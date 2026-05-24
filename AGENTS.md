@@ -6,9 +6,9 @@ Quick-start context for AI agents working in this repo.
 
 `mrs` is an automated theorem prover in Rust targeting the CASC competition. It reads **TPTP** problem files and outputs **SZS/TSTP**-formatted results using a superposition calculus with a given-clause loop and strategy portfolio scheduler.
 
-## mrs-tptp-parser
+## mrs-tptp
 
-The TPTP parser lives at `crates/mrs-tptp-parser/` inside this repo. The **directory** is `mrs-tptp-parser`; the **crate name** (package name in its `Cargo.toml`) is `mrs-tptp`. It is a full workspace member — no sibling repo or external clone required.
+The TPTP parser lives at `crates/mrs-tptp/` inside this repo. The **directory** is `mrs-tptp`; the **crate name** (package name in its `Cargo.toml`) is `mrs-tptp`.
 
 - Zero-copy TPTP parser built with [winnow](https://crates.io/crates/winnow). AST borrows `&str` slices from the input — no per-token allocation.
 - Single library crate (no binary). Edition 2024.
@@ -42,7 +42,7 @@ cargo run -p mrs-tptp --example parse_file
 cargo run --release -p mrs-tptp --example parse_folder -- /path/to/TPTP --timeout 5000 --threads 4
 ```
 
-Integration tests live in `crates/mrs-tptp-parser/tests/` (not inline): `parser_tests.rs`, `non_classical_tests.rs`, `syn000_tests.rs`, plus `tests/resources/` fixtures.
+Integration tests live in `crates/mrs-tptp/tests/` (not inline): `parser_tests.rs`, `non_classical_tests.rs`, `syn000_tests.rs`, plus `tests/resources/` fixtures.
 
 ## Toolchain
 
@@ -87,7 +87,7 @@ mrs/                  ← workspace root AND the binary crate (src/main.rs)
 │   ├── mrs-index/    ← discrimination tree indexing (indirect dep via mrs-search)
 │   ├── mrs-proof/    ← proof extraction + TSTP output
 │   ├── mrs-search/   ← given-clause loop, clause weighting, strategy scheduler
-│   └── mrs-tptp-parser/ ← TPTP parser (crate name: mrs-tptp)
+│   └── mrs-tptp/         ← TPTP parser (crate name: mrs-tptp)
 └── problems/         ← curated TPTP .p files for manual testing (not wired into cargo test)
 ```
 
@@ -104,7 +104,7 @@ The root `Cargo.toml` is both `[workspace]` and `[package]` — valid but unusua
 ## Testing
 
 - Most tests are `#[cfg(test)]` inline modules — no separate test directories, no fixtures.
-- Exception: `mrs-tptp` has integration tests under `crates/mrs-tptp-parser/tests/` with fixture files in `tests/resources/`.
+- Exception: `mrs-tptp` has integration tests under `crates/mrs-tptp/tests/` with fixture files in `tests/resources/`.
 - Some `mrs-search` and `mrs-calculus` tests run the full given-clause loop with real `Duration::from_secs(5)` timeouts.
 - `problems/` is for manual binary runs only, not `cargo test`.
 
