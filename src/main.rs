@@ -61,7 +61,21 @@ fn main() {
     // Resolve include directives
     if !problem.includes.is_empty() {
         let base_dir = Path::new(path).parent().unwrap_or(Path::new("."));
-        let tptp_root: Option<PathBuf> = env::var("TPTP").ok().map(PathBuf::from);
+
+        // Prefer $TPTP env var; otherwise walk up from the problem directory
+        // looking for the TPTP root (the first ancestor that contains Axioms/).
+        let tptp_root: Option<PathBuf> = env::var("TPTP").ok().map(PathBuf::from).or_else(|| {
+            let mut dir = base_dir.to_path_buf();
+            loop {
+                if dir.join("Axioms").is_dir() {
+                    return Some(dir);
+                }
+                if !dir.pop() {
+                    break;
+                }
+            }
+            None
+        });
 
         match include::resolve_and_lower(&problem, &mut lowered, base_dir, tptp_root.as_deref()) {
             Ok(()) => {
