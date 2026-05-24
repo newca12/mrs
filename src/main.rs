@@ -9,6 +9,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
+use std::time::Instant;
 
 use std::time::Duration;
 
@@ -21,6 +22,7 @@ use mrs_search::strategy::{StrategySchedule, run_schedule};
 use mrs_szs::{SzsStatus, szs_output_end, szs_output_start, szs_status_line};
 
 fn main() {
+    let start = Instant::now();
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
@@ -163,4 +165,38 @@ fn main() {
         println!("{}", tstp);
         println!("{}", szs_output_end("Proof", problem_name));
     }
+
+    print_statistics(status, start.elapsed());
+}
+
+/// Returns peak virtual memory in MB by reading /proc/self/status (Linux only).
+fn peak_memory_mb() -> Option<u64> {
+    let content = fs::read_to_string("/proc/self/status").ok()?;
+    for line in content.lines() {
+        if line.starts_with("VmPeak:") {
+            let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+            return Some(kb / 1024);
+        }
+    }
+    None
+}
+
+/// Prints a Vampire-style statistics block to stdout.
+fn print_statistics(status: SzsStatus, elapsed: Duration) {
+    let termination_reason = match status {
+        SzsStatus::Theorem | SzsStatus::Unsatisfiable => "Refutation",
+        SzsStatus::CounterSatisfiable | SzsStatus::Satisfiable => "Saturation",
+        SzsStatus::Timeout => "Timeout",
+        SzsStatus::ResourceOut => "ResourceOut",
+        SzsStatus::GaveUp => "GaveUp",
+        SzsStatus::Unknown | SzsStatus::Error => "Error",
+    };
+    println!("% ------------------------------");
+    println!("% Version: mrs {}", env!("CARGO_PKG_VERSION"));
+    println!("% Termination reason: {}", termination_reason);
+    println!("% Time elapsed: {:.3} s", elapsed.as_secs_f64());
+    if let Some(mb) = peak_memory_mb() {
+        println!("% Peak memory usage: {} MB", mb);
+    }
+    println!("% ------------------------------");
 }
