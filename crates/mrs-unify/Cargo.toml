@@ -1,0 +1,11 @@
+[package]
+name = "mrs-unify"
+version.workspace = true
+edition.workspace = true
+description = "First-order unification and matching algorithms"
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mrs-core = { workspace = true }

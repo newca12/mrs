@@ -1,0 +1,12 @@
+[package]
+name = "mrs-calculus"
+version.workspace = true
+edition.workspace = true
+description = "Inference calculi for automated theorem proving"
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mrs-core = { workspace = true }
+mrs-unify = { workspace = true }

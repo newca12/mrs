@@ -1,0 +1,27 @@
+[package]
+name = "mrs-tptp"
+version.workspace = true
+edition.workspace = true
+description = "A robust TPTP parser for Rust using winnow"
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+documentation = "https://docs.rs/mrs-tptp"
+keywords = ["tptp", "parser", "theorem-prover", "logic", "fof"]
+categories = ["parsing", "science"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+winnow = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = "1.4.1"
+rayon = "1.12.0"
+
+[features]
+default = []
+cancellation = []
+owned = []

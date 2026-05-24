@@ -1,0 +1,11 @@
+[package]
+name = "mrs-index"
+version.workspace = true
+edition.workspace = true
+description = "Term indexing structures for efficient retrieval"
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mrs-core = { workspace = true }

@@ -1,0 +1,10 @@
+[package]
+name = "mrs-core"
+version.workspace = true
+edition.workspace = true
+description = "Core logic types for the MRS automated theorem prover: terms, formulas, clauses, and substitutions"
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]

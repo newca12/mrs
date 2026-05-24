@@ -1,0 +1,44 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/newca12/mrs"
+rust-version = "1.85"
+
+[workspace.dependencies]
+mrs-core = { path = "crates/mrs-core", version = "0.1.0" }
+mrs-szs = { path = "crates/mrs-szs", version = "0.1.0" }
+mrs-tptp = { path = "crates/mrs-tptp-parser", version = "0.1.0" }
+mrs-unify = { path = "crates/mrs-unify", version = "0.1.0" }
+mrs-cnf = { path = "crates/mrs-cnf", version = "0.1.0" }
+mrs-calculus = { path = "crates/mrs-calculus", version = "0.1.0" }
+mrs-index = { path = "crates/mrs-index", version = "0.1.0" }
+mrs-proof = { path = "crates/mrs-proof", version = "0.1.0" }
+mrs-search = { path = "crates/mrs-search", version = "0.1.0" }
+winnow = "1.0.3"
+
+[package]
+name = "mrs"
+version.workspace = true
+edition.workspace = true
+description = "Automated theorem prover for TPTP problems using superposition calculus"
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+keywords = ["theorem-prover", "tptp", "superposition", "casc", "logic"]
+categories = ["science", "command-line-utilities"]
+
+[dependencies]
+mrs-core = { workspace = true }
+mrs-szs = { workspace = true }
+mrs-tptp = { workspace = true }
+mrs-unify = { workspace = true }
+mrs-cnf = { workspace = true }
+mrs-calculus = { workspace = true }
+mrs-proof = { workspace = true }
+mrs-search = { workspace = true }

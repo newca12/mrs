@@ -1,0 +1,11 @@
+[package]
+name = "mrs-cnf"
+version.workspace = true
+edition.workspace = true
+description = "Clausification and preprocessing for first-order logic formulas"
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mrs-core = { workspace = true }

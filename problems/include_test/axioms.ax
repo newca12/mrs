@@ -1,0 +1,5 @@
+% Axioms for the include test
+% These are included by main.p
+
+fof(ax1, axiom, ![X]: (human(X) => mortal(X))).
+fof(ax2, axiom, human(socrates)).

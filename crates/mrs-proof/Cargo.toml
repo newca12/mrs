@@ -1,0 +1,12 @@
+[package]
+name = "mrs-proof"
+version.workspace = true
+edition.workspace = true
+description = "Proof objects and TSTP output for automated theorem proving"
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mrs-core = { workspace = true }
+mrs-szs = { workspace = true }

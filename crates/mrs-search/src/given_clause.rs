@@ -1,0 +1,681 @@
+//! The given-clause loop (Otter-style).
+//!
+//! This is the main proof search algorithm. It alternates between:
+//! 1. Selecting a clause from the unprocessed set
+//! 2. Generating all inferences with the processed set
+//! 3. Adding new clauses to the unprocessed set
+//!
+//! The loop terminates when:
+//! - An empty clause is derived (refutation found)
+//! - All clauses are processed (saturation)
+//! - A time or clause limit is exceeded
+
+use std::collections::HashSet;
+use std::time::Instant;
+
+use mrs_calculus::demodulation;
+use mrs_calculus::equality;
+use mrs_calculus::factoring;
+use mrs_calculus::literal_selection::selected_literals;
+use mrs_calculus::resolution;
+use mrs_calculus::subsumption;
+use mrs_calculus::superposition;
+use mrs_core::Atom;
+use mrs_core::clause::{Clause, ClauseSource};
+
+use crate::select::select;
+use crate::state::SearchState;
+use crate::{SearchConfig, SearchResult};
+
+/// Runs the given-clause proof search.
+///
+/// Returns `SearchResult::Refutation(id)` if the empty clause is derived,
+/// `SearchResult::Saturated` if all clauses are processed without contradiction,
+/// or `SearchResult::Timeout`/`SearchResult::ResourceOut` on resource limits.
+pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
+    // Check for initial empty clauses
+    for clause in &state.unprocessed {
+        if clause.is_empty() {
+            return SearchResult::Refutation(clause.id);
+        }
+    }
+
+    let start = Instant::now();
+    let mut iteration: u64 = 0;
+    let ordering = &config.ordering;
+
+    while let Some(given) = select(&mut state.unprocessed, &config.selection, iteration) {
+        // Check time limit
+        if start.elapsed() >= config.time_limit {
+            return SearchResult::Timeout;
+        }
+
+        // Check clause limit
+        if state.total_clauses() >= config.max_clauses {
+            return SearchResult::ResourceOut;
+        }
+
+        // Skip tautologies
+        if given.is_tautology() {
+            iteration += 1;
+            continue;
+        }
+
+        // Forward subsumption: skip if given is subsumed by a processed clause
+        if state
+            .processed
+            .iter()
+            .any(|p| subsumption::subsumes(p, &given))
+        {
+            iteration += 1;
+            continue;
+        }
+
+        // Forward demodulation: simplify the given clause using unit equalities
+        let given = {
+            let units: Vec<&Clause> = state
+                .processed
+                .iter()
+                .filter(|c| is_unit_positive_equality(c))
+                .collect();
+            if let Some(simplified) =
+                demodulation::demodulate(&given, &units, ordering, &mut state.id_gen)
+            {
+                // Store original clause so proof extraction can find it
+                state.clause_store.insert(given.id, given);
+                simplified
+            } else {
+                given
+            }
+        };
+
+        // Condensation: simplify the given clause by removing redundant literals
+        let given = if let Some(condensed) = subsumption::condense(&given, &mut state.id_gen) {
+            state.clause_store.insert(given.id, given);
+            condensed
+        } else {
+            given
+        };
+
+        // Compute selected literals for the given clause
+        let given_sel = selected_literals(&given, &config.literal_selection);
+
+        // Generate inferences
+        let mut new_clauses = Vec::new();
+
+        // --- Resolution: use index to find clauses with complementary predicates ---
+        {
+            let mut resolution_partner_ids = HashSet::new();
+            for &lit_idx in &given_sel {
+                let lit = &given.literals[lit_idx];
+                if let Atom::Pred(sym, _) = &lit.atom {
+                    let partners = state.processed.get_resolution_partners(*sym, lit.positive);
+                    for partner in partners {
+                        if resolution_partner_ids.insert(partner.id) {
+                            let active_sel = selected_literals(partner, &config.literal_selection);
+                            let resolvents = resolution::resolve_selected(
+                                &given,
+                                partner,
+                                &mut state.id_gen,
+                                Some(&given_sel),
+                                Some(&active_sel),
+                            );
+                            new_clauses.extend(resolvents);
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Superposition ---
+        {
+            // (1) Given as equation source, processed clauses as targets.
+            // Only needed if the given clause has at least one positive equality.
+            let given_has_pos_eq = given
+                .literals
+                .iter()
+                .any(|l| l.is_positive() && matches!(&l.atom, Atom::Eq(_, _)));
+
+            if given_has_pos_eq {
+                let processed_clauses: Vec<Clause> = state.processed.iter().cloned().collect();
+                for active in &processed_clauses {
+                    let active_sel = selected_literals(active, &config.literal_selection);
+                    let sp = superposition::superpose_selected(
+                        &given,
+                        active,
+                        ordering,
+                        &mut state.id_gen,
+                        Some(&active_sel),
+                    );
+                    new_clauses.extend(sp);
+                }
+            }
+
+            // (2) Processed clause as equation source, given as target.
+            // Only consider processed clauses that have positive equalities.
+            {
+                let eq_clauses: Vec<Clause> = state
+                    .processed
+                    .get_positive_equality_clauses()
+                    .into_iter()
+                    .cloned()
+                    .collect();
+                for active in &eq_clauses {
+                    let sp = superposition::superpose_selected(
+                        active,
+                        &given,
+                        ordering,
+                        &mut state.id_gen,
+                        Some(&given_sel),
+                    );
+                    new_clauses.extend(sp);
+                }
+            }
+        }
+
+        // Factor the given clause
+        let factors = factoring::factor(&given, &mut state.id_gen);
+        new_clauses.extend(factors);
+
+        // Equality resolution and factoring on the given clause
+        new_clauses.extend(equality::equality_resolve(&given, &mut state.id_gen));
+        new_clauses.extend(equality::equality_factor(
+            &given,
+            ordering,
+            &mut state.id_gen,
+        ));
+
+        // Backward subsumption: remove processed clauses subsumed by the given
+        state
+            .processed
+            .retain(|p| !subsumption::subsumes(&given, p));
+
+        // Backward subsumption of unprocessed: remove unprocessed clauses subsumed by the given
+        state
+            .unprocessed
+            .retain(|u| !subsumption::subsumes(&given, u));
+
+        // Add given to processed set (indexed)
+        state.clause_store.insert(given.id, given.clone());
+        state.processed.insert(given.clone());
+
+        // Backward demodulation: if the given clause is a unit positive equality,
+        // rewrite all processed clauses using it. Iterate until fixpoint.
+        if is_unit_positive_equality(&given) {
+            let mut new_units: Vec<Clause> = vec![given.clone()];
+
+            loop {
+                if new_units.is_empty() {
+                    break;
+                }
+                let unit_refs: Vec<&Clause> = new_units.iter().collect();
+                let all_processed = state.processed.drain();
+                let mut next_processed = Vec::new();
+                let mut created_units = Vec::new();
+
+                for proc in all_processed {
+                    // Don't rewrite the demod units themselves
+                    if new_units.iter().any(|u| u.id == proc.id) {
+                        next_processed.push(proc);
+                        continue;
+                    }
+                    if let Some(simplified) =
+                        demodulation::demodulate(&proc, &unit_refs, ordering, &mut state.id_gen)
+                    {
+                        // Store original for proof extraction
+                        state.clause_store.insert(proc.id, proc);
+                        // Further simplify using all existing processed units
+                        let all_units: Vec<&Clause> = next_processed
+                            .iter()
+                            .filter(|c| is_unit_positive_equality(c))
+                            .collect();
+                        let simplified = if !all_units.is_empty() {
+                            if let Some(further) = demodulation::demodulate(
+                                &simplified,
+                                &all_units,
+                                ordering,
+                                &mut state.id_gen,
+                            ) {
+                                state.clause_store.insert(simplified.id, simplified);
+                                further
+                            } else {
+                                simplified
+                            }
+                        } else {
+                            simplified
+                        };
+                        if simplified.is_empty() {
+                            state.clause_store.insert(simplified.id, simplified.clone());
+                            return SearchResult::Refutation(simplified.id);
+                        }
+                        if is_trivial_contradiction(&simplified) {
+                            let empty = Clause::new(
+                                state.id_gen.next(),
+                                vec![],
+                                ClauseSource::Inference {
+                                    rule: "equality_resolution".into(),
+                                    parents: vec![simplified.id],
+                                },
+                            );
+                            state.clause_store.insert(simplified.id, simplified);
+                            state.clause_store.insert(empty.id, empty.clone());
+                            return SearchResult::Refutation(empty.id);
+                        }
+                        if !simplified.is_tautology() {
+                            if is_unit_positive_equality(&simplified) {
+                                created_units.push(simplified.clone());
+                            }
+                            state.clause_store.insert(simplified.id, simplified.clone());
+                            next_processed.push(simplified);
+                        }
+                    } else {
+                        next_processed.push(proc);
+                    }
+                }
+
+                // Re-insert all clauses into the index
+                for clause in next_processed {
+                    state.processed.insert(clause);
+                }
+                new_units = created_units;
+            }
+        }
+
+        // Process generated clauses
+        for mut clause in new_clauses {
+            // Remove duplicate literals
+            clause.deduplicate();
+
+            if clause.is_empty() {
+                state.clause_store.insert(clause.id, clause.clone());
+                return SearchResult::Refutation(clause.id);
+            }
+
+            if !clause.is_tautology() {
+                // Forward demodulation on new clauses
+                let clause = {
+                    let units: Vec<&Clause> = state
+                        .processed
+                        .iter()
+                        .filter(|c| is_unit_positive_equality(c))
+                        .collect();
+                    if let Some(simplified) =
+                        demodulation::demodulate(&clause, &units, ordering, &mut state.id_gen)
+                    {
+                        state.clause_store.insert(clause.id, clause);
+                        if simplified.is_empty() {
+                            state.clause_store.insert(simplified.id, simplified.clone());
+                            return SearchResult::Refutation(simplified.id);
+                        }
+                        simplified
+                    } else {
+                        clause
+                    }
+                };
+
+                if clause.is_tautology() {
+                    continue;
+                }
+
+                // Condensation: simplify new clause by removing redundant literals
+                let clause =
+                    if let Some(condensed) = subsumption::condense(&clause, &mut state.id_gen) {
+                        state.clause_store.insert(clause.id, clause);
+                        condensed
+                    } else {
+                        clause
+                    };
+
+                // Forward subsumption: skip if subsumed by a processed clause
+                if state
+                    .processed
+                    .iter()
+                    .any(|p| subsumption::subsumes(p, &clause))
+                {
+                    continue;
+                }
+
+                state.clause_store.insert(clause.id, clause.clone());
+                state.unprocessed.push_back(clause);
+            }
+        }
+
+        iteration += 1;
+    }
+
+    SearchResult::Saturated
+}
+
+/// Returns true if a clause is a unit positive equality (used for demodulation).
+fn is_unit_positive_equality(clause: &Clause) -> bool {
+    clause.len() == 1
+        && clause.literals[0].is_positive()
+        && matches!(&clause.literals[0].atom, Atom::Eq(_, _))
+}
+
+/// Returns true if a clause is a trivial contradiction: a single negative equality
+/// `s ≠ s` where both sides are syntactically identical.
+fn is_trivial_contradiction(clause: &Clause) -> bool {
+    clause.len() == 1
+        && clause.literals[0].is_negative()
+        && matches!(&clause.literals[0].atom, Atom::Eq(l, r) if l == r)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::TermOrdering;
+    use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource};
+    use mrs_core::{Atom, Literal, SymbolTable, Term};
+
+    fn input_clause(
+        id_gen: &mut ClauseIdGen,
+        lits: Vec<Literal>,
+        name: &str,
+        role: &str,
+    ) -> Clause {
+        Clause::new(
+            id_gen.next(),
+            lits,
+            ClauseSource::Input {
+                name: name.into(),
+                role: role.into(),
+            },
+        )
+    }
+
+    #[test]
+    fn prove_p_and_not_p() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            "ax1",
+            "axiom",
+        );
+        let c2 = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::pred(p, vec![Term::constant(a)]))],
+            "ax2",
+            "axiom",
+        );
+
+        let mut state = SearchState::new(vec![c1, c2], id_gen);
+        let config = SearchConfig::default();
+        let result = search(&mut state, &config);
+        assert!(matches!(result, SearchResult::Refutation(_)));
+    }
+
+    #[test]
+    fn prove_socrates() {
+        let mut syms = SymbolTable::new();
+        let human = syms.intern("human");
+        let mortal = syms.intern("mortal");
+        let socrates = syms.intern("socrates");
+        let mut id_gen = ClauseIdGen::new();
+
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![
+                Literal::neg(Atom::pred(human, vec![Term::var(0)])),
+                Literal::pos(Atom::pred(mortal, vec![Term::var(0)])),
+            ],
+            "ax1",
+            "axiom",
+        );
+        let c2 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(
+                human,
+                vec![Term::constant(socrates)],
+            ))],
+            "ax2",
+            "axiom",
+        );
+        let c3 = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::pred(
+                mortal,
+                vec![Term::constant(socrates)],
+            ))],
+            "goal",
+            "negated_conjecture",
+        );
+
+        let mut state = SearchState::new(vec![c1, c2, c3], id_gen);
+        let config = SearchConfig::default();
+        let result = search(&mut state, &config);
+        assert!(matches!(result, SearchResult::Refutation(_)));
+    }
+
+    #[test]
+    fn saturates_on_satisfiable_ground() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let mut id_gen = ClauseIdGen::new();
+
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            "ax1",
+            "axiom",
+        );
+        let c2 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(q, vec![Term::constant(b)]))],
+            "ax2",
+            "axiom",
+        );
+
+        let mut state = SearchState::new(vec![c1, c2], id_gen);
+        let config = SearchConfig::default();
+        let result = search(&mut state, &config);
+        assert!(matches!(result, SearchResult::Saturated));
+    }
+
+    #[test]
+    fn pel27_literal_selection_all() {
+        // Test that pel27 clauses can be refuted with All literal selection
+        use crate::{LiteralSelection, SelectionStrategy};
+
+        let mut syms = SymbolTable::new();
+        let f_sym = syms.intern("f");
+        let g_sym = syms.intern("g");
+        let h_sym = syms.intern("h");
+        let i_sym = syms.intern("i");
+        let j_sym = syms.intern("j");
+        let sk1 = syms.intern("sk_ax1_0");
+        let sk2 = syms.intern("sk_goal_0");
+        let mut id_gen = ClauseIdGen::new();
+
+        let clauses = vec![
+            // [0] f(sk1)
+            input_clause(
+                &mut id_gen,
+                vec![Literal::pos(Atom::pred(f_sym, vec![Term::constant(sk1)]))],
+                "ax1_0",
+                "axiom",
+            ),
+            // [1] ~g(sk1)
+            input_clause(
+                &mut id_gen,
+                vec![Literal::neg(Atom::pred(g_sym, vec![Term::constant(sk1)]))],
+                "ax1_1",
+                "axiom",
+            ),
+            // [2] ~f(X0) | h(X0)
+            input_clause(
+                &mut id_gen,
+                vec![
+                    Literal::neg(Atom::pred(f_sym, vec![Term::var(0)])),
+                    Literal::pos(Atom::pred(h_sym, vec![Term::var(0)])),
+                ],
+                "ax2",
+                "axiom",
+            ),
+            // [3] ~j(X0) | ~i(X0) | f(X0)
+            input_clause(
+                &mut id_gen,
+                vec![
+                    Literal::neg(Atom::pred(j_sym, vec![Term::var(0)])),
+                    Literal::neg(Atom::pred(i_sym, vec![Term::var(0)])),
+                    Literal::pos(Atom::pred(f_sym, vec![Term::var(0)])),
+                ],
+                "ax3",
+                "axiom",
+            ),
+            // [4] ~h(X0) | g(X0) | ~i(X1) | ~h(X1)
+            input_clause(
+                &mut id_gen,
+                vec![
+                    Literal::neg(Atom::pred(h_sym, vec![Term::var(0)])),
+                    Literal::pos(Atom::pred(g_sym, vec![Term::var(0)])),
+                    Literal::neg(Atom::pred(i_sym, vec![Term::var(1)])),
+                    Literal::neg(Atom::pred(h_sym, vec![Term::var(1)])),
+                ],
+                "ax4",
+                "axiom",
+            ),
+            // [5] j(sk2)
+            input_clause(
+                &mut id_gen,
+                vec![Literal::pos(Atom::pred(j_sym, vec![Term::constant(sk2)]))],
+                "goal_0",
+                "negated_conjecture",
+            ),
+            // [6] i(sk2)
+            input_clause(
+                &mut id_gen,
+                vec![Literal::pos(Atom::pred(i_sym, vec![Term::constant(sk2)]))],
+                "goal_1",
+                "negated_conjecture",
+            ),
+        ];
+
+        // With All: should find refutation
+        let mut state = SearchState::new(clauses.clone(), id_gen.clone());
+        let config = SearchConfig {
+            time_limit: std::time::Duration::from_secs(5),
+            max_clauses: 50_000,
+            selection: SelectionStrategy::AgeWeight(5),
+            literal_selection: LiteralSelection::All,
+            ordering: TermOrdering::KBO,
+        };
+        let result = search(&mut state, &config);
+        assert!(
+            matches!(result, SearchResult::Refutation(_)),
+            "Expected refutation with All selection, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn pel27_literal_selection_all_negative() {
+        // Test that pel27 fails with AllNegative literal selection
+        use crate::{LiteralSelection, SelectionStrategy};
+
+        let mut syms = SymbolTable::new();
+        let f_sym = syms.intern("f");
+        let g_sym = syms.intern("g");
+        let h_sym = syms.intern("h");
+        let i_sym = syms.intern("i");
+        let j_sym = syms.intern("j");
+        let sk1 = syms.intern("sk_ax1_0");
+        let sk2 = syms.intern("sk_goal_0");
+        let mut id_gen = ClauseIdGen::new();
+
+        let clauses = vec![
+            input_clause(
+                &mut id_gen,
+                vec![Literal::pos(Atom::pred(f_sym, vec![Term::constant(sk1)]))],
+                "ax1_0",
+                "axiom",
+            ),
+            input_clause(
+                &mut id_gen,
+                vec![Literal::neg(Atom::pred(g_sym, vec![Term::constant(sk1)]))],
+                "ax1_1",
+                "axiom",
+            ),
+            input_clause(
+                &mut id_gen,
+                vec![
+                    Literal::neg(Atom::pred(f_sym, vec![Term::var(0)])),
+                    Literal::pos(Atom::pred(h_sym, vec![Term::var(0)])),
+                ],
+                "ax2",
+                "axiom",
+            ),
+            input_clause(
+                &mut id_gen,
+                vec![
+                    Literal::neg(Atom::pred(j_sym, vec![Term::var(0)])),
+                    Literal::neg(Atom::pred(i_sym, vec![Term::var(0)])),
+                    Literal::pos(Atom::pred(f_sym, vec![Term::var(0)])),
+                ],
+                "ax3",
+                "axiom",
+            ),
+            input_clause(
+                &mut id_gen,
+                vec![
+                    Literal::neg(Atom::pred(h_sym, vec![Term::var(0)])),
+                    Literal::pos(Atom::pred(g_sym, vec![Term::var(0)])),
+                    Literal::neg(Atom::pred(i_sym, vec![Term::var(1)])),
+                    Literal::neg(Atom::pred(h_sym, vec![Term::var(1)])),
+                ],
+                "ax4",
+                "axiom",
+            ),
+            input_clause(
+                &mut id_gen,
+                vec![Literal::pos(Atom::pred(j_sym, vec![Term::constant(sk2)]))],
+                "goal_0",
+                "negated_conjecture",
+            ),
+            input_clause(
+                &mut id_gen,
+                vec![Literal::pos(Atom::pred(i_sym, vec![Term::constant(sk2)]))],
+                "goal_1",
+                "negated_conjecture",
+            ),
+        ];
+
+        // With AllNegative: check if it saturates
+        let mut state = SearchState::new(clauses, id_gen);
+        let config = SearchConfig {
+            time_limit: std::time::Duration::from_secs(5),
+            max_clauses: 50_000,
+            selection: SelectionStrategy::AgeWeight(5),
+            literal_selection: LiteralSelection::AllNegative,
+            ordering: TermOrdering::KBO,
+        };
+        let result = search(&mut state, &config);
+        // Report what happens — if this saturates, AllNegative is too restrictive
+        eprintln!("pel27 with AllNegative: {:?}", result);
+    }
+
+    #[test]
+    fn initial_empty_clause() {
+        let mut id_gen = ClauseIdGen::new();
+        let c = Clause::new(
+            id_gen.next(),
+            vec![],
+            ClauseSource::Input {
+                name: "empty".into(),
+                role: "axiom".into(),
+            },
+        );
+        let mut state = SearchState::new(vec![c], id_gen);
+        let config = SearchConfig::default();
+        let result = search(&mut state, &config);
+        assert!(matches!(result, SearchResult::Refutation(_)));
+    }
+}
