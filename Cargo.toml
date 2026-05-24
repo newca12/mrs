@@ -12,7 +12,7 @@ rust-version = "1.85"
 [workspace.dependencies]
 mrs-core = { path = "crates/mrs-core", version = "0.1.0" }
 mrs-szs = { path = "crates/mrs-szs", version = "0.1.0" }
-mrs-tptp = { path = "crates/mrs-tptp-parser", version = "0.1.0" }
+mrs-tptp = { path = "crates/mrs-tptp", version = "0.1.0" }
 mrs-unify = { path = "crates/mrs-unify", version = "0.1.0" }
 mrs-cnf = { path = "crates/mrs-cnf", version = "0.1.0" }
 mrs-calculus = { path = "crates/mrs-calculus", version = "0.1.0" }
