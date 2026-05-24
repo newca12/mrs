@@ -72,13 +72,11 @@ pub fn resolve_selected(
             }
 
             // Convert atoms to terms for unification
-            let t1 = match atom_to_term(&l1.atom) {
-                Some(t) => t,
-                None => continue,
+            let Some(t1) = atom_to_term(&l1.atom) else {
+                continue;
             };
-            let t2 = match atom_to_term(&l2.atom) {
-                Some(t) => t,
-                None => continue,
+            let Some(t2) = atom_to_term(&l2.atom) else {
+                continue;
             };
 
             // Try unification

@@ -23,22 +23,20 @@ use mrs_szs::{SzsStatus, szs_output_end, szs_output_start, szs_status_line};
 
 fn main() {
     let start = Instant::now();
-    let args: Vec<String> = env::args().collect();
 
-    if args.len() < 2 {
+    let Some(path) = env::args().nth(1) else {
         eprintln!("Usage: mrs <file.p>");
         eprintln!("  An automated theorem prover for TPTP problems.");
         process::exit(1);
-    }
+    };
 
-    let path = &args[1];
-    let problem_name = Path::new(path)
+    let problem_name = Path::new(&path)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("unknown");
 
     // Read the file
-    let input = match fs::read_to_string(path) {
+    let input = match fs::read_to_string(&path) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Error reading {}: {}", path, e);
@@ -62,7 +60,7 @@ fn main() {
 
     // Resolve include directives
     if !problem.includes.is_empty() {
-        let base_dir = Path::new(path).parent().unwrap_or(Path::new("."));
+        let base_dir = Path::new(&path).parent().unwrap_or(Path::new("."));
 
         // Prefer $TPTP env var; otherwise walk up from the problem directory
         // looking for the TPTP root (the first ancestor that contains Axioms/).

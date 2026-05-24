@@ -70,13 +70,15 @@ impl<'a> LowerCtx<'a> {
 
     /// Gets or creates a VarId for the given variable name.
     fn var_id(&mut self, name: &str) -> VarId {
-        if let Some(&id) = self.var_map.get(name) {
-            return id;
+        use std::collections::hash_map::Entry;
+        match self.var_map.entry(name.to_string()) {
+            Entry::Occupied(e) => *e.get(),
+            Entry::Vacant(e) => {
+                let id = self.next_var;
+                self.next_var += 1;
+                *e.insert(id)
+            }
         }
-        let id = self.next_var;
-        self.next_var += 1;
-        self.var_map.insert(name.to_string(), id);
-        id
     }
 
     /// Interns a symbol name.

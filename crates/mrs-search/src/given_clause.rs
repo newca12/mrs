@@ -229,18 +229,15 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                             .iter()
                             .filter(|c| is_unit_positive_equality(c))
                             .collect();
-                        let simplified = if !all_units.is_empty() {
-                            if let Some(further) = demodulation::demodulate(
+                        let simplified = if !all_units.is_empty()
+                            && let Some(further) = demodulation::demodulate(
                                 &simplified,
                                 &all_units,
                                 ordering,
                                 &mut state.id_gen,
                             ) {
-                                state.clause_store.insert(simplified.id, simplified);
-                                further
-                            } else {
-                                simplified
-                            }
+                            state.clause_store.insert(simplified.id, simplified);
+                            further
                         } else {
                             simplified
                         };

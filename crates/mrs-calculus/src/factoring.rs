@@ -36,13 +36,11 @@ pub fn factor(clause: &Clause, id_gen: &mut ClauseIdGen) -> Vec<Clause> {
                 continue;
             }
 
-            let t1 = match atom_to_term(&l1.atom) {
-                Some(t) => t,
-                None => continue,
+            let Some(t1) = atom_to_term(&l1.atom) else {
+                continue;
             };
-            let t2 = match atom_to_term(&l2.atom) {
-                Some(t) => t,
-                None => continue,
+            let Some(t2) = atom_to_term(&l2.atom) else {
+                continue;
             };
 
             if let Ok(mgu) = mrs_unify::unify(&t1, &t2) {

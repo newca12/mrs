@@ -6,6 +6,8 @@
 //! - **Duplicate literal removal**: Remove repeated literals within a clause
 //! - **True/False handling**: Remove trivially true clauses
 
+use std::collections::HashSet;
+
 use mrs_core::clause::Clause;
 
 /// Simplifies a set of clauses.
@@ -22,12 +24,11 @@ pub fn simplify_clauses(clauses: Vec<Clause>) -> Vec<Clause> {
 
 /// Removes duplicate literals from a clause.
 fn remove_duplicate_literals(clause: Clause) -> Clause {
-    let mut seen = Vec::new();
+    let mut seen = HashSet::new();
     let mut unique_lits = Vec::new();
 
     for lit in &clause.literals {
-        if !seen.contains(lit) {
-            seen.push(lit.clone());
+        if seen.insert(lit.clone()) {
             unique_lits.push(lit.clone());
         }
     }

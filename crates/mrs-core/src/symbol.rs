@@ -60,13 +60,15 @@ impl SymbolTable {
     /// If the name has been interned before, returns the existing ID.
     /// Otherwise, assigns a new ID.
     pub fn intern(&mut self, name: &str) -> SymbolId {
-        if let Some(&id) = self.ids.get(name) {
-            return id;
+        use std::collections::hash_map::Entry;
+        match self.ids.entry(name.to_string()) {
+            Entry::Occupied(e) => *e.get(),
+            Entry::Vacant(e) => {
+                let id = SymbolId(self.names.len() as u32);
+                self.names.push(name.to_string());
+                *e.insert(id)
+            }
         }
-        let id = SymbolId(self.names.len() as u32);
-        self.names.push(name.to_string());
-        self.ids.insert(name.to_string(), id);
-        id
     }
 
     /// Resolves a [`SymbolId`] back to its string name.
