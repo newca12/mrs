@@ -1,3 +1,22 @@
+# Rust build output
 /target
+
+# Editor and IDE
+.idea/
+.vscode/*.code-workspace
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Rust backup files
+*.rs.bk
+
+# Merge / patch artifacts
+*.orig
+*.rej
+
+# Machine-specific logs
 laptop_i.err
 laptop_i.out
