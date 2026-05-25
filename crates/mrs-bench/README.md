@@ -22,10 +22,13 @@ cargo build --release
 # 2. Download problems and axioms (~500 MB)
 crates/mrs-bench/setup.sh
 
-# 3. Run the benchmark (12 s per problem, all default divisions)
-crates/mrs-bench/casc.sh --systems mrs --time 12
+# 3. (Optional) Add a competitor binary, e.g. Vampire
+cp /path/to/vampire crates/mrs-bench/systems/vampire/bin/vampire
 
-# 4. Summarise the latest run
+# 4. Run the benchmark (12 s per problem, all default divisions)
+crates/mrs-bench/casc.sh --systems mrs,vampire --time 12  # omit ,vampire if not installed
+
+# 5. Summarise the latest run
 cargo run -p mrs-bench --bin bench_report -- crates/mrs-bench/results/casc-30/<timestamp>/run.csv
 ```
 
