@@ -154,7 +154,17 @@ fn main() {
     }
 
     // --- Proof search ---
-    let schedule = StrategySchedule::default_schedule(Duration::from_secs(time_secs));
+    let total_budget = Duration::from_secs(time_secs);
+    let elapsed = start.elapsed();
+
+    if elapsed >= total_budget {
+        println!("{}", szs_status_line(SzsStatus::Timeout, problem_name));
+        print_statistics(SzsStatus::Timeout, elapsed);
+        process::exit(0);
+    }
+
+    let search_budget = total_budget - elapsed;
+    let schedule = StrategySchedule::default_schedule(search_budget);
     let (result, state) = run_schedule(&all_clauses, id_gen, &schedule);
 
     // --- Output result ---
