@@ -8,15 +8,16 @@ Quick-start context for AI agents working in this repo.
 
 ## mrs-tptp
 
-The TPTP parser lives at `crates/mrs-tptp/` inside this repo. The **directory** is `mrs-tptp`; the **crate name** (package name in its `Cargo.toml`) is `mrs-tptp`.
+Zero-copy TPTP parser built with [winnow](https://crates.io/crates/winnow). Lives at `crates/mrs-tptp/`; crate name `mrs-tptp`. The AST borrows `&str` slices directly from the input — no per-token allocation. Single library crate, edition 2024.
 
-- Zero-copy TPTP parser built with [winnow](https://crates.io/crates/winnow). AST borrows `&str` slices from the input — no per-token allocation.
-- Single library crate (no binary). Edition 2024.
-- Supports all major dialects: CNF, FOF, TFF, TCF, THF, TXF, NXF/NHF.
-- Two opt-in feature flags (both off by default):
-  - `cancellation` — cooperative parse cancellation via `set_cancel_flag` / `clear_cancel_flag`
-  - `owned` — `OwnedTPTPProblem` / `parse_tptp_file` that own their data (no lifetime parameter)
-- `mrs` uses neither feature flag (default features only).
+**Supported dialects:** CNF, FOF, TFF, TCF, THF, TXF, NXF/NHF.
+
+**Feature flags** (both off by default; `mrs` uses neither):
+
+| Flag | Effect |
+|------|--------|
+| `cancellation` | Cooperative parse cancellation via `set_cancel_flag` / `clear_cancel_flag` |
+| `owned` | `OwnedTPTPProblem` / `parse_tptp_file` — owns its data, no lifetime parameter |
 
 **Key public API used by `mrs`:**
 
@@ -29,20 +30,18 @@ The TPTP parser lives at `crates/mrs-tptp/` inside this repo. The **directory** 
 | `FormulaRole` | `Axiom`, `Conjecture`, `NegatedConjecture`, `Type`, `Definition`, … |
 | `ParseError` | Carries byte offset; `.line()`, `.column()`, `.snippet()` helpers |
 
-**Testing mrs-tptp:**
+**Testing:**
 
 ```bash
-# from mrs/ workspace root
-cargo test -p mrs-tptp                          # unit + integration tests
-cargo test -p mrs-tptp parser_tests             # integration tests only
-cargo test -p mrs-tptp -- --nocapture           # see stdout
+cargo test -p mrs-tptp                    # unit + integration tests
+cargo test -p mrs-tptp parser_tests       # integration tests only
+cargo test -p mrs-tptp -- --nocapture     # see stdout
 
-# runnable examples (from mrs/ workspace root)
 cargo run -p mrs-tptp --example parse_file
 cargo run --release -p mrs-tptp --example parse_folder -- /path/to/TPTP --timeout 5000 --threads 4
 ```
 
-Integration tests live in `crates/mrs-tptp/tests/` (not inline): `parser_tests.rs`, `non_classical_tests.rs`, `syn000_tests.rs`, plus `tests/resources/` fixtures.
+Integration tests live in `crates/mrs-tptp/tests/`: `parser_tests.rs`, `non_classical_tests.rs`, `syn000_tests.rs`, plus `tests/resources/` fixtures.
 
 ## Toolchain
 
@@ -55,9 +54,9 @@ Integration tests live in `crates/mrs-tptp/tests/` (not inline): `parser_tests.r
 cargo build                          # debug build
 cargo build --release                # release (use for benchmarking)
 cargo check                          # fast type-check, no output
-cargo clippy --workspace             # lint
-cargo fmt                            # format
-cargo fmt --check                    # CI-style format check
+cargo clippy --all                   # lint (always run before committing)
+cargo fmt --all                      # format (always run before committing)
+cargo fmt --all --check              # CI-style format check
 
 cargo test --workspace               # all tests (use --workspace; bare cargo test only runs root crate)
 cargo test -p mrs-search             # single crate
@@ -87,7 +86,8 @@ mrs/                  ← workspace root AND the binary crate (src/main.rs)
 │   ├── mrs-index/    ← discrimination tree indexing (indirect dep via mrs-search)
 │   ├── mrs-proof/    ← proof extraction + TSTP output
 │   ├── mrs-search/   ← given-clause loop, clause weighting, strategy scheduler
-│   └── mrs-tptp/         ← TPTP parser (crate name: mrs-tptp)
+│   ├── mrs-tptp/     ← TPTP parser
+│   └── mrs-bench/    ← CASC benchmark harness (casc.sh, setup.sh) + bench_report binary
 └── problems/         ← curated TPTP .p files for manual testing (not wired into cargo test)
 ```
 
@@ -110,4 +110,4 @@ The root `Cargo.toml` is both `[workspace]` and `[package]` — valid but unusua
 
 ## Runtime env var
 
-`TPTP=/path/to/TPTP` — only needed at runtime when problems use `%include` pointing to the standard TPTP library. Not required for local `problems/` files.
+`TPTP=/path/to/TPTP` — only needed at runtime when problems use `%include` pointing to the standard TPTP library. The benchmark harness (`crates/mrs-bench/systems/mrs/invoke.sh`) sets this automatically to `crates/mrs-bench/problems/casc-30`, so it is not required for normal benchmark runs. Only set it manually when running the binary directly on problems that use `%include`.
