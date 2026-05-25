@@ -24,8 +24,32 @@ use mrs_szs::{SzsStatus, szs_output_end, szs_output_start, szs_status_line};
 fn main() {
     let start = Instant::now();
 
-    let Some(path) = env::args().nth(1) else {
-        eprintln!("Usage: mrs <file.p>");
+    let mut path: Option<String> = None;
+    let mut time_secs: u64 = 30;
+    let mut args = env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--time" => {
+                let val = args.next().unwrap_or_else(|| {
+                    eprintln!("Usage: mrs [--time <seconds>] <file.p>");
+                    process::exit(1);
+                });
+                time_secs = val.parse().unwrap_or_else(|_| {
+                    eprintln!("Error: --time requires a positive integer, got {:?}", val);
+                    process::exit(1);
+                });
+            }
+            _ => {
+                if path.is_some() {
+                    eprintln!("Usage: mrs [--time <seconds>] <file.p>");
+                    process::exit(1);
+                }
+                path = Some(arg);
+            }
+        }
+    }
+    let Some(path) = path else {
+        eprintln!("Usage: mrs [--time <seconds>] <file.p>");
         eprintln!("  An automated theorem prover for TPTP problems.");
         process::exit(1);
     };
@@ -130,7 +154,7 @@ fn main() {
     }
 
     // --- Proof search ---
-    let schedule = StrategySchedule::default_schedule(Duration::from_secs(30));
+    let schedule = StrategySchedule::default_schedule(Duration::from_secs(time_secs));
     let (result, state) = run_schedule(&all_clauses, id_gen, &schedule);
 
     // --- Output result ---

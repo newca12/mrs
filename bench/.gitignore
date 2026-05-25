@@ -1,0 +1,13 @@
+# Downloaded problem archives and extracted files
+problems/casc-30/Problems/
+problems/casc-30/Axioms/
+
+# Run results
+results/
+
+# Competitor binaries
+systems/*/bin/
+
+# Python cache
+__pycache__/
+*.pyc
