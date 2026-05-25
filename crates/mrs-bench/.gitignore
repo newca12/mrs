@@ -1,0 +1,9 @@
+# All downloaded problems and axioms
+problems/
+
+# Run results
+results/
+
+# Competitor binaries
+systems/*/bin/
+

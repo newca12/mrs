@@ -60,6 +60,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mrs-bench"
+version = "0.1.0"
+
+[[package]]
 name = "mrs-calculus"
 version = "0.1.0"
 dependencies = [

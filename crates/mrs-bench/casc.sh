@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# bench/casc.sh
+# crates/mrs-bench/casc.sh
 # Run a CASC benchmark: invoke each registered system on each selected problem,
 # collect SZS status + wall time, and write a CSV.
 #
 # Usage:
-#   bench/casc.sh [OPTIONS]
+#   crates/mrs-bench/casc.sh [OPTIONS]
 #
 # Options:
 #   --edition   <name>         Competition edition directory (default: casc-30)
-#   --systems   <s1,s2,...>    Comma-separated system names (default: all in bench/systems/)
+#   --systems   <s1,s2,...>    Comma-separated system names (default: all in crates/mrs-bench/systems/)
 #   --divisions <d1,d2,...>    Comma-separated division names (default: fne,feq,epu,eps,ueq,icu)
 #   --time      <secs>         Per-problem time limit in seconds (default: 120)
 #   --jobs      <N>            Parallel jobs (default: 1)
-#   --output    <dir>          Output directory (default: bench/results/<edition>/TIMESTAMP)
+#   --output    <dir>          Output directory (default: crates/mrs-bench/results/<edition>/TIMESTAMP)
 #
 # Output:
 #   <output>/run.csv    — one row per (problem, system)
@@ -58,7 +58,7 @@ exec 2> >(tee -a "${OUTPUT}/run.log" >&2)
 
 PROBLEMS_DIR="${SCRIPT_DIR}/problems/${EDITION}"
 LISTS_DIR="${PROBLEMS_DIR}/lists"
-PROBLEMS_ROOT="${PROBLEMS_DIR}/Problems"
+PROBLEMS_ROOT="${PROBLEMS_DIR}"
 
 # Set TPTP so %include directives resolve (can be overridden by caller)
 if [[ -z "${TPTP:-}" ]]; then
@@ -79,7 +79,7 @@ else
 fi
 
 if [[ ${#SYSTEMS_LIST[@]} -eq 0 ]]; then
-    echo "No systems found. Add a directory under bench/systems/ with an invoke.sh." >&2
+    echo "No systems found. Add a directory under crates/mrs-bench/systems/ with an invoke.sh." >&2
     exit 1
 fi
 
@@ -111,7 +111,8 @@ for div in "${DIVISION_LIST[@]}"; do
     while IFS= read -r problem || [[ -n "${problem}" ]]; do
         [[ -z "${problem}" ]] && continue
         domain="${problem:0:3}"
-        prob_path="${PROBLEMS_ROOT}/${domain}/${problem}.p"
+        div_upper="${div^^}"
+        prob_path="${PROBLEMS_ROOT}/${div_upper}/${problem}.p"
         for sys in "${SYSTEMS_LIST[@]}"; do
             printf '%s\t%s\t%s\t%s\n' "${div}" "${problem}" "${prob_path}" "${sys}" >> "${JOBS_FILE}"
             (( total_problems++ )) || true
@@ -145,6 +146,12 @@ run_one() {
     end_ms=$(date +%s%3N)
 
     wall_s=$(echo "scale=3; (${end_ms} - ${start_ms}) / 1000" | bc)
+
+    # If the OS timeout fired, cap wall time to the stated limit (the +10s
+    # grace period would otherwise make it appear as TIME_LIMIT+10).
+    if [[ ${exit_code} -eq 124 ]]; then
+        wall_s=$(printf '%.3f' "${TIME_LIMIT}")
+    fi
 
     # Extract SZS status from output.
     # Vampire: "% SZS status Theorem for ..."

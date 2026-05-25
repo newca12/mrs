@@ -1,0 +1,12 @@
+[package]
+name = "mrs-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "CASC benchmark harness and report tool for mrs"
+
+[[bin]]
+name = "bench_report"
+path = "src/main.rs"
