@@ -20,9 +20,10 @@ use mrs_calculus::literal_selection::selected_literals;
 use mrs_calculus::resolution;
 use mrs_calculus::subsumption;
 use mrs_calculus::superposition;
-use mrs_core::Atom;
 use mrs_core::clause::{Clause, ClauseSource};
+use mrs_core::Atom;
 use mrs_index::fvi::FeatureVector;
+use varisat::ExtendFormula;
 
 use crate::select::select;
 use crate::state::SearchState;
@@ -34,11 +35,42 @@ use crate::{SearchConfig, SearchResult};
 /// `SearchResult::Saturated` if all clauses are processed without contradiction,
 /// or `SearchResult::Timeout`/`SearchResult::ResourceOut` on resource limits.
 pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
+    // Initial SAT sync
+    state.avatar.current_model.clear();
+    if matches!(state.avatar.solver.solve(), Ok(true)) {
+        let model = state.avatar.solver.model().unwrap();
+        for lit in model {
+            if lit.is_positive() {
+                state.avatar.current_model.insert(lit.var().to_dimacs() as u32);
+            }
+        }
+    } else {
+        return SearchResult::Refutation(mrs_core::clause::ClauseId(0)); // Should not happen on empty start
+    }
+
     // Check for initial empty clauses
     for id in state.unprocessed.iter() {
         let clause = state.clause_store.get(&id).unwrap();
         if clause.is_empty() {
-            return SearchResult::Refutation(clause.id);
+            if clause.avatar.is_empty() {
+                return SearchResult::Refutation(clause.id);
+            } else {
+                let sat_clause: Vec<varisat::Lit> = clause.avatar.iter().map(|&a| {
+                    varisat::Lit::from_var(varisat::Var::from_dimacs(a as isize), false)
+                }).collect();
+                state.avatar.solver.add_clause(&sat_clause);
+                if !matches!(state.avatar.solver.solve(), Ok(true)) {
+                    return SearchResult::Refutation(clause.id);
+                } else {
+                    let model = state.avatar.solver.model().unwrap();
+                    state.avatar.current_model.clear();
+                    for lit in model {
+                        if lit.is_positive() {
+                            state.avatar.current_model.insert(lit.var().to_dimacs() as u32);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -48,6 +80,11 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
 
     while let Some(given_id) = select(&mut state.unprocessed, &config.selection, iteration) {
         let given = state.clause_store.get(&given_id).unwrap().clone();
+
+        if !state.is_active(&given) {
+            state.dormant_unprocessed.insert(given.id, given);
+            continue;
+        }
 
         // Check time limit
         if start.elapsed() >= config.time_limit {
@@ -80,7 +117,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         // Forward demodulation: simplify the given clause using unit equalities
         let given = {
             if let Some(simplified) =
-                demodulation::demodulate(&given, &state.demod_index, &mut state.id_gen)
+                demodulation::demodulate(&given, &state.demod_index, &state.clause_store, &mut state.id_gen)
             {
                 // Store original clause so proof extraction can find it
                 state.clause_store.insert(given.id, given);
@@ -138,8 +175,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 .any(|l| l.is_positive() && matches!(&l.atom, Atom::Eq(_, _)));
 
             if given_has_pos_eq {
-                let mut processed_clauses: Vec<Clause> = state.processed.iter().cloned().collect();
-                processed_clauses.push(given.clone()); // Include given for self-superposition
+                let processed_clauses: Vec<Clause> = state.processed.iter().cloned().collect();
                 for active in &processed_clauses {
                     let active_sel = selected_literals(active, &config.literal_selection);
                     let sp = superposition::superpose_selected(
@@ -280,7 +316,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         continue;
                     }
                     if let Some(simplified) =
-                        demodulation::demodulate(&proc, &temp_demod_index, &mut state.id_gen)
+                        demodulation::demodulate(&proc, &temp_demod_index, &state.clause_store, &mut state.id_gen)
                     {
                         // Store original for proof extraction
                         state.clause_store.insert(proc.id, proc);
@@ -305,6 +341,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                             && let Some(further) = demodulation::demodulate(
                                 &simplified,
                                 &all_units_index,
+                                &state.clause_store,
                                 &mut state.id_gen,
                             ) {
                             state.clause_store.insert(simplified.id, simplified);
@@ -364,20 +401,128 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         }
 
         // Process generated clauses
-        for mut clause in new_clauses {
+        let mut final_new_clauses = Vec::new();
+        for clause in new_clauses {
+            if let Some(splits) = state.avatar.split_clause(&clause, &mut state.id_gen) {
+                // println!("AVATAR SPLIT: {:?} into {} parts", clause.display(&state.symbols?), splits.len());
+                for split in splits {
+                    state.clause_store.insert(split.id, split.clone());
+                    final_new_clauses.push(split);
+                }
+            } else {
+                final_new_clauses.push(clause);
+            }
+        }
+
+        for mut clause in final_new_clauses {
             // Remove duplicate literals
             clause.deduplicate();
 
             if clause.is_empty() {
                 state.clause_store.insert(clause.id, clause.clone());
-                return SearchResult::Refutation(clause.id);
+                
+                if clause.avatar.is_empty() {
+                    return SearchResult::Refutation(clause.id);
+                } else {
+                    let sat_clause: Vec<varisat::Lit> = clause.avatar.iter().map(|&a| {
+                        varisat::Lit::from_var(varisat::Var::from_dimacs(a as isize), false)
+                    }).collect();
+                    state.avatar.solver.add_clause(&sat_clause);
+                    
+                    if matches!(state.avatar.solver.solve(), Ok(true)) {
+                        let model = state.avatar.solver.model().unwrap();
+                        state.avatar.current_model.clear();
+                        for lit in model {
+                            if lit.is_positive() {
+                                state.avatar.current_model.insert(lit.var().to_dimacs() as u32);
+                            }
+                        }
+                        
+                        // Update active/dormant status
+                        // 1. Processed -> Dormant
+                        let mut to_remove_processed = Vec::new();
+                        for p in state.processed.iter() {
+                            if !state.is_active(p) {
+                                to_remove_processed.push(p.id);
+                            }
+                        }
+                        for id in to_remove_processed {
+                            if let Some(p) = state.processed.remove(id) {
+                                state.dormant_processed.insert(p.id, p.clone());
+                                if is_unit_positive_equality(&p)
+                                    && let Atom::Eq(l, r) = &p.literals[0].atom {
+                                        use mrs_calculus::ordering::TermComparison;
+                                        if ordering.compare(l, r) == TermComparison::Greater {
+                                            state.demod_index.remove(l, &(l.clone(), r.clone(), p.id));
+                                        } else if ordering.compare(r, l) == TermComparison::Greater {
+                                            state.demod_index.remove(r, &(r.clone(), l.clone(), p.id));
+                                        }
+                                    }
+                            }
+                        }
+                        
+                        // 2. Unprocessed -> Dormant
+                        let mut to_remove_unproc = Vec::new();
+                        for id in state.unprocessed.iter() {
+                            let u = state.clause_store.get(&id).unwrap();
+                            if !state.is_active(u) {
+                                to_remove_unproc.push(u.id);
+                            }
+                        }
+                        let to_remove_set: std::collections::HashSet<_> = to_remove_unproc.into_iter().collect();
+                        
+                        state.unprocessed.retain(|id| !to_remove_set.contains(&id));
+
+                        for id in to_remove_set {
+                            let u = state.clause_store.get(&id).unwrap().clone();
+                            state.dormant_unprocessed.insert(id, u);
+                        }
+                        
+                        // 3. Dormant -> Processed
+                        let mut to_restore_processed = Vec::new();
+                        for (id, p) in &state.dormant_processed {
+                            if state.is_active(p) {
+                                to_restore_processed.push(*id);
+                            }
+                        }
+                        for id in to_restore_processed {
+                            let p = state.dormant_processed.remove(&id).unwrap();
+                            state.processed.insert(p.clone());
+                            if is_unit_positive_equality(&p)
+                                && let Atom::Eq(l, r) = &p.literals[0].atom {
+                                    use mrs_calculus::ordering::TermComparison;
+                                    if ordering.compare(l, r) == TermComparison::Greater {
+                                        state.demod_index.insert(l, (l.clone(), r.clone(), p.id));
+                                    } else if ordering.compare(r, l) == TermComparison::Greater {
+                                        state.demod_index.insert(r, (r.clone(), l.clone(), p.id));
+                                    }
+                                }
+                        }
+                        
+                        // 4. Dormant -> Unprocessed
+                        let mut to_restore_unprocessed = Vec::new();
+                        for (id, u) in &state.dormant_unprocessed {
+                            if state.is_active(u) {
+                                to_restore_unprocessed.push(*id);
+                            }
+                        }
+                        for id in to_restore_unprocessed {
+                            let u = state.dormant_unprocessed.remove(&id).unwrap();
+                            state.unprocessed.push(&u);
+                        }
+                        
+                        continue;
+                    } else {
+                        return SearchResult::Refutation(clause.id);
+                    }
+                }
             }
 
             if !clause.is_tautology() {
                 // Forward demodulation on new clauses
                 let clause = {
                     if let Some(simplified) =
-                        demodulation::demodulate(&clause, &state.demod_index, &mut state.id_gen)
+                        demodulation::demodulate(&clause, &state.demod_index, &state.clause_store, &mut state.id_gen)
                     {
                         state.clause_store.insert(clause.id, clause);
                         if simplified.is_empty() {
