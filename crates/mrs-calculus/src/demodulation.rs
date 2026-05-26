@@ -191,7 +191,7 @@ mod tests {
             "target",
         );
 
-        let demod_index = mrs_index::dtree::DTree::new();
+        let mut demod_index = mrs_index::dtree::DTree::new();
         demod_index.insert(&Term::app(f, vec![Term::constant(a)]), (Term::app(f, vec![Term::constant(a)]), Term::constant(b), unit.id));
 
         let result = demodulate(&target, &demod_index, &mut id_gen);
@@ -244,7 +244,7 @@ mod tests {
             "target",
         );
 
-        let demod_index = mrs_index::dtree::DTree::new();
+        let mut demod_index = mrs_index::dtree::DTree::new();
         demod_index.insert(&Term::app(f, vec![Term::constant(a)]), (Term::app(f, vec![Term::constant(a)]), Term::constant(b), unit.id));
 
         let result = demodulate(&target, &demod_index, &mut id_gen);
@@ -280,7 +280,7 @@ mod tests {
             "target",
         );
 
-        let demod_index = mrs_index::dtree::DTree::new();
+        let mut demod_index = mrs_index::dtree::DTree::new();
         demod_index.insert(&Term::app(f, vec![Term::var(0)]), (Term::app(f, vec![Term::var(0)]), Term::var(0), unit.id));
 
         let result = demodulate(&target, &demod_index, &mut id_gen);
@@ -319,7 +319,7 @@ mod tests {
             "target",
         );
 
-        let demod_index = mrs_index::dtree::DTree::new();
+        let mut demod_index = mrs_index::dtree::DTree::new();
         // non_unit is not inserted because it is not a unit equation
 
         let result = demodulate(&target, &demod_index, &mut id_gen);
