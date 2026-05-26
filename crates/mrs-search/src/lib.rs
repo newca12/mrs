@@ -27,6 +27,7 @@ pub mod given_clause;
 pub mod select;
 pub mod state;
 pub mod strategy;
+pub mod unprocessed;
 pub mod weight;
 
 use std::time::Duration;

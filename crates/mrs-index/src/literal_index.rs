@@ -10,6 +10,9 @@ use std::collections::{HashMap, HashSet};
 use mrs_core::Atom;
 use mrs_core::clause::{Clause, ClauseId};
 use mrs_core::symbol::SymbolId;
+use mrs_core::term::Term;
+
+use crate::dtree::DTree;
 
 /// Key for the literal index: a predicate symbol with a polarity.
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Debug)]
@@ -25,8 +28,8 @@ struct LitKey {
 pub struct LiteralIndex {
     /// Clauses stored in the index.
     clauses: HashMap<ClauseId, Clause>,
-    /// Maps (predicate, polarity) -> set of clause IDs.
-    pred_index: HashMap<LitKey, HashSet<ClauseId>>,
+    /// Maps (predicate, polarity) -> DTree of clause IDs.
+    pred_index: HashMap<LitKey, DTree<ClauseId>>,
     /// Clause IDs that contain at least one positive equality.
     pos_eq_clauses: HashSet<ClauseId>,
     /// Clause IDs that contain at least one negative equality.
@@ -49,14 +52,15 @@ impl LiteralIndex {
         let id = clause.id;
         for lit in &clause.literals {
             match &lit.atom {
-                Atom::Pred(sym, _) => {
+                Atom::Pred(sym, args) => {
+                    let term = Term::App(*sym, args.clone());
                     self.pred_index
                         .entry(LitKey {
                             pred: *sym,
                             positive: lit.positive,
                         })
                         .or_default()
-                        .insert(id);
+                        .insert(&term, id);
                 }
                 Atom::Eq(_, _) => {
                     if lit.positive {
@@ -75,12 +79,13 @@ impl LiteralIndex {
         if let Some(clause) = self.clauses.remove(&id) {
             for lit in &clause.literals {
                 match &lit.atom {
-                    Atom::Pred(sym, _) => {
-                        if let Some(set) = self.pred_index.get_mut(&LitKey {
+                    Atom::Pred(sym, args) => {
+                        if let Some(tree) = self.pred_index.get_mut(&LitKey {
                             pred: *sym,
                             positive: lit.positive,
                         }) {
-                            set.remove(&id);
+                            let term = Term::App(*sym, args.clone());
+                            tree.remove(&term, &id);
                         }
                     }
                     Atom::Eq(_, _) => {
@@ -99,16 +104,25 @@ impl LiteralIndex {
     }
 
     /// Returns clauses that have a literal with the given predicate symbol and
-    /// the *complementary* polarity. These are the resolution candidates.
-    pub fn get_resolution_partners(&self, pred: SymbolId, positive: bool) -> Vec<&Clause> {
-        let key = LitKey {
-            pred,
-            positive: !positive,
-        };
-        match self.pred_index.get(&key) {
-            Some(ids) => ids.iter().filter_map(|id| self.clauses.get(id)).collect(),
-            None => Vec::new(),
+    /// the *complementary* polarity, and whose arguments are unifiable with the query.
+    pub fn get_unifiable_resolution_partners(&self, atom: &Atom, positive: bool) -> Vec<&Clause> {
+        if let Atom::Pred(sym, args) = atom {
+            let key = LitKey {
+                pred: *sym,
+                positive: !positive,
+            };
+            if let Some(tree) = self.pred_index.get(&key) {
+                let term = Term::App(*sym, args.clone());
+                let mut ids = tree.get_unifiable(&term);
+                ids.sort_unstable();
+                ids.dedup();
+                return ids
+                    .into_iter()
+                    .filter_map(|id| self.clauses.get(&id))
+                    .collect();
+            }
         }
+        Vec::new()
     }
 
     /// Returns all clauses that contain a positive equality literal.
@@ -199,10 +213,11 @@ mod tests {
             vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
         );
         let c1_id = c1.id;
+        let query_atom = Atom::pred(p, vec![Term::var(0)]);
         idx.insert(c1);
 
         // Look for resolution partners of -p(X) → should find c1
-        let partners = idx.get_resolution_partners(p, false);
+        let partners = idx.get_unifiable_resolution_partners(&query_atom, false);
         assert_eq!(partners.len(), 1);
         assert_eq!(partners[0].id, c1_id);
     }
@@ -219,10 +234,11 @@ mod tests {
             &mut id_gen,
             vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
         );
+        let query_atom = Atom::pred(p, vec![Term::var(0)]);
         idx.insert(c1);
 
         // Same polarity → no partners
-        let partners = idx.get_resolution_partners(p, true);
+        let partners = idx.get_unifiable_resolution_partners(&query_atom, true);
         assert!(partners.is_empty());
     }
 
@@ -239,11 +255,19 @@ mod tests {
             vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
         );
         let c1_id = c1.id;
+        let query_atom = Atom::pred(p, vec![Term::var(0)]);
         idx.insert(c1);
 
-        assert_eq!(idx.get_resolution_partners(p, false).len(), 1);
+        assert_eq!(
+            idx.get_unifiable_resolution_partners(&query_atom, false)
+                .len(),
+            1
+        );
         idx.remove(c1_id);
-        assert!(idx.get_resolution_partners(p, false).is_empty());
+        assert!(
+            idx.get_unifiable_resolution_partners(&query_atom, false)
+                .is_empty()
+        );
     }
 
     #[test]

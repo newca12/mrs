@@ -9,7 +9,7 @@
 //! target clause and replace them with corresponding instances of the right side.
 
 use mrs_core::Atom;
-use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource, Literal};
+use mrs_core::clause::{Clause, ClauseId, ClauseIdGen, ClauseSource, Literal};
 use mrs_core::term::Term;
 use mrs_unify::match_term;
 
@@ -35,7 +35,7 @@ pub fn demodulate(
     let mut used_unit_ids = Vec::new();
 
     // Pre-filter and orient unit equalities once
-    let oriented: Vec<(&Term, &Term, mrs_core::clause::ClauseId)> = units
+    let oriented: Vec<(&Term, &Term, ClauseId)> = units
         .iter()
         .filter_map(|unit| {
             if unit.len() != 1 || !unit.literals[0].is_positive() {
@@ -55,9 +55,7 @@ pub fn demodulate(
         })
         .collect();
 
-    // Iterate to fixpoint: one rewrite may create opportunities for another.
-    // For example, assoc rewrites mult(mult(inv(X),X),Y) to mult(inv(X),mult(X,Y)),
-    // which left_inverse then rewrites further. A single pass misses this.
+    // Iterate to fixpoint
     loop {
         let mut changed_this_pass = false;
         for &(from, to, unit_id) in &oriented {
@@ -130,11 +128,6 @@ fn rewrite_literal(lit: &mut Literal, from: &Term, to: &Term) -> bool {
 fn rewrite_term(term: &Term, from: &Term, to: &Term) -> Term {
     // Try matching at the current position first
     if let Ok(sigma) = match_term(from, term) {
-        // Use non-chaining application: matching only binds pattern variables
-        // to target subterms. If pattern and target variables share VarIds,
-        // apply_term's transitive chain following could infinite-loop
-        // (e.g., sigma = {2→Var(3), 3→mult(Var(2),Var(5))}). Flat application
-        // only resolves variables that appear directly in `to`, avoiding this.
         return apply_matching_subst(&sigma, to);
     }
 
@@ -149,11 +142,6 @@ fn rewrite_term(term: &Term, from: &Term, to: &Term) -> Term {
 }
 
 /// Applies a matching substitution without following variable chains.
-///
-/// Unlike `Substitution::apply_term` (which chases V→V'→t transitively),
-/// this only does one-level lookup. This is correct for matching results
-/// because matching binds pattern variables to target subterms, and target
-/// subterms should not be further substituted through coincidental VarId overlap.
 fn apply_matching_subst(sigma: &mrs_core::Substitution, term: &Term) -> Term {
     match term {
         Term::Var(v) => match sigma.lookup(*v) {

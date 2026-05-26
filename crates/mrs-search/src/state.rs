@@ -1,9 +1,12 @@
 //! Search state: processed and unprocessed clause sets.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 
 use mrs_core::clause::{Clause, ClauseId, ClauseIdGen};
+use mrs_index::dtree::DTree;
 use mrs_index::literal_index::LiteralIndex;
+
+use crate::unprocessed::UnprocessedSet;
 
 /// The mutable state of a proof search.
 ///
@@ -13,8 +16,10 @@ pub struct SearchState {
     /// Clauses that have been selected and had all inferences generated.
     /// Indexed by predicate symbol for fast resolution partner lookup.
     pub processed: LiteralIndex,
+    /// DTree indexing the left-hand side of oriented unit equalities for fast demodulation.
+    pub demod_index: DTree<ClauseId>,
     /// Clauses waiting to be selected.
-    pub unprocessed: VecDeque<Clause>,
+    pub unprocessed: UnprocessedSet,
     /// Maps clause IDs to clauses (for proof extraction).
     pub clause_store: HashMap<ClauseId, Clause>,
     /// Generator for fresh clause IDs.
@@ -27,15 +32,16 @@ impl SearchState {
     /// All initial clauses are placed in the unprocessed set.
     pub fn new(initial_clauses: Vec<Clause>, id_gen: ClauseIdGen) -> Self {
         let mut clause_store = HashMap::new();
-        let mut unprocessed = VecDeque::new();
+        let mut unprocessed = UnprocessedSet::new();
 
         for clause in initial_clauses {
             clause_store.insert(clause.id, clause.clone());
-            unprocessed.push_back(clause);
+            unprocessed.push(&clause);
         }
 
         Self {
             processed: LiteralIndex::new(),
+            demod_index: DTree::new(),
             unprocessed,
             clause_store,
             id_gen,

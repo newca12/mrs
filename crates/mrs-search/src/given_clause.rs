@@ -34,7 +34,8 @@ use crate::{SearchConfig, SearchResult};
 /// or `SearchResult::Timeout`/`SearchResult::ResourceOut` on resource limits.
 pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
     // Check for initial empty clauses
-    for clause in &state.unprocessed {
+    for id in state.unprocessed.iter() {
+        let clause = state.clause_store.get(&id).unwrap();
         if clause.is_empty() {
             return SearchResult::Refutation(clause.id);
         }
@@ -44,7 +45,9 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
     let mut iteration: u64 = 0;
     let ordering = &config.ordering;
 
-    while let Some(given) = select(&mut state.unprocessed, &config.selection, iteration) {
+    while let Some(given_id) = select(&mut state.unprocessed, &config.selection, iteration) {
+        let given = state.clause_store.get(&given_id).unwrap().clone();
+
         // Check time limit
         if start.elapsed() >= config.time_limit {
             return SearchResult::Timeout;
@@ -108,20 +111,20 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             let mut resolution_partner_ids = HashSet::new();
             for &lit_idx in &given_sel {
                 let lit = &given.literals[lit_idx];
-                if let Atom::Pred(sym, _) = &lit.atom {
-                    let partners = state.processed.get_resolution_partners(*sym, lit.positive);
-                    for partner in partners {
-                        if resolution_partner_ids.insert(partner.id) {
-                            let active_sel = selected_literals(partner, &config.literal_selection);
-                            let resolvents = resolution::resolve_selected(
-                                &given,
-                                partner,
-                                &mut state.id_gen,
-                                Some(&given_sel),
-                                Some(&active_sel),
-                            );
-                            new_clauses.extend(resolvents);
-                        }
+                let partners = state
+                    .processed
+                    .get_unifiable_resolution_partners(&lit.atom, lit.positive);
+                for partner in partners {
+                    if resolution_partner_ids.insert(partner.id) {
+                        let active_sel = selected_literals(partner, &config.literal_selection);
+                        let resolvents = resolution::resolve_selected(
+                            &given,
+                            partner,
+                            &mut state.id_gen,
+                            Some(&given_sel),
+                            Some(&active_sel),
+                        );
+                        new_clauses.extend(resolvents);
                     }
                 }
             }
@@ -191,9 +194,10 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             .retain(|p| !subsumption::subsumes(&given, p));
 
         // Backward subsumption of unprocessed: remove unprocessed clauses subsumed by the given
-        state
-            .unprocessed
-            .retain(|u| !subsumption::subsumes(&given, u));
+        state.unprocessed.retain(|id| {
+            let u = state.clause_store.get(&id).unwrap();
+            !subsumption::subsumes(&given, u)
+        });
 
         // Add given to processed set (indexed)
         state.clause_store.insert(given.id, given.clone());
@@ -333,7 +337,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 }
 
                 state.clause_store.insert(clause.id, clause.clone());
-                state.unprocessed.push_back(clause);
+                state.unprocessed.push(&clause);
             }
         }
 
