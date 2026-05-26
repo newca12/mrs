@@ -120,7 +120,7 @@ fn main() {
     if lowered.axioms.len() + lowered.cnf_clauses.len() > 100 {
         let tolerance = 1.5;
         let depth_limit = Some(3);
-        
+
         let before_axioms = lowered.axioms.len();
         let before_cnf = lowered.cnf_clauses.len();
 
@@ -136,7 +136,7 @@ fn main() {
         }
 
         let filtered = sine::filter_items(&all_items, tolerance, depth_limit);
-        
+
         lowered.axioms = Vec::new();
         lowered.conjectures = Vec::new();
         lowered.cnf_clauses = Vec::new();

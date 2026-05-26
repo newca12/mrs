@@ -38,11 +38,17 @@ impl Default for SymbolConfig {
 
 impl SymbolConfig {
     pub fn symbol_weight(&self, s: SymbolId) -> u32 {
-        self.weights.get(s.index() as usize).copied().unwrap_or(self.w0)
+        self.weights
+            .get(s.index() as usize)
+            .copied()
+            .unwrap_or(self.w0)
     }
 
     pub fn symbol_precedence(&self, s: SymbolId) -> u32 {
-        self.precedence.get(s.index() as usize).copied().unwrap_or(s.index())
+        self.precedence
+            .get(s.index() as usize)
+            .copied()
+            .unwrap_or(s.index())
     }
 }
 

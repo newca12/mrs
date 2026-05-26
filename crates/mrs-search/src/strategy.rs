@@ -7,14 +7,14 @@
 //! This is inspired by systems like Vampire and E, which use strategy
 //! portfolios for CASC competition.
 
-use std::time::Duration;
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
 
+use mrs_calculus::ordering::SymbolConfig;
 use mrs_core::clause::{Clause, ClauseIdGen};
 use mrs_core::symbol::SymbolId;
 use mrs_core::term::Term;
-use mrs_calculus::ordering::SymbolConfig;
 
 use crate::given_clause::search;
 use crate::state::SearchState;
@@ -200,15 +200,31 @@ pub fn run_schedule(
 
     let mut syms_by_freq: Vec<(SymbolId, u32)> = sym_counts.into_iter().collect();
     syms_by_freq.sort_by_key(|&(_, count)| count); // lowest count first (rarest)
-    
+
     // Rare symbols get HIGHER precedence to eliminate them quickly.
-    let mut precedence = vec![0; syms_by_freq.iter().map(|&(s, _)| s.index() as usize).max().unwrap_or(0) + 1];
+    let mut precedence = vec![
+        0;
+        syms_by_freq
+            .iter()
+            .map(|&(s, _)| s.index() as usize)
+            .max()
+            .unwrap_or(0)
+            + 1
+    ];
     for (i, &(sym, _)) in syms_by_freq.iter().rev().enumerate() {
         precedence[sym.index() as usize] = (syms_by_freq.len() - i) as u32;
     }
-    
+
     // Config: dynamic weights and precedence driven by rarity
-    let mut weights = vec![1; syms_by_freq.iter().map(|&(s, _)| s.index() as usize).max().unwrap_or(0) + 1];
+    let mut weights = vec![
+        1;
+        syms_by_freq
+            .iter()
+            .map(|&(s, _)| s.index() as usize)
+            .max()
+            .unwrap_or(0)
+            + 1
+    ];
     for (sym, _) in &syms_by_freq {
         // We could use arity or other heuristics, but for now we just make non-variable symbols weigh 2
         // KBO typically requires w(f) >= w0, and w(c) >= w0 for constants

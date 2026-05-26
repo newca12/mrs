@@ -3,11 +3,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use mrs_calculus::ordering::SymbolConfig;
 use mrs_core::clause::{Clause, ClauseId, ClauseIdGen};
 use mrs_core::term::Term;
 use mrs_index::dtree::DTree;
 use mrs_index::literal_index::LiteralIndex;
-use mrs_calculus::ordering::SymbolConfig;
 
 use crate::unprocessed::UnprocessedSet;
 
@@ -36,7 +36,11 @@ impl SearchState {
     /// Creates a new search state with the given initial clauses.
     ///
     /// All initial clauses are placed in the unprocessed set.
-    pub fn new(initial_clauses: Vec<Clause>, id_gen: ClauseIdGen, config: Arc<SymbolConfig>) -> Self {
+    pub fn new(
+        initial_clauses: Vec<Clause>,
+        id_gen: ClauseIdGen,
+        config: Arc<SymbolConfig>,
+    ) -> Self {
         let mut clause_store = HashMap::new();
         let mut unprocessed = UnprocessedSet::new(config.clone());
 

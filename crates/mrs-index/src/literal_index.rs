@@ -55,7 +55,7 @@ impl LiteralIndex {
     pub fn insert(&mut self, clause: Clause) {
         let id = clause.id;
         self.fvs.insert(id, FeatureVector::from_clause(&clause));
-        
+
         for lit in &clause.literals {
             match &lit.atom {
                 Atom::Pred(sym, args) => {
@@ -123,7 +123,10 @@ impl LiteralIndex {
                 let mut ids = tree.get_unifiable(&term);
                 ids.sort_unstable();
                 ids.dedup();
-                return ids.into_iter().filter_map(|id| self.clauses.get(&id)).collect();
+                return ids
+                    .into_iter()
+                    .filter_map(|id| self.clauses.get(&id))
+                    .collect();
             }
         }
         Vec::new()
@@ -137,7 +140,7 @@ impl LiteralIndex {
             .filter_map(|id| self.clauses.get(id))
             .collect()
     }
-    
+
     /// Returns clauses from the index that could potentially subsume the target clause,
     /// based on feature vector filtering.
     pub fn get_subsumption_candidates(&self, target_fv: &FeatureVector) -> Vec<&Clause> {
@@ -206,4 +209,3 @@ impl Default for LiteralIndex {
         Self::new()
     }
 }
-

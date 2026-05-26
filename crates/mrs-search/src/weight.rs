@@ -6,16 +6,20 @@
 //! The standard weight counts each symbol occurrence (function symbols and
 //! variables) as 1, summing over all literals.
 
+use mrs_calculus::ordering::SymbolConfig;
 use mrs_core::clause::{Clause, Literal};
 use mrs_core::formula::Atom;
 use mrs_core::term::Term;
-use mrs_calculus::ordering::SymbolConfig;
 
 /// Returns the weight of a clause: the sum of symbol occurrences across all literals.
 ///
 /// Lighter clauses are generally preferred because they represent simpler facts.
 pub fn clause_weight(clause: &Clause, config: &SymbolConfig) -> u32 {
-    clause.literals.iter().map(|lit| literal_weight(lit, config)).sum()
+    clause
+        .literals
+        .iter()
+        .map(|lit| literal_weight(lit, config))
+        .sum()
 }
 
 /// Returns the weight of a single literal.
@@ -26,7 +30,10 @@ fn literal_weight(lit: &Literal, config: &SymbolConfig) -> u32 {
 /// Returns the weight of an atom.
 fn atom_weight(atom: &Atom, config: &SymbolConfig) -> u32 {
     match atom {
-        Atom::Pred(sym, args) => config.symbol_weight(*sym) + args.iter().map(|arg| term_weight(arg, config)).sum::<u32>(),
+        Atom::Pred(sym, args) => {
+            config.symbol_weight(*sym)
+                + args.iter().map(|arg| term_weight(arg, config)).sum::<u32>()
+        }
         Atom::Eq(l, r) => term_weight(l, config) + term_weight(r, config),
     }
 }
@@ -35,7 +42,10 @@ fn atom_weight(atom: &Atom, config: &SymbolConfig) -> u32 {
 fn term_weight(term: &Term, config: &SymbolConfig) -> u32 {
     match term {
         Term::Var(_) => config.w0,
-        Term::App(sym, args) => config.symbol_weight(*sym) + args.iter().map(|arg| term_weight(arg, config)).sum::<u32>(),
+        Term::App(sym, args) => {
+            config.symbol_weight(*sym)
+                + args.iter().map(|arg| term_weight(arg, config)).sum::<u32>()
+        }
     }
 }
 

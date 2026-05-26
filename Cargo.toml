@@ -3,27 +3,27 @@ members = ["crates/*"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/newca12/mrs"
 rust-version = "1.95"
 
 [workspace.dependencies]
-mrs-core = { path = "crates/mrs-core", version = "0.1.0" }
-mrs-szs = { path = "crates/mrs-szs", version = "0.1.0" }
-mrs-tptp = { path = "crates/mrs-tptp", version = "0.1.0" }
-mrs-unify = { path = "crates/mrs-unify", version = "0.1.0" }
-mrs-cnf = { path = "crates/mrs-cnf", version = "0.1.0" }
-mrs-calculus = { path = "crates/mrs-calculus", version = "0.1.0" }
-mrs-index = { path = "crates/mrs-index", version = "0.1.0" }
-mrs-proof = { path = "crates/mrs-proof", version = "0.1.0" }
-mrs-search = { path = "crates/mrs-search", version = "0.1.0" }
+mrs-core = { path = "crates/mrs-core", version = "0.1.1" }
+mrs-szs = { path = "crates/mrs-szs", version = "0.1.1" }
+mrs-tptp = { path = "crates/mrs-tptp", version = "0.1.1" }
+mrs-unify = { path = "crates/mrs-unify", version = "0.1.1" }
+mrs-cnf = { path = "crates/mrs-cnf", version = "0.1.1" }
+mrs-calculus = { path = "crates/mrs-calculus", version = "0.1.1" }
+mrs-index = { path = "crates/mrs-index", version = "0.1.1" }
+mrs-proof = { path = "crates/mrs-proof", version = "0.1.1" }
+mrs-search = { path = "crates/mrs-search", version = "0.1.1" }
 winnow = "1.0.3"
 
 [package]
 name = "mrs"
-version = "0.1.3"
+version = "0.1.4"
 edition.workspace = true
 description = "Automated theorem prover for TPTP problems using superposition calculus"
 license.workspace = true

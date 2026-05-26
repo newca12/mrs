@@ -13,7 +13,6 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
-use mrs_index::fvi::FeatureVector;
 use mrs_calculus::demodulation;
 use mrs_calculus::equality;
 use mrs_calculus::factoring;
@@ -23,6 +22,7 @@ use mrs_calculus::subsumption;
 use mrs_calculus::superposition;
 use mrs_core::Atom;
 use mrs_core::clause::{Clause, ClauseSource};
+use mrs_index::fvi::FeatureVector;
 
 use crate::select::select;
 use crate::state::SearchState;
@@ -192,7 +192,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         let mut to_remove_from_demod = Vec::new();
         let candidates = state.processed.get_subsumed_candidates(&given_fv);
         let mut to_remove_from_processed = Vec::new();
-        
+
         for p in candidates {
             if subsumption::subsumes(&given, p) {
                 to_remove_from_processed.push(p.id);
@@ -201,7 +201,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 }
             }
         }
-        
+
         for id in to_remove_from_processed {
             state.processed.remove(id);
         }
@@ -218,30 +218,33 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         }
 
         // Backward subsumption of unprocessed: remove unprocessed clauses subsumed by the given
-        state
-            .unprocessed
-            .retain(|id| {
-                let u = state.clause_store.get(&id).unwrap();
-                let u_fv = FeatureVector::from_clause(u);
-                if given_fv.can_subsume(&u_fv) {
-                    !subsumption::subsumes(&given, u)
-                } else {
-                    true
-                }
-            });
+        state.unprocessed.retain(|id| {
+            let u = state.clause_store.get(&id).unwrap();
+            let u_fv = FeatureVector::from_clause(u);
+            if given_fv.can_subsume(&u_fv) {
+                !subsumption::subsumes(&given, u)
+            } else {
+                true
+            }
+        });
 
         // Add given to processed set (indexed)
         state.clause_store.insert(given.id, given.clone());
         state.processed.insert(given.clone());
         if is_unit_positive_equality(&given)
-            && let Atom::Eq(l, r) = &given.literals[0].atom {
-                use mrs_calculus::ordering::TermComparison;
-                if ordering.compare(l, r) == TermComparison::Greater {
-                    state.demod_index.insert(l, (l.clone(), r.clone(), given.id));
-                } else if ordering.compare(r, l) == TermComparison::Greater {
-                    state.demod_index.insert(r, (r.clone(), l.clone(), given.id));
-                }
+            && let Atom::Eq(l, r) = &given.literals[0].atom
+        {
+            use mrs_calculus::ordering::TermComparison;
+            if ordering.compare(l, r) == TermComparison::Greater {
+                state
+                    .demod_index
+                    .insert(l, (l.clone(), r.clone(), given.id));
+            } else if ordering.compare(r, l) == TermComparison::Greater {
+                state
+                    .demod_index
+                    .insert(r, (r.clone(), l.clone(), given.id));
             }
+        }
 
         // Backward demodulation: if the given clause is a unit positive equality,
         // rewrite all processed clauses using it. Iterate until fixpoint.
@@ -252,7 +255,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 if new_units.is_empty() {
                     break;
                 }
-                
+
                 let mut temp_demod_index = mrs_index::dtree::DTree::new();
                 for u in &new_units {
                     if let Atom::Eq(l, r) = &u.literals[0].atom {
@@ -287,14 +290,15 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         let mut all_units_index = mrs_index::dtree::DTree::new();
                         for c in &next_processed {
                             if is_unit_positive_equality(c)
-                                && let Atom::Eq(l, r) = &c.literals[0].atom {
-                                    use mrs_calculus::ordering::TermComparison;
-                                    if ordering.compare(l, r) == TermComparison::Greater {
-                                        all_units_index.insert(l, (l.clone(), r.clone(), c.id));
-                                    } else if ordering.compare(r, l) == TermComparison::Greater {
-                                        all_units_index.insert(r, (r.clone(), l.clone(), c.id));
-                                    }
+                                && let Atom::Eq(l, r) = &c.literals[0].atom
+                            {
+                                use mrs_calculus::ordering::TermComparison;
+                                if ordering.compare(l, r) == TermComparison::Greater {
+                                    all_units_index.insert(l, (l.clone(), r.clone(), c.id));
+                                } else if ordering.compare(r, l) == TermComparison::Greater {
+                                    all_units_index.insert(r, (r.clone(), l.clone(), c.id));
                                 }
+                            }
                         }
 
                         let simplified = if !all_units_index.is_empty()
@@ -341,14 +345,19 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 for clause in next_processed {
                     state.processed.insert(clause.clone());
                     if is_unit_positive_equality(&clause)
-                        && let Atom::Eq(l, r) = &clause.literals[0].atom {
-                            use mrs_calculus::ordering::TermComparison;
-                            if ordering.compare(l, r) == TermComparison::Greater {
-                                state.demod_index.insert(l, (l.clone(), r.clone(), clause.id));
-                            } else if ordering.compare(r, l) == TermComparison::Greater {
-                                state.demod_index.insert(r, (r.clone(), l.clone(), clause.id));
-                            }
+                        && let Atom::Eq(l, r) = &clause.literals[0].atom
+                    {
+                        use mrs_calculus::ordering::TermComparison;
+                        if ordering.compare(l, r) == TermComparison::Greater {
+                            state
+                                .demod_index
+                                .insert(l, (l.clone(), r.clone(), clause.id));
+                        } else if ordering.compare(r, l) == TermComparison::Greater {
+                            state
+                                .demod_index
+                                .insert(r, (r.clone(), l.clone(), clause.id));
                         }
+                    }
                 }
                 new_units = created_units;
             }
@@ -479,7 +488,11 @@ mod tests {
             "axiom",
         );
 
-        let mut state = SearchState::new(vec![c1, c2], id_gen, std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()));
+        let mut state = SearchState::new(
+            vec![c1, c2],
+            id_gen,
+            std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+        );
         let config = SearchConfig::default();
         let result = search(&mut state, &config);
         assert!(matches!(result, SearchResult::Refutation(_)));
@@ -521,7 +534,11 @@ mod tests {
             "negated_conjecture",
         );
 
-        let mut state = SearchState::new(vec![c1, c2, c3], id_gen, std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()));
+        let mut state = SearchState::new(
+            vec![c1, c2, c3],
+            id_gen,
+            std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+        );
         let config = SearchConfig::default();
         let result = search(&mut state, &config);
         assert!(matches!(result, SearchResult::Refutation(_)));
@@ -549,7 +566,11 @@ mod tests {
             "axiom",
         );
 
-        let mut state = SearchState::new(vec![c1, c2], id_gen, std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()));
+        let mut state = SearchState::new(
+            vec![c1, c2],
+            id_gen,
+            std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+        );
         let config = SearchConfig::default();
         let result = search(&mut state, &config);
         assert!(matches!(result, SearchResult::Saturated));
@@ -635,7 +656,11 @@ mod tests {
         ];
 
         // With All: should find refutation
-        let mut state = SearchState::new(clauses.clone(), id_gen.clone(), std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()));
+        let mut state = SearchState::new(
+            clauses.clone(),
+            id_gen.clone(),
+            std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+        );
         let config = SearchConfig {
             time_limit: std::time::Duration::from_secs(5),
             max_clauses: 50_000,
@@ -724,7 +749,11 @@ mod tests {
         ];
 
         // With AllNegative: check if it saturates
-        let mut state = SearchState::new(clauses, id_gen, std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()));
+        let mut state = SearchState::new(
+            clauses,
+            id_gen,
+            std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+        );
         let config = SearchConfig {
             time_limit: std::time::Duration::from_secs(5),
             max_clauses: 50_000,
@@ -748,7 +777,11 @@ mod tests {
                 role: "axiom".into(),
             },
         );
-        let mut state = SearchState::new(vec![c], id_gen, std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()));
+        let mut state = SearchState::new(
+            vec![c],
+            id_gen,
+            std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+        );
         let config = SearchConfig::default();
         let result = search(&mut state, &config);
         assert!(matches!(result, SearchResult::Refutation(_)));

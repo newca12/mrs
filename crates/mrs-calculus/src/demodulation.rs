@@ -63,7 +63,11 @@ pub fn demodulate(
 
 /// Tries to rewrite terms in a literal using the demodulation index.
 /// Returns true if any rewrite was performed.
-fn rewrite_literal(lit: &mut Literal, demod_index: &mrs_index::dtree::DTree<(Term, Term, ClauseId)>, used_unit_ids: &mut Vec<ClauseId>) -> bool {
+fn rewrite_literal(
+    lit: &mut Literal,
+    demod_index: &mrs_index::dtree::DTree<(Term, Term, ClauseId)>,
+    used_unit_ids: &mut Vec<ClauseId>,
+) -> bool {
     let mut changed = false;
     let new_atom = match &lit.atom {
         Atom::Pred(p, args) => {
@@ -96,7 +100,11 @@ fn rewrite_literal(lit: &mut Literal, demod_index: &mrs_index::dtree::DTree<(Ter
 
 /// Rewrites a term using the demodulation index.
 /// Recurses into subterms, applying the first match found at each level.
-fn rewrite_term(term: &Term, demod_index: &mrs_index::dtree::DTree<(Term, Term, ClauseId)>, used_unit_ids: &mut Vec<ClauseId>) -> (Term, bool) {
+fn rewrite_term(
+    term: &Term,
+    demod_index: &mrs_index::dtree::DTree<(Term, Term, ClauseId)>,
+    used_unit_ids: &mut Vec<ClauseId>,
+) -> (Term, bool) {
     // Try matching at the current position first
     let rules = demod_index.get_generalizations(term);
     for (from, to, unit_id) in rules {
@@ -113,11 +121,16 @@ fn rewrite_term(term: &Term, demod_index: &mrs_index::dtree::DTree<(Term, Term, 
         Term::Var(_) => (term.clone(), false),
         Term::App(f, args) => {
             let mut changed = false;
-            let new_args: Vec<Term> = args.iter().map(|arg| {
-                let (new_arg, ch) = rewrite_term(arg, demod_index, used_unit_ids);
-                if ch { changed = true; }
-                new_arg
-            }).collect();
+            let new_args: Vec<Term> = args
+                .iter()
+                .map(|arg| {
+                    let (new_arg, ch) = rewrite_term(arg, demod_index, used_unit_ids);
+                    if ch {
+                        changed = true;
+                    }
+                    new_arg
+                })
+                .collect();
             if changed {
                 (Term::App(*f, new_args), true)
             } else {
@@ -192,7 +205,14 @@ mod tests {
         );
 
         let mut demod_index = mrs_index::dtree::DTree::new();
-        demod_index.insert(&Term::app(f, vec![Term::constant(a)]), (Term::app(f, vec![Term::constant(a)]), Term::constant(b), unit.id));
+        demod_index.insert(
+            &Term::app(f, vec![Term::constant(a)]),
+            (
+                Term::app(f, vec![Term::constant(a)]),
+                Term::constant(b),
+                unit.id,
+            ),
+        );
 
         let result = demodulate(&target, &demod_index, &mut id_gen);
         assert!(result.is_some());
@@ -245,7 +265,14 @@ mod tests {
         );
 
         let mut demod_index = mrs_index::dtree::DTree::new();
-        demod_index.insert(&Term::app(f, vec![Term::constant(a)]), (Term::app(f, vec![Term::constant(a)]), Term::constant(b), unit.id));
+        demod_index.insert(
+            &Term::app(f, vec![Term::constant(a)]),
+            (
+                Term::app(f, vec![Term::constant(a)]),
+                Term::constant(b),
+                unit.id,
+            ),
+        );
 
         let result = demodulate(&target, &demod_index, &mut id_gen);
         assert!(result.is_none());
@@ -281,7 +308,10 @@ mod tests {
         );
 
         let mut demod_index = mrs_index::dtree::DTree::new();
-        demod_index.insert(&Term::app(f, vec![Term::var(0)]), (Term::app(f, vec![Term::var(0)]), Term::var(0), unit.id));
+        demod_index.insert(
+            &Term::app(f, vec![Term::var(0)]),
+            (Term::app(f, vec![Term::var(0)]), Term::var(0), unit.id),
+        );
 
         let result = demodulate(&target, &demod_index, &mut id_gen);
         assert!(result.is_some());

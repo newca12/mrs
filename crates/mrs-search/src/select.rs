@@ -74,7 +74,9 @@ mod tests {
 
     #[test]
     fn fifo_returns_oldest() {
-        let mut unproc = UnprocessedSet::new(std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()));
+        let mut unproc = UnprocessedSet::new(std::sync::Arc::new(
+            mrs_calculus::ordering::SymbolConfig::default(),
+        ));
         unproc.push(&make_clause(0, 3));
         unproc.push(&make_clause(1, 1));
         unproc.push(&make_clause(2, 2));
@@ -85,7 +87,9 @@ mod tests {
 
     #[test]
     fn smallest_returns_shortest() {
-        let mut unproc = UnprocessedSet::new(std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()));
+        let mut unproc = UnprocessedSet::new(std::sync::Arc::new(
+            mrs_calculus::ordering::SymbolConfig::default(),
+        ));
         unproc.push(&make_clause(0, 3));
         unproc.push(&make_clause(1, 1));
         unproc.push(&make_clause(2, 2));
@@ -96,7 +100,9 @@ mod tests {
 
     #[test]
     fn age_weight_alternates() {
-        let mut unproc = UnprocessedSet::new(std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()));
+        let mut unproc = UnprocessedSet::new(std::sync::Arc::new(
+            mrs_calculus::ordering::SymbolConfig::default(),
+        ));
         unproc.push(&make_clause(0, 3)); // oldest, largest
         unproc.push(&make_clause(1, 1)); // smallest
 
@@ -109,7 +115,9 @@ mod tests {
 
     #[test]
     fn empty_returns_none() {
-        let mut unproc = UnprocessedSet::new(std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()));
+        let mut unproc = UnprocessedSet::new(std::sync::Arc::new(
+            mrs_calculus::ordering::SymbolConfig::default(),
+        ));
         assert!(select(&mut unproc, &SelectionStrategy::Fifo, 0).is_none());
     }
 }

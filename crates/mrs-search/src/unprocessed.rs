@@ -2,8 +2,8 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashSet, VecDeque};
 use std::sync::Arc;
 
-use mrs_core::clause::{Clause, ClauseId};
 use mrs_calculus::ordering::SymbolConfig;
+use mrs_core::clause::{Clause, ClauseId};
 
 use crate::weight::clause_weight;
 
@@ -104,10 +104,9 @@ impl UnprocessedSet {
     {
         self.active_ids.retain(|&id| f(id));
     }
-    
+
     /// Returns an iterator over the active clause IDs.
     pub fn iter(&self) -> impl Iterator<Item = ClauseId> + '_ {
         self.active_ids.iter().copied()
     }
 }
-
