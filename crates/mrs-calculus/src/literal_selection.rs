@@ -23,9 +23,11 @@ pub enum LiteralSelection {
     AllNegative,
     /// Select the single negative literal with maximal weight.
     /// If no negative literals exist, all literals are eligible.
-    /// More aggressive than AllNegative: reduces generated clauses at the cost
-    /// of potentially longer proofs.
     MaxNegative,
+    /// Select the single negative literal with maximal weight.
+    /// If no negative literals exist, select the single positive literal with maximal weight.
+    /// This is very aggressive and sacrifices completeness for speed.
+    MaxNegativeOrMaxPositive,
 }
 
 /// Returns the indices of selected (eligible) literals in a clause.
@@ -61,6 +63,33 @@ pub fn selected_literals(clause: &Clause, strategy: &LiteralSelection) -> Vec<us
                 .collect();
             if neg_indices.is_empty() {
                 (0..clause.len()).collect()
+            } else {
+                // Select the one negative literal with maximal weight
+                let best = neg_indices
+                    .iter()
+                    .max_by_key(|&&i| literal_weight(&clause.literals[i]))
+                    .unwrap();
+                vec![*best]
+            }
+        }
+        LiteralSelection::MaxNegativeOrMaxPositive => {
+            let neg_indices: Vec<usize> = clause
+                .literals
+                .iter()
+                .enumerate()
+                .filter(|(_, lit)| lit.is_negative())
+                .map(|(i, _)| i)
+                .collect();
+            if neg_indices.is_empty() {
+                // No negative literals: select all maximal positive literals by weight
+                // to be closer to complete (though technically still incomplete without term ordering)
+                let max_weight = (0..clause.len())
+                    .map(|i| literal_weight(&clause.literals[i]))
+                    .max()
+                    .unwrap_or(0);
+                (0..clause.len())
+                    .filter(|&i| literal_weight(&clause.literals[i]) == max_weight)
+                    .collect()
             } else {
                 // Select the one negative literal with maximal weight
                 let best = neg_indices

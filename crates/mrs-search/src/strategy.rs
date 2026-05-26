@@ -240,6 +240,10 @@ pub fn run_schedule(
             SearchResult::Refutation(_) => {
                 return (result, state);
             }
+            SearchResult::Saturated => {
+                // Saturated is definitive. No need to run other strategies.
+                return (result, state);
+            }
             _ => {
                 last_result = result;
                 last_state = state;

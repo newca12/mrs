@@ -138,7 +138,8 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 .any(|l| l.is_positive() && matches!(&l.atom, Atom::Eq(_, _)));
 
             if given_has_pos_eq {
-                let processed_clauses: Vec<Clause> = state.processed.iter().cloned().collect();
+                let mut processed_clauses: Vec<Clause> = state.processed.iter().cloned().collect();
+                processed_clauses.push(given.clone()); // Include given for self-superposition
                 for active in &processed_clauses {
                     let active_sel = selected_literals(active, &config.literal_selection);
                     let sp = superposition::superpose_selected(
@@ -155,6 +156,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             // (2) Processed clause as equation source, given as target.
             // Only consider processed clauses that have positive equalities.
             {
+                // We don't need to add given here because given -> given is handled in step (1)
                 let eq_clauses: Vec<Clause> = state
                     .processed
                     .get_positive_equality_clauses()
@@ -414,7 +416,12 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         iteration += 1;
     }
 
-    SearchResult::Saturated
+    // If we reach here, we processed all clauses.
+    // If the literal selection is incomplete, we must return GaveUp.
+    match config.literal_selection {
+        crate::LiteralSelection::MaxNegativeOrMaxPositive => SearchResult::GaveUp,
+        _ => SearchResult::Saturated,
+    }
 }
 
 /// Returns true if a clause is a unit positive equality (used for demodulation).

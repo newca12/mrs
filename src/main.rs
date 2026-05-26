@@ -235,6 +235,7 @@ fn main() {
         }
         SearchResult::Timeout => SzsStatus::Timeout,
         SearchResult::ResourceOut => SzsStatus::ResourceOut,
+        SearchResult::GaveUp => SzsStatus::GaveUp,
     };
 
     println!("{}", szs_status_line(status, problem_name));

@@ -52,6 +52,8 @@ pub enum SearchResult {
     Timeout,
     /// The clause limit was exceeded.
     ResourceOut,
+    /// The search gave up (e.g. saturated with an incomplete strategy).
+    GaveUp,
 }
 
 /// Configuration for the search engine.
