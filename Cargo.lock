@@ -68,6 +68,7 @@ name = "mrs-calculus"
 version = "0.1.0"
 dependencies = [
  "mrs-core",
+ "mrs-index",
  "mrs-unify",
 ]
 

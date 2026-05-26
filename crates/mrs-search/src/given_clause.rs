@@ -13,6 +13,7 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
+use mrs_index::fvi::FeatureVector;
 use mrs_calculus::demodulation;
 use mrs_calculus::equality;
 use mrs_calculus::factoring;
@@ -65,9 +66,11 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         }
 
         // Forward subsumption: skip if given is subsumed by a processed clause
+        let given_fv = FeatureVector::from_clause(&given);
         if state
             .processed
-            .iter()
+            .get_subsumption_candidates(&given_fv)
+            .into_iter()
             .any(|p| subsumption::subsumes(p, &given))
         {
             iteration += 1;
@@ -76,13 +79,8 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
 
         // Forward demodulation: simplify the given clause using unit equalities
         let given = {
-            let units: Vec<&Clause> = state
-                .processed
-                .iter()
-                .filter(|c| is_unit_positive_equality(c))
-                .collect();
             if let Some(simplified) =
-                demodulation::demodulate(&given, &units, ordering, &mut state.id_gen)
+                demodulation::demodulate(&given, &state.demod_index, &mut state.id_gen)
             {
                 // Store original clause so proof extraction can find it
                 state.clause_store.insert(given.id, given);
@@ -189,19 +187,60 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         ));
 
         // Backward subsumption: remove processed clauses subsumed by the given
-        state
-            .processed
-            .retain(|p| !subsumption::subsumes(&given, p));
+        let mut to_remove_from_demod = Vec::new();
+        let candidates = state.processed.get_subsumed_candidates(&given_fv);
+        let mut to_remove_from_processed = Vec::new();
+        
+        for p in candidates {
+            if subsumption::subsumes(&given, p) {
+                to_remove_from_processed.push(p.id);
+                if is_unit_positive_equality(p) {
+                    to_remove_from_demod.push(p.clone());
+                }
+            }
+        }
+        
+        for id in to_remove_from_processed {
+            state.processed.remove(id);
+        }
+
+        for p in to_remove_from_demod {
+            if let Atom::Eq(l, r) = &p.literals[0].atom {
+                use mrs_calculus::ordering::TermComparison;
+                if ordering.compare(l, r) == TermComparison::Greater {
+                    state.demod_index.remove(l, &(l.clone(), r.clone(), p.id));
+                } else if ordering.compare(r, l) == TermComparison::Greater {
+                    state.demod_index.remove(r, &(r.clone(), l.clone(), p.id));
+                }
+            }
+        }
 
         // Backward subsumption of unprocessed: remove unprocessed clauses subsumed by the given
-        state.unprocessed.retain(|id| {
-            let u = state.clause_store.get(&id).unwrap();
-            !subsumption::subsumes(&given, u)
-        });
+        state
+            .unprocessed
+            .retain(|id| {
+                let u = state.clause_store.get(&id).unwrap();
+                let u_fv = FeatureVector::from_clause(u);
+                if given_fv.can_subsume(&u_fv) {
+                    !subsumption::subsumes(&given, u)
+                } else {
+                    true
+                }
+            });
 
         // Add given to processed set (indexed)
         state.clause_store.insert(given.id, given.clone());
         state.processed.insert(given.clone());
+        if is_unit_positive_equality(&given) {
+            if let Atom::Eq(l, r) = &given.literals[0].atom {
+                use mrs_calculus::ordering::TermComparison;
+                if ordering.compare(l, r) == TermComparison::Greater {
+                    state.demod_index.insert(l, (l.clone(), r.clone(), given.id));
+                } else if ordering.compare(r, l) == TermComparison::Greater {
+                    state.demod_index.insert(r, (r.clone(), l.clone(), given.id));
+                }
+            }
+        }
 
         // Backward demodulation: if the given clause is a unit positive equality,
         // rewrite all processed clauses using it. Iterate until fixpoint.
@@ -212,8 +251,21 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 if new_units.is_empty() {
                     break;
                 }
-                let unit_refs: Vec<&Clause> = new_units.iter().collect();
+                
+                let mut temp_demod_index = mrs_index::dtree::DTree::new();
+                for u in &new_units {
+                    if let Atom::Eq(l, r) = &u.literals[0].atom {
+                        use mrs_calculus::ordering::TermComparison;
+                        if ordering.compare(l, r) == TermComparison::Greater {
+                            temp_demod_index.insert(l, (l.clone(), r.clone(), u.id));
+                        } else if ordering.compare(r, l) == TermComparison::Greater {
+                            temp_demod_index.insert(r, (r.clone(), l.clone(), u.id));
+                        }
+                    }
+                }
+
                 let all_processed = state.processed.drain();
+                state.demod_index = mrs_index::dtree::DTree::new(); // Clear and rebuild later
                 let mut next_processed = Vec::new();
                 let mut created_units = Vec::new();
 
@@ -224,20 +276,31 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         continue;
                     }
                     if let Some(simplified) =
-                        demodulation::demodulate(&proc, &unit_refs, ordering, &mut state.id_gen)
+                        demodulation::demodulate(&proc, &temp_demod_index, &mut state.id_gen)
                     {
                         // Store original for proof extraction
                         state.clause_store.insert(proc.id, proc);
                         // Further simplify using all existing processed units
-                        let all_units: Vec<&Clause> = next_processed
-                            .iter()
-                            .filter(|c| is_unit_positive_equality(c))
-                            .collect();
-                        let simplified = if !all_units.is_empty()
+                        // Note: state.demod_index is currently empty, so we must rebuild it from next_processed to do this properly.
+                        // Or we can just build a DTree of all_units so far.
+                        let mut all_units_index = mrs_index::dtree::DTree::new();
+                        for c in &next_processed {
+                            if is_unit_positive_equality(c) {
+                                if let Atom::Eq(l, r) = &c.literals[0].atom {
+                                    use mrs_calculus::ordering::TermComparison;
+                                    if ordering.compare(l, r) == TermComparison::Greater {
+                                        all_units_index.insert(l, (l.clone(), r.clone(), c.id));
+                                    } else if ordering.compare(r, l) == TermComparison::Greater {
+                                        all_units_index.insert(r, (r.clone(), l.clone(), c.id));
+                                    }
+                                }
+                            }
+                        }
+
+                        let simplified = if !all_units_index.is_empty()
                             && let Some(further) = demodulation::demodulate(
                                 &simplified,
-                                &all_units,
-                                ordering,
+                                &all_units_index,
                                 &mut state.id_gen,
                             ) {
                             state.clause_store.insert(simplified.id, simplified);
@@ -276,7 +339,17 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
 
                 // Re-insert all clauses into the index
                 for clause in next_processed {
-                    state.processed.insert(clause);
+                    state.processed.insert(clause.clone());
+                    if is_unit_positive_equality(&clause) {
+                        if let Atom::Eq(l, r) = &clause.literals[0].atom {
+                            use mrs_calculus::ordering::TermComparison;
+                            if ordering.compare(l, r) == TermComparison::Greater {
+                                state.demod_index.insert(l, (l.clone(), r.clone(), clause.id));
+                            } else if ordering.compare(r, l) == TermComparison::Greater {
+                                state.demod_index.insert(r, (r.clone(), l.clone(), clause.id));
+                            }
+                        }
+                    }
                 }
                 new_units = created_units;
             }
@@ -295,13 +368,8 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             if !clause.is_tautology() {
                 // Forward demodulation on new clauses
                 let clause = {
-                    let units: Vec<&Clause> = state
-                        .processed
-                        .iter()
-                        .filter(|c| is_unit_positive_equality(c))
-                        .collect();
                     if let Some(simplified) =
-                        demodulation::demodulate(&clause, &units, ordering, &mut state.id_gen)
+                        demodulation::demodulate(&clause, &state.demod_index, &mut state.id_gen)
                     {
                         state.clause_store.insert(clause.id, clause);
                         if simplified.is_empty() {
@@ -328,9 +396,11 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     };
 
                 // Forward subsumption: skip if subsumed by a processed clause
+                let clause_fv = FeatureVector::from_clause(&clause);
                 if state
                     .processed
-                    .iter()
+                    .get_subsumption_candidates(&clause_fv)
+                    .into_iter()
                     .any(|p| subsumption::subsumes(p, &clause))
                 {
                     continue;

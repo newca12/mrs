@@ -1,0 +1,80 @@
+use std::collections::HashMap;
+use mrs_core::clause::Clause;
+use mrs_core::symbol::SymbolId;
+use mrs_core::term::Term;
+use mrs_core::formula::Atom;
+
+/// A feature vector representing the symbol frequencies of a clause.
+/// Used for fast subsumption filtering.
+///
+/// If clause A subsumes clause B (i.e. A sigma subset B), then:
+/// - A has <= literals than B
+/// - A has <= positive literals than B
+/// - A has <= negative literals than B
+/// - For every function/predicate symbol S, A has <= occurrences of S than B.
+#[derive(Clone, Default, Debug)]
+pub struct FeatureVector {
+    pub num_lits: u32,
+    pub pos_lits: u32,
+    pub neg_lits: u32,
+    pub sym_counts: HashMap<SymbolId, u32>,
+}
+
+impl FeatureVector {
+    /// Computes the feature vector for a clause.
+    pub fn from_clause(clause: &Clause) -> Self {
+        let mut fv = FeatureVector::default();
+        fv.num_lits = clause.len() as u32;
+        
+        for lit in &clause.literals {
+            if lit.positive {
+                fv.pos_lits += 1;
+            } else {
+                fv.neg_lits += 1;
+            }
+            
+            match &lit.atom {
+                Atom::Pred(sym, args) => {
+                    *fv.sym_counts.entry(*sym).or_insert(0) += 1;
+                    for arg in args {
+                        fv.count_term(arg);
+                    }
+                }
+                Atom::Eq(l, r) => {
+                    fv.count_term(l);
+                    fv.count_term(r);
+                }
+            }
+        }
+        fv
+    }
+    
+    fn count_term(&mut self, term: &Term) {
+        match term {
+            Term::Var(_) => {} // Variables can map to anything, don't count them
+            Term::App(sym, args) => {
+                *self.sym_counts.entry(*sym).or_insert(0) += 1;
+                for arg in args {
+                    self.count_term(arg);
+                }
+            }
+        }
+    }
+    
+    /// Returns true if this feature vector could potentially subsume `other`.
+    /// This is a fast necessary (but not sufficient) condition for subsumption.
+    pub fn can_subsume(&self, other: &FeatureVector) -> bool {
+        if self.num_lits > other.num_lits { return false; }
+        if self.pos_lits > other.pos_lits { return false; }
+        if self.neg_lits > other.neg_lits { return false; }
+        
+        for (sym, &count) in &self.sym_counts {
+            let other_count = other.sym_counts.get(sym).copied().unwrap_or(0);
+            if count > other_count {
+                return false;
+            }
+        }
+        
+        true
+    }
+}

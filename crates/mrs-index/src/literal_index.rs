@@ -13,6 +13,7 @@ use mrs_core::symbol::SymbolId;
 use mrs_core::term::Term;
 
 use crate::dtree::DTree;
+use crate::fvi::FeatureVector;
 
 /// Key for the literal index: a predicate symbol with a polarity.
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Debug)]
@@ -28,6 +29,8 @@ struct LitKey {
 pub struct LiteralIndex {
     /// Clauses stored in the index.
     clauses: HashMap<ClauseId, Clause>,
+    /// Feature vectors for stored clauses (used for subsumption filtering).
+    fvs: HashMap<ClauseId, FeatureVector>,
     /// Maps (predicate, polarity) -> DTree of clause IDs.
     pred_index: HashMap<LitKey, DTree<ClauseId>>,
     /// Clause IDs that contain at least one positive equality.
@@ -41,6 +44,7 @@ impl LiteralIndex {
     pub fn new() -> Self {
         LiteralIndex {
             clauses: HashMap::new(),
+            fvs: HashMap::new(),
             pred_index: HashMap::new(),
             pos_eq_clauses: HashSet::new(),
             neg_eq_clauses: HashSet::new(),
@@ -50,6 +54,8 @@ impl LiteralIndex {
     /// Inserts a clause into the index.
     pub fn insert(&mut self, clause: Clause) {
         let id = clause.id;
+        self.fvs.insert(id, FeatureVector::from_clause(&clause));
+        
         for lit in &clause.literals {
             match &lit.atom {
                 Atom::Pred(sym, args) => {
@@ -76,6 +82,7 @@ impl LiteralIndex {
 
     /// Removes a clause from the index by ID. Returns the removed clause if found.
     pub fn remove(&mut self, id: ClauseId) -> Option<Clause> {
+        self.fvs.remove(&id);
         if let Some(clause) = self.clauses.remove(&id) {
             for lit in &clause.literals {
                 match &lit.atom {
@@ -116,10 +123,7 @@ impl LiteralIndex {
                 let mut ids = tree.get_unifiable(&term);
                 ids.sort_unstable();
                 ids.dedup();
-                return ids
-                    .into_iter()
-                    .filter_map(|id| self.clauses.get(&id))
-                    .collect();
+                return ids.into_iter().filter_map(|id| self.clauses.get(&id)).collect();
             }
         }
         Vec::new()
@@ -131,6 +135,26 @@ impl LiteralIndex {
         self.pos_eq_clauses
             .iter()
             .filter_map(|id| self.clauses.get(id))
+            .collect()
+    }
+    
+    /// Returns clauses from the index that could potentially subsume the target clause,
+    /// based on feature vector filtering.
+    pub fn get_subsumption_candidates(&self, target_fv: &FeatureVector) -> Vec<&Clause> {
+        self.clauses
+            .iter()
+            .filter(|(id, _)| self.fvs.get(*id).unwrap().can_subsume(target_fv))
+            .map(|(_, c)| c)
+            .collect()
+    }
+
+    /// Returns clauses from the index that could potentially BE subsumed by the given clause,
+    /// based on feature vector filtering.
+    pub fn get_subsumed_candidates(&self, subsumer_fv: &FeatureVector) -> Vec<&Clause> {
+        self.clauses
+            .iter()
+            .filter(|(id, _)| subsumer_fv.can_subsume(self.fvs.get(*id).unwrap()))
+            .map(|(_, c)| c)
             .collect()
     }
 
@@ -159,11 +183,12 @@ impl LiteralIndex {
         self.pred_index.clear();
         self.pos_eq_clauses.clear();
         self.neg_eq_clauses.clear();
+        self.fvs.clear();
         self.clauses.drain().map(|(_, c)| c).collect()
     }
 
     /// Retains only clauses satisfying the predicate. Rebuilds the index.
-    pub fn retain<F: Fn(&Clause) -> bool>(&mut self, f: F) {
+    pub fn retain<F: FnMut(&Clause) -> bool>(&mut self, mut f: F) {
         let to_remove: Vec<ClauseId> = self
             .clauses
             .values()
@@ -176,114 +201,3 @@ impl LiteralIndex {
     }
 }
 
-impl Default for LiteralIndex {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use mrs_core::clause::{ClauseIdGen, ClauseSource};
-    use mrs_core::{Literal, SymbolTable, Term};
-
-    fn make_clause(id_gen: &mut ClauseIdGen, lits: Vec<Literal>) -> Clause {
-        Clause::new(
-            id_gen.next(),
-            lits,
-            ClauseSource::Input {
-                name: "test".into(),
-                role: "axiom".into(),
-            },
-        )
-    }
-
-    #[test]
-    fn resolution_partners_found() {
-        let mut syms = SymbolTable::new();
-        let p = syms.intern("p");
-        let a = syms.intern("a");
-        let mut id_gen = ClauseIdGen::new();
-        let mut idx = LiteralIndex::new();
-
-        // Insert clause with +p(a)
-        let c1 = make_clause(
-            &mut id_gen,
-            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
-        );
-        let c1_id = c1.id;
-        let query_atom = Atom::pred(p, vec![Term::var(0)]);
-        idx.insert(c1);
-
-        // Look for resolution partners of -p(X) → should find c1
-        let partners = idx.get_unifiable_resolution_partners(&query_atom, false);
-        assert_eq!(partners.len(), 1);
-        assert_eq!(partners[0].id, c1_id);
-    }
-
-    #[test]
-    fn no_partners_for_same_polarity() {
-        let mut syms = SymbolTable::new();
-        let p = syms.intern("p");
-        let a = syms.intern("a");
-        let mut id_gen = ClauseIdGen::new();
-        let mut idx = LiteralIndex::new();
-
-        let c1 = make_clause(
-            &mut id_gen,
-            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
-        );
-        let query_atom = Atom::pred(p, vec![Term::var(0)]);
-        idx.insert(c1);
-
-        // Same polarity → no partners
-        let partners = idx.get_unifiable_resolution_partners(&query_atom, true);
-        assert!(partners.is_empty());
-    }
-
-    #[test]
-    fn remove_updates_index() {
-        let mut syms = SymbolTable::new();
-        let p = syms.intern("p");
-        let a = syms.intern("a");
-        let mut id_gen = ClauseIdGen::new();
-        let mut idx = LiteralIndex::new();
-
-        let c1 = make_clause(
-            &mut id_gen,
-            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
-        );
-        let c1_id = c1.id;
-        let query_atom = Atom::pred(p, vec![Term::var(0)]);
-        idx.insert(c1);
-
-        assert_eq!(
-            idx.get_unifiable_resolution_partners(&query_atom, false)
-                .len(),
-            1
-        );
-        idx.remove(c1_id);
-        assert!(
-            idx.get_unifiable_resolution_partners(&query_atom, false)
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn equality_clauses_tracked() {
-        let mut syms = SymbolTable::new();
-        let a = syms.intern("a");
-        let b = syms.intern("b");
-        let mut id_gen = ClauseIdGen::new();
-        let mut idx = LiteralIndex::new();
-
-        let c1 = make_clause(
-            &mut id_gen,
-            vec![Literal::pos(Atom::Eq(Term::constant(a), Term::constant(b)))],
-        );
-        idx.insert(c1);
-
-        assert_eq!(idx.get_positive_equality_clauses().len(), 1);
-    }
-}

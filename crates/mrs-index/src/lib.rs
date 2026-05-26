@@ -11,4 +11,5 @@
 //!   generalization retrieval, and instance retrieval.
 
 pub mod dtree;
+pub mod fvi;
 pub mod literal_index;

@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use mrs_core::clause::{Clause, ClauseId, ClauseIdGen};
+use mrs_core::term::Term;
 use mrs_index::dtree::DTree;
 use mrs_index::literal_index::LiteralIndex;
 
@@ -17,7 +18,8 @@ pub struct SearchState {
     /// Indexed by predicate symbol for fast resolution partner lookup.
     pub processed: LiteralIndex,
     /// DTree indexing the left-hand side of oriented unit equalities for fast demodulation.
-    pub demod_index: DTree<ClauseId>,
+    /// The value is (from, to, unit_clause_id).
+    pub demod_index: DTree<(Term, Term, ClauseId)>,
     /// Clauses waiting to be selected.
     pub unprocessed: UnprocessedSet,
     /// Maps clause IDs to clauses (for proof extraction).

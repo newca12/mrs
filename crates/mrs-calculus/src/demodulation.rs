@@ -26,47 +26,20 @@ use crate::ordering::{TermComparison, TermOrdering};
 /// with the original clause and the rewriting unit(s) as parents.
 pub fn demodulate(
     clause: &Clause,
-    units: &[&Clause],
-    ordering: &TermOrdering,
+    demod_index: &mrs_index::dtree::DTree<(Term, Term, ClauseId)>,
     id_gen: &mut ClauseIdGen,
 ) -> Option<Clause> {
     let mut current_lits = clause.literals.clone();
     let mut changed = false;
     let mut used_unit_ids = Vec::new();
 
-    // Pre-filter and orient unit equalities once
-    let oriented: Vec<(&Term, &Term, ClauseId)> = units
-        .iter()
-        .filter_map(|unit| {
-            if unit.len() != 1 || !unit.literals[0].is_positive() {
-                return None;
-            }
-            let (l, r) = match &unit.literals[0].atom {
-                Atom::Eq(l, r) => (l, r),
-                _ => return None,
-            };
-            if ordering.compare(l, r) == TermComparison::Greater {
-                Some((l, r, unit.id))
-            } else if ordering.compare(r, l) == TermComparison::Greater {
-                Some((r, l, unit.id))
-            } else {
-                None
-            }
-        })
-        .collect();
-
     // Iterate to fixpoint
     loop {
         let mut changed_this_pass = false;
-        for &(from, to, unit_id) in &oriented {
-            for lit in &mut current_lits {
-                if rewrite_literal(lit, from, to) {
-                    changed = true;
-                    changed_this_pass = true;
-                    if !used_unit_ids.contains(&unit_id) {
-                        used_unit_ids.push(unit_id);
-                    }
-                }
+        for lit in &mut current_lits {
+            if rewrite_literal(lit, demod_index, &mut used_unit_ids) {
+                changed = true;
+                changed_this_pass = true;
             }
         }
         if !changed_this_pass {
@@ -90,17 +63,17 @@ pub fn demodulate(
     }
 }
 
-/// Tries to rewrite terms in a literal using the rule `from → to`.
+/// Tries to rewrite terms in a literal using the demodulation index.
 /// Returns true if any rewrite was performed.
-fn rewrite_literal(lit: &mut Literal, from: &Term, to: &Term) -> bool {
+fn rewrite_literal(lit: &mut Literal, demod_index: &mrs_index::dtree::DTree<(Term, Term, ClauseId)>, used_unit_ids: &mut Vec<ClauseId>) -> bool {
     let mut changed = false;
     let new_atom = match &lit.atom {
         Atom::Pred(p, args) => {
             let new_args: Vec<Term> = args
                 .iter()
                 .map(|arg| {
-                    let new_arg = rewrite_term(arg, from, to);
-                    if new_arg != *arg {
+                    let (new_arg, ch) = rewrite_term(arg, demod_index, used_unit_ids);
+                    if ch {
                         changed = true;
                     }
                     new_arg
@@ -109,9 +82,9 @@ fn rewrite_literal(lit: &mut Literal, from: &Term, to: &Term) -> bool {
             Atom::Pred(*p, new_args)
         }
         Atom::Eq(l, r) => {
-            let new_l = rewrite_term(l, from, to);
-            let new_r = rewrite_term(r, from, to);
-            if new_l != *l || new_r != *r {
+            let (new_l, ch_l) = rewrite_term(l, demod_index, used_unit_ids);
+            let (new_r, ch_r) = rewrite_term(r, demod_index, used_unit_ids);
+            if ch_l || ch_r {
                 changed = true;
             }
             Atom::Eq(new_l, new_r)
@@ -123,20 +96,35 @@ fn rewrite_literal(lit: &mut Literal, from: &Term, to: &Term) -> bool {
     changed
 }
 
-/// Rewrites all instances of `from` in `term` with `to`, using one-way matching.
+/// Rewrites a term using the demodulation index.
 /// Recurses into subterms, applying the first match found at each level.
-fn rewrite_term(term: &Term, from: &Term, to: &Term) -> Term {
+fn rewrite_term(term: &Term, demod_index: &mrs_index::dtree::DTree<(Term, Term, ClauseId)>, used_unit_ids: &mut Vec<ClauseId>) -> (Term, bool) {
     // Try matching at the current position first
-    if let Ok(sigma) = match_term(from, term) {
-        return apply_matching_subst(&sigma, to);
+    let rules = demod_index.get_generalizations(term);
+    for (from, to, unit_id) in rules {
+        if let Ok(sigma) = match_term(&from, term) {
+            if !used_unit_ids.contains(&unit_id) {
+                used_unit_ids.push(unit_id);
+            }
+            return (apply_matching_subst(&sigma, &to), true);
+        }
     }
 
     // Recurse into subterms
     match term {
-        Term::Var(_) => term.clone(),
+        Term::Var(_) => (term.clone(), false),
         Term::App(f, args) => {
-            let new_args: Vec<Term> = args.iter().map(|arg| rewrite_term(arg, from, to)).collect();
-            Term::App(*f, new_args)
+            let mut changed = false;
+            let new_args: Vec<Term> = args.iter().map(|arg| {
+                let (new_arg, ch) = rewrite_term(arg, demod_index, used_unit_ids);
+                if ch { changed = true; }
+                new_arg
+            }).collect();
+            if changed {
+                (Term::App(*f, new_args), true)
+            } else {
+                (term.clone(), false)
+            }
         }
     }
 }
@@ -186,7 +174,6 @@ mod tests {
         let a = syms.intern("a");
         let b = syms.intern("b");
         let mut id_gen = ClauseIdGen::new();
-        let ordering = TermOrdering::KBO;
 
         let unit = input_clause(
             &mut id_gen,
@@ -206,7 +193,10 @@ mod tests {
             "target",
         );
 
-        let result = demodulate(&target, &[&unit], &ordering, &mut id_gen);
+        let mut demod_index = mrs_index::dtree::DTree::new();
+        demod_index.insert(&Term::app(f, vec![Term::constant(a)]), (Term::app(f, vec![Term::constant(a)]), Term::constant(b), unit.id));
+
+        let result = demodulate(&target, &demod_index, &mut id_gen);
         assert!(result.is_some());
         let simplified = result.unwrap();
         // Verify demodulation source is recorded
@@ -237,7 +227,6 @@ mod tests {
         let a = syms.intern("a");
         let b = syms.intern("b");
         let mut id_gen = ClauseIdGen::new();
-        let ordering = TermOrdering::KBO;
 
         let unit = input_clause(
             &mut id_gen,
@@ -257,7 +246,10 @@ mod tests {
             "target",
         );
 
-        let result = demodulate(&target, &[&unit], &ordering, &mut id_gen);
+        let mut demod_index = mrs_index::dtree::DTree::new();
+        demod_index.insert(&Term::app(f, vec![Term::constant(a)]), (Term::app(f, vec![Term::constant(a)]), Term::constant(b), unit.id));
+
+        let result = demodulate(&target, &demod_index, &mut id_gen);
         assert!(result.is_none());
     }
 
@@ -271,7 +263,6 @@ mod tests {
         let p = syms.intern("p");
         let a = syms.intern("a");
         let mut id_gen = ClauseIdGen::new();
-        let ordering = TermOrdering::KBO;
 
         let unit = input_clause(
             &mut id_gen,
@@ -291,7 +282,10 @@ mod tests {
             "target",
         );
 
-        let result = demodulate(&target, &[&unit], &ordering, &mut id_gen);
+        let mut demod_index = mrs_index::dtree::DTree::new();
+        demod_index.insert(&Term::app(f, vec![Term::var(0)]), (Term::app(f, vec![Term::var(0)]), Term::var(0), unit.id));
+
+        let result = demodulate(&target, &demod_index, &mut id_gen);
         assert!(result.is_some());
         let simplified = result.unwrap();
         match &simplified.literals[0].atom {
@@ -311,7 +305,6 @@ mod tests {
         let b = syms.intern("b");
         let c = syms.intern("c");
         let mut id_gen = ClauseIdGen::new();
-        let ordering = TermOrdering::KBO;
 
         let non_unit = input_clause(
             &mut id_gen,
@@ -328,7 +321,10 @@ mod tests {
             "target",
         );
 
-        let result = demodulate(&target, &[&non_unit], &ordering, &mut id_gen);
+        let mut demod_index = mrs_index::dtree::DTree::new();
+        // non_unit is not inserted because it is not a unit equation
+
+        let result = demodulate(&target, &demod_index, &mut id_gen);
         assert!(result.is_none());
     }
 }
