@@ -100,7 +100,7 @@ impl StrategySchedule {
                         time_limit: t4,
                         max_clauses: 50_000,
                         selection: SelectionStrategy::AgeWeight(5),
-                        literal_selection: LiteralSelection::MaxNegative,
+                        literal_selection: LiteralSelection::MaxNegativeOrMaxPositive,
                         ordering: TermOrdering::KBO,
                     },
                     t4,
