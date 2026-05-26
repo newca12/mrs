@@ -475,7 +475,7 @@ mod tests {
             "axiom",
         );
 
-        let mut state = SearchState::new(vec![c1, c2], id_gen);
+        let mut state = SearchState::new(vec![c1, c2], id_gen, std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()));
         let config = SearchConfig::default();
         let result = search(&mut state, &config);
         assert!(matches!(result, SearchResult::Refutation(_)));
@@ -517,7 +517,7 @@ mod tests {
             "negated_conjecture",
         );
 
-        let mut state = SearchState::new(vec![c1, c2, c3], id_gen);
+        let mut state = SearchState::new(vec![c1, c2, c3], id_gen, std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()));
         let config = SearchConfig::default();
         let result = search(&mut state, &config);
         assert!(matches!(result, SearchResult::Refutation(_)));
@@ -545,7 +545,7 @@ mod tests {
             "axiom",
         );
 
-        let mut state = SearchState::new(vec![c1, c2], id_gen);
+        let mut state = SearchState::new(vec![c1, c2], id_gen, std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()));
         let config = SearchConfig::default();
         let result = search(&mut state, &config);
         assert!(matches!(result, SearchResult::Saturated));
@@ -631,7 +631,7 @@ mod tests {
         ];
 
         // With All: should find refutation
-        let mut state = SearchState::new(clauses.clone(), id_gen.clone());
+        let mut state = SearchState::new(clauses.clone(), id_gen.clone(), std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()));
         let config = SearchConfig {
             time_limit: std::time::Duration::from_secs(5),
             max_clauses: 50_000,
@@ -720,7 +720,7 @@ mod tests {
         ];
 
         // With AllNegative: check if it saturates
-        let mut state = SearchState::new(clauses, id_gen);
+        let mut state = SearchState::new(clauses, id_gen, std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()));
         let config = SearchConfig {
             time_limit: std::time::Duration::from_secs(5),
             max_clauses: 50_000,
@@ -744,7 +744,7 @@ mod tests {
                 role: "axiom".into(),
             },
         );
-        let mut state = SearchState::new(vec![c], id_gen);
+        let mut state = SearchState::new(vec![c], id_gen, std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()));
         let config = SearchConfig::default();
         let result = search(&mut state, &config);
         assert!(matches!(result, SearchResult::Refutation(_)));

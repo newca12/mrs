@@ -9,32 +9,33 @@
 use mrs_core::clause::{Clause, Literal};
 use mrs_core::formula::Atom;
 use mrs_core::term::Term;
+use mrs_calculus::ordering::SymbolConfig;
 
 /// Returns the weight of a clause: the sum of symbol occurrences across all literals.
 ///
 /// Lighter clauses are generally preferred because they represent simpler facts.
-pub fn clause_weight(clause: &Clause) -> u32 {
-    clause.literals.iter().map(literal_weight).sum()
+pub fn clause_weight(clause: &Clause, config: &SymbolConfig) -> u32 {
+    clause.literals.iter().map(|lit| literal_weight(lit, config)).sum()
 }
 
 /// Returns the weight of a single literal.
-fn literal_weight(lit: &Literal) -> u32 {
-    atom_weight(&lit.atom)
+fn literal_weight(lit: &Literal, config: &SymbolConfig) -> u32 {
+    atom_weight(&lit.atom, config)
 }
 
 /// Returns the weight of an atom.
-fn atom_weight(atom: &Atom) -> u32 {
+fn atom_weight(atom: &Atom, config: &SymbolConfig) -> u32 {
     match atom {
-        Atom::Pred(_, args) => 1 + args.iter().map(term_weight).sum::<u32>(),
-        Atom::Eq(l, r) => term_weight(l) + term_weight(r),
+        Atom::Pred(sym, args) => config.symbol_weight(*sym) + args.iter().map(|arg| term_weight(arg, config)).sum::<u32>(),
+        Atom::Eq(l, r) => term_weight(l, config) + term_weight(r, config),
     }
 }
 
-/// Returns the weight of a term: 1 per symbol/variable occurrence.
-fn term_weight(term: &Term) -> u32 {
+/// Returns the weight of a term.
+fn term_weight(term: &Term, config: &SymbolConfig) -> u32 {
     match term {
-        Term::Var(_) => 1,
-        Term::App(_, args) => 1 + args.iter().map(term_weight).sum::<u32>(),
+        Term::Var(_) => config.w0,
+        Term::App(sym, args) => config.symbol_weight(*sym) + args.iter().map(|arg| term_weight(arg, config)).sum::<u32>(),
     }
 }
 
@@ -58,7 +59,8 @@ mod tests {
     #[test]
     fn weight_of_empty_clause() {
         let c = make_clause(vec![]);
-        assert_eq!(clause_weight(&c), 0);
+        let config = SymbolConfig::default();
+        assert_eq!(clause_weight(&c, &config), 0);
     }
 
     #[test]
@@ -67,7 +69,8 @@ mod tests {
         let mut syms = SymbolTable::new();
         let p = syms.intern("p");
         let c = make_clause(vec![Literal::pos(Atom::prop(p))]);
-        assert_eq!(clause_weight(&c), 1);
+        let config = SymbolConfig::default();
+        assert_eq!(clause_weight(&c, &config), 1);
     }
 
     #[test]
@@ -77,7 +80,8 @@ mod tests {
         let p = syms.intern("p");
         let a = syms.intern("a");
         let c = make_clause(vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))]);
-        assert_eq!(clause_weight(&c), 2);
+        let config = SymbolConfig::default();
+        assert_eq!(clause_weight(&c, &config), 2);
     }
 
     #[test]
@@ -91,7 +95,8 @@ mod tests {
             p,
             vec![Term::app(f, vec![Term::constant(a), Term::var(0)])],
         ))]);
-        assert_eq!(clause_weight(&c), 4);
+        let config = SymbolConfig::default();
+        assert_eq!(clause_weight(&c, &config), 4);
     }
 
     #[test]
@@ -104,7 +109,8 @@ mod tests {
             Term::constant(a),
             Term::constant(b),
         ))]);
-        assert_eq!(clause_weight(&c), 2);
+        let config = SymbolConfig::default();
+        assert_eq!(clause_weight(&c, &config), 2);
     }
 
     #[test]
@@ -119,7 +125,8 @@ mod tests {
             Literal::pos(Atom::pred(p, vec![Term::constant(a)])),
             Literal::pos(Atom::pred(q, vec![Term::var(0), Term::constant(b)])),
         ]);
-        assert_eq!(clause_weight(&c), 5);
+        let config = SymbolConfig::default();
+        assert_eq!(clause_weight(&c, &config), 5);
     }
 
     #[test]
@@ -130,6 +137,7 @@ mod tests {
         let a = syms.intern("a");
         let pos = make_clause(vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))]);
         let neg = make_clause(vec![Literal::neg(Atom::pred(p, vec![Term::constant(a)]))]);
-        assert_eq!(clause_weight(&pos), clause_weight(&neg));
+        let config = SymbolConfig::default();
+        assert_eq!(clause_weight(&pos, &config), clause_weight(&neg, &config));
     }
 }

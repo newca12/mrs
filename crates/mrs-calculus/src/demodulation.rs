@@ -13,8 +13,6 @@ use mrs_core::clause::{Clause, ClauseId, ClauseIdGen, ClauseSource, Literal};
 use mrs_core::term::Term;
 use mrs_unify::match_term;
 
-use crate::ordering::{TermComparison, TermOrdering};
-
 /// Forward demodulation: simplify a clause using oriented unit equalities.
 ///
 /// For each unit equality `{l = r}` where `l ≻ r`, finds instances of `l`
@@ -193,7 +191,7 @@ mod tests {
             "target",
         );
 
-        let mut demod_index = mrs_index::dtree::DTree::new();
+        let demod_index = mrs_index::dtree::DTree::new();
         demod_index.insert(&Term::app(f, vec![Term::constant(a)]), (Term::app(f, vec![Term::constant(a)]), Term::constant(b), unit.id));
 
         let result = demodulate(&target, &demod_index, &mut id_gen);
@@ -246,7 +244,7 @@ mod tests {
             "target",
         );
 
-        let mut demod_index = mrs_index::dtree::DTree::new();
+        let demod_index = mrs_index::dtree::DTree::new();
         demod_index.insert(&Term::app(f, vec![Term::constant(a)]), (Term::app(f, vec![Term::constant(a)]), Term::constant(b), unit.id));
 
         let result = demodulate(&target, &demod_index, &mut id_gen);
@@ -282,7 +280,7 @@ mod tests {
             "target",
         );
 
-        let mut demod_index = mrs_index::dtree::DTree::new();
+        let demod_index = mrs_index::dtree::DTree::new();
         demod_index.insert(&Term::app(f, vec![Term::var(0)]), (Term::app(f, vec![Term::var(0)]), Term::var(0), unit.id));
 
         let result = demodulate(&target, &demod_index, &mut id_gen);
@@ -306,7 +304,7 @@ mod tests {
         let c = syms.intern("c");
         let mut id_gen = ClauseIdGen::new();
 
-        let non_unit = input_clause(
+        let _non_unit = input_clause(
             &mut id_gen,
             vec![
                 Literal::pos(Atom::eq(Term::constant(a), Term::constant(b))),
@@ -321,7 +319,7 @@ mod tests {
             "target",
         );
 
-        let mut demod_index = mrs_index::dtree::DTree::new();
+        let demod_index = mrs_index::dtree::DTree::new();
         // non_unit is not inserted because it is not a unit equation
 
         let result = demodulate(&target, &demod_index, &mut id_gen);

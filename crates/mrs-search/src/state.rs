@@ -1,11 +1,13 @@
 //! Search state: processed and unprocessed clause sets.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use mrs_core::clause::{Clause, ClauseId, ClauseIdGen};
 use mrs_core::term::Term;
 use mrs_index::dtree::DTree;
 use mrs_index::literal_index::LiteralIndex;
+use mrs_calculus::ordering::SymbolConfig;
 
 use crate::unprocessed::UnprocessedSet;
 
@@ -26,15 +28,17 @@ pub struct SearchState {
     pub clause_store: HashMap<ClauseId, Clause>,
     /// Generator for fresh clause IDs.
     pub id_gen: ClauseIdGen,
+    /// Configuration for symbol precedence and weights.
+    pub config: Arc<SymbolConfig>,
 }
 
 impl SearchState {
     /// Creates a new search state with the given initial clauses.
     ///
     /// All initial clauses are placed in the unprocessed set.
-    pub fn new(initial_clauses: Vec<Clause>, id_gen: ClauseIdGen) -> Self {
+    pub fn new(initial_clauses: Vec<Clause>, id_gen: ClauseIdGen, config: Arc<SymbolConfig>) -> Self {
         let mut clause_store = HashMap::new();
-        let mut unprocessed = UnprocessedSet::new();
+        let mut unprocessed = UnprocessedSet::new(config.clone());
 
         for clause in initial_clauses {
             clause_store.insert(clause.id, clause.clone());
@@ -47,6 +51,7 @@ impl SearchState {
             unprocessed,
             clause_store,
             id_gen,
+            config,
         }
     }
 

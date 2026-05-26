@@ -11,13 +11,16 @@
 //! # Example
 //!
 //! ```
+//! use std::sync::Arc;
 //! use mrs_core::clause::ClauseIdGen;
+//! use mrs_calculus::ordering::SymbolConfig;
 //! use mrs_search::{SearchConfig, SearchResult, SelectionStrategy};
 //! use mrs_search::state::SearchState;
 //! use mrs_search::given_clause::search;
 //!
 //! let id_gen = ClauseIdGen::new();
-//! let mut state = SearchState::new(vec![], id_gen);
+//! let config_arc = Arc::new(SymbolConfig::default());
+//! let mut state = SearchState::new(vec![], id_gen, config_arc);
 //! let config = SearchConfig::default();
 //! let result = search(&mut state, &config);
 //! assert!(matches!(result, SearchResult::Saturated));

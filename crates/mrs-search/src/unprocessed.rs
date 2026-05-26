@@ -1,7 +1,9 @@
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashSet, VecDeque};
+use std::sync::Arc;
 
 use mrs_core::clause::{Clause, ClauseId};
+use mrs_calculus::ordering::SymbolConfig;
 
 use crate::weight::clause_weight;
 
@@ -45,22 +47,25 @@ pub struct UnprocessedSet {
     age_queue: VecDeque<ClauseId>,
     /// Priority queue ordered by weight (lightest first).
     weight_queue: BinaryHeap<WeightWrapper>,
+    /// Configuration for symbol precedence and weights.
+    config: Arc<SymbolConfig>,
 }
 
 impl UnprocessedSet {
     /// Creates a new, empty unprocessed set.
-    pub fn new() -> Self {
+    pub fn new(config: Arc<SymbolConfig>) -> Self {
         Self {
             active_ids: HashSet::new(),
             age_queue: VecDeque::new(),
             weight_queue: BinaryHeap::new(),
+            config,
         }
     }
 
     /// Adds a clause to the unprocessed set.
     pub fn push(&mut self, clause: &Clause) {
         let id = clause.id;
-        let weight = clause_weight(clause);
+        let weight = clause_weight(clause, &self.config);
         self.active_ids.insert(id);
         self.age_queue.push_back(id);
         self.weight_queue.push(WeightWrapper { id, weight });
@@ -99,15 +104,10 @@ impl UnprocessedSet {
     {
         self.active_ids.retain(|&id| f(id));
     }
-
+    
     /// Returns an iterator over the active clause IDs.
     pub fn iter(&self) -> impl Iterator<Item = ClauseId> + '_ {
         self.active_ids.iter().copied()
     }
 }
 
-impl Default for UnprocessedSet {
-    fn default() -> Self {
-        Self::new()
-    }
-}

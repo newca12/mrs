@@ -8,8 +8,13 @@
 //! portfolios for CASC competition.
 
 use std::time::Duration;
+use std::sync::Arc;
+use std::collections::HashMap;
 
 use mrs_core::clause::{Clause, ClauseIdGen};
+use mrs_core::symbol::SymbolId;
+use mrs_core::term::Term;
+use mrs_calculus::ordering::SymbolConfig;
 
 use crate::given_clause::search;
 use crate::state::SearchState;
@@ -165,12 +170,71 @@ pub fn run_schedule(
     id_gen: ClauseIdGen,
     schedule: &StrategySchedule,
 ) -> (SearchResult, SearchState) {
-    let mut last_result = SearchResult::Saturated;
-    let mut last_state = SearchState::new(Vec::new(), ClauseIdGen::new());
+    // 1. Analyze problem for symbol frequencies to configure KBO/LPO and weights.
+    let mut sym_counts: HashMap<SymbolId, u32> = HashMap::new();
+    for clause in clauses {
+        for lit in &clause.literals {
+            match &lit.atom {
+                mrs_core::formula::Atom::Pred(p, args) => {
+                    *sym_counts.entry(*p).or_insert(0) += 1;
+                    let mut stack: Vec<&Term> = args.iter().collect();
+                    while let Some(t) = stack.pop() {
+                        if let Term::App(f, nested_args) = t {
+                            *sym_counts.entry(*f).or_insert(0) += 1;
+                            stack.extend(nested_args.iter());
+                        }
+                    }
+                }
+                mrs_core::formula::Atom::Eq(l, r) => {
+                    let mut stack = vec![l, r];
+                    while let Some(t) = stack.pop() {
+                        if let Term::App(f, nested_args) = t {
+                            *sym_counts.entry(*f).or_insert(0) += 1;
+                            stack.extend(nested_args.iter());
+                        }
+                    }
+                }
+            }
+        }
+    }
 
-    for (config, _) in &schedule.strategies {
-        let mut state = SearchState::new(clauses.to_vec(), id_gen.clone());
-        let result = search(&mut state, config);
+    let mut syms_by_freq: Vec<(SymbolId, u32)> = sym_counts.into_iter().collect();
+    syms_by_freq.sort_by_key(|&(_, count)| count); // lowest count first (rarest)
+    
+    // Rare symbols get HIGHER precedence to eliminate them quickly.
+    let mut precedence = vec![0; syms_by_freq.iter().map(|&(s, _)| s.index() as usize).max().unwrap_or(0) + 1];
+    for (i, &(sym, _)) in syms_by_freq.iter().rev().enumerate() {
+        precedence[sym.index() as usize] = (syms_by_freq.len() - i) as u32;
+    }
+    
+    // Config: dynamic weights and precedence driven by rarity
+    let mut weights = vec![1; syms_by_freq.iter().map(|&(s, _)| s.index() as usize).max().unwrap_or(0) + 1];
+    for (sym, _) in &syms_by_freq {
+        // We could use arity or other heuristics, but for now we just make non-variable symbols weigh 2
+        // KBO typically requires w(f) >= w0, and w(c) >= w0 for constants
+        weights[sym.index() as usize] = 2;
+    }
+
+    let config = Arc::new(SymbolConfig {
+        precedence,
+        weights,
+        w0: 1,
+    });
+
+    let mut last_result = SearchResult::Saturated;
+    let mut last_state = SearchState::new(Vec::new(), ClauseIdGen::new(), config.clone());
+
+    for (search_config, _) in &schedule.strategies {
+        let mut actual_config = search_config.clone();
+        // Override the ordering to use our custom configuration
+        actual_config.ordering = match search_config.ordering {
+            TermOrdering::KBO => TermOrdering::CustomKBO(config.clone()),
+            TermOrdering::LPO => TermOrdering::CustomLPO(config.clone()),
+            ref other => other.clone(),
+        };
+
+        let mut state = SearchState::new(clauses.to_vec(), id_gen.clone(), config.clone());
+        let result = search(&mut state, &actual_config);
 
         match &result {
             SearchResult::Refutation(_) => {

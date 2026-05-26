@@ -35,6 +35,7 @@ pub struct LoweredProblem {
 }
 
 /// A formula with its metadata from the TPTP input.
+#[derive(Clone)]
 pub struct LoweredFormula {
     /// Original name from the TPTP file.
     pub name: String,

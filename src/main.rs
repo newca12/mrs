@@ -4,6 +4,7 @@
 
 mod include;
 mod lowering;
+mod sine;
 
 use std::env;
 use std::fs;
@@ -112,6 +113,55 @@ fn main() {
     }
 
     let has_conjecture = !lowered.conjectures.is_empty();
+
+    // --- SInE Filtering ---
+    // In problems with massive axiomatizations, use SInE to filter.
+    // If there are more than 100 axioms, try filtering.
+    if lowered.axioms.len() + lowered.cnf_clauses.len() > 100 {
+        let tolerance = 1.5;
+        let depth_limit = Some(3);
+        
+        let before_axioms = lowered.axioms.len();
+        let before_cnf = lowered.cnf_clauses.len();
+
+        let mut all_items: Vec<sine::SineItemWrapper> = Vec::new();
+        for axiom in lowered.axioms {
+            all_items.push(sine::SineItemWrapper::Formula(axiom));
+        }
+        for conj in lowered.conjectures {
+            all_items.push(sine::SineItemWrapper::Formula(conj));
+        }
+        for clause in lowered.cnf_clauses {
+            all_items.push(sine::SineItemWrapper::Clause(clause));
+        }
+
+        let filtered = sine::filter_items(&all_items, tolerance, depth_limit);
+        
+        lowered.axioms = Vec::new();
+        lowered.conjectures = Vec::new();
+        lowered.cnf_clauses = Vec::new();
+
+        for item in filtered {
+            match item {
+                sine::SineItemWrapper::Formula(lf) => {
+                    if lf.role == "conjecture" || lf.role == "negated_conjecture" {
+                        lowered.conjectures.push(lf);
+                    } else {
+                        lowered.axioms.push(lf);
+                    }
+                }
+                sine::SineItemWrapper::Clause(c) => lowered.cnf_clauses.push(c),
+            }
+        }
+
+        eprintln!(
+            "% SInE filtered axioms: {} -> {}, cnf: {} -> {}",
+            before_axioms,
+            lowered.axioms.len(),
+            before_cnf,
+            lowered.cnf_clauses.len()
+        );
+    }
 
     // Display input summary
     let cnf_count = lowered.cnf_clauses.len();

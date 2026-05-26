@@ -9,9 +9,42 @@
 //! necessary for completeness.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use mrs_core::SymbolId;
 use mrs_core::term::{Term, VarId};
+
+/// Configuration for symbol precedence and weights.
+/// This can be generated based on the problem's symbol frequencies.
+#[derive(Clone, Debug)]
+pub struct SymbolConfig {
+    /// Maps SymbolId.0 to its precedence. Higher is greater.
+    pub precedence: Vec<u32>,
+    /// Maps SymbolId.0 to its weight.
+    pub weights: Vec<u32>,
+    /// Default weight for variables and unknown symbols.
+    pub w0: u32,
+}
+
+impl Default for SymbolConfig {
+    fn default() -> Self {
+        Self {
+            precedence: Vec::new(),
+            weights: Vec::new(),
+            w0: 1,
+        }
+    }
+}
+
+impl SymbolConfig {
+    pub fn symbol_weight(&self, s: SymbolId) -> u32 {
+        self.weights.get(s.index() as usize).copied().unwrap_or(self.w0)
+    }
+
+    pub fn symbol_precedence(&self, s: SymbolId) -> u32 {
+        self.precedence.get(s.index() as usize).copied().unwrap_or(s.index())
+    }
+}
 
 /// Result of comparing two terms under a reduction ordering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,31 +67,32 @@ pub enum TermComparison {
 /// - Variable weight `w0` (must be the minimum weight of any symbol)
 ///
 /// Default configuration: all symbols have weight 1, precedence is by `SymbolId` value.
+#[derive(Clone, Debug)]
 pub struct KBO {
-    /// Weight for each symbol. Missing entries default to `w0`.
-    weights: HashMap<SymbolId, u32>,
-    /// Minimum weight, used for variables and default symbol weight.
-    w0: u32,
+    config: Arc<SymbolConfig>,
 }
 
 impl KBO {
     /// Creates a KBO with default weights (all symbols and variables have weight 1).
     pub fn new() -> Self {
         Self {
-            weights: HashMap::new(),
-            w0: 1,
+            config: Arc::new(SymbolConfig::default()),
         }
+    }
+
+    pub fn with_config(config: Arc<SymbolConfig>) -> Self {
+        Self { config }
     }
 
     /// Returns the weight of a function symbol.
     fn symbol_weight(&self, s: SymbolId) -> u32 {
-        *self.weights.get(&s).unwrap_or(&self.w0)
+        self.config.symbol_weight(s)
     }
 
     /// Computes the total weight of a term.
     fn weight(&self, t: &Term) -> u32 {
         match t {
-            Term::Var(_) => self.w0,
+            Term::Var(_) => self.config.w0,
             Term::App(f, args) => {
                 self.symbol_weight(*f) + args.iter().map(|a| self.weight(a)).sum::<u32>()
             }
@@ -130,11 +164,13 @@ impl KBO {
         match (s, t) {
             (Term::App(f1, args1), Term::App(f2, args2)) => {
                 if f1 != f2 {
-                    // Precedence comparison: higher SymbolId = higher precedence
-                    if s_ge_t_vars && f1 > f2 {
+                    let prec1 = self.config.symbol_precedence(*f1);
+                    let prec2 = self.config.symbol_precedence(*f2);
+                    // Precedence comparison: higher = higher precedence
+                    if s_ge_t_vars && prec1 > prec2 {
                         return TermComparison::Greater;
                     }
-                    if t_ge_s_vars && f2 > f1 {
+                    if t_ge_s_vars && prec2 > prec1 {
                         return TermComparison::Less;
                     }
                     return TermComparison::Incomparable;
@@ -176,13 +212,22 @@ impl Default for KBO {
 /// LPO is particularly effective for equational problems involving
 /// associativity, commutativity, and distributivity.
 ///
-/// Precedence: by `SymbolId` value (higher ID = higher precedence), same as KBO.
-pub struct LPO;
+/// Precedence: by configured `SymbolConfig` or default (SymbolId value).
+#[derive(Clone, Debug)]
+pub struct LPO {
+    config: Arc<SymbolConfig>,
+}
 
 impl LPO {
     /// Creates an LPO with default precedence (by SymbolId value).
     pub fn new() -> Self {
-        LPO
+        Self {
+            config: Arc::new(SymbolConfig::default()),
+        }
+    }
+
+    pub fn with_config(config: Arc<SymbolConfig>) -> Self {
+        Self { config }
     }
 
     /// Compares two terms under LPO.
@@ -240,11 +285,14 @@ impl LPO {
                             return false;
                         }
 
-                        if f > g {
+                        let prec_f = self.config.symbol_precedence(*f);
+                        let prec_g = self.config.symbol_precedence(*g);
+
+                        if prec_f > prec_g {
                             // Case 2b: f ≻ g and s >_lpo all tj
                             true
-                        } else if f == g {
-                            // Case 2c: same symbol, lexicographic comparison
+                        } else if prec_f == prec_g {
+                            // Case 2c: same precedence, lexicographic comparison
                             // and s >_lpo all tj (already checked)
                             self.lex_gt(s_args, t_args, s, t)
                         } else {
@@ -307,6 +355,10 @@ pub enum TermOrdering {
     KBO,
     /// Lexicographic Path Ordering.
     LPO,
+    /// KBO with custom configuration.
+    CustomKBO(Arc<SymbolConfig>),
+    /// LPO with custom configuration.
+    CustomLPO(Arc<SymbolConfig>),
 }
 
 impl TermOrdering {
@@ -315,6 +367,8 @@ impl TermOrdering {
         match self {
             TermOrdering::KBO => KBO::new().compare(s, t),
             TermOrdering::LPO => LPO::new().compare(s, t),
+            TermOrdering::CustomKBO(config) => KBO::with_config(config.clone()).compare(s, t),
+            TermOrdering::CustomLPO(config) => LPO::with_config(config.clone()).compare(s, t),
         }
     }
 }
