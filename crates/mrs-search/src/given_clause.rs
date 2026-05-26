@@ -698,7 +698,7 @@ mod tests {
         );
         let config = SearchConfig::default();
         let result = search(&mut state, &config);
-        assert!(matches!(result, SearchResult::Refutation(_)));
+        assert!(matches!(result, SearchResult::Refutation(..)));
     }
 
     #[test]
@@ -744,7 +744,7 @@ mod tests {
         );
         let config = SearchConfig::default();
         let result = search(&mut state, &config);
-        assert!(matches!(result, SearchResult::Refutation(_)));
+        assert!(matches!(result, SearchResult::Refutation(..)));
     }
 
     #[test]
@@ -873,7 +873,7 @@ mod tests {
         };
         let result = search(&mut state, &config);
         assert!(
-            matches!(result, SearchResult::Refutation(_)),
+            matches!(result, SearchResult::Refutation(..)),
             "Expected refutation with All selection, got {:?}",
             result
         );
@@ -987,6 +987,6 @@ mod tests {
         );
         let config = SearchConfig::default();
         let result = search(&mut state, &config);
-        assert!(matches!(result, SearchResult::Refutation(_)));
+        assert!(matches!(result, SearchResult::Refutation(..)));
     }
 }

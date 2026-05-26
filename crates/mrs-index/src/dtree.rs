@@ -12,7 +12,7 @@
 //! - **Instance**: returns terms more specific than the query
 
 use mrs_core::symbol::SymbolId;
-use mrs_core::term::Term;
+use mrs_core::term::{Term, VarId};
 use std::collections::HashMap;
 
 /// A cell in the flattened term representation.
@@ -20,24 +20,38 @@ use std::collections::HashMap;
 enum Cell {
     /// Function symbol with its arity.
     Sym(SymbolId, u8),
-    /// Variable (treated as a wildcard).
-    Star,
+    /// Variable with its normalized ID.
+    Var(VarId),
 }
 
-/// Flatten a term into its pre-order DFS cell representation.
+/// Flatten a term into its pre-order DFS cell representation, normalizing variables.
 fn flatten(term: &Term) -> Vec<Cell> {
     let mut cells = Vec::new();
-    flatten_into(term, &mut cells);
+    let mut var_map = HashMap::new();
+    let mut next_var = 0;
+    flatten_into(term, &mut cells, &mut var_map, &mut next_var);
     cells
 }
 
-fn flatten_into(term: &Term, out: &mut Vec<Cell>) {
+fn flatten_into(
+    term: &Term,
+    out: &mut Vec<Cell>,
+    var_map: &mut HashMap<VarId, VarId>,
+    next_var: &mut VarId,
+) {
     match term {
-        Term::Var(_) => out.push(Cell::Star),
+        Term::Var(v) => {
+            let norm_v = *var_map.entry(*v).or_insert_with(|| {
+                let id = *next_var;
+                *next_var += 1;
+                id
+            });
+            out.push(Cell::Var(norm_v));
+        }
         Term::App(sym, args) => {
             out.push(Cell::Sym(*sym, args.len() as u8));
             for arg in args {
-                flatten_into(arg, out);
+                flatten_into(arg, out, var_map, next_var);
             }
         }
     }
@@ -46,7 +60,7 @@ fn flatten_into(term: &Term, out: &mut Vec<Cell>) {
 /// Returns the position after the subterm starting at `pos` in a flat representation.
 fn skip_in_flat(flat: &[Cell], pos: usize) -> usize {
     match flat[pos] {
-        Cell::Star => pos + 1,
+        Cell::Var(_) => pos + 1,
         Cell::Sym(_, n) => {
             let mut p = pos + 1;
             for _ in 0..n {
@@ -137,17 +151,19 @@ impl<V: Clone + PartialEq> DTree<V> {
                 if let Some(child) = self.children.get(&Cell::Sym(f, n)) {
                     child.unify_flat(query, pos + 1, results);
                 }
-                // Star in tree: stored variable unifies with any query subterm
-                if let Some(child) = self.children.get(&Cell::Star) {
-                    let skip = skip_in_flat(query, pos);
-                    child.unify_flat(query, skip, results);
+                // Var in tree: stored variable unifies with any query subterm
+                for (&key, child) in &self.children {
+                    if let Cell::Var(_) = key {
+                        let skip = skip_in_flat(query, pos);
+                        child.unify_flat(query, skip, results);
+                    }
                 }
             }
-            Cell::Star => {
+            Cell::Var(_) => {
                 // Query variable: unifies with anything stored
                 for (&key, child) in &self.children {
                     match key {
-                        Cell::Star => {
+                        Cell::Var(_) => {
                             // Both variables: advance both
                             child.unify_flat(query, pos + 1, results);
                         }
@@ -162,10 +178,6 @@ impl<V: Clone + PartialEq> DTree<V> {
     }
 
     /// Skip `remaining` stored child subterms in the tree, then continue unification.
-    ///
-    /// When the query has a variable and the tree has `Sym(f, n)`, we've entered
-    /// the stored subterm and need to traverse past its `n` children before
-    /// continuing the match with the rest of the query.
     fn skip_stored(
         &self,
         remaining: usize,
@@ -179,7 +191,7 @@ impl<V: Clone + PartialEq> DTree<V> {
         }
         for (&key, child) in &self.children {
             match key {
-                Cell::Star => {
+                Cell::Var(_) => {
                     // One stored variable = one child subterm skipped
                     child.skip_stored(remaining - 1, query, query_pos, results);
                 }
@@ -198,14 +210,21 @@ impl<V: Clone + PartialEq> DTree<V> {
     ///
     /// The query should typically be ground (no variables). If it has variables,
     /// only stored variables can match query variables.
-    pub fn get_generalizations(&self, query: &Term) -> Vec<V> {
+    pub fn get_generalizations<'a>(&self, query: &'a Term) -> Vec<V> {
         let flat = flatten(query);
         let mut results = Vec::new();
-        self.gen_flat(&flat, 0, &mut results);
+        let mut bindings = Vec::new();
+        self.gen_flat(&flat, 0, &mut bindings, &mut results);
         results
     }
 
-    fn gen_flat(&self, query: &[Cell], pos: usize, results: &mut Vec<V>) {
+    fn gen_flat<'a>(
+        &self,
+        query: &'a [Cell],
+        pos: usize,
+        bindings: &mut Vec<Option<&'a [Cell]>>,
+        results: &mut Vec<V>,
+    ) {
         if pos >= query.len() {
             results.extend_from_slice(&self.leaves);
             return;
@@ -215,18 +234,52 @@ impl<V: Clone + PartialEq> DTree<V> {
             Cell::Sym(f, n) => {
                 // Exact match
                 if let Some(child) = self.children.get(&Cell::Sym(f, n)) {
-                    child.gen_flat(query, pos + 1, results);
+                    child.gen_flat(query, pos + 1, bindings, results);
                 }
-                // Star in tree: stored variable generalizes any query subterm
-                if let Some(child) = self.children.get(&Cell::Star) {
-                    let skip = skip_in_flat(query, pos);
-                    child.gen_flat(query, skip, results);
+                // Var in tree: stored variable generalizes any query subterm
+                for (&key, child) in &self.children {
+                    if let Cell::Var(vid) = key {
+                        let vid = vid as usize;
+                        let skip = skip_in_flat(query, pos);
+                        let subterm = &query[pos..skip];
+
+                        if vid >= bindings.len() {
+                            bindings.resize(vid + 1, None);
+                        }
+
+                        if let Some(bound) = bindings[vid] {
+                            if bound == subterm {
+                                child.gen_flat(query, skip, bindings, results);
+                            }
+                        } else {
+                            bindings[vid] = Some(subterm);
+                            child.gen_flat(query, skip, bindings, results);
+                            bindings[vid] = None; // backtrack
+                        }
+                    }
                 }
             }
-            Cell::Star => {
+            Cell::Var(_) => {
                 // Query variable: only stored variables can generalize a variable
-                if let Some(child) = self.children.get(&Cell::Star) {
-                    child.gen_flat(query, pos + 1, results);
+                for (&key, child) in &self.children {
+                    if let Cell::Var(vid) = key {
+                        let vid = vid as usize;
+                        let subterm = &query[pos..pos + 1];
+
+                        if vid >= bindings.len() {
+                            bindings.resize(vid + 1, None);
+                        }
+
+                        if let Some(bound) = bindings[vid] {
+                            if bound == subterm {
+                                child.gen_flat(query, pos + 1, bindings, results);
+                            }
+                        } else {
+                            bindings[vid] = Some(subterm);
+                            child.gen_flat(query, pos + 1, bindings, results);
+                            bindings[vid] = None; // backtrack
+                        }
+                    }
                 }
             }
         }
@@ -255,13 +308,13 @@ impl<V: Clone + PartialEq> DTree<V> {
                 if let Some(child) = self.children.get(&Cell::Sym(f, n)) {
                     child.inst_flat(query, pos + 1, results);
                 }
-                // Star in tree: a variable is not an instance of a function term
+                // Var in tree: a variable is not an instance of a function term
             }
-            Cell::Star => {
+            Cell::Var(_) => {
                 // Query variable: matches any stored subterm (it's an instance)
                 for (&key, child) in &self.children {
                     match key {
-                        Cell::Star => {
+                        Cell::Var(_) => {
                             child.inst_flat(query, pos + 1, results);
                         }
                         Cell::Sym(_, n) => {
