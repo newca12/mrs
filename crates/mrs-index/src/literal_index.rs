@@ -201,3 +201,9 @@ impl LiteralIndex {
     }
 }
 
+impl Default for LiteralIndex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+

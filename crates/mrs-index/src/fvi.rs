@@ -23,8 +23,10 @@ pub struct FeatureVector {
 impl FeatureVector {
     /// Computes the feature vector for a clause.
     pub fn from_clause(clause: &Clause) -> Self {
-        let mut fv = FeatureVector::default();
-        fv.num_lits = clause.len() as u32;
+        let mut fv = FeatureVector {
+            num_lits: clause.len() as u32,
+            ..Default::default()
+        };
         
         for lit in &clause.literals {
             if lit.positive {

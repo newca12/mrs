@@ -183,11 +183,10 @@ pub fn filter_items<T: SineItem + Clone>(
 
     let mut depth = 0;
     while !new_syms.is_empty() {
-        if let Some(dl) = depth_limit {
-            if depth >= dl {
+        if let Some(dl) = depth_limit
+            && depth >= dl {
                 break;
             }
-        }
         depth += 1;
 
         let mut next_new_syms = HashSet::new();

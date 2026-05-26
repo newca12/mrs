@@ -233,8 +233,8 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         // Add given to processed set (indexed)
         state.clause_store.insert(given.id, given.clone());
         state.processed.insert(given.clone());
-        if is_unit_positive_equality(&given) {
-            if let Atom::Eq(l, r) = &given.literals[0].atom {
+        if is_unit_positive_equality(&given)
+            && let Atom::Eq(l, r) = &given.literals[0].atom {
                 use mrs_calculus::ordering::TermComparison;
                 if ordering.compare(l, r) == TermComparison::Greater {
                     state.demod_index.insert(l, (l.clone(), r.clone(), given.id));
@@ -242,7 +242,6 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     state.demod_index.insert(r, (r.clone(), l.clone(), given.id));
                 }
             }
-        }
 
         // Backward demodulation: if the given clause is a unit positive equality,
         // rewrite all processed clauses using it. Iterate until fixpoint.
@@ -287,8 +286,8 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         // Or we can just build a DTree of all_units so far.
                         let mut all_units_index = mrs_index::dtree::DTree::new();
                         for c in &next_processed {
-                            if is_unit_positive_equality(c) {
-                                if let Atom::Eq(l, r) = &c.literals[0].atom {
+                            if is_unit_positive_equality(c)
+                                && let Atom::Eq(l, r) = &c.literals[0].atom {
                                     use mrs_calculus::ordering::TermComparison;
                                     if ordering.compare(l, r) == TermComparison::Greater {
                                         all_units_index.insert(l, (l.clone(), r.clone(), c.id));
@@ -296,7 +295,6 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                                         all_units_index.insert(r, (r.clone(), l.clone(), c.id));
                                     }
                                 }
-                            }
                         }
 
                         let simplified = if !all_units_index.is_empty()
@@ -342,8 +340,8 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 // Re-insert all clauses into the index
                 for clause in next_processed {
                     state.processed.insert(clause.clone());
-                    if is_unit_positive_equality(&clause) {
-                        if let Atom::Eq(l, r) = &clause.literals[0].atom {
+                    if is_unit_positive_equality(&clause)
+                        && let Atom::Eq(l, r) = &clause.literals[0].atom {
                             use mrs_calculus::ordering::TermComparison;
                             if ordering.compare(l, r) == TermComparison::Greater {
                                 state.demod_index.insert(l, (l.clone(), r.clone(), clause.id));
@@ -351,7 +349,6 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                                 state.demod_index.insert(r, (r.clone(), l.clone(), clause.id));
                             }
                         }
-                    }
                 }
                 new_units = created_units;
             }
