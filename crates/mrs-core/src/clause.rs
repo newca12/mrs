@@ -102,6 +102,8 @@ pub struct Clause {
     pub source: ClauseSource,
     /// AVATAR assertions (boolean variables from the SAT solver).
     pub avatar: Vec<u32>,
+    /// Distance to conjecture (0 for conjectures, +1 for generated, large for axioms).
+    pub distance: u32,
 }
 
 impl Clause {
@@ -112,6 +114,7 @@ impl Clause {
             literals,
             source,
             avatar: Vec::new(),
+            distance: 1000,
         }
     }
 
@@ -129,7 +132,14 @@ impl Clause {
             literals,
             source,
             avatar,
+            distance: 1000,
         }
+    }
+
+    /// Set the distance for this clause.
+    pub fn with_distance(mut self, distance: u32) -> Self {
+        self.distance = distance;
+        self
     }
 
     /// Returns `true` if this is the empty clause (contradiction).

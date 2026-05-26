@@ -275,6 +275,48 @@ pub fn condense(clause: &Clause, id_gen: &mut ClauseIdGen) -> Option<Clause> {
     None
 }
 
+/// Applies Subsumption Resolution to `target` using `active_clause`.
+///
+/// If `active_clause` $\sigma \subseteq (target \setminus \{L\}) \cup \{\overline{L}\}$
+/// for some literal $L \in target$, we can remove $L$ from `target`.
+/// Returns the index of the literal that can be removed, if any.
+pub fn subsumption_resolution(active_clause: &Clause, target: &Clause) -> Option<usize> {
+    if active_clause.len() > target.len() {
+        return None;
+    }
+
+    if active_clause.is_empty() {
+        return None; // Empty clause subsumes target completely, handled by subsumption.
+    }
+
+    let offset = max_var(target);
+    let active_renamed = rename_clause(active_clause, offset);
+
+    // Try to remove each literal `i` from target
+    for i in 0..target.literals.len() {
+        // Construct the modified target: (target \ {L_i}) U {~L_i}
+        let mut modified_target = Vec::with_capacity(target.len());
+        for (j, lit) in target.literals.iter().enumerate() {
+            if i == j {
+                // Add the complement of L_i
+                modified_target.push(Literal {
+                    positive: !lit.positive,
+                    atom: lit.atom.clone(),
+                });
+            } else {
+                modified_target.push(lit.clone());
+            }
+        }
+
+        let subst = Substitution::new();
+        if match_literals(&active_renamed.literals, &modified_target, &subst, offset) {
+            return Some(i);
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,5 +625,57 @@ mod tests {
         // This should return None because the "condensed" clause
         // doesn't subsume the original (variables get merged)
         assert!(condense(&c, &mut id_gen).is_none());
+    }
+}
+
+#[cfg(test)]
+mod tests2 {
+    use super::*;
+    use mrs_core::clause::{ClauseIdGen, ClauseSource};
+    use mrs_core::{Atom, Literal, SymbolTable, Term};
+
+    fn input_clause(id_gen: &mut ClauseIdGen, lits: Vec<Literal>, name: &str) -> mrs_core::clause::Clause {
+        mrs_core::clause::Clause::new(
+            id_gen.next(),
+            lits,
+            ClauseSource::Input {
+                name: name.into(),
+                role: "axiom".into(),
+            },
+        )
+    }
+
+    #[test]
+    fn subsumption_resolution_basic() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+        let r = syms.intern("r");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let c = syms.intern("c");
+        let mut id_gen = ClauseIdGen::new();
+
+        let active = input_clause(
+            &mut id_gen,
+            vec![
+                Literal::pos(Atom::pred(p, vec![Term::constant(a)])),
+                Literal::pos(Atom::pred(q, vec![Term::constant(b)])),
+            ],
+            "active",
+        );
+
+        let target = input_clause(
+            &mut id_gen,
+            vec![
+                Literal::pos(Atom::pred(p, vec![Term::constant(a)])),
+                Literal::neg(Atom::pred(q, vec![Term::constant(b)])),
+                Literal::pos(Atom::pred(r, vec![Term::constant(c)])),
+            ],
+            "target",
+        );
+
+        let removed_idx = subsumption_resolution(&active, &target);
+        assert_eq!(removed_idx, Some(1));
     }
 }

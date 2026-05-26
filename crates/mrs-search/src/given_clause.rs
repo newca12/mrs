@@ -186,7 +186,8 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 .any(|l| l.is_positive() && matches!(&l.atom, Atom::Eq(_, _)));
 
             if given_has_pos_eq {
-                let processed_clauses: Vec<Clause> = state.processed.iter().cloned().collect();
+                let mut processed_clauses: Vec<Clause> = state.processed.iter().cloned().collect();
+                processed_clauses.push(given.clone()); // Include given for self-superposition
                 for active in &processed_clauses {
                     let active_sel = selected_literals(active, &config.literal_selection);
                     let sp = superposition::superpose_selected(
@@ -196,6 +197,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         &mut state.id_gen,
                         Some(&active_sel),
                     );
+                    println!("Superposing given {:?} into active {:?} yielded {} clauses", given.id.0, active.id.0, sp.len());
                     new_clauses.extend(sp);
                 }
             }

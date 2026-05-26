@@ -161,6 +161,15 @@ impl LiteralIndex {
             .collect()
     }
 
+    /// Returns clauses from the index that could potentially subsumption-resolve the target clause.
+    pub fn get_subsumption_resolution_candidates(&self, target_fv: &FeatureVector) -> Vec<&Clause> {
+        self.clauses
+            .iter()
+            .filter(|(id, _)| self.fvs.get(*id).unwrap().can_subsumption_resolve(target_fv))
+            .map(|(_, c)| c)
+            .collect()
+    }
+
     /// Returns a specific clause by ID.
     pub fn get(&self, id: ClauseId) -> Option<&Clause> {
         self.clauses.get(&id)

@@ -175,7 +175,7 @@ fn main() {
 
     // --- Clausification ---
     let mut id_gen = lowered.id_gen;
-    let mut all_clauses: Vec<Clause> = lowered.cnf_clauses;
+    let mut all_clauses: Vec<Clause> = lowered.cnf_clauses.into_iter().map(|c| c.with_distance(100)).collect();
 
     // Clausify axioms directly
     for f in &lowered.axioms {
@@ -186,7 +186,7 @@ fn main() {
             &f.name,
             &f.role,
         );
-        all_clauses.extend(clauses);
+        all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(100)));
     }
 
     // Negate conjectures for refutation-based proving:
@@ -200,7 +200,7 @@ fn main() {
             &f.name,
             "negated_conjecture",
         );
-        all_clauses.extend(clauses);
+        all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(0)));
     }
 
     // --- Proof search ---

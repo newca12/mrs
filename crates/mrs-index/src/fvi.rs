@@ -85,4 +85,29 @@ impl FeatureVector {
 
         true
     }
+
+    /// Returns true if this feature vector could potentially subsumption-resolve a target
+    /// that has `other` as its feature vector.
+    /// This means `self` could subsume `other` if exactly one literal's polarity was flipped.
+    pub fn can_subsumption_resolve(&self, other: &FeatureVector) -> bool {
+        if self.num_lits > other.num_lits {
+            return false;
+        }
+
+        if self.pos_lits > other.pos_lits + 1 {
+            return false;
+        }
+        if self.neg_lits > other.neg_lits + 1 {
+            return false;
+        }
+
+        // Symbols don't change when flipping polarity.
+        for (sym, _) in &self.sym_counts {
+            if !other.sym_counts.contains_key(sym) {
+                return false;
+            }
+        }
+
+        true
+    }
 }

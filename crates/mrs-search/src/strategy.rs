@@ -352,7 +352,7 @@ mod tests {
 
         let schedule = StrategySchedule::default_schedule(Duration::from_secs(5));
         let (result, _) = run_schedule(&[c1, c2], id_gen, &schedule);
-        assert!(matches!(result, SearchResult::Refutation(_)));
+        assert!(matches!(result, SearchResult::Refutation(..)));
     }
 
     #[test]
