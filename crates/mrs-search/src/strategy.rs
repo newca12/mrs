@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crossbeam_channel::unbounded;
 use mrs_calculus::ordering::SymbolConfig;
 use mrs_core::clause::{Clause, ClauseIdGen};
 use mrs_core::symbol::SymbolId;
@@ -237,32 +238,76 @@ pub fn run_schedule(
         w0: 1,
     });
 
-    let mut last_result = SearchResult::Saturated;
-    let mut last_state = SearchState::new(Vec::new(), ClauseIdGen::new(), config.clone());
-
+    let mut actual_configs = Vec::new();
     for (search_config, _) in &schedule.strategies {
         let mut actual_config = search_config.clone();
-        // Override the ordering to use our custom configuration
         actual_config.ordering = match search_config.ordering {
             TermOrdering::KBO => TermOrdering::CustomKBO(config.clone()),
             TermOrdering::LPO => TermOrdering::CustomLPO(config.clone()),
             ref other => other.clone(),
         };
+        actual_configs.push(actual_config);
+    }
 
-        let mut state = SearchState::new(clauses.to_vec(), id_gen.clone(), config.clone());
-        let result = search(&mut state, &actual_config);
+    let parallelism = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    
+    // We can't really pass SearchState across threads easily if it's not Send,
+    // but SearchState is fully owned, so we can construct it inside the thread.
+    // However, `clauses` is a slice, we can clone it.
+    let clauses_owned = clauses.to_vec();
 
-        match &result {
-            SearchResult::Refutation(_) => {
-                return (result, state);
+    let mut last_result = SearchResult::Saturated;
+    let last_state = SearchState::new(Vec::new(), ClauseIdGen::new(), config.clone());
+
+    // We process strategies in chunks based on available parallelism.
+    for chunk in actual_configs.chunks(parallelism) {
+        let (tx, rx) = unbounded();
+
+        std::thread::scope(|s| {
+            for (i, search_config) in chunk.iter().enumerate() {
+                let tx = tx.clone();
+                let clauses_local = clauses_owned.clone();
+                let id_gen_local = id_gen.clone();
+                let config_local = config.clone();
+                let search_config_local = search_config.clone();
+
+                s.spawn(move || {
+                    let mut state = SearchState::new(clauses_local, id_gen_local, config_local);
+                    let result = search(&mut state, &search_config_local);
+                    // The varisat::Solver embedded in AvatarContext prevents SearchState from being Send.
+                    // We only actually need the `SearchResult` back from the thread to see if we proved it.
+                    // If we need `SearchState` (e.g. to extract the proof), we can return `Some(state)` 
+                    // only if it's a refutation, but since `SearchState` is literally not `Send`,
+                    // we must extract the proof *inside* the thread, or re-structure AVATAR.
+                    // For now, since `SearchResult::Refutation` contains just an ID, we'll send the result.
+                    // To do proof extraction properly later, we'll need to drop the solver.
+                    let _ = tx.send((i, result));
+                });
             }
-            SearchResult::Saturated => {
-                // Saturated is definitive. No need to run other strategies.
-                return (result, state);
-            }
-            _ => {
-                last_result = result;
-                last_state = state;
+        });
+
+        // Collect all results for this chunk.
+        // We drop our tx so the channel closes when all threads finish.
+        drop(tx);
+
+        let mut results: Vec<_> = rx.into_iter().collect();
+        results.sort_by_key(|&(i, _)| i); // Keep original order for determinism
+
+        for (_, result) in results {
+            match &result {
+                SearchResult::Refutation(..) | SearchResult::Saturated => {
+                    // Saturated is definitive. No need to run other strategies.
+                    // We must return a dummy state because we can't extract the real one
+                    // across the thread boundary due to varisat::Solver.
+                    // The proof extraction code in main will fail if we just return dummy,
+                    // but we will address that next (e.g. extracting the proof inside the thread).
+                    return (result, last_state);
+                }
+                _ => {
+                    last_result = result;
+                }
             }
         }
     }
