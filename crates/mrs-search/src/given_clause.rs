@@ -20,8 +20,8 @@ use mrs_calculus::literal_selection::selected_literals;
 use mrs_calculus::resolution;
 use mrs_calculus::subsumption;
 use mrs_calculus::superposition;
-use mrs_core::clause::{Clause, ClauseSource};
 use mrs_core::Atom;
+use mrs_core::clause::{Clause, ClauseSource};
 use mrs_index::fvi::FeatureVector;
 use varisat::ExtendFormula;
 
@@ -41,11 +41,14 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         let model = state.avatar.solver.model().unwrap();
         for lit in model {
             if lit.is_positive() {
-                state.avatar.current_model.insert(lit.var().to_dimacs() as u32);
+                state
+                    .avatar
+                    .current_model
+                    .insert(lit.var().to_dimacs() as u32);
             }
         }
     } else {
-        return SearchResult::Refutation(mrs_core::clause::ClauseId(0)); // Should not happen on empty start
+        return SearchResult::Refutation(mrs_core::clause::ClauseId(0), String::new()); // Should not happen on empty start
     }
 
     // Check for initial empty clauses
@@ -53,20 +56,25 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         let clause = state.clause_store.get(&id).unwrap();
         if clause.is_empty() {
             if clause.avatar.is_empty() {
-                return SearchResult::Refutation(clause.id);
+                return SearchResult::Refutation(clause.id, String::new());
             } else {
-                let sat_clause: Vec<varisat::Lit> = clause.avatar.iter().map(|&a| {
-                    varisat::Lit::from_var(varisat::Var::from_dimacs(a as isize), false)
-                }).collect();
+                let sat_clause: Vec<varisat::Lit> = clause
+                    .avatar
+                    .iter()
+                    .map(|&a| varisat::Lit::from_var(varisat::Var::from_dimacs(a as isize), false))
+                    .collect();
                 state.avatar.solver.add_clause(&sat_clause);
                 if !matches!(state.avatar.solver.solve(), Ok(true)) {
-                    return SearchResult::Refutation(clause.id);
+                    return SearchResult::Refutation(clause.id, String::new());
                 } else {
                     let model = state.avatar.solver.model().unwrap();
                     state.avatar.current_model.clear();
                     for lit in model {
                         if lit.is_positive() {
-                            state.avatar.current_model.insert(lit.var().to_dimacs() as u32);
+                            state
+                                .avatar
+                                .current_model
+                                .insert(lit.var().to_dimacs() as u32);
                         }
                     }
                 }
@@ -116,9 +124,12 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
 
         // Forward demodulation: simplify the given clause using unit equalities
         let given = {
-            if let Some(simplified) =
-                demodulation::demodulate(&given, &state.demod_index, &state.clause_store, &mut state.id_gen)
-            {
+            if let Some(simplified) = demodulation::demodulate(
+                &given,
+                &state.demod_index,
+                &state.clause_store,
+                &mut state.id_gen,
+            ) {
                 // Store original clause so proof extraction can find it
                 state.clause_store.insert(given.id, given);
                 simplified
@@ -315,9 +326,12 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         next_processed.push(proc);
                         continue;
                     }
-                    if let Some(simplified) =
-                        demodulation::demodulate(&proc, &temp_demod_index, &state.clause_store, &mut state.id_gen)
-                    {
+                    if let Some(simplified) = demodulation::demodulate(
+                        &proc,
+                        &temp_demod_index,
+                        &state.clause_store,
+                        &mut state.id_gen,
+                    ) {
                         // Store original for proof extraction
                         state.clause_store.insert(proc.id, proc);
                         // Further simplify using all existing processed units
@@ -351,20 +365,35 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         };
                         if simplified.is_empty() {
                             state.clause_store.insert(simplified.id, simplified.clone());
-                            return SearchResult::Refutation(simplified.id);
+                            return SearchResult::Refutation(simplified.id, String::new());
                         }
                         if is_trivial_contradiction(&simplified) {
-                            let empty = Clause::new(
+                            let empty = Clause::new_avatar(
                                 state.id_gen.next(),
                                 vec![],
                                 ClauseSource::Inference {
                                     rule: "equality_resolution".into(),
                                     parents: vec![simplified.id],
                                 },
+                                simplified.avatar.clone(),
                             );
                             state.clause_store.insert(simplified.id, simplified);
                             state.clause_store.insert(empty.id, empty.clone());
-                            return SearchResult::Refutation(empty.id);
+                            return SearchResult::Refutation(empty.id, String::new());
+                        }
+                        if is_trivial_contradiction(&simplified) {
+                            let empty = Clause::new_avatar(
+                                state.id_gen.next(),
+                                vec![],
+                                ClauseSource::Inference {
+                                    rule: "equality_resolution".into(),
+                                    parents: vec![simplified.id],
+                                },
+                                simplified.avatar.clone(),
+                            );
+                            state.clause_store.insert(simplified.id, simplified);
+                            state.clause_store.insert(empty.id, empty.clone());
+                            return SearchResult::Refutation(empty.id, String::new());
                         }
                         if !simplified.is_tautology() {
                             if is_unit_positive_equality(&simplified) {
@@ -420,24 +449,31 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
 
             if clause.is_empty() {
                 state.clause_store.insert(clause.id, clause.clone());
-                
+
                 if clause.avatar.is_empty() {
-                    return SearchResult::Refutation(clause.id);
+                    return SearchResult::Refutation(clause.id, String::new());
                 } else {
-                    let sat_clause: Vec<varisat::Lit> = clause.avatar.iter().map(|&a| {
-                        varisat::Lit::from_var(varisat::Var::from_dimacs(a as isize), false)
-                    }).collect();
+                    let sat_clause: Vec<varisat::Lit> = clause
+                        .avatar
+                        .iter()
+                        .map(|&a| {
+                            varisat::Lit::from_var(varisat::Var::from_dimacs(a as isize), false)
+                        })
+                        .collect();
                     state.avatar.solver.add_clause(&sat_clause);
-                    
+
                     if matches!(state.avatar.solver.solve(), Ok(true)) {
                         let model = state.avatar.solver.model().unwrap();
                         state.avatar.current_model.clear();
                         for lit in model {
                             if lit.is_positive() {
-                                state.avatar.current_model.insert(lit.var().to_dimacs() as u32);
+                                state
+                                    .avatar
+                                    .current_model
+                                    .insert(lit.var().to_dimacs() as u32);
                             }
                         }
-                        
+
                         // Update active/dormant status
                         // 1. Processed -> Dormant
                         let mut to_remove_processed = Vec::new();
@@ -450,17 +486,18 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                             if let Some(p) = state.processed.remove(id) {
                                 state.dormant_processed.insert(p.id, p.clone());
                                 if is_unit_positive_equality(&p)
-                                    && let Atom::Eq(l, r) = &p.literals[0].atom {
-                                        use mrs_calculus::ordering::TermComparison;
-                                        if ordering.compare(l, r) == TermComparison::Greater {
-                                            state.demod_index.remove(l, &(l.clone(), r.clone(), p.id));
-                                        } else if ordering.compare(r, l) == TermComparison::Greater {
-                                            state.demod_index.remove(r, &(r.clone(), l.clone(), p.id));
-                                        }
+                                    && let Atom::Eq(l, r) = &p.literals[0].atom
+                                {
+                                    use mrs_calculus::ordering::TermComparison;
+                                    if ordering.compare(l, r) == TermComparison::Greater {
+                                        state.demod_index.remove(l, &(l.clone(), r.clone(), p.id));
+                                    } else if ordering.compare(r, l) == TermComparison::Greater {
+                                        state.demod_index.remove(r, &(r.clone(), l.clone(), p.id));
                                     }
+                                }
                             }
                         }
-                        
+
                         // 2. Unprocessed -> Dormant
                         let mut to_remove_unproc = Vec::new();
                         for id in state.unprocessed.iter() {
@@ -469,15 +506,16 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                                 to_remove_unproc.push(u.id);
                             }
                         }
-                        let to_remove_set: std::collections::HashSet<_> = to_remove_unproc.into_iter().collect();
-                        
+                        let to_remove_set: std::collections::HashSet<_> =
+                            to_remove_unproc.into_iter().collect();
+
                         state.unprocessed.retain(|id| !to_remove_set.contains(&id));
 
                         for id in to_remove_set {
                             let u = state.clause_store.get(&id).unwrap().clone();
                             state.dormant_unprocessed.insert(id, u);
                         }
-                        
+
                         // 3. Dormant -> Processed
                         let mut to_restore_processed = Vec::new();
                         for (id, p) in &state.dormant_processed {
@@ -489,16 +527,17 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                             let p = state.dormant_processed.remove(&id).unwrap();
                             state.processed.insert(p.clone());
                             if is_unit_positive_equality(&p)
-                                && let Atom::Eq(l, r) = &p.literals[0].atom {
-                                    use mrs_calculus::ordering::TermComparison;
-                                    if ordering.compare(l, r) == TermComparison::Greater {
-                                        state.demod_index.insert(l, (l.clone(), r.clone(), p.id));
-                                    } else if ordering.compare(r, l) == TermComparison::Greater {
-                                        state.demod_index.insert(r, (r.clone(), l.clone(), p.id));
-                                    }
+                                && let Atom::Eq(l, r) = &p.literals[0].atom
+                            {
+                                use mrs_calculus::ordering::TermComparison;
+                                if ordering.compare(l, r) == TermComparison::Greater {
+                                    state.demod_index.insert(l, (l.clone(), r.clone(), p.id));
+                                } else if ordering.compare(r, l) == TermComparison::Greater {
+                                    state.demod_index.insert(r, (r.clone(), l.clone(), p.id));
                                 }
+                            }
                         }
-                        
+
                         // 4. Dormant -> Unprocessed
                         let mut to_restore_unprocessed = Vec::new();
                         for (id, u) in &state.dormant_unprocessed {
@@ -510,10 +549,10 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                             let u = state.dormant_unprocessed.remove(&id).unwrap();
                             state.unprocessed.push(&u);
                         }
-                        
+
                         continue;
                     } else {
-                        return SearchResult::Refutation(clause.id);
+                        return SearchResult::Refutation(clause.id, String::new());
                     }
                 }
             }
@@ -521,13 +560,30 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             if !clause.is_tautology() {
                 // Forward demodulation on new clauses
                 let clause = {
-                    if let Some(simplified) =
-                        demodulation::demodulate(&clause, &state.demod_index, &state.clause_store, &mut state.id_gen)
-                    {
+                    if let Some(simplified) = demodulation::demodulate(
+                        &clause,
+                        &state.demod_index,
+                        &state.clause_store,
+                        &mut state.id_gen,
+                    ) {
                         state.clause_store.insert(clause.id, clause);
                         if simplified.is_empty() {
                             state.clause_store.insert(simplified.id, simplified.clone());
-                            return SearchResult::Refutation(simplified.id);
+                            return SearchResult::Refutation(simplified.id, String::new());
+                        }
+                        if is_trivial_contradiction(&simplified) {
+                            let empty = Clause::new_avatar(
+                                state.id_gen.next(),
+                                vec![],
+                                ClauseSource::Inference {
+                                    rule: "equality_resolution".into(),
+                                    parents: vec![simplified.id],
+                                },
+                                simplified.avatar.clone(),
+                            );
+                            state.clause_store.insert(simplified.id, simplified);
+                            state.clause_store.insert(empty.id, empty.clone());
+                            return SearchResult::Refutation(empty.id, String::new());
                         }
                         simplified
                     } else {

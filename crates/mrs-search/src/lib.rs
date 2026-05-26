@@ -45,8 +45,8 @@ pub use select::SelectionStrategy;
 /// Result of a proof search.
 #[derive(Clone, Debug)]
 pub enum SearchResult {
-    /// A refutation was found. Contains the ID of the empty clause.
-    Refutation(ClauseId),
+    /// A refutation was found. Contains the ID of the empty clause and the proof TSTP string.
+    Refutation(ClauseId, String),
     /// All clauses were processed without finding a contradiction.
     Saturated,
     /// The time limit was exceeded.

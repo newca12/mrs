@@ -41,7 +41,7 @@ impl AvatarContext {
         // Find connected components of literals by variable sharing.
         // Also group all ground literals into a single component, because splitting ground
         // literals into separate components is valid, but usually we split into variable-disjoint parts.
-        // Actually, Vampire puts all ground literals into one component if possible? 
+        // Actually, Vampire puts all ground literals into one component if possible?
         // Let's do a simple disjoint-set over literals.
         let n = clause.literals.len();
         let mut parent = (0..n).collect::<Vec<_>>();
@@ -129,17 +129,16 @@ impl AvatarContext {
                 v
             };
 
-            sat_clause.push(varisat::Lit::from_var(varisat::Var::from_dimacs(var as isize), true));
+            sat_clause.push(varisat::Lit::from_var(
+                varisat::Var::from_dimacs(var as isize),
+                true,
+            ));
 
             let mut new_avatar = clause.avatar.clone();
             new_avatar.push(var);
 
-            let new_clause = Clause::new_avatar(
-                id_gen.next(),
-                lits,
-                clause.source.clone(),
-                new_avatar,
-            );
+            let new_clause =
+                Clause::new_avatar(id_gen.next(), lits, clause.source.clone(), new_avatar);
             split_clauses.push(new_clause);
         }
 
@@ -148,7 +147,10 @@ impl AvatarContext {
         // So `A1 & A2 ... -> (S1 | S2 ...)`
         // `~A1 | ~A2 ... | S1 | S2 ...`
         for &a in &clause.avatar {
-            sat_clause.push(varisat::Lit::from_var(varisat::Var::from_dimacs(a as isize), false));
+            sat_clause.push(varisat::Lit::from_var(
+                varisat::Var::from_dimacs(a as isize),
+                false,
+            ));
         }
 
         self.solver.add_clause(&sat_clause);

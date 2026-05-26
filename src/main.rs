@@ -219,7 +219,7 @@ fn main() {
 
     // --- Output result ---
     let status = match &result {
-        SearchResult::Refutation(_) => {
+        SearchResult::Refutation(..) => {
             if has_conjecture {
                 SzsStatus::Theorem
             } else {
@@ -241,11 +241,15 @@ fn main() {
     println!("{}", szs_status_line(status, problem_name));
 
     // Output proof if refutation found
-    if let SearchResult::Refutation(empty_id) = result {
+    if let SearchResult::Refutation(empty_id, tstp_proof) = result {
         let proof = extract_proof(empty_id, &state.clause_store);
         let tstp = format_tstp(&proof, &lowered.symbols);
         println!("{}", szs_output_start("Proof", problem_name));
-        println!("{}", tstp);
+        if !tstp_proof.is_empty() {
+            println!("{}", tstp_proof);
+        } else {
+            println!("{}", tstp);
+        }
         println!("{}", szs_output_end("Proof", problem_name));
     }
 

@@ -51,7 +51,7 @@ pub fn demodulate(
     if changed {
         let mut parents = vec![clause.id];
         parents.extend(used_unit_ids.iter().copied());
-        
+
         let mut new_avatar = clause.avatar.clone();
         for &u_id in &used_unit_ids {
             if let Some(u) = clause_store.get(&u_id) {

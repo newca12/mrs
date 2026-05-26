@@ -21,6 +21,7 @@ mrs-proof = { path = "crates/mrs-proof", version = "0.1.1" }
 mrs-search = { path = "crates/mrs-search", version = "0.1.1" }
 winnow = "1.0.3"
 varisat = "0.2.2"
+crossbeam-channel = "0.5.11"
 
 [package]
 name = "mrs"

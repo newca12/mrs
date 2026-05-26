@@ -252,7 +252,7 @@ pub fn run_schedule(
     let parallelism = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1);
-    
+
     // We can't really pass SearchState across threads easily if it's not Send,
     // but SearchState is fully owned, so we can construct it inside the thread.
     // However, `clauses` is a slice, we can clone it.
@@ -278,7 +278,7 @@ pub fn run_schedule(
                     let result = search(&mut state, &search_config_local);
                     // The varisat::Solver embedded in AvatarContext prevents SearchState from being Send.
                     // We only actually need the `SearchResult` back from the thread to see if we proved it.
-                    // If we need `SearchState` (e.g. to extract the proof), we can return `Some(state)` 
+                    // If we need `SearchState` (e.g. to extract the proof), we can return `Some(state)`
                     // only if it's a refutation, but since `SearchState` is literally not `Send`,
                     // we must extract the proof *inside* the thread, or re-structure AVATAR.
                     // For now, since `SearchResult::Refutation` contains just an ID, we'll send the result.

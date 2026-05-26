@@ -1,8 +1,8 @@
-use std::collections::HashMap;
 use mrs_core::clause::Clause;
+use mrs_core::formula::Atom;
 use mrs_core::symbol::SymbolId;
 use mrs_core::term::Term;
-use mrs_core::formula::Atom;
+use std::collections::HashMap;
 
 /// A feature vector representing the symbol frequencies of a clause.
 /// Used for fast subsumption filtering.
@@ -27,14 +27,14 @@ impl FeatureVector {
             num_lits: clause.len() as u32,
             ..Default::default()
         };
-        
+
         for lit in &clause.literals {
             if lit.positive {
                 fv.pos_lits += 1;
             } else {
                 fv.neg_lits += 1;
             }
-            
+
             match &lit.atom {
                 Atom::Pred(sym, args) => {
                     *fv.sym_counts.entry(*sym).or_insert(0) += 1;
@@ -50,7 +50,7 @@ impl FeatureVector {
         }
         fv
     }
-    
+
     fn count_term(&mut self, term: &Term) {
         match term {
             Term::Var(_) => {} // Variables can map to anything, don't count them
@@ -62,21 +62,27 @@ impl FeatureVector {
             }
         }
     }
-    
+
     /// Returns true if this feature vector could potentially subsume `other`.
     /// This is a fast necessary (but not sufficient) condition for subsumption.
     pub fn can_subsume(&self, other: &FeatureVector) -> bool {
-        if self.num_lits > other.num_lits { return false; }
-        if self.pos_lits > other.pos_lits { return false; }
-        if self.neg_lits > other.neg_lits { return false; }
-        
+        if self.num_lits > other.num_lits {
+            return false;
+        }
+        if self.pos_lits > other.pos_lits {
+            return false;
+        }
+        if self.neg_lits > other.neg_lits {
+            return false;
+        }
+
         for (sym, &count) in &self.sym_counts {
             let other_count = other.sym_counts.get(sym).copied().unwrap_or(0);
             if count > other_count {
                 return false;
             }
         }
-        
+
         true
     }
 }

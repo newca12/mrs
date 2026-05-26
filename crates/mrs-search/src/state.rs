@@ -9,8 +9,8 @@ use mrs_core::term::Term;
 use mrs_index::dtree::DTree;
 use mrs_index::literal_index::LiteralIndex;
 
-use crate::unprocessed::UnprocessedSet;
 use crate::avatar::AvatarContext;
+use crate::unprocessed::UnprocessedSet;
 
 /// The mutable state of a proof search.
 ///
@@ -84,6 +84,9 @@ impl SearchState {
 
     /// Checks if a clause is active under the current AVATAR model.
     pub fn is_active(&self, clause: &Clause) -> bool {
-        clause.avatar.iter().all(|&a| self.avatar.current_model.contains(&a))
+        clause
+            .avatar
+            .iter()
+            .all(|&a| self.avatar.current_model.contains(&a))
     }
 }

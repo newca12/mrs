@@ -12,3 +12,4 @@ mrs-core = { workspace = true }
 mrs-calculus = { workspace = true }
 mrs-index = { workspace = true }
 varisat = { workspace = true }
+crossbeam-channel = { workspace = true }

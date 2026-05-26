@@ -37,7 +37,12 @@ pub fn rename_clause(clause: &Clause, offset: VarId) -> Clause {
         .map(|l| rename_literal(l, offset))
         .collect();
 
-    Clause::new_avatar(clause.id, new_lits, clause.source.clone(), clause.avatar.clone())
+    Clause::new_avatar(
+        clause.id,
+        new_lits,
+        clause.source.clone(),
+        clause.avatar.clone(),
+    )
 }
 
 fn rename_term(term: &Term, offset: VarId) -> Term {
