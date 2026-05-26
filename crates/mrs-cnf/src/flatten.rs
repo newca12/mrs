@@ -37,13 +37,14 @@ fn extract_rec(
         _ => {
             // This should be a single clause (disjunction of literals)
             let literals = extract_literals(formula);
-            clauses.push(Clause::new(
+            clauses.push(Clause::new_avatar(
                 id_gen.next(),
                 literals,
                 ClauseSource::Input {
                     name: name.to_string(),
                     role: role.to_string(),
                 },
+                Vec::new(),
             ));
         }
     }

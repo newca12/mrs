@@ -148,13 +148,17 @@ fn superpose_with(
                 // Add the rewritten literal
                 new_lits.push(replaced_lit);
 
-                results.push(Clause::new(
+                let mut new_avatar = eq_clause.avatar.clone();
+                new_avatar.extend_from_slice(&target.avatar);
+
+                results.push(Clause::new_avatar(
                     id_gen.next(),
                     new_lits,
                     ClauseSource::Inference {
                         rule: "superposition".into(),
                         parents: vec![eq_clause.id, target.id],
                     },
+                    new_avatar,
                 ));
             }
         }

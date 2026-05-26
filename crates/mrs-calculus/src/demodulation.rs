@@ -22,9 +22,12 @@ use mrs_unify::match_term;
 /// Returns `Some(simplified)` if any rewrite was applied, `None` otherwise.
 /// The simplified clause gets a new ID and records a demodulation inference
 /// with the original clause and the rewriting unit(s) as parents.
+use std::collections::HashMap;
+
 pub fn demodulate(
     clause: &Clause,
     demod_index: &mrs_index::dtree::DTree<(Term, Term, ClauseId)>,
+    clause_store: &HashMap<ClauseId, Clause>,
     id_gen: &mut ClauseIdGen,
 ) -> Option<Clause> {
     let mut current_lits = clause.literals.clone();
@@ -47,14 +50,23 @@ pub fn demodulate(
 
     if changed {
         let mut parents = vec![clause.id];
-        parents.extend(used_unit_ids);
-        Some(Clause::new(
+        parents.extend(used_unit_ids.iter().copied());
+        
+        let mut new_avatar = clause.avatar.clone();
+        for &u_id in &used_unit_ids {
+            if let Some(u) = clause_store.get(&u_id) {
+                new_avatar.extend_from_slice(&u.avatar);
+            }
+        }
+
+        Some(Clause::new_avatar(
             id_gen.next(),
             current_lits,
             ClauseSource::Inference {
                 rule: "demodulation".into(),
                 parents,
             },
+            new_avatar,
         ))
     } else {
         None
@@ -204,6 +216,9 @@ mod tests {
             "target",
         );
 
+        let mut clause_store = HashMap::new();
+        clause_store.insert(unit.id, unit.clone());
+
         let mut demod_index = mrs_index::dtree::DTree::new();
         demod_index.insert(
             &Term::app(f, vec![Term::constant(a)]),
@@ -214,7 +229,7 @@ mod tests {
             ),
         );
 
-        let result = demodulate(&target, &demod_index, &mut id_gen);
+        let result = demodulate(&target, &demod_index, &clause_store, &mut id_gen);
         assert!(result.is_some());
         let simplified = result.unwrap();
         // Verify demodulation source is recorded
@@ -264,6 +279,9 @@ mod tests {
             "target",
         );
 
+        let mut clause_store = HashMap::new();
+        clause_store.insert(unit.id, unit.clone());
+
         let mut demod_index = mrs_index::dtree::DTree::new();
         demod_index.insert(
             &Term::app(f, vec![Term::constant(a)]),
@@ -274,7 +292,7 @@ mod tests {
             ),
         );
 
-        let result = demodulate(&target, &demod_index, &mut id_gen);
+        let result = demodulate(&target, &demod_index, &clause_store, &mut id_gen);
         assert!(result.is_none());
     }
 
@@ -307,13 +325,16 @@ mod tests {
             "target",
         );
 
+        let mut clause_store = HashMap::new();
+        clause_store.insert(unit.id, unit.clone());
+
         let mut demod_index = mrs_index::dtree::DTree::new();
         demod_index.insert(
             &Term::app(f, vec![Term::var(0)]),
             (Term::app(f, vec![Term::var(0)]), Term::var(0), unit.id),
         );
 
-        let result = demodulate(&target, &demod_index, &mut id_gen);
+        let result = demodulate(&target, &demod_index, &clause_store, &mut id_gen);
         assert!(result.is_some());
         let simplified = result.unwrap();
         match &simplified.literals[0].atom {
@@ -349,10 +370,12 @@ mod tests {
             "target",
         );
 
+        let clause_store = HashMap::new();
+
         let mut demod_index = mrs_index::dtree::DTree::new();
         // non_unit is not inserted because it is not a unit equation
 
-        let result = demodulate(&target, &demod_index, &mut id_gen);
+        let result = demodulate(&target, &demod_index, &clause_store, &mut id_gen);
         assert!(result.is_none());
     }
 }

@@ -10,6 +10,7 @@ use mrs_index::dtree::DTree;
 use mrs_index::literal_index::LiteralIndex;
 
 use crate::unprocessed::UnprocessedSet;
+use crate::avatar::AvatarContext;
 
 /// The mutable state of a proof search.
 ///
@@ -30,6 +31,12 @@ pub struct SearchState {
     pub id_gen: ClauseIdGen,
     /// Configuration for symbol precedence and weights.
     pub config: Arc<SymbolConfig>,
+    /// AVATAR context for clause splitting.
+    pub avatar: AvatarContext,
+    /// Clauses that were in `processed` but are currently inactive.
+    pub dormant_processed: HashMap<ClauseId, Clause>,
+    /// Clauses that were in `unprocessed` but are currently inactive.
+    pub dormant_unprocessed: HashMap<ClauseId, Clause>,
 }
 
 impl SearchState {
@@ -38,15 +45,23 @@ impl SearchState {
     /// All initial clauses are placed in the unprocessed set.
     pub fn new(
         initial_clauses: Vec<Clause>,
-        id_gen: ClauseIdGen,
+        mut id_gen: ClauseIdGen,
         config: Arc<SymbolConfig>,
     ) -> Self {
         let mut clause_store = HashMap::new();
         let mut unprocessed = UnprocessedSet::new(config.clone());
+        let mut avatar = AvatarContext::new();
 
         for clause in initial_clauses {
-            clause_store.insert(clause.id, clause.clone());
-            unprocessed.push(&clause);
+            if let Some(splits) = avatar.split_clause(&clause, &mut id_gen) {
+                for split in splits {
+                    clause_store.insert(split.id, split.clone());
+                    unprocessed.push(&split);
+                }
+            } else {
+                clause_store.insert(clause.id, clause.clone());
+                unprocessed.push(&clause);
+            }
         }
 
         Self {
@@ -56,11 +71,19 @@ impl SearchState {
             clause_store,
             id_gen,
             config,
+            avatar,
+            dormant_processed: HashMap::new(),
+            dormant_unprocessed: HashMap::new(),
         }
     }
 
     /// Total number of clauses stored.
     pub fn total_clauses(&self) -> usize {
         self.clause_store.len()
+    }
+
+    /// Checks if a clause is active under the current AVATAR model.
+    pub fn is_active(&self, clause: &Clause) -> bool {
+        clause.avatar.iter().all(|&a| self.avatar.current_model.contains(&a))
     }
 }

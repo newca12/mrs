@@ -249,13 +249,14 @@ pub fn condense(clause: &Clause, id_gen: &mut ClauseIdGen) -> Option<Clause> {
                 }
 
                 // Deduplicate (σ might collapse other pairs too)
-                let mut new_clause = Clause::new(
+                let mut new_clause = Clause::new_avatar(
                     id_gen.next(),
                     new_lits,
                     ClauseSource::Inference {
                         rule: "condensation".into(),
                         parents: vec![clause.id],
                     },
+                    clause.avatar.clone(),
                 );
                 new_clause.deduplicate();
 

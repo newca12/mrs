@@ -94,13 +94,17 @@ pub fn resolve_selected(
                     }
                 }
 
-                resolvents.push(Clause::new(
+                let mut new_avatar = c1.avatar.clone();
+                new_avatar.extend_from_slice(&c2.avatar);
+
+                resolvents.push(Clause::new_avatar(
                     id_gen.next(),
                     lits,
                     ClauseSource::Inference {
                         rule: "resolution".to_string(),
                         parents: vec![c1.id, c2.id],
                     },
+                    new_avatar,
                 ));
             }
         }

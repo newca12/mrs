@@ -100,15 +100,35 @@ pub struct Clause {
     pub literals: Vec<Literal>,
     /// How this clause was derived.
     pub source: ClauseSource,
+    /// AVATAR assertions (boolean variables from the SAT solver).
+    pub avatar: Vec<u32>,
 }
 
 impl Clause {
-    /// Creates a new clause with the given ID, literals, and source.
+    /// Creates a new clause with the given ID, literals, and source, with empty AVATAR assertions.
     pub fn new(id: ClauseId, literals: Vec<Literal>, source: ClauseSource) -> Self {
         Clause {
             id,
             literals,
             source,
+            avatar: Vec::new(),
+        }
+    }
+
+    /// Creates a new clause with AVATAR assertions.
+    pub fn new_avatar(
+        id: ClauseId,
+        literals: Vec<Literal>,
+        source: ClauseSource,
+        mut avatar: Vec<u32>,
+    ) -> Self {
+        avatar.sort_unstable();
+        avatar.dedup();
+        Clause {
+            id,
+            literals,
+            source,
+            avatar,
         }
     }
 

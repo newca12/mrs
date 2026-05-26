@@ -52,13 +52,14 @@ pub fn factor(clause: &Clause, id_gen: &mut ClauseIdGen) -> Vec<Clause> {
                     }
                 }
 
-                factors.push(Clause::new(
+                factors.push(Clause::new_avatar(
                     id_gen.next(),
                     lits,
                     ClauseSource::Inference {
-                        rule: "factoring".to_string(),
+                        rule: "factoring".into(),
                         parents: vec![clause.id],
                     },
+                    clause.avatar.clone(),
                 ));
             }
         }

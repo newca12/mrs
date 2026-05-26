@@ -43,13 +43,14 @@ pub fn equality_resolve(clause: &Clause, id_gen: &mut ClauseIdGen) -> Vec<Clause
             .map(|(_, lit)| sigma.apply_literal(lit))
             .collect();
 
-        results.push(Clause::new(
+        results.push(Clause::new_avatar(
             id_gen.next(),
             new_lits,
             ClauseSource::Inference {
                 rule: "equality_resolution".into(),
                 parents: vec![clause.id],
             },
+            clause.avatar.clone(),
         ));
     }
 
@@ -126,13 +127,14 @@ pub fn equality_factor(
                     }
                 }
 
-                results.push(Clause::new(
+                results.push(Clause::new_avatar(
                     id_gen.next(),
                     new_lits,
                     ClauseSource::Inference {
                         rule: "equality_factoring".into(),
                         parents: vec![clause.id],
                     },
+                    clause.avatar.clone(),
                 ));
             }
         }

@@ -37,7 +37,7 @@ fn remove_duplicate_literals(clause: Clause) -> Clause {
         // No duplicates found
         clause
     } else {
-        Clause::new(clause.id, unique_lits, clause.source)
+        Clause::new_avatar(clause.id, unique_lits, clause.source, clause.avatar)
     }
 }
 
