@@ -326,24 +326,15 @@ pub fn run_schedule(
         results.sort_by_key(|&(i, _)| i); // Keep original order for determinism
 
         // Scan the entire chunk before deciding.  A Refutation wins
-        // unconditionally.  A Saturated is held aside so that a later
-        // Refutation in the same chunk is not masked.
-        let mut chunk_saturated: Option<SearchResult> = None;
+        // unconditionally.  Saturated (or any other non-Refutation result)
+        // is stored in last_result so that subsequent chunks still run —
+        // a single strategy saturating with the wrong ordering must not
+        // silence later strategies that might find a Refutation.
         for (_, result) in results {
-            match &result {
-                SearchResult::Refutation(..) => {
-                    return result;
-                }
-                SearchResult::Saturated => {
-                    chunk_saturated = Some(result);
-                }
-                _ => {
-                    last_result = result;
-                }
+            match result {
+                SearchResult::Refutation(..) => return result,
+                other => last_result = other,
             }
-        }
-        if let Some(sat) = chunk_saturated {
-            return sat;
         }
     }
 
