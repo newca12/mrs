@@ -19,6 +19,8 @@ pub enum SelectionStrategy {
     SmallestFirst,
     /// Alternate: every `ratio`-th pick is by age (FIFO), rest by weight.
     AgeWeight(u32),
+    /// Alternate: every `ratio`-th pick is by age (FIFO), rest by distance-penalized weight.
+    GoalDirected(u32),
 }
 
 /// Selects and removes a clause ID from the unprocessed set.
@@ -45,6 +47,14 @@ pub fn select(
             } else {
                 // Weight pick: lightest clause
                 unprocessed.pop_weight()
+            }
+        }
+
+        SelectionStrategy::GoalDirected(ratio) => {
+            if *ratio == 0 || iteration.is_multiple_of(*ratio as u64) {
+                unprocessed.pop_age()
+            } else {
+                unprocessed.pop_goal_directed()
             }
         }
     }

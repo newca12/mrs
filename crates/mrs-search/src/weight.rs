@@ -14,22 +14,12 @@ use mrs_core::term::Term;
 /// Returns the weight of a clause: the sum of symbol occurrences across all literals.
 ///
 /// Lighter clauses are generally preferred because they represent simpler facts.
-/// Distance to conjecture is also factored in to prefer goal-directed search.
 pub fn clause_weight(clause: &Clause, config: &SymbolConfig) -> u32 {
-    let base_weight: u32 = clause
+    clause
         .literals
         .iter()
         .map(|lit| literal_weight(lit, config))
-        .sum();
-
-    // Penalize clauses that are far from the conjecture
-    let distance_penalty = if clause.distance < 100 {
-        clause.distance * 2 // Mild penalty for steps away from conjecture
-    } else {
-        100 // Flat penalty for pure axiom-driven inferences
-    };
-
-    base_weight + distance_penalty
+        .sum()
 }
 
 /// Returns the weight of a single literal.

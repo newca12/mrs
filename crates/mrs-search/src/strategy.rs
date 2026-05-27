@@ -79,7 +79,7 @@ impl StrategySchedule {
                     SearchConfig {
                         time_limit: t2,
                         max_clauses: 50_000,
-                        selection: SelectionStrategy::AgeWeight(10),
+                        selection: SelectionStrategy::GoalDirected(5),
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::KBO,
                     },
@@ -140,7 +140,7 @@ impl StrategySchedule {
                     SearchConfig {
                         time_limit: t8,
                         max_clauses: 50_000,
-                        selection: SelectionStrategy::AgeWeight(10),
+                        selection: SelectionStrategy::GoalDirected(10),
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::LPO,
                     },

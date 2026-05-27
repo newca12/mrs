@@ -47,6 +47,8 @@ pub struct UnprocessedSet {
     age_queue: VecDeque<ClauseId>,
     /// Priority queue ordered by weight (lightest first).
     weight_queue: BinaryHeap<WeightWrapper>,
+    /// Priority queue ordered by distance to conjecture + weight.
+    goal_queue: BinaryHeap<WeightWrapper>,
     /// Configuration for symbol precedence and weights.
     config: Arc<SymbolConfig>,
 }
@@ -58,6 +60,7 @@ impl UnprocessedSet {
             active_ids: HashSet::new(),
             age_queue: VecDeque::new(),
             weight_queue: BinaryHeap::new(),
+            goal_queue: BinaryHeap::new(),
             config,
         }
     }
@@ -66,9 +69,20 @@ impl UnprocessedSet {
     pub fn push(&mut self, clause: &Clause) {
         let id = clause.id;
         let weight = clause_weight(clause, &self.config);
+
+        let goal_weight = if clause.distance < 100 {
+            weight + (clause.distance * 2)
+        } else {
+            weight + 1000 // heavy penalty for pure axioms
+        };
+
         self.active_ids.insert(id);
         self.age_queue.push_back(id);
         self.weight_queue.push(WeightWrapper { id, weight });
+        self.goal_queue.push(WeightWrapper {
+            id,
+            weight: goal_weight,
+        });
     }
 
     /// Returns `true` if there are no clauses in the set.
@@ -89,6 +103,16 @@ impl UnprocessedSet {
     /// Pops the lightest clause from the set, returning its ID.
     pub fn pop_weight(&mut self) -> Option<ClauseId> {
         while let Some(wrapper) = self.weight_queue.pop() {
+            if self.active_ids.remove(&wrapper.id) {
+                return Some(wrapper.id);
+            }
+        }
+        None
+    }
+
+    /// Pops the clause closest to the goal.
+    pub fn pop_goal_directed(&mut self) -> Option<ClauseId> {
+        while let Some(wrapper) = self.goal_queue.pop() {
             if self.active_ids.remove(&wrapper.id) {
                 return Some(wrapper.id);
             }
