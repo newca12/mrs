@@ -120,10 +120,11 @@ fn superpose_with(
                     Err(_) => continue,
                 };
 
-                // Check ordering: from·σ ≻ to·σ
+                // Check ordering: from·σ ≻ to·σ (or incomparable)
                 let from_s = sigma.apply_term(from);
                 let to_s = sigma.apply_term(to);
-                if ordering.compare(&from_s, &to_s) != TermComparison::Greater {
+                let comp = ordering.compare(&from_s, &to_s);
+                if comp == TermComparison::Less || comp == TermComparison::Equal {
                     continue;
                 }
 

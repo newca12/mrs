@@ -210,7 +210,7 @@ impl<V: Clone + PartialEq> DTree<V> {
     ///
     /// The query should typically be ground (no variables). If it has variables,
     /// only stored variables can match query variables.
-    pub fn get_generalizations<'a>(&self, query: &'a Term) -> Vec<V> {
+    pub fn get_generalizations(&self, query: &Term) -> Vec<V> {
         let flat = flatten(query);
         let mut results = Vec::new();
         let mut bindings = Vec::new();

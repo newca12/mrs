@@ -21,7 +21,7 @@ pub fn clause_weight(clause: &Clause, config: &SymbolConfig) -> u32 {
         .iter()
         .map(|lit| literal_weight(lit, config))
         .sum();
-    
+
     // Penalize clauses that are far from the conjecture
     let distance_penalty = if clause.distance < 100 {
         clause.distance * 2 // Mild penalty for steps away from conjecture
@@ -73,7 +73,8 @@ mod tests {
                 name: "test".into(),
                 role: "axiom".into(),
             },
-        ).with_distance(0)
+        )
+        .with_distance(0)
     }
 
     #[test]

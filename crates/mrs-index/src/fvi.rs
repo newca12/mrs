@@ -102,7 +102,7 @@ impl FeatureVector {
         }
 
         // Symbols don't change when flipping polarity.
-        for (sym, _) in &self.sym_counts {
+        for sym in self.sym_counts.keys() {
             if !other.sym_counts.contains_key(sym) {
                 return false;
             }

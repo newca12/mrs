@@ -100,10 +100,11 @@ pub fn equality_factor(
                     Err(_) => continue,
                 };
 
-                // Check ordering: left1·σ ≻ right1·σ (the equality is oriented)
+                // Check ordering: left1·σ ≻ right1·σ (or incomparable)
                 let l1s = sigma.apply_term(left1);
                 let r1s = sigma.apply_term(right1);
-                if ordering.compare(&l1s, &r1s) != TermComparison::Greater {
+                let comp = ordering.compare(&l1s, &r1s);
+                if comp == TermComparison::Less || comp == TermComparison::Equal {
                     continue;
                 }
 

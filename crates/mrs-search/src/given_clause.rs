@@ -197,7 +197,12 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         &mut state.id_gen,
                         Some(&active_sel),
                     );
-                    println!("Superposing given {:?} into active {:?} yielded {} clauses", given.id.0, active.id.0, sp.len());
+                    println!(
+                        "Superposing given {:?} into active {:?} yielded {} clauses",
+                        given.id.0,
+                        active.id.0,
+                        sp.len()
+                    );
                     new_clauses.extend(sp);
                 }
             }

@@ -175,7 +175,11 @@ fn main() {
 
     // --- Clausification ---
     let mut id_gen = lowered.id_gen;
-    let mut all_clauses: Vec<Clause> = lowered.cnf_clauses.into_iter().map(|c| c.with_distance(100)).collect();
+    let mut all_clauses: Vec<Clause> = lowered
+        .cnf_clauses
+        .into_iter()
+        .map(|c| c.with_distance(100))
+        .collect();
 
     // Clausify axioms directly
     for f in &lowered.axioms {

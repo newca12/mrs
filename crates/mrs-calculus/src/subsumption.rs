@@ -634,7 +634,11 @@ mod tests2 {
     use mrs_core::clause::{ClauseIdGen, ClauseSource};
     use mrs_core::{Atom, Literal, SymbolTable, Term};
 
-    fn input_clause(id_gen: &mut ClauseIdGen, lits: Vec<Literal>, name: &str) -> mrs_core::clause::Clause {
+    fn input_clause(
+        id_gen: &mut ClauseIdGen,
+        lits: Vec<Literal>,
+        name: &str,
+    ) -> mrs_core::clause::Clause {
         mrs_core::clause::Clause::new(
             id_gen.next(),
             lits,

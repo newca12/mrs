@@ -165,7 +165,12 @@ impl LiteralIndex {
     pub fn get_subsumption_resolution_candidates(&self, target_fv: &FeatureVector) -> Vec<&Clause> {
         self.clauses
             .iter()
-            .filter(|(id, _)| self.fvs.get(*id).unwrap().can_subsumption_resolve(target_fv))
+            .filter(|(id, _)| {
+                self.fvs
+                    .get(*id)
+                    .unwrap()
+                    .can_subsumption_resolve(target_fv)
+            })
             .map(|(_, c)| c)
             .collect()
     }
