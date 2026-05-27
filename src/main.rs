@@ -117,9 +117,10 @@ fn main() {
     // --- SInE Filtering ---
     // In problems with massive axiomatizations, use SInE to filter.
     // If there are more than 100 axioms, try filtering.
+    let mut sine_triggered = false;
     if lowered.axioms.len() + lowered.cnf_clauses.len() > 100 {
-        let tolerance = 1.5;
-        let depth_limit = Some(3);
+        let tolerance = 2.0;
+        let depth_limit = Some(5);
 
         let before_axioms = lowered.axioms.len();
         let before_cnf = lowered.cnf_clauses.len();
@@ -136,6 +137,10 @@ fn main() {
         }
 
         let filtered = sine::filter_items(&all_items, tolerance, depth_limit);
+
+        if filtered.len() < all_items.len() {
+            sine_triggered = true;
+        }
 
         lowered.axioms = Vec::new();
         lowered.conjectures = Vec::new();
@@ -231,7 +236,10 @@ fn main() {
             }
         }
         SearchResult::Saturated => {
-            if has_conjecture {
+            if sine_triggered {
+                // If SInE dropped axioms, saturation is incomplete for the full problem.
+                SzsStatus::GaveUp
+            } else if has_conjecture {
                 SzsStatus::CounterSatisfiable
             } else {
                 SzsStatus::Satisfiable

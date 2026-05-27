@@ -92,10 +92,8 @@ impl AvatarContext {
             }
         }
 
-        // Decide if we should split ground literals from the rest.
-        // If there's 0 or 1 variable components and some ground literals, we can split them.
-        // For maximum splitting, treat the ground literals as one component.
-        let num_components = components.len() + if ground_lits.is_empty() { 0 } else { 1 };
+        // Each ground literal becomes its own component!
+        let num_components = components.len() + ground_lits.len();
 
         if num_components <= 1 {
             return None; // Cannot be split
@@ -105,8 +103,8 @@ impl AvatarContext {
         for (_, lits) in components {
             parts.push(lits);
         }
-        if !ground_lits.is_empty() {
-            parts.push(ground_lits);
+        for lit in ground_lits {
+            parts.push(vec![lit]);
         }
 
         // We have successfully split the clause into `parts`.

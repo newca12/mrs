@@ -44,3 +44,4 @@ mrs-cnf = { workspace = true }
 mrs-calculus = { workspace = true }
 mrs-proof = { workspace = true }
 mrs-search = { workspace = true }
+varisat.workspace = true

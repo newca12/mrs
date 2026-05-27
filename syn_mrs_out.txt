@@ -1,0 +1,7 @@
+% SZS status CounterSatisfiable for SYN457+1
+% ------------------------------
+% Version: mrs 0.1.4
+% Termination reason: Saturation
+% Time elapsed: 0.509 s
+% Peak memory usage: 1095 MB
+% ------------------------------

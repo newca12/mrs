@@ -142,6 +142,28 @@ impl Clause {
         self
     }
 
+    /// Returns `true` if `self.avatar` is a subset of `other.avatar`.
+    ///
+    /// In AVATAR, a clause `C1` can only destructively simplify or subsume `C2`
+    /// if `C1`'s avatar assertions are a subset of `C2`'s. Otherwise, `C1` might be
+    /// false in a SAT model where `C2` is true, meaning `C2` was incorrectly deleted.
+    pub fn avatar_is_subset_of(&self, other: &Clause) -> bool {
+        // avatar is always sorted and deduplicated
+        let mut i = 0;
+        let mut j = 0;
+        while i < self.avatar.len() && j < other.avatar.len() {
+            if self.avatar[i] < other.avatar[j] {
+                return false;
+            } else if self.avatar[i] == other.avatar[j] {
+                i += 1;
+                j += 1;
+            } else {
+                j += 1;
+            }
+        }
+        i == self.avatar.len()
+    }
+
     /// Returns `true` if this is the empty clause (contradiction).
     pub fn is_empty(&self) -> bool {
         self.literals.is_empty()

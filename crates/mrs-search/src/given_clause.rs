@@ -29,54 +29,147 @@ use crate::select::select;
 use crate::state::SearchState;
 use crate::{SearchConfig, SearchResult};
 
+/// After the SAT model changes, move clauses between active and dormant sets to
+/// reflect the new assignment.  Also updates the demodulation index for any
+/// unit-equality clauses that cross the active/dormant boundary.
+fn sync_active_dormant(state: &mut SearchState, ordering: &crate::TermOrdering) {
+    // 1. Processed -> Dormant
+    let mut to_remove: Vec<_> = state
+        .processed
+        .iter()
+        .filter(|p| !state.is_active(p))
+        .map(|p| p.id)
+        .collect();
+    for id in to_remove {
+        if let Some(p) = state.processed.remove(id) {
+            if is_unit_positive_equality(&p) {
+                if let Atom::Eq(l, r) = &p.literals[0].atom {
+                    use mrs_calculus::ordering::TermComparison;
+                    if ordering.compare(l, r) == TermComparison::Greater {
+                        state.demod_index.remove(l, &(l.clone(), r.clone(), p.id));
+                    } else if ordering.compare(r, l) == TermComparison::Greater {
+                        state.demod_index.remove(r, &(r.clone(), l.clone(), p.id));
+                    }
+                }
+            }
+            state.dormant_processed.insert(p.id, p);
+        }
+    }
+
+    // 2. Unprocessed -> Dormant
+    let inactive_unproc: HashSet<_> = state
+        .unprocessed
+        .iter()
+        .filter(|id| !state.is_active(state.clause_store.get(id).unwrap()))
+        .collect();
+    state
+        .unprocessed
+        .retain(|id| !inactive_unproc.contains(&id));
+    for id in inactive_unproc {
+        let u = state.clause_store.get(&id).unwrap().clone();
+        state.dormant_unprocessed.insert(id, u);
+    }
+
+    // 3. Dormant -> Processed
+    let to_restore_proc: Vec<_> = state
+        .dormant_processed
+        .keys()
+        .copied()
+        .filter(|id| state.is_active(state.dormant_processed.get(id).unwrap()))
+        .collect();
+    for id in to_restore_proc {
+        let p = state.dormant_processed.remove(&id).unwrap();
+        if is_unit_positive_equality(&p) {
+            if let Atom::Eq(l, r) = &p.literals[0].atom {
+                use mrs_calculus::ordering::TermComparison;
+                if ordering.compare(l, r) == TermComparison::Greater {
+                    state.demod_index.insert(l, (l.clone(), r.clone(), p.id));
+                } else if ordering.compare(r, l) == TermComparison::Greater {
+                    state.demod_index.insert(r, (r.clone(), l.clone(), p.id));
+                }
+            }
+        }
+        state.processed.insert(p);
+    }
+
+    // 4. Dormant -> Unprocessed
+    let to_restore_unproc: Vec<_> = state
+        .dormant_unprocessed
+        .keys()
+        .copied()
+        .filter(|id| state.is_active(state.dormant_unprocessed.get(id).unwrap()))
+        .collect();
+    for id in to_restore_unproc {
+        let u = state.dormant_unprocessed.remove(&id).unwrap();
+        state.unprocessed.push(&u);
+    }
+}
+
+/// Update the SAT model from the solver's current assignment.
+fn update_model(state: &mut SearchState) {
+    let model = state.avatar.solver.model().unwrap();
+    state.avatar.current_model.clear();
+    for lit in model {
+        if lit.is_positive() {
+            state
+                .avatar
+                .current_model
+                .insert(lit.var().to_dimacs() as u32);
+        }
+    }
+}
+
+/// Add the negation of an AVATAR clause's assumptions to the SAT solver and
+/// check satisfiability.  Returns `true` if a new model was found (the clause
+/// is now dormant), `false` if UNSAT (full refutation).
+fn avatar_refute_branch(
+    state: &mut SearchState,
+    avatar: &[u32],
+    ordering: &crate::TermOrdering,
+) -> bool {
+    let sat_clause: Vec<varisat::Lit> = avatar
+        .iter()
+        .map(|&a| varisat::Lit::from_var(varisat::Var::from_dimacs(a as isize), false))
+        .collect();
+    state.avatar.solver.add_clause(&sat_clause);
+
+    if matches!(state.avatar.solver.solve(), Ok(true)) {
+        update_model(state);
+        sync_active_dormant(state, ordering);
+        true
+    } else {
+        false
+    }
+}
+
 /// Runs the given-clause proof search.
 ///
 /// Returns `SearchResult::Refutation(id)` if the empty clause is derived,
 /// `SearchResult::Saturated` if all clauses are processed without contradiction,
 /// or `SearchResult::Timeout`/`SearchResult::ResourceOut` on resource limits.
 pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
+    let ordering = &config.ordering;
+
     // Initial SAT sync
     state.avatar.current_model.clear();
     if matches!(state.avatar.solver.solve(), Ok(true)) {
-        let model = state.avatar.solver.model().unwrap();
-        for lit in model {
-            if lit.is_positive() {
-                state
-                    .avatar
-                    .current_model
-                    .insert(lit.var().to_dimacs() as u32);
-            }
-        }
+        update_model(state);
     } else {
-        return SearchResult::Refutation(mrs_core::clause::ClauseId(0), String::new()); // Should not happen on empty start
+        return SearchResult::Refutation(mrs_core::clause::ClauseId(0), String::new());
     }
 
     // Check for initial empty clauses
-    for id in state.unprocessed.iter() {
-        let clause = state.clause_store.get(&id).unwrap();
+    let initial_ids: Vec<_> = state.unprocessed.iter().collect();
+    for id in initial_ids {
+        let clause = state.clause_store.get(&id).unwrap().clone();
         if clause.is_empty() {
             if clause.avatar.is_empty() {
                 return SearchResult::Refutation(clause.id, String::new());
             } else {
-                let sat_clause: Vec<varisat::Lit> = clause
-                    .avatar
-                    .iter()
-                    .map(|&a| varisat::Lit::from_var(varisat::Var::from_dimacs(a as isize), false))
-                    .collect();
-                state.avatar.solver.add_clause(&sat_clause);
-                if !matches!(state.avatar.solver.solve(), Ok(true)) {
-                    return SearchResult::Refutation(clause.id, String::new());
-                } else {
-                    let model = state.avatar.solver.model().unwrap();
-                    state.avatar.current_model.clear();
-                    for lit in model {
-                        if lit.is_positive() {
-                            state
-                                .avatar
-                                .current_model
-                                .insert(lit.var().to_dimacs() as u32);
-                        }
-                    }
+                let avatar = clause.avatar.clone();
+                let cid = clause.id;
+                if !avatar_refute_branch(state, &avatar, ordering) {
+                    return SearchResult::Refutation(cid, String::new());
                 }
             }
         }
@@ -84,7 +177,6 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
 
     let start = Instant::now();
     let mut iteration: u64 = 0;
-    let ordering = &config.ordering;
 
     while let Some(given_id) = select(&mut state.unprocessed, &config.selection, iteration) {
         let given = state.clause_store.get(&given_id).unwrap().clone();
@@ -110,13 +202,60 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             continue;
         }
 
+        let mut given = given;
+
+        // Forward Subsumption Resolution
+        loop {
+            let given_fv = FeatureVector::from_clause(&given);
+            let candidates = state
+                .processed
+                .get_subsumption_resolution_candidates(&given_fv);
+            let mut changed = false;
+            for p in candidates {
+                if p.avatar_is_subset_of(&given) {
+                    if let Some(removed_idx) = subsumption::subsumption_resolution(p, &given) {
+                        let mut new_lits = given.literals.clone();
+                        new_lits.remove(removed_idx);
+                        given = Clause::new_avatar(
+                            state.id_gen.next(),
+                            new_lits,
+                            ClauseSource::Inference {
+                                rule: "subsumption_resolution".into(),
+                                parents: vec![p.id, given.id],
+                            },
+                            given.avatar.clone(),
+                        );
+                        state.clause_store.insert(given.id, given.clone());
+                        changed = true;
+                        break; // re-compute FV and start over
+                    }
+                }
+            }
+            if !changed || given.is_empty() {
+                break;
+            }
+        }
+
+        if given.is_empty() {
+            if given.avatar.is_empty() {
+                return SearchResult::Refutation(given.id, String::new());
+            } else {
+                let avatar = given.avatar.clone();
+                let id = given.id;
+                if !avatar_refute_branch(state, &avatar, ordering) {
+                    return SearchResult::Refutation(id, String::new());
+                }
+                continue;
+            }
+        }
+
         // Forward subsumption: skip if given is subsumed by a processed clause
         let given_fv = FeatureVector::from_clause(&given);
         if state
             .processed
             .get_subsumption_candidates(&given_fv)
             .into_iter()
-            .any(|p| subsumption::subsumes(p, &given))
+            .any(|p| p.avatar_is_subset_of(&given) && subsumption::subsumes(p, &given))
         {
             iteration += 1;
             continue;
@@ -197,12 +336,6 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         &mut state.id_gen,
                         Some(&active_sel),
                     );
-                    println!(
-                        "Superposing given {:?} into active {:?} yielded {} clauses",
-                        given.id.0,
-                        active.id.0,
-                        sp.len()
-                    );
                     new_clauses.extend(sp);
                 }
             }
@@ -210,7 +343,6 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             // (2) Processed clause as equation source, given as target.
             // Only consider processed clauses that have positive equalities.
             {
-                // We don't need to add given here because given -> given is handled in step (1)
                 let eq_clauses: Vec<Clause> = state
                     .processed
                     .get_positive_equality_clauses()
@@ -248,7 +380,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         let mut to_remove_from_processed = Vec::new();
 
         for p in candidates {
-            if subsumption::subsumes(&given, p) {
+            if given.avatar_is_subset_of(p) && subsumption::subsumes(&given, p) {
                 to_remove_from_processed.push(p.id);
                 if is_unit_positive_equality(p) {
                     to_remove_from_demod.push(p.clone());
@@ -276,7 +408,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             let u = state.clause_store.get(&id).unwrap();
             let u_fv = FeatureVector::from_clause(u);
             if given_fv.can_subsume(&u_fv) {
-                !subsumption::subsumes(&given, u)
+                !(given.avatar_is_subset_of(u) && subsumption::subsumes(&given, u))
             } else {
                 true
             }
@@ -341,9 +473,6 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     ) {
                         // Store original for proof extraction
                         state.clause_store.insert(proc.id, proc);
-                        // Further simplify using all existing processed units
-                        // Note: state.demod_index is currently empty, so we must rebuild it from next_processed to do this properly.
-                        // Or we can just build a DTree of all_units so far.
                         let mut all_units_index = mrs_index::dtree::DTree::new();
                         for c in &next_processed {
                             if is_unit_positive_equality(c)
@@ -373,20 +502,6 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         if simplified.is_empty() {
                             state.clause_store.insert(simplified.id, simplified.clone());
                             return SearchResult::Refutation(simplified.id, String::new());
-                        }
-                        if is_trivial_contradiction(&simplified) {
-                            let empty = Clause::new_avatar(
-                                state.id_gen.next(),
-                                vec![],
-                                ClauseSource::Inference {
-                                    rule: "equality_resolution".into(),
-                                    parents: vec![simplified.id],
-                                },
-                                simplified.avatar.clone(),
-                            );
-                            state.clause_store.insert(simplified.id, simplified);
-                            state.clause_store.insert(empty.id, empty.clone());
-                            return SearchResult::Refutation(empty.id, String::new());
                         }
                         if is_trivial_contradiction(&simplified) {
                             let empty = Clause::new_avatar(
@@ -436,17 +551,45 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             }
         }
 
-        // Process generated clauses
+        // Split new inferences into AVATAR components.
+        // If a split violates the current SAT model (all parent assumptions true, no
+        // component assigned true), re-query the solver immediately.
         let mut final_new_clauses = Vec::new();
+        let mut model_violated = false;
         for clause in new_clauses {
             if let Some(splits) = state.avatar.split_clause(&clause, &mut state.id_gen) {
-                // println!("AVATAR SPLIT: {:?} into {} parts", clause.display(&state.symbols?), splits.len());
+                // Check violation: all parent assumptions true AND no split component true.
+                let mut violated = clause
+                    .avatar
+                    .iter()
+                    .all(|&a| state.avatar.current_model.contains(&(a as u32)));
+                if violated {
+                    violated = splits.iter().all(|s| {
+                        !state
+                            .avatar
+                            .current_model
+                            .contains(&(*s.avatar.last().unwrap() as u32))
+                    });
+                }
+                if violated {
+                    model_violated = true;
+                }
+
                 for split in splits {
                     state.clause_store.insert(split.id, split.clone());
                     final_new_clauses.push(split);
                 }
             } else {
                 final_new_clauses.push(clause);
+            }
+        }
+
+        if model_violated {
+            if matches!(state.avatar.solver.solve(), Ok(true)) {
+                update_model(state);
+                sync_active_dormant(state, ordering);
+            } else {
+                return SearchResult::Refutation(given.id, String::new());
             }
         }
 
@@ -460,107 +603,12 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 if clause.avatar.is_empty() {
                     return SearchResult::Refutation(clause.id, String::new());
                 } else {
-                    let sat_clause: Vec<varisat::Lit> = clause
-                        .avatar
-                        .iter()
-                        .map(|&a| {
-                            varisat::Lit::from_var(varisat::Var::from_dimacs(a as isize), false)
-                        })
-                        .collect();
-                    state.avatar.solver.add_clause(&sat_clause);
-
-                    if matches!(state.avatar.solver.solve(), Ok(true)) {
-                        let model = state.avatar.solver.model().unwrap();
-                        state.avatar.current_model.clear();
-                        for lit in model {
-                            if lit.is_positive() {
-                                state
-                                    .avatar
-                                    .current_model
-                                    .insert(lit.var().to_dimacs() as u32);
-                            }
-                        }
-
-                        // Update active/dormant status
-                        // 1. Processed -> Dormant
-                        let mut to_remove_processed = Vec::new();
-                        for p in state.processed.iter() {
-                            if !state.is_active(p) {
-                                to_remove_processed.push(p.id);
-                            }
-                        }
-                        for id in to_remove_processed {
-                            if let Some(p) = state.processed.remove(id) {
-                                state.dormant_processed.insert(p.id, p.clone());
-                                if is_unit_positive_equality(&p)
-                                    && let Atom::Eq(l, r) = &p.literals[0].atom
-                                {
-                                    use mrs_calculus::ordering::TermComparison;
-                                    if ordering.compare(l, r) == TermComparison::Greater {
-                                        state.demod_index.remove(l, &(l.clone(), r.clone(), p.id));
-                                    } else if ordering.compare(r, l) == TermComparison::Greater {
-                                        state.demod_index.remove(r, &(r.clone(), l.clone(), p.id));
-                                    }
-                                }
-                            }
-                        }
-
-                        // 2. Unprocessed -> Dormant
-                        let mut to_remove_unproc = Vec::new();
-                        for id in state.unprocessed.iter() {
-                            let u = state.clause_store.get(&id).unwrap();
-                            if !state.is_active(u) {
-                                to_remove_unproc.push(u.id);
-                            }
-                        }
-                        let to_remove_set: std::collections::HashSet<_> =
-                            to_remove_unproc.into_iter().collect();
-
-                        state.unprocessed.retain(|id| !to_remove_set.contains(&id));
-
-                        for id in to_remove_set {
-                            let u = state.clause_store.get(&id).unwrap().clone();
-                            state.dormant_unprocessed.insert(id, u);
-                        }
-
-                        // 3. Dormant -> Processed
-                        let mut to_restore_processed = Vec::new();
-                        for (id, p) in &state.dormant_processed {
-                            if state.is_active(p) {
-                                to_restore_processed.push(*id);
-                            }
-                        }
-                        for id in to_restore_processed {
-                            let p = state.dormant_processed.remove(&id).unwrap();
-                            state.processed.insert(p.clone());
-                            if is_unit_positive_equality(&p)
-                                && let Atom::Eq(l, r) = &p.literals[0].atom
-                            {
-                                use mrs_calculus::ordering::TermComparison;
-                                if ordering.compare(l, r) == TermComparison::Greater {
-                                    state.demod_index.insert(l, (l.clone(), r.clone(), p.id));
-                                } else if ordering.compare(r, l) == TermComparison::Greater {
-                                    state.demod_index.insert(r, (r.clone(), l.clone(), p.id));
-                                }
-                            }
-                        }
-
-                        // 4. Dormant -> Unprocessed
-                        let mut to_restore_unprocessed = Vec::new();
-                        for (id, u) in &state.dormant_unprocessed {
-                            if state.is_active(u) {
-                                to_restore_unprocessed.push(*id);
-                            }
-                        }
-                        for id in to_restore_unprocessed {
-                            let u = state.dormant_unprocessed.remove(&id).unwrap();
-                            state.unprocessed.push(&u);
-                        }
-
-                        continue;
-                    } else {
-                        return SearchResult::Refutation(clause.id, String::new());
+                    let avatar = clause.avatar.clone();
+                    let id = clause.id;
+                    if !avatar_refute_branch(state, &avatar, ordering) {
+                        return SearchResult::Refutation(id, String::new());
                     }
+                    continue;
                 }
             }
 
@@ -617,7 +665,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     .processed
                     .get_subsumption_candidates(&clause_fv)
                     .into_iter()
-                    .any(|p| subsumption::subsumes(p, &clause))
+                    .any(|p| p.avatar_is_subset_of(&clause) && subsumption::subsumes(p, &clause))
                 {
                     continue;
                 }
@@ -630,8 +678,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         iteration += 1;
     }
 
-    // If we reach here, we processed all clauses.
-    // If the literal selection is incomplete, we must return GaveUp.
+    // If the literal selection is incomplete, return GaveUp rather than Saturated.
     match config.literal_selection {
         crate::LiteralSelection::MaxNegativeOrMaxPositive => SearchResult::GaveUp,
         _ => SearchResult::Saturated,
@@ -863,7 +910,6 @@ mod tests {
             ),
         ];
 
-        // With All: should find refutation
         let mut state = SearchState::new(
             clauses.clone(),
             id_gen.clone(),
@@ -956,7 +1002,6 @@ mod tests {
             ),
         ];
 
-        // With AllNegative: check if it saturates
         let mut state = SearchState::new(
             clauses,
             id_gen,
@@ -970,7 +1015,7 @@ mod tests {
             ordering: TermOrdering::KBO,
         };
         let result = search(&mut state, &config);
-        // Report what happens — if this saturates, AllNegative is too restrictive
+        // AllNegative is too restrictive for pel27; just record the outcome
         eprintln!("pel27 with AllNegative: {:?}", result);
     }
 
