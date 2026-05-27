@@ -1,7 +1,0 @@
-% SZS status CounterSatisfiable for SYO606+1
-% ------------------------------
-% Version: mrs 0.1.4
-% Termination reason: Saturation
-% Time elapsed: 0.763 s
-% Peak memory usage: 1093 MB
-% ------------------------------
