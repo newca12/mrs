@@ -372,7 +372,7 @@ mod tests {
 
         let clause_store = HashMap::new();
 
-        let mut demod_index = mrs_index::dtree::DTree::new();
+        let demod_index = mrs_index::dtree::DTree::new();
         // non_unit is not inserted because it is not a unit equation
 
         let result = demodulate(&target, &demod_index, &clause_store, &mut id_gen);

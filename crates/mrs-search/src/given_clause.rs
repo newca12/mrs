@@ -36,7 +36,7 @@ use crate::{SearchConfig, SearchResult};
 /// unit-equality clauses that cross the active/dormant boundary.
 fn sync_active_dormant(state: &mut SearchState, ordering: &crate::TermOrdering) {
     // 1. Processed -> Dormant
-    let mut to_remove: Vec<_> = state
+    let to_remove: Vec<_> = state
         .processed
         .iter()
         .filter(|p| !state.is_active(p))
@@ -44,14 +44,14 @@ fn sync_active_dormant(state: &mut SearchState, ordering: &crate::TermOrdering) 
         .collect();
     for id in to_remove {
         if let Some(p) = state.processed.remove(id) {
-            if is_unit_positive_equality(&p) {
-                if let Atom::Eq(l, r) = &p.literals[0].atom {
-                    use mrs_calculus::ordering::TermComparison;
-                    if ordering.compare(l, r) == TermComparison::Greater {
-                        state.demod_index.remove(l, &(l.clone(), r.clone(), p.id));
-                    } else if ordering.compare(r, l) == TermComparison::Greater {
-                        state.demod_index.remove(r, &(r.clone(), l.clone(), p.id));
-                    }
+            if is_unit_positive_equality(&p)
+                && let Atom::Eq(l, r) = &p.literals[0].atom
+            {
+                use mrs_calculus::ordering::TermComparison;
+                if ordering.compare(l, r) == TermComparison::Greater {
+                    state.demod_index.remove(l, &(l.clone(), r.clone(), p.id));
+                } else if ordering.compare(r, l) == TermComparison::Greater {
+                    state.demod_index.remove(r, &(r.clone(), l.clone(), p.id));
                 }
             }
             state.dormant_processed.insert(p.id, p);
@@ -81,14 +81,14 @@ fn sync_active_dormant(state: &mut SearchState, ordering: &crate::TermOrdering) 
         .collect();
     for id in to_restore_proc {
         let p = state.dormant_processed.remove(&id).unwrap();
-        if is_unit_positive_equality(&p) {
-            if let Atom::Eq(l, r) = &p.literals[0].atom {
-                use mrs_calculus::ordering::TermComparison;
-                if ordering.compare(l, r) == TermComparison::Greater {
-                    state.demod_index.insert(l, (l.clone(), r.clone(), p.id));
-                } else if ordering.compare(r, l) == TermComparison::Greater {
-                    state.demod_index.insert(r, (r.clone(), l.clone(), p.id));
-                }
+        if is_unit_positive_equality(&p)
+            && let Atom::Eq(l, r) = &p.literals[0].atom
+        {
+            use mrs_calculus::ordering::TermComparison;
+            if ordering.compare(l, r) == TermComparison::Greater {
+                state.demod_index.insert(l, (l.clone(), r.clone(), p.id));
+            } else if ordering.compare(r, l) == TermComparison::Greater {
+                state.demod_index.insert(r, (r.clone(), l.clone(), p.id));
             }
         }
         state.processed.insert(p);
@@ -149,20 +149,19 @@ fn avatar_refute_branch(
 fn detect_comm_symbols(state: &crate::state::SearchState) -> HashSet<SymbolId> {
     let mut comm = HashSet::new();
     for clause in state.clause_store.values() {
-        if clause.len() == 1 && clause.literals[0].is_positive() {
-            if let Atom::Eq(l, r) = &clause.literals[0].atom {
-                if let (Term::App(f1, args1), Term::App(f2, args2)) = (l, r) {
-                    if f1 == f2 && args1.len() == 2 && args2.len() == 2 {
-                        if let (Term::Var(x1), Term::Var(y1), Term::Var(x2), Term::Var(y2)) =
-                            (&args1[0], &args1[1], &args2[0], &args2[1])
-                        {
-                            // f(X,Y) = f(Y,X): two distinct vars, swapped
-                            if x1 != y1 && x1 == y2 && y1 == x2 {
-                                comm.insert(*f1);
-                            }
-                        }
-                    }
-                }
+        if clause.len() == 1
+            && clause.literals[0].is_positive()
+            && let Atom::Eq(l, r) = &clause.literals[0].atom
+            && let (Term::App(f1, args1), Term::App(f2, args2)) = (l, r)
+            && f1 == f2
+            && args1.len() == 2
+            && args2.len() == 2
+            && let (Term::Var(x1), Term::Var(y1), Term::Var(x2), Term::Var(y2)) =
+                (&args1[0], &args1[1], &args2[0], &args2[1])
+        {
+            // f(X,Y) = f(Y,X): two distinct vars, swapped
+            if x1 != y1 && x1 == y2 && y1 == x2 {
+                comm.insert(*f1);
             }
         }
     }
@@ -242,23 +241,23 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 .get_subsumption_resolution_candidates(&given_fv);
             let mut changed = false;
             for p in candidates {
-                if p.avatar_is_subset_of(&given) {
-                    if let Some(removed_idx) = subsumption::subsumption_resolution(p, &given) {
-                        let mut new_lits = given.literals.clone();
-                        new_lits.remove(removed_idx);
-                        given = Clause::new_avatar(
-                            state.id_gen.next(),
-                            new_lits,
-                            ClauseSource::Inference {
-                                rule: "subsumption_resolution".into(),
-                                parents: vec![p.id, given.id],
-                            },
-                            given.avatar.clone(),
-                        );
-                        state.clause_store.insert(given.id, given.clone());
-                        changed = true;
-                        break; // re-compute FV and start over
-                    }
+                if p.avatar_is_subset_of(&given)
+                    && let Some(removed_idx) = subsumption::subsumption_resolution(p, &given)
+                {
+                    let mut new_lits = given.literals.clone();
+                    new_lits.remove(removed_idx);
+                    given = Clause::new_avatar(
+                        state.id_gen.next(),
+                        new_lits,
+                        ClauseSource::Inference {
+                            rule: "subsumption_resolution".into(),
+                            parents: vec![p.id, given.id],
+                        },
+                        given.avatar.clone(),
+                    );
+                    state.clause_store.insert(given.id, given.clone());
+                    changed = true;
+                    break; // re-compute FV and start over
                 }
             }
             if !changed || given.is_empty() {
@@ -595,13 +594,13 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 let mut violated = clause
                     .avatar
                     .iter()
-                    .all(|&a| state.avatar.current_model.contains(&(a as u32)));
+                    .all(|&a| state.avatar.current_model.contains(&a));
                 if violated {
                     violated = splits.iter().all(|s| {
                         !state
                             .avatar
                             .current_model
-                            .contains(&(*s.avatar.last().unwrap() as u32))
+                            .contains(s.avatar.last().unwrap())
                     });
                 }
                 if violated {

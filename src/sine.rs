@@ -1,3 +1,7 @@
+// This module is shared across multiple binary targets via `#[path]`; not all
+// binaries use every item, so suppress dead-code warnings here.
+#![allow(dead_code)]
+
 use std::collections::{HashMap, HashSet};
 
 use mrs_core::clause::Clause;

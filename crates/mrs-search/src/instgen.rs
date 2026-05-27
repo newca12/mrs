@@ -149,10 +149,11 @@ fn collect_constants(clauses: &[Clause]) -> Vec<SymbolId> {
 }
 
 fn collect_constants_term(term: &Term, seen: &mut HashSet<SymbolId>, out: &mut Vec<SymbolId>) {
-    if let Term::App(sym, args) = term {
-        if args.is_empty() && seen.insert(*sym) {
-            out.push(*sym);
-        }
+    if let Term::App(sym, args) = term
+        && args.is_empty()
+        && seen.insert(*sym)
+    {
+        out.push(*sym);
     }
 }
 

@@ -8,6 +8,10 @@
 //! are resolved relative to that path. Otherwise, they're resolved relative to
 //! the main problem file's directory.
 
+// This module is shared across multiple binary targets via `#[path]`; not all
+// binaries use every item, so suppress dead-code warnings here.
+#![allow(dead_code)]
+
 use std::collections::HashSet;
 use std::fmt;
 use std::fs;

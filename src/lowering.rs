@@ -25,10 +25,12 @@ pub struct LoweredProblem {
     /// The symbol table with all interned names.
     pub symbols: SymbolTable,
     /// Axioms: formulas with axiom-like roles (need clausification).
+    #[allow(dead_code)]
     pub axioms: Vec<LoweredFormula>,
     /// Conjectures: formulas with the conjecture role (need clausification).
     pub conjectures: Vec<LoweredFormula>,
     /// Pre-clausified clauses from CNF input (skip clausification).
+    #[allow(dead_code)]
     pub cnf_clauses: Vec<Clause>,
     /// Clause ID generator, continues from IDs assigned to CNF clauses.
     pub id_gen: ClauseIdGen,
@@ -40,6 +42,7 @@ pub struct LoweredFormula {
     /// Original name from the TPTP file.
     pub name: String,
     /// The TPTP role string.
+    #[allow(dead_code)]
     pub role: String,
     /// The lowered formula.
     pub formula: Formula,

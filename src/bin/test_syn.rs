@@ -1,7 +1,6 @@
 use mrs_core::Formula;
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
 
 #[path = "../include.rs"]
 mod include;
