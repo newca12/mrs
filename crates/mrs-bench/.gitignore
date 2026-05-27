@@ -7,3 +7,6 @@ results/
 # Competitor binaries
 systems/*/bin/
 
+# Generated reference lookup table (run systems/reference/fetch_answers.sh to populate)
+systems/reference/answers.tsv
+
