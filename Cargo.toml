@@ -42,6 +42,5 @@ mrs-tptp = { workspace = true }
 mrs-unify = { workspace = true }
 mrs-cnf = { workspace = true }
 mrs-calculus = { workspace = true }
-mrs-proof = { workspace = true }
 mrs-search = { workspace = true }
 varisat.workspace = true

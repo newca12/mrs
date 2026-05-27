@@ -8,6 +8,9 @@
 //!
 //! Before resolution, C2's variables are renamed to be disjoint from C1's.
 
+use std::collections::HashSet;
+
+use mrs_core::SymbolId;
 use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource};
 use mrs_core::term::Term;
 use mrs_core::{Atom, Literal};
@@ -35,19 +38,24 @@ fn atom_to_term(atom: &Atom) -> Option<Term> {
 ///
 /// Returns an empty vector if no resolution is possible.
 pub fn resolve(c1: &Clause, c2: &Clause, id_gen: &mut ClauseIdGen) -> Vec<Clause> {
-    resolve_selected(c1, c2, id_gen, None, None)
+    resolve_selected(c1, c2, id_gen, None, None, &HashSet::new())
 }
 
 /// Like [`resolve`], but restricted to selected literals.
 ///
 /// Only literal pairs where `l1` is in `sel1` (if provided) AND `l2` is in
 /// `sel2` (if provided) are considered. `None` means all literals are eligible.
+///
+/// `comm` is the set of binary function symbols treated as commutative: when
+/// normal unification of the predicate terms fails, the arguments are swapped
+/// and tried again.
 pub fn resolve_selected(
     c1: &Clause,
     c2: &Clause,
     id_gen: &mut ClauseIdGen,
     sel1: Option<&[usize]>,
     sel2: Option<&[usize]>,
+    comm: &HashSet<SymbolId>,
 ) -> Vec<Clause> {
     let offset = max_var(c1);
     let c2r = rename_clause(c2, offset);
@@ -80,7 +88,7 @@ pub fn resolve_selected(
             };
 
             // Try unification
-            if let Ok(mgu) = mrs_unify::unify(&t1, &t2) {
+            if let Ok(mgu) = mrs_unify::unify_comm(&t1, &t2, comm) {
                 // Build resolvent: all literals except the resolved pair
                 let mut lits: Vec<Literal> = Vec::new();
                 for (k, lit) in c1.literals.iter().enumerate() {

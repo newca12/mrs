@@ -96,6 +96,37 @@ pub fn unify(s: &Term, t: &Term) -> UnifyResult {
     robinson::unify(s, t)
 }
 
+/// Unifies two terms with commutativity support for a set of binary symbols.
+///
+/// Delegates to [`robinson::unify_comm`]. See that function for details.
+///
+/// # Examples
+///
+/// ```
+/// use std::collections::HashSet;
+/// use mrs_core::{Term, SymbolTable};
+/// use mrs_unify::unify_comm;
+///
+/// let mut syms = SymbolTable::new();
+/// let f = syms.intern("f");
+/// let a = syms.intern("a");
+/// let b = syms.intern("b");
+///
+/// // f(a,b) ~ f(b,a) with f commutative
+/// let mut comm = HashSet::new();
+/// comm.insert(f);
+/// let t1 = Term::app(f, vec![Term::constant(a), Term::constant(b)]);
+/// let t2 = Term::app(f, vec![Term::constant(b), Term::constant(a)]);
+/// assert!(unify_comm(&t1, &t2, &comm).is_ok());
+/// ```
+pub fn unify_comm(
+    s: &Term,
+    t: &Term,
+    comm: &std::collections::HashSet<mrs_core::SymbolId>,
+) -> UnifyResult {
+    robinson::unify_comm(s, t, comm)
+}
+
 /// Matches a pattern against a target term (one-way unification).
 ///
 /// Only variables in the pattern are bound; the target is treated as ground.

@@ -112,11 +112,12 @@ impl AvatarContext {
         let mut sat_clause = Vec::new();
 
         for lits in parts {
-            // For each part, we need an AVATAR variable.
-            // Normalize component (e.g. rename vars from 0 to N) to maximize sharing.
-            // For now, simple format string.
-            // TODO: Proper canonicalization
-            let comp_str = format!("{:?}", lits); // Hacky normalization
+            // For each part, canonicalize the component by renaming variables
+            // 0..N in DFS order through the literals.  Two alpha-equivalent
+            // components (identical up to variable renaming) then get the same
+            // key, which lets the SAT solver share AVATAR variables between them
+            // and prunes redundant case splits.
+            let comp_str = canonical_component_key(&lits);
 
             let var = if let Some(&v) = self.component_vars.get(&comp_str) {
                 v
@@ -189,5 +190,196 @@ fn collect_vars(term: &Term, vars: &mut HashSet<VarId>) {
                 collect_vars(a, vars);
             }
         }
+    }
+}
+
+/// Returns a canonical string key for a set of literals that is invariant
+/// under variable renaming.  Variables are assigned fresh names V0, V1, …
+/// in the order they are first encountered during a left-to-right, DFS
+/// traversal of the literals.  This means two alpha-equivalent components
+/// produce the same key, enabling the SAT solver to share AVATAR variables.
+fn canonical_component_key(lits: &[Literal]) -> String {
+    let mut var_map: HashMap<VarId, u32> = HashMap::new();
+    let mut next: u32 = 0;
+    let mut s = String::new();
+    for (i, lit) in lits.iter().enumerate() {
+        if i > 0 {
+            s.push('|');
+        }
+        if lit.is_negative() {
+            s.push('~');
+        }
+        match &lit.atom {
+            Atom::Pred(sym, args) => {
+                s.push('P');
+                push_u32(&mut s, sym.index());
+                if !args.is_empty() {
+                    s.push('(');
+                    for (j, a) in args.iter().enumerate() {
+                        if j > 0 {
+                            s.push(',');
+                        }
+                        write_term_canonical(a, &mut s, &mut var_map, &mut next);
+                    }
+                    s.push(')');
+                }
+            }
+            Atom::Eq(l, r) => {
+                s.push_str("Eq(");
+                write_term_canonical(l, &mut s, &mut var_map, &mut next);
+                s.push(',');
+                write_term_canonical(r, &mut s, &mut var_map, &mut next);
+                s.push(')');
+            }
+        }
+    }
+    s
+}
+
+fn write_term_canonical(
+    term: &Term,
+    s: &mut String,
+    var_map: &mut HashMap<VarId, u32>,
+    next: &mut u32,
+) {
+    match term {
+        Term::Var(v) => {
+            let id = *var_map.entry(*v).or_insert_with(|| {
+                let id = *next;
+                *next += 1;
+                id
+            });
+            s.push('V');
+            push_u32(s, id);
+        }
+        Term::App(sym, args) => {
+            s.push('F');
+            push_u32(s, sym.index());
+            if !args.is_empty() {
+                s.push('(');
+                for (i, a) in args.iter().enumerate() {
+                    if i > 0 {
+                        s.push(',');
+                    }
+                    write_term_canonical(a, s, var_map, next);
+                }
+                s.push(')');
+            }
+        }
+    }
+}
+
+/// Append a `u32` to a `String` without going through the allocating
+/// `format!` machinery.
+fn push_u32(s: &mut String, mut n: u32) {
+    if n == 0 {
+        s.push('0');
+        return;
+    }
+    let mut buf = [0u8; 10];
+    let mut len = 0;
+    while n > 0 {
+        buf[len] = b'0' + (n % 10) as u8;
+        len += 1;
+        n /= 10;
+    }
+    buf[..len].reverse();
+    s.push_str(std::str::from_utf8(&buf[..len]).unwrap());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mrs_core::{Atom, Literal, SymbolTable, Term};
+
+    #[test]
+    fn canonical_key_alpha_invariant() {
+        // p(X0) and p(X5) should produce the same key
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+
+        let lits_v0 = vec![Literal::pos(Atom::pred(p, vec![Term::var(0)]))];
+        let lits_v5 = vec![Literal::pos(Atom::pred(p, vec![Term::var(5)]))];
+        assert_eq!(
+            canonical_component_key(&lits_v0),
+            canonical_component_key(&lits_v5),
+            "alpha-equivalent components must have the same canonical key"
+        );
+    }
+
+    #[test]
+    fn canonical_key_distinct_structures() {
+        // p(X0, X1) and p(X0, X0) must have different keys
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+
+        let lits_12 = vec![Literal::pos(Atom::pred(
+            p,
+            vec![Term::var(0), Term::var(1)],
+        ))];
+        let lits_11 = vec![Literal::pos(Atom::pred(
+            p,
+            vec![Term::var(0), Term::var(0)],
+        ))];
+        assert_ne!(
+            canonical_component_key(&lits_12),
+            canonical_component_key(&lits_11),
+            "structurally different components must have different keys"
+        );
+    }
+
+    #[test]
+    fn split_clause_shares_avatar_var_for_alpha_equiv_components() {
+        // Two clauses that split into the same component shape should get
+        // the same AVATAR variable for that component.
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+        let mut ctx = AvatarContext::new();
+        let mut id_gen = mrs_core::clause::ClauseIdGen::new();
+
+        // Clause 1: p(X0) | q(X1)  -- two variable-disjoint literals
+        let c1 = Clause::new(
+            id_gen.next(),
+            vec![
+                Literal::pos(Atom::pred(p, vec![Term::var(0)])),
+                Literal::pos(Atom::pred(q, vec![Term::var(1)])),
+            ],
+            mrs_core::clause::ClauseSource::Input {
+                name: "c1".into(),
+                role: "axiom".into(),
+            },
+        );
+        // Clause 2: p(X5) | q(X6)  -- same shape, different var IDs
+        let c2 = Clause::new(
+            id_gen.next(),
+            vec![
+                Literal::pos(Atom::pred(p, vec![Term::var(5)])),
+                Literal::pos(Atom::pred(q, vec![Term::var(6)])),
+            ],
+            mrs_core::clause::ClauseSource::Input {
+                name: "c2".into(),
+                role: "axiom".into(),
+            },
+        );
+
+        let splits1 = ctx.split_clause(&c1, &mut id_gen).expect("c1 must split");
+        let splits2 = ctx.split_clause(&c2, &mut id_gen).expect("c2 must split");
+
+        // Collect the AVATAR variables allocated for each split.
+        // For alpha-equivalent components the variables must coincide.
+        let vars1: std::collections::HashSet<u32> = splits1
+            .iter()
+            .flat_map(|s| s.avatar.iter().copied())
+            .collect();
+        let vars2: std::collections::HashSet<u32> = splits2
+            .iter()
+            .flat_map(|s| s.avatar.iter().copied())
+            .collect();
+
+        assert_eq!(
+            vars1, vars2,
+            "alpha-equivalent clauses must reuse the same AVATAR variables"
+        );
     }
 }

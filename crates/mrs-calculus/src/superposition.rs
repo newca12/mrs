@@ -10,10 +10,12 @@
 //! subterm `u` in the target clause, if `mgu(l, u) = σ` and `lσ ≻ rσ`,
 //! produce a new clause with `u` replaced by `r`, under `σ`.
 
+use std::collections::HashSet;
+
 use mrs_core::Atom;
+use mrs_core::SymbolId;
 use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource, Literal};
 use mrs_core::term::Term;
-use mrs_unify::unify;
 
 use crate::ordering::{TermComparison, TermOrdering};
 use crate::rename::{max_var, rename_clause};
@@ -30,7 +32,7 @@ pub fn superpose(
     ordering: &TermOrdering,
     id_gen: &mut ClauseIdGen,
 ) -> Vec<Clause> {
-    superpose_selected(eq_clause, target, ordering, id_gen, None)
+    superpose_selected(eq_clause, target, ordering, id_gen, None, &HashSet::new())
 }
 
 /// Like [`superpose`], but only rewrites into selected literals of the target.
@@ -38,12 +40,16 @@ pub fn superpose(
 /// `target_sel` restricts which literals in the target clause are eligible
 /// for rewriting. `None` means all target literals are eligible.
 /// The eq_clause's positive equalities are always eligible (no restriction).
+///
+/// `comm` is the set of binary function symbols treated as commutative for
+/// unification of the `from` term against target subterms.
 pub fn superpose_selected(
     eq_clause: &Clause,
     target: &Clause,
     ordering: &TermOrdering,
     id_gen: &mut ClauseIdGen,
     target_sel: Option<&[usize]>,
+    comm: &HashSet<SymbolId>,
 ) -> Vec<Clause> {
     let offset = max_var(eq_clause);
     let target_r = rename_clause(target, offset);
@@ -76,6 +82,7 @@ pub fn superpose_selected(
                 ordering,
                 id_gen,
                 target_sel,
+                comm,
                 &mut results,
             );
         }
@@ -95,6 +102,7 @@ fn superpose_with(
     ordering: &TermOrdering,
     id_gen: &mut ClauseIdGen,
     target_sel: Option<&[usize]>,
+    comm: &HashSet<SymbolId>,
     results: &mut Vec<Clause>,
 ) {
     for (j, target_lit) in target.literals.iter().enumerate() {
@@ -115,7 +123,7 @@ fn superpose_with(
                 };
 
                 // Try to unify `from` with this subterm
-                let sigma = match unify(from, subterm) {
+                let sigma = match mrs_unify::unify_comm(from, subterm, comm) {
                     Ok(s) => s,
                     Err(_) => continue,
                 };

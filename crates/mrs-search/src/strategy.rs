@@ -13,11 +13,15 @@ use std::time::Duration;
 
 use crossbeam_channel::unbounded;
 use mrs_calculus::ordering::SymbolConfig;
+use mrs_core::SymbolTable;
 use mrs_core::clause::{Clause, ClauseIdGen};
 use mrs_core::symbol::SymbolId;
 use mrs_core::term::Term;
+use mrs_proof::extract::extract_proof;
+use mrs_proof::tstp::format_tstp;
 
 use crate::given_clause::search;
+use crate::instgen::preprocess_epr;
 use crate::state::SearchState;
 use crate::{LiteralSelection, SearchConfig, SearchResult, SelectionStrategy, TermOrdering};
 
@@ -166,11 +170,16 @@ impl StrategySchedule {
 /// Tries each strategy in sequence. Returns `Refutation` as soon as one is found.
 /// Each strategy starts fresh with its own search state (no carryover from previous
 /// attempts), since different strategies may benefit from different exploration orderings.
+///
+/// `symbols` is required so that the TSTP proof string can be formatted inside the
+/// worker thread (while `SearchState` is still live), before the non-`Send`
+/// `varisat::Solver` is dropped.
 pub fn run_schedule(
     clauses: &[Clause],
     id_gen: ClauseIdGen,
     schedule: &StrategySchedule,
-) -> (SearchResult, SearchState) {
+    symbols: &SymbolTable,
+) -> SearchResult {
     // 1. Analyze problem for symbol frequencies to configure KBO/LPO and weights.
     let mut sym_counts: HashMap<SymbolId, u32> = HashMap::new();
     for clause in clauses {
@@ -259,7 +268,6 @@ pub fn run_schedule(
     let clauses_owned = clauses.to_vec();
 
     let mut last_result = SearchResult::Saturated;
-    let last_state = SearchState::new(Vec::new(), ClauseIdGen::new(), config.clone());
 
     // We process strategies in chunks based on available parallelism.
     for chunk in actual_configs.chunks(parallelism) {
@@ -269,20 +277,34 @@ pub fn run_schedule(
             for (i, search_config) in chunk.iter().enumerate() {
                 let tx = tx.clone();
                 let clauses_local = clauses_owned.clone();
-                let id_gen_local = id_gen.clone();
+                let mut id_gen_local = id_gen.clone();
                 let config_local = config.clone();
                 let search_config_local = search_config.clone();
 
                 s.spawn(move || {
+                    // EPR pre-processing: if the problem is essentially
+                    // propositional, enumerate all ground instances before
+                    // starting the loop.  This is faster than superposition
+                    // for purely propositional problems.
+                    let clauses_local =
+                        if let Some(ground) = preprocess_epr(&clauses_local, &mut id_gen_local) {
+                            ground
+                        } else {
+                            clauses_local
+                        };
                     let mut state = SearchState::new(clauses_local, id_gen_local, config_local);
                     let result = search(&mut state, &search_config_local);
-                    // The varisat::Solver embedded in AvatarContext prevents SearchState from being Send.
-                    // We only actually need the `SearchResult` back from the thread to see if we proved it.
-                    // If we need `SearchState` (e.g. to extract the proof), we can return `Some(state)`
-                    // only if it's a refutation, but since `SearchState` is literally not `Send`,
-                    // we must extract the proof *inside* the thread, or re-structure AVATAR.
-                    // For now, since `SearchResult::Refutation` contains just an ID, we'll send the result.
-                    // To do proof extraction properly later, we'll need to drop the solver.
+                    // Extract the proof while `state` (and its `varisat::Solver`) is still
+                    // live inside this thread.  `varisat::Solver` is not `Send`, so we
+                    // cannot move `state` across the channel boundary; we serialise the
+                    // proof into a `String` here instead.
+                    let result = if let SearchResult::Refutation(id, _) = result {
+                        let proof = extract_proof(id, &state.clause_store);
+                        let tstp = format_tstp(&proof, symbols);
+                        SearchResult::Refutation(id, tstp)
+                    } else {
+                        result
+                    };
                     let _ = tx.send((i, result));
                 });
             }
@@ -298,12 +320,7 @@ pub fn run_schedule(
         for (_, result) in results {
             match &result {
                 SearchResult::Refutation(..) | SearchResult::Saturated => {
-                    // Saturated is definitive. No need to run other strategies.
-                    // We must return a dummy state because we can't extract the real one
-                    // across the thread boundary due to varisat::Solver.
-                    // The proof extraction code in main will fail if we just return dummy,
-                    // but we will address that next (e.g. extracting the proof inside the thread).
-                    return (result, last_state);
+                    return result;
                 }
                 _ => {
                     last_result = result;
@@ -312,7 +329,7 @@ pub fn run_schedule(
         }
     }
 
-    (last_result, last_state)
+    last_result
 }
 
 #[cfg(test)]
@@ -351,7 +368,7 @@ mod tests {
         );
 
         let schedule = StrategySchedule::default_schedule(Duration::from_secs(5));
-        let (result, _) = run_schedule(&[c1, c2], id_gen, &schedule);
+        let result = run_schedule(&[c1, c2], id_gen, &schedule, &syms);
         assert!(matches!(result, SearchResult::Refutation(..)));
     }
 
@@ -376,7 +393,7 @@ mod tests {
         );
 
         let schedule = StrategySchedule::default_schedule(Duration::from_secs(5));
-        let (result, _) = run_schedule(&[c1, c2], id_gen, &schedule);
+        let result = run_schedule(&[c1, c2], id_gen, &schedule, &syms);
         assert!(matches!(result, SearchResult::Saturated));
     }
 }

@@ -16,8 +16,6 @@ use std::time::Duration;
 
 use mrs_core::Formula;
 use mrs_core::clause::Clause;
-use mrs_proof::extract::extract_proof;
-use mrs_proof::tstp::format_tstp;
 use mrs_search::SearchResult;
 use mrs_search::strategy::{StrategySchedule, run_schedule};
 use mrs_szs::{SzsStatus, szs_output_end, szs_output_start, szs_status_line};
@@ -224,7 +222,7 @@ fn main() {
 
     let search_budget = total_budget - elapsed;
     let schedule = StrategySchedule::default_schedule(search_budget);
-    let (result, state) = run_schedule(&all_clauses, id_gen, &schedule);
+    let result = run_schedule(&all_clauses, id_gen, &schedule, &lowered.symbols);
 
     // --- Output result ---
     let status = match &result {
@@ -253,15 +251,9 @@ fn main() {
     println!("{}", szs_status_line(status, problem_name));
 
     // Output proof if refutation found
-    if let SearchResult::Refutation(empty_id, tstp_proof) = result {
-        let proof = extract_proof(empty_id, &state.clause_store);
-        let tstp = format_tstp(&proof, &lowered.symbols);
+    if let SearchResult::Refutation(_, tstp_proof) = &result {
         println!("{}", szs_output_start("Proof", problem_name));
-        if !tstp_proof.is_empty() {
-            println!("{}", tstp_proof);
-        } else {
-            println!("{}", tstp);
-        }
+        println!("{}", tstp_proof);
         println!("{}", szs_output_end("Proof", problem_name));
     }
 

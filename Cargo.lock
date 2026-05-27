@@ -100,7 +100,6 @@ dependencies = [
  "mrs-calculus",
  "mrs-cnf",
  "mrs-core",
- "mrs-proof",
  "mrs-search",
  "mrs-szs",
  "mrs-tptp",
@@ -155,6 +154,7 @@ dependencies = [
  "mrs-calculus",
  "mrs-core",
  "mrs-index",
+ "mrs-proof",
  "varisat",
 ]
 

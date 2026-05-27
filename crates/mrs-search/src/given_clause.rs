@@ -21,7 +21,9 @@ use mrs_calculus::resolution;
 use mrs_calculus::subsumption;
 use mrs_calculus::superposition;
 use mrs_core::Atom;
+use mrs_core::SymbolId;
 use mrs_core::clause::{Clause, ClauseSource};
+use mrs_core::term::Term;
 use mrs_index::fvi::FeatureVector;
 use varisat::ExtendFormula;
 
@@ -142,6 +144,31 @@ fn avatar_refute_branch(
     }
 }
 
+/// Scans the clause store for commutativity axioms of the form `f(X,Y) = f(Y,X)`
+/// and returns the set of all such binary function symbols.
+fn detect_comm_symbols(state: &crate::state::SearchState) -> HashSet<SymbolId> {
+    let mut comm = HashSet::new();
+    for clause in state.clause_store.values() {
+        if clause.len() == 1 && clause.literals[0].is_positive() {
+            if let Atom::Eq(l, r) = &clause.literals[0].atom {
+                if let (Term::App(f1, args1), Term::App(f2, args2)) = (l, r) {
+                    if f1 == f2 && args1.len() == 2 && args2.len() == 2 {
+                        if let (Term::Var(x1), Term::Var(y1), Term::Var(x2), Term::Var(y2)) =
+                            (&args1[0], &args1[1], &args2[0], &args2[1])
+                        {
+                            // f(X,Y) = f(Y,X): two distinct vars, swapped
+                            if x1 != y1 && x1 == y2 && y1 == x2 {
+                                comm.insert(*f1);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    comm
+}
+
 /// Runs the given-clause proof search.
 ///
 /// Returns `SearchResult::Refutation(id)` if the empty clause is derived,
@@ -149,6 +176,9 @@ fn avatar_refute_branch(
 /// or `SearchResult::Timeout`/`SearchResult::ResourceOut` on resource limits.
 pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
     let ordering = &config.ordering;
+
+    // Detect commutative symbols from axioms of the form f(X,Y) = f(Y,X)
+    state.comm_symbols = detect_comm_symbols(state);
 
     // Initial SAT sync
     state.avatar.current_model.clear();
@@ -308,6 +338,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                             &mut state.id_gen,
                             Some(&given_sel),
                             Some(&active_sel),
+                            &state.comm_symbols,
                         );
                         new_clauses.extend(resolvents);
                     }
@@ -335,6 +366,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         ordering,
                         &mut state.id_gen,
                         Some(&active_sel),
+                        &state.comm_symbols,
                     );
                     new_clauses.extend(sp);
                 }
@@ -356,6 +388,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         ordering,
                         &mut state.id_gen,
                         Some(&given_sel),
+                        &state.comm_symbols,
                     );
                     new_clauses.extend(sp);
                 }

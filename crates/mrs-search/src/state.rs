@@ -1,9 +1,10 @@
 //! Search state: processed and unprocessed clause sets.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use mrs_calculus::ordering::SymbolConfig;
+use mrs_core::SymbolId;
 use mrs_core::clause::{Clause, ClauseId, ClauseIdGen};
 use mrs_core::term::Term;
 use mrs_index::dtree::DTree;
@@ -33,10 +34,13 @@ pub struct SearchState {
     pub config: Arc<SymbolConfig>,
     /// AVATAR context for clause splitting.
     pub avatar: AvatarContext,
-    /// Clauses that were in `processed` but are currently inactive.
+    /// Dormant processed clauses (inactive under current AVATAR model).
     pub dormant_processed: HashMap<ClauseId, Clause>,
     /// Clauses that were in `unprocessed` but are currently inactive.
     pub dormant_unprocessed: HashMap<ClauseId, Clause>,
+    /// Binary function symbols detected as commutative (from `f(X,Y)=f(Y,X)` axioms).
+    /// Used by inference rules to enable commutativity unification.
+    pub comm_symbols: HashSet<SymbolId>,
 }
 
 impl SearchState {
@@ -74,6 +78,7 @@ impl SearchState {
             avatar,
             dormant_processed: HashMap::new(),
             dormant_unprocessed: HashMap::new(),
+            comm_symbols: HashSet::new(),
         }
     }
 

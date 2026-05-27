@@ -28,6 +28,7 @@
 
 pub mod avatar;
 pub mod given_clause;
+pub mod instgen;
 pub mod select;
 pub mod state;
 pub mod strategy;
