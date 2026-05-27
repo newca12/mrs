@@ -267,7 +267,7 @@ pub fn run_schedule(
     // However, `clauses` is a slice, we can clone it.
     let clauses_owned = clauses.to_vec();
 
-    let mut last_result = SearchResult::Saturated;
+    let mut last_result = SearchResult::GaveUp;
 
     // We process strategies in chunks based on available parallelism.
     for chunk in actual_configs.chunks(parallelism) {
@@ -286,10 +286,13 @@ pub fn run_schedule(
                     // propositional, enumerate all ground instances before
                     // starting the loop.  This is faster than superposition
                     // for purely propositional problems.
+                    let epr_applied;
                     let clauses_local =
                         if let Some(ground) = preprocess_epr(&clauses_local, &mut id_gen_local) {
+                            epr_applied = true;
                             ground
                         } else {
+                            epr_applied = false;
                             clauses_local
                         };
                     let mut state = SearchState::new(clauses_local, id_gen_local, config_local);
@@ -302,6 +305,11 @@ pub fn run_schedule(
                         let proof = extract_proof(id, &state.clause_store);
                         let tstp = format_tstp(&proof, symbols);
                         SearchResult::Refutation(id, tstp)
+                    } else if epr_applied && matches!(result, SearchResult::Saturated) {
+                        // Conservative: EPR instance enumeration is sound but we have
+                        // observed false Saturated results (e.g. MSC024-1).  Demote to
+                        // GaveUp so we never output a wrong Satisfiable/CounterSatisfiable.
+                        SearchResult::GaveUp
                     } else {
                         result
                     };
@@ -317,15 +325,25 @@ pub fn run_schedule(
         let mut results: Vec<_> = rx.into_iter().collect();
         results.sort_by_key(|&(i, _)| i); // Keep original order for determinism
 
+        // Scan the entire chunk before deciding.  A Refutation wins
+        // unconditionally.  A Saturated is held aside so that a later
+        // Refutation in the same chunk is not masked.
+        let mut chunk_saturated: Option<SearchResult> = None;
         for (_, result) in results {
             match &result {
-                SearchResult::Refutation(..) | SearchResult::Saturated => {
+                SearchResult::Refutation(..) => {
                     return result;
+                }
+                SearchResult::Saturated => {
+                    chunk_saturated = Some(result);
                 }
                 _ => {
                     last_result = result;
                 }
             }
+        }
+        if let Some(sat) = chunk_saturated {
+            return sat;
         }
     }
 
@@ -394,6 +412,11 @@ mod tests {
 
         let schedule = StrategySchedule::default_schedule(Duration::from_secs(5));
         let result = run_schedule(&[c1, c2], id_gen, &schedule, &syms);
-        assert!(matches!(result, SearchResult::Saturated));
+        // After EPR preprocessing, a saturated ground search is demoted to
+        // GaveUp (conservative: avoids outputting a wrong Satisfiable).
+        assert!(
+            matches!(result, SearchResult::Saturated | SearchResult::GaveUp),
+            "expected Saturated or GaveUp, got {result:?}"
+        );
     }
 }
