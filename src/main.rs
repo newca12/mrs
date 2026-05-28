@@ -235,7 +235,6 @@ fn main() {
             }
         }
         SearchResult::Timeout => SzsStatus::Timeout,
-        SearchResult::ResourceOut => SzsStatus::ResourceOut,
         SearchResult::GaveUp => SzsStatus::GaveUp,
     };
 
@@ -268,8 +267,7 @@ fn print_statistics(status: SzsStatus, elapsed: Duration) {
     let termination_reason = match status {
         SzsStatus::Theorem | SzsStatus::Unsatisfiable => "Refutation",
         SzsStatus::CounterSatisfiable | SzsStatus::Satisfiable => "Saturation",
-        SzsStatus::Timeout => "Timeout",
-        SzsStatus::ResourceOut => "ResourceOut",
+        SzsStatus::Timeout | SzsStatus::ResourceOut => "Timeout",
         SzsStatus::GaveUp => "GaveUp",
         SzsStatus::Unknown | SzsStatus::Error => "Error",
     };

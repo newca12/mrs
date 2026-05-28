@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crossbeam_channel::unbounded;
 use mrs_calculus::ordering::SymbolConfig;
 use mrs_core::SymbolTable;
 use mrs_core::clause::{Clause, ClauseIdGen};
@@ -72,7 +71,6 @@ impl StrategySchedule {
                 (
                     SearchConfig {
                         time_limit: t1,
-                        max_clauses: 50_000,
                         selection: SelectionStrategy::AgeWeight(5),
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::KBO,
@@ -83,7 +81,6 @@ impl StrategySchedule {
                 (
                     SearchConfig {
                         time_limit: t2,
-                        max_clauses: 50_000,
                         selection: SelectionStrategy::GoalDirected(5),
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::KBO,
@@ -94,7 +91,6 @@ impl StrategySchedule {
                 (
                     SearchConfig {
                         time_limit: t3,
-                        max_clauses: 50_000,
                         selection: SelectionStrategy::SmallestFirst,
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::KBO,
@@ -105,7 +101,6 @@ impl StrategySchedule {
                 (
                     SearchConfig {
                         time_limit: t4,
-                        max_clauses: 50_000,
                         selection: SelectionStrategy::AgeWeight(5),
                         literal_selection: LiteralSelection::MaxNegativeOrMaxPositive,
                         ordering: TermOrdering::KBO,
@@ -116,7 +111,6 @@ impl StrategySchedule {
                 (
                     SearchConfig {
                         time_limit: t5,
-                        max_clauses: 50_000,
                         selection: SelectionStrategy::AgeWeight(5),
                         literal_selection: LiteralSelection::All,
                         ordering: TermOrdering::KBO,
@@ -127,7 +121,6 @@ impl StrategySchedule {
                 (
                     SearchConfig {
                         time_limit: t6,
-                        max_clauses: 50_000,
                         selection: SelectionStrategy::Fifo,
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::KBO,
@@ -139,7 +132,6 @@ impl StrategySchedule {
                 (
                     SearchConfig {
                         time_limit: t7,
-                        max_clauses: 50_000,
                         selection: SelectionStrategy::AgeWeight(5),
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::LPO,
@@ -150,7 +142,6 @@ impl StrategySchedule {
                 (
                     SearchConfig {
                         time_limit: t8,
-                        max_clauses: 50_000,
                         selection: SelectionStrategy::GoalDirected(10),
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::LPO,
@@ -161,7 +152,6 @@ impl StrategySchedule {
                 (
                     SearchConfig {
                         time_limit: t9,
-                        max_clauses: 50_000,
                         selection: SelectionStrategy::SmallestFirst,
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::LPO,
@@ -267,87 +257,44 @@ pub fn run_schedule(
         actual_configs.push(actual_config);
     }
 
-    let parallelism = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
-
-    // We can't really pass SearchState across threads easily if it's not Send,
-    // but SearchState is fully owned, so we can construct it inside the thread.
-    // However, `clauses` is a slice, we can clone it.
     let clauses_owned = clauses.to_vec();
 
     let mut last_result = SearchResult::GaveUp;
 
-    // We process strategies in chunks based on available parallelism.
-    for chunk in actual_configs.chunks(parallelism) {
-        let (tx, rx) = unbounded();
+    // Run strategies serially.  Each strategy gets its own time slice; the
+    // total wall-clock time across all strategies equals the full budget.
+    for search_config in &actual_configs {
+        let mut clauses_local = clauses_owned.clone();
+        let mut id_gen_local = id_gen.clone();
 
-        std::thread::scope(|s| {
-            for (i, search_config) in chunk.iter().enumerate() {
-                let tx = tx.clone();
-                let clauses_local = clauses_owned.clone();
-                let mut id_gen_local = id_gen.clone();
-                let config_local = config.clone();
-                let search_config_local = search_config.clone();
+        // EPR pre-processing: if the problem is essentially propositional,
+        // enumerate all ground instances before starting the loop.
+        let epr_applied = if let Some(ground) = preprocess_epr(&clauses_local, &mut id_gen_local) {
+            clauses_local = ground;
+            true
+        } else {
+            false
+        };
 
-                std::thread::Builder::new()
-                    .stack_size(8 * 1024 * 1024)
-                    .spawn_scoped(s, move || {
-                        // EPR pre-processing: if the problem is essentially
-                        // propositional, enumerate all ground instances before
-                        // starting the loop.  This is faster than superposition
-                        // for purely propositional problems.
-                        let epr_applied;
-                        let clauses_local = if let Some(ground) =
-                            preprocess_epr(&clauses_local, &mut id_gen_local)
-                        {
-                            epr_applied = true;
-                            ground
-                        } else {
-                            epr_applied = false;
-                            clauses_local
-                        };
-                        let mut state = SearchState::new(clauses_local, id_gen_local, config_local);
-                        let result = search(&mut state, &search_config_local);
-                        // Extract the proof while `state` (and its `varisat::Solver`) is still
-                        // live inside this thread.  `varisat::Solver` is not `Send`, so we
-                        // cannot move `state` across the channel boundary; we serialise the
-                        // proof into a `String` here instead.
-                        let result = if let SearchResult::Refutation(id, _) = result {
-                            let proof = extract_proof(id, &state.clause_store);
-                            let tstp = format_tstp(&proof, symbols);
-                            SearchResult::Refutation(id, tstp)
-                        } else if epr_applied && matches!(result, SearchResult::Saturated) {
-                            // Conservative: EPR instance enumeration is sound but we have
-                            // observed false Saturated results (e.g. MSC024-1).  Demote to
-                            // GaveUp so we never output a wrong Satisfiable/CounterSatisfiable.
-                            SearchResult::GaveUp
-                        } else {
-                            result
-                        };
-                        let _ = tx.send((i, result));
-                    })
-                    .expect("failed to spawn worker thread");
-            }
-        });
+        let mut state = SearchState::new(clauses_local, id_gen_local, config.clone());
+        let result = search(&mut state, search_config);
 
-        // Collect all results for this chunk.
-        // We drop our tx so the channel closes when all threads finish.
-        drop(tx);
+        let result = if let SearchResult::Refutation(id, _) = result {
+            let proof = extract_proof(id, &state.clause_store);
+            let tstp = format_tstp(&proof, symbols);
+            SearchResult::Refutation(id, tstp)
+        } else if epr_applied && matches!(result, SearchResult::Saturated) {
+            // Conservative: EPR instance enumeration is sound but we have
+            // observed false Saturated results (e.g. MSC024-1).  Demote to
+            // GaveUp so we never output a wrong Satisfiable/CounterSatisfiable.
+            SearchResult::GaveUp
+        } else {
+            result
+        };
 
-        let mut results: Vec<_> = rx.into_iter().collect();
-        results.sort_by_key(|&(i, _)| i); // Keep original order for determinism
-
-        // Scan the entire chunk before deciding.  A Refutation wins
-        // unconditionally.  Saturated (or any other non-Refutation result)
-        // is stored in last_result so that subsequent chunks still run —
-        // a single strategy saturating with the wrong ordering must not
-        // silence later strategies that might find a Refutation.
-        for (_, result) in results {
-            match result {
-                SearchResult::Refutation(..) => return result,
-                other => last_result = other,
-            }
+        match result {
+            SearchResult::Refutation(..) => return result,
+            other => last_result = other,
         }
     }
 

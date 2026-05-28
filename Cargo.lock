@@ -24,15 +24,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
-name = "crossbeam-channel"
-version = "0.5.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82b8f8f868b36967f9606790d1903570de9ceaf870a7bf9fbbd3016d636a2cb2"
-dependencies = [
- "crossbeam-utils",
-]
-
-[[package]]
 name = "crossbeam-deque"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -89,13 +80,13 @@ checksum = "616ec5685824bcc94416c6d4a7a446eea774a31efd7062c8480ba6fd06d7a6e5"
 
 [[package]]
 name = "memchr"
-version = "2.8.0"
+version = "2.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
+checksum = "6b947ae49db0d222b1dbc6b113ce7248a3fc3a6ca21b696717bfc000ba4484d8"
 
 [[package]]
 name = "mrs"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "mrs-calculus",
  "mrs-cnf",
@@ -109,11 +100,11 @@ dependencies = [
 
 [[package]]
 name = "mrs-bench"
-version = "0.1.1"
+version = "0.1.2"
 
 [[package]]
 name = "mrs-calculus"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "mrs-core",
  "mrs-index",
@@ -122,25 +113,25 @@ dependencies = [
 
 [[package]]
 name = "mrs-cnf"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "mrs-core",
 ]
 
 [[package]]
 name = "mrs-core"
-version = "0.1.1"
+version = "0.1.2"
 
 [[package]]
 name = "mrs-index"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "mrs-core",
 ]
 
 [[package]]
 name = "mrs-proof"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "mrs-core",
  "mrs-szs",
@@ -148,9 +139,8 @@ dependencies = [
 
 [[package]]
 name = "mrs-search"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
- "crossbeam-channel",
  "mrs-calculus",
  "mrs-core",
  "mrs-index",
@@ -160,11 +150,11 @@ dependencies = [
 
 [[package]]
 name = "mrs-szs"
-version = "0.1.1"
+version = "0.1.2"
 
 [[package]]
 name = "mrs-tptp"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pretty_assertions",
  "rayon",
@@ -173,7 +163,7 @@ dependencies = [
 
 [[package]]
 name = "mrs-unify"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "mrs-core",
 ]

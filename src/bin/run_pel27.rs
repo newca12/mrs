@@ -83,7 +83,6 @@ fn main() {
     );
     let config = SearchConfig {
         time_limit: std::time::Duration::from_secs(5),
-        max_clauses: 50_000,
         selection: SelectionStrategy::AgeWeight(5),
         literal_selection: LiteralSelection::AllNegative,
         ordering: TermOrdering::KBO,

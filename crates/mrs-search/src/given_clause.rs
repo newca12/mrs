@@ -173,7 +173,7 @@ fn detect_comm_symbols(state: &crate::state::SearchState) -> HashSet<SymbolId> {
 ///
 /// Returns `SearchResult::Refutation(id)` if the empty clause is derived,
 /// `SearchResult::Saturated` if all clauses are processed without contradiction,
-/// or `SearchResult::Timeout`/`SearchResult::ResourceOut` on resource limits.
+/// or `SearchResult::Timeout` on timeout.
 pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
     let ordering = &config.ordering;
     let sym_config = ordering.symbol_config();
@@ -222,11 +222,6 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         // Check time limit
         if start.elapsed() >= config.time_limit {
             return SearchResult::Timeout;
-        }
-
-        // Check clause limit
-        if state.total_clauses() >= config.max_clauses {
-            return SearchResult::ResourceOut;
         }
 
         // Skip tautologies
@@ -967,7 +962,6 @@ mod tests {
         );
         let config = SearchConfig {
             time_limit: std::time::Duration::from_secs(5),
-            max_clauses: 50_000,
             selection: SelectionStrategy::AgeWeight(5),
             literal_selection: LiteralSelection::All,
             ordering: TermOrdering::KBO,
@@ -1060,7 +1054,6 @@ mod tests {
         );
         let config = SearchConfig {
             time_limit: std::time::Duration::from_secs(5),
-            max_clauses: 50_000,
             selection: SelectionStrategy::AgeWeight(5),
             literal_selection: LiteralSelection::AllNegative,
             ordering: TermOrdering::KBO,

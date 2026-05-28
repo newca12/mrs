@@ -52,8 +52,6 @@ pub enum SearchResult {
     Saturated,
     /// The time limit was exceeded.
     Timeout,
-    /// The clause limit was exceeded.
-    ResourceOut,
     /// The search gave up (e.g. saturated with an incomplete strategy).
     GaveUp,
 }
@@ -63,8 +61,6 @@ pub enum SearchResult {
 pub struct SearchConfig {
     /// Maximum wall-clock time for the search.
     pub time_limit: Duration,
-    /// Maximum number of clauses to store.
-    pub max_clauses: usize,
     /// Clause selection strategy.
     pub selection: SelectionStrategy,
     /// Literal selection strategy for inference restriction.
@@ -86,7 +82,6 @@ impl Default for SearchConfig {
     fn default() -> Self {
         Self {
             time_limit: Duration::from_secs(5),
-            max_clauses: 10_000,
             selection: SelectionStrategy::AgeWeight(5),
             literal_selection: LiteralSelection::AllNegative,
             ordering: TermOrdering::KBO,
