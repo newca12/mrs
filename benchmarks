@@ -1,4 +1,94 @@
 
+Results for mrs commit a5b220380d6a24234c59275a188a4f6a948f7160
+
+[www@teenf9901 mrs]$ TPTP=/DATA/ai/mrs/crates/mrs-bench/problems/casc-30 crates/mrs-bench/casc.sh --systems reference,mrs --divisions fne
+Division  Problems    mrs                   reference
+                      Solved  Avg (s)      Solved  Avg (s)
+------------------  --------------------  --------------------
+FNE            100        26   13.872         100    0.019
+------------------  --------------------  --------------------
+TOTAL          100        26   13.872         100    0.019
+
+DISAGREEMENTS — 3 problem(s) where systems gave contradictory answers:
+  FNE     LCL660+1.015                    mrs=CounterSatisfiable  reference=Theorem  ⚠ SOUNDNESS
+  FNE     SYN938+1                        mrs=CounterSatisfiable  reference=Theorem  ⚠ SOUNDNESS
+  FNE     SYN986+1.004                    mrs=CounterSatisfiable  reference=Theorem  ⚠ SOUNDNESS
+
+POLARITY VIOLATIONS — none detected.
+
+Results for mrs commit c6eb579c47b11726154c1eaa6c215c1edc21ea2c
+ongoing
+[root@mtsdev02 mrs]# TPTP=/mnt/sda1/mrs/crates/mrs-bench/problems/casc-30 crates/mrs-bench/casc.sh --systems reference,mrs
+
+Results for mrs commit 38f023ef0e0319226bf659fc5dc9f53511eb81c2
+
+[www@teenf9901 mrs]$ TPTP=/DATA/ai/mrs/crates/mrs-bench/problems/casc-30 crates/mrs-bench/casc.sh --systems reference,mrs
+CASC-30 Results — 2026-05-28 08:03  (1101 problems × 2 systems)
+===============================================================
+
+Division  Problems    mrs                   reference
+                      Solved  Avg (s)      Solved  Avg (s)
+------------------  --------------------  --------------------
+FNE            100        16    9.517         100    0.019
+FEQ            400        37    5.110         399    0.019
+EPU            100        11   10.095         100    0.019
+EPS            100        14    3.182         100    0.019
+UEQ            300        19   34.888         300    0.019
+ICU            101         7    0.058          57    0.019
+------------------  --------------------  --------------------
+TOTAL         1101       104   11.156        1056    0.019
+
+DISAGREEMENTS — 3 problem(s) where systems gave contradictory answers:
+  EPS     NLP006-1                        mrs=Unsatisfiable  reference=Satisfiable  ⚠ SOUNDNESS
+  EPS     NLP008-1                        mrs=Unsatisfiable  reference=Satisfiable  ⚠ SOUNDNESS
+  ICU     VVA001+1                        mrs=Theorem  reference=CounterSatisfiable  ⚠ SOUNDNESS
+
+POLARITY VIOLATIONS — 2 case(s) of wrong SZS polarity:
+  EPS     NLP006-1                        mrs=Unsatisfiable  (expected one of ["CounterSatisfiable", "Satisfiable"])  ⚠ UNSOUND
+  EPS     NLP008-1                        mrs=Unsatisfiable  (expected one of ["CounterSatisfiable", "Satisfiable"])  ⚠ UNSOUND
+
+ongoing
+hack@pve:~/mrs$ TPTP=/home/hack/mrs/crates/mrs-bench/problems/casc-30 crates/mrs-bench/casc.sh --systems reference,mrs --divisions eps,epu,feq
+CASC-30 Results — 2026-05-28 10:44  (600 problems × 2 systems)
+==============================================================
+
+Division  Problems    mrs                   reference
+                      Solved  Avg (s)      Solved  Avg (s)
+------------------  --------------------  --------------------
+EPS            100        15    3.939         100    0.011
+EPU            100        11    4.952         100    0.011
+FEQ            400        64    1.794         399    0.011
+------------------  --------------------  --------------------
+TOTAL          600        90    2.537         599    0.011
+
+DISAGREEMENTS — 3 problem(s) where systems gave contradictory answers:
+  EPS     NLP006-1                        mrs=Unsatisfiable  reference=Satisfiable  ⚠ SOUNDNESS
+  EPS     NLP008-1                        mrs=Unsatisfiable  reference=Satisfiable  ⚠ SOUNDNESS
+  EPS     NLP012-1                        mrs=Unsatisfiable  reference=Satisfiable  ⚠ SOUNDNESS
+
+POLARITY VIOLATIONS — 3 case(s) of wrong SZS polarity:
+  EPS     NLP006-1                        mrs=Unsatisfiable  (expected one of ["CounterSatisfiable", "Satisfiable"])  ⚠ UNSOUND
+  EPS     NLP008-1                        mrs=Unsatisfiable  (expected one of ["CounterSatisfiable", "Satisfiable"])  ⚠ UNSOUND
+  EPS     NLP012-1                        mrs=Unsatisfiable  (expected one of ["CounterSatisfiable", "Satisfiable"])  ⚠ UNSOUND
+
+hack@pve:~/mrs$ TPTP=/home/hack/mrs/crates/mrs-bench/problems/casc-30 crates/mrs-bench/casc.sh --systems reference,mrs --divisions fne,ueq
+[casc] Done. Results: /home/hack/mrs/crates/mrs-bench/results/casc-30/20260527_161327/run.csv
+hack@pve:~/mrs$
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+==============================================================
+
+Division  Problems    mrs                   reference
+                      Solved  Avg (s)      Solved  Avg (s)
+------------------  --------------------  --------------------
+FNE            100        19    4.990         100    0.011
+UEQ            300        15   21.399         300    0.011
+------------------  --------------------  --------------------
+TOTAL          400        34   12.229         400    0.011
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
 Results for mrs commit 4c7418c39df5b1ea489d560d4b5fb8a97f5836f0
 [www@teenf9901 mrs]$ cargo run -p mrs-bench --bin bench_report -- /DATA/ai/mrs/crates/mrs-bench/results/casc-30/20260527_095507/run.csv
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
@@ -17,6 +107,33 @@ TOTAL          100         7    5.715
 Results for mrs commit d9dacb516c0cf5c17c5eda34d7b67436057ac138
 
 mtsdev02 still ongoing [casc] 586/1101 completed
+CASC-30 Results — 2026-05-28 06:42  (1101 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100         7    5.954
+FEQ            400        63    3.385
+EPU            100         8    3.063
+EPS            100        35    3.533
+UEQ            300        20   18.862
+ICU            101         9    1.570
+------------------  --------------------
+TOTAL         1101       142    5.595
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — 8 case(s) of wrong SZS polarity:
+  EPU     MSC024-1                        mrs=Satisfiable  (expected one of ["Unsatisfiable"])  ⚠ UNSOUND
+  UEQ     LCL195-10                       mrs=Satisfiable  (expected one of ["Unsatisfiable"])  ⚠ UNSOUND
+  UEQ     LCL203-10                       mrs=Satisfiable  (expected one of ["Unsatisfiable"])  ⚠ UNSOUND
+  UEQ     LCL211-10                       mrs=Satisfiable  (expected one of ["Unsatisfiable"])  ⚠ UNSOUND
+  UEQ     LCL224-10                       mrs=Satisfiable  (expected one of ["Unsatisfiable"])  ⚠ UNSOUND
+  UEQ     LCL416-10                       mrs=Satisfiable  (expected one of ["Unsatisfiable"])  ⚠ UNSOUND
+  UEQ     NUM284-10.014                   mrs=Satisfiable  (expected one of ["Unsatisfiable"])  ⚠ UNSOUND
+  UEQ     RNG001-10                       mrs=Satisfiable  (expected one of ["Unsatisfiable"])  ⚠ UNSOUND
+
 
 [www@teenf9901 mrs]$ ./crates/mrs-bench/systems/vampire/bin/vampire --version
 Vampire 5.0.1 (Release build, commit cb4838130 on 2026-05-26 10:04:53 +0200)

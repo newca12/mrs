@@ -27,6 +27,7 @@
 //! ```
 
 pub mod avatar;
+pub mod fvo;
 pub mod given_clause;
 pub mod instgen;
 pub mod select;
@@ -76,6 +77,12 @@ pub struct SearchConfig {
     pub max_term_weight: Option<u32>,
     /// Whether to enable AVATAR clause splitting via an embedded SAT solver.
     pub use_avatar: bool,
+    /// If true, only generate resolvents where at least one parent is a unit
+    /// (single-literal clause).  This restricts the inference to unit resolution,
+    /// which dramatically reduces passive-set growth on FNE-encoded problems whose
+    /// proofs consist entirely of unit-chain derivations.  The restriction is
+    /// incomplete for general clause sets but correct (sound) everywhere.
+    pub unit_only_resolution: bool,
 }
 
 impl Default for SearchConfig {
@@ -87,6 +94,7 @@ impl Default for SearchConfig {
             ordering: TermOrdering::KBO,
             max_term_weight: Some(200),
             use_avatar: true,
+            unit_only_resolution: false,
         }
     }
 }

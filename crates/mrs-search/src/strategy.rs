@@ -19,6 +19,7 @@ use mrs_core::term::Term;
 use mrs_proof::extract::extract_proof;
 use mrs_proof::tstp::format_tstp;
 
+use crate::fvo::try_fvo_refutation;
 use crate::given_clause::search;
 use crate::instgen::{is_epr, preprocess_epr};
 use crate::state::SearchState;
@@ -37,15 +38,33 @@ impl StrategySchedule {
     /// Creates the default strategy schedule.
     ///
     /// 1. AgeWeight(5) + AllNegative + KBO — balanced exploration (15%)
-    /// 2. AgeWeight(10) + AllNegative + KBO — prefer lighter clauses (10%)
+    /// 2. SmallestFirst + AllNegative + KBO + no weight limit + no AVATAR — deep chain proofs (10%)
     /// 3. SmallestFirst + AllNegative + KBO — pure best-first (10%)
     /// 4. AgeWeight(5) + MaxNegative + KBO — aggressive selection (10%)
     /// 5. AgeWeight(5) + All + KBO — unrestricted literal selection (10%)
-    /// 6. Fifo + AllNegative + KBO — breadth-first saturation (10%)
+    /// 6. AgeWeight(5) + All + KBO + no AVATAR — FNE/definitional CNF proofs (10%)
     /// 7. AgeWeight(5) + AllNegative + LPO — LPO balanced exploration (15%)
-    /// 8. AgeWeight(10) + AllNegative + LPO — LPO prefer lighter (10%)
+    /// 8. GoalDirected(10) + AllNegative + LPO — LPO goal-directed (10%)
     /// 9. SmallestFirst + AllNegative + LPO — LPO best-first (10%)
     pub fn default_schedule(total_time: Duration) -> Self {
+        // Allow overriding to a single strategy for diagnosis: MRS_SINGLE_STRATEGY=N
+        // runs only strategy N (1-indexed) for the full time budget.
+        if let Ok(val) = std::env::var("MRS_SINGLE_STRATEGY") {
+            if let Ok(n) = val.trim().parse::<usize>() {
+                let full = StrategySchedule::_all_strategies(total_time);
+                if n >= 1 && n <= full.strategies.len() {
+                    let (mut cfg, _) = full.strategies[n - 1].clone();
+                    cfg.time_limit = total_time;
+                    return StrategySchedule {
+                        strategies: vec![(cfg, total_time)],
+                    };
+                }
+            }
+        }
+        Self::_all_strategies(total_time)
+    }
+
+    fn _all_strategies(total_time: Duration) -> Self {
         let ms = total_time.as_millis() as u64;
         let t1 = Duration::from_millis(ms * 15 / 100);
         let t2 = Duration::from_millis(ms * 10 / 100);
@@ -81,10 +100,15 @@ impl StrategySchedule {
                 (
                     SearchConfig {
                         time_limit: t2,
-                        selection: SelectionStrategy::GoalDirected(5),
+                        selection: SelectionStrategy::SmallestFirst,
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::KBO,
-                        ..SearchConfig::default()
+                        // No weight limit: allows proofs that require terms of unbounded
+                        // size (e.g. SYN986+1.004 needs succ^65536(zero) as a witness).
+                        max_term_weight: None,
+                        // No AVATAR: avoids overhead and incorrect dormancy on chain proofs.
+                        use_avatar: false,
+                        unit_only_resolution: false,
                     },
                     t2,
                 ),
@@ -121,10 +145,19 @@ impl StrategySchedule {
                 (
                     SearchConfig {
                         time_limit: t6,
-                        selection: SelectionStrategy::Fifo,
-                        literal_selection: LiteralSelection::AllNegative,
+                        selection: SelectionStrategy::AgeWeight(5),
+                        literal_selection: LiteralSelection::All,
                         ordering: TermOrdering::KBO,
-                        ..SearchConfig::default()
+                        // No weight limit: SYN938+1 has 185 clauses whose proof path
+                        // requires resolving a 46-literal definitional main clause through
+                        // multi-step chains; intermediate clauses can exceed 200 weight,
+                        // so removing the cap allows the proof to go through.
+                        max_term_weight: None,
+                        // No AVATAR: AVATAR splits definition clauses (e.g. ~def_k | p(X))
+                        // into separate components and can dormant the ~def_k unit under
+                        // the SAT model, blocking key resolutions in FNE-style problems.
+                        use_avatar: false,
+                        unit_only_resolution: false,
                     },
                     t6,
                 ),
@@ -158,6 +191,24 @@ impl StrategySchedule {
                         ..SearchConfig::default()
                     },
                     t9,
+                ),
+                // Diagnostic strategy 10: SmallestFirst + All + max_weight=12 + AVATAR
+                // AVATAR splits the 46-literal all-positive main clause into 46 independent
+                // branches; with SmallestFirst+All+weight=12 each branch refutation is fast
+                // (small sub-problem, tight weight keeps passive compact).  BUR output is
+                // never weight-filtered (see given_clause.rs).
+                // (zero time in normal runs; testable via MRS_SINGLE_STRATEGY=10)
+                (
+                    SearchConfig {
+                        time_limit: Duration::ZERO,
+                        selection: SelectionStrategy::SmallestFirst,
+                        literal_selection: LiteralSelection::All,
+                        ordering: TermOrdering::KBO,
+                        max_term_weight: Some(15),
+                        use_avatar: true,
+                        unit_only_resolution: false,
+                    },
+                    Duration::ZERO,
                 ),
             ],
         }
@@ -281,13 +332,25 @@ pub fn run_schedule(
 
     let mut last_result = SearchResult::GaveUp;
 
+    // FVO pre-pass: for clause sets where all predicate arguments are variables
+    // (no equality, no function terms), the first-order problem is
+    // propositionally equivalent.  Try a BFS propositional refutation first;
+    // it solves problems like SYN938+1 in milliseconds where the regular
+    // given-clause loop times out.
+    {
+        let mut fvo_id_gen = id_gen.clone();
+        if let Some(result) = try_fvo_refutation(&clauses_owned, &mut fvo_id_gen, symbols) {
+            return result;
+        }
+    }
+
     // Total time budget = sum of all strategy slices.
     let total_budget: Duration = actual_configs.iter().map(|c| c.time_limit).sum();
     let schedule_start = Instant::now();
 
     // Run strategies serially.  Each strategy gets its own time slice; the
     // total wall-clock time across all strategies equals the full budget.
-    for search_config in &actual_configs {
+    for (strategy_idx, search_config) in actual_configs.iter().enumerate() {
         // Guard: if the overall budget is already exhausted (e.g. because
         // prior strategies' preprocessing took longer than their slice),
         // stop launching new strategies.
@@ -300,6 +363,13 @@ pub fn run_schedule(
         // together never exceed the remaining overall budget.
         let remaining = total_budget - elapsed;
         let effective_limit = search_config.time_limit.min(remaining);
+        // Skip strategies with zero effective time limit (e.g., diagnostic
+        // strategies configured with Duration::ZERO that are only run via
+        // MRS_SINGLE_STRATEGY).  Running search() with a zero budget yields
+        // an immediate Timeout that would overwrite a prior Saturated/GaveUp.
+        if effective_limit.is_zero() {
+            continue;
+        }
         let mut search_config = search_config.clone();
         search_config.time_limit = effective_limit;
 
@@ -339,6 +409,18 @@ pub fn run_schedule(
 
         let result = search(&mut state, &search_config);
 
+        if std::env::var("TRACE_SEARCH").is_ok() {
+            eprintln!(
+                "[TRACE] strategy {} ({:?}+{:?}+no_weight={}) result={:?} elapsed={:.2}s",
+                strategy_idx + 1,
+                search_config.selection,
+                search_config.literal_selection,
+                search_config.max_term_weight.is_none(),
+                result,
+                schedule_start.elapsed().as_secs_f64(),
+            );
+        }
+
         let result = if let SearchResult::Refutation(id, _) = result {
             let proof = extract_proof(id, &state.clause_store);
             let tstp = format_tstp(&proof, symbols);
@@ -347,6 +429,13 @@ pub fn run_schedule(
             // Conservative: EPR instance enumeration is sound but we have
             // observed false Saturated results (e.g. MSC024-1).  Demote to
             // GaveUp so we never output a wrong Satisfiable/CounterSatisfiable.
+            SearchResult::GaveUp
+        } else if search_config.max_term_weight.is_some()
+            && matches!(result, SearchResult::Saturated)
+        {
+            // Weight-bounded search is incomplete: saturation only means "no
+            // proof exists within the weight budget", not genuine unsatisfiability.
+            // Demote to GaveUp so we never emit a wrong CounterSatisfiable.
             SearchResult::GaveUp
         } else {
             result
