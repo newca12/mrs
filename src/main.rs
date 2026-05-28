@@ -25,6 +25,10 @@ fn main() {
 
     let mut path: Option<String> = None;
     let mut time_secs: u64 = 30;
+    #[cfg(feature = "proover")]
+    let mut quiet = false;
+    #[cfg(feature = "proover")]
+    let mut fast = false;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -38,6 +42,10 @@ fn main() {
                     process::exit(1);
                 });
             }
+            #[cfg(feature = "proover")]
+            "--quiet" => quiet = true,
+            #[cfg(feature = "proover")]
+            "--fast" => fast = true,
             _ => {
                 if path.is_some() {
                     eprintln!("Usage: mrs [--time <seconds>] <file.p>");
@@ -53,18 +61,54 @@ fn main() {
         process::exit(1);
     };
 
-    let problem_name = Path::new(&path)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("unknown");
+    // Helper macro: print informational stderr unless --quiet is in effect.
+    // In default builds, `quiet` does not exist, so the macro reduces to a
+    // plain `eprintln!`.
+    #[cfg(feature = "proover")]
+    macro_rules! info {
+        ($($arg:tt)*) => { if !quiet { eprintln!($($arg)*); } };
+    }
+    #[cfg(not(feature = "proover"))]
+    macro_rules! info {
+        ($($arg:tt)*) => { eprintln!($($arg)*); };
+    }
 
-    // Read the file
-    let input = match fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Error reading {}: {}", path, e);
+    let problem_name = if path == "-" {
+        "stdin"
+    } else {
+        Path::new(&path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+    };
+
+    // Read the input. With the `proover` feature, `-` means stdin.
+    let input = if path == "-" {
+        #[cfg(feature = "proover")]
+        {
+            use std::io::Read;
+            let mut buf = String::new();
+            if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
+                eprintln!("Error reading stdin: {}", e);
+                println!("{}", szs_status_line(SzsStatus::Error, problem_name));
+                process::exit(1);
+            }
+            buf
+        }
+        #[cfg(not(feature = "proover"))]
+        {
+            eprintln!("Error: `-` (stdin) requires the `proover` feature");
             println!("{}", szs_status_line(SzsStatus::Error, problem_name));
             process::exit(1);
+        }
+    } else {
+        match fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error reading {}: {}", path, e);
+                println!("{}", szs_status_line(SzsStatus::Error, problem_name));
+                process::exit(1);
+            }
         }
     };
 
@@ -93,10 +137,10 @@ fn main() {
 
         match include::resolve_and_lower(&problem, &mut lowered, base_dir, tptp_root.as_deref()) {
             Ok(()) => {
-                eprintln!("% Resolved {} include directive(s)", problem.includes.len());
+                info!("% Resolved {} include directive(s)", problem.includes.len());
             }
             Err(e) => {
-                eprintln!("Warning: include resolution failed: {}", e);
+                info!("Warning: include resolution failed: {}", e);
             }
         }
     }
@@ -148,7 +192,7 @@ fn main() {
             }
         }
 
-        eprintln!(
+        info!(
             "% SInE filtered axioms: {} -> {}, cnf: {} -> {}",
             before_axioms,
             lowered.axioms.len(),
@@ -159,7 +203,7 @@ fn main() {
 
     // Display input summary
     let cnf_count = lowered.cnf_clauses.len();
-    eprintln!(
+    info!(
         "% Problem: {} ({} axioms, {} conjectures, {} cnf clauses)",
         problem_name,
         lowered.axioms.len(),
@@ -207,12 +251,34 @@ fn main() {
 
     if elapsed >= total_budget {
         println!("{}", szs_status_line(SzsStatus::Timeout, problem_name));
-        print_statistics(SzsStatus::Timeout, elapsed);
+        #[cfg(feature = "proover")]
+        {
+            if !quiet {
+                print_statistics(SzsStatus::Timeout, elapsed);
+            }
+        }
+        #[cfg(not(feature = "proover"))]
+        {
+            print_statistics(SzsStatus::Timeout, elapsed);
+        }
         process::exit(0);
     }
 
     let search_budget = total_budget - elapsed;
-    let schedule = StrategySchedule::default_schedule(search_budget);
+    let schedule = {
+        #[cfg(feature = "proover")]
+        {
+            if fast {
+                fast_schedule(search_budget)
+            } else {
+                StrategySchedule::default_schedule(search_budget)
+            }
+        }
+        #[cfg(not(feature = "proover"))]
+        {
+            StrategySchedule::default_schedule(search_budget)
+        }
+    };
     let result = run_schedule(&all_clauses, id_gen, &schedule, &lowered.symbols);
 
     // --- Output result ---
@@ -240,14 +306,45 @@ fn main() {
 
     println!("{}", szs_status_line(status, problem_name));
 
-    // Output proof if refutation found
-    if let SearchResult::Refutation(_, tstp_proof) = &result {
-        println!("{}", szs_output_start("Proof", problem_name));
-        println!("{}", tstp_proof);
-        println!("{}", szs_output_end("Proof", problem_name));
-    }
+    // Output proof if refutation found (skip in quiet mode: mrs-proover only
+    // cares about the SZS line).
+    #[cfg(feature = "proover")]
+    let emit_extras = !quiet;
+    #[cfg(not(feature = "proover"))]
+    let emit_extras = true;
 
-    print_statistics(status, start.elapsed());
+    if emit_extras {
+        if let SearchResult::Refutation(_, tstp_proof) = &result {
+            println!("{}", szs_output_start("Proof", problem_name));
+            println!("{}", tstp_proof);
+            println!("{}", szs_output_end("Proof", problem_name));
+        }
+
+        print_statistics(status, start.elapsed());
+    }
+}
+
+/// Single-strategy short-budget schedule for ProoVer-style ATP queries.
+///
+/// Each call from `mrs-proover` carries a handful of premises and a small
+/// conclusion. The default 9-strategy schedule pays per-strategy setup cost
+/// nine times over a 1-2 second budget, which is the worst possible split.
+/// This schedule runs one balanced KBO strategy for the whole budget.
+#[cfg(feature = "proover")]
+fn fast_schedule(total_time: Duration) -> StrategySchedule {
+    use mrs_search::{LiteralSelection, SearchConfig, SelectionStrategy, TermOrdering};
+    StrategySchedule {
+        strategies: vec![(
+            SearchConfig {
+                time_limit: total_time,
+                selection: SelectionStrategy::AgeWeight(5),
+                literal_selection: LiteralSelection::AllNegative,
+                ordering: TermOrdering::KBO,
+                ..SearchConfig::default()
+            },
+            total_time,
+        )],
+    }
 }
 
 /// Returns peak virtual memory in MB by reading /proc/self/status (Linux only).

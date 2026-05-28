@@ -34,6 +34,7 @@ fn usage() -> ExitCode {
     eprintln!(
         "usage: mrs-proover [--problems-dir DIR] [--no-atp] [--no-mrs]\n\
                       [--eprover PATH] [--vampire PATH]\n\
+                      [--only-mrs|--only-eprover|--only-vampire]\n\
                       [--time SECS] [--verbose] <proof.p>"
     );
     ExitCode::from(2)
@@ -49,6 +50,7 @@ fn main() -> ExitCode {
     let mut vampire_override: Option<PathBuf> = None;
     let mut verbose = false;
     let mut total_budget_secs: Option<u64> = None;
+    let mut only: Option<&'static str> = None;
     let mut iter = args.into_iter();
     while let Some(a) = iter.next() {
         match a.as_str() {
@@ -59,6 +61,9 @@ fn main() -> ExitCode {
             },
             "--no-atp" => no_atp = true,
             "--no-mrs" => no_mrs = true,
+            "--only-mrs" => only = Some("mrs"),
+            "--only-eprover" => only = Some("eprover"),
+            "--only-vampire" => only = Some("vampire"),
             "--eprover" => match iter.next() {
                 Some(v) => eprover_override = Some(PathBuf::from(v)),
                 None => return usage(),
@@ -111,15 +116,27 @@ fn main() -> ExitCode {
     }
 
     // Build ladder: in-process mrs first (cheapest), then eprover, then vampire.
+    // `--only-<backend>` overrides everything else.
     let mut ladder = LadderAtp::new();
-    if !no_mrs {
+    let pick = |name: &str| match only {
+        Some(o) => o == name,
+        None => match name {
+            "mrs" => !no_mrs,
+            _ => true,
+        },
+    };
+    if pick("mrs") {
         ladder = ladder.push(Box::new(MrsAtp::new()));
     }
-    if let Some(p) = eprover_override.or_else(find_eprover) {
-        ladder = ladder.push(Box::new(EProverAtp::new(p)));
+    if pick("eprover") {
+        if let Some(p) = eprover_override.or_else(find_eprover) {
+            ladder = ladder.push(Box::new(EProverAtp::new(p)));
+        }
     }
-    if let Some(p) = vampire_override.or_else(find_vampire) {
-        ladder = ladder.push(Box::new(VampireAtp::new(p)));
+    if pick("vampire") {
+        if let Some(p) = vampire_override.or_else(find_vampire) {
+            ladder = ladder.push(Box::new(VampireAtp::new(p)));
+        }
     }
     let v = if ladder.backends.is_empty() {
         let atp = NoopAtp;

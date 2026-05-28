@@ -43,3 +43,13 @@ mrs-cnf = { workspace = true }
 mrs-calculus = { workspace = true }
 mrs-search = { workspace = true }
 varisat.workspace = true
+
+[features]
+default = []
+# Enables ProoVer-friendly behaviours on the `mrs` binary:
+# - read TPTP problem from stdin when the path is `-`
+# - `--quiet` suppresses informational stderr/stdout chatter
+# - `--fast` selects a short-budget single-strategy schedule tuned for
+#   the small ATP queries emitted by `mrs-proover`.
+# All three are no-ops in the default build.
+proover = []
