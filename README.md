@@ -1,36 +1,33 @@
 # mrs — Mechanical Reasoning System
 
+[![Crates.io](https://img.shields.io/crates/v/mrs.svg)](https://crates.io/crates/mrs)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+
 An automated theorem prover written in Rust, targeting the [CASC](http://www.tptp.org/CASC/) competition.
 
-Reads [TPTP](https://www.tptp.org/) problem files and outputs results in SZS/TSTP format using a superposition calculus with a given-clause loop and a strategy portfolio scheduler.
+Reads [TPTP](https://www.tptp.org/) problem files and outputs results in [SZS/TSTP](https://tptp.org/Seminars/TPTPContentAndStandards/SZSPresentationSlides.pdf) format using a superposition calculus with a given-clause loop and a strategy portfolio scheduler.
 
-## Prerequisites
+## Install
 
-**Rust toolchain:** edition 2024, resolver 3 — requires stable ≥ 1.85.
-
-```bash
-rustup show          # check current version
-rustup update stable # update if needed
-```
-
-## Building
+The easiest way to get `mrs` is via [crates.io](https://crates.io/crates/mrs):
 
 ```bash
-cargo build           # debug build
-cargo build --release # release (use for benchmarking)
-cargo check           # fast type-check only
+cargo install mrs
 ```
 
-## Usage
+This requires a Rust toolchain ≥ 1.85 (`rustup update stable` if needed).
+
+Pre-built binaries are not yet provided; see [Building from source](#building-from-source) if you prefer not to use `cargo install`.
+
+## Basic usage
 
 ```bash
-cargo run -- problems/socrates.p
-cargo run --release -- problems/pel1.p
+mrs problem.p
 ```
 
-Output lines begin with `% SZS status ...`. A refutation also produces a TSTP proof block.
+Output lines begin with `% SZS status ...`.  On a successful refutation a TSTP proof block is also printed.
 
-**Example** (`problems/socrates.p`):
+**Example** — given `socrates.p`:
 
 ```tptp
 fof(ax1, axiom, ![X]: (human(X) => mortal(X))).
@@ -45,43 +42,62 @@ fof(goal, conjecture, mortal(socrates)).
 % SZS output end Proof for socrates
 ```
 
-### TPTP `%include` directives
+## Options
 
-Set the `TPTP` environment variable to the root of a local TPTP library installation when problems use standard library includes:
-
-```bash
-TPTP=/path/to/TPTP cargo run --release -- problem.p
+```
+mrs [--time <seconds>] <file.p>
 ```
 
-This is not needed for the bundled `problems/` files.
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--time <n>` | `30` | Wall-clock time limit in seconds |
+
+## TPTP `%include` directives
+
+Problems that reference the standard TPTP library via `%include` need the `TPTP` environment variable set to the root of a local TPTP installation:
+
+```bash
+TPTP=/path/to/TPTP-v9.x.x mrs problem.p
+```
+
+This is not needed for problems that are self-contained.
+
+## Building from source
+
+```bash
+git clone https://github.com/newca12/mrs
+cd mrs
+cargo build --release      # binary at target/release/mrs
+cargo test --workspace     # run all tests
+```
 
 ## Architecture
 
 The pipeline for each problem:
 
-1. **Parse** — `mrs-tptp-parser` converts TPTP text to an AST.
+1. **Parse** — `mrs-tptp` converts TPTP text to a zero-copy AST.
 2. **Lower** — `src/lowering.rs` maps the AST to `mrs-core` types.
 3. **Clausify** — `mrs-cnf` transforms formulas to CNF (NNF → Skolemization → definitional CNF). Conjectures are negated for refutation-based proving.
-4. **Search** — `mrs-search` runs a given-clause loop. A strategy portfolio of 9 configurations is tried in sequence; the first refutation found wins.
+4. **Search** — `mrs-search` runs a given-clause loop with a strategy portfolio of 9 configurations tried in sequence; the first refutation found wins.
 5. **Output** — `mrs-szs` formats the SZS status line; `mrs-proof` extracts and formats the TSTP proof on refutation.
 
 ### Strategy portfolio
 
-Nine strategies run serially, each with a fresh `SearchState`. Time is split across them proportionally from the 30-second budget:
+Nine strategies run serially, each with a fresh search state. Time is split proportionally from the total budget:
 
 | # | Selection | Literal selection | Ordering | Time share |
 |---|-----------|-------------------|----------|------------|
 | 1 | AgeWeight(5) | AllNegative | KBO | 15% |
-| 2 | AgeWeight(10) | AllNegative | KBO | 10% |
+| 2 | GoalDirected(5) | AllNegative | KBO | 10% |
 | 3 | SmallestFirst | AllNegative | KBO | 10% |
-| 4 | AgeWeight(5) | MaxNegative | KBO | 10% |
+| 4 | AgeWeight(5) | MaxNegativeOrMaxPositive | KBO | 10% |
 | 5 | AgeWeight(5) | All | KBO | 10% |
 | 6 | FIFO | AllNegative | KBO | 10% |
 | 7 | AgeWeight(5) | AllNegative | LPO | 15% |
-| 8 | AgeWeight(10) | AllNegative | LPO | 10% |
+| 8 | GoalDirected(10) | AllNegative | LPO | 10% |
 | 9 | SmallestFirst | AllNegative | LPO | ~10% |
 
-Resource limits per strategy: 50,000 clauses (`ResourceOut`) or the allocated time slice (`Timeout`).
+Each strategy runs until its time slice expires or the search space is exhausted.
 
 ### Workspace layout
 
@@ -100,30 +116,7 @@ mrs/
     ├── mrs-index/     discrimination tree indexing
     ├── mrs-proof/     proof extraction + TSTP output
     ├── mrs-search/    given-clause loop, clause weighting, strategy scheduler
-    └── mrs-tptp-parser/ TPTP parser (crate name: mrs-tptp)
-```
-
-The root `Cargo.toml` is both `[workspace]` and `[package]`.
-
-## Testing
-
-```bash
-cargo test --workspace                             # all tests
-cargo test -p mrs-search                           # single crate
-cargo test -p mrs-calculus resolution              # single test (substring match)
-cargo test -p mrs-search -- --nocapture            # show stdout
-```
-
-Most tests are inline `#[cfg(test)]` modules. `mrs-tptp` also has integration tests under `crates/mrs-tptp-parser/tests/`. The `problems/` directory is for manual binary runs only.
-
-Some integration tests in `mrs-search` and `mrs-calculus` run a full given-clause loop with real 5-second timeouts.
-
-## Linting & formatting
-
-```bash
-cargo clippy --workspace
-cargo fmt
-cargo fmt --check  # CI-style check
+    └── mrs-tptp/      zero-copy TPTP parser
 ```
 
 ## License
