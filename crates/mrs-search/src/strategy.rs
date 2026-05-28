@@ -19,6 +19,7 @@ use mrs_core::term::Term;
 use mrs_proof::extract::extract_proof;
 use mrs_proof::tstp::format_tstp;
 
+use crate::cwa::try_componentwise_refute;
 use crate::fvo::try_fvo_refutation;
 use crate::given_clause::search;
 use crate::instgen::{is_epr, preprocess_epr};
@@ -340,6 +341,20 @@ pub fn run_schedule(
     {
         let mut fvo_id_gen = id_gen.clone();
         if let Some(result) = try_fvo_refutation(&clauses_owned, &mut fvo_id_gen, symbols) {
+            return result;
+        }
+    }
+
+    // Componentwise AVATAR pre-pass: for problems produced by definitional CNF
+    // on a top-level conjunction, the input contains a single large positive
+    // disjunction `def_1(X̄₁) ∨ ... ∨ def_N(X̄_N)` with distinct predicate
+    // symbols, plus definition clauses encoding each conjunct.  Refute every
+    // branch independently.
+    {
+        let mut cwa_id_gen = id_gen.clone();
+        if let Some(result) =
+            try_componentwise_refute(&clauses_owned, &mut cwa_id_gen, symbols, config.clone())
+        {
             return result;
         }
     }

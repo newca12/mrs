@@ -27,6 +27,7 @@
 //! ```
 
 pub mod avatar;
+pub mod cwa;
 pub mod fvo;
 pub mod given_clause;
 pub mod instgen;
