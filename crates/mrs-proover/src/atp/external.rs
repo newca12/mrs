@@ -99,15 +99,16 @@ impl Atp for VampireAtp {
 ///
 /// `mrs` is the cheapest rung of the ladder because it is purpose-built for
 /// short FOF problems and reports back a plain SZS line. Requires `mrs` to
-/// be built with the `proover` feature, which adds `--quiet`, `--fast`, and
-/// stdin (`-`) input. Falls back to a tempfile if the feature is missing,
-/// at which point the only loss is some I/O overhead and noisier output —
-/// `parse_szs` still extracts the SZS line correctly.
+/// be built with the `proover` feature, which adds `--quiet` and stdin (`-`)
+/// input. The `--schedule fast` flag is unconditional (works on any mrs
+/// build). Falls back to a tempfile if the feature is missing, at which
+/// point the only loss is some I/O overhead and noisier output — `parse_szs`
+/// still extracts the SZS line correctly.
 pub struct MrsAtp {
     pub binary: PathBuf,
-    /// When true (default), use `--quiet --fast -` (stdin). When false, fall
-    /// back to the legacy tempfile-based invocation that works on any mrs
-    /// build.
+    /// When true (default), use `--quiet --schedule fast -` (stdin). When
+    /// false, fall back to the legacy tempfile-based invocation that works
+    /// on any mrs build.
     pub use_proover_mode: bool,
 }
 
@@ -127,7 +128,7 @@ impl MrsAtp {
         }
     }
 
-    /// Disable proover mode (stdin + `--quiet --fast`). Useful for
+    /// Disable proover mode (stdin + `--quiet --schedule fast`). Useful for
     /// benchmarking the unmodified mrs binary.
     pub fn legacy_mode(mut self) -> Self {
         self.use_proover_mode = false;
@@ -160,7 +161,7 @@ impl Atp for MrsAtp {
             // Featured mrs: read TPTP from stdin, write only the SZS line.
             return run_atp(
                 &self.binary,
-                &["--time", &secs, "--quiet", "--fast", "-"],
+                &["--time", &secs, "--quiet", "--schedule", "fast", "-"],
                 &problem,
             );
         }

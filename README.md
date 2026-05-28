@@ -45,12 +45,14 @@ fof(goal, conjecture, mortal(socrates)).
 ## Options
 
 ```
-mrs [--time <seconds>] <file.p>
+mrs [--time <seconds>] [--schedule <name>] <file.p>
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--time <n>` | `30` | Wall-clock time limit in seconds |
+| `--schedule <name>` | `casc` | Strategy schedule to run. Built-ins: `casc` (the default 9-strategy CASC portfolio), `fast` (single KBO strategy for short budgets), `mini` (3-strategy compact portfolio). |
+| `--list-schedules` | — | Print known schedule names and exit |
 
 ## TPTP `%include` directives
 

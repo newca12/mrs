@@ -67,7 +67,40 @@ cargo test -p mrs-search -- --nocapture  # show stdout
 cargo run -- problems/socrates.p
 cargo run --release -- problems/pel1.p
 # Expected output: lines starting with "% SZS status ..."
+
+# Pick a non-default strategy schedule
+cargo run --release -- --schedule fast problems/socrates.p
+cargo run --release -- --list-schedules
 ```
+
+## CLI flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--time <seconds>` | `30` | Wall-clock time limit |
+| `--schedule <name>` | `casc` | Strategy schedule; see registry below |
+| `--list-schedules` | — | Print known schedule names and exit |
+| `--fast` | — | Deprecated alias for `--schedule fast` |
+| `--quiet` | — | Suppress non-SZS stderr; **requires `proover` feature** |
+| `-` (positional) | — | Read TPTP from stdin; **requires `proover` feature** |
+
+Named schedules live in `mrs_search::strategy::named` (`crates/mrs-search/src/strategy/named.rs`):
+
+| Name | Strategies | Use case |
+|------|------------|----------|
+| `casc` (alias `default`) | 9-strategy portfolio | CASC competition; default behavior |
+| `fast` | 1 KBO `AgeWeight(5)+AllNegative` | Sub-second ATP queries (e.g. `mrs-proover` backend) |
+| `mini` | 3-strategy compact portfolio | 1–5 s budgets |
+
+To add a new schedule: implement a constructor in `strategy::named`, then add its name to `ALL` and the `by_name` match. `default_schedule()` must stay synonymous with `casc` so unflagged CASC runs are unaffected.
+
+## Root crate features
+
+| Feature | Off-by-default | Effect |
+|---------|----------------|--------|
+| `proover` | yes | Enables `--quiet` and stdin (`-`); used by `mrs-proover`'s in-process `MrsAtp` backend. Build with `cargo build --release --features proover --bin mrs`. |
+
+`--schedule`, `--list-schedules`, and `--fast` are **unconditional** — they work in any build.
 
 ## Workspace layout
 
@@ -97,7 +130,7 @@ The root `Cargo.toml` is both `[workspace]` and `[package]` — valid but unusua
 ## Architecture notes
 
 - **Strategy portfolio:** 9 strategies run **serially**, each with a fresh `SearchState`. No shared state between strategies.
-- **Default time budget:** 30 seconds, hardcoded in `main.rs`. No CLI flag yet.
+- **Default time budget:** 30 seconds; overridable with `--time <seconds>`.
 - **`max_clauses`:** 50,000 per strategy. Hitting this gives `ResourceOut`, not `Timeout`.
 - **Refutation-based:** conjectures are negated before search. A problem with no `conjecture` role checks satisfiability (outputs `Unsatisfiable`/`Satisfiable`).
 - **TSTP proof output** only on `Refutation`; other statuses produce only the SZS status line.

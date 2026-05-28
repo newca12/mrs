@@ -7,6 +7,8 @@
 //! This is inspired by systems like Vampire and E, which use strategy
 //! portfolios for CASC competition.
 
+pub mod named;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

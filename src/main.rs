@@ -25,10 +25,9 @@ fn main() {
 
     let mut path: Option<String> = None;
     let mut time_secs: u64 = 30;
+    let mut schedule_name: Option<String> = None;
     #[cfg(feature = "proover")]
     let mut quiet = false;
-    #[cfg(feature = "proover")]
-    let mut fast = false;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -42,13 +41,31 @@ fn main() {
                     process::exit(1);
                 });
             }
+            "--schedule" => {
+                let val = args.next().unwrap_or_else(|| {
+                    eprintln!(
+                        "Error: --schedule requires a name (one of: {})",
+                        mrs_search::strategy::named::ALL.join(", ")
+                    );
+                    process::exit(1);
+                });
+                schedule_name = Some(val);
+            }
+            // Deprecated alias: --fast is now --schedule fast.
+            "--fast" => {
+                schedule_name = Some("fast".to_string());
+            }
+            "--list-schedules" => {
+                for name in mrs_search::strategy::named::ALL {
+                    println!("{name}");
+                }
+                process::exit(0);
+            }
             #[cfg(feature = "proover")]
             "--quiet" => quiet = true,
-            #[cfg(feature = "proover")]
-            "--fast" => fast = true,
             _ => {
                 if path.is_some() {
-                    eprintln!("Usage: mrs [--time <seconds>] <file.p>");
+                    eprintln!("Usage: mrs [--time <seconds>] [--schedule NAME] <file.p>");
                     process::exit(1);
                 }
                 path = Some(arg);
@@ -56,8 +73,12 @@ fn main() {
         }
     }
     let Some(path) = path else {
-        eprintln!("Usage: mrs [--time <seconds>] <file.p>");
+        eprintln!("Usage: mrs [--time <seconds>] [--schedule NAME] <file.p>");
         eprintln!("  An automated theorem prover for TPTP problems.");
+        eprintln!(
+            "  Schedules: {} (default: casc)",
+            mrs_search::strategy::named::ALL.join(", ")
+        );
         process::exit(1);
     };
 
@@ -265,19 +286,19 @@ fn main() {
     }
 
     let search_budget = total_budget - elapsed;
-    let schedule = {
-        #[cfg(feature = "proover")]
-        {
-            if fast {
-                fast_schedule(search_budget)
-            } else {
-                StrategySchedule::default_schedule(search_budget)
+    let schedule = match schedule_name.as_deref() {
+        None => StrategySchedule::default_schedule(search_budget),
+        Some(name) => match mrs_search::strategy::named::by_name(name, search_budget) {
+            Some(s) => s,
+            None => {
+                eprintln!(
+                    "Error: unknown schedule {:?} (known: {})",
+                    name,
+                    mrs_search::strategy::named::ALL.join(", "),
+                );
+                process::exit(1);
             }
-        }
-        #[cfg(not(feature = "proover"))]
-        {
-            StrategySchedule::default_schedule(search_budget)
-        }
+        },
     };
     let result = run_schedule(&all_clauses, id_gen, &schedule, &lowered.symbols);
 
@@ -321,29 +342,6 @@ fn main() {
         }
 
         print_statistics(status, start.elapsed());
-    }
-}
-
-/// Single-strategy short-budget schedule for ProoVer-style ATP queries.
-///
-/// Each call from `mrs-proover` carries a handful of premises and a small
-/// conclusion. The default 9-strategy schedule pays per-strategy setup cost
-/// nine times over a 1-2 second budget, which is the worst possible split.
-/// This schedule runs one balanced KBO strategy for the whole budget.
-#[cfg(feature = "proover")]
-fn fast_schedule(total_time: Duration) -> StrategySchedule {
-    use mrs_search::{LiteralSelection, SearchConfig, SelectionStrategy, TermOrdering};
-    StrategySchedule {
-        strategies: vec![(
-            SearchConfig {
-                time_limit: total_time,
-                selection: SelectionStrategy::AgeWeight(5),
-                literal_selection: LiteralSelection::AllNegative,
-                ordering: TermOrdering::KBO,
-                ..SearchConfig::default()
-            },
-            total_time,
-        )],
     }
 }
 
