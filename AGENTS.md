@@ -87,6 +87,7 @@ mrs/                  ← workspace root AND the binary crate (src/main.rs)
 │   ├── mrs-proof/    ← proof extraction + TSTP output
 │   ├── mrs-search/   ← given-clause loop, clause weighting, strategy scheduler
 │   ├── mrs-tptp/     ← TPTP parser
+│   ├── mrs-proover/  ← TSTP proof verifier (ProoVer 2026 entry); see crates/mrs-proover/README.md
 │   └── mrs-bench/    ← CASC benchmark harness (casc.sh, setup.sh) + bench_report binary
 └── problems/         ← curated TPTP .p files for manual testing (not wired into cargo test)
 ```

@@ -103,6 +103,8 @@ pub mod lexer;
 #[cfg(feature = "owned")]
 pub mod owned;
 pub mod parser;
+#[cfg(feature = "proover")]
+pub mod proover;
 pub mod visitor;
 
 pub use ast::*;

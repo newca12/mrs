@@ -1,0 +1,299 @@
+//! Top-level verification loop. Orchestrates structural checks, per-rule
+//! internal checks, and (later) ATP calls.
+
+use std::time::{Duration, Instant};
+
+use mrs_core::SymbolTable;
+use mrs_tptp::FormulaRole;
+
+use crate::atp::{Atp, AtpVerdict, NoopAtp};
+use crate::checks::{axiom_leaf, neg_conjecture, skolemize};
+use crate::dag::{self, Dag};
+use crate::load::LoadedJob;
+use crate::lower::{LowerCtx, lower_fof_statement};
+use crate::verdict::{StepOutcome, Verdict, aggregate};
+
+/// Settings controlling the verification run.
+pub struct Settings {
+    /// Wall-clock budget for the whole proof.
+    ///
+    /// When ATP backends are used, this is split across the remaining
+    /// unchecked steps (see `verify_with`).
+    pub total_budget: Duration,
+    /// Per-step ATP budget. Acts as an upper cap on each individual ATP
+    /// invocation; the actual budget per step is
+    /// `min(per_step_budget, remaining / remaining_steps)`.
+    pub per_step_budget: Duration,
+    /// If true, write a per-step report to stderr (`% step <name>: …`).
+    pub verbose: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            total_budget: Duration::from_secs(30),
+            per_step_budget: Duration::from_secs(8),
+            verbose: false,
+        }
+    }
+}
+
+/// Run the verification pipeline on a loaded job. Returns the final verdict.
+pub fn verify(job: &LoadedJob, settings: &Settings) -> Verdict {
+    let noop = NoopAtp;
+    verify_with(job, settings, &noop)
+}
+
+/// Run with a specific ATP backend.
+pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdict {
+    let started = Instant::now();
+
+    // 1) Build the DAG.
+    let dag = match dag::build(job.proof.problem()) {
+        Ok(d) => d,
+        Err(e) => return Verdict::FailedVerified(format!("structural: {e}")),
+    };
+
+    // Defensive: must have a $false root.
+    if dag.root.is_none() {
+        return Verdict::FailedVerified("structural: proof does not derive $false".into());
+    }
+
+    // 2) Set up shared symbol table and Skolem registry.
+    let mut symbols = SymbolTable::new();
+    let mut sk_reg = skolemize::SkolemRegistry::new();
+    // Seed the registry with every symbol from the linked problem file so
+    // that proofs cannot reuse problem symbols as Skolems.
+    if let Some(problem) = job.problem.as_ref() {
+        for af in &problem.problem().formulas {
+            if let mrs_tptp::AnnotatedFormula::FOF(f) = af {
+                sk_reg.record_from_statement(&f.formula);
+            }
+        }
+    }
+
+    // 3) Walk topo order, dispatching per node.
+    let mut outcomes: Vec<(String, StepOutcome)> = Vec::with_capacity(dag.nodes.len());
+
+    // Identify which steps may end up using the ATP (so we can prorate the
+    // wall-clock budget across them). Internal checks are essentially free.
+    let total_atp_steps = dag
+        .topo
+        .iter()
+        .filter(|&&i| step_needs_atp(&dag.nodes[i]))
+        .count();
+    let mut atp_steps_remaining = total_atp_steps;
+
+    for &idx in &dag.topo {
+        let needs_atp = step_needs_atp(&dag.nodes[idx]);
+
+        // Compute this step's ATP budget: the smaller of the per-step cap
+        // and an even share of the remaining wall budget.
+        let budget = if needs_atp {
+            let elapsed = started.elapsed();
+            let remaining = settings
+                .total_budget
+                .checked_sub(elapsed)
+                .unwrap_or_default();
+            let share = if atp_steps_remaining == 0 {
+                Duration::ZERO
+            } else {
+                remaining / atp_steps_remaining as u32
+            };
+            let b = std::cmp::min(settings.per_step_budget, share);
+            // Avoid 0-duration ATP calls; require at least 1s if any time left.
+            if b.is_zero() && !remaining.is_zero() {
+                Duration::from_secs(1).min(remaining)
+            } else {
+                b
+            }
+        } else {
+            Duration::ZERO
+        };
+
+        let oc = check_node(&dag, idx, job, &mut symbols, &mut sk_reg, atp, budget);
+        let name = dag.nodes[idx].name.to_string();
+
+        if needs_atp {
+            atp_steps_remaining = atp_steps_remaining.saturating_sub(1);
+        }
+
+        if settings.verbose {
+            let rule = dag.nodes[idx].inference_rule.unwrap_or("-");
+            let kind = if needs_atp { "atp" } else { "internal" };
+            eprintln!("% step {name} [{kind} rule={rule}] -> {oc:?}");
+        }
+
+        // After processing, register the node's symbols so subsequent steps
+        // can detect freshness violations.
+        sk_reg.record_from_statement(&dag.nodes[idx].fof.formula);
+
+        outcomes.push((name, oc));
+    }
+
+    aggregate(outcomes.iter().map(|(n, o)| (n.as_str(), o.clone())))
+}
+
+/// Inference rules that are structurally trivial enough that we declare them
+/// `Sound` without bothering the ATP. They are sound *by definition* for any
+/// reasonable presentation: each is either a tautological rearrangement of
+/// the parent, or a syntactic reformulation, or a renaming of bound
+/// variables.
+///
+/// Being wrong here costs us 10× more than playing it safe, so the list is
+/// intentionally short and conservative. Anything not on the list still gets
+/// dispatched to the ATP.
+const TRIVIAL_RULES: &[&str] = &[
+    "assume_negation",
+    "rectify",
+    "true_and_iff_removal",
+    "fof_simplification",
+    "trivial_inequality_removal",
+    "evaluation",
+    "remove_duplicate_literals",
+];
+
+fn is_trivial_rule(rule: Option<&str>) -> bool {
+    matches!(rule, Some(r) if TRIVIAL_RULES.contains(&r))
+}
+
+fn step_needs_atp(node: &dag::Node<'_>) -> bool {
+    // Leaves don't need ATP.
+    if matches!(node.role, FormulaRole::Axiom | FormulaRole::Conjecture)
+        && node
+            .fof
+            .annotations
+            .as_ref()
+            .and_then(|a| a.file_source())
+            .is_some()
+    {
+        return false;
+    }
+    if node.role == FormulaRole::NegatedConjecture {
+        let rule = node.inference_rule;
+        let is_direct_negation =
+            matches!(rule, Some("assume_negation") | Some("negated_conjecture"));
+        if is_direct_negation || rule.is_none() {
+            return false;
+        }
+    }
+    if node.inference_rule == Some("skolemize") {
+        return false;
+    }
+    if is_trivial_rule(node.inference_rule) {
+        return false;
+    }
+    true
+}
+
+fn check_node<'p>(
+    dag: &Dag<'p>,
+    idx: usize,
+    job: &LoadedJob,
+    symbols: &mut SymbolTable,
+    sk_reg: &mut skolemize::SkolemRegistry,
+    atp: &dyn Atp,
+    budget: Duration,
+) -> StepOutcome {
+    let node = &dag.nodes[idx];
+
+    // --- Role / status routing --------------------------------------------
+
+    // Leaf: axiom or conjecture brought in from the problem file.
+    if matches!(node.role, FormulaRole::Axiom | FormulaRole::Conjecture)
+        && node
+            .fof
+            .annotations
+            .as_ref()
+            .and_then(|a| a.file_source())
+            .is_some()
+    {
+        return axiom_leaf::check_leaf(
+            node.fof,
+            job.problem.as_ref().map(|p| p.problem()),
+            symbols,
+        );
+    }
+
+    // negated_conjecture step — only the direct negation step (rule
+    // `assume_negation`, `negated_conjecture`, or no rule with a conjecture
+    // parent) gets the strict structural check. Downstream
+    // `negated_conjecture`-tagged steps keep that role through normalization
+    // (E does this); they are ordinary inferences and go to the ATP.
+    if node.role == FormulaRole::NegatedConjecture {
+        let rule = node.inference_rule;
+        let is_direct_negation =
+            matches!(rule, Some("assume_negation") | Some("negated_conjecture"));
+        let parent_is_conjecture = node
+            .parents
+            .first()
+            .and_then(|p| dag.by_name.get(p))
+            .map(|&i| dag.nodes[i].role == FormulaRole::Conjecture)
+            .unwrap_or(false);
+        if is_direct_negation || (rule.is_none() && parent_is_conjecture) {
+            let parent_fof = node
+                .parents
+                .first()
+                .and_then(|p| dag.by_name.get(p).map(|&i| dag.nodes[i].fof));
+            return neg_conjecture::check(node.fof, parent_fof, symbols);
+        }
+        // Otherwise fall through to whatever other handling applies.
+    }
+
+    // plain `esa` rule=skolemize
+    if node.inference_rule == Some("skolemize") {
+        let parent_fof = node
+            .parents
+            .first()
+            .and_then(|p| dag.by_name.get(p).map(|&i| dag.nodes[i].fof));
+        return skolemize::check(node.fof, parent_fof, sk_reg);
+    }
+
+    // Trivial rules: accepted without ATP.
+    if is_trivial_rule(node.inference_rule) {
+        return StepOutcome::Sound;
+    }
+
+    // Other plain/thm/cth steps → delegate to ATP.
+    delegate_to_atp(dag, idx, symbols, atp, budget)
+}
+
+fn delegate_to_atp<'p>(
+    dag: &Dag<'p>,
+    idx: usize,
+    symbols: &mut SymbolTable,
+    atp: &dyn Atp,
+    budget: Duration,
+) -> StepOutcome {
+    let node = &dag.nodes[idx];
+    if budget.is_zero() {
+        return StepOutcome::Unknown(format!(
+            "ATP budget exhausted (rule={:?})",
+            node.inference_rule
+        ));
+    }
+    // Build the conclusion and premise formulas in mrs-core form.
+    let mut ctx = LowerCtx::new(symbols);
+    let mut premises = Vec::with_capacity(node.parents.len());
+    for p in &node.parents {
+        if let Some(&pi) = dag.by_name.get(p) {
+            ctx.reset_vars();
+            let f = lower_fof_statement(&mut ctx, &dag.nodes[pi].fof.formula);
+            premises.push(f);
+        }
+    }
+    ctx.reset_vars();
+    let conclusion = lower_fof_statement(&mut ctx, &node.fof.formula);
+
+    match atp.check_step(symbols, &premises, &conclusion, budget) {
+        AtpVerdict::Sound => StepOutcome::Sound,
+        AtpVerdict::Unsound => StepOutcome::Unsound(format!(
+            "ATP `{}` refuted entailment by premises",
+            atp.name()
+        )),
+        AtpVerdict::Unknown => StepOutcome::Unknown(format!(
+            "no ATP could decide step (rule={:?})",
+            node.inference_rule
+        )),
+    }
+}

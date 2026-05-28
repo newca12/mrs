@@ -1,0 +1,8 @@
+//! Internal proof-step checks.
+//!
+//! Each module here implements a focused check that produces a
+//! [`crate::verdict::StepOutcome`].
+
+pub mod axiom_leaf;
+pub mod neg_conjecture;
+pub mod skolemize;

@@ -17,6 +17,9 @@ pub mod subst;
 pub mod symbol;
 pub mod term;
 
+#[cfg(feature = "proover")]
+pub mod alpha;
+
 pub use clause::{Clause, ClauseId, ClauseSource, Literal};
 pub use formula::{Atom, Formula};
 pub use subst::Substitution;

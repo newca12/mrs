@@ -1,0 +1,218 @@
+//! Build a DAG of proof nodes and check structural well-formedness.
+//!
+//! A *proof node* is a single annotated formula in the proof file. Each node
+//! carries:
+//!
+//! - its name (e.g. `s1`),
+//! - its role (`axiom`, `conjecture`, `negated_conjecture`, `plain`),
+//! - the names of its parents (from the `inference(rule, info, [parents])`
+//!   source), if any,
+//! - the inference rule name, if any,
+//! - the SZS status (`thm`, `esa`, `cth`), if any.
+//!
+//! Structural checks performed here:
+//! 1. Names are unique.
+//! 2. All parent references resolve to a known node.
+//! 3. The parent graph is acyclic.
+//! 4. There is exactly one `$false` step, used as the root of the refutation.
+
+use std::collections::{HashMap, HashSet};
+
+use mrs_tptp::{AnnotatedFormula, FOFAtomicFormula, FOFFormula, FOFStatement, FormulaRole};
+
+/// A single node in the proof DAG. We keep only `FOF` nodes — anything else
+/// is reported as a structural failure upstream.
+pub struct Node<'p> {
+    pub name: &'p str,
+    pub role: FormulaRole,
+    pub parents: Vec<&'p str>,
+    pub inference_rule: Option<&'p str>,
+    pub status: Option<&'p str>,
+    pub is_false: bool,
+    pub fof: &'p mrs_tptp::FOFAnnotated<'p>,
+}
+
+/// The proof DAG.
+pub struct Dag<'p> {
+    pub nodes: Vec<Node<'p>>,
+    /// Name → index in `nodes`.
+    pub by_name: HashMap<&'p str, usize>,
+    /// Topological order: parents before children.
+    pub topo: Vec<usize>,
+    /// Index of the unique `$false` node, if any.
+    pub root: Option<usize>,
+}
+
+/// A structural defect found while building the DAG.
+#[derive(Debug)]
+pub enum DagError {
+    /// Non-FOF dialect node in the proof.
+    UnsupportedDialect(String),
+    /// Two nodes share the same name.
+    DuplicateName(String),
+    /// A parent reference does not resolve.
+    UnknownParent { node: String, parent: String },
+    /// The parent graph contains a cycle.
+    Cycle,
+    /// The proof has no `$false` step.
+    NoFalseRoot,
+    /// The proof has more than one `$false` step.
+    MultipleFalseRoots(Vec<String>),
+    /// The root `$false` step is not reachable as the topological maximum
+    /// (or there are orphan nodes after the root that depend on nothing).
+    /// We accept this case but report it as a warning category — see
+    /// `Dag::is_root_reaching_all_used`.
+    #[allow(dead_code)]
+    DanglingNodes(Vec<String>),
+}
+
+impl std::fmt::Display for DagError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DagError::UnsupportedDialect(n) => write!(f, "node {n} is not FOF"),
+            DagError::DuplicateName(n) => write!(f, "duplicate node name {n}"),
+            DagError::UnknownParent { node, parent } => {
+                write!(f, "node {node} references unknown parent {parent}")
+            }
+            DagError::Cycle => write!(f, "cycle in parent graph"),
+            DagError::NoFalseRoot => write!(f, "proof does not derive $false"),
+            DagError::MultipleFalseRoots(ns) => {
+                write!(f, "multiple $false steps: {}", ns.join(", "))
+            }
+            DagError::DanglingNodes(ns) => write!(f, "dangling nodes: {}", ns.join(", ")),
+        }
+    }
+}
+
+/// Build the DAG from a parsed proof.
+pub fn build<'p>(proof: &'p mrs_tptp::TPTPProblem<'p>) -> Result<Dag<'p>, DagError> {
+    let mut nodes: Vec<Node<'p>> = Vec::with_capacity(proof.formulas.len());
+    let mut by_name: HashMap<&'p str, usize> = HashMap::with_capacity(proof.formulas.len());
+
+    for af in &proof.formulas {
+        let fof = match af {
+            AnnotatedFormula::FOF(f) => f,
+            other => {
+                return Err(DagError::UnsupportedDialect(other.name().to_string()));
+            }
+        };
+        let name = fof.name.as_str();
+        if by_name.contains_key(name) {
+            return Err(DagError::DuplicateName(name.to_string()));
+        }
+        let (parents, rule, status) = if let Some(ann) = &fof.annotations {
+            let parents = ann.parent_names();
+            let rule = ann.inference_rule();
+            let status = ann.status();
+            (parents, rule, status)
+        } else {
+            (Vec::new(), None, None)
+        };
+        let is_false = is_false_statement(&fof.formula);
+        by_name.insert(name, nodes.len());
+        nodes.push(Node {
+            name,
+            role: fof.role,
+            parents,
+            inference_rule: rule,
+            status,
+            is_false,
+            fof,
+        });
+    }
+
+    // Validate parent references.
+    for (idx, n) in nodes.iter().enumerate() {
+        for p in &n.parents {
+            if !by_name.contains_key(p) {
+                return Err(DagError::UnknownParent {
+                    node: n.name.to_string(),
+                    parent: p.to_string(),
+                });
+            }
+        }
+        let _ = idx;
+    }
+
+    // Topological sort (Kahn).
+    let topo = topo_sort(&nodes, &by_name)?;
+
+    // Locate the unique $false node.
+    let falses: Vec<usize> = nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.is_false)
+        .map(|(i, _)| i)
+        .collect();
+    let root = match falses.len() {
+        0 => return Err(DagError::NoFalseRoot),
+        1 => Some(falses[0]),
+        _ => {
+            // Allow only if exactly one of them appears last in topo and others
+            // are referenced; but to be strict we reject.
+            return Err(DagError::MultipleFalseRoots(
+                falses
+                    .into_iter()
+                    .map(|i| nodes[i].name.to_string())
+                    .collect(),
+            ));
+        }
+    };
+
+    Ok(Dag {
+        nodes,
+        by_name,
+        topo,
+        root,
+    })
+}
+
+fn topo_sort<'p>(
+    nodes: &[Node<'p>],
+    by_name: &HashMap<&'p str, usize>,
+) -> Result<Vec<usize>, DagError> {
+    let n = nodes.len();
+    let mut indeg: Vec<usize> = vec![0; n];
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (i, node) in nodes.iter().enumerate() {
+        for p in &node.parents {
+            let pi = *by_name.get(p).unwrap();
+            indeg[i] += 1;
+            children[pi].push(i);
+        }
+    }
+    let mut order = Vec::with_capacity(n);
+    let mut ready: Vec<usize> = (0..n).filter(|i| indeg[*i] == 0).collect();
+    let mut visited: HashSet<usize> = HashSet::new();
+    while let Some(i) = ready.pop() {
+        if !visited.insert(i) {
+            continue;
+        }
+        order.push(i);
+        for &c in &children[i] {
+            indeg[c] -= 1;
+            if indeg[c] == 0 {
+                ready.push(c);
+            }
+        }
+    }
+    if order.len() != n {
+        return Err(DagError::Cycle);
+    }
+    Ok(order)
+}
+
+fn is_false_statement(s: &FOFStatement<'_>) -> bool {
+    match s {
+        FOFStatement::Logical(f) => is_false_formula(f),
+        _ => false,
+    }
+}
+
+fn is_false_formula(f: &FOFFormula<'_>) -> bool {
+    match f {
+        FOFFormula::Atomic(FOFAtomicFormula::False) => true,
+        FOFFormula::Parens(inner) => is_false_formula(inner),
+        _ => false,
+    }
+}

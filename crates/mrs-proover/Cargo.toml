@@ -1,0 +1,20 @@
+[package]
+name = "mrs-proover"
+version.workspace = true
+edition.workspace = true
+description = "Proof verifier for TPTP/TSTP — entry for the ProoVer competition"
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "mrs-proover"
+path = "src/bin/mrs-proover.rs"
+
+[dependencies]
+mrs-tptp = { workspace = true, features = ["proover", "owned"] }
+mrs-core = { workspace = true, features = ["proover"] }
+mrs-cnf = { workspace = true }

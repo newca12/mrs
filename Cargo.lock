@@ -138,6 +138,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mrs-proover"
+version = "0.1.7"
+dependencies = [
+ "mrs-cnf",
+ "mrs-core",
+ "mrs-tptp",
+]
+
+[[package]]
 name = "mrs-search"
 version = "0.1.7"
 dependencies = [

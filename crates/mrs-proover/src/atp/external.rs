@@ -1,0 +1,292 @@
+//! External-process ATP backends: eprover and vampire.
+//!
+//! Common pipeline:
+//!
+//! 1. Serialize premises and conclusion into a small FOF problem file.
+//! 2. Spawn the ATP with a wall-clock time limit.
+//! 3. Parse the SZS status line from stdout.
+//!
+//! Premises are emitted as `fof(p<i>, axiom, ...)` and the conclusion as
+//! `fof(g, conjecture, ...)`. A `Theorem` / `Unsatisfiable` reply means the
+//! step is sound. A `CounterSatisfiable` / `Satisfiable` reply means the
+//! premises do *not* entail the conclusion — positive evidence that the
+//! step is bad. Anything else (`Timeout`, `GaveUp`, `Unknown`,
+//! `ResourceOut`) is reported as `Unknown`.
+
+use std::io::Write;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::time::Duration;
+
+use mrs_core::display::DisplayWithSymbols;
+use mrs_core::{Formula, SymbolTable};
+
+use super::{Atp, AtpVerdict};
+
+/// Backend that calls `eprover` as a subprocess.
+pub struct EProverAtp {
+    pub binary: PathBuf,
+}
+
+impl EProverAtp {
+    pub fn new(binary: impl Into<PathBuf>) -> Self {
+        Self {
+            binary: binary.into(),
+        }
+    }
+}
+
+impl Atp for EProverAtp {
+    fn name(&self) -> &'static str {
+        "eprover"
+    }
+
+    fn check_step(
+        &self,
+        symbols: &SymbolTable,
+        premises: &[Formula],
+        conclusion: &Formula,
+        budget: Duration,
+    ) -> AtpVerdict {
+        let problem = build_fof_problem(symbols, premises, conclusion);
+        let secs = budget.as_secs().max(1);
+        let cpu_arg = format!("--cpu-limit={secs}");
+        run_atp(
+            &self.binary,
+            &["--auto", "--silent", &cpu_arg, "--tptp3-format"],
+            &problem,
+        )
+    }
+}
+
+/// Backend that calls `vampire` as a subprocess.
+pub struct VampireAtp {
+    pub binary: PathBuf,
+}
+
+impl VampireAtp {
+    pub fn new(binary: impl Into<PathBuf>) -> Self {
+        Self {
+            binary: binary.into(),
+        }
+    }
+}
+
+impl Atp for VampireAtp {
+    fn name(&self) -> &'static str {
+        "vampire"
+    }
+
+    fn check_step(
+        &self,
+        symbols: &SymbolTable,
+        premises: &[Formula],
+        conclusion: &Formula,
+        budget: Duration,
+    ) -> AtpVerdict {
+        let problem = build_fof_problem(symbols, premises, conclusion);
+        let secs = budget.as_secs().max(1);
+        let secs_arg = secs.to_string();
+        run_atp(
+            &self.binary,
+            &["--time_limit", &secs_arg, "--input_syntax", "tptp"],
+            &problem,
+        )
+    }
+}
+
+/// Backend that calls the in-tree `mrs` binary as a subprocess.
+///
+/// `mrs` is the cheapest rung of the ladder because it is purpose-built for
+/// short FOF problems and reports back a plain SZS line. It does not
+/// (yet) read from stdin, so we use a temp file.
+pub struct MrsAtp {
+    pub binary: PathBuf,
+}
+
+impl MrsAtp {
+    /// Construct an `MrsAtp` pointing at the binary we were compiled with.
+    pub fn new() -> Self {
+        Self {
+            binary: super::discover::find_mrs().unwrap_or_else(|| PathBuf::from("mrs")),
+        }
+    }
+
+    pub fn with_binary(binary: impl Into<PathBuf>) -> Self {
+        Self {
+            binary: binary.into(),
+        }
+    }
+}
+
+impl Default for MrsAtp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Atp for MrsAtp {
+    fn name(&self) -> &'static str {
+        "mrs"
+    }
+
+    fn check_step(
+        &self,
+        symbols: &SymbolTable,
+        premises: &[Formula],
+        conclusion: &Formula,
+        budget: Duration,
+    ) -> AtpVerdict {
+        let problem = build_fof_problem(symbols, premises, conclusion);
+        let secs = budget.as_secs().max(1).to_string();
+        // mrs takes a file path, not stdin: write to a tempfile.
+        let tmpdir = std::env::temp_dir();
+        let nonce = std::process::id();
+        let counter = NEXT_TMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = tmpdir.join(format!("mrs-proover-{nonce}-{counter}.p"));
+        if std::fs::write(&path, problem.as_bytes()).is_err() {
+            return AtpVerdict::Unknown;
+        }
+        let path_str = path.to_string_lossy().into_owned();
+        let verdict = run_atp_file(&self.binary, &["--time", &secs, &path_str]);
+        let _ = std::fs::remove_file(&path);
+        verdict
+    }
+}
+
+static NEXT_TMP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Render premises and conclusion into one FOF problem string.
+pub fn build_fof_problem(
+    symbols: &SymbolTable,
+    premises: &[Formula],
+    conclusion: &Formula,
+) -> String {
+    let mut out = String::new();
+    out.push_str("%----- mrs-proover step query -----\n");
+    for (i, p) in premises.iter().enumerate() {
+        // Free variables in proof steps are implicitly universally quantified;
+        // TPTP semantics at top level treat free FOF variables the same way,
+        // but to be safe we close over any explicit free vars.
+        let closed = close_universally(p);
+        out.push_str(&format!("fof(p{i}, axiom, {}).\n", closed.display(symbols)));
+    }
+    let closed_g = close_universally(conclusion);
+    out.push_str(&format!(
+        "fof(g, conjecture, {}).\n",
+        closed_g.display(symbols)
+    ));
+    out
+}
+
+fn close_universally(f: &Formula) -> Formula {
+    let mut fv: Vec<u32> = f.free_vars().into_iter().collect();
+    fv.sort();
+    let mut cur = f.clone();
+    for v in fv.into_iter().rev() {
+        cur = Formula::forall(v, cur);
+    }
+    cur
+}
+
+fn run_atp(binary: &std::path::Path, args: &[&str], problem: &str) -> AtpVerdict {
+    let Ok(mut child) = Command::new(binary)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return AtpVerdict::Unknown;
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(problem.as_bytes());
+    }
+    let output = match child.wait_with_output() {
+        Ok(o) => o,
+        Err(_) => return AtpVerdict::Unknown,
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_szs(&stdout)
+}
+
+/// Run an ATP that reads from a file path (rather than stdin).
+fn run_atp_file(binary: &std::path::Path, args: &[&str]) -> AtpVerdict {
+    let Ok(child) = Command::new(binary)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return AtpVerdict::Unknown;
+    };
+    let output = match child.wait_with_output() {
+        Ok(o) => o,
+        Err(_) => return AtpVerdict::Unknown,
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_szs(&stdout)
+}
+
+/// Parse an SZS status from any line of the prover's stdout.
+pub fn parse_szs(stdout: &str) -> AtpVerdict {
+    for line in stdout.lines() {
+        // Tolerate lines like "% SZS status Theorem for problem"
+        let lower = line.to_ascii_lowercase();
+        if !lower.contains("szs status") {
+            continue;
+        }
+        if lower.contains("theorem")
+            || lower.contains("unsatisfiable")
+            || lower.contains("contradictoryaxioms")
+        {
+            return AtpVerdict::Sound;
+        }
+        if lower.contains("countersatisfiable") || lower.contains("satisfiable") {
+            // Be careful: "Unsatisfiable" already returned above, so a leftover
+            // "satisfiable" here is the bare/CounterSatisfiable case.
+            return AtpVerdict::Unsound;
+        }
+        if lower.contains("timeout")
+            || lower.contains("gaveup")
+            || lower.contains("unknown")
+            || lower.contains("resourceout")
+        {
+            return AtpVerdict::Unknown;
+        }
+    }
+    AtpVerdict::Unknown
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_theorem() {
+        assert_eq!(parse_szs("% SZS status Theorem for q\n"), AtpVerdict::Sound);
+    }
+    #[test]
+    fn parse_unsat() {
+        assert_eq!(
+            parse_szs("% SZS status Unsatisfiable for q\n"),
+            AtpVerdict::Sound
+        );
+    }
+    #[test]
+    fn parse_countersat() {
+        assert_eq!(
+            parse_szs("% SZS status CounterSatisfiable for q\n"),
+            AtpVerdict::Unsound
+        );
+    }
+    #[test]
+    fn parse_timeout() {
+        assert_eq!(parse_szs("% SZS status Timeout\n"), AtpVerdict::Unknown);
+    }
+    #[test]
+    fn parse_unknown_when_nothing() {
+        assert_eq!(parse_szs(""), AtpVerdict::Unknown);
+    }
+}
