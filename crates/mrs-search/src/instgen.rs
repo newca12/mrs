@@ -108,7 +108,11 @@ pub fn preprocess_epr(clauses: &[Clause], id_gen: &mut ClauseIdGen) -> Option<Ve
 
 /// Returns `true` iff every clause in `clauses` is EPR: all terms are either
 /// variables or constants (nullary function applications).
-fn is_epr(clauses: &[Clause]) -> bool {
+///
+/// This is `pub` so that callers can disable AVATAR for EPR problems even when
+/// the full Herbrand expansion exceeds [`MAX_INSTANCES`] and `preprocess_epr`
+/// returns `None`.
+pub fn is_epr(clauses: &[Clause]) -> bool {
     clauses.iter().all(|c| {
         c.literals.iter().all(|lit| match &lit.atom {
             Atom::Pred(_, args) => args.iter().all(term_is_epr),

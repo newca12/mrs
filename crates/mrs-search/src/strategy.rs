@@ -20,7 +20,7 @@ use mrs_proof::extract::extract_proof;
 use mrs_proof::tstp::format_tstp;
 
 use crate::given_clause::search;
-use crate::instgen::preprocess_epr;
+use crate::instgen::{is_epr, preprocess_epr};
 use crate::state::SearchState;
 use crate::{LiteralSelection, SearchConfig, SearchResult, SelectionStrategy, TermOrdering};
 
@@ -271,6 +271,14 @@ pub fn run_schedule(
     let epr_ground_cache: Option<Vec<Clause>> =
         preprocess_epr(&clauses_owned, &mut epr_id_gen_base);
 
+    // Detect EPR structure even when the full expansion exceeds MAX_INSTANCES.
+    // EPR problems (only variables and ground terms, no function symbols of
+    // arity ≥ 1) must run without AVATAR regardless of whether we succeeded in
+    // expanding them: AVATAR's SAT instance grows without bound during a
+    // resolution search over EPR clauses and can cause varisat to block for
+    // minutes with no way to interrupt it.
+    let epr_structure = epr_ground_cache.is_some() || is_epr(&clauses_owned);
+
     let mut last_result = SearchResult::GaveUp;
 
     // Total time budget = sum of all strategy slices.
@@ -303,10 +311,11 @@ pub fn run_schedule(
             (false, clauses_owned.clone(), id_gen.clone())
         };
 
-        // Disable AVATAR for EPR instances: the ground enumeration may produce
-        // tens of thousands of clauses, each of which AVATAR would split into
-        // singleton components, creating an intractably large SAT sub-problem.
-        if epr_applied {
+        // Disable AVATAR for EPR instances (expanded or not): the ground
+        // enumeration may produce tens of thousands of clauses, and even when
+        // the expansion is skipped the AVATAR SAT instance grows without bound
+        // during a resolution search over EPR clauses (varisat has no interrupt).
+        if epr_structure {
             search_config.use_avatar = false;
         }
 
