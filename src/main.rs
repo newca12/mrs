@@ -85,20 +85,11 @@ fn main() {
     if !problem.includes.is_empty() {
         let base_dir = Path::new(&path).parent().unwrap_or(Path::new("."));
 
-        // Prefer $TPTP env var; otherwise walk up from the problem directory
-        // looking for the TPTP root (the first ancestor that contains Axioms/).
-        let tptp_root: Option<PathBuf> = env::var("TPTP").ok().map(PathBuf::from).or_else(|| {
-            let mut dir = base_dir.to_path_buf();
-            loop {
-                if dir.join("Axioms").is_dir() {
-                    return Some(dir);
-                }
-                if !dir.pop() {
-                    break;
-                }
-            }
-            None
-        });
+        // Use $TPTP as a hint for the root directory.  Even if it is wrong
+        // (e.g. pointing at Problems/ instead of TPTP-v9.2.1/), resolve_path
+        // will also auto-detect the root by walking up from base_dir looking
+        // for an ancestor that contains Axioms/.
+        let tptp_root: Option<PathBuf> = env::var("TPTP").ok().map(PathBuf::from);
 
         match include::resolve_and_lower(&problem, &mut lowered, base_dir, tptp_root.as_deref()) {
             Ok(()) => {

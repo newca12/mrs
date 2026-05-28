@@ -25,7 +25,12 @@ use crate::lowering::{self, LoweredProblem};
 #[derive(Debug)]
 pub enum IncludeError {
     /// The included file could not be found.
-    FileNotFound { path: PathBuf },
+    FileNotFound {
+        /// The requested include path (as written in the problem file).
+        requested: String,
+        /// Every absolute path that was tried.
+        tried: Vec<PathBuf>,
+    },
     /// An I/O error reading the included file.
     IoError {
         path: PathBuf,
@@ -40,8 +45,20 @@ pub enum IncludeError {
 impl fmt::Display for IncludeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            IncludeError::FileNotFound { path } => {
-                write!(f, "Include file not found: {}", path.display())
+            IncludeError::FileNotFound { requested, tried } => {
+                write!(f, "Include file not found: '{}'", requested)?;
+                if !tried.is_empty() {
+                    write!(f, "\n  Tried:")?;
+                    for p in tried {
+                        write!(f, "\n    {}", p.display())?;
+                    }
+                    write!(
+                        f,
+                        "\n  Hint: set TPTP to the root directory that contains Axioms/ \
+                         (e.g. TPTP=/path/to/TPTP-v9.2.1)"
+                    )?;
+                }
+                Ok(())
             }
             IncludeError::IoError { path, error } => {
                 write!(f, "Error reading {}: {}", path.display(), error)
@@ -83,7 +100,7 @@ fn resolve_includes_recursive(
     visited: &mut HashSet<PathBuf>,
 ) -> Result<(), IncludeError> {
     for include in &problem.includes {
-        let path = resolve_path(include.file_name, base_dir, tptp_root);
+        let (path, tried) = resolve_path(include.file_name, base_dir, tptp_root);
 
         // Circular include detection
         let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
@@ -93,7 +110,10 @@ fn resolve_includes_recursive(
 
         // Read the file
         if !path.exists() {
-            return Err(IncludeError::FileNotFound { path: path.clone() });
+            return Err(IncludeError::FileNotFound {
+                requested: include.file_name.to_owned(),
+                tried,
+            });
         }
 
         let content = fs::read_to_string(&path).map_err(|e| IncludeError::IoError {
@@ -125,16 +145,56 @@ fn resolve_includes_recursive(
     Ok(())
 }
 
-/// Resolves a TPTP include path.
+/// Resolves a TPTP include path, trying multiple candidate roots.
 ///
-/// If `$TPTP` is set, tries resolving relative to that root first.
-/// Falls back to resolving relative to `base_dir` (the problem file's directory).
-fn resolve_path(file_name: &str, base_dir: &Path, tptp_root: Option<&Path>) -> PathBuf {
+/// Resolution order:
+/// 1. `$TPTP/file_name`  (if the env-var root is provided)
+/// 2. Walk up from `base_dir` looking for the first ancestor that contains
+///    an `Axioms/` subdirectory, then try `<ancestor>/file_name`.  This
+///    auto-detects the TPTP root even when `$TPTP` is set to a wrong value
+///    (e.g. `.../Problems/` instead of `.../TPTP-v9.2.1/`).
+/// 3. `base_dir/file_name`  (last resort)
+///
+/// Returns the best candidate path (the first existing one, or the last
+/// candidate if none exist) together with the list of every path tried.
+fn resolve_path(
+    file_name: &str,
+    base_dir: &Path,
+    tptp_root: Option<&Path>,
+) -> (PathBuf, Vec<PathBuf>) {
+    let mut tried: Vec<PathBuf> = Vec::new();
+
+    // 1. $TPTP/file_name
     if let Some(root) = tptp_root {
-        let path = root.join(file_name);
-        if path.exists() {
-            return path;
+        let p = root.join(file_name);
+        tried.push(p.clone());
+        if p.exists() {
+            return (p, tried);
         }
     }
-    base_dir.join(file_name)
+
+    // 2. Walk up from base_dir, find the first ancestor with Axioms/
+    let mut dir = base_dir.to_path_buf();
+    loop {
+        if dir.join("Axioms").is_dir() {
+            let p = dir.join(file_name);
+            if !tried.contains(&p) {
+                tried.push(p.clone());
+            }
+            if p.exists() {
+                return (p, tried);
+            }
+            break;
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+
+    // 3. base_dir/file_name
+    let fallback = base_dir.join(file_name);
+    if !tried.contains(&fallback) {
+        tried.push(fallback.clone());
+    }
+    (fallback, tried)
 }
