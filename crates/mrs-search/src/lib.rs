@@ -20,7 +20,7 @@
 //!
 //! let id_gen = ClauseIdGen::new();
 //! let config_arc = Arc::new(SymbolConfig::default());
-//! let mut state = SearchState::new(vec![], id_gen, config_arc);
+//! let mut state = SearchState::new(vec![], id_gen, config_arc, true);
 //! let config = SearchConfig::default();
 //! let result = search(&mut state, &config);
 //! assert!(matches!(result, SearchResult::Saturated));

@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use mrs_calculus::ordering::SymbolConfig;
 use mrs_core::SymbolTable;
@@ -259,25 +259,76 @@ pub fn run_schedule(
 
     let clauses_owned = clauses.to_vec();
 
+    // Pre-compute EPR ground instances once.  EPR expansion can take several
+    // seconds for large problems; running it once per strategy (up to 9 times)
+    // would multiply that cost.  We generate the ground clauses a single time
+    // and clone the result for each strategy that needs it.
+    //
+    // `epr_id_gen_base` is advanced past the IDs used for the ground clauses;
+    // each strategy then clones it so newly derived clauses get unique IDs
+    // that do not collide with the pre-computed ground ones.
+    let mut epr_id_gen_base = id_gen.clone();
+    let epr_ground_cache: Option<Vec<Clause>> =
+        preprocess_epr(&clauses_owned, &mut epr_id_gen_base);
+
     let mut last_result = SearchResult::GaveUp;
+
+    // Total time budget = sum of all strategy slices.
+    let total_budget: Duration = actual_configs.iter().map(|c| c.time_limit).sum();
+    let schedule_start = Instant::now();
 
     // Run strategies serially.  Each strategy gets its own time slice; the
     // total wall-clock time across all strategies equals the full budget.
     for search_config in &actual_configs {
-        let mut clauses_local = clauses_owned.clone();
-        let mut id_gen_local = id_gen.clone();
+        // Guard: if the overall budget is already exhausted (e.g. because
+        // prior strategies' preprocessing took longer than their slice),
+        // stop launching new strategies.
+        let elapsed = schedule_start.elapsed();
+        if elapsed >= total_budget {
+            break;
+        }
 
-        // EPR pre-processing: if the problem is essentially propositional,
-        // enumerate all ground instances before starting the loop.
-        let epr_applied = if let Some(ground) = preprocess_epr(&clauses_local, &mut id_gen_local) {
-            clauses_local = ground;
-            true
+        // Trim this strategy's time limit so that preprocessing + search
+        // together never exceed the remaining overall budget.
+        let remaining = total_budget - elapsed;
+        let effective_limit = search_config.time_limit.min(remaining);
+        let mut search_config = search_config.clone();
+        search_config.time_limit = effective_limit;
+
+        // Use the pre-computed EPR ground clauses (no per-strategy re-expansion).
+        let (epr_applied, clauses_local, id_gen_local) = if let Some(ref ground) = epr_ground_cache
+        {
+            (true, ground.clone(), epr_id_gen_base.clone())
         } else {
-            false
+            (false, clauses_owned.clone(), id_gen.clone())
         };
 
-        let mut state = SearchState::new(clauses_local, id_gen_local, config.clone());
-        let result = search(&mut state, search_config);
+        // Disable AVATAR for EPR instances: the ground enumeration may produce
+        // tens of thousands of clauses, each of which AVATAR would split into
+        // singleton components, creating an intractably large SAT sub-problem.
+        if epr_applied {
+            search_config.use_avatar = false;
+        }
+
+        // Deduct any time already spent on preprocessing from this strategy's
+        // time limit, so the search loop itself stays within the slice.
+        let after_preprocess = schedule_start.elapsed();
+        let used_in_preprocess = after_preprocess.saturating_sub(elapsed);
+        search_config.time_limit = search_config.time_limit.saturating_sub(used_in_preprocess);
+
+        let mut state = SearchState::new(
+            clauses_local,
+            id_gen_local,
+            config.clone(),
+            search_config.use_avatar,
+        );
+
+        // Deduct SearchState::new time (AVATAR splitting, etc.) as well.
+        let after_init = schedule_start.elapsed();
+        let used_in_init = after_init.saturating_sub(after_preprocess);
+        search_config.time_limit = search_config.time_limit.saturating_sub(used_in_init);
+
+        let result = search(&mut state, &search_config);
 
         let result = if let SearchResult::Refutation(id, _) = result {
             let proof = extract_proof(id, &state.clause_store);

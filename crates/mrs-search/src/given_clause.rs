@@ -125,11 +125,21 @@ fn update_model(state: &mut SearchState) {
 /// Add the negation of an AVATAR clause's assumptions to the SAT solver and
 /// check satisfiability.  Returns `true` if a new model was found (the clause
 /// is now dormant), `false` if UNSAT (full refutation).
+///
+/// If the wall-clock deadline stored in `state.search_deadline` has already
+/// been reached the function skips the `solve()` call and returns `true`
+/// (treating it as "SAT, keep current model").  The main loop will detect the
+/// timeout on its next iteration.
 fn avatar_refute_branch(
     state: &mut SearchState,
     avatar: &[u32],
     ordering: &crate::TermOrdering,
 ) -> bool {
+    // Deadline guard: don't hand off to varisat after time is up — it has no
+    // internal time limit and could block for tens of seconds on large SAT instances.
+    if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+        return true;
+    }
     let sat_clause: Vec<varisat::Lit> = avatar
         .iter()
         .map(|&a| varisat::Lit::from_var(varisat::Var::from_dimacs(a as isize), false))
@@ -181,6 +191,12 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
     // Detect commutative symbols from axioms of the form f(X,Y) = f(Y,X)
     state.comm_symbols = detect_comm_symbols(state);
 
+    // Record the search start time and deadline *before* the initial SAT solve
+    // so that the deadline guard in `avatar_refute_branch` is always set when
+    // the solver is called.
+    let start = Instant::now();
+    state.search_deadline = Some(start + config.time_limit);
+
     // Initial SAT sync
     if config.use_avatar {
         state.avatar.current_model.clear();
@@ -208,7 +224,6 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         }
     }
 
-    let start = Instant::now();
     let mut iteration: u64 = 0;
 
     while let Some(given_id) = select(&mut state.unprocessed, &config.selection, iteration) {
@@ -340,7 +355,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         // --- Resolution: use index to find clauses with complementary predicates ---
         {
             let mut resolution_partner_ids = HashSet::new();
-            for &lit_idx in &given_sel {
+            'resolution: for &lit_idx in &given_sel {
                 let lit = &given.literals[lit_idx];
                 let partners = state
                     .processed
@@ -357,7 +372,15 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                             &state.comm_symbols,
                         );
                         new_clauses.extend(resolvents);
+                        // Intra-iteration time guard: a single iteration over many ground
+                        // clauses can overshoot the budget by seconds; return early here.
+                        if start.elapsed() >= config.time_limit {
+                            return SearchResult::Timeout;
+                        }
                     }
+                }
+                if start.elapsed() >= config.time_limit {
+                    break 'resolution;
                 }
             }
         }
@@ -385,6 +408,9 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         &state.comm_symbols,
                     );
                     new_clauses.extend(sp);
+                    if start.elapsed() >= config.time_limit {
+                        return SearchResult::Timeout;
+                    }
                 }
             }
 
@@ -407,6 +433,9 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         &state.comm_symbols,
                     );
                     new_clauses.extend(sp);
+                    if start.elapsed() >= config.time_limit {
+                        return SearchResult::Timeout;
+                    }
                 }
             }
         }
@@ -518,6 +547,14 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 let mut created_units = Vec::new();
 
                 for proc in all_processed {
+                    // Per-clause budget guard: if time ran out mid-sweep, stop
+                    // demodulating and re-insert all remaining clauses as-is.
+                    // This prevents a single backward-demod pass over a large
+                    // processed set from overshooting the strategy time limit.
+                    if start.elapsed() >= config.time_limit {
+                        next_processed.push(proc);
+                        continue;
+                    }
                     // Don't rewrite the demod units themselves
                     if new_units.iter().any(|u| u.id == proc.id) {
                         next_processed.push(proc);
@@ -589,10 +626,14 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     }
                 }
 
-                // Re-insert all clauses into the index
+                // Re-insert all clauses into the index.
+                // Skip the (expensive) demod-index update once time is up —
+                // keeping processed consistent is enough if we're about to timeout.
+                let time_ok = start.elapsed() < config.time_limit;
                 for clause in next_processed {
                     state.processed.insert(clause.clone());
-                    if is_unit_positive_equality(&clause)
+                    if time_ok
+                        && is_unit_positive_equality(&clause)
                         && let Atom::Eq(l, r) = &clause.literals[0].atom
                     {
                         use mrs_calculus::ordering::TermComparison;
@@ -681,23 +722,27 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         }
 
         if config.use_avatar && model_violated {
-            if trace_avatar {
-                eprintln!(
-                    "[AVATAR] model_violated: re-querying SAT solver (given={})",
-                    given.id.0
-                );
-            }
-            if matches!(state.avatar.solver.solve(), Ok(true)) {
-                update_model(state);
-                sync_active_dormant(state, ordering);
-            } else {
+            // Deadline guard: skip the SAT re-query when time is already up.
+            let past_deadline = state.search_deadline.is_some_and(|d| Instant::now() >= d);
+            if !past_deadline {
                 if trace_avatar {
                     eprintln!(
-                        "[AVATAR] model_violated path: SAT UNSAT → Refutation(given={})",
+                        "[AVATAR] model_violated: re-querying SAT solver (given={})",
                         given.id.0
                     );
                 }
-                return SearchResult::Refutation(given.id, String::new());
+                if matches!(state.avatar.solver.solve(), Ok(true)) {
+                    update_model(state);
+                    sync_active_dormant(state, ordering);
+                } else {
+                    if trace_avatar {
+                        eprintln!(
+                            "[AVATAR] model_violated path: SAT UNSAT → Refutation(given={})",
+                            given.id.0
+                        );
+                    }
+                    return SearchResult::Refutation(given.id, String::new());
+                }
             }
         }
 
@@ -894,6 +939,7 @@ mod tests {
             vec![c1, c2],
             id_gen,
             std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+            true,
         );
         let config = SearchConfig::default();
         let result = search(&mut state, &config);
@@ -940,6 +986,7 @@ mod tests {
             vec![c1, c2, c3],
             id_gen,
             std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+            true,
         );
         let config = SearchConfig::default();
         let result = search(&mut state, &config);
@@ -972,6 +1019,7 @@ mod tests {
             vec![c1, c2],
             id_gen,
             std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+            true,
         );
         let config = SearchConfig::default();
         let result = search(&mut state, &config);
@@ -1061,6 +1109,7 @@ mod tests {
             clauses.clone(),
             id_gen.clone(),
             std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+            true,
         );
         let config = SearchConfig {
             time_limit: std::time::Duration::from_secs(5),
@@ -1126,6 +1175,7 @@ mod tests {
             vec![clause_a, clause_b],
             id_gen,
             std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+            true,
         );
         let config = SearchConfig {
             time_limit: std::time::Duration::from_secs(5),
@@ -1217,6 +1267,7 @@ mod tests {
             clauses,
             id_gen,
             std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+            true,
         );
         let config = SearchConfig {
             time_limit: std::time::Duration::from_secs(5),
@@ -1245,6 +1296,7 @@ mod tests {
             vec![c],
             id_gen,
             std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+            true,
         );
         let config = SearchConfig::default();
         let result = search(&mut state, &config);

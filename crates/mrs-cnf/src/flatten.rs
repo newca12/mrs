@@ -34,12 +34,14 @@ fn extract_rec(
                 extract_rec(c, id_gen, name, role, clauses);
             }
         }
-        _ => {
-            // This should be a single clause (disjunction of literals)
-            let literals = extract_literals(formula);
+        Formula::True => {
+            // $true as a top-level formula is trivially satisfied: no clause needed.
+        }
+        Formula::False => {
+            // $false as a top-level formula is the empty clause (immediately unsatisfiable).
             clauses.push(Clause::new_avatar(
                 id_gen.next(),
-                literals,
+                vec![],
                 ClauseSource::Input {
                     name: name.to_string(),
                     role: role.to_string(),
@@ -47,25 +49,50 @@ fn extract_rec(
                 Vec::new(),
             ));
         }
+        _ => {
+            // This should be a single clause (disjunction of literals)
+            if let Some(literals) = extract_literals(formula) {
+                clauses.push(Clause::new_avatar(
+                    id_gen.next(),
+                    literals,
+                    ClauseSource::Input {
+                        name: name.to_string(),
+                        role: role.to_string(),
+                    },
+                    Vec::new(),
+                ));
+            }
+            // None means the clause contained $true and is a tautology; skip it.
+        }
     }
 }
 
 /// Extracts literals from a disjunction (or a single literal).
-fn extract_literals(formula: &Formula) -> Vec<Literal> {
+/// Returns `None` if the clause is a tautology (contains `$true`).
+fn extract_literals(formula: &Formula) -> Option<Vec<Literal>> {
     let mut lits = Vec::new();
-    collect_literals(formula, &mut lits);
-    lits
+    if collect_literals(formula, &mut lits) {
+        None // tautology
+    } else {
+        Some(lits)
+    }
 }
 
-fn collect_literals(formula: &Formula, lits: &mut Vec<Literal>) {
+/// Collects literals from `formula` into `lits`.
+/// Returns `true` if the formula contains `$true` (making the clause a tautology).
+fn collect_literals(formula: &Formula, lits: &mut Vec<Literal>) -> bool {
     match formula {
         Formula::Or(disjuncts) => {
             for d in disjuncts {
-                collect_literals(d, lits);
+                if collect_literals(d, lits) {
+                    return true; // tautology: short-circuit
+                }
             }
+            false
         }
         Formula::Atom(a) => {
             lits.push(Literal::pos(a.clone()));
+            false
         }
         Formula::Neg(inner) => {
             if let Formula::Atom(a) = inner.as_ref() {
@@ -76,16 +103,15 @@ fn collect_literals(formula: &Formula, lits: &mut Vec<Literal>) {
                 // For now, panic to surface bugs in the pipeline.
                 panic!("collect_literals: negation of non-atom in CNF: {:?}", inner);
             }
+            false
         }
         Formula::True => {
-            // $true in a disjunction: the clause is trivially true (tautology).
-            // We represent it and let simplification handle it.
-            // Use a special sentinel — or we could skip the clause entirely.
-            // For correctness, just skip (a clause with $true is always satisfied).
+            // $true in a disjunction makes the whole clause a tautology.
+            true
         }
         Formula::False => {
-            // $false in a disjunction: contributes nothing (identity for OR).
-            // Just skip it.
+            // $false in a disjunction contributes nothing (identity for OR).
+            false
         }
         other => {
             panic!(

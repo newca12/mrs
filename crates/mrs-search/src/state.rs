@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Instant;
 
 use mrs_calculus::ordering::SymbolConfig;
 use mrs_core::SymbolId;
@@ -41,26 +42,39 @@ pub struct SearchState {
     /// Binary function symbols detected as commutative (from `f(X,Y)=f(Y,X)` axioms).
     /// Used by inference rules to enable commutativity unification.
     pub comm_symbols: HashSet<SymbolId>,
+    /// Wall-clock deadline for the current search.  Set by `given_clause::search`
+    /// immediately after recording `start`; used by `avatar_refute_branch` to skip
+    /// expensive `solver.solve()` calls once the time budget is exhausted.
+    pub search_deadline: Option<Instant>,
 }
 
 impl SearchState {
     /// Creates a new search state with the given initial clauses.
     ///
     /// All initial clauses are placed in the unprocessed set.
+    /// When `use_avatar` is `false`, AVATAR clause splitting is skipped and every
+    /// input clause is inserted verbatim.  Pass `false` for EPR/ground instances
+    /// where AVATAR would create an intractably large SAT sub-problem.
     pub fn new(
         initial_clauses: Vec<Clause>,
         mut id_gen: ClauseIdGen,
         config: Arc<SymbolConfig>,
+        use_avatar: bool,
     ) -> Self {
         let mut clause_store = HashMap::new();
         let mut unprocessed = UnprocessedSet::new(config.clone());
         let mut avatar = AvatarContext::new();
 
         for clause in initial_clauses {
-            if let Some(splits) = avatar.split_clause(&clause, &mut id_gen) {
-                for split in splits {
-                    clause_store.insert(split.id, split.clone());
-                    unprocessed.push(&split);
+            if use_avatar {
+                if let Some(splits) = avatar.split_clause(&clause, &mut id_gen) {
+                    for split in splits {
+                        clause_store.insert(split.id, split.clone());
+                        unprocessed.push(&split);
+                    }
+                } else {
+                    clause_store.insert(clause.id, clause.clone());
+                    unprocessed.push(&clause);
                 }
             } else {
                 clause_store.insert(clause.id, clause.clone());
@@ -79,6 +93,7 @@ impl SearchState {
             dormant_processed: HashMap::new(),
             dormant_unprocessed: HashMap::new(),
             comm_symbols: HashSet::new(),
+            search_deadline: None,
         }
     }
 

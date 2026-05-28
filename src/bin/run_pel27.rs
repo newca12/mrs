@@ -80,6 +80,7 @@ fn main() {
         clauses.clone(),
         id_gen.clone(),
         Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+        true,
     );
     let config = SearchConfig {
         time_limit: std::time::Duration::from_secs(5),
