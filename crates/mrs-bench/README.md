@@ -12,6 +12,9 @@ CASC benchmark harness and report tool for `mrs`.
 | `problems/` | Extracted TPTP problems and axioms (gitignored, populated by `setup.sh`) |
 | `results/` | CSV output from benchmark runs (gitignored) |
 | `src/main.rs` | `bench_report` binary — summarises a `run.csv` file |
+| `proover.sh` | Per-system harness for `mrs-proover` (CSV of verdicts per proof file) |
+| `fuzz_proover.sh` | Generate proofs with eprover/vampire on a problem tree, then verify each with `mrs-proover`; surfaces unhandled inference rules and recurring failure reasons |
+| `proover_compare.sh` | Run `mrs-proover` over a proof set with each ATP backend in isolation (`--only-mrs` / `--only-eprover` / `--only-vampire`); reports per-backend verdicts and wall times |
 
 ## Quick start
 
@@ -53,3 +56,28 @@ Create `crates/mrs-bench/systems/<name>/invoke.sh` with this interface:
 ```
 
 `casc.sh` auto-discovers all directories under `systems/` that contain an executable `invoke.sh`.
+
+## Generating a proof corpus for `mrs-proover`
+
+`fuzz_proover.sh` runs a proof generator (eprover or vampire) on every problem in a directory, then verifies each resulting proof with `mrs-proover`. Designed to scale from the tiny in-tree `problems/` directory to the full TPTP-v9 FOF library on a multi-core machine.
+
+```bash
+# Smoke test on the in-tree problems/ directory:
+crates/mrs-bench/fuzz_proover.sh --jobs 8
+
+# Full TPTP-v9 FOF library, 64 workers, with eprover:
+crates/mrs-bench/fuzz_proover.sh \
+    --problems-dir /data/TPTP-v9.0.0/Problems \
+    --generator eprover --jobs 64 --time 30 \
+    --output /data/proover-corpus-eprover
+
+# Same with vampire:
+crates/mrs-bench/fuzz_proover.sh \
+    --problems-dir /data/TPTP-v9.0.0/Problems \
+    --generator vampire --jobs 64 --time 30 \
+    --output /data/proover-corpus-vampire
+```
+
+When `--problems-dir` is overridden, the default `--pattern` becomes `*+*.p` (TPTP's filename convention for FOF problems). Override with `--pattern '*.p'` for a flat directory of any-dialect problems.
+
+The script writes a `run.csv` plus prints two summary tables at the end: top unhandled inference rules (`NotVerified` rows) and top recurring `FailedVerified` reasons. Both are the highest-leverage signals for prioritising verifier work.
