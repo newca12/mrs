@@ -266,11 +266,29 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
 
         if given.is_empty() {
             if given.avatar.is_empty() {
+                if std::env::var("TRACE_AVATAR").is_ok() {
+                    eprintln!(
+                        "[AVATAR] empty given {} (no avatar) → Refutation",
+                        given.id.0
+                    );
+                }
                 return SearchResult::Refutation(given.id, String::new());
             } else {
                 let avatar = given.avatar.clone();
                 let id = given.id;
+                if std::env::var("TRACE_AVATAR").is_ok() {
+                    eprintln!(
+                        "[AVATAR] empty given {} (avatar={:?}): calling avatar_refute_branch",
+                        id.0, avatar
+                    );
+                }
                 if !avatar_refute_branch(state, &avatar, ordering) {
+                    if std::env::var("TRACE_AVATAR").is_ok() {
+                        eprintln!(
+                            "[AVATAR] empty given {}: avatar_refute_branch returned false → Refutation",
+                            id.0
+                        );
+                    }
                     return SearchResult::Refutation(id, String::new());
                 }
                 continue;
@@ -467,9 +485,18 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         // rewrite all processed clauses using it. Iterate until fixpoint.
         if is_unit_positive_equality(&given) {
             let mut new_units: Vec<Clause> = vec![given.clone()];
+            let mut backward_demod_empty: Vec<Clause> = Vec::new();
 
             loop {
                 if new_units.is_empty() {
+                    break;
+                }
+
+                // Don't spin in this inner fixpoint loop past the strategy time
+                // limit.  The processed set is still consistent at this check
+                // point (nothing has been drained yet for this iteration), so it
+                // is safe to break here.
+                if start.elapsed() >= config.time_limit {
                     break;
                 }
 
@@ -532,7 +559,8 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         };
                         if simplified.is_empty() {
                             state.clause_store.insert(simplified.id, simplified.clone());
-                            return SearchResult::Refutation(simplified.id, String::new());
+                            backward_demod_empty.push(simplified);
+                            continue;
                         }
                         if is_trivial_contradiction(&simplified) {
                             let empty = Clause::new_avatar(
@@ -546,7 +574,8 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                             );
                             state.clause_store.insert(simplified.id, simplified);
                             state.clause_store.insert(empty.id, empty.clone());
-                            return SearchResult::Refutation(empty.id, String::new());
+                            backward_demod_empty.push(empty);
+                            continue;
                         }
                         if !simplified.is_tautology() {
                             if is_unit_positive_equality(&simplified) {
@@ -580,16 +609,48 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 }
                 new_units = created_units;
             }
+            // AVATAR-aware handling of empty clauses produced by backward demodulation.
+            // A contradiction derived under AVATAR assumptions must go through
+            // avatar_refute_branch rather than an immediate global Refutation, because
+            // it is only contradictory under those specific branch assumptions.
+            for empty in backward_demod_empty {
+                if empty.avatar.is_empty() || !config.use_avatar {
+                    return SearchResult::Refutation(empty.id, String::new());
+                }
+                let avatar = empty.avatar.clone();
+                let id = empty.id;
+                if !avatar_refute_branch(state, &avatar, ordering) {
+                    return SearchResult::Refutation(id, String::new());
+                }
+            }
         }
 
         // Split new inferences into AVATAR components.
         // If a split violates the current SAT model (all parent assumptions true, no
         // component assigned true), re-query the solver immediately.
+        let trace_avatar = std::env::var("TRACE_AVATAR").is_ok();
         let mut final_new_clauses = Vec::new();
         let mut model_violated = false;
         for clause in new_clauses {
             if config.use_avatar {
                 if let Some(splits) = state.avatar.split_clause(&clause, &mut state.id_gen) {
+                    if trace_avatar {
+                        eprintln!(
+                            "[AVATAR] split clause {} ({} lits, avatar={:?}) -> {} components",
+                            clause.id.0,
+                            clause.literals.len(),
+                            clause.avatar,
+                            splits.len()
+                        );
+                        for s in &splits {
+                            eprintln!(
+                                "  component {} ({} lits, avatar={:?})",
+                                s.id.0,
+                                s.literals.len(),
+                                s.avatar
+                            );
+                        }
+                    }
                     // Check violation: all parent assumptions true AND no split component true.
                     let mut violated = clause
                         .avatar
@@ -620,10 +681,22 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         }
 
         if config.use_avatar && model_violated {
+            if trace_avatar {
+                eprintln!(
+                    "[AVATAR] model_violated: re-querying SAT solver (given={})",
+                    given.id.0
+                );
+            }
             if matches!(state.avatar.solver.solve(), Ok(true)) {
                 update_model(state);
                 sync_active_dormant(state, ordering);
             } else {
+                if trace_avatar {
+                    eprintln!(
+                        "[AVATAR] model_violated path: SAT UNSAT → Refutation(given={})",
+                        given.id.0
+                    );
+                }
                 return SearchResult::Refutation(given.id, String::new());
             }
         }
@@ -640,7 +713,19 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 } else {
                     let avatar = clause.avatar.clone();
                     let id = clause.id;
+                    if trace_avatar {
+                        eprintln!(
+                            "[AVATAR] empty clause {} (avatar={:?}): calling avatar_refute_branch",
+                            id.0, avatar
+                        );
+                    }
                     if !avatar_refute_branch(state, &avatar, ordering) {
+                        if trace_avatar {
+                            eprintln!(
+                                "[AVATAR] avatar_refute_branch returned false → SAT UNSAT → Refutation({})",
+                                id.0
+                            );
+                        }
                         return SearchResult::Refutation(id, String::new());
                     }
                     continue;
@@ -649,37 +734,54 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
 
             if !clause.is_tautology() {
                 // Forward demodulation on new clauses
-                let clause = {
-                    if let Some(simplified) = demodulation::demodulate(
-                        &clause,
-                        &state.demod_index,
-                        &state.clause_store,
-                        &mut state.id_gen,
-                    ) {
-                        state.clause_store.insert(clause.id, clause);
-                        if simplified.is_empty() {
-                            state.clause_store.insert(simplified.id, simplified.clone());
-                            return SearchResult::Refutation(simplified.id, String::new());
-                        }
-                        if is_trivial_contradiction(&simplified) {
-                            let empty = Clause::new_avatar(
-                                state.id_gen.next(),
-                                vec![],
-                                ClauseSource::Inference {
-                                    rule: "equality_resolution".into(),
-                                    parents: vec![simplified.id],
-                                },
-                                simplified.avatar.clone(),
-                            );
-                            state.clause_store.insert(simplified.id, simplified);
-                            state.clause_store.insert(empty.id, empty.clone());
-                            return SearchResult::Refutation(empty.id, String::new());
-                        }
-                        simplified
-                    } else {
-                        clause
-                    }
+                let clause = if let Some(simplified) = demodulation::demodulate(
+                    &clause,
+                    &state.demod_index,
+                    &state.clause_store,
+                    &mut state.id_gen,
+                ) {
+                    state.clause_store.insert(clause.id, clause);
+                    simplified
+                } else {
+                    clause
                 };
+                // AVATAR-aware handling: demodulation may produce an empty or trivially
+                // contradictory clause.  Such results must go through avatar_refute_branch
+                // rather than an immediate global Refutation.
+                if clause.is_empty() {
+                    state.clause_store.insert(clause.id, clause.clone());
+                    if clause.avatar.is_empty() || !config.use_avatar {
+                        return SearchResult::Refutation(clause.id, String::new());
+                    }
+                    let avatar = clause.avatar.clone();
+                    let id = clause.id;
+                    if !avatar_refute_branch(state, &avatar, ordering) {
+                        return SearchResult::Refutation(id, String::new());
+                    }
+                    continue;
+                }
+                if is_trivial_contradiction(&clause) {
+                    let empty = Clause::new_avatar(
+                        state.id_gen.next(),
+                        vec![],
+                        ClauseSource::Inference {
+                            rule: "equality_resolution".into(),
+                            parents: vec![clause.id],
+                        },
+                        clause.avatar.clone(),
+                    );
+                    state.clause_store.insert(clause.id, clause.clone());
+                    state.clause_store.insert(empty.id, empty.clone());
+                    if empty.avatar.is_empty() || !config.use_avatar {
+                        return SearchResult::Refutation(empty.id, String::new());
+                    }
+                    let avatar = empty.avatar.clone();
+                    let id = empty.id;
+                    if !avatar_refute_branch(state, &avatar, ordering) {
+                        return SearchResult::Refutation(id, String::new());
+                    }
+                    continue;
+                }
 
                 if clause.is_tautology() {
                     continue;
@@ -972,6 +1074,70 @@ mod tests {
             matches!(result, SearchResult::Refutation(..)),
             "Expected refutation with All selection, got {:?}",
             result
+        );
+    }
+
+    /// Soundness regression test: a trivial contradiction produced by forward
+    /// demodulation under AVATAR assumptions must NOT cause a global Refutation
+    /// without first consulting the AVATAR SAT solver.
+    ///
+    /// Setup:
+    ///   A: f(a) = a | q(a)   → AVATAR splits into {f(a)=a}[s1] and {q(a)}[s2],
+    ///                           constraint s1 | s2.
+    ///   B: f(a) ≠ a           → unit negative equality, no AVATAR split (avatar=[]).
+    ///
+    /// When {f(a)=a} (s1-active) is in the demod index and B is forward-demodulated,
+    /// the result is a≠a (avatar=[s1]).  avatar_refute_branch([s1]) adds ~s1 to the
+    /// SAT solver; s1|s2 forces s2=true, giving a new satisfying model.  The search
+    /// then saturates — it must NOT return Refutation.
+    #[test]
+    fn avatar_forward_demod_no_false_refutation() {
+        use crate::{LiteralSelection, SelectionStrategy};
+
+        let mut syms = SymbolTable::new();
+        let f_sym = syms.intern("f");
+        let a_sym = syms.intern("a");
+        let q_sym = syms.intern("q");
+        let mut id_gen = ClauseIdGen::new();
+
+        let a = Term::constant(a_sym);
+        let fa = Term::app(f_sym, vec![a.clone()]);
+
+        // Clause A: f(a) = a | q(a)  — 2 literals, will be AVATAR-split
+        let clause_a = input_clause(
+            &mut id_gen,
+            vec![
+                Literal::pos(Atom::eq(fa.clone(), a.clone())),
+                Literal::pos(Atom::pred(q_sym, vec![a.clone()])),
+            ],
+            "ax1",
+            "axiom",
+        );
+
+        // Clause B: f(a) ≠ a  — unit negative equality, no split
+        let clause_b = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::eq(fa.clone(), a.clone()))],
+            "ax2",
+            "axiom",
+        );
+
+        let mut state = SearchState::new(
+            vec![clause_a, clause_b],
+            id_gen,
+            std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+        );
+        let config = SearchConfig {
+            time_limit: std::time::Duration::from_secs(5),
+            selection: SelectionStrategy::AgeWeight(5),
+            literal_selection: LiteralSelection::All,
+            ordering: TermOrdering::KBO,
+            ..SearchConfig::default()
+        };
+        let result = search(&mut state, &config);
+        assert!(
+            !matches!(result, SearchResult::Refutation(..)),
+            "Soundness bug: got false Refutation for a satisfiable problem (expected Saturated)"
         );
     }
 
