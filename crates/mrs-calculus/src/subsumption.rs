@@ -153,20 +153,26 @@ fn match_single_term(
                 // It must match the target exactly (treated as a constant).
                 pattern == target
             } else {
-                // Trivial case: Var(v) matching Var(v) is always fine (identity).
-                if let Term::Var(tv) = target
-                    && *v == *tv
+                // Resolve the target through the current substitution chain before
+                // performing the occurs check.  A direct check on the raw target
+                // misses transitive cycles: if subst = {4 → f(Var(5))} and we try
+                // to bind 5 → Var(4), the raw check sees Var(4).contains(5) = false
+                // and allows the binding, creating the cycle {4→f(5), 5→4}.
+                // Resolving Var(4) via the chain gives f(Var(5)), whose occurs
+                // check correctly rejects the binding.
+                let resolved = apply_subst_chain(subst, target);
+
+                // Trivial: binding v to itself is a no-op.
+                if let Term::Var(tv) = &resolved
+                    && *tv == *v
                 {
-                    // Don't bind (it's a no-op), just succeed.
                     return true;
                 }
-                // Occurs check: don't bind a variable to a term containing itself.
-                // This prevents circular bindings (e.g., V2 → mult(V2, V3)) that can
-                // arise when pattern variables resolve to target variables via chains.
-                if target.contains_var(*v) {
+                // Transitive occurs check on the fully-resolved target.
+                if resolved.contains_var(*v) {
                     return false;
                 }
-                subst.bind(*v, target.clone());
+                subst.bind(*v, resolved);
                 true
             }
         }
@@ -207,6 +213,44 @@ fn apply_subst_flat(subst: &Substitution, term: &Term) -> Term {
         Term::App(f, args) => {
             let new_args: Vec<Term> = args.iter().map(|a| apply_subst_flat(subst, a)).collect();
             Term::App(*f, new_args)
+        }
+    }
+}
+
+/// Follows variable chains in `subst` iteratively, with cycle detection.
+///
+/// Unlike `apply_subst_flat` (single-level) or `Substitution::apply_term`
+/// (recursive, can loop on cycles), this function chases the chain of variable
+/// bindings until it reaches a non-variable term or an unbound variable, breaking
+/// on any cycle.  When the chain ends at an `App` term, one level of flat
+/// substitution is applied to its arguments.
+///
+/// This is used in `match_single_term` before storing a new binding, to ensure
+/// the occurs check is performed on the *fully resolved* target rather than a
+/// raw (possibly transitive) variable reference.  Without this, a sequence of
+/// bindings can create a cycle:
+///   bind 4 → App(f,[Var(5)])          -- direct occurs check passes (5 ∉ App)
+///   bind 5 → Var(4)                   -- direct occurs check: Var(4).contains(5)=false ← BUG
+///   apply_subst_chain resolves Var(4) → App(f,[Var(5)]), contains(5)=true → rejected ✓
+fn apply_subst_chain(subst: &Substitution, term: &Term) -> Term {
+    use std::collections::HashSet;
+
+    let mut current = term.clone();
+    let mut seen: HashSet<u32> = HashSet::new();
+    loop {
+        match current {
+            Term::Var(v) => {
+                if !seen.insert(v) {
+                    // Cycle in variable chain — stop here.
+                    return Term::Var(v);
+                }
+                match subst.lookup(v) {
+                    None => return Term::Var(v),
+                    Some(t) => current = t.clone(),
+                }
+            }
+            // Non-variable term: apply one level of flat substitution to args.
+            _ => return apply_subst_flat(subst, &current),
         }
     }
 }

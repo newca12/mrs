@@ -14,12 +14,29 @@ use mrs_core::term::Term;
 /// Returns the weight of a clause: the sum of symbol occurrences across all literals.
 ///
 /// Lighter clauses are generally preferred because they represent simpler facts.
+///
+/// Uses an iterative traversal to avoid stack overflow on deeply nested terms.
 pub fn clause_weight(clause: &Clause, config: &SymbolConfig) -> u32 {
     clause
         .literals
         .iter()
         .map(|lit| literal_weight(lit, config))
         .sum()
+}
+
+/// Returns true if the clause weight exceeds `max`.
+///
+/// Bails out early as soon as the running total exceeds the limit, so it is
+/// cheaper than computing the full weight when the clause is very heavy.
+pub fn clause_weight_exceeds(clause: &Clause, max: u32, config: &SymbolConfig) -> bool {
+    let mut total: u32 = 0;
+    for lit in &clause.literals {
+        total = total.saturating_add(literal_weight(lit, config));
+        if total > max {
+            return true;
+        }
+    }
+    false
 }
 
 /// Returns the weight of a single literal.
@@ -38,15 +55,25 @@ fn atom_weight(atom: &Atom, config: &SymbolConfig) -> u32 {
     }
 }
 
-/// Returns the weight of a term.
-fn term_weight(term: &Term, config: &SymbolConfig) -> u32 {
-    match term {
-        Term::Var(_) => config.w0,
-        Term::App(sym, args) => {
-            config.symbol_weight(*sym)
-                + args.iter().map(|arg| term_weight(arg, config)).sum::<u32>()
+/// Returns the weight of a term using an iterative (explicit-stack) traversal.
+///
+/// This avoids stack overflow on deeply nested terms that arise during
+/// superposition without demodulation simplification.
+pub fn term_weight(term: &Term, config: &SymbolConfig) -> u32 {
+    let mut stack: Vec<&Term> = vec![term];
+    let mut weight: u32 = 0;
+    while let Some(t) = stack.pop() {
+        match t {
+            Term::Var(_) => {
+                weight = weight.saturating_add(config.w0);
+            }
+            Term::App(sym, args) => {
+                weight = weight.saturating_add(config.symbol_weight(*sym));
+                stack.extend(args.iter());
+            }
         }
     }
+    weight
 }
 
 #[cfg(test)]
@@ -150,5 +177,21 @@ mod tests {
         let neg = make_clause(vec![Literal::neg(Atom::pred(p, vec![Term::constant(a)]))]);
         let config = SymbolConfig::default();
         assert_eq!(clause_weight(&pos, &config), clause_weight(&neg, &config));
+    }
+
+    #[test]
+    fn weight_exceeds_detects_heavy_clauses() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let c = make_clause(vec![
+            Literal::pos(Atom::pred(p, vec![Term::constant(a)])),
+            Literal::pos(Atom::pred(p, vec![Term::constant(b)])),
+        ]);
+        let config = SymbolConfig::default();
+        // weight = 4; threshold 3 should trigger, threshold 4 should not
+        assert!(clause_weight_exceeds(&c, 3, &config));
+        assert!(!clause_weight_exceeds(&c, 4, &config));
     }
 }

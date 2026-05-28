@@ -157,6 +157,16 @@ fn unify_comm_rec(
 }
 
 /// Binds a variable to a term, performing the occurs check.
+///
+/// Before storing, the current substitution is applied to `term` (path
+/// compression).  This step is critical for cycle prevention: without it, the
+/// raw occurs check only detects *direct* occurrences of `var` in `term`, but
+/// misses transitive ones.  For example, with `subst = {5 → f(Var(4))}` and
+/// `term = g(Var(5))`, the raw check does not see `Var(4)` in `term`, so it
+/// would store `4 → g(Var(5))` — creating the cycle
+/// `4 → g(f(4)) → g(f(g(f(...)))) → ∞`.  Applying the substitution first
+/// expands `g(Var(5))` to `g(f(Var(4)))`, and the occurs check then correctly
+/// rejects the binding.
 fn bind_var(var: VarId, term: &Term, subst: &mut Substitution) -> Result<(), UnifyError> {
     // If the term is the same variable, nothing to do
     if let Term::Var(v) = term
@@ -165,12 +175,23 @@ fn bind_var(var: VarId, term: &Term, subst: &mut Substitution) -> Result<(), Uni
         return Ok(());
     }
 
-    // Occurs check: variable must not appear in the term
+    // Path-compress: apply the current substitution to `term` so that the
+    // occurs check below can detect transitive cycles.
+    let term = subst.apply_term(term);
+
+    // After applying, the term might reduce to the same variable (identity).
+    if let Term::Var(v) = &term
+        && *v == var
+    {
+        return Ok(());
+    }
+
+    // Occurs check on the fully-applied term.
     if term.contains_var(var) {
         return Err(UnifyError::OccursCheck { var });
     }
 
-    subst.bind(var, term.clone());
+    subst.bind(var, term);
     Ok(())
 }
 

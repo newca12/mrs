@@ -76,6 +76,7 @@ impl StrategySchedule {
                         selection: SelectionStrategy::AgeWeight(5),
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::KBO,
+                        ..SearchConfig::default()
                     },
                     t1,
                 ),
@@ -86,6 +87,7 @@ impl StrategySchedule {
                         selection: SelectionStrategy::GoalDirected(5),
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::KBO,
+                        ..SearchConfig::default()
                     },
                     t2,
                 ),
@@ -96,6 +98,7 @@ impl StrategySchedule {
                         selection: SelectionStrategy::SmallestFirst,
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::KBO,
+                        ..SearchConfig::default()
                     },
                     t3,
                 ),
@@ -106,6 +109,7 @@ impl StrategySchedule {
                         selection: SelectionStrategy::AgeWeight(5),
                         literal_selection: LiteralSelection::MaxNegativeOrMaxPositive,
                         ordering: TermOrdering::KBO,
+                        ..SearchConfig::default()
                     },
                     t4,
                 ),
@@ -116,6 +120,7 @@ impl StrategySchedule {
                         selection: SelectionStrategy::AgeWeight(5),
                         literal_selection: LiteralSelection::All,
                         ordering: TermOrdering::KBO,
+                        ..SearchConfig::default()
                     },
                     t5,
                 ),
@@ -126,6 +131,7 @@ impl StrategySchedule {
                         selection: SelectionStrategy::Fifo,
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::KBO,
+                        ..SearchConfig::default()
                     },
                     t6,
                 ),
@@ -137,6 +143,7 @@ impl StrategySchedule {
                         selection: SelectionStrategy::AgeWeight(5),
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::LPO,
+                        ..SearchConfig::default()
                     },
                     t7,
                 ),
@@ -147,6 +154,7 @@ impl StrategySchedule {
                         selection: SelectionStrategy::GoalDirected(10),
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::LPO,
+                        ..SearchConfig::default()
                     },
                     t8,
                 ),
@@ -157,6 +165,7 @@ impl StrategySchedule {
                         selection: SelectionStrategy::SmallestFirst,
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::LPO,
+                        ..SearchConfig::default()
                     },
                     t9,
                 ),
@@ -281,40 +290,44 @@ pub fn run_schedule(
                 let config_local = config.clone();
                 let search_config_local = search_config.clone();
 
-                s.spawn(move || {
-                    // EPR pre-processing: if the problem is essentially
-                    // propositional, enumerate all ground instances before
-                    // starting the loop.  This is faster than superposition
-                    // for purely propositional problems.
-                    let epr_applied;
-                    let clauses_local =
-                        if let Some(ground) = preprocess_epr(&clauses_local, &mut id_gen_local) {
+                std::thread::Builder::new()
+                    .stack_size(8 * 1024 * 1024)
+                    .spawn_scoped(s, move || {
+                        // EPR pre-processing: if the problem is essentially
+                        // propositional, enumerate all ground instances before
+                        // starting the loop.  This is faster than superposition
+                        // for purely propositional problems.
+                        let epr_applied;
+                        let clauses_local = if let Some(ground) =
+                            preprocess_epr(&clauses_local, &mut id_gen_local)
+                        {
                             epr_applied = true;
                             ground
                         } else {
                             epr_applied = false;
                             clauses_local
                         };
-                    let mut state = SearchState::new(clauses_local, id_gen_local, config_local);
-                    let result = search(&mut state, &search_config_local);
-                    // Extract the proof while `state` (and its `varisat::Solver`) is still
-                    // live inside this thread.  `varisat::Solver` is not `Send`, so we
-                    // cannot move `state` across the channel boundary; we serialise the
-                    // proof into a `String` here instead.
-                    let result = if let SearchResult::Refutation(id, _) = result {
-                        let proof = extract_proof(id, &state.clause_store);
-                        let tstp = format_tstp(&proof, symbols);
-                        SearchResult::Refutation(id, tstp)
-                    } else if epr_applied && matches!(result, SearchResult::Saturated) {
-                        // Conservative: EPR instance enumeration is sound but we have
-                        // observed false Saturated results (e.g. MSC024-1).  Demote to
-                        // GaveUp so we never output a wrong Satisfiable/CounterSatisfiable.
-                        SearchResult::GaveUp
-                    } else {
-                        result
-                    };
-                    let _ = tx.send((i, result));
-                });
+                        let mut state = SearchState::new(clauses_local, id_gen_local, config_local);
+                        let result = search(&mut state, &search_config_local);
+                        // Extract the proof while `state` (and its `varisat::Solver`) is still
+                        // live inside this thread.  `varisat::Solver` is not `Send`, so we
+                        // cannot move `state` across the channel boundary; we serialise the
+                        // proof into a `String` here instead.
+                        let result = if let SearchResult::Refutation(id, _) = result {
+                            let proof = extract_proof(id, &state.clause_store);
+                            let tstp = format_tstp(&proof, symbols);
+                            SearchResult::Refutation(id, tstp)
+                        } else if epr_applied && matches!(result, SearchResult::Saturated) {
+                            // Conservative: EPR instance enumeration is sound but we have
+                            // observed false Saturated results (e.g. MSC024-1).  Demote to
+                            // GaveUp so we never output a wrong Satisfiable/CounterSatisfiable.
+                            SearchResult::GaveUp
+                        } else {
+                            result
+                        };
+                        let _ = tx.send((i, result));
+                    })
+                    .expect("failed to spawn worker thread");
             }
         });
 

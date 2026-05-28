@@ -29,6 +29,7 @@ use varisat::ExtendFormula;
 
 use crate::select::select;
 use crate::state::SearchState;
+use crate::weight;
 use crate::{SearchConfig, SearchResult};
 
 /// After the SAT model changes, move clauses between active and dormant sets to
@@ -175,16 +176,19 @@ fn detect_comm_symbols(state: &crate::state::SearchState) -> HashSet<SymbolId> {
 /// or `SearchResult::Timeout`/`SearchResult::ResourceOut` on resource limits.
 pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
     let ordering = &config.ordering;
+    let sym_config = ordering.symbol_config();
 
     // Detect commutative symbols from axioms of the form f(X,Y) = f(Y,X)
     state.comm_symbols = detect_comm_symbols(state);
 
     // Initial SAT sync
-    state.avatar.current_model.clear();
-    if matches!(state.avatar.solver.solve(), Ok(true)) {
-        update_model(state);
-    } else {
-        return SearchResult::Refutation(mrs_core::clause::ClauseId(0), String::new());
+    if config.use_avatar {
+        state.avatar.current_model.clear();
+        if matches!(state.avatar.solver.solve(), Ok(true)) {
+            update_model(state);
+        } else {
+            return SearchResult::Refutation(mrs_core::clause::ClauseId(0), String::new());
+        }
     }
 
     // Check for initial empty clauses
@@ -192,7 +196,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
     for id in initial_ids {
         let clause = state.clause_store.get(&id).unwrap().clone();
         if clause.is_empty() {
-            if clause.avatar.is_empty() {
+            if clause.avatar.is_empty() || !config.use_avatar {
                 return SearchResult::Refutation(clause.id, String::new());
             } else {
                 let avatar = clause.avatar.clone();
@@ -589,34 +593,38 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         let mut final_new_clauses = Vec::new();
         let mut model_violated = false;
         for clause in new_clauses {
-            if let Some(splits) = state.avatar.split_clause(&clause, &mut state.id_gen) {
-                // Check violation: all parent assumptions true AND no split component true.
-                let mut violated = clause
-                    .avatar
-                    .iter()
-                    .all(|&a| state.avatar.current_model.contains(&a));
-                if violated {
-                    violated = splits.iter().all(|s| {
-                        !state
-                            .avatar
-                            .current_model
-                            .contains(s.avatar.last().unwrap())
-                    });
-                }
-                if violated {
-                    model_violated = true;
-                }
+            if config.use_avatar {
+                if let Some(splits) = state.avatar.split_clause(&clause, &mut state.id_gen) {
+                    // Check violation: all parent assumptions true AND no split component true.
+                    let mut violated = clause
+                        .avatar
+                        .iter()
+                        .all(|&a| state.avatar.current_model.contains(&a));
+                    if violated {
+                        violated = splits.iter().all(|s| {
+                            !state
+                                .avatar
+                                .current_model
+                                .contains(s.avatar.last().unwrap())
+                        });
+                    }
+                    if violated {
+                        model_violated = true;
+                    }
 
-                for split in splits {
-                    state.clause_store.insert(split.id, split.clone());
-                    final_new_clauses.push(split);
+                    for split in splits {
+                        state.clause_store.insert(split.id, split.clone());
+                        final_new_clauses.push(split);
+                    }
+                } else {
+                    final_new_clauses.push(clause);
                 }
             } else {
                 final_new_clauses.push(clause);
             }
         }
 
-        if model_violated {
+        if config.use_avatar && model_violated {
             if matches!(state.avatar.solver.solve(), Ok(true)) {
                 update_model(state);
                 sync_active_dormant(state, ordering);
@@ -632,7 +640,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             if clause.is_empty() {
                 state.clause_store.insert(clause.id, clause.clone());
 
-                if clause.avatar.is_empty() {
+                if clause.avatar.is_empty() || !config.use_avatar {
                     return SearchResult::Refutation(clause.id, String::new());
                 } else {
                     let avatar = clause.avatar.clone();
@@ -690,6 +698,16 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     } else {
                         clause
                     };
+
+                // Max term weight filter: discard clauses whose total symbol weight
+                // exceeds the configured limit.  This prevents unbounded term growth
+                // (term explosion) during superposition without demodulation, which
+                // would otherwise overflow the call stack of all term-recursive functions.
+                if let Some(max_w) = config.max_term_weight
+                    && weight::clause_weight_exceeds(&clause, max_w, &sym_config)
+                {
+                    continue;
+                }
 
                 // Forward subsumption: skip if subsumed by a processed clause
                 let clause_fv = FeatureVector::from_clause(&clause);
@@ -953,6 +971,7 @@ mod tests {
             selection: SelectionStrategy::AgeWeight(5),
             literal_selection: LiteralSelection::All,
             ordering: TermOrdering::KBO,
+            ..SearchConfig::default()
         };
         let result = search(&mut state, &config);
         assert!(
@@ -1045,10 +1064,11 @@ mod tests {
             selection: SelectionStrategy::AgeWeight(5),
             literal_selection: LiteralSelection::AllNegative,
             ordering: TermOrdering::KBO,
+            ..SearchConfig::default()
         };
         let result = search(&mut state, &config);
         // AllNegative is too restrictive for pel27; just record the outcome
-        eprintln!("pel27 with AllNegative: {:?}", result);
+        let _ = result; // result is Timeout or GaveUp, not an assertion
     }
 
     #[test]

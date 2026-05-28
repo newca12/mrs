@@ -71,6 +71,15 @@ pub struct SearchConfig {
     pub literal_selection: LiteralSelection,
     /// Term ordering for orienting equalities.
     pub ordering: TermOrdering,
+    /// Maximum total symbol weight of any generated clause.
+    ///
+    /// Inferred clauses whose total weight (sum of all symbol occurrences
+    /// across all literals) exceeds this limit are discarded immediately.
+    /// This prevents unbounded term growth during superposition.
+    /// `None` means no limit.
+    pub max_term_weight: Option<u32>,
+    /// Whether to enable AVATAR clause splitting via an embedded SAT solver.
+    pub use_avatar: bool,
 }
 
 impl Default for SearchConfig {
@@ -81,6 +90,8 @@ impl Default for SearchConfig {
             selection: SelectionStrategy::AgeWeight(5),
             literal_selection: LiteralSelection::AllNegative,
             ordering: TermOrdering::KBO,
+            max_term_weight: Some(200),
+            use_avatar: true,
         }
     }
 }

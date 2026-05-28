@@ -83,12 +83,36 @@ impl Substitution {
     /// Variables not in the substitution are left unchanged.
     /// Variable chains are followed transitively: if X→Y and Y→a,
     /// then applying to X yields a (not Y).
+    ///
+    /// Variable chaining is done iteratively to avoid stack overflow on long
+    /// (but acyclic) chains.  If a cycle is ever detected in the variable
+    /// portion of the chain, this function panics in debug mode (it indicates
+    /// a bug in the code that built the substitution) and returns the looping
+    /// variable in release mode.
     pub fn apply_term(&self, term: &Term) -> Term {
         match term {
-            Term::Var(v) => match self.bindings.get(v) {
-                Some(t) => self.apply_term(t), // chase variable chains
-                None => term.clone(),
-            },
+            Term::Var(start) => {
+                // Follow the variable chain iteratively.
+                let mut current = *start;
+                let mut steps: u32 = 0;
+                loop {
+                    match self.bindings.get(&current) {
+                        None => return Term::Var(current),
+                        Some(Term::Var(next)) => {
+                            steps += 1;
+                            debug_assert!(
+                                steps < 100_000,
+                                "apply_term: variable chain exceeded 100,000 steps — \
+                                 likely a cycle. substitution = {:?}",
+                                self.bindings
+                            );
+                            current = *next;
+                        }
+                        // Chain ends at a non-variable term: recurse into it.
+                        Some(t) => return self.apply_term(t),
+                    }
+                }
+            }
             Term::App(f, args) => {
                 let new_args: Vec<Term> = args.iter().map(|a| self.apply_term(a)).collect();
                 Term::App(*f, new_args)

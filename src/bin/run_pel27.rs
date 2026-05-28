@@ -87,6 +87,7 @@ fn main() {
         selection: SelectionStrategy::AgeWeight(5),
         literal_selection: LiteralSelection::AllNegative,
         ordering: TermOrdering::KBO,
+        ..SearchConfig::default()
     };
     let result = mrs_search::given_clause::search(&mut state, &config);
     println!("Result: {:?}", result);

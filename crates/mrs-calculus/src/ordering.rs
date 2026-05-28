@@ -300,7 +300,7 @@ impl LPO {
                         } else if prec_f == prec_g {
                             // Case 2c: same precedence, lexicographic comparison
                             // and s >_lpo all tj (already checked)
-                            self.lex_gt(s_args, t_args, s, t)
+                            self.lex_gt(s_args, t_args)
                         } else {
                             false
                         }
@@ -317,7 +317,7 @@ impl LPO {
     /// Lexicographic comparison of argument lists.
     /// Returns true if args_s >_lex args_t (first differing position has si > ti).
     /// Also requires that s >_lpo all remaining tj (which the caller ensures via s_gt_all_tj).
-    fn lex_gt(&self, args_s: &[Term], args_t: &[Term], _s: &Term, _t: &Term) -> bool {
+    fn lex_gt(&self, args_s: &[Term], args_t: &[Term]) -> bool {
         for (si, ti) in args_s.iter().zip(args_t.iter()) {
             if si == ti {
                 continue;
@@ -375,6 +375,14 @@ impl TermOrdering {
             TermOrdering::LPO => LPO::new().compare(s, t),
             TermOrdering::CustomKBO(config) => KBO::with_config(config.clone()).compare(s, t),
             TermOrdering::CustomLPO(config) => LPO::with_config(config.clone()).compare(s, t),
+        }
+    }
+
+    /// Returns the symbol configuration used by this ordering.
+    pub fn symbol_config(&self) -> Arc<SymbolConfig> {
+        match self {
+            TermOrdering::KBO | TermOrdering::LPO => Arc::new(SymbolConfig::default()),
+            TermOrdering::CustomKBO(config) | TermOrdering::CustomLPO(config) => config.clone(),
         }
     }
 }
