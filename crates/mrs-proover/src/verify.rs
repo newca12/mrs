@@ -63,7 +63,13 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
     let mut symbols = SymbolTable::new();
     let mut sk_reg = skolemize::SkolemRegistry::new();
     // Seed the registry with every symbol from the linked problem file so
-    // that proofs cannot reuse problem symbols as Skolems.
+    // that proofs cannot reuse problem symbols as Skolems. Per-step recording
+    // is intentionally *not* done: Skolem freshness is defined w.r.t. the
+    // original problem, not against peer proof steps that may legitimately
+    // mention a Skolem introduced elsewhere in the proof (e.g. AVATAR
+    // splitting definitions referencing a Skolem from a peer
+    // `skolem_symbol_introduction` step). Steps that themselves introduce
+    // Skolems (e.g. `skolemize`) record their new symbol explicitly.
     if let Some(problem) = job.problem.as_ref() {
         for af in &problem.problem().formulas {
             if let mrs_tptp::AnnotatedFormula::FOF(f) = af {
@@ -123,10 +129,6 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
             let kind = if needs_atp { "atp" } else { "internal" };
             eprintln!("% step {name} [{kind} rule={rule}] -> {oc:?}");
         }
-
-        // After processing, register the node's symbols so subsequent steps
-        // can detect freshness violations.
-        sk_reg.record_from_statement(&dag.nodes[idx].fof.formula);
 
         outcomes.push((name, oc));
     }

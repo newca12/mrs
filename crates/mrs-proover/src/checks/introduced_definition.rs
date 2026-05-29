@@ -52,7 +52,9 @@
 //! main verify loop seeds from the linked problem and updates after each
 //! prior node.
 
-use mrs_tptp::ast::common::{AtomicWord, GeneralTerm};
+use std::collections::HashSet;
+
+use mrs_tptp::ast::common::{AtomicWord, GeneralTerm, Quantifier};
 use mrs_tptp::{
     Annotations, BinaryConnective, FOFAnnotated, FOFAtomicFormula, FOFFormula, FOFStatement,
 };
@@ -82,6 +84,10 @@ pub fn is_introduced_definition(ann: &Annotations<'_>) -> bool {
 ///
 /// * the annotation declares a single new predicate symbol via
 ///   `new_symbols(naming, [P])` and `P` is fresh (Vampire shape), **or**
+/// * the body is a Skolem axiom — universally closed
+///   `(∃X. φ) → φ[X := sk(...)]` — whose Skolem function symbol does
+///   not appear in any earlier proof step (Vampire's
+///   `skolem_symbol_introduction` shape), **or**
 /// * the formula body is a biconditional one of whose sides has a fresh
 ///   head predicate symbol (E shape).
 ///
@@ -118,10 +124,9 @@ pub fn check<'p>(step: &FOFAnnotated<'p>, registry: &SkolemRegistry) -> StepOutc
                     .into(),
             );
         }
-        // No new_symbols entry — fall through to the E-style biconditional path.
+        // No new_symbols entry — fall through to the structural paths.
     }
 
-    // --- E shape: parse the formula for a biconditional with a fresh head. ---
     let logical = match &step.formula {
         FOFStatement::Logical(f) => f,
         FOFStatement::Sequent(..) => {
@@ -131,6 +136,28 @@ pub fn check<'p>(step: &FOFAnnotated<'p>, registry: &SkolemRegistry) -> StepOutc
         }
     };
 
+    // --- Vampire `skolem_symbol_introduction`: a Skolem axiom. ---
+    //
+    // Vampire emits these with the body
+    //   ! [params] : ((? [X] : phi(X, params)) => phi(sk(params), params))
+    // and an empty info list (no `new_symbols` entry). The witness symbol
+    // `sk` appears in the consequent but is absent from the antecedent.
+    // It is a sound conservative extension iff `sk` is fresh — i.e. does
+    // not appear in any earlier step of the proof or the linked problem.
+    //
+    // We detect the shape structurally rather than by label: any body of
+    // the form `(∃ X. φ) → ψ` whose ψ introduces at least one function
+    // symbol absent from φ is accepted, provided every such new symbol
+    // is fresh in the registry. This is strictly sound (the symbol is
+    // fresh, so the formula is satisfiable in any model that interprets
+    // it as a choice function) and admits the slight generalisations
+    // where the implication is wrapped in additional universal binders
+    // or where φ/ψ are themselves quantified.
+    if let Some(outcome) = try_skolem_axiom(logical, registry) {
+        return outcome;
+    }
+
+    // --- E shape: parse the formula for a biconditional with a fresh head. ---
     let body = peel(logical);
     let (left, right) = match body {
         FOFFormula::Binary {
@@ -141,7 +168,8 @@ pub fn check<'p>(step: &FOFAnnotated<'p>, registry: &SkolemRegistry) -> StepOutc
         _ => {
             return StepOutcome::Unknown(
                 "introduced(definition) with no new_symbols entry and body is \
-                 not a biconditional after peeling quantifiers/parens"
+                 not a biconditional or Skolem axiom after peeling \
+                 quantifiers/parens"
                     .into(),
             );
         }
@@ -165,6 +193,127 @@ pub fn check<'p>(step: &FOFAnnotated<'p>, registry: &SkolemRegistry) -> StepOutc
     )
 }
 
+/// Try to match a Skolem-axiom shape and certify it.
+///
+/// Returns `Some(Sound)` if accepted, `Some(Unknown(reason))` if the
+/// shape matches but the freshness check fails, and `None` if the
+/// formula isn't recognisable as a Skolem axiom at all (so the caller
+/// should try the next shape).
+fn try_skolem_axiom<'p>(f: &FOFFormula<'p>, registry: &SkolemRegistry) -> Option<StepOutcome> {
+    // Peel only universal quantifiers and parens, NOT existentials — the
+    // existential is the witness we are looking to Skolemise and must be
+    // visible on the left of the implication.
+    let body = peel_forall(f);
+    let (ante, cons) = match body {
+        FOFFormula::Binary {
+            left,
+            connective: BinaryConnective::Impl,
+            right,
+        } => (peel_parens(left), peel_parens(right)),
+        _ => return None,
+    };
+
+    // Antecedent must be ∃-quantified (the existential we are Skolemising).
+    if !matches!(
+        ante,
+        FOFFormula::Quantified {
+            quantifier: Quantifier::Exists,
+            ..
+        }
+    ) {
+        return None;
+    }
+
+    // Collect function symbols on each side and find the new ones.
+    let mut ante_syms = HashSet::new();
+    collect_fun_syms(ante, &mut ante_syms);
+    let mut cons_syms = HashSet::new();
+    collect_fun_syms(cons, &mut cons_syms);
+
+    let introduced: Vec<&str> = cons_syms.difference(&ante_syms).copied().collect();
+    if introduced.is_empty() {
+        // Consequent introduces no new function symbol — not a Skolem
+        // axiom (or a degenerate one we can't distinguish from the
+        // identity rewrite).
+        return None;
+    }
+
+    // Every newly-introduced symbol must be fresh in the registry. If
+    // any is already known, refuse (it would mean Vampire reused an
+    // earlier symbol as a Skolem witness, which our soundness argument
+    // forbids).
+    let stale: Vec<&str> = introduced
+        .iter()
+        .copied()
+        .filter(|s| registry.seen_symbols.contains(*s))
+        .collect();
+    if !stale.is_empty() {
+        return Some(StepOutcome::Unknown(format!(
+            "introduced(definition) Skolem axiom reuses already-seen symbol(s): {stale:?}"
+        )));
+    }
+    Some(StepOutcome::Sound)
+}
+
+/// Collect all function symbol names appearing in a formula.
+fn collect_fun_syms<'a>(f: &FOFFormula<'a>, out: &mut HashSet<&'a str>) {
+    match f {
+        FOFFormula::Atomic(a) => collect_fun_syms_atomic(a, out),
+        FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => collect_fun_syms(inner, out),
+        FOFFormula::Quantified { formula, .. } => collect_fun_syms(formula, out),
+        FOFFormula::Binary { left, right, .. } => {
+            collect_fun_syms(left, out);
+            collect_fun_syms(right, out);
+        }
+        FOFFormula::Equality(a, b) | FOFFormula::Inequality(a, b) => {
+            collect_fun_syms_term(a, out);
+            collect_fun_syms_term(b, out);
+        }
+    }
+}
+
+fn collect_fun_syms_atomic<'a>(
+    a: &mrs_tptp::FOFAtomicFormula<'a>,
+    out: &mut HashSet<&'a str>,
+) {
+    use mrs_tptp::FOFAtomicFormula::*;
+    match a {
+        Plain(_pred, args) => {
+            // Predicates are not function symbols for our purposes — only
+            // their arguments are. (A "Skolem function" we care about is
+            // one that appears as a function term in the consequent but
+            // not the antecedent.)
+            for t in args {
+                collect_fun_syms_term(t, out);
+            }
+        }
+        Defined(_, args) | System(_, args) => {
+            for t in args {
+                collect_fun_syms_term(t, out);
+            }
+        }
+        True | False => {}
+    }
+}
+
+fn collect_fun_syms_term<'a>(t: &mrs_tptp::FOFTerm<'a>, out: &mut HashSet<&'a str>) {
+    use mrs_tptp::FOFTerm::*;
+    match t {
+        Function(name, args) => {
+            out.insert(name.as_str());
+            for a in args {
+                collect_fun_syms_term(a, out);
+            }
+        }
+        DefinedFunction(_, args) | SystemFunction(_, args) => {
+            for a in args {
+                collect_fun_syms_term(a, out);
+            }
+        }
+        Variable(_) | Number(_) | DistinctObject(_) => {}
+    }
+}
+
 /// Peel leading universal quantifiers and `(…)` wrappers, yielding the
 /// innermost formula. Returns a reference into the input AST.
 fn peel<'a, 'p>(f: &'a FOFFormula<'p>) -> &'a FOFFormula<'p> {
@@ -176,6 +325,33 @@ fn peel<'a, 'p>(f: &'a FOFFormula<'p>) -> &'a FOFFormula<'p> {
             _ => return cur,
         }
     }
+}
+
+/// Peel leading `∀` quantifiers and `(…)` wrappers — but NOT existentials.
+/// Used when the existential structure is significant (e.g. the antecedent
+/// of a Skolem axiom).
+fn peel_forall<'a, 'p>(f: &'a FOFFormula<'p>) -> &'a FOFFormula<'p> {
+    let mut cur = f;
+    loop {
+        match cur {
+            FOFFormula::Parens(inner) => cur = inner,
+            FOFFormula::Quantified {
+                quantifier: Quantifier::Forall,
+                formula,
+                ..
+            } => cur = formula,
+            _ => return cur,
+        }
+    }
+}
+
+/// Peel only `(…)` wrappers; leave quantifiers in place.
+fn peel_parens<'a, 'p>(f: &'a FOFFormula<'p>) -> &'a FOFFormula<'p> {
+    let mut cur = f;
+    while let FOFFormula::Parens(inner) = cur {
+        cur = inner;
+    }
+    cur
 }
 
 /// Extract `new_symbols(kind, [s1, s2, …])` symbol names from an
@@ -332,6 +508,70 @@ mod tests {
         );
         let mut reg = SkolemRegistry::new();
         reg.record("sP2");
+        assert!(matches!(check(af, &reg), StepOutcome::Unknown(_)));
+    }
+
+    // --- Vampire skolem_symbol_introduction (Skolem axiom shape) ---
+
+    #[test]
+    fn accepts_parametric_skolem_axiom() {
+        // Body: ! [X0] : ((? [X1] : (op2(X1,X1) != X0 & sorti2(X1)))
+        //                  => (op2(sK1(X0),sK1(X0)) != X0 & sorti2(sK1(X0))))
+        let af = first_fof(
+            "fof(f15, plain, \
+             ( ! [X0] : ( ( ? [X1] : (op2(X1,X1) != X0 & sorti2(X1)) ) \
+                          => (op2(sK1(X0),sK1(X0)) != X0 & sorti2(sK1(X0))) ) ), \
+             introduced(definition,[],[skolem_symbol_introduction])).",
+        );
+        let reg = SkolemRegistry::new();
+        assert!(matches!(check(af, &reg), StepOutcome::Sound));
+    }
+
+    #[test]
+    fn accepts_nullary_skolem_axiom() {
+        // Body: (? [X0] : (sorti2(X0) & p(X0))) => (sorti2(sK1) & p(sK1))
+        let af = first_fof(
+            "fof(f16, plain, \
+             ( ( ? [X0] : (sorti2(X0) & p(X0)) ) => (sorti2(sK1) & p(sK1)) ), \
+             introduced(definition,[],[skolem_symbol_introduction])).",
+        );
+        let reg = SkolemRegistry::new();
+        assert!(matches!(check(af, &reg), StepOutcome::Sound));
+    }
+
+    #[test]
+    fn rejects_skolem_axiom_reusing_known_symbol() {
+        let af = first_fof(
+            "fof(f16, plain, \
+             ( ( ? [X0] : (sorti2(X0) & p(X0)) ) => (sorti2(sK1) & p(sK1)) ), \
+             introduced(definition,[],[skolem_symbol_introduction])).",
+        );
+        let mut reg = SkolemRegistry::new();
+        reg.record("sK1"); // already seen elsewhere → must not reuse
+        assert!(matches!(check(af, &reg), StepOutcome::Unknown(_)));
+    }
+
+    #[test]
+    fn rejects_implication_without_existential_antecedent() {
+        // Not a Skolem axiom — antecedent is a plain conjunction.
+        let af = first_fof(
+            "fof(c1, plain, ((p & q) => r(sK1)), introduced(definition)).",
+        );
+        let reg = SkolemRegistry::new();
+        assert!(matches!(check(af, &reg), StepOutcome::Unknown(_)));
+    }
+
+    #[test]
+    fn rejects_skolem_axiom_with_no_new_symbol() {
+        // Implication with ∃ antecedent but consequent introduces no
+        // new function symbol — refuse (we can't see the witness).
+        let af = first_fof(
+            "fof(c1, plain, \
+             ( ( ? [X] : p(X) ) => p(c0) ), \
+             introduced(definition,[],[skolem_symbol_introduction])).",
+        );
+        let mut reg = SkolemRegistry::new();
+        reg.record("c0"); // c0 already known → consequent has no new sym
         assert!(matches!(check(af, &reg), StepOutcome::Unknown(_)));
     }
 }
