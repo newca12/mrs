@@ -14,7 +14,16 @@
 //! 1. Names are unique.
 //! 2. All parent references resolve to a known node.
 //! 3. The parent graph is acyclic.
-//! 4. There is exactly one `$false` step, used as the root of the refutation.
+//! 4. There is exactly one *root* `$false` step (i.e. a `$false` clause not
+//!    used as a parent by any other node). Vampire's AVATAR mode legitimately
+//!    emits multiple `$false` clauses per proof (one per SAT-level component
+//!    refutation, plus a final `avatar_sat_refutation` rolling them up); we
+//!    accept this provided the final $false is unique in being unused as a
+//!    parent. The internal `$false` clauses still get verified on their own
+//!    merits via `check_node()` in the verify loop, so soundness is
+//!    preserved: a tampered extra $false at an interior position must still
+//!    pass its own inference check, and a tampered extra $false at the root
+//!    yields a second unparented $false and is rejected here.
 
 use std::collections::{HashMap, HashSet};
 
@@ -137,24 +146,50 @@ pub fn build<'p>(proof: &'p mrs_tptp::TPTPProblem<'p>) -> Result<Dag<'p>, DagErr
     // Topological sort (Kahn).
     let topo = topo_sort(&nodes, &by_name)?;
 
-    // Locate the unique $false node.
+    // Locate $false node(s). A proof is sound if at most one $false clause
+    // is "unused" (i.e. not referenced as a parent by any other clause); that
+    // one is the refutation root. All other $false clauses must be referenced
+    // by something (vampire's AVATAR pattern: per-component $false clauses
+    // fed into a final `avatar_sat_refutation`). Such internal $false nodes
+    // are verified individually by the main verify loop, so an attacker
+    // cannot use them to smuggle in unsound derivations.
     let falses: Vec<usize> = nodes
         .iter()
         .enumerate()
         .filter(|(_, n)| n.is_false)
         .map(|(i, _)| i)
         .collect();
-    let root = match falses.len() {
-        0 => return Err(DagError::NoFalseRoot),
-        1 => Some(falses[0]),
-        _ => {
-            // Allow only if exactly one of them appears last in topo and others
-            // are referenced; but to be strict we reject.
+    if falses.is_empty() {
+        return Err(DagError::NoFalseRoot);
+    }
+    // Determine which nodes are referenced as parents anywhere in the proof.
+    let mut used_as_parent: HashSet<usize> = HashSet::with_capacity(nodes.len());
+    for n in &nodes {
+        for p in &n.parents {
+            if let Some(&pi) = by_name.get(p) {
+                used_as_parent.insert(pi);
+            }
+        }
+    }
+    let unused_falses: Vec<usize> = falses
+        .iter()
+        .copied()
+        .filter(|i| !used_as_parent.contains(i))
+        .collect();
+    let root = match unused_falses.as_slice() {
+        [single] => Some(*single),
+        [] => {
+            // Every $false is consumed by some downstream node — there is no
+            // refutation root. Treat as no root: structurally the proof
+            // doesn't conclude.
+            return Err(DagError::NoFalseRoot);
+        }
+        many => {
+            // Multiple unparented $false clauses: ambiguous which is "the"
+            // refutation. Reject — this is the case a tampered file would
+            // need to land in to inject a fake refutation.
             return Err(DagError::MultipleFalseRoots(
-                falses
-                    .into_iter()
-                    .map(|i| nodes[i].name.to_string())
-                    .collect(),
+                many.iter().map(|&i| nodes[i].name.to_string()).collect(),
             ));
         }
     };
