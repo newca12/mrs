@@ -266,9 +266,11 @@ echo "[fuzz] Top unhandled inference rules (NotVerified rows):" >&2
 awk -F, '
     NR>1 && $3=="NotVerified" {
         if (match($0, /rule=Some\("[^"]+"\)/)) {
-            r=substr($0, RSTART+12, RLENGTH-14)
+            # `rule=Some("` is 11 chars; `")` suffix is 2 chars; trim both.
+            r=substr($0, RSTART+11, RLENGTH-13)
             n[r]++
         } else if (match($0, /rule="[^"]+"/)) {
+            # `rule="` is 6 chars; `"` suffix is 1 char.
             r=substr($0, RSTART+6, RLENGTH-7)
             n[r]++
         }
