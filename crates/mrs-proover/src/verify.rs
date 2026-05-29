@@ -4,10 +4,12 @@
 use std::time::{Duration, Instant};
 
 use mrs_core::SymbolTable;
-use mrs_tptp::FormulaRole;
+use mrs_tptp::{FOFAnnotated, FormulaRole};
 
 use crate::atp::{Atp, AtpVerdict, NoopAtp};
-use crate::checks::{axiom_leaf, introduced_definition, neg_conjecture, skolemize};
+use crate::checks::{
+    axiom_leaf, introduced_definition, neg_conjecture, skolemize, vampire_skolemisation,
+};
 use crate::dag::{self, Dag};
 use crate::load::LoadedJob;
 use crate::lower::{LowerCtx, lower_fof_statement};
@@ -338,6 +340,21 @@ fn check_node<'p>(
         .is_some_and(introduced_definition::is_introduced_definition)
     {
         return introduced_definition::check(node.fof, sk_reg);
+    }
+
+    // Vampire `skolemisation`: try the structural check before falling
+    // back to the ATP. The structural check is much faster than the ATP
+    // and handles the multi-Skolem rewrites that often time out the ATP.
+    if node.inference_rule == Some("skolemisation") {
+        let parents: Vec<&FOFAnnotated<'_>> = node
+            .parents
+            .iter()
+            .filter_map(|p| dag.by_name.get(p).map(|&i| dag.nodes[i].fof))
+            .collect();
+        if let Some(outcome) = vampire_skolemisation::try_check(node.fof, &parents, sk_reg) {
+            return outcome;
+        }
+        // Fall through to ATP if the structural check could not apply.
     }
 
     // Trivial rules: accepted without ATP.

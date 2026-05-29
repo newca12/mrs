@@ -79,6 +79,31 @@ pub fn is_introduced_definition(ann: &Annotations<'_>) -> bool {
     }
 }
 
+/// Returns `true` iff the annotation looks like a Vampire Skolem-axiom
+/// introduction (`introduced(definition, _, [skolem_symbol_introduction])`).
+/// Checks the third argument (intro list) for the `skolem_symbol_introduction`
+/// marker. We do not require the second argument (info list) to be empty —
+/// future Vampire versions may add metadata there.
+pub fn is_skolem_symbol_introduction(ann: Option<&Annotations<'_>>) -> bool {
+    let Some(ann) = ann else { return false };
+    let GeneralTerm::Function(AtomicWord::Lower("introduced"), args) = &ann.source else {
+        return false;
+    };
+    if args.len() < 3 {
+        return false;
+    }
+    let GeneralTerm::List(intro_list) = &args[2] else {
+        return false;
+    };
+    intro_list.iter().any(|t| {
+        matches!(
+            t,
+            GeneralTerm::Word(AtomicWord::Lower("skolem_symbol_introduction"))
+                | GeneralTerm::Word(AtomicWord::SingleQuoted("skolem_symbol_introduction"))
+        )
+    })
+}
+
 /// Verify one `introduced(definition)` step. Returns
 /// [`StepOutcome::Sound`] iff:
 ///
