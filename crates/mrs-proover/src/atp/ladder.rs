@@ -46,9 +46,21 @@ impl Atp for LadderAtp {
         if self.backends.is_empty() {
             return AtpVerdict::Unknown;
         }
-        // Split budget evenly across backends; each gets at least 1 second.
-        let n = self.backends.len() as u32;
-        let per = std::cmp::max(Duration::from_secs(1), budget / n);
+        // Each backend gets the *full* per-step budget. We do not pre-divide
+        // it across backends because vampire/eprover need at least a few
+        // hundred ms of real CPU to crack non-trivial steps, and a sub-100ms
+        // share is essentially wasted call-overhead. Instead, we rely on
+        // the wall-clock kill inside `run_atp` to enforce the real budget
+        // and bail to the next backend on Unknown.
+        //
+        // We also enforce a 1-second floor per backend: empirically vampire
+        // resolves most reachable steps within a second, and below that the
+        // hit-rate collapses sharply. The wall-clock kill makes this floor
+        // safe — the verify-loop's `remaining / steps_remaining` math will
+        // self-correct on subsequent steps.
+        //
+        // Worst case for a hard step: total wall time ≈ n_backends × max(1s, budget).
+        let per = std::cmp::max(Duration::from_secs(1), budget);
         for b in &self.backends {
             match b.check_step(symbols, premises, conclusion, per) {
                 AtpVerdict::Sound => return AtpVerdict::Sound,

@@ -13,7 +13,7 @@ pub use external::{EProverAtp, MrsAtp, VampireAtp};
 pub use ladder::LadderAtp;
 
 /// Verdict returned by an ATP about a single inference step.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AtpVerdict {
     /// The ATP confirmed `premises ⊨ conclusion`.
     Sound,

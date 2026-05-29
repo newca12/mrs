@@ -13,10 +13,11 @@
 //! step is bad. Anything else (`Timeout`, `GaveUp`, `Unknown`,
 //! `ResourceOut`) is reported as `Unknown`.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::process::{Child, Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use mrs_core::display::DisplayWithSymbols;
 use mrs_core::{Formula, SymbolTable};
@@ -49,12 +50,17 @@ impl Atp for EProverAtp {
         budget: Duration,
     ) -> AtpVerdict {
         let problem = build_fof_problem(symbols, premises, conclusion);
+        // eprover only accepts integer --cpu-limit, so floor to 1s. The
+        // Rust-side wall-clock kill in `run_atp` enforces the *real*
+        // budget; --cpu-limit is just a fallback upper bound that
+        // applies if our kill races with the binary exiting.
         let secs = budget.as_secs().max(1);
         let cpu_arg = format!("--cpu-limit={secs}");
         run_atp(
             &self.binary,
             &["--auto", "--silent", &cpu_arg, "--tptp3-format"],
             &problem,
+            budget,
         )
     }
 }
@@ -85,12 +91,17 @@ impl Atp for VampireAtp {
         budget: Duration,
     ) -> AtpVerdict {
         let problem = build_fof_problem(symbols, premises, conclusion);
-        let secs = budget.as_secs().max(1);
-        let secs_arg = secs.to_string();
+        // Vampire accepts fractional --time_limit. Pass the budget as
+        // decimal seconds so sub-second budgets are honored cleanly;
+        // the Rust-side wall-clock kill is still in place as a hard
+        // backstop.
+        let secs = (budget.as_secs_f64()).max(0.1);
+        let secs_arg = format!("{secs:.2}");
         run_atp(
             &self.binary,
             &["--time_limit", &secs_arg, "--input_syntax", "tptp"],
             &problem,
+            budget,
         )
     }
 }
@@ -155,6 +166,8 @@ impl Atp for MrsAtp {
         budget: Duration,
     ) -> AtpVerdict {
         let problem = build_fof_problem(symbols, premises, conclusion);
+        // mrs itself only accepts integer --time, so floor to 1s and
+        // rely on the wall-clock kill for sub-second budgets.
         let secs = budget.as_secs().max(1).to_string();
 
         if self.use_proover_mode {
@@ -163,6 +176,7 @@ impl Atp for MrsAtp {
                 &self.binary,
                 &["--time", &secs, "--quiet", "--schedule", "fast", "-"],
                 &problem,
+                budget,
             );
         }
 
@@ -175,7 +189,7 @@ impl Atp for MrsAtp {
             return AtpVerdict::Unknown;
         }
         let path_str = path.to_string_lossy().into_owned();
-        let verdict = run_atp_file(&self.binary, &["--time", &secs, &path_str]);
+        let verdict = run_atp_file(&self.binary, &["--time", &secs, &path_str], budget);
         let _ = std::fs::remove_file(&path);
         verdict
     }
@@ -216,7 +230,7 @@ fn close_universally(f: &Formula) -> Formula {
     cur
 }
 
-fn run_atp(binary: &std::path::Path, args: &[&str], problem: &str) -> AtpVerdict {
+fn run_atp(binary: &std::path::Path, args: &[&str], problem: &str, budget: Duration) -> AtpVerdict {
     let Ok(mut child) = Command::new(binary)
         .args(args)
         .stdin(Stdio::piped())
@@ -226,56 +240,23 @@ fn run_atp(binary: &std::path::Path, args: &[&str], problem: &str) -> AtpVerdict
     else {
         return AtpVerdict::Unknown;
     };
+    // Feed stdin from a thread so a full kernel pipe buffer cannot
+    // deadlock us before the child has read it.
     if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(problem.as_bytes());
+        let buf = problem.as_bytes().to_vec();
+        thread::spawn(move || {
+            let _ = stdin.write_all(&buf);
+        });
     }
-    let output = match child.wait_with_output() {
-        Ok(o) => o,
-        Err(_) => return AtpVerdict::Unknown,
-    };
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let verdict = parse_szs(&stdout);
-    // Debug hook: when MRS_DEBUG_ATP is set, dump every problem we send
-    // along with the ATP's verdict and full stdout, so we can root-cause
-    // ATP-refuted (Unsound) FailedVerified verdicts. Files land in
-    // $MRS_DEBUG_ATP_DIR (default /tmp/opencode/atp-debug) with a unique
-    // id per call.
-    if std::env::var("MRS_DEBUG_ATP").is_ok() {
-        let dir = std::env::var("MRS_DEBUG_ATP_DIR")
-            .unwrap_or_else(|_| "/tmp/opencode/atp-debug".to_string());
-        let _ = std::fs::create_dir_all(&dir);
-        let id = NEXT_TMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let bin = binary.file_name().and_then(|s| s.to_str()).unwrap_or("atp");
-        let tag = match verdict {
-            AtpVerdict::Sound => "sound",
-            AtpVerdict::Unsound => "unsound",
-            AtpVerdict::Unknown => "unknown",
-        };
-        let path = format!("{dir}/{bin}-{tag}-{id:06}.p");
-        let mut buf = String::new();
-        buf.push_str("% args:");
-        for a in args {
-            buf.push(' ');
-            buf.push_str(a);
-        }
-        buf.push('\n');
-        buf.push_str(&format!("% verdict: {tag}\n"));
-        buf.push_str("% --- stdout ---\n");
-        for line in stdout.lines() {
-            buf.push_str("% ");
-            buf.push_str(line);
-            buf.push('\n');
-        }
-        buf.push_str("% --- problem ---\n");
-        buf.push_str(problem);
-        let _ = std::fs::write(&path, buf);
-    }
+    let stdout_bytes = drain_to_bytes(child.stdout.take());
+    let (verdict, stdout) = wait_with_timeout(&mut child, budget, stdout_bytes);
+    maybe_debug_dump(binary, args, problem, &stdout, verdict);
     verdict
 }
 
 /// Run an ATP that reads from a file path (rather than stdin).
-fn run_atp_file(binary: &std::path::Path, args: &[&str]) -> AtpVerdict {
-    let Ok(child) = Command::new(binary)
+fn run_atp_file(binary: &std::path::Path, args: &[&str], budget: Duration) -> AtpVerdict {
+    let Ok(mut child) = Command::new(binary)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -284,12 +265,139 @@ fn run_atp_file(binary: &std::path::Path, args: &[&str]) -> AtpVerdict {
     else {
         return AtpVerdict::Unknown;
     };
-    let output = match child.wait_with_output() {
-        Ok(o) => o,
-        Err(_) => return AtpVerdict::Unknown,
+    let stdout_bytes = drain_to_bytes(child.stdout.take());
+    let (verdict, _stdout) = wait_with_timeout(&mut child, budget, stdout_bytes);
+    verdict
+}
+
+/// Spawn a background thread that reads the child's stdout into a
+/// shared byte buffer. Returns a join handle and the shared buffer.
+///
+/// Draining stdout while the child runs prevents pipe-full deadlocks on
+/// long-running provers that produce lots of output (e.g. vampire with
+/// `--proof on`). Reading concurrently also means we already have the
+/// SZS line buffered when the child exits, with no extra wait.
+fn drain_to_bytes(
+    mut stdout: Option<std::process::ChildStdout>,
+) -> std::sync::Arc<std::sync::Mutex<Vec<u8>>> {
+    let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::with_capacity(4096)));
+    if let Some(s) = stdout.take() {
+        let buf_clone = buf.clone();
+        thread::spawn(move || {
+            let mut local = Vec::with_capacity(4096);
+            let mut reader = s;
+            let _ = reader.read_to_end(&mut local);
+            if let Ok(mut guard) = buf_clone.lock() {
+                guard.extend_from_slice(&local);
+            }
+        });
+    }
+    buf
+}
+
+/// Wait for `child` to exit, or kill it once `budget` elapses.
+///
+/// Returns the parsed SZS verdict and the accumulated stdout (as a
+/// `String`). If the child is killed for exceeding the budget, we still
+/// parse whatever stdout was emitted before the kill — some provers
+/// stream the SZS status line early and only spend the remaining budget
+/// on the proof body, so we can still recover a verdict in that case.
+///
+/// Polling uses an **adaptive** schedule: fast 1 ms polls for the first
+/// 50 ms (so easy steps that resolve in a few ms aren't penalised by
+/// idle wait), then exponential backoff up to 25 ms. With 1000+ ATP
+/// calls per proof, a flat 25 ms poll would otherwise add 25 seconds
+/// of pure idle time, dwarfing the actual prover work and silently
+/// exhausting the wall budget. A 200 ms grace is added on top of
+/// `budget` so the child has a chance to exit cleanly on its own
+/// (avoiding spurious SIGKILLs when the prover's internal timer fires
+/// at the exact deadline).
+fn wait_with_timeout(
+    child: &mut Child,
+    budget: Duration,
+    stdout_bytes: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+) -> (AtpVerdict, String) {
+    let started = Instant::now();
+    let deadline = started + budget + Duration::from_millis(200);
+    let mut poll = Duration::from_millis(1);
+    let max_poll = Duration::from_millis(25);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break;
+                }
+                thread::sleep(poll);
+                // Exponential backoff once we're past the fast-poll window.
+                if started.elapsed() > Duration::from_millis(50) && poll < max_poll {
+                    poll = std::cmp::min(poll * 2, max_poll);
+                }
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return (AtpVerdict::Unknown, String::new());
+            }
+        }
+    }
+    // Give the stdout drain thread a brief moment to flush after the
+    // child exits, then read whatever we've accumulated.
+    thread::sleep(Duration::from_millis(2));
+    let bytes = match stdout_bytes.lock() {
+        Ok(g) => g.clone(),
+        Err(_) => Vec::new(),
     };
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_szs(&stdout)
+    let stdout = String::from_utf8_lossy(&bytes).into_owned();
+    let verdict = parse_szs(&stdout);
+    (verdict, stdout)
+}
+
+/// Debug hook: when MRS_DEBUG_ATP is set, dump every problem we send
+/// along with the ATP's verdict and full stdout, so we can root-cause
+/// ATP-refuted (Unsound) FailedVerified verdicts. Files land in
+/// $MRS_DEBUG_ATP_DIR (default /tmp/opencode/atp-debug) with a unique
+/// id per call.
+fn maybe_debug_dump(
+    binary: &std::path::Path,
+    args: &[&str],
+    problem: &str,
+    stdout: &str,
+    verdict: AtpVerdict,
+) {
+    if std::env::var("MRS_DEBUG_ATP").is_err() {
+        return;
+    }
+    let dir = std::env::var("MRS_DEBUG_ATP_DIR")
+        .unwrap_or_else(|_| "/tmp/opencode/atp-debug".to_string());
+    let _ = std::fs::create_dir_all(&dir);
+    let id = NEXT_TMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let bin = binary.file_name().and_then(|s| s.to_str()).unwrap_or("atp");
+    let tag = match verdict {
+        AtpVerdict::Sound => "sound",
+        AtpVerdict::Unsound => "unsound",
+        AtpVerdict::Unknown => "unknown",
+    };
+    let path = format!("{dir}/{bin}-{tag}-{id:06}.p");
+    let mut buf = String::new();
+    buf.push_str("% args:");
+    for a in args {
+        buf.push(' ');
+        buf.push_str(a);
+    }
+    buf.push('\n');
+    buf.push_str(&format!("% verdict: {tag}\n"));
+    buf.push_str("% --- stdout ---\n");
+    for line in stdout.lines() {
+        buf.push_str("% ");
+        buf.push_str(line);
+        buf.push('\n');
+    }
+    buf.push_str("% --- problem ---\n");
+    buf.push_str(problem);
+    let _ = std::fs::write(&path, buf);
 }
 
 /// Parse an SZS status from any line of the prover's stdout.
