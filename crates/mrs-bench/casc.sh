@@ -8,7 +8,10 @@
 #
 # Options:
 #   --edition   <name>         Competition edition directory (default: casc-30)
-#   --systems   <s1,s2,...>    Comma-separated system names (default: all in crates/mrs-bench/systems/)
+#   --systems   <s1,s2,...>    Comma-separated system names (default: all in
+#                              crates/mrs-bench/systems/ EXCEPT `reference`,
+#                              which is a stub system retained only for
+#                              regenerating answers.tsv)
 #   --divisions <d1,d2,...>    Comma-separated division names (default: fne,feq,epu,eps,ueq,icu)
 #   --time      <secs>         Per-problem time limit in seconds (default: 120)
 #   --jobs      <N>            Parallel jobs (default: 1)
@@ -66,10 +69,16 @@ if [[ -z "${TPTP:-}" ]]; then
 fi
 
 # ---------- discover systems ----------
+# `reference` is a stub system (it just echoes the TPTP-library answer);
+# scheduling it as a benchmark target wastes a run slot per problem and
+# clutters results with rows whose verdict is tautologically correct.
+# Skip it during auto-discovery. Users who explicitly pass
+# `--systems reference` still get it (handy for verifying answers.tsv).
 if [[ -z "${SYSTEMS}" ]]; then
     SYSTEMS_LIST=()
     for d in "${SCRIPT_DIR}/systems"/*/; do
         name="$(basename "${d}")"
+        [[ "${name}" == "reference" ]] && continue
         if [[ -x "${d}invoke.sh" ]]; then
             SYSTEMS_LIST+=("${name}")
         fi
