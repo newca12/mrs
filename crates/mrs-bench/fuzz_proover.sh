@@ -29,6 +29,9 @@
 #                         (default: a fresh mktemp directory)
 #   --limit N             Process only the first N problems after discovery
 #                         (useful for smoke tests)
+#   --verify-only         Skip generation; re-verify proofs already present
+#                         under <output>/proofs/ (and Problems/). Useful for
+#                         measuring verifier changes against a fixed corpus.
 #
 # Examples:
 #   # In-tree smoke test (eprover, single threaded):
@@ -59,6 +62,7 @@ TIME=10
 JOBS=1
 OUTPUT=""
 LIMIT=0
+VERIFY_ONLY=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -69,7 +73,8 @@ while [[ $# -gt 0 ]]; do
         --jobs)         JOBS="$2";                  shift 2 ;;
         --output)       OUTPUT="$2";                shift 2 ;;
         --limit)        LIMIT="$2";                 shift 2 ;;
-        -h|--help) sed -n '2,50p' "$0"; exit 0 ;;
+        --verify-only)  VERIFY_ONLY=1;              shift ;;
+        -h|--help) sed -n '2,55p' "$0"; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
 done
@@ -87,10 +92,14 @@ PROOVER="${WORKSPACE_ROOT}/target/release/mrs-proover"
 
 case "${GENERATOR}" in
     eprover)
-        [[ -x "${EPROVER}" ]] || { echo "eprover not found at ${EPROVER}" >&2; exit 1; }
+        if [[ "${VERIFY_ONLY}" -eq 0 ]]; then
+            [[ -x "${EPROVER}" ]] || { echo "eprover not found at ${EPROVER}" >&2; exit 1; }
+        fi
         ;;
     vampire)
-        [[ -x "${VAMPIRE}" ]] || { echo "vampire not found at ${VAMPIRE}" >&2; exit 1; }
+        if [[ "${VERIFY_ONLY}" -eq 0 ]]; then
+            [[ -x "${VAMPIRE}" ]] || { echo "vampire not found at ${VAMPIRE}" >&2; exit 1; }
+        fi
         ;;
     *) echo "Unknown --generator: ${GENERATOR} (want eprover|vampire)" >&2; exit 1 ;;
 esac
@@ -104,6 +113,12 @@ fi
 mkdir -p "${OUTPUT}/Problems" "${OUTPUT}/proofs"
 
 CSV="${OUTPUT}/run.csv"
+if [[ "${VERIFY_ONLY}" -eq 1 ]]; then
+    # Verify-only writes to a sibling CSV so we never clobber the original
+    # generation run. Timestamped so repeated re-verifies don't overwrite
+    # each other either.
+    CSV="${OUTPUT}/run-reverify-$(date +%Y%m%d-%H%M%S).csv"
+fi
 echo "problem,generator,verdict,detail" > "${CSV}"
 
 echo "[fuzz] Problems dir: ${PROBLEMS_DIR}" >&2
@@ -112,9 +127,23 @@ echo "[fuzz] Generator:    ${GENERATOR}" >&2
 echo "[fuzz] Time budget:  ${TIME}s / problem" >&2
 echo "[fuzz] Workers:      ${JOBS}" >&2
 echo "[fuzz] Output:       ${OUTPUT}" >&2
+if [[ "${VERIFY_ONLY}" -eq 1 ]]; then
+    echo "[fuzz] Mode:         verify-only (re-verify existing proofs/)" >&2
+fi
 
-# Discover problems (recursive). Sort for deterministic ordering.
-mapfile -t PROBLEMS < <(find "${PROBLEMS_DIR}" -type f -name "${PATTERN}" | sort)
+# Discover problems. In verify-only mode we walk the existing proofs/
+# directory (so re-verification doesn't require the original TPTP tree).
+# Otherwise we walk the problem tree as configured.
+if [[ "${VERIFY_ONLY}" -eq 1 ]]; then
+    mapfile -t PROBLEMS < <(
+        find "${OUTPUT}/proofs" -type f -name '*_proof.p' \
+        | sed -E 's|/([^/]+)_proof\.p$|/\1.p|' \
+        | sed -E "s|${OUTPUT}/proofs|${OUTPUT}/Problems|" \
+        | sort
+    )
+else
+    mapfile -t PROBLEMS < <(find "${PROBLEMS_DIR}" -type f -name "${PATTERN}" | sort)
+fi
 if [[ "${LIMIT}" -gt 0 && "${#PROBLEMS[@]}" -gt "${LIMIT}" ]]; then
     PROBLEMS=("${PROBLEMS[@]:0:${LIMIT}}")
 fi
@@ -144,6 +173,17 @@ process_one() {
         cp "${prob}" "${prob_dst}.tmp.$$" && mv "${prob_dst}.tmp.$$" "${prob_dst}"
     fi
 
+    local proof_path="${OUTPUT}/proofs/${name}_proof.p"
+
+    if [[ "${VERIFY_ONLY}" -eq 1 ]]; then
+        # Re-verify mode: skip generation entirely. A missing proof file
+        # means the previous run produced no proof for this problem, so we
+        # record NoProof and move on (preserves denominators across runs).
+        if [[ ! -s "${proof_path}" ]]; then
+            emit_row "${name}" "NoProof" ""
+            return
+        fi
+    else
     # Run the chosen generator with a hard wall-clock cap. `timeout` is the
     # outer safety net; the generator's own --cpu-limit / --time_limit is
     # the inner one.
@@ -194,12 +234,12 @@ process_one() {
     # Stitch a verifier-ready file. cnf(...) lines are rewritten to fof(...)
     # because mrs-proover treats top-level free variables as universally
     # closed in either dialect — equivalent at this position.
-    local proof_path="${OUTPUT}/proofs/${name}_proof.p"
     {
         echo "% Proof : Problems/${name}.p"
         sed -E -e 's/^cnf\(/fof(/' -e 's/^%cnf\(/%fof(/' "${proof_body}"
     } > "${proof_path}.tmp.$$" && mv "${proof_path}.tmp.$$" "${proof_path}"
     rm -f "${proof_body}"
+    fi
 
     # Verify.
     local res verdict detail
@@ -236,7 +276,7 @@ emit_row() {
 }
 
 export -f process_one emit_row
-export OUTPUT GENERATOR TIME EPROVER VAMPIRE PROOVER CSV
+export OUTPUT GENERATOR TIME EPROVER VAMPIRE PROOVER CSV VERIFY_ONLY
 
 # Drive the workers. xargs -P is portable and good enough; GNU parallel
 # would be slightly nicer but is an extra dependency.
