@@ -146,11 +146,33 @@ pub fn try_check<'p>(
     //
     // We approximate this by sorting axioms in descending order of
     // antecedent size (a "bigger" antecedent is more likely to be
-    // outer). For each axiom we record its original parent index so
-    // ordering remains deterministic.
+    // outer). Ties are broken by the minimum **declared index** of
+    // any Skolem symbol the axiom introduces: Vampire enumerates
+    // Skolems in source order, so the axiom that owns the earlier
+    // Skolem should be applied to the earlier (leftmost) matching
+    // position. Without this tiebreaker two axioms with structurally
+    // identical antecedents can land on each other's positions and
+    // produce a swapped Skolem assignment relative to `step` (the
+    // SEU401+1 pattern: two branches of an `And` each carry a
+    // `? [...]` of the same shape but Vampire assigns sK5/sK6 to one
+    // branch and sK7/sK8 to the other).
+    let declared_index: std::collections::HashMap<&str, usize> = declared_skolems
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (*s, i))
+        .collect();
+    let min_decl_idx = |ax: &SkolemAxiom<'p>| -> usize {
+        ax.skolem_symbols
+            .iter()
+            .filter_map(|s| declared_index.get(s).copied())
+            .min()
+            .unwrap_or(usize::MAX)
+    };
     let mut remaining: Vec<usize> = (0..axioms.len()).collect();
     remaining.sort_by(|&i, &j| {
-        formula_size(&axioms[j].antecedent).cmp(&formula_size(&axioms[i].antecedent))
+        formula_size(&axioms[j].antecedent)
+            .cmp(&formula_size(&axioms[i].antecedent))
+            .then_with(|| min_decl_idx(&axioms[i]).cmp(&min_decl_idx(&axioms[j])))
     });
     while !remaining.is_empty() {
         let mut progressed = false;
@@ -175,7 +197,17 @@ pub fn try_check<'p>(
                         );
                     }
                     arena.push(Box::new(next));
-                    remaining.swap_remove(i);
+                    // Use `remove` not `swap_remove` so the descending-
+                    // antecedent-size + ascending-declared-index sort
+                    // order built above is preserved across iterations.
+                    // `swap_remove` moves the last element into the
+                    // freed slot, which can promote a lower-priority
+                    // axiom ahead of a still-pending higher-priority
+                    // one — this matters for SEU191+1-style cases
+                    // where two same-size axioms must be applied in
+                    // declared-Skolem order to satisfy each other's
+                    // antecedent dependencies.
+                    remaining.remove(i);
                     progressed = true;
                 }
                 None => {
