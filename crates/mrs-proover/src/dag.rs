@@ -35,6 +35,11 @@ pub struct Node<'p> {
     pub name: &'p str,
     pub role: FormulaRole,
     pub parents: Vec<&'p str>,
+    /// Parallel to `parents`: `true` iff the pedigree wraps the parent
+    /// in `inference(assume_negation, _, _)`, in which case the
+    /// asserted premise is the *negation* of the parent's formula.
+    /// See [`mrs_tptp::proover::ParentRef`] for the why.
+    pub negated_parents: Vec<bool>,
     pub inference_rule: Option<&'p str>,
     pub status: Option<&'p str>,
     pub is_false: bool,
@@ -109,13 +114,19 @@ pub fn build<'p>(proof: &'p mrs_tptp::TPTPProblem<'p>) -> Result<Dag<'p>, DagErr
         if by_name.contains_key(name) {
             return Err(DagError::DuplicateName(name.to_string()));
         }
-        let (parents, rule, status) = if let Some(ann) = &fof.annotations {
-            let parents = ann.parent_names();
+        let (parents, negated_parents, rule, status) = if let Some(ann) = &fof.annotations {
+            let refs = ann.parent_refs();
             let rule = ann.inference_rule();
             let status = ann.status();
-            (parents, rule, status)
+            let mut names = Vec::with_capacity(refs.len());
+            let mut negs = Vec::with_capacity(refs.len());
+            for r in refs {
+                names.push(r.name);
+                negs.push(r.negated);
+            }
+            (names, negs, rule, status)
         } else {
-            (Vec::new(), None, None)
+            (Vec::new(), Vec::new(), None, None)
         };
         let is_false = is_false_statement(&fof.formula);
         by_name.insert(name, nodes.len());
@@ -123,6 +134,7 @@ pub fn build<'p>(proof: &'p mrs_tptp::TPTPProblem<'p>) -> Result<Dag<'p>, DagErr
             name,
             role: fof.role,
             parents,
+            negated_parents,
             inference_rule: rule,
             status,
             is_false,

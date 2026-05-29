@@ -1,41 +1,56 @@
 //! Structural check for `introduced(definition)` clauses.
 //!
-//! E (and a few other ATPs) introduce auxiliary predicate symbols to keep
-//! intermediate clauses compact. Such a step has source `introduced(definition)`
-//! and asserts a biconditional of the form
+//! Two ATP families emit such clauses with slightly different shapes:
+//!
+//! ## E (full biconditional)
 //!
 //! ```text
-//! ! [X1, ..., Xn] : ( P(t1, ..., tk)  <=>  phi )
+//! fof(c1, plain, (epred1_0 <=> phi), introduced(definition)).
+//! fof(c2, plain, (! [X] : (P(X) <=> phi(X))), introduced(definition)).
 //! ```
 //!
-//! or — with the negation pushed to the head side —
+//! Here a single clause asserts the entire biconditional `P :iff phi`.
+//!
+//! ## Vampire (directional definition fragments, with declared new symbol)
 //!
 //! ```text
-//! ! [X1, ..., Xn] : ( ~P(t1, ..., tk)  <=>  phi )
+//! fof(f18, plain, ( phi | ~sP2 ),
+//!     introduced(definition, [new_symbols(naming, [sP2])],
+//!                            [predicate_definition_introduction])).
 //! ```
 //!
-//! or (most commonly with a fresh nullary predicate) the unquantified
+//! Vampire's AVATAR splits the biconditional `sP2 :iff phi` into the two
+//! clausal halves (`sP2 -> phi` written as `phi | ~sP2`, and `phi -> sP2`
+//! written as `~phi | sP2`) and emits each as its own
+//! `introduced(definition, ...)` clause. The fresh predicate symbol is
+//! announced in the `new_symbols(naming, [...])` info entry.
 //!
-//! ```text
-//! P  <=>  phi      /     ~P  <=>  phi
-//! ```
+//! ## Soundness
 //!
-//! A predicate definition `P :⇔ φ` is a *conservative extension* whenever
-//! `P` is fresh — i.e. does not occur in any earlier proof node or in the
-//! linked problem. Conservativity means no new theorem about the original
-//! signature is derivable, so the introduction is sound by construction and
-//! does not need to be checked against an ATP.
+//! Either way the introduction is a *conservative extension* of the
+//! theory: the new predicate symbol does not appear earlier in the proof
+//! or in the linked problem, so any model can be extended with an
+//! interpretation of the new symbol that satisfies the introduced
+//! clause(s). Therefore no theorem about the original signature can be
+//! falsified.
 //!
-//! Soundness requirements implemented here:
+//! ## What we accept
 //!
-//! 1. Source is `introduced(definition)` (or `introduced(definition, _)`).
-//! 2. The formula has the structural shape above.
-//! 3. The "head" predicate symbol `P` is *not* already in the
-//!    [`SkolemRegistry`] (which tracks every symbol seen so far). The
-//!    registry is updated by the main verify loop after each node, so
-//!    "earlier" here means "in any prior node or the linked problem".
+//! 1. **E-style explicit biconditional** — the formula's body (after
+//!    peeling leading universal quantifiers and parentheses) is
+//!    `lhs <=> rhs` and one side's "head" predicate symbol is fresh
+//!    w.r.t. the [`SkolemRegistry`].
 //!
-//! Anything else falls through to the ATP path.
+//! 2. **Vampire-style declared new symbol** — the annotation carries a
+//!    `new_symbols(naming, [...])` entry naming a single new predicate
+//!    symbol that is fresh w.r.t. the [`SkolemRegistry`]. The formula's
+//!    shape is not further constrained; the freshness of the symbol is
+//!    what makes the clause sound regardless of which directional
+//!    fragment is being asserted.
+//!
+//! In both cases "fresh" means: not present in the registry, which the
+//! main verify loop seeds from the linked problem and updates after each
+//! prior node.
 
 use mrs_tptp::ast::common::{AtomicWord, GeneralTerm};
 use mrs_tptp::{
@@ -63,13 +78,50 @@ pub fn is_introduced_definition(ann: &Annotations<'_>) -> bool {
 }
 
 /// Verify one `introduced(definition)` step. Returns
-/// [`StepOutcome::Sound`] iff the formula is a biconditional whose head
-/// predicate is fresh w.r.t. the registry; otherwise an outcome that
-/// surfaces the reason for rejection.
+/// [`StepOutcome::Sound`] iff:
+///
+/// * the annotation declares a single new predicate symbol via
+///   `new_symbols(naming, [P])` and `P` is fresh (Vampire shape), **or**
+/// * the formula body is a biconditional one of whose sides has a fresh
+///   head predicate symbol (E shape).
+///
+/// Otherwise returns [`StepOutcome::Unknown`] with the reason — never
+/// [`StepOutcome::Unsound`], because `introduced(definition)` carries no
+/// claim that an attacker could break: an *unsupported* shape means we
+/// can't certify, not that the step is wrong.
 ///
 /// The caller is responsible for invoking this only when
-/// [`is_introduced_definition`] returns true for the step's annotation.
+/// [`is_introduced_definition`] returns true.
 pub fn check<'p>(step: &FOFAnnotated<'p>, registry: &SkolemRegistry) -> StepOutcome {
+    // --- Vampire shape: annotation declares the new symbol(s) directly. ---
+    if let Some(ann) = step.annotations.as_ref() {
+        let declared = declared_new_symbols(ann);
+        if declared.len() == 1 {
+            let sym = declared[0];
+            if !registry.seen_symbols.contains(sym) {
+                return StepOutcome::Sound;
+            }
+            return StepOutcome::Unknown(format!(
+                "introduced(definition) declares already-seen symbol `{sym}`"
+            ));
+        }
+        if declared.len() > 1 {
+            // Multiple new symbols at once: unusual but conservative — accept
+            // only if *all* are fresh.
+            let all_fresh = declared.iter().all(|s| !registry.seen_symbols.contains(*s));
+            if all_fresh {
+                return StepOutcome::Sound;
+            }
+            return StepOutcome::Unknown(
+                "introduced(definition) declares multiple new symbols and at \
+                 least one is already known"
+                    .into(),
+            );
+        }
+        // No new_symbols entry — fall through to the E-style biconditional path.
+    }
+
+    // --- E shape: parse the formula for a biconditional with a fresh head. ---
     let logical = match &step.formula {
         FOFStatement::Logical(f) => f,
         FOFStatement::Sequent(..) => {
@@ -79,10 +131,7 @@ pub fn check<'p>(step: &FOFAnnotated<'p>, registry: &SkolemRegistry) -> StepOutc
         }
     };
 
-    // Peel off a leading universal quantifier (and any number of nested
-    // parentheses) to expose the biconditional.
     let body = peel(logical);
-
     let (left, right) = match body {
         FOFFormula::Binary {
             left,
@@ -91,16 +140,13 @@ pub fn check<'p>(step: &FOFAnnotated<'p>, registry: &SkolemRegistry) -> StepOutc
         } => (peel(left), peel(right)),
         _ => {
             return StepOutcome::Unknown(
-                "introduced(definition) is not a biconditional after peeling \
-                 leading quantifiers/parens"
+                "introduced(definition) with no new_symbols entry and body is \
+                 not a biconditional after peeling quantifiers/parens"
                     .into(),
             );
         }
     };
 
-    // Either side may be the "head" side carrying the fresh predicate
-    // symbol. Try both. A side is a candidate head iff it is an atomic
-    // predicate application (or its single negation).
     if let Some(name) = head_predicate(left)
         && !registry.seen_symbols.contains(name)
     {
@@ -130,6 +176,39 @@ fn peel<'a, 'p>(f: &'a FOFFormula<'p>) -> &'a FOFFormula<'p> {
             _ => return cur,
         }
     }
+}
+
+/// Extract `new_symbols(kind, [s1, s2, …])` symbol names from an
+/// `introduced(definition, [info_items], [extras])` annotation source.
+///
+/// Unlike [`Annotations::new_symbols`], which only looks inside
+/// `inference(/3)`, this walks the `introduced(/N)` info list directly.
+fn declared_new_symbols<'a>(ann: &Annotations<'a>) -> Vec<&'a str> {
+    let info = match &ann.source {
+        GeneralTerm::Function(AtomicWord::Lower("introduced"), args) if args.len() >= 2 => {
+            match &args[1] {
+                GeneralTerm::List(items) => items.as_slice(),
+                _ => return Vec::new(),
+            }
+        }
+        _ => return Vec::new(),
+    };
+    for it in info {
+        if let GeneralTerm::Function(AtomicWord::Lower("new_symbols"), inner) = it
+            && inner.len() == 2
+            && let GeneralTerm::List(items) = &inner[1]
+        {
+            return items
+                .iter()
+                .filter_map(|g| match g {
+                    GeneralTerm::Word(AtomicWord::Lower(s)) => Some(*s),
+                    GeneralTerm::Word(AtomicWord::SingleQuoted(s)) => Some(*s),
+                    _ => None,
+                })
+                .collect();
+        }
+    }
+    Vec::new()
 }
 
 /// Returns the predicate-symbol name of `f` if `f` is a single (possibly
@@ -168,6 +247,17 @@ mod tests {
     }
 
     #[test]
+    fn detects_source_with_extras() {
+        let af = first_fof(
+            "fof(c1, plain, (q | ~sP2), \
+             introduced(definition,[new_symbols(naming,[sP2])],\
+                                   [predicate_definition_introduction])).",
+        );
+        let ann = af.annotations.as_ref().unwrap();
+        assert!(is_introduced_definition(ann));
+    }
+
+    #[test]
     fn rejects_non_definition_source() {
         let af = first_fof("fof(c1, plain, (p0 <=> q), inference(rw, [status(thm)], [a])).");
         let ann = af.annotations.as_ref().unwrap();
@@ -200,9 +290,7 @@ mod tests {
         let af = first_fof("fof(c1, plain, (p <=> q), introduced(definition)).");
         let mut reg = SkolemRegistry::new();
         reg.record("p"); // already seen
-        // q must also be considered for freshness; mark it too so neither side
-        // qualifies as the fresh head.
-        reg.record("q");
+        reg.record("q"); // also seen → neither side qualifies
         assert!(matches!(check(af, &reg), StepOutcome::Unknown(_)));
     }
 
@@ -215,9 +303,35 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_biconditional() {
+    fn rejects_non_biconditional_without_new_symbols() {
         let af = first_fof("fof(c1, plain, (epred1_0 => q), introduced(definition)).");
         let reg = SkolemRegistry::new();
+        assert!(matches!(check(af, &reg), StepOutcome::Unknown(_)));
+    }
+
+    #[test]
+    fn accepts_vampire_directional_fragment_via_new_symbols() {
+        // The body is NOT a biconditional — it's `phi | ~sP2`, one of the
+        // two clausal halves of `sP2 <=> phi`. Acceptance comes from the
+        // declared `new_symbols(naming, [sP2])` entry.
+        let af = first_fof(
+            "fof(f18, plain, (q | ~sP2), \
+             introduced(definition,[new_symbols(naming,[sP2])],\
+                                   [predicate_definition_introduction])).",
+        );
+        let reg = SkolemRegistry::new();
+        assert!(matches!(check(af, &reg), StepOutcome::Sound));
+    }
+
+    #[test]
+    fn rejects_vampire_fragment_with_known_new_symbol() {
+        let af = first_fof(
+            "fof(f18, plain, (q | ~sP2), \
+             introduced(definition,[new_symbols(naming,[sP2])],\
+                                   [predicate_definition_introduction])).",
+        );
+        let mut reg = SkolemRegistry::new();
+        reg.record("sP2");
         assert!(matches!(check(af, &reg), StepOutcome::Unknown(_)));
     }
 }

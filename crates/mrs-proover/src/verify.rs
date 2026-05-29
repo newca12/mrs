@@ -338,12 +338,22 @@ fn delegate_to_atp<'p>(
         ));
     }
     // Build the conclusion and premise formulas in mrs-core form.
+    //
+    // Each parent's `negated_parents[i]` flag tells us whether the
+    // pedigree wraps that parent in `assume_negation`. In that case the
+    // *asserted* premise is `¬parent`, not `parent`, and we must
+    // negate before handing it to the ATP — otherwise we'll feed
+    // `co1 ∧ definitions ⊨ ¬co1` (genuinely unsatisfiable) and get back
+    // a spurious `Unsound` verdict.
     let mut ctx = LowerCtx::new(symbols);
     let mut premises = Vec::with_capacity(node.parents.len());
-    for p in &node.parents {
+    for (i, p) in node.parents.iter().enumerate() {
         if let Some(&pi) = dag.by_name.get(p) {
             ctx.reset_vars();
-            let f = lower_fof_statement(&mut ctx, &dag.nodes[pi].fof.formula);
+            let mut f = lower_fof_statement(&mut ctx, &dag.nodes[pi].fof.formula);
+            if node.negated_parents.get(i).copied().unwrap_or(false) {
+                f = mrs_core::Formula::Neg(Box::new(f));
+            }
             premises.push(f);
         }
     }
