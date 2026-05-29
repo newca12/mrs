@@ -206,6 +206,22 @@ pub fn check<'p>(step: &FOFAnnotated<'p>, registry: &SkolemRegistry) -> StepOutc
         return outcome;
     }
 
+    // --- Distinctness axiom between distinct $distinct_object constants. ---
+    //
+    // Vampire emits this as `introduced(definition,[],[distinctness_axiom])`
+    // with a body like `"Apple" != "Microsoft"`. TPTP semantics
+    // (Sutcliffe, JAR 2009 §3.1) guarantees that any two syntactically
+    // distinct double-quoted constants are pairwise unequal, so the
+    // inequality is a tautology requiring no further justification.
+    //
+    // We accept any body that, after peeling parens/quantifiers, is an
+    // `Inequality(DistinctObject(a), DistinctObject(b))` with `a != b`.
+    // Anything else — equality, inequality of plain terms, etc. — is
+    // rejected and falls through to the iff check below.
+    if let Some(outcome) = try_distinctness_axiom(logical) {
+        return outcome;
+    }
+
     // --- E shape: parse the formula for a biconditional with a fresh head. ---
     let body = peel(logical);
     let (left, right) = match body {
@@ -318,6 +334,29 @@ pub(crate) fn collect_fun_syms<'a>(f: &FOFFormula<'a>, out: &mut HashSet<&'a str
             collect_fun_syms_term(a, out);
             collect_fun_syms_term(b, out);
         }
+    }
+}
+
+/// If `f` is (after peeling quantifiers/parens) an inequality between two
+/// syntactically distinct `$distinct_object` constants, return
+/// `Some(Sound)`. TPTP semantics treats distinct double-quoted constants
+/// as pairwise unequal, so the inequality is a tautology and the
+/// `introduced(definition,[],[distinctness_axiom])` step is sound.
+///
+/// Returns `None` on any other shape so the caller can fall through to
+/// the iff-style structural check.
+fn try_distinctness_axiom<'p>(f: &FOFFormula<'p>) -> Option<StepOutcome> {
+    use mrs_tptp::FOFTerm;
+    let body = peel(f);
+    let (lhs, rhs) = match body {
+        FOFFormula::Inequality(l, r) => (l, r),
+        _ => return None,
+    };
+    match (lhs, rhs) {
+        (FOFTerm::DistinctObject(a), FOFTerm::DistinctObject(b)) if a != b => {
+            Some(StepOutcome::Sound)
+        }
+        _ => None,
     }
 }
 
@@ -514,6 +553,38 @@ mod tests {
         let af = first_fof("fof(c1, plain, (! [X] : (p(X) <=> q(X))), introduced(definition)).");
         let reg = SkolemRegistry::new();
         assert!(matches!(check(af, &reg), StepOutcome::Sound));
+    }
+
+    #[test]
+    fn accepts_distinctness_between_distinct_objects() {
+        // Vampire emits `"Apple" != "Microsoft"` as a tautology under
+        // TPTP's distinct-object semantics; see SYO561+1 in the corpus.
+        let af = first_fof(
+            "fof(f3, plain, (\"Apple\" != \"Microsoft\"), \
+             introduced(definition,[],[distinctness_axiom])).",
+        );
+        let reg = SkolemRegistry::new();
+        assert!(matches!(check(af, &reg), StepOutcome::Sound));
+    }
+
+    #[test]
+    fn rejects_distinctness_between_equal_objects() {
+        // Same literal twice is not a tautology — defer to ATPs.
+        let af = first_fof(
+            "fof(f3, plain, (\"Apple\" != \"Apple\"), \
+             introduced(definition,[],[distinctness_axiom])).",
+        );
+        let reg = SkolemRegistry::new();
+        assert!(matches!(check(af, &reg), StepOutcome::Unknown(_)));
+    }
+
+    #[test]
+    fn rejects_distinctness_between_plain_terms() {
+        // Plain function symbols are not distinct objects; defer.
+        let af =
+            first_fof("fof(f3, plain, (a != b), introduced(definition,[],[distinctness_axiom])).");
+        let reg = SkolemRegistry::new();
+        assert!(matches!(check(af, &reg), StepOutcome::Unknown(_)));
     }
 
     #[test]
