@@ -133,7 +133,19 @@ pub fn try_check<'p>(
     // iterations.
     let mut arena: Vec<Box<FOFFormula<'p>>> = Vec::with_capacity(axioms.len() + 1);
     arena.push(Box::new(source.clone()));
+    // Apply axioms outermost-first: a Skolem axiom whose antecedent
+    // contains another axiom's antecedent as a subformula must be
+    // applied first, otherwise the inner rewrite alters the outer
+    // antecedent and the outer match silently fails.
+    //
+    // We approximate this by sorting axioms in descending order of
+    // antecedent size (a "bigger" antecedent is more likely to be
+    // outer). For each axiom we record its original parent index so
+    // ordering remains deterministic.
     let mut remaining: Vec<usize> = (0..axioms.len()).collect();
+    remaining.sort_by(|&i, &j| {
+        formula_size(&axioms[j].antecedent).cmp(&formula_size(&axioms[i].antecedent))
+    });
     while !remaining.is_empty() {
         let mut progressed = false;
         let mut i = 0;
@@ -171,6 +183,12 @@ pub fn try_check<'p>(
         FOFStatement::Logical(f) => f,
         _ => return None,
     };
+
+    if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+        eprintln!("[skolem-dbg] all axioms applied; comparing");
+        eprintln!("[skolem-dbg] current = {current:?}");
+        eprintln!("[skolem-dbg] step    = {step_f:?}");
+    }
 
     if formula_eq(current, step_f) {
         // Record the Skolems so downstream freshness checks see them as
@@ -839,6 +857,17 @@ fn strip_parens<'p>(f: &'p FOFFormula<'p>) -> &'p FOFFormula<'p> {
     cur
 }
 
+/// Count formula nodes (atoms, connectives, quantifiers) — used as a
+/// proxy for "outerness" when ordering Skolem axioms.
+fn formula_size<'p>(f: &FOFFormula<'p>) -> usize {
+    match f {
+        FOFFormula::Atomic(_) | FOFFormula::Equality(_, _) | FOFFormula::Inequality(_, _) => 1,
+        FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => 1 + formula_size(inner),
+        FOFFormula::Binary { left, right, .. } => 1 + formula_size(left) + formula_size(right),
+        FOFFormula::Quantified { formula, .. } => 1 + formula_size(formula),
+    }
+}
+
 fn formula_eq<'p>(a: &FOFFormula<'p>, b: &FOFFormula<'p>) -> bool {
     let a = strip_parens(a);
     let b = strip_parens(b);
@@ -1089,6 +1118,34 @@ fof(ax_inner, plain, \
     ((? [X1] : r(sK0, X1)) => r(sK0, sK1)), \
     introduced(definition, [], [skolem_symbol_introduction])).
 fof(step, plain, (p(sK0) & r(sK0, sK1)), \
+    inference(skolemisation, [status(esa), new_symbols(skolem, [sK0, sK1])], \
+              [src, ax_inner, ax_outer])).
+";
+        let outcome = run(input, "step", &["src", "ax_inner", "ax_outer"]);
+        assert!(matches!(outcome, Some(StepOutcome::Sound)),
+            "expected Sound, got {outcome:?}");
+    }
+
+    /// Multi-axiom nested skolemisation (LCL654-style minimal): the
+    /// source has an outer `∃X0.…` and an inner `∃X1.…` under a `∀`.
+    /// One axiom Skolemises the outer ∃, another Skolemises the inner
+    /// ∃ (now under sK0 in its antecedent). The outer axiom MUST be
+    /// applied first; descending antecedent-size ordering achieves it.
+    #[test]
+    fn outer_and_inner_skolems_require_size_ordering() {
+        let input = "\
+fof(src, plain, \
+    (? [X0] : (p(X0) & ! [Y] : (q(X0, Y) | ? [X1] : r(Y, X1)))), \
+    inference(ennf_transformation, [], [])).
+fof(ax_outer, plain, \
+    ((? [X0] : (p(X0) & ! [Y] : (q(X0, Y) | ? [X1] : r(Y, X1)))) \
+     => (p(sK0) & ! [Y] : (q(sK0, Y) | ? [X1] : r(Y, X1)))), \
+    introduced(definition, [], [skolem_symbol_introduction])).
+fof(ax_inner, plain, \
+    (! [Y] : ((? [X1] : r(Y, X1)) => r(Y, sK1(Y)))), \
+    introduced(definition, [], [skolem_symbol_introduction])).
+fof(step, plain, \
+    (p(sK0) & ! [Y] : (q(sK0, Y) | r(Y, sK1(Y)))), \
     inference(skolemisation, [status(esa), new_symbols(skolem, [sK0, sK1])], \
               [src, ax_inner, ax_outer])).
 ";
