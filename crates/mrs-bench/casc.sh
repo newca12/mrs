@@ -174,42 +174,45 @@ export -f run_one
 export SCRIPT_DIR TIME_LIMIT EDITION
 
 # ---------- execute ----------
-completed=0
 GRACE=$((TIME_LIMIT + 10))
 
+# Worker shared by both serial and parallel paths. Appends one CSV row
+# (under flock so concurrent writers don't interleave) and prints a
+# carriage-return progress line. Progress is computed by counting CSV
+# lines so it works whether one or many workers are active.
 run_and_append() {
     local line="$1"
     IFS=$'\t' read -r div problem prob_path sys <<< "${line}"
     local row
     row=$(run_one "${div}" "${problem}" "${prob_path}" "${sys}")
-    # Append atomically (single printf is atomic for short lines on Linux)
-    printf '%s\n' "${row}" >> "${CSV}"
-    (( completed++ )) || true
-    printf '\r[casc] %d/%d completed' "${completed}" "${total_problems}" >&2
+    local completed
+    (
+        flock 9
+        printf '%s\n' "${row}" >> "${CSV}"
+        # Subtract 1 for the header.
+        completed=$(($(wc -l < "${CSV}") - 1))
+        printf '\r[casc] %d/%d completed' "${completed}" "${total_problems}" >&2
+    ) 9>>"${CSV}.lock"
 }
+export -f run_and_append
+export CSV total_problems
 
 if [[ "${JOBS}" -le 1 ]]; then
     while IFS= read -r line; do
         run_and_append "${line}"
     done < "${JOBS_FILE}"
 else
-    # Parallel execution via GNU parallel or xargs -P
+    # Parallel execution. Each worker calls run_and_append directly so the
+    # progress counter advances in real time (instead of only at the end).
     if command -v parallel &>/dev/null; then
-        export -f run_one
-        # parallel reads TSV lines; split on tab to get fields
-        parallel --jobs "${JOBS}" --colsep '\t' \
-            'row=$(run_one {1} {2} {3} {4}); printf "%s\n" "${row}"' \
-            :::: "${JOBS_FILE}" >> "${CSV}"
+        parallel --jobs "${JOBS}" --will-cite \
+            'run_and_append {}' :::: "${JOBS_FILE}"
     else
-        # xargs fallback: wrap each line as a single argument
-        xargs -P "${JOBS}" -I '{}' bash -c '
-            IFS=$'"'"'\t'"'"' read -r div problem prob_path sys <<< "$1"
-            row=$(run_one "${div}" "${problem}" "${prob_path}" "${sys}")
-            printf "%s\n" "${row}"
-        ' _ '{}' < "${JOBS_FILE}" >> "${CSV}"
+        xargs -P "${JOBS}" -I '{}' bash -c 'run_and_append "$@"' _ '{}' \
+            < "${JOBS_FILE}"
     fi
 fi
 
 printf '\n' >&2
-rm -f "${JOBS_FILE}"
+rm -f "${JOBS_FILE}" "${CSV}.lock"
 echo "[casc] Done. Results: ${CSV}" >&2
