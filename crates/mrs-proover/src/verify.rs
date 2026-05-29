@@ -7,7 +7,7 @@ use mrs_core::SymbolTable;
 use mrs_tptp::FormulaRole;
 
 use crate::atp::{Atp, AtpVerdict, NoopAtp};
-use crate::checks::{axiom_leaf, neg_conjecture, skolemize};
+use crate::checks::{axiom_leaf, introduced_definition, neg_conjecture, skolemize};
 use crate::dag::{self, Dag};
 use crate::load::LoadedJob;
 use crate::lower::{LowerCtx, lower_fof_statement};
@@ -168,10 +168,10 @@ const TRIVIAL_RULES: &[&str] = &[
     "evaluation",
     "remove_duplicate_literals",
     // Added after the TPTP-v9 FOF corpus analysis (May 2026):
-    "fof_nnf",          // negation normal form — logical equivalence
-    "distribute",       // CNF distribution of ∨ over ∧ — logical equivalence
-    "variable_rename",  // α-renaming of bound variables — logical equivalence
-    "split_conjunct",   // (A ∧ B) ⊢ A or B — sound projection
+    "fof_nnf",         // negation normal form — logical equivalence
+    "distribute",      // CNF distribution of ∨ over ∧ — logical equivalence
+    "variable_rename", // α-renaming of bound variables — logical equivalence
+    "split_conjunct",  // (A ∧ B) ⊢ A or B — sound projection
 ];
 
 fn is_trivial_rule(rule: Option<&str>) -> bool {
@@ -202,6 +202,16 @@ fn step_needs_atp(node: &dag::Node<'_>) -> bool {
         }
     }
     if node.inference_rule == Some("skolemize") {
+        return false;
+    }
+    // Predicate-definition introductions: handled by a dedicated structural
+    // check, no ATP needed.
+    if node
+        .fof
+        .annotations
+        .as_ref()
+        .is_some_and(introduced_definition::is_introduced_definition)
+    {
         return false;
     }
     if is_trivial_rule(node.inference_rule) {
@@ -291,6 +301,17 @@ fn check_node<'p>(
             .first()
             .and_then(|p| dag.by_name.get(p).map(|&i| dag.nodes[i].fof));
         return skolemize::check(node.fof, parent_fof, sk_reg);
+    }
+
+    // introduced(definition): predicate-definition introduction, sound as a
+    // conservative extension when the head predicate is fresh.
+    if node
+        .fof
+        .annotations
+        .as_ref()
+        .is_some_and(introduced_definition::is_introduced_definition)
+    {
+        return introduced_definition::check(node.fof, sk_reg);
     }
 
     // Trivial rules: accepted without ATP.
