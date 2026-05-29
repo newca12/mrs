@@ -106,7 +106,25 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
             } else {
                 remaining / atp_steps_remaining as u32
             };
-            let b = std::cmp::min(settings.per_step_budget, share);
+            // Vampire's `skolemisation` rule can rewrite many existentials
+            // in one step against several Skolem-axiom premises. These
+            // rewrites are sound by construction but combinatorially hard
+            // for the ATP, so give them a bigger per-step cap. We still
+            // honour the wall-clock remaining budget so other steps are
+            // not entirely starved.
+            let per_step_cap = if dag.nodes[idx].inference_rule == Some("skolemisation") {
+                settings.per_step_budget.max(Duration::from_secs(25))
+            } else {
+                settings.per_step_budget
+            };
+            // Skolemisation steps may claim more than their fair share but
+            // never more than the per-step cap or what remains on the wall.
+            let upper = std::cmp::min(per_step_cap, remaining);
+            let b = if dag.nodes[idx].inference_rule == Some("skolemisation") {
+                upper
+            } else {
+                std::cmp::min(settings.per_step_budget, share)
+            };
             // Avoid 0-duration ATP calls; require at least 1s if any time left.
             if b.is_zero() && !remaining.is_zero() {
                 Duration::from_secs(1).min(remaining)
