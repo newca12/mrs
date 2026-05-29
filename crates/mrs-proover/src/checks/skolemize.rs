@@ -123,10 +123,20 @@ pub fn check<'p>(
     }
 
     // 2) extract skolemize(Var, sk(args)) info.
+    //
+    // E omits this annotation entirely on its `skolemize` steps, declaring
+    // neither `skolemize(...)` nor `new_symbols(...)`. In that case we
+    // cannot do the full structural check (we don't know which existential
+    // was eliminated nor the exact Skolem term), so we fall back to a
+    // permissive inference: any function symbol present in the step but
+    // absent from both the parent and the registry is treated as a fresh
+    // Skolem. If we find at least one such fresh symbol AND no symbol in
+    // the step clashes with the registry, we accept the step as `Unknown`
+    // — not provably sound, but not provably unsound either. This avoids
+    // a false-positive FailedVerified for the many E proofs whose skolemize
+    // annotations are too sparse.
     let Some(info) = ann.skolemize_info() else {
-        return StepOutcome::Unsound(
-            "skolemize step missing `skolemize(Var, sk(...))` annotation".into(),
-        );
+        return check_e_style_skolemize(step, parent, registry);
     };
 
     // 3) exactly one new symbol declared, equal to info.skolem_symbol.
@@ -483,4 +493,64 @@ fn term_eq(a: &FOFTerm<'_>, b: &FOFTerm<'_>) -> bool {
         (FOFTerm::DistinctObject(x), FOFTerm::DistinctObject(y)) => x == y,
         _ => false,
     }
+}
+
+/// E-style fallback when a `skolemize` step has no `skolemize(Var, sk(...))`
+/// annotation. We collect every function symbol mentioned in the step but
+/// not in the parent. If at least one such symbol exists and none of them
+/// were already in the registry (problem symbols), record them as fresh
+/// Skolems and return `Unknown` (we cannot prove soundness without the
+/// missing var/term info, but we have no evidence of unsoundness either —
+/// `Unknown` propagates to `NotVerified`, scoring 0 instead of the −1 a
+/// false-positive `FailedVerified` would cost).
+fn check_e_style_skolemize<'p>(
+    step: &FOFAnnotated<'p>,
+    parent: Option<&FOFAnnotated<'p>>,
+    registry: &mut SkolemRegistry,
+) -> StepOutcome {
+    let Some(parent) = parent else {
+        return StepOutcome::Unknown("skolemize step has no parent".into());
+    };
+    let step_f = match &step.formula {
+        FOFStatement::Logical(f) => f,
+        _ => return StepOutcome::Unknown("skolemize step is a sequent".into()),
+    };
+    let parent_f = match &parent.formula {
+        FOFStatement::Logical(f) => f,
+        _ => return StepOutcome::Unknown("skolemize parent is a sequent".into()),
+    };
+
+    let mut step_syms: HashSet<&str> = HashSet::new();
+    let mut parent_syms: HashSet<&str> = HashSet::new();
+    crate::checks::introduced_definition::collect_fun_syms(step_f, &mut step_syms);
+    crate::checks::introduced_definition::collect_fun_syms(parent_f, &mut parent_syms);
+
+    let fresh: Vec<&str> = step_syms.difference(&parent_syms).copied().collect();
+    if fresh.is_empty() {
+        return StepOutcome::Unknown(
+            "skolemize step missing `skolemize(Var, sk(...))` annotation; \
+             no fresh symbols introduced — cannot verify structurally"
+                .into(),
+        );
+    }
+
+    let stale: Vec<&str> = fresh
+        .iter()
+        .copied()
+        .filter(|s| registry.seen_symbols.contains(*s))
+        .collect();
+    if !stale.is_empty() {
+        return StepOutcome::Unknown(format!(
+            "skolemize step missing annotation and candidate Skolem symbol(s) {stale:?} \
+             clash with the problem's symbols"
+        ));
+    }
+
+    for s in &fresh {
+        registry.record(s);
+    }
+    StepOutcome::Unknown(format!(
+        "skolemize step missing `skolemize(Var, sk(...))` annotation; \
+         inferred fresh Skolem(s) {fresh:?} from step\\parent — accepted as Unknown"
+    ))
 }

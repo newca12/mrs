@@ -256,7 +256,7 @@ fn try_skolem_axiom<'p>(f: &FOFFormula<'p>, registry: &SkolemRegistry) -> Option
 }
 
 /// Collect all function symbol names appearing in a formula.
-fn collect_fun_syms<'a>(f: &FOFFormula<'a>, out: &mut HashSet<&'a str>) {
+pub(crate) fn collect_fun_syms<'a>(f: &FOFFormula<'a>, out: &mut HashSet<&'a str>) {
     match f {
         FOFFormula::Atomic(a) => collect_fun_syms_atomic(a, out),
         FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => collect_fun_syms(inner, out),
