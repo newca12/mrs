@@ -898,3 +898,153 @@ fn term_eq<'p>(a: &FOFTerm<'p>, b: &FOFTerm<'p>) -> bool {
         _ => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mrs_tptp::parse_tptp;
+
+    /// Parse a TPTP problem string and return references to its FOF
+    /// annotated formulas. Leaks the parsed problem so the borrows
+    /// live for the entire test.
+    fn parse_fofs(input: &'static str) -> Vec<&'static FOFAnnotated<'static>> {
+        let problem = Box::leak(Box::new(parse_tptp(input).expect("parse")));
+        let mut out: Vec<&'static FOFAnnotated<'static>> = Vec::new();
+        for f in &problem.formulas {
+            if let mrs_tptp::AnnotatedFormula::FOF(a) = f {
+                let a_static: &'static FOFAnnotated<'static> =
+                    unsafe { &*(a as *const FOFAnnotated<'_> as *const FOFAnnotated<'static>) };
+                out.push(a_static);
+            }
+        }
+        out
+    }
+
+    fn run(
+        input: &'static str,
+        step_name: &str,
+        parent_names: &[&str],
+    ) -> Option<StepOutcome> {
+        let fofs = parse_fofs(input);
+        let by_name: HashMap<&str, &FOFAnnotated<'static>> = fofs
+            .iter()
+            .map(|a| (a.name.as_str(), *a))
+            .collect();
+        let step = *by_name.get(step_name).expect("step not found");
+        let parents: Vec<&FOFAnnotated<'static>> = parent_names
+            .iter()
+            .map(|n| *by_name.get(*n).expect("parent not found"))
+            .collect();
+        let mut reg = SkolemRegistry::new();
+        // Seed the registry only from formulas that represent the
+        // original problem input (axioms/conjectures without an
+        // inference annotation), matching what the live verifier does.
+        for p in &fofs {
+            if p.annotations.is_some() {
+                continue;
+            }
+            if let FOFStatement::Logical(f) = &p.formula {
+                let mut syms: std::collections::HashSet<&str> =
+                    std::collections::HashSet::new();
+                crate::checks::introduced_definition::collect_fun_syms(f, &mut syms);
+                for s in syms {
+                    reg.record(s);
+                }
+            }
+        }
+        try_check(step, &parents, &mut reg)
+    }
+
+    #[test]
+    fn accepts_single_nullary_skolem() {
+        let input = "\
+fof(src, plain, (? [X0] : (sorti1(X0) & ! [X1] : (op1(X1,X1) = X0 | ~sorti1(X1)))), \
+    inference(ennf_transformation, [], [])).
+fof(ax, plain, \
+    (? [X0] : (sorti1(X0) & ! [X1] : (op1(X1,X1) = X0 | ~sorti1(X1))) \
+     => (sorti1(sK0) & ! [X1] : (op1(X1,X1) = sK0 | ~sorti1(X1)))), \
+    introduced(definition, [], [skolem_symbol_introduction])).
+fof(step, plain, (sorti1(sK0) & ! [X1] : (op1(X1,X1) = sK0 | ~sorti1(X1))), \
+    inference(skolemisation, [status(esa), new_symbols(skolem, [sK0])], [src, ax])).
+";
+        let outcome = run(input, "step", &["src", "ax"]);
+        assert!(matches!(outcome, Some(StepOutcome::Sound)),
+            "expected Sound, got {outcome:?}");
+    }
+
+    #[test]
+    fn accepts_single_unary_skolem() {
+        let input = "\
+fof(src, plain, (! [X0] : (~sorti2(X0) | ? [X1] : (op2(X1,X1) != X0 & sorti2(X1)))), \
+    inference(ennf_transformation, [], [])).
+fof(ax, plain, \
+    (! [X0] : (? [X1] : (op2(X1,X1) != X0 & sorti2(X1)) \
+     => (op2(sK1(X0),sK1(X0)) != X0 & sorti2(sK1(X0))))), \
+    introduced(definition, [], [skolem_symbol_introduction])).
+fof(step, plain, \
+    (! [X0] : (~sorti2(X0) | (op2(sK1(X0),sK1(X0)) != X0 & sorti2(sK1(X0))))), \
+    inference(skolemisation, [status(esa), new_symbols(skolem, [sK1])], [src, ax])).
+";
+        let outcome = run(input, "step", &["src", "ax"]);
+        assert!(matches!(outcome, Some(StepOutcome::Sound)),
+            "expected Sound, got {outcome:?}");
+    }
+
+    #[test]
+    fn shape_mismatch_returns_none() {
+        let input = "\
+fof(src, plain, (? [X0] : p(X0)), inference(ennf_transformation, [], [])).
+fof(ax, plain, ((? [X0] : p(X0)) => p(sK0)), \
+    introduced(definition, [], [skolem_symbol_introduction])).
+fof(step, plain, (q(sK0)), \
+    inference(skolemisation, [status(esa), new_symbols(skolem, [sK0])], [src, ax])).
+";
+        let outcome = run(input, "step", &["src", "ax"]);
+        assert!(outcome.is_none(), "expected None, got {outcome:?}");
+    }
+
+    #[test]
+    fn stale_skolem_returns_unknown() {
+        let input = "\
+fof(prob, axiom, p(sK0)).
+fof(src, plain, (? [X0] : p(X0)), inference(ennf_transformation, [], [])).
+fof(ax, plain, ((? [X0] : p(X0)) => p(sK0)), \
+    introduced(definition, [], [skolem_symbol_introduction])).
+fof(step, plain, (p(sK0)), \
+    inference(skolemisation, [status(esa), new_symbols(skolem, [sK0])], [src, ax])).
+";
+        let outcome = run(input, "step", &["src", "ax"]);
+        assert!(
+            matches!(outcome, Some(StepOutcome::Unknown(_))),
+            "expected Unknown, got {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn no_skolem_axiom_parents_returns_none() {
+        let input = "\
+fof(src, plain, (? [X0] : p(X0)), inference(ennf_transformation, [], [])).
+fof(step, plain, (p(sK0)), \
+    inference(skolemisation, [status(esa), new_symbols(skolem, [sK0])], [src])).
+";
+        let outcome = run(input, "step", &["src"]);
+        assert!(outcome.is_none(), "expected None, got {outcome:?}");
+    }
+
+    #[test]
+    fn axiom_order_independent() {
+        let input = "\
+fof(src, plain, ((? [X0] : p(X0)) & (? [X1] : q(X1))), \
+    inference(ennf_transformation, [], [])).
+fof(ax1, plain, ((? [X0] : p(X0)) => p(sK0)), \
+    introduced(definition, [], [skolem_symbol_introduction])).
+fof(ax2, plain, ((? [X1] : q(X1)) => q(sK1)), \
+    introduced(definition, [], [skolem_symbol_introduction])).
+fof(step, plain, (p(sK0) & q(sK1)), \
+    inference(skolemisation, [status(esa), new_symbols(skolem, [sK0, sK1])], [ax2, src, ax1])).
+";
+        let outcome = run(input, "step", &["ax2", "src", "ax1"]);
+        assert!(matches!(outcome, Some(StepOutcome::Sound)),
+            "expected Sound, got {outcome:?}");
+    }
+}
