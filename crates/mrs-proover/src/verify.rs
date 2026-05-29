@@ -192,6 +192,12 @@ const TRIVIAL_RULES: &[&str] = &[
     "distribute",      // CNF distribution of ∨ over ∧ — logical equivalence
     "variable_rename", // α-renaming of bound variables — logical equivalence
     "split_conjunct",  // (A ∧ B) ⊢ A or B — sound projection
+    // Added after the post-Fix#6 Vampire re-verify (May 2026):
+    "duplicate_literal_removal", // Vampire alias of remove_duplicate_literals
+    "flattening",                // (A ∧ B) ∧ C → A ∧ B ∧ C (assoc/commut)
+    "nnf_transformation",        // Vampire alias of fof_nnf
+    "ennf_transformation",       // eliminate <=> and =>; logically equivalent
+    "cnf_transformation",        // FOF → CNF, equisatisfiable
 ];
 
 fn is_trivial_rule(rule: Option<&str>) -> bool {
