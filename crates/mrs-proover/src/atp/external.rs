@@ -234,7 +234,43 @@ fn run_atp(binary: &std::path::Path, args: &[&str], problem: &str) -> AtpVerdict
         Err(_) => return AtpVerdict::Unknown,
     };
     let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_szs(&stdout)
+    let verdict = parse_szs(&stdout);
+    // Debug hook: when MRS_DEBUG_ATP is set, dump every problem we send
+    // along with the ATP's verdict and full stdout, so we can root-cause
+    // ATP-refuted (Unsound) FailedVerified verdicts. Files land in
+    // $MRS_DEBUG_ATP_DIR (default /tmp/opencode/atp-debug) with a unique
+    // id per call.
+    if std::env::var("MRS_DEBUG_ATP").is_ok() {
+        let dir = std::env::var("MRS_DEBUG_ATP_DIR")
+            .unwrap_or_else(|_| "/tmp/opencode/atp-debug".to_string());
+        let _ = std::fs::create_dir_all(&dir);
+        let id = NEXT_TMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let bin = binary.file_name().and_then(|s| s.to_str()).unwrap_or("atp");
+        let tag = match verdict {
+            AtpVerdict::Sound => "sound",
+            AtpVerdict::Unsound => "unsound",
+            AtpVerdict::Unknown => "unknown",
+        };
+        let path = format!("{dir}/{bin}-{tag}-{id:06}.p");
+        let mut buf = String::new();
+        buf.push_str("% args:");
+        for a in args {
+            buf.push(' ');
+            buf.push_str(a);
+        }
+        buf.push('\n');
+        buf.push_str(&format!("% verdict: {tag}\n"));
+        buf.push_str("% --- stdout ---\n");
+        for line in stdout.lines() {
+            buf.push_str("% ");
+            buf.push_str(line);
+            buf.push('\n');
+        }
+        buf.push_str("% --- problem ---\n");
+        buf.push_str(problem);
+        let _ = std::fs::write(&path, buf);
+    }
+    verdict
 }
 
 /// Run an ATP that reads from a file path (rather than stdin).
