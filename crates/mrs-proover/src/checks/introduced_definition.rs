@@ -104,6 +104,30 @@ pub fn is_skolem_symbol_introduction(ann: Option<&Annotations<'_>>) -> bool {
     })
 }
 
+/// Returns `true` iff the annotation looks like an E-style
+/// `predicate_definition_introduction`
+/// (`introduced(definition, _, [predicate_definition_introduction])`).
+/// Mirror of [`is_skolem_symbol_introduction`].
+pub fn is_predicate_definition_introduction(ann: Option<&Annotations<'_>>) -> bool {
+    let Some(ann) = ann else { return false };
+    let GeneralTerm::Function(AtomicWord::Lower("introduced"), args) = &ann.source else {
+        return false;
+    };
+    if args.len() < 3 {
+        return false;
+    }
+    let GeneralTerm::List(intro_list) = &args[2] else {
+        return false;
+    };
+    intro_list.iter().any(|t| {
+        matches!(
+            t,
+            GeneralTerm::Word(AtomicWord::Lower("predicate_definition_introduction"))
+                | GeneralTerm::Word(AtomicWord::SingleQuoted("predicate_definition_introduction"))
+        )
+    })
+}
+
 /// Verify one `introduced(definition)` step. Returns
 /// [`StepOutcome::Sound`] iff:
 ///
@@ -384,7 +408,13 @@ fn peel_parens<'a, 'p>(f: &'a FOFFormula<'p>) -> &'a FOFFormula<'p> {
 ///
 /// Unlike [`Annotations::new_symbols`], which only looks inside
 /// `inference(/3)`, this walks the `introduced(/N)` info list directly.
-fn declared_new_symbols<'a>(ann: &Annotations<'a>) -> Vec<&'a str> {
+/// Returns the symbol names declared in the
+/// `introduced(definition, [new_symbols(naming, [...])], ...)` annotation,
+/// or an empty vector if no such entry is present. Useful for callers
+/// that need to identify the freshly-defined symbol(s) (e.g. to extend a
+/// one-directional `predicate_definition_introduction` premise into its
+/// biconditional closure before handing it to an ATP).
+pub(crate) fn declared_new_symbols<'a>(ann: &Annotations<'a>) -> Vec<&'a str> {
     let info = match &ann.source {
         GeneralTerm::Function(AtomicWord::Lower("introduced"), args) if args.len() >= 2 => {
             match &args[1] {

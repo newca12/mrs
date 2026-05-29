@@ -396,6 +396,32 @@ fn delegate_to_atp<'p>(
             let mut f = lower_fof_statement(&mut ctx, &dag.nodes[pi].fof.formula);
             if node.negated_parents.get(i).copied().unwrap_or(false) {
                 f = mrs_core::Formula::Neg(Box::new(f));
+            } else {
+                // E emits `predicate_definition_introduction` axioms as
+                // one half of the underlying iff, e.g.
+                //   fof(f8, plain, (body | ~sP0),
+                //       introduced(definition,
+                //                  [new_symbols(naming, [sP0])],
+                //                  [predicate_definition_introduction])).
+                // Literally that says `sP0 -> ¬body`. The intended meaning
+                // is `sP0 <-> ¬body`. When a `definition_folding` step
+                // (or any later step) folds an occurrence of `¬body` into
+                // `sP0`, it relies on the missing direction. We extend
+                // the premise to the biconditional closure before
+                // handing it to the ATP. Only applied when the parent's
+                // annotation matches the E pattern; other premises pass
+                // through unchanged.
+                //
+                // We do *not* touch negated parents (those go through
+                // `assume_negation` and have their own polarity flip).
+                let parent_ann = dag.nodes[pi].fof.annotations.as_ref();
+                if introduced_definition::is_predicate_definition_introduction(parent_ann) {
+                    if let Some(extended) =
+                        complete_definition_iff(&f, parent_ann.unwrap(), ctx.symbols)
+                    {
+                        f = extended;
+                    }
+                }
             }
             premises.push(f);
         }
@@ -413,5 +439,275 @@ fn delegate_to_atp<'p>(
             "no ATP could decide step (rule={:?})",
             node.inference_rule
         )),
+    }
+}
+
+/// Given a premise lowered from an E `predicate_definition_introduction`
+/// axiom and its TPTP annotation, return the biconditional closure of
+/// the premise when it has the canonical one-direction shape; return
+/// `None` otherwise (premise passes through unchanged).
+///
+/// The canonical E shape is (modulo a possibly-empty `Forall` prefix):
+///
+/// ```text
+/// rest_disjuncts ∨ ±P(args)
+/// ```
+///
+/// where `±P(args)` is the unique disjunct mentioning the freshly-declared
+/// predicate symbol `P` named in the annotation's `new_symbols(naming,
+/// [P])` entry. The literal may be positive (`P(args)`) or negative
+/// (`¬P(args)`), and the polarity determines which iff we produce:
+///
+/// * `rest ∨ ¬P` ≡ `P → rest`; completed by `rest → P`. Iff: `P ↔ rest`.
+/// * `rest ∨ P`  ≡ `¬rest → P`; completed by `P → ¬rest`. Iff: `P ↔ ¬rest`.
+///
+/// E uses the negative-literal form in practice (see e.g. ALG021+1 f8:
+/// `(commutativity_conj) | ~sP0`), which folds in `definition_folding`
+/// as "if commutativity holds, sP0 holds". The literal premise alone
+/// gives only one direction; without the iff completion the ATP rightly
+/// refuses to conclude the folded form.
+///
+/// Shapes we deliberately do *not* extend (returning `None`):
+///
+/// * Already-biconditional bodies (`P ↔ φ` or `∀X. (P(X) ↔ φ(X))`) — the
+///   premise already provides both halves.
+/// * Disjunctions that do not contain a `±P` literal at the top level,
+///   or contain `P` more than once, or where the predicate name is not
+///   declared in the annotation.
+/// * Sequents or anything not parseable as a quantifier-prefixed
+///   disjunction (the rare exotic shape; conservative pass-through).
+fn complete_definition_iff(
+    lowered: &mrs_core::Formula,
+    ann: &mrs_tptp::Annotations<'_>,
+    symbols: &mut mrs_core::SymbolTable,
+) -> Option<mrs_core::Formula> {
+    use mrs_core::{Atom, Formula};
+
+    let declared = introduced_definition::declared_new_symbols(ann);
+    if declared.len() != 1 {
+        return None;
+    }
+    let p_sym = symbols.intern(declared[0]);
+
+    // Peel a (possibly empty) Forall prefix; remember the variables so we
+    // can re-wrap the result.
+    let mut binders: Vec<u32> = Vec::new();
+    let mut body: &Formula = lowered;
+    while let Formula::Forall(v, inner) = body {
+        binders.push(*v);
+        body = inner;
+    }
+
+    // If already a biconditional, no extension needed.
+    if matches!(body, Formula::Iff(..)) {
+        return None;
+    }
+
+    // Body must be a disjunction containing exactly one ±P(...) literal.
+    let disjuncts: Vec<&Formula> = match body {
+        Formula::Or(ds) => ds.iter().collect(),
+        _ => return None,
+    };
+
+    let mut p_idx: Option<usize> = None;
+    let mut p_args: Option<Vec<mrs_core::Term>> = None;
+    let mut p_positive: bool = false;
+    for (i, d) in disjuncts.iter().enumerate() {
+        let (atom_opt, polarity_pos) = match d {
+            Formula::Neg(inner) => match inner.as_ref() {
+                Formula::Atom(a) => (Some(a), false),
+                _ => (None, false),
+            },
+            Formula::Atom(a) => (Some(a), true),
+            _ => (None, false),
+        };
+        if let Some(Atom::Pred(sid, args)) = atom_opt
+            && *sid == p_sym
+        {
+            if p_idx.is_some() {
+                // P appears more than once at top level — bail.
+                return None;
+            }
+            p_idx = Some(i);
+            p_args = Some(args.clone());
+            p_positive = polarity_pos;
+        }
+    }
+
+    let p_idx = p_idx?;
+    let p_args = p_args?;
+
+    // `rest` = disjunction of all other disjuncts (or False if none).
+    let rest_owned: Vec<Formula> = disjuncts
+        .iter()
+        .enumerate()
+        .filter_map(|(i, d)| (i != p_idx).then(|| (*d).clone()))
+        .collect();
+    let rest = match rest_owned.len() {
+        0 => Formula::False,
+        1 => rest_owned.into_iter().next().unwrap(),
+        _ => Formula::Or(rest_owned),
+    };
+
+    // Polarity:
+    //   * Negative literal: premise is `rest ∨ ¬P`, i.e. `P → rest`.
+    //     iff completion adds `rest → P`. Combined: `P ↔ rest`.
+    //   * Positive literal: premise is `rest ∨ P`, i.e. `¬rest → P`.
+    //     iff completion adds `P → ¬rest`. Combined: `P ↔ ¬rest`.
+    let p_atom = Formula::Atom(Atom::Pred(p_sym, p_args));
+    let other_side = if p_positive {
+        Formula::neg(rest)
+    } else {
+        rest
+    };
+    let iff = Formula::iff(p_atom, other_side);
+
+    // Re-wrap in the original Forall prefix.
+    let mut out = iff;
+    for v in binders.into_iter().rev() {
+        out = Formula::forall(v, out);
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod complete_definition_iff_tests {
+    use super::*;
+    use mrs_core::{Atom, Formula, SymbolTable, Term};
+    use mrs_tptp::parse_tptp;
+
+    fn ann_from(src: &str) -> mrs_tptp::Annotations<'_> {
+        // Build a tiny fof annotated formula just to extract its annotation.
+        let prob = Box::leak(Box::new(parse_tptp(src).expect("parse")));
+        match prob.formulas.first().expect("formula") {
+            mrs_tptp::AnnotatedFormula::FOF(f) => f.annotations.clone().expect("ann"),
+            _ => panic!("expected FOF"),
+        }
+    }
+
+    #[test]
+    fn negative_literal_shape_completes_to_iff() {
+        // Premise body: a | ~sP, with sP nullary.
+        // a | ~sP ≡ sP → a, completed to sP ↔ a.
+        let mut syms = SymbolTable::new();
+        let a_sym = syms.intern("a");
+        let p_sym = syms.intern("sP");
+        let a_atom = Formula::Atom(Atom::Pred(a_sym, vec![]));
+        let p_neg = Formula::neg(Formula::Atom(Atom::Pred(p_sym, vec![])));
+        let lowered = Formula::Or(vec![a_atom.clone(), p_neg]);
+
+        let ann = ann_from(
+            "fof(f, plain, ($true),\n  introduced(definition,[new_symbols(naming,[sP])],[predicate_definition_introduction])).",
+        );
+        let extended = complete_definition_iff(&lowered, &ann, &mut syms).expect("extended");
+        // Expect Iff(P, a) — NOT Iff(P, Neg(a)).
+        match extended {
+            Formula::Iff(l, r) => {
+                match *l {
+                    Formula::Atom(Atom::Pred(s, ref args)) => {
+                        assert_eq!(s, p_sym);
+                        assert!(args.is_empty());
+                    }
+                    other => panic!("lhs not P: {other:?}"),
+                }
+                match *r {
+                    Formula::Atom(Atom::Pred(s, _)) => assert_eq!(s, a_sym),
+                    other => panic!("rhs not a (got {other:?})"),
+                }
+            }
+            other => panic!("not iff: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn positive_literal_shape_completes_to_iff_with_neg_rest() {
+        // Premise body: a | sP. ≡ ¬a → sP, completed to sP ↔ ¬a.
+        let mut syms = SymbolTable::new();
+        let a_sym = syms.intern("a");
+        let p_sym = syms.intern("sP");
+        let lowered = Formula::Or(vec![
+            Formula::Atom(Atom::Pred(a_sym, vec![])),
+            Formula::Atom(Atom::Pred(p_sym, vec![])),
+        ]);
+        let ann = ann_from(
+            "fof(f, plain, ($true),\n  introduced(definition,[new_symbols(naming,[sP])],[predicate_definition_introduction])).",
+        );
+        let extended = complete_definition_iff(&lowered, &ann, &mut syms).expect("extended");
+        match extended {
+            Formula::Iff(_, r) => match *r {
+                Formula::Neg(_) => {}
+                other => panic!("rhs not Neg(.): {other:?}"),
+            },
+            other => panic!("not iff: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn already_iff_is_unchanged() {
+        let mut syms = SymbolTable::new();
+        let a_sym = syms.intern("a");
+        let p_sym = syms.intern("sP");
+        let lowered = Formula::iff(
+            Formula::Atom(Atom::Pred(p_sym, vec![])),
+            Formula::Atom(Atom::Pred(a_sym, vec![])),
+        );
+        let ann = ann_from(
+            "fof(f, plain, ($true),\n  introduced(definition,[new_symbols(naming,[sP])],[predicate_definition_introduction])).",
+        );
+        assert!(complete_definition_iff(&lowered, &ann, &mut syms).is_none());
+    }
+
+    #[test]
+    fn forall_prefix_preserved() {
+        // Body: ! [X] : (p(X) | ~sP(X))
+        let mut syms = SymbolTable::new();
+        let p_sym = syms.intern("p");
+        let sp_sym = syms.intern("sP");
+        let inner = Formula::Or(vec![
+            Formula::Atom(Atom::Pred(p_sym, vec![Term::var(0)])),
+            Formula::neg(Formula::Atom(Atom::Pred(sp_sym, vec![Term::var(0)]))),
+        ]);
+        let lowered = Formula::forall(0, inner);
+        let ann = ann_from(
+            "fof(f, plain, ($true),\n  introduced(definition,[new_symbols(naming,[sP])],[predicate_definition_introduction])).",
+        );
+        let extended = complete_definition_iff(&lowered, &ann, &mut syms).expect("extended");
+        match extended {
+            Formula::Forall(v, body) => {
+                assert_eq!(v, 0);
+                assert!(matches!(*body, Formula::Iff(..)));
+            }
+            other => panic!("not forall: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_p_literal_returns_none() {
+        // Body has no occurrence of declared symbol.
+        let mut syms = SymbolTable::new();
+        let a_sym = syms.intern("a");
+        let _p_sym = syms.intern("sP");
+        let lowered = Formula::Or(vec![
+            Formula::Atom(Atom::Pred(a_sym, vec![])),
+            Formula::Atom(Atom::Pred(a_sym, vec![])),
+        ]);
+        let ann = ann_from(
+            "fof(f, plain, ($true),\n  introduced(definition,[new_symbols(naming,[sP])],[predicate_definition_introduction])).",
+        );
+        assert!(complete_definition_iff(&lowered, &ann, &mut syms).is_none());
+    }
+
+    #[test]
+    fn multiple_p_occurrences_returns_none() {
+        let mut syms = SymbolTable::new();
+        let p_sym = syms.intern("sP");
+        let lowered = Formula::Or(vec![
+            Formula::Atom(Atom::Pred(p_sym, vec![])),
+            Formula::neg(Formula::Atom(Atom::Pred(p_sym, vec![]))),
+        ]);
+        let ann = ann_from(
+            "fof(f, plain, ($true),\n  introduced(definition,[new_symbols(naming,[sP])],[predicate_definition_introduction])).",
+        );
+        assert!(complete_definition_iff(&lowered, &ann, &mut syms).is_none());
     }
 }
