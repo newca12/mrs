@@ -120,24 +120,49 @@ pub fn try_check<'p>(
         )));
     }
 
-    // Apply each axiom to the source in turn.  We allocate every
-    // intermediate formula in an arena-like `Vec` so that each `&'p`
-    // borrow we hand to `apply_axiom` survives across iterations.
+    // Apply each axiom to the source. Axioms have dependencies — the
+    // antecedent of a later axiom may reference Skolems introduced by
+    // an earlier one (e.g. LCL654's sK6-using axioms reference sK0).
+    // Vampire emits parents in arbitrary order, so we use a fixpoint
+    // loop: repeatedly scan the remaining axioms and apply any that
+    // match. We're done when all axioms have been consumed; we fail
+    // (return None) if a full pass finds no applicable axiom.
+    //
+    // Intermediate formulas live in an arena-style `Vec<Box<…>>` so
+    // each `&'p` borrow handed to `apply_axiom` survives across loop
+    // iterations.
     let mut arena: Vec<Box<FOFFormula<'p>>> = Vec::with_capacity(axioms.len() + 1);
     arena.push(Box::new(source.clone()));
-    for ax in &axioms {
-        // SAFETY: we never remove or mutate elements in the arena; each
-        // boxed formula remains valid for the rest of the function.
-        let current: &FOFFormula<'p> = arena.last().unwrap();
-        let current_ref: &'p FOFFormula<'p> =
-            unsafe { &*(current as *const FOFFormula<'p>) };
-        // SAFETY: axioms live for the entire function call; we never
-        // mutate the `axioms` Vec after this point.
-        let ax_ref: &'p SkolemAxiom<'p> =
-            unsafe { &*(ax as *const SkolemAxiom<'p>) };
-        match apply_axiom(current_ref, ax_ref) {
-            Some(next) => arena.push(Box::new(next)),
-            None => return None,
+    let mut remaining: Vec<usize> = (0..axioms.len()).collect();
+    while !remaining.is_empty() {
+        let mut progressed = false;
+        let mut i = 0;
+        while i < remaining.len() {
+            let ax_idx = remaining[i];
+            // SAFETY: we never remove or mutate elements in the arena;
+            // each boxed formula remains valid for the rest of this
+            // function. We never mutate `axioms` either.
+            let current: &FOFFormula<'p> = arena.last().unwrap();
+            let current_ref: &'p FOFFormula<'p> =
+                unsafe { &*(current as *const FOFFormula<'p>) };
+            let ax_ref: &'p SkolemAxiom<'p> =
+                unsafe { &*(&axioms[ax_idx] as *const SkolemAxiom<'p>) };
+            match apply_axiom(current_ref, ax_ref) {
+                Some(next) => {
+                    arena.push(Box::new(next));
+                    remaining.swap_remove(i);
+                    progressed = true;
+                }
+                None => {
+                    i += 1;
+                }
+            }
+        }
+        if !progressed {
+            // No axiom in `remaining` could apply to the current
+            // formula. Either the matcher is incomplete or the step
+            // has an unexpected shape; defer to the ATP.
+            return None;
         }
     }
     let current: &FOFFormula<'p> = arena.last().unwrap();
@@ -1044,6 +1069,30 @@ fof(step, plain, (p(sK0) & q(sK1)), \
     inference(skolemisation, [status(esa), new_symbols(skolem, [sK0, sK1])], [ax2, src, ax1])).
 ";
         let outcome = run(input, "step", &["ax2", "src", "ax1"]);
+        assert!(matches!(outcome, Some(StepOutcome::Sound)),
+            "expected Sound, got {outcome:?}");
+    }
+
+    /// Dependent axioms (LCL654-style): an inner Skolem axiom's
+    /// antecedent mentions the outer Skolem symbol. The fixpoint loop
+    /// must apply the outer axiom first even though it appears later
+    /// in the parent list.
+    #[test]
+    fn dependent_axioms_reverse_order() {
+        let input = "\
+fof(src, plain, (? [X0] : (p(X0) & ? [X1] : r(X0, X1))), \
+    inference(ennf_transformation, [], [])).
+fof(ax_outer, plain, \
+    ((? [X0] : (p(X0) & ? [X1] : r(X0, X1))) => (p(sK0) & ? [X1] : r(sK0, X1))), \
+    introduced(definition, [], [skolem_symbol_introduction])).
+fof(ax_inner, plain, \
+    ((? [X1] : r(sK0, X1)) => r(sK0, sK1)), \
+    introduced(definition, [], [skolem_symbol_introduction])).
+fof(step, plain, (p(sK0) & r(sK0, sK1)), \
+    inference(skolemisation, [status(esa), new_symbols(skolem, [sK0, sK1])], \
+              [src, ax_inner, ax_outer])).
+";
+        let outcome = run(input, "step", &["src", "ax_inner", "ax_outer"]);
         assert!(matches!(outcome, Some(StepOutcome::Sound)),
             "expected Sound, got {outcome:?}");
     }
