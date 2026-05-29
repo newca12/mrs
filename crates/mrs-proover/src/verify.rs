@@ -138,11 +138,27 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
 /// `Sound` without bothering the ATP. They are sound *by definition* for any
 /// reasonable presentation: each is either a tautological rearrangement of
 /// the parent, or a syntactic reformulation, or a renaming of bound
-/// variables.
+/// variables, or a strict projection that is logically implied by the
+/// parent (e.g. `(A & B) ⊢ A`).
 ///
 /// Being wrong here costs us 10× more than playing it safe, so the list is
 /// intentionally short and conservative. Anything not on the list still gets
 /// dispatched to the ATP.
+///
+/// Categories represented:
+///   * preprocessing / clausification (E, vampire):
+///     `fof_simplification`, `fof_nnf`, `distribute`, `rectify`,
+///     `variable_rename`, `true_and_iff_removal`, `evaluation`,
+///     `trivial_inequality_removal`, `remove_duplicate_literals`,
+///     `split_conjunct`
+///   * negation step (covered separately by `neg_conjecture` check too):
+///     `assume_negation`
+///
+/// Excluded on purpose (substantive first-order inferences that require
+/// real entailment checks):
+///   * E:        `spm`, `rw`, `cn`, `sr`, `pm`, `apply_def`
+///   * Vampire:  `resolution`, `subsumption_resolution`, `superposition`,
+///               `forward_subsumption_resolution`, `avatar_*`, etc.
 const TRIVIAL_RULES: &[&str] = &[
     "assume_negation",
     "rectify",
@@ -151,6 +167,11 @@ const TRIVIAL_RULES: &[&str] = &[
     "trivial_inequality_removal",
     "evaluation",
     "remove_duplicate_literals",
+    // Added after the TPTP-v9 FOF corpus analysis (May 2026):
+    "fof_nnf",          // negation normal form — logical equivalence
+    "distribute",       // CNF distribution of ∨ over ∧ — logical equivalence
+    "variable_rename",  // α-renaming of bound variables — logical equivalence
+    "split_conjunct",   // (A ∧ B) ⊢ A or B — sound projection
 ];
 
 fn is_trivial_rule(rule: Option<&str>) -> bool {
