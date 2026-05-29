@@ -31,7 +31,7 @@
 use std::collections::HashMap;
 
 use mrs_tptp::{
-    AtomicWord, FOFAnnotated, FOFAtomicFormula, FOFFormula, FOFStatement, FOFTerm, Quantifier,
+    FOFAnnotated, FOFAtomicFormula, FOFFormula, FOFStatement, FOFTerm, Quantifier,
 };
 
 use crate::checks::skolemize::SkolemRegistry;
@@ -94,16 +94,22 @@ pub fn try_check<'p>(
     }
     let source = source?;
 
-    // The number of Skolem axioms should equal the number of declared
-    // Skolem symbols; otherwise the shape is unexpected.
-    if axioms.len() != declared_skolems.len() {
+    // The total number of fresh Skolem symbols introduced across all
+    // axioms should equal the number declared on the inference step.
+    // A single axiom may introduce several at once (multi-existential
+    // Skolemisation — the SET949+1 pattern), so we sum rather than
+    // counting axioms.
+    let introduced_count: usize = axioms.iter().map(|a| a.skolem_symbols.len()).sum();
+    if introduced_count != declared_skolems.len() {
         return None;
     }
     let declared_set: std::collections::HashSet<&str> =
         declared_skolems.iter().copied().collect();
     for ax in &axioms {
-        if !declared_set.contains(ax.skolem_symbol) {
-            return None;
+        for s in &ax.skolem_symbols {
+            if !declared_set.contains(s) {
+                return None;
+            }
         }
     }
 
@@ -161,16 +167,41 @@ pub fn try_check<'p>(
                 unsafe { &*(&axioms[ax_idx] as *const SkolemAxiom<'p>) };
             match apply_axiom(current_ref, ax_ref) {
                 Some(next) => {
+                    if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                        eprintln!(
+                            "[skolem-dbg] applied axiom #{ax_idx} (sK={:?}); arena.len now {}",
+                            ax_ref.skolem_symbols,
+                            arena.len() + 1
+                        );
+                    }
                     arena.push(Box::new(next));
                     remaining.swap_remove(i);
                     progressed = true;
                 }
                 None => {
+                    if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                        eprintln!(
+                            "[skolem-dbg] axiom #{ax_idx} (sK={:?}) did NOT match current; ant_size={}",
+                            ax_ref.skolem_symbols,
+                            formula_size(&ax_ref.antecedent)
+                        );
+                    }
                     i += 1;
                 }
             }
         }
         if !progressed {
+            if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                eprintln!(
+                    "[skolem-dbg] no progress; remaining axioms: {:?}",
+                    remaining
+                        .iter()
+                        .map(|&i| &axioms[i].skolem_symbols)
+                        .collect::<Vec<_>>()
+                );
+                let cur = arena.last().unwrap();
+                eprintln!("[skolem-dbg] current = {cur:?}");
+            }
             // No axiom in `remaining` could apply to the current
             // formula. Either the matcher is incomplete or the step
             // has an unexpected shape; defer to the ATP.
@@ -210,14 +241,27 @@ pub fn try_check<'p>(
 /// Parsed Skolem axiom: `∀U_1..U_k. (∃V_1..V_m. body_phi) → consequent`.
 ///
 /// `consequent` is `body_phi` with each `V_j` replaced by an application
-/// of `skolem_symbol` to some terms over `universals`. We do not
-/// pre-extract the substitution — it is recovered at match time.
+/// of a fresh Skolem symbol to some terms over `universals`. A single
+/// axiom may introduce **several** Skolem symbols at once when the
+/// existential prefix has arity > 1 — e.g. Vampire's standard SET/SEU
+/// pattern emits one axiom of the form
+///   `! [U] : (? [V1,V2] : φ) => φ[V1 ↦ sK_a(U), V2 ↦ sK_b(U)]`
+/// where `[sK_a, sK_b]` are both new. We don't pre-extract the per-
+/// existential mapping (it's recovered implicitly: applying σ to
+/// `consequent` already substitutes every `V_j` because Vampire baked
+/// the Skolem terms into the consequent up-front).
 struct SkolemAxiom<'p> {
     universals: Vec<&'p str>,
     existentials: Vec<&'p str>,
     antecedent: FOFFormula<'p>,
     consequent: FOFFormula<'p>,
-    skolem_symbol: &'p str,
+    /// All function symbols that appear in `consequent` but not in
+    /// `antecedent`. Length is typically `existentials.len()` but may
+    /// be smaller if Vampire reused an already-introduced Skolem in
+    /// one of the consequent positions; we don't enforce equality
+    /// because the per-existential mapping is recovered at apply time
+    /// rather than declared up-front.
+    skolem_symbols: Vec<&'p str>,
 }
 
 fn is_skolem_intro<'p>(node: &FOFAnnotated<'p>) -> bool {
@@ -264,14 +308,20 @@ fn parse_skolem_axiom<'p>(node: &'p FOFAnnotated<'p>) -> Option<SkolemAxiom<'p>>
         } => (variables.clone(), strip_parens(formula).clone()),
         _ => return None,
     };
-    // Identify the Skolem symbol: a function symbol that appears in rhs
-    // but not in body_phi.
+    // Identify the new Skolem symbols: function symbols that appear in
+    // `rhs` but not in `body_phi`. Vampire typically introduces one new
+    // symbol per existential variable, but a single axiom may legitimately
+    // introduce several at once (the SET949+1 pattern: `? [X7,X6] : … =>
+    // … sK1(U) … sK2(U) …`). We require at least one — an axiom that
+    // introduces no fresh symbol is not a Skolem-intro axiom and we
+    // defer it to the ATP rather than silently treating it as a
+    // tautology.
     let mut rhs_syms: std::collections::HashSet<&'p str> = Default::default();
     let mut phi_syms: std::collections::HashSet<&'p str> = Default::default();
     crate::checks::introduced_definition::collect_fun_syms(rhs, &mut rhs_syms);
     crate::checks::introduced_definition::collect_fun_syms(&body_phi, &mut phi_syms);
     let new_syms: Vec<&'p str> = rhs_syms.difference(&phi_syms).copied().collect();
-    if new_syms.len() != 1 {
+    if new_syms.is_empty() {
         return None;
     }
     Some(SkolemAxiom {
@@ -279,7 +329,7 @@ fn parse_skolem_axiom<'p>(node: &'p FOFAnnotated<'p>) -> Option<SkolemAxiom<'p>>
         existentials,
         antecedent: body_phi,
         consequent: rhs.clone(),
-        skolem_symbol: new_syms[0],
+        skolem_symbols: new_syms,
     })
 }
 
@@ -326,30 +376,25 @@ fn apply_axiom_walk<'p>(
                 &axiom.existentials,
                 variables,
             ) {
-                // Build the Skolem term from σ.
-                let sk_args: Vec<FOFTerm<'p>> = axiom
-                    .universals
-                    .iter()
-                    .map(|u| sigma.get(u).cloned().unwrap_or(FOFTerm::Variable(u)))
-                    .collect();
-                let sk_term = if sk_args.is_empty() {
-                    FOFTerm::Function(AtomicWord::Lower(axiom.skolem_symbol), vec![])
-                } else {
-                    FOFTerm::Function(AtomicWord::Lower(axiom.skolem_symbol), sk_args)
-                };
-                // Substitute the existentials with sk_term in the
-                // consequent (with universals first σ-substituted).
-                let mut new_body = subst_universals(&axiom.consequent, &sigma);
-                for (v_ax, v_local) in axiom.existentials.iter().zip(variables.iter()) {
-                    // The consequent has the skolem term already in
-                    // place of the existential variable; but in case it
-                    // still mentions the existential name (when not
-                    // bound away), we substitute too.
-                    new_body = subst_var(&new_body, v_ax, &sk_term);
-                    // Also substitute the local existential name so any
-                    // residual references are removed.
-                    new_body = subst_var(&new_body, v_local, &sk_term);
-                }
+                // Vampire's `skolem_symbol_introduction` axioms already
+                // bake the Skolem terms into the consequent — each
+                // existential `V_i` has been replaced by an application
+                // of its dedicated Skolem symbol to the axiom's
+                // universals. So the rewrite is just `σ(consequent)`:
+                // apply σ to the universal variables, and the result
+                // already mentions the correct sK_j(σ(U)) wherever V_i
+                // used to be.
+                //
+                // This treatment unifies the single-Skolem case (one
+                // axiom → one new symbol) and the multi-Skolem case
+                // (one axiom → multiple new symbols, e.g. SET949+1's
+                // `? [X7,X6] : … => … sK1(U) … sK2(U) …`) without
+                // needing to recover the per-existential mapping
+                // separately. If the consequent has residual references
+                // to an existential variable (i.e. the axiom is
+                // malformed), the final `formula_eq(current, step)`
+                // check will reject the rewrite and we defer to ATP.
+                let new_body = subst_universals(&axiom.consequent, &sigma);
                 *found = true;
                 return new_body;
             }
@@ -741,114 +786,6 @@ fn subst_in_term_uni<'p>(
     }
 }
 
-fn subst_var<'p>(f: &FOFFormula<'p>, var: &str, replacement: &FOFTerm<'p>) -> FOFFormula<'p> {
-    match f {
-        FOFFormula::Atomic(a) => FOFFormula::Atomic(subst_in_atomic_var(a, var, replacement)),
-        FOFFormula::Negation(inner) => {
-            FOFFormula::Negation(Box::new(subst_var(inner, var, replacement)))
-        }
-        FOFFormula::Parens(inner) => {
-            FOFFormula::Parens(Box::new(subst_var(inner, var, replacement)))
-        }
-        FOFFormula::Equality(l, r) => FOFFormula::Equality(
-            subst_in_term_var(l, var, replacement),
-            subst_in_term_var(r, var, replacement),
-        ),
-        FOFFormula::Inequality(l, r) => FOFFormula::Inequality(
-            subst_in_term_var(l, var, replacement),
-            subst_in_term_var(r, var, replacement),
-        ),
-        FOFFormula::Binary {
-            left,
-            connective,
-            right,
-        } => FOFFormula::Binary {
-            left: Box::new(subst_var(left, var, replacement)),
-            connective: *connective,
-            right: Box::new(subst_var(right, var, replacement)),
-        },
-        FOFFormula::Quantified {
-            quantifier,
-            variables,
-            formula,
-        } => {
-            if variables.contains(&var) {
-                f.clone()
-            } else {
-                FOFFormula::Quantified {
-                    quantifier: *quantifier,
-                    variables: variables.clone(),
-                    formula: Box::new(subst_var(formula, var, replacement)),
-                }
-            }
-        }
-    }
-}
-
-fn subst_in_atomic_var<'p>(
-    a: &FOFAtomicFormula<'p>,
-    var: &str,
-    replacement: &FOFTerm<'p>,
-) -> FOFAtomicFormula<'p> {
-    match a {
-        FOFAtomicFormula::Plain(w, args) => FOFAtomicFormula::Plain(
-            w.clone(),
-            args.iter()
-                .map(|t| subst_in_term_var(t, var, replacement))
-                .collect(),
-        ),
-        FOFAtomicFormula::Defined(w, args) => FOFAtomicFormula::Defined(
-            w.clone(),
-            args.iter()
-                .map(|t| subst_in_term_var(t, var, replacement))
-                .collect(),
-        ),
-        FOFAtomicFormula::System(w, args) => FOFAtomicFormula::System(
-            w.clone(),
-            args.iter()
-                .map(|t| subst_in_term_var(t, var, replacement))
-                .collect(),
-        ),
-        FOFAtomicFormula::True => FOFAtomicFormula::True,
-        FOFAtomicFormula::False => FOFAtomicFormula::False,
-    }
-}
-
-fn subst_in_term_var<'p>(
-    t: &FOFTerm<'p>,
-    var: &str,
-    replacement: &FOFTerm<'p>,
-) -> FOFTerm<'p> {
-    match t {
-        FOFTerm::Variable(v) => {
-            if *v == var {
-                replacement.clone()
-            } else {
-                FOFTerm::Variable(v)
-            }
-        }
-        FOFTerm::Function(w, args) => FOFTerm::Function(
-            w.clone(),
-            args.iter()
-                .map(|a| subst_in_term_var(a, var, replacement))
-                .collect(),
-        ),
-        FOFTerm::DefinedFunction(w, args) => FOFTerm::DefinedFunction(
-            w.clone(),
-            args.iter()
-                .map(|a| subst_in_term_var(a, var, replacement))
-                .collect(),
-        ),
-        FOFTerm::SystemFunction(w, args) => FOFTerm::SystemFunction(
-            w.clone(),
-            args.iter()
-                .map(|a| subst_in_term_var(a, var, replacement))
-                .collect(),
-        ),
-        FOFTerm::Number(_) | FOFTerm::DistinctObject(_) => t.clone(),
-    }
-}
-
 fn strip_parens<'p>(f: &'p FOFFormula<'p>) -> &'p FOFFormula<'p> {
     let mut cur = f;
     while let FOFFormula::Parens(inner) = cur {
@@ -901,9 +838,38 @@ fn formula_eq<'p>(a: &FOFFormula<'p>, b: &FOFFormula<'p>) -> bool {
                 variables: vb,
                 formula: fb,
             },
-        ) => qa == qb && va == vb && formula_eq(fa, fb),
+        ) => qa == qb && same_binder_set(va, vb) && formula_eq(fa, fb),
         _ => false,
     }
+}
+
+/// `Q [X,Y] : φ ≡ Q [Y,X] : φ` for any quantifier and any body, so
+/// two binder vectors that differ only by permutation are equivalent.
+/// We deliberately don't do α-renaming here: Vampire's CNF pipeline
+/// reuses the source variable names in Skolem-axiom consequents but
+/// sometimes lists them in a different order than the source bound
+/// them in (e.g. f14's `! [X5,X4]` vs f13's `! [X4,X5]` in SET949+1).
+/// Comparing binder *sets* rather than vectors closes that gap
+/// without admitting any soundness risk: the body is still required
+/// to match structurally, and any unbound variable would surface as
+/// a free occurrence on one side only.
+fn same_binder_set(a: &[&str], b: &[&str]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    // Fast path: identical order (the common case for non-Vampire
+    // generators and for steps that don't trigger Vampire's
+    // re-ordering quirk).
+    if a == b {
+        return true;
+    }
+    // Small N (typically 1-4), so a sorted-vector compare is the
+    // simplest correct check and avoids hashing overhead.
+    let mut sa: Vec<&str> = a.to_vec();
+    let mut sb: Vec<&str> = b.to_vec();
+    sa.sort_unstable();
+    sb.sort_unstable();
+    sa == sb
 }
 
 fn atomic_eq<'p>(a: &FOFAtomicFormula<'p>, b: &FOFAtomicFormula<'p>) -> bool {
@@ -1150,6 +1116,68 @@ fof(step, plain, \
               [src, ax_inner, ax_outer])).
 ";
         let outcome = run(input, "step", &["src", "ax_inner", "ax_outer"]);
+        assert!(matches!(outcome, Some(StepOutcome::Sound)),
+            "expected Sound, got {outcome:?}");
+    }
+
+    /// SET949+1-shape: Vampire's Skolem-axiom consequent permutes
+    /// the bound-variable list of a nested quantifier relative to the
+    /// source. E.g. source `! [X4,X5] : φ` becomes `! [X5,X4] : φ` in
+    /// the axiom consequent (and the skolemised step keeps the source
+    /// order `! [X4,X5]`). The rewrite-step matcher must treat the
+    /// two binder vectors as equivalent or every multi-axiom
+    /// skolemisation on the SET / SEU corpus falls through to the
+    /// ATP fallback and times out.
+    #[test]
+    fn binder_permutation_in_axiom_consequent() {
+        let input = "\
+fof(src, plain, \
+    (? [X3] : (! [X4, X5] : r(X4, X5, X3) | ~p(X3))), \
+    inference(ennf_transformation, [], [])).
+fof(ax, plain, \
+    ((? [X3] : (! [X4, X5] : r(X4, X5, X3) | ~p(X3))) \
+     => (! [X5, X4] : r(X4, X5, sK0) | ~p(sK0))), \
+    introduced(definition, [], [skolem_symbol_introduction])).
+fof(step, plain, \
+    (! [X4, X5] : r(X4, X5, sK0) | ~p(sK0)), \
+    inference(skolemisation, [status(esa), new_symbols(skolem, [sK0])], [src, ax])).
+";
+        let outcome = run(input, "step", &["src", "ax"]);
+        assert!(matches!(outcome, Some(StepOutcome::Sound)),
+            "expected Sound, got {outcome:?}");
+    }
+
+    /// SET949+1 verbatim — three-axiom multi-Skolemisation where the
+    /// source's `? [X3] : ((! [X4,X5] : … | …) & (? [X6,X7] : … | …))`
+    /// is replaced by sK0/sK1/sK2-bearing form. Verifies the full
+    /// fixpoint application with binder permutations both in the axiom
+    /// consequents (`! [X5,X4]`, `? [X7,X6]`) and back in the final
+    /// step (`! [X4,X5]` matching the source order).
+    #[test]
+    fn set949_shape_three_axioms() {
+        let input = "\
+fof(src, plain, \
+    (! [X0,X1,X2] : (X2 = cp(X0,X1) | \
+      ? [X3] : ((! [X4,X5] : (~in(X4,X0) | ~in(X5,X1) | op(X4,X5) != X3) | ~in(X3,X2)) \
+              & (? [X6,X7] : (in(X6,X0) & in(X7,X1) & op(X6,X7) = X3) | in(X3,X2))))), \
+    inference(rectify, [], [])).
+fof(ax14, plain, \
+    (! [X0,X1,X2] : ((? [X3] : ((! [X4,X5] : (~in(X4,X0) | ~in(X5,X1) | op(X4,X5) != X3) | ~in(X3,X2)) \
+                              & (? [X6,X7] : (in(X6,X0) & in(X7,X1) & op(X6,X7) = X3) | in(X3,X2)))) \
+                  => ((! [X5,X4] : (~in(X4,X0) | ~in(X5,X1) | op(X4,X5) != sK0(X0,X1,X2)) | ~in(sK0(X0,X1,X2),X2)) \
+                    & (? [X7,X6] : (in(X6,X0) & in(X7,X1) & op(X6,X7) = sK0(X0,X1,X2)) | in(sK0(X0,X1,X2),X2))))), \
+    introduced(definition, [], [skolem_symbol_introduction])).
+fof(ax15, plain, \
+    (! [X0,X1,X2] : ((? [X7,X6] : (in(X6,X0) & in(X7,X1) & op(X6,X7) = sK0(X0,X1,X2))) \
+                  => (in(sK1(X0,X1,X2),X0) & in(sK2(X0,X1,X2),X1) & sK0(X0,X1,X2) = op(sK1(X0,X1,X2),sK2(X0,X1,X2))))), \
+    introduced(definition, [], [skolem_symbol_introduction])).
+fof(step, plain, \
+    (! [X0,X1,X2] : (X2 = cp(X0,X1) | \
+      ((! [X4,X5] : (~in(X4,X0) | ~in(X5,X1) | op(X4,X5) != sK0(X0,X1,X2)) | ~in(sK0(X0,X1,X2),X2)) \
+     & ((in(sK1(X0,X1,X2),X0) & in(sK2(X0,X1,X2),X1) & sK0(X0,X1,X2) = op(sK1(X0,X1,X2),sK2(X0,X1,X2))) | in(sK0(X0,X1,X2),X2))))), \
+    inference(skolemisation, [status(esa), new_symbols(skolem, [sK0,sK1,sK2])], [src, ax15, ax14])).
+";
+        let outcome = run(input, "step", &["src", "ax15", "ax14"]);
         assert!(matches!(outcome, Some(StepOutcome::Sound)),
             "expected Sound, got {outcome:?}");
     }
