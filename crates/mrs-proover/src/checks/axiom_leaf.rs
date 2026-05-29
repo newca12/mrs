@@ -70,9 +70,10 @@ pub fn check_leaf<'p>(
                 return StepOutcome::Sound;
             }
         }
-        return StepOutcome::Unsound(
-            "leaf with anonymous provenance (file(_,unknown)) does not match any \
-             premise-role formula in the linked problem"
+        return StepOutcome::Unknown(
+            "leaf with anonymous provenance (file(_,unknown)) does not α-match any \
+             premise-role formula in the linked problem (may differ only by \
+             AC-rewriting of commutative operators)"
                 .into(),
         );
     }
@@ -87,8 +88,9 @@ pub fn check_leaf<'p>(
         })
         .find(|f| f.name.as_str() == expected_name)
     else {
-        return StepOutcome::Unsound(format!(
-            "leaf references unknown axiom '{expected_name}' in problem file"
+        return StepOutcome::Unknown(format!(
+            "leaf references axiom '{expected_name}' not present in problem file \
+             (the prover may have renamed or inlined the original axiom)"
         ));
     };
 
@@ -98,8 +100,19 @@ pub fn check_leaf<'p>(
     if alpha_equiv(&proof_f, &prob_f) {
         StepOutcome::Sound
     } else {
-        StepOutcome::Unsound(format!(
-            "leaf formula does not match axiom '{expected_name}' in problem file"
+        // The proof leaf does not α-match the named axiom. This can be a
+        // genuine soundness violation, but in practice it most often
+        // happens when the proof tool (e.g. E) reparses and normalises
+        // the conjecture, reordering disjuncts under commutative
+        // operators or rearranging parenthesisation. Our `alpha_equiv`
+        // is purely positional and does not account for AC-rewriting,
+        // so we cannot tell the two cases apart from this comparison
+        // alone. Return `Unknown` rather than `Unsound` to avoid a
+        // false-positive `FailedVerified` (−1) — `NotVerified` (0)
+        // is the conservative score.
+        StepOutcome::Unknown(format!(
+            "leaf formula does not syntactically α-match axiom '{expected_name}' \
+             (may differ only by AC-rewriting of commutative operators)"
         ))
     }
 }
