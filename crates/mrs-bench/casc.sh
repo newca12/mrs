@@ -249,37 +249,23 @@ export SCRIPT_DIR TIME_LIMIT EDITION ANSWERS
 GRACE=$((TIME_LIMIT + 10))
 
 # Worker shared by both serial and parallel paths. Appends one CSV row
-# (under flock so concurrent writers don't interleave) and prints a
-# completion line that names the just-finished (problem,system) and
-# its ok/ko/?? marker. Without the marker users would have to wait
-# for the run to finish to learn whether the engine agreed with the
-# reference; the previous flow paired a fake `reference` row next to
-# each real row, which became unreadable as soon as --jobs > 1
-# interleaved the output.
+# (under flock so concurrent writers don't interleave) and refreshes a
+# single-line carriage-return progress counter. Progress is computed
+# by counting CSV lines so it works whether one or many workers are
+# active. Per-row grading is recorded in the CSV (`verdict` column)
+# rather than printed, to keep the live output a single line.
 run_and_append() {
     local line="$1"
     IFS=$'\t' read -r div problem prob_path sys <<< "${line}"
     local row
     row=$(run_one "${div}" "${problem}" "${prob_path}" "${sys}")
-    # Pull `szs_status` (col 5) and `verdict` (col 7) back out for display.
-    local szs verdict marker
-    szs=$(echo "${row}" | awk -F, '{print $5}')
-    verdict=$(echo "${row}" | awk -F, '{print $7}')
-    case "${verdict}" in
-        ok)      marker="OK" ;;
-        ko)      marker="KO" ;;
-        unknown) marker="??" ;;
-        *)       marker="--" ;;
-    esac
     local completed
     (
         flock 9
         printf '%s\n' "${row}" >> "${CSV}"
         # Subtract 1 for the header.
         completed=$(($(wc -l < "${CSV}") - 1))
-        printf '[casc] %s %-12s %-12s %-14s (%d/%d)\n' \
-            "${marker}" "${sys}" "${problem}" "${szs}" \
-            "${completed}" "${total_problems}" >&2
+        printf '\r[casc] %d/%d completed' "${completed}" "${total_problems}" >&2
     ) 9>>"${CSV}.lock"
 }
 export -f run_and_append
