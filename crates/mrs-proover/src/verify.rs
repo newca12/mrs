@@ -179,8 +179,11 @@ fn is_trivial_rule(rule: Option<&str>) -> bool {
 }
 
 fn step_needs_atp(node: &dag::Node<'_>) -> bool {
-    // Leaves don't need ATP.
-    if matches!(node.role, FormulaRole::Axiom | FormulaRole::Conjecture)
+    // Leaves don't need ATP. A node is a "leaf" if it has a `file(...)`
+    // provenance annotation AND its role is one a problem may legitimately
+    // declare as a starting fact. Routing matches `is_premise_role` in the
+    // leaf check so `check_node` and this function agree.
+    if is_premise_role(node.role)
         && node
             .fof
             .annotations
@@ -207,6 +210,23 @@ fn step_needs_atp(node: &dag::Node<'_>) -> bool {
     true
 }
 
+/// Roles a proof leaf may legitimately re-import from the linked problem.
+/// Mirrors `axiom_leaf::is_premise_role`; the two must stay in sync.
+fn is_premise_role(r: FormulaRole) -> bool {
+    matches!(
+        r,
+        FormulaRole::Axiom
+            | FormulaRole::Hypothesis
+            | FormulaRole::Assumption
+            | FormulaRole::Definition
+            | FormulaRole::Conjecture
+            | FormulaRole::NegatedConjecture
+            | FormulaRole::Lemma
+            | FormulaRole::Theorem
+            | FormulaRole::Corollary
+    )
+}
+
 fn check_node<'p>(
     dag: &Dag<'p>,
     idx: usize,
@@ -220,8 +240,11 @@ fn check_node<'p>(
 
     // --- Role / status routing --------------------------------------------
 
-    // Leaf: axiom or conjecture brought in from the problem file.
-    if matches!(node.role, FormulaRole::Axiom | FormulaRole::Conjecture)
+    // Leaf: any premise role brought in from the problem file via a
+    // `file(...)` source. We delegate to `axiom_leaf::check_leaf`, which
+    // handles both the named-axiom and the Vampire-style anonymous
+    // (`file(_, unknown)`) cases.
+    if is_premise_role(node.role)
         && node
             .fof
             .annotations
