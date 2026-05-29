@@ -21,7 +21,11 @@
 #   <output>/run.csv    — one row per (problem, system)
 #   <output>/run.log    — harness stderr
 #
-# CSV schema: edition,division,problem,system,szs_status,wall_time_s
+# CSV schema: edition,division,problem,system,szs_status,expected,verdict,wall_time_s
+#   verdict ∈ {ok, ko, unknown}
+#     ok      — system status agrees with the reference answer
+#     ko      — system status disagrees with the reference answer
+#     unknown — system gave up / timed out, or no reference answer exists
 #
 # Requires: bash >= 4, bc, timeout (GNU coreutils)
 # For --jobs > 1 also requires: GNU parallel OR xargs -P
@@ -104,8 +108,17 @@ done
 # ---------- build job list ----------
 IFS=',' read -ra DIVISION_LIST <<< "${DIVISIONS}"
 
+# Reference answers file. Used inline by the worker to grade each
+# system run. Missing file → every verdict is `unknown`.
+ANSWERS="${SCRIPT_DIR}/systems/reference/answers.tsv"
+if [[ ! -f "${ANSWERS}" ]]; then
+    echo "WARNING: reference answers not found at ${ANSWERS}" >&2
+    echo "         all verdicts will be reported as 'unknown'." >&2
+    echo "         Run: crates/mrs-bench/systems/reference/fetch_answers.sh" >&2
+fi
+
 CSV="${OUTPUT}/run.csv"
-echo "edition,division,problem,system,szs_status,wall_time_s" > "${CSV}"
+echo "edition,division,problem,system,szs_status,expected,verdict,wall_time_s" > "${CSV}"
 
 JOBS_FILE="${OUTPUT}/.jobs"
 > "${JOBS_FILE}"
@@ -140,6 +153,18 @@ echo "[casc] Total jobs: ${total_problems}" >&2
 
 # ---------- worker function ----------
 # Arguments: div  problem  prob_path  sys
+#
+# Emits one CSV row:
+#   edition,division,problem,system,szs_status,expected,verdict,wall_time_s
+#
+# `verdict` compares the system's SZS status against the reference
+# answer for `problem` (from systems/reference/answers.tsv):
+#   ok      — both map to the same provability class (provable /
+#             counter-provable)
+#   ko      — system disagrees with the reference (potential soundness
+#             bug, mis-configuration, or a genuine reference error)
+#   unknown — system gave up / timed out, or no reference answer
+#             exists for this problem
 run_one() {
     local div="$1" problem="$2" prob_path="$3" sys="$4"
     local invoke="${SCRIPT_DIR}/systems/${sys}/invoke.sh"
@@ -176,31 +201,85 @@ run_one() {
     fi
 
     rm -f "${tmp}"
-    printf '%s,%s,%s,%s,%s,%s\n' \
-        "${EDITION}" "${div}" "${problem}" "${sys}" "${szs}" "${wall_s}"
+
+    # Look up reference answer and grade.
+    local expected="" verdict="unknown"
+    if [[ -f "${ANSWERS}" ]]; then
+        expected=$(awk -F'\t' -v p="${problem}" '$1 == p { print $2; exit }' "${ANSWERS}")
+    fi
+    if [[ -n "${expected}" ]]; then
+        local sys_class ref_class
+        sys_class=$(szs_class "${szs}")
+        ref_class=$(szs_class "${expected}")
+        if [[ "${sys_class}" == "inconclusive" ]]; then
+            verdict="unknown"
+        elif [[ "${ref_class}" == "inconclusive" ]]; then
+            # Reference itself is non-committal; we cannot grade.
+            verdict="unknown"
+        elif [[ "${sys_class}" == "${ref_class}" ]]; then
+            verdict="ok"
+        else
+            verdict="ko"
+        fi
+    fi
+
+    printf '%s,%s,%s,%s,%s,%s,%s,%s\n' \
+        "${EDITION}" "${div}" "${problem}" "${sys}" \
+        "${szs}" "${expected}" "${verdict}" "${wall_s}"
 }
-export -f run_one
-export SCRIPT_DIR TIME_LIMIT EDITION
+
+# Map an SZS status to a coarse provability class so different
+# successful statuses (Theorem vs Unsatisfiable vs ContradictoryAxioms)
+# compare equal. Anything we don't recognise as a definitive verdict
+# (Timeout, GaveUp, ResourceOut, Unknown, …) maps to `inconclusive`.
+szs_class() {
+    case "$1" in
+        Theorem|Unsatisfiable|ContradictoryAxioms)
+            echo "provable" ;;
+        CounterSatisfiable|Satisfiable)
+            echo "counter" ;;
+        *)
+            echo "inconclusive" ;;
+    esac
+}
+export -f run_one szs_class
+export SCRIPT_DIR TIME_LIMIT EDITION ANSWERS
 
 # ---------- execute ----------
 GRACE=$((TIME_LIMIT + 10))
 
 # Worker shared by both serial and parallel paths. Appends one CSV row
 # (under flock so concurrent writers don't interleave) and prints a
-# carriage-return progress line. Progress is computed by counting CSV
-# lines so it works whether one or many workers are active.
+# completion line that names the just-finished (problem,system) and
+# its ok/ko/?? marker. Without the marker users would have to wait
+# for the run to finish to learn whether the engine agreed with the
+# reference; the previous flow paired a fake `reference` row next to
+# each real row, which became unreadable as soon as --jobs > 1
+# interleaved the output.
 run_and_append() {
     local line="$1"
     IFS=$'\t' read -r div problem prob_path sys <<< "${line}"
     local row
     row=$(run_one "${div}" "${problem}" "${prob_path}" "${sys}")
+    # Pull `szs_status` (col 5) and `verdict` (col 7) back out for display.
+    local szs verdict marker
+    szs=$(echo "${row}" | awk -F, '{print $5}')
+    verdict=$(echo "${row}" | awk -F, '{print $7}')
+    case "${verdict}" in
+        ok)      marker="OK" ;;
+        ko)      marker="KO" ;;
+        unknown) marker="??" ;;
+        *)       marker="--" ;;
+    esac
     local completed
     (
         flock 9
         printf '%s\n' "${row}" >> "${CSV}"
         # Subtract 1 for the header.
         completed=$(($(wc -l < "${CSV}") - 1))
-        printf '\r[casc] %d/%d completed' "${completed}" "${total_problems}" >&2
+        printf '[casc] %s %-12s %-12s %-14s (%d/%d)\n' \
+            "${marker}" "${sys}" "${problem}" "${szs}" \
+            "${completed}" "${total_problems}" >&2
     ) 9>>"${CSV}.lock"
 }
 export -f run_and_append
