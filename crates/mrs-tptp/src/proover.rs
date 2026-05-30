@@ -106,7 +106,7 @@ impl<'a> Annotations<'a> {
             GeneralTerm::Word(AtomicWord::Lower(s))
             | GeneralTerm::Word(AtomicWord::SingleQuoted(s)) => {
                 out.push(ParentRef {
-                    name: *s,
+                    name: s,
                     negated: false,
                 });
             }
@@ -131,13 +131,13 @@ impl<'a> Annotations<'a> {
     /// Extract `status(...)` value if present, e.g. `"thm"`, `"cth"`, `"esa"`.
     pub fn status(&self) -> Option<&'a str> {
         for it in self.info_items() {
-            if let GeneralTerm::Function(AtomicWord::Lower("status"), inner) = it {
-                if let Some(g) = inner.first() {
-                    match g {
-                        GeneralTerm::Word(AtomicWord::Lower(s)) => return Some(*s),
-                        GeneralTerm::Word(AtomicWord::SingleQuoted(s)) => return Some(*s),
-                        _ => {}
-                    }
+            if let GeneralTerm::Function(AtomicWord::Lower("status"), inner) = it
+                && let Some(g) = inner.first()
+            {
+                match g {
+                    GeneralTerm::Word(AtomicWord::Lower(s)) => return Some(*s),
+                    GeneralTerm::Word(AtomicWord::SingleQuoted(s)) => return Some(*s),
+                    _ => {}
                 }
             }
         }
@@ -147,19 +147,18 @@ impl<'a> Annotations<'a> {
     /// Extract `new_symbols(kind, [s1, s2, …])` symbol names if present.
     pub fn new_symbols(&self) -> Vec<&'a str> {
         for it in self.info_items() {
-            if let GeneralTerm::Function(AtomicWord::Lower("new_symbols"), inner) = it {
-                if inner.len() == 2 {
-                    if let GeneralTerm::List(items) = &inner[1] {
-                        return items
-                            .iter()
-                            .filter_map(|g| match g {
-                                GeneralTerm::Word(AtomicWord::Lower(s)) => Some(*s),
-                                GeneralTerm::Word(AtomicWord::SingleQuoted(s)) => Some(*s),
-                                _ => None,
-                            })
-                            .collect();
-                    }
-                }
+            if let GeneralTerm::Function(AtomicWord::Lower("new_symbols"), inner) = it
+                && inner.len() == 2
+                && let GeneralTerm::List(items) = &inner[1]
+            {
+                return items
+                    .iter()
+                    .filter_map(|g| match g {
+                        GeneralTerm::Word(AtomicWord::Lower(s)) => Some(*s),
+                        GeneralTerm::Word(AtomicWord::SingleQuoted(s)) => Some(*s),
+                        _ => None,
+                    })
+                    .collect();
             }
         }
         Vec::new()
@@ -168,46 +167,46 @@ impl<'a> Annotations<'a> {
     /// Extract `skolemize(Var, sk(args…))` if present.
     pub fn skolemize_info(&self) -> Option<SkolemizeInfo<'a>> {
         for it in self.info_items() {
-            if let GeneralTerm::Function(AtomicWord::Lower("skolemize"), inner) = it {
-                if inner.len() == 2 {
-                    let var = match &inner[0] {
-                        GeneralTerm::Variable(v) => *v,
-                        GeneralTerm::Word(AtomicWord::Lower(s)) => *s,
-                        GeneralTerm::Word(AtomicWord::SingleQuoted(s)) => *s,
-                        _ => continue,
-                    };
-                    let (sk_sym, args) = match &inner[1] {
-                        GeneralTerm::Function(AtomicWord::Lower(sym), a) => {
-                            let args: Vec<&str> = a
-                                .iter()
-                                .filter_map(|g| match g {
-                                    GeneralTerm::Variable(v) => Some(*v),
-                                    _ => None,
-                                })
-                                .collect();
-                            (*sym, args)
-                        }
-                        GeneralTerm::Function(AtomicWord::SingleQuoted(sym), a) => {
-                            let args: Vec<&str> = a
-                                .iter()
-                                .filter_map(|g| match g {
-                                    GeneralTerm::Variable(v) => Some(*v),
-                                    _ => None,
-                                })
-                                .collect();
-                            (*sym, args)
-                        }
-                        // Skolem may be a constant
-                        GeneralTerm::Word(AtomicWord::Lower(sym)) => (*sym, Vec::new()),
-                        GeneralTerm::Word(AtomicWord::SingleQuoted(sym)) => (*sym, Vec::new()),
-                        _ => continue,
-                    };
-                    return Some(SkolemizeInfo {
-                        var,
-                        skolem_symbol: sk_sym,
-                        args,
-                    });
-                }
+            if let GeneralTerm::Function(AtomicWord::Lower("skolemize"), inner) = it
+                && inner.len() == 2
+            {
+                let var = match &inner[0] {
+                    GeneralTerm::Variable(v) => *v,
+                    GeneralTerm::Word(AtomicWord::Lower(s)) => *s,
+                    GeneralTerm::Word(AtomicWord::SingleQuoted(s)) => *s,
+                    _ => continue,
+                };
+                let (sk_sym, args) = match &inner[1] {
+                    GeneralTerm::Function(AtomicWord::Lower(sym), a) => {
+                        let args: Vec<&str> = a
+                            .iter()
+                            .filter_map(|g| match g {
+                                GeneralTerm::Variable(v) => Some(*v),
+                                _ => None,
+                            })
+                            .collect();
+                        (*sym, args)
+                    }
+                    GeneralTerm::Function(AtomicWord::SingleQuoted(sym), a) => {
+                        let args: Vec<&str> = a
+                            .iter()
+                            .filter_map(|g| match g {
+                                GeneralTerm::Variable(v) => Some(*v),
+                                _ => None,
+                            })
+                            .collect();
+                        (*sym, args)
+                    }
+                    // Skolem may be a constant
+                    GeneralTerm::Word(AtomicWord::Lower(sym)) => (*sym, Vec::new()),
+                    GeneralTerm::Word(AtomicWord::SingleQuoted(sym)) => (*sym, Vec::new()),
+                    _ => continue,
+                };
+                return Some(SkolemizeInfo {
+                    var,
+                    skolem_symbol: sk_sym,
+                    args,
+                });
             }
         }
         None
@@ -251,7 +250,7 @@ fn collect_parent_refs<'a>(t: &GeneralTerm<'a>, negated: bool, out: &mut Vec<Par
     match t {
         GeneralTerm::Word(AtomicWord::Lower(s))
         | GeneralTerm::Word(AtomicWord::SingleQuoted(s)) => {
-            out.push(ParentRef { name: *s, negated });
+            out.push(ParentRef { name: s, negated });
         }
         GeneralTerm::Number(n) => {
             out.push(ParentRef {
@@ -275,12 +274,32 @@ fn collect_parent_refs<'a>(t: &GeneralTerm<'a>, negated: bool, out: &mut Vec<Par
     }
 }
 
+/// Scan an input for the `% Proof : path/to/problem.p` header line.
+///
+/// Returns the path portion (trimmed), or `None` if absent.
+pub fn proof_header_link(input: &str) -> Option<&str> {
+    for line in input.lines() {
+        let l = line.trim_start();
+        let Some(l) = l.strip_prefix('%') else {
+            continue;
+        };
+        let l = l.trim_start();
+        if let Some(rest) = l.strip_prefix("Proof") {
+            let rest = rest.trim_start();
+            if let Some(rest) = rest.strip_prefix(':') {
+                return Some(rest.trim());
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::parser::parse_tptp;
 
-    fn parse_single<'a>(input: &'a str) -> Annotations<'a> {
+    fn parse_single(input: &str) -> Annotations<'_> {
         let problem = parse_tptp(input).expect("parse");
         let af = problem
             .formulas
@@ -336,24 +355,4 @@ mod tests {
         assert_eq!(refs[0].name, "c_0_3");
         assert_eq!(refs[1].name, "c_0_4");
     }
-}
-
-/// Scan an input for the `% Proof : path/to/problem.p` header line.
-///
-/// Returns the path portion (trimmed), or `None` if absent.
-pub fn proof_header_link(input: &str) -> Option<&str> {
-    for line in input.lines() {
-        let l = line.trim_start();
-        let Some(l) = l.strip_prefix('%') else {
-            continue;
-        };
-        let l = l.trim_start();
-        if let Some(rest) = l.strip_prefix("Proof") {
-            let rest = rest.trim_start();
-            if let Some(rest) = rest.strip_prefix(':') {
-                return Some(rest.trim());
-            }
-        }
-    }
-    None
 }

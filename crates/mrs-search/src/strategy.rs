@@ -52,16 +52,16 @@ impl StrategySchedule {
     pub fn default_schedule(total_time: Duration) -> Self {
         // Allow overriding to a single strategy for diagnosis: MRS_SINGLE_STRATEGY=N
         // runs only strategy N (1-indexed) for the full time budget.
-        if let Ok(val) = std::env::var("MRS_SINGLE_STRATEGY") {
-            if let Ok(n) = val.trim().parse::<usize>() {
-                let full = StrategySchedule::_all_strategies(total_time);
-                if n >= 1 && n <= full.strategies.len() {
-                    let (mut cfg, _) = full.strategies[n - 1].clone();
-                    cfg.time_limit = total_time;
-                    return StrategySchedule {
-                        strategies: vec![(cfg, total_time)],
-                    };
-                }
+        if let Ok(val) = std::env::var("MRS_SINGLE_STRATEGY")
+            && let Ok(n) = val.trim().parse::<usize>()
+        {
+            let full = StrategySchedule::_all_strategies(total_time);
+            if n >= 1 && n <= full.strategies.len() {
+                let (mut cfg, _) = full.strategies[n - 1].clone();
+                cfg.time_limit = total_time;
+                return StrategySchedule {
+                    strategies: vec![(cfg, total_time)],
+                };
             }
         }
         Self::_all_strategies(total_time)

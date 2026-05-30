@@ -85,10 +85,11 @@ impl From<ParseError> for ParseFileError {
 /// # Safety
 ///
 /// Internally this type stores a `TPTPProblem<'static>` whose string slices
-/// actually point into the `Box<String>` kept in the same struct. This is
+/// actually point into the `String` kept in the same struct. This is
 /// sound because:
 ///
-/// 1. The `String` is heap-allocated and its byte buffer does not move.
+/// 1. A `String`'s byte buffer lives on the heap and does not move when the
+///    `String` header itself is moved into this struct.
 /// 2. `_source` is dropped *after* `problem` (field declaration order).
 /// 3. `_source` is private and never exposed as `&mut`.
 ///
@@ -96,7 +97,7 @@ impl From<ParseError> for ParseFileError {
 pub struct OwnedTPTPProblem {
     // IMPORTANT: field order matters — `_source` must be declared before
     // `problem` so it is dropped last.
-    _source: Box<String>,
+    _source: String,
     // SAFETY: The 'static lifetime is an intentional lie — these slices point
     // into `_source`. See the safety comment on the struct.
     problem: TPTPProblem<'static>,
@@ -152,13 +153,11 @@ impl fmt::Debug for OwnedTPTPProblem {
 /// assert_eq!(problem.formulas.len(), 1);
 /// ```
 pub fn parse_tptp_owned(source: String) -> Result<OwnedTPTPProblem, ParseError> {
-    // Box the String so its contents live at a stable heap address.
-    let source = Box::new(source);
-
     // SAFETY: `source_ref` points into the heap-allocated byte buffer of
-    // `*source`. We are about to move `source` into the struct without
-    // touching the String's contents, so the pointer remains valid for
-    // the lifetime of the returned `OwnedTPTPProblem`.
+    // `source`. We are about to move `source` into the struct without
+    // touching the String's contents; moving the `String` header does not
+    // move its buffer, so the pointer remains valid for the lifetime of the
+    // returned `OwnedTPTPProblem`.
     let source_ref: &str = source.as_str();
     let source_static: &'static str = unsafe { std::mem::transmute(source_ref) };
 

@@ -299,7 +299,7 @@ mod tests {
     use super::*;
     use mrs_tptp::parse_tptp;
 
-    fn lower_first<'a>(input: &'a str, symbols: &mut SymbolTable) -> Formula {
+    fn lower_first(input: &str, symbols: &mut SymbolTable) -> Formula {
         let problem = parse_tptp(input).expect("parse");
         let mut ctx = LowerCtx::new(symbols);
         match problem.formulas.into_iter().next().expect("af") {

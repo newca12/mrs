@@ -17,9 +17,9 @@ fn main() {
                     println!("Line {}: FAIL at:", i + 1);
                     println!("  Content: {}", line.trim());
                     println!("  Error: {:?}", e);
-                    let start = if i > 5 { i - 5 } else { 0 };
-                    for j in start..=i {
-                        println!("    {}: {}", j + 1, lines[j]);
+                    let start = i.saturating_sub(5);
+                    for (j, ctx_line) in lines.iter().enumerate().take(i + 1).skip(start) {
+                        println!("    {}: {}", j + 1, ctx_line);
                     }
                     return;
                 }

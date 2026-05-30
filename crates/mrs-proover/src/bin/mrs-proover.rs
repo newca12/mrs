@@ -145,15 +145,15 @@ fn main() -> ExitCode {
     if pick("mrs") {
         ladder = ladder.push(Box::new(MrsAtp::new()));
     }
-    if pick("eprover") {
-        if let Some(p) = eprover_override.or_else(find_eprover) {
-            ladder = ladder.push(Box::new(EProverAtp::new(p)));
-        }
+    if pick("eprover")
+        && let Some(p) = eprover_override.or_else(find_eprover)
+    {
+        ladder = ladder.push(Box::new(EProverAtp::new(p)));
     }
-    if pick("vampire") {
-        if let Some(p) = vampire_override.clone().or_else(find_vampire) {
-            ladder = ladder.push(Box::new(VampireAtp::new(p)));
-        }
+    if pick("vampire")
+        && let Some(p) = vampire_override.clone().or_else(find_vampire)
+    {
+        ladder = ladder.push(Box::new(VampireAtp::new(p)));
     }
     // Counter-model finder rung (last): only when not in single-backend mode
     // and not explicitly disabled. FMB confirms non-entailments the saturation

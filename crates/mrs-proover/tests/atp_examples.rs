@@ -94,7 +94,7 @@ mod fmb {
 
         // p(a) ⊨ p(a): valid.
         assert_eq!(
-            fmb.check_step(&syms, &[pa.clone()], &pa, budget),
+            fmb.check_step(&syms, std::slice::from_ref(&pa), &pa, budget),
             AtpVerdict::Sound,
             "valid entailment must be Sound",
         );

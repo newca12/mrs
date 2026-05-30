@@ -42,12 +42,12 @@ use crate::verdict::StepOutcome;
 /// source; the rest are Skolem-axiom intro-defs in some order.
 ///
 /// Returns:
-///   - `Some(Sound)`   — the step was verified structurally.
-///   - `Some(Unknown)` — the step has the right shape but the structural
-///                       reproduction failed (likely benign, fall through
-///                       to ATP would be wasteful; report Unknown).
-///   - `None`          — the step does not have the expected skolemisation
-///                       shape; the caller should try the ATP instead.
+/// - `Some(Sound)` — the step was verified structurally.
+/// - `Some(Unknown)` — the step has the right shape but the structural
+///   reproduction failed (likely benign, falling through to ATP would be
+///   wasteful; report Unknown).
+/// - `None` — the step does not have the expected skolemisation shape; the
+///   caller should try the ATP instead.
 pub fn try_check<'p>(
     step: &'p FOFAnnotated<'p>,
     parents: &[&'p FOFAnnotated<'p>],
@@ -390,40 +390,39 @@ fn apply_axiom_walk<'p>(
         variables,
         formula,
     } = strip_parens(f)
+        && variables.len() == axiom.existentials.len()
     {
-        if variables.len() == axiom.existentials.len() {
-            let body = strip_parens(formula);
-            // Find a universal binding σ such that
-            // axiom.antecedent[U:=σ(U), V:=variables] α-equals body.
-            if let Some(sigma) = match_with_universal_subst(
-                &axiom.antecedent,
-                body,
-                &axiom.universals,
-                &axiom.existentials,
-                variables,
-            ) {
-                // Vampire's `skolem_symbol_introduction` axioms already
-                // bake the Skolem terms into the consequent — each
-                // existential `V_i` has been replaced by an application
-                // of its dedicated Skolem symbol to the axiom's
-                // universals. So the rewrite is just `σ(consequent)`:
-                // apply σ to the universal variables, and the result
-                // already mentions the correct sK_j(σ(U)) wherever V_i
-                // used to be.
-                //
-                // This treatment unifies the single-Skolem case (one
-                // axiom → one new symbol) and the multi-Skolem case
-                // (one axiom → multiple new symbols, e.g. SET949+1's
-                // `? [X7,X6] : … => … sK1(U) … sK2(U) …`) without
-                // needing to recover the per-existential mapping
-                // separately. If the consequent has residual references
-                // to an existential variable (i.e. the axiom is
-                // malformed), the final `formula_eq(current, step)`
-                // check will reject the rewrite and we defer to ATP.
-                let new_body = subst_universals(&axiom.consequent, &sigma);
-                *found = true;
-                return new_body;
-            }
+        let body = strip_parens(formula);
+        // Find a universal binding σ such that
+        // axiom.antecedent[U:=σ(U), V:=variables] α-equals body.
+        if let Some(sigma) = match_with_universal_subst(
+            &axiom.antecedent,
+            body,
+            &axiom.universals,
+            &axiom.existentials,
+            variables,
+        ) {
+            // Vampire's `skolem_symbol_introduction` axioms already
+            // bake the Skolem terms into the consequent — each
+            // existential `V_i` has been replaced by an application
+            // of its dedicated Skolem symbol to the axiom's
+            // universals. So the rewrite is just `σ(consequent)`:
+            // apply σ to the universal variables, and the result
+            // already mentions the correct sK_j(σ(U)) wherever V_i
+            // used to be.
+            //
+            // This treatment unifies the single-Skolem case (one
+            // axiom → one new symbol) and the multi-Skolem case
+            // (one axiom → multiple new symbols, e.g. SET949+1's
+            // `? [X7,X6] : … => … sK1(U) … sK2(U) …`) without
+            // needing to recover the per-existential mapping
+            // separately. If the consequent has residual references
+            // to an existential variable (i.e. the axiom is
+            // malformed), the final `formula_eq(current, step)`
+            // check will reject the rewrite and we defer to ATP.
+            let new_body = subst_universals(&axiom.consequent, &sigma);
+            *found = true;
+            return new_body;
         }
     }
     // Otherwise recurse into children.
@@ -476,9 +475,6 @@ fn match_with_universal_subst<'p>(
 ) -> Option<HashMap<&'p str, FOFTerm<'p>>> {
     let mut sigma: HashMap<&'p str, FOFTerm<'p>> = HashMap::new();
     let univ_set: std::collections::HashSet<&'p str> = universals.iter().copied().collect();
-    let ax_exists_set: std::collections::HashSet<&'p str> = axiom_exists.iter().copied().collect();
-    let local_exists_set: std::collections::HashSet<&'p str> =
-        local_exists.iter().copied().collect();
     // Build a renaming for existentials: when matching, axiom V_i is
     // considered equal to local V_i.
     let mut exists_renaming: HashMap<&'p str, &'p str> = HashMap::new();
@@ -489,8 +485,6 @@ fn match_with_universal_subst<'p>(
         axiom_body,
         local_body,
         &univ_set,
-        &ax_exists_set,
-        &local_exists_set,
         &exists_renaming,
         &mut sigma,
     ) {
@@ -504,8 +498,6 @@ fn match_formula<'p>(
     a: &'p FOFFormula<'p>,
     b: &'p FOFFormula<'p>,
     universals: &std::collections::HashSet<&'p str>,
-    a_exists: &std::collections::HashSet<&'p str>,
-    b_exists: &std::collections::HashSet<&'p str>,
     exists_renaming: &HashMap<&'p str, &'p str>,
     sigma: &mut HashMap<&'p str, FOFTerm<'p>>,
 ) -> bool {
@@ -515,15 +507,9 @@ fn match_formula<'p>(
         (FOFFormula::Atomic(ax), FOFFormula::Atomic(bx)) => {
             match_atomic(ax, bx, universals, exists_renaming, sigma)
         }
-        (FOFFormula::Negation(ax), FOFFormula::Negation(bx)) => match_formula(
-            ax,
-            bx,
-            universals,
-            a_exists,
-            b_exists,
-            exists_renaming,
-            sigma,
-        ),
+        (FOFFormula::Negation(ax), FOFFormula::Negation(bx)) => {
+            match_formula(ax, bx, universals, exists_renaming, sigma)
+        }
         (FOFFormula::Equality(la, ra), FOFFormula::Equality(lb, rb))
         | (FOFFormula::Inequality(la, ra), FOFFormula::Inequality(lb, rb)) => {
             match_term(la, lb, universals, exists_renaming, sigma)
@@ -542,24 +528,8 @@ fn match_formula<'p>(
             },
         ) => {
             ca == cb
-                && match_formula(
-                    la,
-                    lb,
-                    universals,
-                    a_exists,
-                    b_exists,
-                    exists_renaming,
-                    sigma,
-                )
-                && match_formula(
-                    ra,
-                    rb,
-                    universals,
-                    a_exists,
-                    b_exists,
-                    exists_renaming,
-                    sigma,
-                )
+                && match_formula(la, lb, universals, exists_renaming, sigma)
+                && match_formula(ra, rb, universals, exists_renaming, sigma)
         }
         (
             FOFFormula::Quantified {
@@ -583,7 +553,7 @@ fn match_formula<'p>(
             for (a_v, b_v) in va.iter().zip(vb.iter()) {
                 new_renaming.insert(*a_v, *b_v);
             }
-            match_formula(fa, fb, universals, a_exists, b_exists, &new_renaming, sigma)
+            match_formula(fa, fb, universals, &new_renaming, sigma)
         }
         _ => false,
     }
@@ -936,8 +906,9 @@ mod tests {
         let mut out: Vec<&'static FOFAnnotated<'static>> = Vec::new();
         for f in &problem.formulas {
             if let mrs_tptp::AnnotatedFormula::FOF(a) = f {
-                let a_static: &'static FOFAnnotated<'static> =
-                    unsafe { &*(a as *const FOFAnnotated<'_> as *const FOFAnnotated<'static>) };
+                let a_static: &'static FOFAnnotated<'static> = unsafe {
+                    std::mem::transmute::<&FOFAnnotated<'_>, &'static FOFAnnotated<'static>>(a)
+                };
                 out.push(a_static);
             }
         }

@@ -529,12 +529,11 @@ fn prepare_atp_step<'p>(dag: &Dag<'p>, idx: usize, symbols: &mut SymbolTable) ->
                 //
                 // We do *not* touch negated parents (those go through
                 // `assume_negation` and have their own polarity flip).
-                if introduced_definition::is_predicate_definition_introduction(parent_ann) {
-                    if let Some(extended) =
+                if introduced_definition::is_predicate_definition_introduction(parent_ann)
+                    && let Some(extended) =
                         complete_definition_iff(&f, parent_ann.unwrap(), ctx.symbols)
-                    {
-                        f = extended;
-                    }
+                {
+                    f = extended;
                 }
             }
             premises.push(f);
@@ -740,7 +739,8 @@ fn complete_definition_iff(
     let rest_owned: Vec<Formula> = disjuncts
         .iter()
         .enumerate()
-        .filter_map(|(i, d)| (i != p_idx).then(|| (*d).clone()))
+        .filter(|&(i, _)| i != p_idx)
+        .map(|(_, d)| (*d).clone())
         .collect();
     let rest = match rest_owned.len() {
         0 => Formula::False,
