@@ -66,3 +66,44 @@ fn evil_examples_all_failedverified_with_atp() {
         );
     }
 }
+
+mod fmb {
+    use std::time::Duration;
+
+    use mrs_core::{Atom, Formula, SymbolTable, Term};
+    use mrs_proover::atp::{Atp, AtpVerdict, VampireFmbAtp, find_vampire};
+
+    /// FMB confirms a valid entailment as `Sound` and refutes a genuine
+    /// non-entailment as `Unsound` — never the reverse. This is the soundness
+    /// invariant the Phase-3 model-finder rung relies on.
+    #[test]
+    fn fmb_distinguishes_entailment_from_countermodel() {
+        let Some(vamp) = find_vampire() else {
+            eprintln!("skipping: no vampire backend found");
+            return;
+        };
+        let fmb = VampireFmbAtp { binary: vamp };
+        let budget = Duration::from_secs(5);
+
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let pa = Formula::atom(Atom::pred(p, vec![Term::constant(a)]));
+        let pb = Formula::atom(Atom::pred(p, vec![Term::constant(b)]));
+
+        // p(a) ⊨ p(a): valid.
+        assert_eq!(
+            fmb.check_step(&syms, &[pa.clone()], &pa, budget),
+            AtpVerdict::Sound,
+            "valid entailment must be Sound",
+        );
+
+        // p(a) ⊭ p(b): finite counter-model exists.
+        assert_eq!(
+            fmb.check_step(&syms, &[pa], &pb, budget),
+            AtpVerdict::Unsound,
+            "non-entailment must be refuted (counter-model)",
+        );
+    }
+}

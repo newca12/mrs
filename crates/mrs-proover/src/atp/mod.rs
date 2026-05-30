@@ -9,7 +9,7 @@ pub mod external;
 pub mod ladder;
 
 pub use discover::{find_eprover, find_mrs, find_vampire};
-pub use external::{EProverAtp, MrsAtp, VampireAtp};
+pub use external::{EProverAtp, MrsAtp, VampireAtp, VampireFmbAtp};
 pub use ladder::LadderAtp;
 
 /// Verdict returned by an ATP about a single inference step.

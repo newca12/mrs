@@ -19,7 +19,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use mrs_proover::atp::{
-    EProverAtp, LadderAtp, MrsAtp, NoopAtp, VampireAtp, find_eprover, find_vampire,
+    EProverAtp, LadderAtp, MrsAtp, NoopAtp, VampireAtp, VampireFmbAtp, find_eprover, find_vampire,
 };
 use mrs_proover::load::{LoadError, load};
 use mrs_proover::verdict::Verdict;
@@ -32,7 +32,7 @@ fn print_and_exit(v: Verdict) -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: mrs-proover [--problems-dir DIR] [--no-atp] [--no-mrs]\n\
+        "usage: mrs-proover [--problems-dir DIR] [--no-atp] [--no-mrs] [--no-fmb]\n\
                       [--eprover PATH] [--vampire PATH]\n\
                       [--only-mrs|--only-eprover|--only-vampire]\n\
                       [--time SECS] [--verbose] <proof.p>"
@@ -46,6 +46,7 @@ fn main() -> ExitCode {
     let mut problems_dir: Option<PathBuf> = None;
     let mut no_atp = false;
     let mut no_mrs = false;
+    let mut no_fmb = false;
     let mut eprover_override: Option<PathBuf> = None;
     let mut vampire_override: Option<PathBuf> = None;
     let mut verbose = false;
@@ -61,6 +62,7 @@ fn main() -> ExitCode {
             },
             "--no-atp" => no_atp = true,
             "--no-mrs" => no_mrs = true,
+            "--no-fmb" => no_fmb = true,
             "--only-mrs" => only = Some("mrs"),
             "--only-eprover" => only = Some("eprover"),
             "--only-vampire" => only = Some("vampire"),
@@ -149,9 +151,20 @@ fn main() -> ExitCode {
         }
     }
     if pick("vampire") {
-        if let Some(p) = vampire_override.or_else(find_vampire) {
+        if let Some(p) = vampire_override.clone().or_else(find_vampire) {
             ladder = ladder.push(Box::new(VampireAtp::new(p)));
         }
+    }
+    // Counter-model finder rung (last): only when not in single-backend mode
+    // and not explicitly disabled. FMB confirms non-entailments the saturation
+    // provers can only time out on, earning FailedVerified (+2) on bad proofs.
+    // The esa guard in `delegate_to_atp` still suppresses any FMB refutation of
+    // an equisatisfiability step, so this never costs us a good-proof point.
+    if only.is_none()
+        && !no_fmb
+        && let Some(p) = vampire_override.or_else(find_vampire)
+    {
+        ladder = ladder.push(Box::new(VampireFmbAtp::new(p)));
     }
     let v = if ladder.backends.is_empty() {
         let atp = NoopAtp;

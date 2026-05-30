@@ -106,8 +106,59 @@ impl Atp for VampireAtp {
     }
 }
 
+/// Backend that calls `vampire` in finite-model-building mode as a counter-
+/// model finder. Unlike the saturation provers, FMB actively searches for a
+/// finite model of `premises ∧ ¬conclusion`; finding one is positive proof
+/// that the step is *not* a valid entailment (`CounterSatisfiable` →
+/// `Unsound`), which lets us report `FailedVerified` (+2) on bad proofs that
+/// the entailment provers can only time out on. FMB is sound in both
+/// directions: it returns `Theorem`/`Unsatisfiable` when the step *is* valid
+/// and a counter-model only when one genuinely exists, so it never refutes a
+/// sound step. Placed last on the ladder, after the entailment provers.
+pub struct VampireFmbAtp {
+    pub binary: PathBuf,
+}
+
+impl VampireFmbAtp {
+    pub fn new(binary: impl Into<PathBuf>) -> Self {
+        Self {
+            binary: binary.into(),
+        }
+    }
+}
+
+impl Atp for VampireFmbAtp {
+    fn name(&self) -> &'static str {
+        "vampire-fmb"
+    }
+
+    fn check_step(
+        &self,
+        symbols: &SymbolTable,
+        premises: &[Formula],
+        conclusion: &Formula,
+        budget: Duration,
+    ) -> AtpVerdict {
+        let problem = build_fof_problem(symbols, premises, conclusion);
+        let secs = (budget.as_secs_f64()).max(0.1);
+        let secs_arg = format!("{secs:.2}");
+        run_atp(
+            &self.binary,
+            &[
+                "--saturation_algorithm",
+                "fmb",
+                "--time_limit",
+                &secs_arg,
+                "--input_syntax",
+                "tptp",
+            ],
+            &problem,
+            budget,
+        )
+    }
+}
+
 /// Backend that calls the in-tree `mrs` binary as a subprocess.
-///
 /// `mrs` is the cheapest rung of the ladder because it is purpose-built for
 /// short FOF problems and reports back a plain SZS line. Requires `mrs` to
 /// be built with the `proover` feature, which adds `--quiet` and stdin (`-`)
