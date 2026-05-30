@@ -4,6 +4,7 @@
 //! [`crate::verdict::StepOutcome`].
 
 pub mod axiom_leaf;
+pub mod definition_folding;
 pub mod introduced_definition;
 pub mod neg_conjecture;
 pub mod propositional_sat;

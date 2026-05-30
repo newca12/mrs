@@ -429,6 +429,20 @@ fn delegate_to_atp<'p>(
     ctx.reset_vars();
     let conclusion = lower_fof_statement(&mut ctx, &node.fof.formula);
 
+    // Structural definition_folding: when Vampire emits a step whose
+    // sole non-def parent is the unfolded source and the rest are
+    // `predicate_definition_introduction` axioms (now iff-completed by
+    // the loop above), we can decide the entailment by syntactic
+    // unfolding + alpha-equivalence. This sidesteps the saturation
+    // search that even multi-second-budget ATPs fail on. The check is
+    // bounded by a small work budget so worst case it falls through
+    // quickly to the generic ATP ladder.
+    if node.inference_rule == Some("definition_folding")
+        && let Some(true) = crate::checks::definition_folding::try_check(&premises, &conclusion)
+    {
+        return StepOutcome::Sound;
+    }
+
     // Propositional fast-path: when every premise and the conclusion are
     // built from 0-ary predicates only (the `spl0_N` avatar splits and
     // similar), the entailment check is a finite SAT problem solvable in
