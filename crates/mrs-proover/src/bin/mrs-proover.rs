@@ -97,6 +97,21 @@ fn main() -> ExitCode {
                 "proof file has no `% Proof :` header; cannot locate problem file".into(),
             ));
         }
+        // A proof file that doesn't parse as TPTP is *by definition* a bad
+        // proof: the ProoVer 2026 rules promise "All provided proofs will be
+        // syntactically well-formed and parsable in TPTP", and the
+        // official `example3_e_proof.p` evil example contains a malformed
+        // `skolemize(Groom sK0(Marriage))` (missing comma) that should be
+        // flagged as bad. Reporting `FailedVerified` scores +2 instead of
+        // 0 in that case; the rules' guarantee means we should never
+        // wrongly hit this branch on a legitimate good proof.
+        Err(LoadError::ParseProof(detail)) => {
+            return print_and_exit(Verdict::FailedVerified(format!(
+                "proof file is not parseable TPTP: {detail}"
+            )));
+        }
+        // ReadProof / ReadProblem / ParseProblem are infrastructure or
+        // problem-file issues, not proof faults; stay conservative.
         Err(e) => {
             return print_and_exit(Verdict::NotVerified(format!("load error: {e}")));
         }
