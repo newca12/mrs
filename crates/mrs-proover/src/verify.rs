@@ -437,8 +437,17 @@ fn delegate_to_atp<'p>(
     // search that even multi-second-budget ATPs fail on. The check is
     // bounded by a small work budget so worst case it falls through
     // quickly to the generic ATP ladder.
-    if node.inference_rule == Some("definition_folding")
-        && let Some(true) = crate::checks::definition_folding::try_check(&premises, &conclusion)
+    //
+    // The same shape applies to vampire's `avatar_split_clause`: its
+    // premises are one original clause + several `avatar_definition`
+    // iff axioms (`spl <=> body`), and the conclusion is the
+    // propositional disjunction of the `spl` symbols. Unfolding all
+    // `spl` symbols in the conclusion yields a formula α-equivalent
+    // to the original clause, exactly as for `definition_folding`.
+    if matches!(
+        node.inference_rule,
+        Some("definition_folding") | Some("avatar_split_clause")
+    ) && let Some(true) = crate::checks::definition_folding::try_check(&premises, &conclusion)
     {
         return StepOutcome::Sound;
     }

@@ -615,6 +615,51 @@ mod tests {
         assert_eq!(try_check(&[def, src], &concl), Some(true));
     }
 
+    #[test]
+    fn folds_avatar_propositional_definitions() {
+        // Vampire's `avatar_split_clause` shape: each `spl<n>` is a 0-ary
+        // predicate symbol defined by an iff with no outer quantifier
+        // (e.g. `fof(f7225, definition, (spl150_1086 <=> sP119))`).
+        // The conclusion of the split is a propositional disjunction
+        // of the spl symbols, and the source is the original (already
+        // propositional) clause whose disjuncts are named by the
+        // spl symbols. Unfolding all spl symbols in the conclusion
+        // must α-match the source.
+        let mut s = SymbolTable::new();
+        let spl_a = s.intern("spl_a");
+        let spl_b = s.intern("spl_b");
+        let spl_c = s.intern("spl_c");
+        let q = s.intern("q");
+        let r = s.intern("r");
+        let t = s.intern("t");
+        let def_a = Formula::iff(
+            Formula::Atom(Atom::Pred(spl_a, vec![])),
+            Formula::Atom(Atom::Pred(q, vec![])),
+        );
+        let def_b = Formula::iff(
+            Formula::Atom(Atom::Pred(spl_b, vec![])),
+            Formula::Atom(Atom::Pred(r, vec![])),
+        );
+        let def_c = Formula::iff(
+            Formula::Atom(Atom::Pred(spl_c, vec![])),
+            Formula::Atom(Atom::Pred(t, vec![])),
+        );
+        let src = Formula::Or(vec![
+            Formula::Atom(Atom::Pred(q, vec![])),
+            Formula::Atom(Atom::Pred(r, vec![])),
+            Formula::Atom(Atom::Pred(t, vec![])),
+        ]);
+        let concl = Formula::Or(vec![
+            Formula::Atom(Atom::Pred(spl_a, vec![])),
+            Formula::Atom(Atom::Pred(spl_b, vec![])),
+            Formula::Atom(Atom::Pred(spl_c, vec![])),
+        ]);
+        assert_eq!(
+            try_check(&[def_a, def_b, def_c, src], &concl),
+            Some(true)
+        );
+    }
+
     /// Stress test: even if a pathological input were fed in, the
     /// function must return quickly (well under a second) rather than
     /// hang. We construct a deep nested formula that exceeds
