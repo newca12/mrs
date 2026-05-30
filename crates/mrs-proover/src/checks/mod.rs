@@ -6,5 +6,6 @@
 pub mod axiom_leaf;
 pub mod introduced_definition;
 pub mod neg_conjecture;
+pub mod propositional_sat;
 pub mod skolemize;
 pub mod vampire_skolemisation;

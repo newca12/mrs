@@ -429,6 +429,25 @@ fn delegate_to_atp<'p>(
     ctx.reset_vars();
     let conclusion = lower_fof_statement(&mut ctx, &node.fof.formula);
 
+    // Propositional fast-path: when every premise and the conclusion are
+    // built from 0-ary predicates only (the `spl0_N` avatar splits and
+    // similar), the entailment check is a finite SAT problem solvable in
+    // microseconds. Vampire's `rat`, `avatar_*`, and `sat_conversion`
+    // rules all produce pure propositional steps, and FOL ATPs
+    // (eprover/vampire/mrs) routinely time out on the larger ones.
+    // Returning `None` here costs only a quick is_propositional walk and
+    // falls through to the unchanged ATP ladder.
+    if let Some(outcome) =
+        crate::checks::propositional_sat::try_propositional(&premises, &conclusion)
+    {
+        return match outcome {
+            crate::checks::propositional_sat::PropOutcome::Sound => StepOutcome::Sound,
+            crate::checks::propositional_sat::PropOutcome::Unsound => StepOutcome::Unsound(
+                "propositional SAT solver refuted entailment by premises".into(),
+            ),
+        };
+    }
+
     match atp.check_step(symbols, &premises, &conclusion, budget) {
         AtpVerdict::Sound => StepOutcome::Sound,
         AtpVerdict::Unsound => StepOutcome::Unsound(format!(
