@@ -8,7 +8,7 @@ use mrs_tptp::{FOFAnnotated, FormulaRole};
 
 use crate::atp::{Atp, AtpVerdict, NoopAtp};
 use crate::checks::{
-    axiom_leaf, introduced_definition, neg_conjecture, skolemize, vampire_skolemisation,
+    axiom_leaf, introduced_definition, neg_conjecture, skolemize, trivial, vampire_skolemisation,
 };
 use crate::dag::{self, Dag};
 use crate::load::LoadedJob;
@@ -156,56 +156,15 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
     aggregate(outcomes.iter().map(|(n, o)| (n.as_str(), o.clone())))
 }
 
-/// Inference rules that are structurally trivial enough that we declare them
-/// `Sound` without bothering the ATP. They are sound *by definition* for any
-/// reasonable presentation: each is either a tautological rearrangement of
-/// the parent, or a syntactic reformulation, or a renaming of bound
-/// variables, or a strict projection that is logically implied by the
-/// parent (e.g. `(A & B) ⊢ A`).
+/// Former name-trust list, now replaced by structural verification.
 ///
-/// Being wrong here costs us 10× more than playing it safe, so the list is
-/// intentionally short and conservative. Anything not on the list still gets
-/// dispatched to the ATP.
-///
-/// Categories represented:
-///   * preprocessing / clausification (E, vampire):
-///     `fof_simplification`, `fof_nnf`, `distribute`, `rectify`,
-///     `variable_rename`, `true_and_iff_removal`, `evaluation`,
-///     `trivial_inequality_removal`, `remove_duplicate_literals`,
-///     `split_conjunct`
-///   * negation step (covered separately by `neg_conjecture` check too):
-///     `assume_negation`
-///
-/// Excluded on purpose (substantive first-order inferences that require
-/// real entailment checks):
-///   * E:        `spm`, `rw`, `cn`, `sr`, `pm`, `apply_def`
-///   * Vampire:  `resolution`, `subsumption_resolution`, `superposition`,
-///               `forward_subsumption_resolution`, `avatar_*`, etc.
-const TRIVIAL_RULES: &[&str] = &[
-    "assume_negation",
-    "rectify",
-    "true_and_iff_removal",
-    "fof_simplification",
-    "trivial_inequality_removal",
-    "evaluation",
-    "remove_duplicate_literals",
-    // Added after the TPTP-v9 FOF corpus analysis (May 2026):
-    "fof_nnf",         // negation normal form — logical equivalence
-    "distribute",      // CNF distribution of ∨ over ∧ — logical equivalence
-    "variable_rename", // α-renaming of bound variables — logical equivalence
-    "split_conjunct",  // (A ∧ B) ⊢ A or B — sound projection
-    // Added after the post-Fix#6 Vampire re-verify (May 2026):
-    "duplicate_literal_removal", // Vampire alias of remove_duplicate_literals
-    "flattening",                // (A ∧ B) ∧ C → A ∧ B ∧ C (assoc/commut)
-    "nnf_transformation",        // Vampire alias of fof_nnf
-    "ennf_transformation",       // eliminate <=> and =>; logically equivalent
-    "cnf_transformation",        // FOF → CNF, equisatisfiable
-];
-
-fn is_trivial_rule(rule: Option<&str>) -> bool {
-    matches!(rule, Some(r) if TRIVIAL_RULES.contains(&r))
-}
-
+/// Previously these preprocessing/clausification rules were accepted as
+/// `Sound` purely on their inference-rule name — the single largest
+/// adversarial soundness hole, since the attacker controls the label. They
+/// now route through [`crate::checks::trivial`], which only accepts on a
+/// *checked* structural proof (NNF-canonical equivalence or conjunct
+/// projection) and otherwise falls through to the ATP. See that module for
+/// the soundness argument.
 fn step_needs_atp(node: &dag::Node<'_>) -> bool {
     // Leaves don't need ATP. A node is a "leaf" if it has a `file(...)`
     // provenance annotation AND its role is one a problem may legitimately
@@ -242,9 +201,12 @@ fn step_needs_atp(node: &dag::Node<'_>) -> bool {
     {
         return false;
     }
-    if is_trivial_rule(node.inference_rule) && !node.is_false {
-        return false;
-    }
+    // Former `TRIVIAL_RULES` steps are intentionally *not* short-circuited
+    // here: they are attempted by the structural `trivial` verifier inside
+    // `check_node` (essentially free), and only those it cannot confirm fall
+    // through to the ATP. Counting them as ATP steps guarantees such
+    // fall-throughs still receive a real budget instead of being starved to a
+    // spurious `Unknown`.
     true
 }
 
@@ -357,18 +319,23 @@ fn check_node<'p>(
         // Fall through to ATP if the structural check could not apply.
     }
 
-    // Trivial rules: accepted without ATP — *unless* the conclusion is the
-    // empty clause `$false`. A "trivial" rearrangement (e.g.
-    // `fof_simplification`, an equivalence-preserving simplification of a
-    // single premise) can never soundly introduce `$false` out of
-    // consistent — or absent — premises. An adversarial proof can tag a
-    // bogus `[premises] ⊢ $false` step (or one with empty parents) with
-    // such a rule to manufacture a refutation; routing every
-    // `$false`-concluding step through the real entailment check closes
-    // that hole while still accepting genuine simplifications like
-    // `a != a ⊢ $false` (which the ATP confirms).
-    if is_trivial_rule(node.inference_rule) && !node.is_false {
-        return StepOutcome::Sound;
+    // Former `TRIVIAL_RULES`: instead of trusting the rule *name*, attempt a
+    // structural verification (NNF-canonical equivalence for rewriting rules,
+    // conjunct projection for `split_conjunct`). The check accepts only on a
+    // checked structural proof and otherwise returns `None`, so adversarial
+    // mislabelling cannot earn a blind pass — anything unconfirmed falls
+    // through to the real entailment check below. `$false`-concluding steps
+    // are excluded by `trivial::try_check` itself and always reach the ATP.
+    if trivial::is_trivial_rule(node.inference_rule) {
+        let parents: Vec<&FOFAnnotated<'_>> = node
+            .parents
+            .iter()
+            .filter_map(|p| dag.by_name.get(p).map(|&i| dag.nodes[i].fof))
+            .collect();
+        if let Some(outcome) = trivial::try_check(node, &parents, symbols) {
+            return outcome;
+        }
+        // Fall through to ATP if the structural check could not confirm.
     }
 
     // Other plain/thm/cth steps → delegate to ATP.
@@ -818,9 +785,8 @@ mod false_guard_tests {
 
     #[test]
     fn false_concluding_trivial_step_requires_atp() {
-        // The whole point of the guard: a `$false`-concluding step tagged
-        // with an otherwise-trusted trivial rule must NOT be short-circuited
-        // — it has to go through the entailment check.
+        // A `$false`-concluding step tagged with a former trivial rule must
+        // reach the entailment check, never a structural shortcut.
         assert!(
             step_needs_atp(&false_node()),
             "a $false-concluding trivial step must require the entailment check"
@@ -828,12 +794,16 @@ mod false_guard_tests {
     }
 
     #[test]
-    fn ordinary_trivial_step_does_not_require_atp() {
+    fn ordinary_trivial_step_is_budgeted_for_atp() {
+        // Under structural verification, former trivial rules are no longer
+        // auto-skipped for budgeting: the structural check is tried first in
+        // `check_node` (free), but if it cannot confirm the step the ATP must
+        // still receive a real budget. So `step_needs_atp` reports `true`.
         let node = dag::Node {
             is_false: false,
             fof: first_fof("fof(s2, plain, p(a), inference(fof_simplification, [], [a]))."),
             ..false_node()
         };
-        assert!(!step_needs_atp(&node));
+        assert!(step_needs_atp(&node));
     }
 }

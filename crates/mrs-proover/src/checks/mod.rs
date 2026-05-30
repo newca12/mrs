@@ -9,4 +9,5 @@ pub mod introduced_definition;
 pub mod neg_conjecture;
 pub mod propositional_sat;
 pub mod skolemize;
+pub mod trivial;
 pub mod vampire_skolemisation;
