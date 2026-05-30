@@ -471,6 +471,18 @@ fn delegate_to_atp<'p>(
         };
     }
 
+    // Propositional-abstraction fast-path: treat every argumented atom (and
+    // equalities) as an opaque boolean and ask the SAT solver whether the
+    // step is *propositionally* valid. Sound over-approximation — an UNSAT
+    // abstraction means the step holds in every FOL model, so we accept it.
+    // A satisfiable abstraction proves nothing and falls through to the ATP
+    // ladder; this path never reports unsoundness. This decides Vampire's
+    // `avatar_component_clause` (`spl <=> body` ⊢ `¬body ∨ spl`) and similar
+    // CNF-of-iff extractions that the FOL ATPs stall on.
+    if crate::checks::propositional_sat::try_propositional_abstraction(&premises, &conclusion) {
+        return StepOutcome::Sound;
+    }
+
     match atp.check_step(symbols, &premises, &conclusion, budget) {
         AtpVerdict::Sound => StepOutcome::Sound,
         AtpVerdict::Unsound => StepOutcome::Unsound(format!(
@@ -597,11 +609,7 @@ fn complete_definition_iff(
     //   * Positive literal: premise is `rest ∨ P`, i.e. `¬rest → P`.
     //     iff completion adds `P → ¬rest`. Combined: `P ↔ ¬rest`.
     let p_atom = Formula::Atom(Atom::Pred(p_sym, p_args));
-    let other_side = if p_positive {
-        Formula::neg(rest)
-    } else {
-        rest
-    };
+    let other_side = if p_positive { Formula::neg(rest) } else { rest };
     let iff = Formula::iff(p_atom, other_side);
 
     // Re-wrap in the original Forall prefix.

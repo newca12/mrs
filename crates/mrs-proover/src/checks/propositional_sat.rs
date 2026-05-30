@@ -28,7 +28,7 @@
 
 use std::collections::HashMap;
 
-use mrs_core::{Atom, Formula, SymbolId};
+use mrs_core::{Atom, Formula};
 use varisat::{ExtendFormula, Lit, Solver, Var};
 
 /// Outcome of the propositional fast-path.
@@ -76,6 +76,67 @@ pub fn try_propositional(premises: &[Formula], conclusion: &Formula) -> Option<P
     }
 }
 
+/// Try to decide `premises ⊨ conclusion` by **propositional abstraction**:
+/// every distinct atom (of *any* arity, including equalities) is mapped to
+/// a fresh boolean variable, ignoring all first-order structure beneath it.
+///
+/// This is a sound *over*-approximation of satisfiability. If the abstracted
+/// `premises ∧ ¬conclusion` is UNSAT, then the original is UNSAT in every
+/// FOL model (each model induces a propositional valuation that must satisfy
+/// the same boolean constraints), so the step is genuinely sound and we
+/// return `true`.
+///
+/// Crucially, a *satisfiable* abstraction proves **nothing** — the boolean
+/// counter-model may be spurious once equality/instantiation constraints are
+/// restored. We therefore return `false` (defer to the FOL ATP ladder) on
+/// SAT, and **never** report unsoundness from this path. This asymmetry is
+/// what keeps it safe under ProoVer's heavy `bad→good` penalty.
+///
+/// Quantifiers cannot be abstracted as a single boolean (their body links
+/// instances), so any quantified input makes the function decline.
+///
+/// This handles steps that are propositionally valid but range over
+/// argumented predicates — e.g. Vampire's `avatar_component_clause`
+/// (`spl <=> body` ⊢ `¬body ∨ spl`), where `body` is an arbitrary atom and
+/// the FOL ATP ladder may stall or choke on exotic operator symbols.
+pub fn try_propositional_abstraction(premises: &[Formula], conclusion: &Formula) -> bool {
+    for p in premises {
+        if !is_quantifier_free(p) {
+            return false;
+        }
+    }
+    if !is_quantifier_free(conclusion) {
+        return false;
+    }
+
+    let mut enc = Encoder::default();
+    let mut solver = Solver::new();
+    for p in premises {
+        let lit = enc.encode(p, &mut solver);
+        solver.add_clause(&[lit]);
+    }
+    let neg_concl = enc.encode(conclusion, &mut solver);
+    solver.add_clause(&[!neg_concl]);
+
+    // UNSAT ⇒ truly entailed (sound). SAT ⇒ abstraction too coarse, defer.
+    matches!(solver.solve(), Ok(false))
+}
+
+/// Walks `f` returning `true` iff it contains no quantifier. Unlike
+/// [`is_propositional`], predicate arguments and equality atoms are allowed —
+/// they are treated as opaque booleans by [`try_propositional_abstraction`].
+fn is_quantifier_free(f: &Formula) -> bool {
+    match f {
+        Formula::True | Formula::False | Formula::Atom(_) => true,
+        Formula::Neg(g) => is_quantifier_free(g),
+        Formula::And(gs) | Formula::Or(gs) => gs.iter().all(is_quantifier_free),
+        Formula::Implies(a, b) | Formula::Iff(a, b) => {
+            is_quantifier_free(a) && is_quantifier_free(b)
+        }
+        Formula::Forall(..) | Formula::Exists(..) => false,
+    }
+}
+
 /// Walks `f` returning `true` iff it contains only propositional
 /// constructs. Free variables are not propositional — a `Forall`/`Exists`
 /// node, a `Pred` with arguments, or any `Eq` atom causes `false`.
@@ -96,7 +157,7 @@ fn is_propositional(f: &Formula) -> bool {
 /// auxiliary variable with the connective clauses added on-encounter.
 #[derive(Default)]
 struct Encoder {
-    atom_vars: HashMap<SymbolId, Var>,
+    atom_vars: HashMap<Atom, Var>,
 }
 
 impl Encoder {
@@ -117,16 +178,16 @@ impl Encoder {
                 solver.add_clause(&[Lit::from_var(v, false)]);
                 Lit::from_var(v, true)
             }
-            Formula::Atom(Atom::Pred(sym, args)) => {
-                debug_assert!(args.is_empty(), "non-propositional atom slipped through");
+            Formula::Atom(atom) => {
+                // Key on the full atom (any arity, including equalities).
+                // For the pure-propositional caller this is just the 0-ary
+                // predicate; for the abstraction caller it treats every
+                // distinct argumented atom as an opaque boolean.
                 let var = *self
                     .atom_vars
-                    .entry(*sym)
+                    .entry(atom.clone())
                     .or_insert_with(|| solver.new_var());
                 Lit::from_var(var, true)
-            }
-            Formula::Atom(Atom::Eq(..)) => {
-                unreachable!("Eq slipped past is_propositional")
             }
             Formula::Neg(g) => !self.encode(g, solver),
             Formula::And(gs) => {
@@ -332,5 +393,83 @@ mod tests {
         let pp2 = p(&mut s, "q");
         let taut = Formula::Or(vec![pp2.clone(), Formula::neg(pp2)]);
         assert_eq!(try_propositional(&[], &taut), Some(PropOutcome::Sound));
+    }
+
+    // ---- propositional-abstraction tests ----
+
+    /// An argumented atom: `pred(args...)`.
+    fn pa(s: &mut SymbolTable, name: &str, args: Vec<Term>) -> Formula {
+        Formula::Atom(Atom::Pred(s.intern(name), args))
+    }
+
+    #[test]
+    fn abstraction_decides_avatar_component_clause() {
+        // The exact shape of LCL894+1 f44:
+        //   premise:  spl0_1 <=> ge(c, b)
+        //   concl:    ¬ge(c, b) ∨ spl0_1
+        // ge(c,b) is an argumented atom; the pure-0-ary path declines, but
+        // abstraction treats ge(c,b) as opaque and proves the entailment.
+        let mut s = SymbolTable::new();
+        let c = Term::constant(s.intern("c"));
+        let b = Term::constant(s.intern("b"));
+        let ge = pa(&mut s, "ge", vec![c, b]);
+        let spl = p(&mut s, "spl0_1");
+        let iff = Formula::iff(spl.clone(), ge.clone());
+        let concl = Formula::Or(vec![Formula::neg(ge), spl]);
+        assert!(try_propositional_abstraction(&[iff], &concl));
+    }
+
+    #[test]
+    fn abstraction_handles_pure_0ary() {
+        // Pure propositional unit resolution is also provable by abstraction.
+        let mut s = SymbolTable::new();
+        let pp = p(&mut s, "p");
+        let pq = p(&mut s, "q");
+        let prem1 = Formula::Or(vec![pp.clone(), pq.clone()]);
+        let prem2 = Formula::neg(pq);
+        assert!(try_propositional_abstraction(&[prem1, prem2], &pp));
+    }
+
+    #[test]
+    fn abstraction_defers_on_equality_transitivity() {
+        // SOUNDNESS-CRITICAL: a=b, b=c ⊨ a=c is a real FOL entailment, but it
+        // relies on equality transitivity, which abstraction cannot see (the
+        // three equalities are distinct opaque booleans). It must return
+        // `false` (defer to ATP), NOT falsely claim soundness.
+        let mut s = SymbolTable::new();
+        let a = Term::constant(s.intern("a"));
+        let b = Term::constant(s.intern("b"));
+        let c = Term::constant(s.intern("c"));
+        let ab = Formula::Atom(Atom::Eq(a.clone(), b.clone()));
+        let bc = Formula::Atom(Atom::Eq(b, c.clone()));
+        let ac = Formula::Atom(Atom::Eq(a, c));
+        assert!(!try_propositional_abstraction(&[ab, bc], &ac));
+    }
+
+    #[test]
+    fn abstraction_defers_on_first_order_instantiation() {
+        // SOUNDNESS-CRITICAL: ∀X.p(X) ⊨ p(a) is valid but needs instantiation.
+        // The premise is quantified, so abstraction declines outright.
+        let mut s = SymbolTable::new();
+        let asym = Term::constant(s.intern("a"));
+        let psym = s.intern("p");
+        let prem = Formula::Forall(
+            0,
+            Box::new(Formula::Atom(Atom::Pred(psym, vec![Term::var(0)]))),
+        );
+        let goal = Formula::Atom(Atom::Pred(psym, vec![asym]));
+        assert!(!try_propositional_abstraction(&[prem], &goal));
+    }
+
+    #[test]
+    fn abstraction_defers_when_not_entailed() {
+        // p(a) ⊨ p(b) is NOT valid; abstraction sees distinct atoms, SAT,
+        // returns false (defer) — never claims soundness.
+        let mut s = SymbolTable::new();
+        let asym = Term::constant(s.intern("a"));
+        let bsym = Term::constant(s.intern("b"));
+        let pa_atom = pa(&mut s, "p", vec![asym]);
+        let pb_atom = pa(&mut s, "p", vec![bsym]);
+        assert!(!try_propositional_abstraction(&[pa_atom], &pb_atom));
     }
 }
