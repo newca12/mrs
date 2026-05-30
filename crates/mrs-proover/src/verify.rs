@@ -242,7 +242,7 @@ fn step_needs_atp(node: &dag::Node<'_>) -> bool {
     {
         return false;
     }
-    if is_trivial_rule(node.inference_rule) {
+    if is_trivial_rule(node.inference_rule) && !node.is_false {
         return false;
     }
     true
@@ -357,8 +357,17 @@ fn check_node<'p>(
         // Fall through to ATP if the structural check could not apply.
     }
 
-    // Trivial rules: accepted without ATP.
-    if is_trivial_rule(node.inference_rule) {
+    // Trivial rules: accepted without ATP — *unless* the conclusion is the
+    // empty clause `$false`. A "trivial" rearrangement (e.g.
+    // `fof_simplification`, an equivalence-preserving simplification of a
+    // single premise) can never soundly introduce `$false` out of
+    // consistent — or absent — premises. An adversarial proof can tag a
+    // bogus `[premises] ⊢ $false` step (or one with empty parents) with
+    // such a rule to manufacture a refutation; routing every
+    // `$false`-concluding step through the real entailment check closes
+    // that hole while still accepting genuine simplifications like
+    // `a != a ⊢ $false` (which the ATP confirms).
+    if is_trivial_rule(node.inference_rule) && !node.is_false {
         return StepOutcome::Sound;
     }
 
@@ -775,5 +784,56 @@ mod complete_definition_iff_tests {
             "fof(f, plain, ($true),\n  introduced(definition,[new_symbols(naming,[sP])],[predicate_definition_introduction])).",
         );
         assert!(complete_definition_iff(&lowered, &ann, &mut syms).is_none());
+    }
+}
+
+#[cfg(test)]
+mod false_guard_tests {
+    use super::*;
+    use mrs_tptp::parse_tptp;
+
+    fn first_fof(src: &'static str) -> &'static FOFAnnotated<'static> {
+        let prob = Box::leak(Box::new(parse_tptp(src).expect("parse")));
+        match prob.formulas.first().expect("formula") {
+            mrs_tptp::AnnotatedFormula::FOF(f) => f,
+            _ => panic!("expected FOF"),
+        }
+    }
+
+    fn false_node() -> dag::Node<'static> {
+        // A `$false`-concluding step tagged with an otherwise-trusted
+        // trivial rule and *no* parents — the disconnected_root / trivial_
+        // rule_trust shape.
+        dag::Node {
+            name: "s2",
+            role: FormulaRole::Plain,
+            parents: vec![],
+            negated_parents: vec![],
+            inference_rule: Some("fof_simplification"),
+            status: None,
+            is_false: true,
+            fof: first_fof("fof(s2, plain, $false, inference(fof_simplification, [], []))."),
+        }
+    }
+
+    #[test]
+    fn false_concluding_trivial_step_requires_atp() {
+        // The whole point of the guard: a `$false`-concluding step tagged
+        // with an otherwise-trusted trivial rule must NOT be short-circuited
+        // — it has to go through the entailment check.
+        assert!(
+            step_needs_atp(&false_node()),
+            "a $false-concluding trivial step must require the entailment check"
+        );
+    }
+
+    #[test]
+    fn ordinary_trivial_step_does_not_require_atp() {
+        let node = dag::Node {
+            is_false: false,
+            fof: first_fof("fof(s2, plain, p(a), inference(fof_simplification, [], [a]))."),
+            ..false_node()
+        };
+        assert!(!step_needs_atp(&node));
     }
 }

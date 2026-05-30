@@ -30,9 +30,7 @@
 
 use std::collections::HashMap;
 
-use mrs_tptp::{
-    FOFAnnotated, FOFAtomicFormula, FOFFormula, FOFStatement, FOFTerm, Quantifier,
-};
+use mrs_tptp::{FOFAnnotated, FOFAtomicFormula, FOFFormula, FOFStatement, FOFTerm, Quantifier};
 
 use crate::checks::skolemize::SkolemRegistry;
 use crate::verdict::StepOutcome;
@@ -103,8 +101,7 @@ pub fn try_check<'p>(
     if introduced_count != declared_skolems.len() {
         return None;
     }
-    let declared_set: std::collections::HashSet<&str> =
-        declared_skolems.iter().copied().collect();
+    let declared_set: std::collections::HashSet<&str> = declared_skolems.iter().copied().collect();
     for ax in &axioms {
         for s in &ax.skolem_symbols {
             if !declared_set.contains(s) {
@@ -183,8 +180,7 @@ pub fn try_check<'p>(
             // each boxed formula remains valid for the rest of this
             // function. We never mutate `axioms` either.
             let current: &FOFFormula<'p> = arena.last().unwrap();
-            let current_ref: &'p FOFFormula<'p> =
-                unsafe { &*(current as *const FOFFormula<'p>) };
+            let current_ref: &'p FOFFormula<'p> = unsafe { &*(current as *const FOFFormula<'p>) };
             let ax_ref: &'p SkolemAxiom<'p> =
                 unsafe { &*(&axioms[ax_idx] as *const SkolemAxiom<'p>) };
             match apply_axiom(current_ref, ax_ref) {
@@ -297,9 +293,7 @@ struct SkolemAxiom<'p> {
 }
 
 fn is_skolem_intro<'p>(node: &FOFAnnotated<'p>) -> bool {
-    crate::checks::introduced_definition::is_skolem_symbol_introduction(
-        node.annotations.as_ref(),
-    )
+    crate::checks::introduced_definition::is_skolem_symbol_introduction(node.annotations.as_ref())
 }
 
 /// Parse a Skolem-axiom body of shape `∀U. (∃V. φ) → ψ`.
@@ -482,8 +476,7 @@ fn match_with_universal_subst<'p>(
 ) -> Option<HashMap<&'p str, FOFTerm<'p>>> {
     let mut sigma: HashMap<&'p str, FOFTerm<'p>> = HashMap::new();
     let univ_set: std::collections::HashSet<&'p str> = universals.iter().copied().collect();
-    let ax_exists_set: std::collections::HashSet<&'p str> =
-        axiom_exists.iter().copied().collect();
+    let ax_exists_set: std::collections::HashSet<&'p str> = axiom_exists.iter().copied().collect();
     let local_exists_set: std::collections::HashSet<&'p str> =
         local_exists.iter().copied().collect();
     // Build a renaming for existentials: when matching, axiom V_i is
@@ -590,15 +583,7 @@ fn match_formula<'p>(
             for (a_v, b_v) in va.iter().zip(vb.iter()) {
                 new_renaming.insert(*a_v, *b_v);
             }
-            match_formula(
-                fa,
-                fb,
-                universals,
-                a_exists,
-                b_exists,
-                &new_renaming,
-                sigma,
-            )
+            match_formula(fa, fb, universals, a_exists, b_exists, &new_renaming, sigma)
         }
         _ => false,
     }
@@ -745,7 +730,9 @@ fn subst_universals<'p>(
 ) -> FOFFormula<'p> {
     match f {
         FOFFormula::Atomic(a) => FOFFormula::Atomic(subst_in_atomic_uni(a, sigma)),
-        FOFFormula::Negation(inner) => FOFFormula::Negation(Box::new(subst_universals(inner, sigma))),
+        FOFFormula::Negation(inner) => {
+            FOFFormula::Negation(Box::new(subst_universals(inner, sigma)))
+        }
         FOFFormula::Parens(inner) => FOFFormula::Parens(Box::new(subst_universals(inner, sigma))),
         FOFFormula::Equality(l, r) => {
             FOFFormula::Equality(subst_in_term_uni(l, sigma), subst_in_term_uni(r, sigma))
@@ -796,10 +783,7 @@ fn subst_in_atomic_uni<'p>(
     }
 }
 
-fn subst_in_term_uni<'p>(
-    t: &FOFTerm<'p>,
-    sigma: &HashMap<&'p str, FOFTerm<'p>>,
-) -> FOFTerm<'p> {
+fn subst_in_term_uni<'p>(t: &FOFTerm<'p>, sigma: &HashMap<&'p str, FOFTerm<'p>>) -> FOFTerm<'p> {
     match t {
         FOFTerm::Variable(v) => sigma.get(v).cloned().unwrap_or(FOFTerm::Variable(v)),
         FOFTerm::Function(w, args) => FOFTerm::Function(
@@ -908,19 +892,13 @@ fn atomic_eq<'p>(a: &FOFAtomicFormula<'p>, b: &FOFAtomicFormula<'p>) -> bool {
     use FOFAtomicFormula::*;
     match (a, b) {
         (Plain(wa, aa), Plain(wb, ab)) => {
-            wa == wb
-                && aa.len() == ab.len()
-                && aa.iter().zip(ab.iter()).all(|(x, y)| term_eq(x, y))
+            wa == wb && aa.len() == ab.len() && aa.iter().zip(ab.iter()).all(|(x, y)| term_eq(x, y))
         }
         (Defined(wa, aa), Defined(wb, ab)) => {
-            wa == wb
-                && aa.len() == ab.len()
-                && aa.iter().zip(ab.iter()).all(|(x, y)| term_eq(x, y))
+            wa == wb && aa.len() == ab.len() && aa.iter().zip(ab.iter()).all(|(x, y)| term_eq(x, y))
         }
         (System(wa, aa), System(wb, ab)) => {
-            wa == wb
-                && aa.len() == ab.len()
-                && aa.iter().zip(ab.iter()).all(|(x, y)| term_eq(x, y))
+            wa == wb && aa.len() == ab.len() && aa.iter().zip(ab.iter()).all(|(x, y)| term_eq(x, y))
         }
         (True, True) | (False, False) => true,
         _ => false,
@@ -931,19 +909,13 @@ fn term_eq<'p>(a: &FOFTerm<'p>, b: &FOFTerm<'p>) -> bool {
     match (a, b) {
         (FOFTerm::Variable(x), FOFTerm::Variable(y)) => x == y,
         (FOFTerm::Function(wa, aa), FOFTerm::Function(wb, ab)) => {
-            wa == wb
-                && aa.len() == ab.len()
-                && aa.iter().zip(ab.iter()).all(|(x, y)| term_eq(x, y))
+            wa == wb && aa.len() == ab.len() && aa.iter().zip(ab.iter()).all(|(x, y)| term_eq(x, y))
         }
         (FOFTerm::DefinedFunction(wa, aa), FOFTerm::DefinedFunction(wb, ab)) => {
-            wa == wb
-                && aa.len() == ab.len()
-                && aa.iter().zip(ab.iter()).all(|(x, y)| term_eq(x, y))
+            wa == wb && aa.len() == ab.len() && aa.iter().zip(ab.iter()).all(|(x, y)| term_eq(x, y))
         }
         (FOFTerm::SystemFunction(wa, aa), FOFTerm::SystemFunction(wb, ab)) => {
-            wa == wb
-                && aa.len() == ab.len()
-                && aa.iter().zip(ab.iter()).all(|(x, y)| term_eq(x, y))
+            wa == wb && aa.len() == ab.len() && aa.iter().zip(ab.iter()).all(|(x, y)| term_eq(x, y))
         }
         (FOFTerm::Number(x), FOFTerm::Number(y)) => x.as_str() == y.as_str(),
         (FOFTerm::DistinctObject(x), FOFTerm::DistinctObject(y)) => x == y,
@@ -972,16 +944,10 @@ mod tests {
         out
     }
 
-    fn run(
-        input: &'static str,
-        step_name: &str,
-        parent_names: &[&str],
-    ) -> Option<StepOutcome> {
+    fn run(input: &'static str, step_name: &str, parent_names: &[&str]) -> Option<StepOutcome> {
         let fofs = parse_fofs(input);
-        let by_name: HashMap<&str, &FOFAnnotated<'static>> = fofs
-            .iter()
-            .map(|a| (a.name.as_str(), *a))
-            .collect();
+        let by_name: HashMap<&str, &FOFAnnotated<'static>> =
+            fofs.iter().map(|a| (a.name.as_str(), *a)).collect();
         let step = *by_name.get(step_name).expect("step not found");
         let parents: Vec<&FOFAnnotated<'static>> = parent_names
             .iter()
@@ -996,8 +962,7 @@ mod tests {
                 continue;
             }
             if let FOFStatement::Logical(f) = &p.formula {
-                let mut syms: std::collections::HashSet<&str> =
-                    std::collections::HashSet::new();
+                let mut syms: std::collections::HashSet<&str> = std::collections::HashSet::new();
                 crate::checks::introduced_definition::collect_fun_syms(f, &mut syms);
                 for s in syms {
                     reg.record(s);
@@ -1020,8 +985,10 @@ fof(step, plain, (sorti1(sK0) & ! [X1] : (op1(X1,X1) = sK0 | ~sorti1(X1))), \
     inference(skolemisation, [status(esa), new_symbols(skolem, [sK0])], [src, ax])).
 ";
         let outcome = run(input, "step", &["src", "ax"]);
-        assert!(matches!(outcome, Some(StepOutcome::Sound)),
-            "expected Sound, got {outcome:?}");
+        assert!(
+            matches!(outcome, Some(StepOutcome::Sound)),
+            "expected Sound, got {outcome:?}"
+        );
     }
 
     #[test]
@@ -1038,8 +1005,10 @@ fof(step, plain, \
     inference(skolemisation, [status(esa), new_symbols(skolem, [sK1])], [src, ax])).
 ";
         let outcome = run(input, "step", &["src", "ax"]);
-        assert!(matches!(outcome, Some(StepOutcome::Sound)),
-            "expected Sound, got {outcome:?}");
+        assert!(
+            matches!(outcome, Some(StepOutcome::Sound)),
+            "expected Sound, got {outcome:?}"
+        );
     }
 
     #[test]
@@ -1096,8 +1065,10 @@ fof(step, plain, (p(sK0) & q(sK1)), \
     inference(skolemisation, [status(esa), new_symbols(skolem, [sK0, sK1])], [ax2, src, ax1])).
 ";
         let outcome = run(input, "step", &["ax2", "src", "ax1"]);
-        assert!(matches!(outcome, Some(StepOutcome::Sound)),
-            "expected Sound, got {outcome:?}");
+        assert!(
+            matches!(outcome, Some(StepOutcome::Sound)),
+            "expected Sound, got {outcome:?}"
+        );
     }
 
     /// Dependent axioms (LCL654-style): an inner Skolem axiom's
@@ -1120,8 +1091,10 @@ fof(step, plain, (p(sK0) & r(sK0, sK1)), \
               [src, ax_inner, ax_outer])).
 ";
         let outcome = run(input, "step", &["src", "ax_inner", "ax_outer"]);
-        assert!(matches!(outcome, Some(StepOutcome::Sound)),
-            "expected Sound, got {outcome:?}");
+        assert!(
+            matches!(outcome, Some(StepOutcome::Sound)),
+            "expected Sound, got {outcome:?}"
+        );
     }
 
     /// Multi-axiom nested skolemisation (LCL654-style minimal): the
@@ -1148,8 +1121,10 @@ fof(step, plain, \
               [src, ax_inner, ax_outer])).
 ";
         let outcome = run(input, "step", &["src", "ax_inner", "ax_outer"]);
-        assert!(matches!(outcome, Some(StepOutcome::Sound)),
-            "expected Sound, got {outcome:?}");
+        assert!(
+            matches!(outcome, Some(StepOutcome::Sound)),
+            "expected Sound, got {outcome:?}"
+        );
     }
 
     /// SET949+1-shape: Vampire's Skolem-axiom consequent permutes
@@ -1175,8 +1150,10 @@ fof(step, plain, \
     inference(skolemisation, [status(esa), new_symbols(skolem, [sK0])], [src, ax])).
 ";
         let outcome = run(input, "step", &["src", "ax"]);
-        assert!(matches!(outcome, Some(StepOutcome::Sound)),
-            "expected Sound, got {outcome:?}");
+        assert!(
+            matches!(outcome, Some(StepOutcome::Sound)),
+            "expected Sound, got {outcome:?}"
+        );
     }
 
     /// SET949+1 verbatim — three-axiom multi-Skolemisation where the
@@ -1210,7 +1187,9 @@ fof(step, plain, \
     inference(skolemisation, [status(esa), new_symbols(skolem, [sK0,sK1,sK2])], [src, ax15, ax14])).
 ";
         let outcome = run(input, "step", &["src", "ax15", "ax14"]);
-        assert!(matches!(outcome, Some(StepOutcome::Sound)),
-            "expected Sound, got {outcome:?}");
+        assert!(
+            matches!(outcome, Some(StepOutcome::Sound)),
+            "expected Sound, got {outcome:?}"
+        );
     }
 }

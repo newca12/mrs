@@ -52,11 +52,12 @@
 //! main verify loop seeds from the linked problem and updates after each
 //! prior node.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use mrs_tptp::ast::common::{AtomicWord, GeneralTerm, Quantifier};
 use mrs_tptp::{
     Annotations, BinaryConnective, FOFAnnotated, FOFAtomicFormula, FOFFormula, FOFStatement,
+    FOFTerm,
 };
 
 use crate::checks::skolemize::SkolemRegistry;
@@ -266,6 +267,27 @@ pub fn check<'p>(step: &FOFAnnotated<'p>, registry: &SkolemRegistry) -> StepOutc
 /// shape matches but the freshness check fails, and `None` if the
 /// formula isn't recognisable as a Skolem axiom at all (so the caller
 /// should try the next shape).
+///
+/// A genuine Vampire Skolem axiom has the body
+///
+/// ```text
+/// ! [params] : ( (? [X1..Xk] : phi) => phi[X1:=t1, .., Xk:=tk] )
+/// ```
+///
+/// where each `ti = sk_i(params)` is a fresh Skolem term. Soundness rests
+/// on **two** independent conditions, *both* of which are checked here:
+///
+///  1. **Structural witnessing** — the consequent must be exactly the
+///     antecedent matrix `phi` with each existential variable replaced by
+///     some witness term (consistent across occurrences). This is what
+///     makes `(∃X. phi) → phi[X:=t]` a logical consequence of the choice
+///     of `t`. Without this check an adversary can assert e.g.
+///     `(∃X. $true) → ($false & bad(sK))`: the antecedent is valid, the
+///     consequent is *not* the antecedent matrix, and `sK` being fresh
+///     does nothing to rescue the embedded `$false`.
+///  2. **Freshness** — every function symbol the consequent introduces
+///     over the antecedent (the Skolem witnesses) must be absent from the
+///     registry, so the extension is conservative.
 fn try_skolem_axiom<'p>(f: &FOFFormula<'p>, registry: &SkolemRegistry) -> Option<StepOutcome> {
     // Peel only universal quantifiers and parens, NOT existentials — the
     // existential is the witness we are looking to Skolemise and must be
@@ -281,13 +303,17 @@ fn try_skolem_axiom<'p>(f: &FOFFormula<'p>, registry: &SkolemRegistry) -> Option
     };
 
     // Antecedent must be ∃-quantified (the existential we are Skolemising).
-    if !matches!(
-        ante,
-        FOFFormula::Quantified {
-            quantifier: Quantifier::Exists,
-            ..
-        }
-    ) {
+    // Collect the existential variables (the "holes") and the matrix they
+    // quantify.
+    let (exists_vars, matrix) = collect_existentials(ante)?;
+
+    // Structural witnessing: the consequent must be `matrix` with each
+    // existential variable instantiated by a witness term. If it is not,
+    // this is not a Skolem axiom we can certify (it might be an outright
+    // unsound assertion dressed up as one) — fall through to the other
+    // shapes, ending in `Unknown` rather than a spurious `Sound`.
+    let mut subst: HashMap<&str, FOFTerm<'_>> = HashMap::new();
+    if !match_formula(matrix, cons, &exists_vars, &mut subst) {
         return None;
     }
 
@@ -322,6 +348,157 @@ fn try_skolem_axiom<'p>(f: &FOFFormula<'p>, registry: &SkolemRegistry) -> Option
     Some(StepOutcome::Sound)
 }
 
+/// Peel leading existential quantifiers (and parens), collecting their
+/// bound variable names, and return the variable set together with the
+/// matrix they quantify. Returns `None` if there is no leading
+/// existential (so the formula is not a Skolem-axiom antecedent).
+fn collect_existentials<'a, 'p>(
+    f: &'a FOFFormula<'p>,
+) -> Option<(HashSet<&'p str>, &'a FOFFormula<'p>)> {
+    let mut vars: HashSet<&'p str> = HashSet::new();
+    let mut cur = f;
+    loop {
+        match cur {
+            FOFFormula::Parens(inner) => cur = inner,
+            FOFFormula::Quantified {
+                quantifier: Quantifier::Exists,
+                variables,
+                formula,
+            } => {
+                for v in variables {
+                    vars.insert(*v);
+                }
+                cur = formula;
+            }
+            _ => break,
+        }
+    }
+    if vars.is_empty() {
+        None
+    } else {
+        Some((vars, cur))
+    }
+}
+
+/// Structural match: is `conc` equal to the pattern `pat` with each
+/// `exists` variable replaced by a (consistent) witness term?
+///
+/// Connective/quantifier/predicate structure must correspond exactly.
+/// At term positions a pattern variable in `exists` binds to whatever
+/// term the consequent has there (and must bind consistently across all
+/// its occurrences); any other variable must match an identical variable.
+fn match_formula<'p>(
+    pat: &FOFFormula<'p>,
+    conc: &FOFFormula<'p>,
+    exists: &HashSet<&str>,
+    subst: &mut HashMap<&'p str, FOFTerm<'p>>,
+) -> bool {
+    match (pat, conc) {
+        (FOFFormula::Parens(a), _) => match_formula(a, conc, exists, subst),
+        (_, FOFFormula::Parens(b)) => match_formula(pat, b, exists, subst),
+        (FOFFormula::Atomic(a), FOFFormula::Atomic(b)) => match_atomic(a, b, exists, subst),
+        (FOFFormula::Negation(a), FOFFormula::Negation(b)) => match_formula(a, b, exists, subst),
+        (
+            FOFFormula::Quantified {
+                quantifier: q1,
+                variables: v1,
+                formula: f1,
+            },
+            FOFFormula::Quantified {
+                quantifier: q2,
+                variables: v2,
+                formula: f2,
+            },
+        ) => q1 == q2 && v1 == v2 && match_formula(f1, f2, exists, subst),
+        (
+            FOFFormula::Binary {
+                left: l1,
+                connective: c1,
+                right: r1,
+            },
+            FOFFormula::Binary {
+                left: l2,
+                connective: c2,
+                right: r2,
+            },
+        ) => {
+            c1 == c2 && match_formula(l1, l2, exists, subst) && match_formula(r1, r2, exists, subst)
+        }
+        (FOFFormula::Equality(a, b), FOFFormula::Equality(c, d)) => {
+            match_term(a, c, exists, subst) && match_term(b, d, exists, subst)
+        }
+        (FOFFormula::Inequality(a, b), FOFFormula::Inequality(c, d)) => {
+            match_term(a, c, exists, subst) && match_term(b, d, exists, subst)
+        }
+        _ => false,
+    }
+}
+
+fn match_atomic<'p>(
+    pat: &FOFAtomicFormula<'p>,
+    conc: &FOFAtomicFormula<'p>,
+    exists: &HashSet<&str>,
+    subst: &mut HashMap<&'p str, FOFTerm<'p>>,
+) -> bool {
+    use FOFAtomicFormula::*;
+    match (pat, conc) {
+        (Plain(n1, a1), Plain(n2, a2)) => n1 == n2 && match_term_lists(a1, a2, exists, subst),
+        (Defined(n1, a1), Defined(n2, a2)) => n1 == n2 && match_term_lists(a1, a2, exists, subst),
+        (System(n1, a1), System(n2, a2)) => n1 == n2 && match_term_lists(a1, a2, exists, subst),
+        (True, True) | (False, False) => true,
+        _ => false,
+    }
+}
+
+fn match_term_lists<'p>(
+    pat: &[FOFTerm<'p>],
+    conc: &[FOFTerm<'p>],
+    exists: &HashSet<&str>,
+    subst: &mut HashMap<&'p str, FOFTerm<'p>>,
+) -> bool {
+    pat.len() == conc.len()
+        && pat
+            .iter()
+            .zip(conc)
+            .all(|(a, b)| match_term(a, b, exists, subst))
+}
+
+fn match_term<'p>(
+    pat: &FOFTerm<'p>,
+    conc: &FOFTerm<'p>,
+    exists: &HashSet<&str>,
+    subst: &mut HashMap<&'p str, FOFTerm<'p>>,
+) -> bool {
+    match pat {
+        // Existential variable: binds to the witness term (consistently).
+        FOFTerm::Variable(v) if exists.contains(v) => match subst.get(v) {
+            Some(prev) => prev == conc,
+            None => {
+                subst.insert(v, conc.clone());
+                true
+            }
+        },
+        // Any other variable (e.g. an outer universal `param`): must be
+        // the identical variable in the consequent.
+        FOFTerm::Variable(v) => matches!(conc, FOFTerm::Variable(w) if w == v),
+        FOFTerm::Function(n, args) => match conc {
+            FOFTerm::Function(n2, a2) => n == n2 && match_term_lists(args, a2, exists, subst),
+            _ => false,
+        },
+        FOFTerm::DefinedFunction(n, args) => match conc {
+            FOFTerm::DefinedFunction(n2, a2) => {
+                n == n2 && match_term_lists(args, a2, exists, subst)
+            }
+            _ => false,
+        },
+        FOFTerm::SystemFunction(n, args) => match conc {
+            FOFTerm::SystemFunction(n2, a2) => n == n2 && match_term_lists(args, a2, exists, subst),
+            _ => false,
+        },
+        FOFTerm::Number(_) | FOFTerm::DistinctObject(_) => pat == conc,
+    }
+}
+
 /// Collect all function symbol names appearing in a formula.
 pub(crate) fn collect_fun_syms<'a>(f: &FOFFormula<'a>, out: &mut HashSet<&'a str>) {
     match f {
@@ -348,7 +525,6 @@ pub(crate) fn collect_fun_syms<'a>(f: &FOFFormula<'a>, out: &mut HashSet<&'a str
 /// Returns `None` on any other shape so the caller can fall through to
 /// the iff-style structural check.
 fn try_distinctness_axiom<'p>(f: &FOFFormula<'p>) -> Option<StepOutcome> {
-    use mrs_tptp::FOFTerm;
     let body = peel(f);
     let (lhs, rhs) = match body {
         FOFFormula::Inequality(l, r) => (l, r),
@@ -707,6 +883,54 @@ mod tests {
         );
         let mut reg = SkolemRegistry::new();
         reg.record("c0"); // c0 already known → consequent has no new sym
+        assert!(matches!(check(af, &reg), StepOutcome::Unknown(_)));
+    }
+
+    // --- Adversarial shapes (evil-proofs corpus) -----------------------
+
+    #[test]
+    fn rejects_skolem_injection_unsound_consequent() {
+        // `(? [X] : $true) => ($false & bad_sym(sK))`: the antecedent is
+        // valid and `sK` is fresh, but the consequent is NOT the
+        // antecedent matrix (`$true`) witnessed — it embeds `$false`, so
+        // the implication is unsound. The structural-witnessing check must
+        // refuse to certify it. (evil-proofs/skolem_injection)
+        let af = first_fof(
+            "fof(s2, plain, \
+             ( ( ? [X] : $true ) => ( $false & bad_sym(sK) ) ), \
+             introduced(definition,[],[skolem_symbol_introduction])).",
+        );
+        let reg = SkolemRegistry::new();
+        assert!(
+            matches!(check(af, &reg), StepOutcome::Unknown(_)),
+            "must NOT certify an unsound disguised Skolem axiom"
+        );
+    }
+
+    #[test]
+    fn rejects_skolem_axiom_with_altered_consequent() {
+        // Antecedent matrix `p(X) & q(X)` but consequent `p(sK) & r(sK)`
+        // (q swapped for r): the consequent is not the witnessed matrix,
+        // so it must be rejected even though sK is fresh.
+        let af = first_fof(
+            "fof(s2, plain, \
+             ( ( ? [X] : (p(X) & q(X)) ) => (p(sK) & r(sK)) ), \
+             introduced(definition,[],[skolem_symbol_introduction])).",
+        );
+        let reg = SkolemRegistry::new();
+        assert!(matches!(check(af, &reg), StepOutcome::Unknown(_)));
+    }
+
+    #[test]
+    fn rejects_skolem_axiom_inconsistent_witness() {
+        // Same existential variable witnessed by two *different* terms in
+        // the consequent (`sK1` vs `sK2`): not a valid Skolemisation.
+        let af = first_fof(
+            "fof(s2, plain, \
+             ( ( ? [X] : (p(X) & q(X)) ) => (p(sK1) & q(sK2)) ), \
+             introduced(definition,[],[skolem_symbol_introduction])).",
+        );
+        let reg = SkolemRegistry::new();
         assert!(matches!(check(af, &reg), StepOutcome::Unknown(_)));
     }
 }
