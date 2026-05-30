@@ -85,13 +85,32 @@ impl<'a> Annotations<'a> {
     /// be added here as we encounter them.
     pub fn parent_refs(&self) -> Vec<ParentRef<'a>> {
         let mut out = Vec::new();
-        if let GeneralTerm::Function(AtomicWord::Lower("inference"), args) = &self.source
-            && args.len() == 3
-            && let GeneralTerm::List(items) = &args[2]
-        {
-            for it in items {
-                collect_parent_refs(it, false, &mut out);
+        match &self.source {
+            GeneralTerm::Function(AtomicWord::Lower("inference"), args) if args.len() == 3 => {
+                if let GeneralTerm::List(items) = &args[2] {
+                    for it in items {
+                        collect_parent_refs(it, false, &mut out);
+                    }
+                }
             }
+            // Bare-atom source: `fof(c_0_4, axiom, (p(a)), c1).` is TPTP's
+            // "general_source -> name" form, meaning "this formula was
+            // copied from `c1`". eprover emits these for trivial
+            // rename/identity steps. Treat the atom as a single parent
+            // reference so that the verifier checks `c1 ⊨ c_0_4` (which
+            // is trivially true if the formulas match) instead of feeding
+            // the ATP an empty-premise query that comes back unsound.
+            //
+            // We deliberately exclude `file(...)` (handled by
+            // `file_source()`) and `inference(...)` (handled above).
+            GeneralTerm::Word(AtomicWord::Lower(s))
+            | GeneralTerm::Word(AtomicWord::SingleQuoted(s)) => {
+                out.push(ParentRef {
+                    name: *s,
+                    negated: false,
+                });
+            }
+            _ => {}
         }
         out
     }
@@ -253,6 +272,69 @@ fn collect_parent_refs<'a>(t: &GeneralTerm<'a>, negated: bool, out: &mut Vec<Par
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::parse_tptp;
+
+    fn parse_single<'a>(input: &'a str) -> Annotations<'a> {
+        let problem = parse_tptp(input).expect("parse");
+        let af = problem
+            .formulas
+            .into_iter()
+            .next()
+            .expect("at least one annotated formula");
+        match af {
+            crate::ast::AnnotatedFormula::FOF(f) => f.annotations.expect("annotations"),
+            _ => panic!("expected FOF"),
+        }
+    }
+
+    #[test]
+    fn bare_atom_source_is_parent() {
+        // eprover emits trivial copy/rename steps with a bare-atom
+        // source, e.g. `fof(c_0_4, axiom, (p(a)), c1).`. The single
+        // atom `c1` is the parent reference and must be reported as
+        // such; otherwise downstream consumers feed the ATP an
+        // empty-premise query and get back a spurious Unsound verdict.
+        let ann = parse_single("fof(c_0_4, axiom, (p(a)), c1).");
+        let refs = ann.parent_refs();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].name, "c1");
+        assert!(!refs[0].negated);
+        // No `inference(...)` wrapper → no rule name.
+        assert_eq!(ann.inference_rule(), None);
+    }
+
+    #[test]
+    fn single_quoted_bare_atom_source_is_parent() {
+        let ann = parse_single("fof(step, plain, ($true), 'parent_name').");
+        let refs = ann.parent_refs();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].name, "parent_name");
+    }
+
+    #[test]
+    fn file_source_is_not_a_parent() {
+        // `file(...)` leaf sources must not be misreported as parents
+        // (they're handled by `file_source()`).
+        let ann = parse_single("fof(c1, axiom, (p(a)), file('foo.p', c1)).");
+        assert!(ann.parent_refs().is_empty());
+        assert!(ann.file_source().is_some());
+    }
+
+    #[test]
+    fn inference_source_still_works() {
+        let ann = parse_single(
+            "fof(c_0_5, plain, ($false), inference(cn,[status(thm)],[c_0_3, c_0_4])).",
+        );
+        let refs = ann.parent_refs();
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].name, "c_0_3");
+        assert_eq!(refs[1].name, "c_0_4");
     }
 }
 

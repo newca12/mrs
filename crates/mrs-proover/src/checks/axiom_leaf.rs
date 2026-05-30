@@ -17,7 +17,7 @@ use mrs_core::SymbolTable;
 use mrs_core::alpha::alpha_equiv;
 use mrs_tptp::{AnnotatedFormula, FOFAnnotated, FormulaRole, TPTPProblem};
 
-use crate::lower::{LowerCtx, lower_fof_statement};
+use crate::lower::{LowerCtx, lower_cnf_statement, lower_fof_statement};
 use crate::verdict::StepOutcome;
 
 /// Check a single proof leaf whose source is `file('…', name)`.
@@ -50,22 +50,23 @@ pub fn check_leaf<'p>(
     // --- Anonymous-provenance fallback (Vampire's `file(_, unknown)`) -----
     if expected_name == "unknown" {
         for af in &problem.formulas {
-            let Some(target) = (match af {
-                AnnotatedFormula::FOF(f) => Some(f),
-                _ => None,
-            }) else {
-                continue;
-            };
             // Only match against premises of the original problem — that is,
             // roles a proof step could legitimately appeal to as a starting
             // fact: axiom, hypothesis, assumption, definition, conjecture.
             // Skip everything else (e.g. types) so we never accept a leaf
             // that matches a non-premise declaration.
-            if !is_premise_role(target.role) {
-                continue;
-            }
-            ctx.reset_vars();
-            let prob_f = lower_fof_statement(&mut ctx, &target.formula);
+            let (role, prob_f) = match af {
+                AnnotatedFormula::FOF(f) if is_premise_role(f.role) => {
+                    ctx.reset_vars();
+                    (f.role, lower_fof_statement(&mut ctx, &f.formula))
+                }
+                AnnotatedFormula::CNF(f) if is_premise_role(f.role) => {
+                    ctx.reset_vars();
+                    (f.role, lower_cnf_statement(&mut ctx, &f.formula))
+                }
+                _ => continue,
+            };
+            let _ = role;
             if alpha_equiv(&proof_f, &prob_f) {
                 return StepOutcome::Sound;
             }
@@ -79,23 +80,37 @@ pub fn check_leaf<'p>(
     }
 
     // --- Named-axiom path -------------------------------------------------
-    let Some(target) = problem
-        .formulas
-        .iter()
-        .filter_map(|af| match af {
-            AnnotatedFormula::FOF(f) => Some(f),
-            _ => None,
-        })
-        .find(|f| f.name.as_str() == expected_name)
-    else {
+    // Look up the named entry in either dialect (the prover may have
+    // converted a CNF problem to FOF in the proof, or vice versa). We
+    // accept the entry whose name matches, regardless of dialect.
+    let mut target_fof: Option<&FOFAnnotated<'_>> = None;
+    let mut target_cnf: Option<&mrs_tptp::CNFAnnotated<'_>> = None;
+    for af in &problem.formulas {
+        match af {
+            AnnotatedFormula::FOF(f) if f.name.as_str() == expected_name => {
+                target_fof = Some(f);
+                break;
+            }
+            AnnotatedFormula::CNF(f) if f.name.as_str() == expected_name => {
+                target_cnf = Some(f);
+                break;
+            }
+            _ => {}
+        }
+    }
+    if target_fof.is_none() && target_cnf.is_none() {
         return StepOutcome::Unknown(format!(
             "leaf references axiom '{expected_name}' not present in problem file \
              (the prover may have renamed or inlined the original axiom)"
         ));
-    };
+    }
 
     ctx.reset_vars();
-    let prob_f = lower_fof_statement(&mut ctx, &target.formula);
+    let prob_f = if let Some(t) = target_fof {
+        lower_fof_statement(&mut ctx, &t.formula)
+    } else {
+        lower_cnf_statement(&mut ctx, &target_cnf.unwrap().formula)
+    };
 
     if alpha_equiv(&proof_f, &prob_f) {
         StepOutcome::Sound
