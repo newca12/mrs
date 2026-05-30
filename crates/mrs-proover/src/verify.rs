@@ -356,6 +356,18 @@ fn delegate_to_atp<'p>(
             node.inference_rule
         ));
     }
+    // SZS status routing. An `esa` step asserts *equisatisfiability*, not
+    // logical entailment: e.g. Skolemization introduces a fresh symbol whose
+    // value the premises do not pin down, so the conclusion need not be a
+    // logical consequence. A counter-model to the entailment query is
+    // therefore *expected* for a sound esa step and is NOT evidence of a
+    // fault. Reporting `Unsound` (→ FailedVerified, −1) on a good esa step
+    // would be a scoring error, and becomes an outright hazard once a
+    // counter-model finder is in the ladder. So for esa steps we accept only
+    // positive `Sound` confirmations and downgrade every refutation to
+    // `Unknown` (NotVerified, 0). `thm`/`cth`/plain steps are genuine
+    // entailments and keep full refutation power.
+    let esa = node.status == Some("esa");
     // Build the conclusion and premise formulas in mrs-core form.
     //
     // Each parent's `negated_parents[i]` flag tells us whether the
@@ -457,6 +469,11 @@ fn delegate_to_atp<'p>(
     {
         return match outcome {
             crate::checks::propositional_sat::PropOutcome::Sound => StepOutcome::Sound,
+            crate::checks::propositional_sat::PropOutcome::Unsound if esa => StepOutcome::Unknown(
+                "esa step: propositional refutation is not evidence of a faulty \
+                 equisatisfiability step"
+                    .into(),
+            ),
             crate::checks::propositional_sat::PropOutcome::Unsound => StepOutcome::Unsound(
                 "propositional SAT solver refuted entailment by premises".into(),
             ),
@@ -477,6 +494,11 @@ fn delegate_to_atp<'p>(
 
     match atp.check_step(symbols, &premises, &conclusion, budget) {
         AtpVerdict::Sound => StepOutcome::Sound,
+        AtpVerdict::Unsound if esa => StepOutcome::Unknown(format!(
+            "esa step: ATP `{}` found a counter-model, but equisatisfiability \
+             steps are not entailments, so this is not a fault",
+            atp.name()
+        )),
         AtpVerdict::Unsound => StepOutcome::Unsound(format!(
             "ATP `{}` refuted entailment by premises",
             atp.name()
@@ -805,5 +827,77 @@ mod false_guard_tests {
             ..false_node()
         };
         assert!(step_needs_atp(&node));
+    }
+}
+
+#[cfg(test)]
+mod esa_guard_tests {
+    use super::*;
+    use crate::atp::{Atp, AtpVerdict};
+    use mrs_core::Formula;
+
+    /// A backend that always refutes the entailment — stands in for a
+    /// counter-model finder hitting a step whose conclusion is not a logical
+    /// consequence of its premises.
+    struct AlwaysUnsound;
+    impl Atp for AlwaysUnsound {
+        fn name(&self) -> &'static str {
+            "always_unsound"
+        }
+        fn check_step(
+            &self,
+            _: &SymbolTable,
+            _: &[Formula],
+            _: &Formula,
+            _: Duration,
+        ) -> AtpVerdict {
+            AtpVerdict::Unsound
+        }
+    }
+
+    fn build_dag(src: &'static str) -> dag::Dag<'static> {
+        let prob = Box::leak(Box::new(mrs_tptp::parse_tptp(src).expect("parse")));
+        dag::build(prob).expect("dag")
+    }
+
+    /// `delegate_to_atp` on the named step with an always-Unsound backend.
+    fn outcome_for(src: &'static str, step: &str) -> StepOutcome {
+        let dag = build_dag(src);
+        let idx = *dag.by_name.get(step).expect("step");
+        let mut symbols = SymbolTable::new();
+        delegate_to_atp(
+            &dag,
+            idx,
+            &mut symbols,
+            &AlwaysUnsound,
+            Duration::from_secs(1),
+        )
+    }
+
+    #[test]
+    fn esa_step_downgrades_unsound_to_unknown() {
+        // An esa step refuted by the backend must NOT be reported Unsound:
+        // equisatisfiability steps are not entailments, so a counter-model is
+        // expected and is not a fault. Scoring: 0 (NotVerified), never −1.
+        let src = "fof(a, axiom, p(a)).\n\
+                   fof(s1, plain, q(b), inference(some_rule, [status(esa)], [a])).\n\
+                   fof(s2, plain, $false, inference(some_rule, [status(thm)], [s1])).\n";
+        assert!(
+            matches!(outcome_for(src, "s1"), StepOutcome::Unknown(_)),
+            "esa refutation must downgrade to Unknown"
+        );
+    }
+
+    #[test]
+    fn thm_step_keeps_unsound() {
+        // A thm step is a genuine entailment; a refutation IS a fault and must
+        // be reported Unsound (→ FailedVerified, +2 on a bad proof).
+        let src = "fof(a, axiom, p(a)).\n\
+                   fof(s1, plain, q(b), inference(some_rule, [status(thm)], [a])).\n\
+                   fof(s2, plain, $false, inference(some_rule, [status(thm)], [s1])).\n";
+        assert!(
+            matches!(outcome_for(src, "s1"), StepOutcome::Unsound(_)),
+            "thm refutation must stay Unsound"
+        );
     }
 }
