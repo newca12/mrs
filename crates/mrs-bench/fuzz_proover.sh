@@ -88,7 +88,7 @@ fi
 
 EPROVER="${SCRIPT_DIR}/systems/eprover/bin/eprover"
 VAMPIRE="${SCRIPT_DIR}/systems/vampire/bin/vampire"
-PROOVER="${WORKSPACE_ROOT}/target/release/mrs-proover"
+PROOVER="${PROOVER:-${WORKSPACE_ROOT}/target/release/mrs-proover}"
 
 case "${GENERATOR}" in
     eprover)

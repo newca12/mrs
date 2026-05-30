@@ -123,7 +123,9 @@ pub fn is_predicate_definition_introduction(ann: Option<&Annotations<'_>>) -> bo
         matches!(
             t,
             GeneralTerm::Word(AtomicWord::Lower("predicate_definition_introduction"))
-                | GeneralTerm::Word(AtomicWord::SingleQuoted("predicate_definition_introduction"))
+                | GeneralTerm::Word(AtomicWord::SingleQuoted(
+                    "predicate_definition_introduction"
+                ))
         )
     })
 }
@@ -360,10 +362,7 @@ fn try_distinctness_axiom<'p>(f: &FOFFormula<'p>) -> Option<StepOutcome> {
     }
 }
 
-fn collect_fun_syms_atomic<'a>(
-    a: &mrs_tptp::FOFAtomicFormula<'a>,
-    out: &mut HashSet<&'a str>,
-) {
+fn collect_fun_syms_atomic<'a>(a: &mrs_tptp::FOFAtomicFormula<'a>, out: &mut HashSet<&'a str>) {
     use mrs_tptp::FOFAtomicFormula::*;
     match a {
         Plain(_pred, args) => {
@@ -479,6 +478,18 @@ pub(crate) fn declared_new_symbols<'a>(ann: &Annotations<'a>) -> Vec<&'a str> {
         }
     }
     Vec::new()
+}
+
+/// As [`declared_new_symbols`], but accepts an optional annotation and
+/// returns an empty vector when absent. A non-empty result means the
+/// step introduces fresh symbol(s) (E `predicate_definition_introduction`
+/// or Vampire `avatar_definition`), which marks it as a *definition*
+/// rather than a source/original formula.
+pub(crate) fn declared_new_symbols_opt<'a>(ann: Option<&Annotations<'a>>) -> Vec<&'a str> {
+    match ann {
+        Some(a) => declared_new_symbols(a),
+        None => Vec::new(),
+    }
 }
 
 /// Returns the predicate-symbol name of `f` if `f` is a single (possibly
@@ -680,9 +691,7 @@ mod tests {
     #[test]
     fn rejects_implication_without_existential_antecedent() {
         // Not a Skolem axiom — antecedent is a plain conjunction.
-        let af = first_fof(
-            "fof(c1, plain, ((p & q) => r(sK1)), introduced(definition)).",
-        );
+        let af = first_fof("fof(c1, plain, ((p & q) => r(sK1)), introduced(definition)).");
         let reg = SkolemRegistry::new();
         assert!(matches!(check(af, &reg), StepOutcome::Unknown(_)));
     }

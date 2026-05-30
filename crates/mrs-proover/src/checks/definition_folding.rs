@@ -75,7 +75,7 @@ impl Guard {
 ///
 /// Returns `Some(true)` on a confirmed structural match; `None`
 /// otherwise. Never returns `Some(false)`.
-pub fn try_check(premises: &[Formula], conclusion: &Formula) -> Option<bool> {
+pub fn try_check(premises: &[Formula], is_def: &[bool], conclusion: &Formula) -> Option<bool> {
     let g = Guard::default();
 
     // Pre-flight size gate: cheap walk, bounded by MAX_INPUT_NODES.
@@ -91,8 +91,17 @@ pub fn try_check(premises: &[Formula], conclusion: &Formula) -> Option<bool> {
     let mut defs: HashMap<SymbolId, (Vec<VarId>, Formula)> = HashMap::new();
     let mut sources: Vec<&Formula> = Vec::new();
 
-    for p in premises {
-        if let Some((sym, params, body)) = parse_iff_def(p) {
+    // Classify premises by *provenance*, not shape: only premises flagged
+    // as introduced definitions (fresh-symbol naming annotation) are
+    // unfoldable definitions. A source that happens to be a biconditional
+    // (e.g. an original `cUnsatisfiable(X) <=> …` carried through
+    // `flattening`) is not flagged, so it is correctly treated as the
+    // source — even though it parses structurally as an iff-def.
+    for (i, p) in premises.iter().enumerate() {
+        if is_def.get(i).copied().unwrap_or(false) {
+            // Flagged as a definition but not in recognised iff shape:
+            // we cannot unfold it soundly, so bail to the ATP ladder.
+            let (sym, params, body) = parse_iff_def(p)?;
             if mentions_symbol(&body, sym, 0, &g) {
                 return None;
             }
@@ -115,17 +124,165 @@ pub fn try_check(premises: &[Formula], conclusion: &Formula) -> Option<bool> {
         return None;
     }
 
-    let source_unfolded = unfold_all(sources[0], &defs, &g)?;
-    let conclusion_unfolded = unfold_all(conclusion, &defs, &g)?;
+    // Fresh-variable supply for capture-avoiding unfolding. Each premise
+    // and the conclusion is lowered with an independently-reset variable
+    // counter, so a definition body's *own* bound variables (e.g. the
+    // `?[X]` inside `sP(a) <=> ?[X]. q(X,a)`) routinely reuse low VarIds
+    // that also occur as call-site arguments or in the surrounding
+    // formula. Substituting the body verbatim would capture those
+    // variables. We therefore α-rename every body binder to a globally
+    // fresh VarId (above any VarId occurring anywhere in the inputs) at
+    // each expansion. Start above the max VarId in defs, source and
+    // conclusion.
+    let mut max_v: u32 = 0;
+    max_var(conclusion, &mut max_v);
+    for p in premises {
+        max_var(p, &mut max_v);
+    }
+    for (_, body) in defs.values() {
+        max_var(body, &mut max_v);
+    }
+    let fresh = Cell::new(max_v.wrapping_add(1));
+
+    let source_unfolded = unfold_all(sources[0], &defs, &fresh, &g)?;
+    let conclusion_unfolded = unfold_all(conclusion, &defs, &fresh, &g)?;
 
     if g.bailed.get() {
         return None;
     }
 
-    if alpha_equiv(&source_unfolded, &conclusion_unfolded) {
+    // Compare modulo α-renaming, associativity/commutativity of ∧/∨, and
+    // symmetry of `=`. All three are logically valid equivalences, so a
+    // match is a sound entailment (in fact equivalence). E routinely
+    // permutes clause literals during `definition_folding`, so plain
+    // structural α-equivalence is too strict; we canonicalise both sides
+    // (De Bruijn binders + sorted ∧/∨ children + sorted `=` sides) and
+    // compare for equality.
+    if alpha_equiv(&source_unfolded, &conclusion_unfolded)
+        || canon_eq(&source_unfolded, &conclusion_unfolded)
+    {
         Some(true)
     } else {
         None
+    }
+}
+
+/// Canonical, order-insensitive form used to compare two formulas modulo
+/// α-renaming, AC of ∧/∨, and symmetry of `=`.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum CTerm {
+    /// De Bruijn index (distance from binder) of a bound variable.
+    Bound(u32),
+    /// Free variable, kept by original id.
+    Free(VarId),
+    App(SymbolId, Vec<CTerm>),
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum CForm {
+    True,
+    False,
+    Pred(SymbolId, Vec<CTerm>),
+    /// `=` with operands sorted (symmetry).
+    Eq(Box<CTerm>, Box<CTerm>),
+    Neg(Box<CForm>),
+    /// children sorted (AC).
+    And(Vec<CForm>),
+    /// children sorted (AC).
+    Or(Vec<CForm>),
+    Implies(Box<CForm>, Box<CForm>),
+    Iff(Box<CForm>, Box<CForm>),
+    Forall(Box<CForm>),
+    Exists(Box<CForm>),
+}
+
+/// True iff `a` and `b` have the same canonical form.
+fn canon_eq(a: &Formula, b: &Formula) -> bool {
+    canon_form(a, &mut Vec::new()) == canon_form(b, &mut Vec::new())
+}
+
+/// `scope` is the stack of bound variables (innermost last); a `Var(v)`
+/// resolves to `Bound(index)` using the nearest enclosing binder of `v`,
+/// else `Free(v)`.
+fn canon_term(t: &Term, scope: &[VarId]) -> CTerm {
+    match t {
+        Term::Var(v) => match scope.iter().rposition(|s| s == v) {
+            Some(pos) => CTerm::Bound((scope.len() - 1 - pos) as u32),
+            None => CTerm::Free(*v),
+        },
+        Term::App(f, args) => CTerm::App(*f, args.iter().map(|a| canon_term(a, scope)).collect()),
+    }
+}
+
+fn canon_atom(a: &Atom, scope: &[VarId]) -> CForm {
+    match a {
+        Atom::Pred(p, args) => CForm::Pred(*p, args.iter().map(|t| canon_term(t, scope)).collect()),
+        Atom::Eq(l, r) => {
+            let mut cl = canon_term(l, scope);
+            let mut cr = canon_term(r, scope);
+            if cr < cl {
+                std::mem::swap(&mut cl, &mut cr);
+            }
+            CForm::Eq(Box::new(cl), Box::new(cr))
+        }
+    }
+}
+
+/// Flatten nested ∧ (or ∨) of the same kind into one sorted child list.
+fn flatten_canon(f: &Formula, scope: &mut Vec<VarId>, is_and: bool) -> Vec<CForm> {
+    let mut out = Vec::new();
+    let kids: &[Formula] = match (is_and, f) {
+        (true, Formula::And(xs)) | (false, Formula::Or(xs)) => xs,
+        _ => return vec![canon_form(f, scope)],
+    };
+    for k in kids {
+        let same = matches!(
+            (is_and, k),
+            (true, Formula::And(_)) | (false, Formula::Or(_))
+        );
+        if same {
+            out.extend(flatten_canon(k, scope, is_and));
+        } else {
+            out.push(canon_form(k, scope));
+        }
+    }
+    out.sort();
+    out
+}
+
+fn canon_form(f: &Formula, scope: &mut Vec<VarId>) -> CForm {
+    match f {
+        Formula::True => CForm::True,
+        Formula::False => CForm::False,
+        Formula::Atom(a) => canon_atom(a, scope),
+        Formula::Neg(x) => CForm::Neg(Box::new(canon_form(x, scope))),
+        Formula::And(_) => CForm::And(flatten_canon(f, scope, true)),
+        Formula::Or(_) => CForm::Or(flatten_canon(f, scope, false)),
+        Formula::Implies(a, b) => CForm::Implies(
+            Box::new(canon_form(a, scope)),
+            Box::new(canon_form(b, scope)),
+        ),
+        Formula::Iff(a, b) => {
+            let mut ca = canon_form(a, scope);
+            let mut cb = canon_form(b, scope);
+            // Iff is commutative; sort for canonicity.
+            if cb < ca {
+                std::mem::swap(&mut ca, &mut cb);
+            }
+            CForm::Iff(Box::new(ca), Box::new(cb))
+        }
+        Formula::Forall(v, x) => {
+            scope.push(*v);
+            let c = canon_form(x, scope);
+            scope.pop();
+            CForm::Forall(Box::new(c))
+        }
+        Formula::Exists(v, x) => {
+            scope.push(*v);
+            let c = canon_form(x, scope);
+            scope.pop();
+            CForm::Exists(Box::new(c))
+        }
     }
 }
 
@@ -294,6 +451,40 @@ fn mentions_symbol(f: &Formula, sym: SymbolId, depth: u32, g: &Guard) -> bool {
     }
 }
 
+/// Record the maximum VarId occurring anywhere in `f` (binders and term
+/// variables) into `acc`.
+fn max_var(f: &Formula, acc: &mut u32) {
+    fn walk_t(t: &Term, acc: &mut u32) {
+        match t {
+            Term::Var(v) => *acc = (*acc).max(*v),
+            Term::App(_, args) => args.iter().for_each(|a| walk_t(a, acc)),
+        }
+    }
+    fn walk_a(at: &Atom, acc: &mut u32) {
+        match at {
+            Atom::Pred(_, args) => args.iter().for_each(|x| walk_t(x, acc)),
+            Atom::Eq(l, r) => {
+                walk_t(l, acc);
+                walk_t(r, acc);
+            }
+        }
+    }
+    match f {
+        Formula::Atom(at) => walk_a(at, acc),
+        Formula::True | Formula::False => {}
+        Formula::Neg(x) => max_var(x, acc),
+        Formula::Forall(v, x) | Formula::Exists(v, x) => {
+            *acc = (*acc).max(*v);
+            max_var(x, acc);
+        }
+        Formula::And(xs) | Formula::Or(xs) => xs.iter().for_each(|x| max_var(x, acc)),
+        Formula::Implies(l, r) | Formula::Iff(l, r) => {
+            max_var(l, acc);
+            max_var(r, acc);
+        }
+    }
+}
+
 /// Iteratively unfold all defined symbols in `f` until none remain.
 /// Bounded by `WORK_BUDGET` (via the guard) and by `defs.len() + 4`
 /// outer iterations (definitions are non-recursive so each pass must
@@ -301,9 +492,10 @@ fn mentions_symbol(f: &Formula, sym: SymbolId, depth: u32, g: &Guard) -> bool {
 fn unfold_all(
     f: &Formula,
     defs: &HashMap<SymbolId, (Vec<VarId>, Formula)>,
+    fresh: &Cell<u32>,
     g: &Guard,
 ) -> Option<Formula> {
-    let mut current = unfold_once(f, defs, 0, g)?;
+    let mut current = unfold_once(f, defs, fresh, 0, g)?;
     for _ in 0..(defs.len() + 4) {
         if g.bailed.get() {
             return None;
@@ -334,7 +526,7 @@ fn unfold_all(
         if !needs_more {
             return Some(current);
         }
-        current = unfold_once(&current, defs, 0, g)?;
+        current = unfold_once(&current, defs, fresh, 0, g)?;
     }
     None
 }
@@ -342,6 +534,7 @@ fn unfold_all(
 fn unfold_once(
     f: &Formula,
     defs: &HashMap<SymbolId, (Vec<VarId>, Formula)>,
+    fresh: &Cell<u32>,
     depth: u32,
     g: &Guard,
 ) -> Option<Formula> {
@@ -354,42 +547,48 @@ fn unfold_once(
                 if params.len() != args.len() {
                     return None;
                 }
-                substitute_vars(body, params, args)
+                substitute_vars(body, params, args, fresh)
             } else {
                 f.clone()
             }
         }
         Formula::Atom(Atom::Eq(..)) => f.clone(),
-        Formula::Neg(x) => Formula::Neg(Box::new(unfold_once(x, defs, depth + 1, g)?)),
+        Formula::Neg(x) => Formula::Neg(Box::new(unfold_once(x, defs, fresh, depth + 1, g)?)),
         Formula::And(xs) => {
             let mut out = Vec::with_capacity(xs.len());
             for x in xs {
-                out.push(unfold_once(x, defs, depth + 1, g)?);
+                out.push(unfold_once(x, defs, fresh, depth + 1, g)?);
             }
             Formula::And(out)
         }
         Formula::Or(xs) => {
             let mut out = Vec::with_capacity(xs.len());
             for x in xs {
-                out.push(unfold_once(x, defs, depth + 1, g)?);
+                out.push(unfold_once(x, defs, fresh, depth + 1, g)?);
             }
             Formula::Or(out)
         }
         Formula::Implies(a, b) => Formula::Implies(
-            Box::new(unfold_once(a, defs, depth + 1, g)?),
-            Box::new(unfold_once(b, defs, depth + 1, g)?),
+            Box::new(unfold_once(a, defs, fresh, depth + 1, g)?),
+            Box::new(unfold_once(b, defs, fresh, depth + 1, g)?),
         ),
         Formula::Iff(a, b) => Formula::Iff(
-            Box::new(unfold_once(a, defs, depth + 1, g)?),
-            Box::new(unfold_once(b, defs, depth + 1, g)?),
+            Box::new(unfold_once(a, defs, fresh, depth + 1, g)?),
+            Box::new(unfold_once(b, defs, fresh, depth + 1, g)?),
         ),
-        Formula::Forall(v, x) => Formula::Forall(*v, Box::new(unfold_once(x, defs, depth + 1, g)?)),
-        Formula::Exists(v, x) => Formula::Exists(*v, Box::new(unfold_once(x, defs, depth + 1, g)?)),
+        Formula::Forall(v, x) => {
+            Formula::Forall(*v, Box::new(unfold_once(x, defs, fresh, depth + 1, g)?))
+        }
+        Formula::Exists(v, x) => {
+            Formula::Exists(*v, Box::new(unfold_once(x, defs, fresh, depth + 1, g)?))
+        }
         Formula::True | Formula::False => f.clone(),
     })
 }
 
-/// Substitute each `params[i] → args[i]` simultaneously throughout `body`.
+/// Substitute each `params[i] → args[i]` simultaneously throughout
+/// `body`, **capture-avoiding**: every binder inside `body` is α-renamed
+/// to a globally-fresh VarId drawn from `fresh`.
 ///
 /// Uses a local single-pass substituter rather than
 /// [`mrs_core::Substitution::apply_term`], because the latter follows
@@ -400,50 +599,74 @@ fn unfold_once(
 /// def `∀X0,X1. sP(X1,X0) ↔ …` and the call site `sP(X1, X0)` use the
 /// same VarIds), which produces exactly this kind of cycle.
 ///
-/// Capture-avoidance: bound variables inside `body` are *not*
-/// substituted. We follow `Substitution::apply_formula`'s convention of
-/// not renaming inner binders; in practice Vampire emits definitions
-/// whose inner bound variables (e.g. X2 in `∀X2. …`) differ from the
-/// formal parameters, so capture does not arise.
-fn substitute_vars(body: &Formula, params: &[VarId], args: &[Term]) -> Formula {
-    let map: HashMap<VarId, &Term> = params.iter().copied().zip(args.iter()).collect();
-    sub_formula(body, &map)
+/// ## Why capture-avoidance is required
+///
+/// Each premise (definition) and the source/conclusion are lowered with
+/// an independently-reset variable counter, so a definition body's own
+/// bound variables (e.g. the `?[X]` inside `sP(a) <=> ?[X]. q(X,a)`)
+/// routinely reuse low VarIds that *also* occur as call-site arguments
+/// or in the surrounding formula. Substituting the body verbatim would
+/// capture those variables — the inner binder would swallow an outer
+/// reference — yielding a structurally-wrong (and the α-check would
+/// rightly reject it). We rename every body binder to a fresh VarId
+/// above any VarId in the inputs, so neither the call-site arguments
+/// (≤ max input VarId) nor the surrounding context can be captured.
+fn substitute_vars(body: &Formula, params: &[VarId], args: &[Term], fresh: &Cell<u32>) -> Formula {
+    let mut map: HashMap<VarId, Term> = params.iter().copied().zip(args.iter().cloned()).collect();
+    sub_formula(body, &mut map, fresh)
 }
 
-fn sub_formula(f: &Formula, map: &HashMap<VarId, &Term>) -> Formula {
+fn sub_formula(f: &Formula, map: &mut HashMap<VarId, Term>, fresh: &Cell<u32>) -> Formula {
     match f {
         Formula::Atom(a) => Formula::Atom(sub_atom(a, map)),
-        Formula::Neg(g) => Formula::Neg(Box::new(sub_formula(g, map))),
-        Formula::And(gs) => Formula::And(gs.iter().map(|g| sub_formula(g, map)).collect()),
-        Formula::Or(gs) => Formula::Or(gs.iter().map(|g| sub_formula(g, map)).collect()),
-        Formula::Implies(a, b) => {
-            Formula::Implies(Box::new(sub_formula(a, map)), Box::new(sub_formula(b, map)))
-        }
-        Formula::Iff(a, b) => {
-            Formula::Iff(Box::new(sub_formula(a, map)), Box::new(sub_formula(b, map)))
-        }
+        Formula::Neg(g) => Formula::Neg(Box::new(sub_formula(g, map, fresh))),
+        Formula::And(gs) => Formula::And(gs.iter().map(|g| sub_formula(g, map, fresh)).collect()),
+        Formula::Or(gs) => Formula::Or(gs.iter().map(|g| sub_formula(g, map, fresh)).collect()),
+        Formula::Implies(a, b) => Formula::Implies(
+            Box::new(sub_formula(a, map, fresh)),
+            Box::new(sub_formula(b, map, fresh)),
+        ),
+        Formula::Iff(a, b) => Formula::Iff(
+            Box::new(sub_formula(a, map, fresh)),
+            Box::new(sub_formula(b, map, fresh)),
+        ),
         Formula::Forall(v, g) => {
-            if map.contains_key(v) {
-                // Bound variable shadows a substituted parameter: do
-                // not substitute inside. (Same convention as
-                // mrs_core::Substitution::apply_formula.)
-                Formula::Forall(*v, g.clone())
-            } else {
-                Formula::Forall(*v, Box::new(sub_formula(g, map)))
-            }
+            let (nv, inner) = sub_binder(*v, g, map, fresh);
+            Formula::Forall(nv, Box::new(inner))
         }
         Formula::Exists(v, g) => {
-            if map.contains_key(v) {
-                Formula::Exists(*v, g.clone())
-            } else {
-                Formula::Exists(*v, Box::new(sub_formula(g, map)))
-            }
+            let (nv, inner) = sub_binder(*v, g, map, fresh);
+            Formula::Exists(nv, Box::new(inner))
         }
         Formula::True | Formula::False => f.clone(),
     }
 }
 
-fn sub_atom(a: &Atom, map: &HashMap<VarId, &Term>) -> Atom {
+/// Substitute under a binder for variable `v`: allocate a fresh VarId
+/// `nv`, map `v → Var(nv)` for the scope of `g`, recurse, then restore
+/// the previous mapping. Returns `(nv, substituted_body)`.
+fn sub_binder(
+    v: VarId,
+    g: &Formula,
+    map: &mut HashMap<VarId, Term>,
+    fresh: &Cell<u32>,
+) -> (VarId, Formula) {
+    let nv = fresh.get();
+    fresh.set(nv.wrapping_add(1));
+    let prev = map.insert(v, Term::Var(nv));
+    let inner = sub_formula(g, map, fresh);
+    match prev {
+        Some(t) => {
+            map.insert(v, t);
+        }
+        None => {
+            map.remove(&v);
+        }
+    }
+    (nv, inner)
+}
+
+fn sub_atom(a: &Atom, map: &HashMap<VarId, Term>) -> Atom {
     match a {
         Atom::Pred(p, args) => Atom::Pred(*p, args.iter().map(|t| sub_term(t, map)).collect()),
         Atom::Eq(l, r) => Atom::Eq(sub_term(l, map), sub_term(r, map)),
@@ -452,10 +675,10 @@ fn sub_atom(a: &Atom, map: &HashMap<VarId, &Term>) -> Atom {
 
 /// Single-pass term substitution: each variable is replaced at most once
 /// by its mapped term, with no recursive re-substitution.
-fn sub_term(t: &Term, map: &HashMap<VarId, &Term>) -> Term {
+fn sub_term(t: &Term, map: &HashMap<VarId, Term>) -> Term {
     match t {
         Term::Var(v) => match map.get(v) {
-            Some(&replacement) => replacement.clone(),
+            Some(replacement) => replacement.clone(),
             None => t.clone(),
         },
         Term::App(f, args) => Term::App(*f, args.iter().map(|a| sub_term(a, map)).collect()),
@@ -476,7 +699,7 @@ mod tests {
         let body = Formula::Atom(Atom::Pred(q_sym, vec![Term::var(0)]));
         let def = Formula::forall(0, Formula::iff(p_app, body));
         let concl = Formula::Atom(Atom::Pred(q_sym, vec![Term::var(0)]));
-        assert_eq!(try_check(&[def], &concl), None);
+        assert_eq!(try_check(&[def], &[true], &concl), None);
     }
 
     #[test]
@@ -487,7 +710,7 @@ mod tests {
         let src1 = Formula::Atom(Atom::Pred(q_sym, vec![]));
         let src2 = Formula::Atom(Atom::Pred(r_sym, vec![]));
         let concl = src1.clone();
-        assert_eq!(try_check(&[src1, src2], &concl), None);
+        assert_eq!(try_check(&[src1, src2], &[false, false], &concl), None);
     }
 
     #[test]
@@ -501,7 +724,7 @@ mod tests {
         let def = Formula::forall(0, Formula::iff(p_app, q_app));
         let src = Formula::Atom(Atom::Pred(q_sym, vec![Term::constant(a_sym)]));
         let concl = Formula::Atom(Atom::Pred(p_sym, vec![Term::constant(a_sym)]));
-        assert_eq!(try_check(&[def, src], &concl), Some(true));
+        assert_eq!(try_check(&[def, src], &[true, false], &concl), Some(true));
     }
 
     #[test]
@@ -522,7 +745,7 @@ mod tests {
             Formula::Atom(Atom::Pred(r_sym, vec![Term::constant(a_sym)])),
         ]);
         let concl = Formula::Atom(Atom::Pred(p_sym, vec![Term::constant(a_sym)]));
-        assert_eq!(try_check(&[def, src], &concl), Some(true));
+        assert_eq!(try_check(&[def, src], &[true, false], &concl), Some(true));
     }
 
     #[test]
@@ -555,7 +778,10 @@ mod tests {
             Formula::Atom(Atom::Pred(r, vec![Term::constant(a)])),
         ]);
         let concl = Formula::Atom(Atom::Pred(p2, vec![Term::constant(a)]));
-        assert_eq!(try_check(&[def1, def2, src], &concl), Some(true));
+        assert_eq!(
+            try_check(&[def1, def2, src], &[true, true, false], &concl),
+            Some(true)
+        );
     }
 
     #[test]
@@ -575,7 +801,7 @@ mod tests {
         );
         let src = Formula::Atom(Atom::Pred(q, vec![]));
         let concl = src.clone();
-        assert_eq!(try_check(&[def, src], &concl), None);
+        assert_eq!(try_check(&[def, src], &[true, false], &concl), None);
     }
 
     #[test]
@@ -595,7 +821,7 @@ mod tests {
         );
         let src = Formula::Atom(Atom::Pred(q, vec![Term::constant(a)]));
         let concl = Formula::Atom(Atom::Pred(r, vec![Term::constant(b)]));
-        assert_eq!(try_check(&[def, src], &concl), None);
+        assert_eq!(try_check(&[def, src], &[true, false], &concl), None);
     }
 
     #[test]
@@ -612,7 +838,7 @@ mod tests {
         );
         let src = Formula::forall(1, Formula::Atom(Atom::Pred(q, vec![Term::var(1)])));
         let concl = Formula::forall(1, Formula::Atom(Atom::Pred(p, vec![Term::var(1)])));
-        assert_eq!(try_check(&[def, src], &concl), Some(true));
+        assert_eq!(try_check(&[def, src], &[true, false], &concl), Some(true));
     }
 
     #[test]
@@ -655,7 +881,11 @@ mod tests {
             Formula::Atom(Atom::Pred(spl_c, vec![])),
         ]);
         assert_eq!(
-            try_check(&[def_a, def_b, def_c, src], &concl),
+            try_check(
+                &[def_a, def_b, def_c, src],
+                &[true, true, true, false],
+                &concl
+            ),
             Some(true)
         );
     }
@@ -681,7 +911,7 @@ mod tests {
         let huge = Formula::And(vec![leaf; 5000]);
         let concl = Formula::Atom(Atom::Pred(p, vec![Term::var(0)]));
         let start = std::time::Instant::now();
-        let result = try_check(&[def, huge], &concl);
+        let result = try_check(&[def, huge], &[true, false], &concl);
         let elapsed = start.elapsed();
         assert_eq!(result, None);
         assert!(

@@ -390,11 +390,26 @@ fn delegate_to_atp<'p>(
     // a spurious `Unsound` verdict.
     let mut ctx = LowerCtx::new(symbols);
     let mut premises = Vec::with_capacity(node.parents.len());
+    // Parallel to `premises`: whether each premise is an *introduced
+    // definition* (E `predicate_definition_introduction` or Vampire
+    // `avatar_definition`) as opposed to a source/original formula. The
+    // structural folding check uses this to decide which premises to
+    // unfold; a source that happens to be a biconditional (e.g. an
+    // original `cUnsatisfiable(X) <=> …` definition carried through
+    // `flattening`) must not be mistaken for a fresh-symbol definition.
+    let mut premise_is_def = Vec::with_capacity(node.parents.len());
     for (i, p) in node.parents.iter().enumerate() {
         if let Some(&pi) = dag.by_name.get(p) {
             ctx.reset_vars();
             let mut f = lower_fof_statement(&mut ctx, &dag.nodes[pi].fof.formula);
-            if node.negated_parents.get(i).copied().unwrap_or(false) {
+            let negated = node.negated_parents.get(i).copied().unwrap_or(false);
+            let parent_ann = dag.nodes[pi].fof.annotations.as_ref();
+            // A definition introduces fresh symbols via
+            // `new_symbols(naming, [..])`; a source never does. Negated
+            // parents go through `assume_negation` and are sources.
+            let is_def =
+                !negated && !introduced_definition::declared_new_symbols_opt(parent_ann).is_empty();
+            if negated {
                 f = mrs_core::Formula::Neg(Box::new(f));
             } else {
                 // E emits `predicate_definition_introduction` axioms as
@@ -414,7 +429,6 @@ fn delegate_to_atp<'p>(
                 //
                 // We do *not* touch negated parents (those go through
                 // `assume_negation` and have their own polarity flip).
-                let parent_ann = dag.nodes[pi].fof.annotations.as_ref();
                 if introduced_definition::is_predicate_definition_introduction(parent_ann) {
                     if let Some(extended) =
                         complete_definition_iff(&f, parent_ann.unwrap(), ctx.symbols)
@@ -424,6 +438,7 @@ fn delegate_to_atp<'p>(
                 }
             }
             premises.push(f);
+            premise_is_def.push(is_def);
         }
     }
     ctx.reset_vars();
@@ -447,7 +462,8 @@ fn delegate_to_atp<'p>(
     if matches!(
         node.inference_rule,
         Some("definition_folding") | Some("avatar_split_clause")
-    ) && let Some(true) = crate::checks::definition_folding::try_check(&premises, &conclusion)
+    ) && let Some(true) =
+        crate::checks::definition_folding::try_check(&premises, &premise_is_def, &conclusion)
     {
         return StepOutcome::Sound;
     }
