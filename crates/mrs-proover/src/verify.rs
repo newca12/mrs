@@ -1,9 +1,11 @@
 //! Top-level verification loop. Orchestrates structural checks, per-rule
 //! internal checks, and (later) ATP calls.
 
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use mrs_core::SymbolTable;
+use mrs_core::{Formula, SymbolTable};
 use mrs_tptp::{FOFAnnotated, FormulaRole};
 
 use crate::atp::{Atp, AtpVerdict, NoopAtp};
@@ -80,80 +82,176 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
         }
     }
 
-    // 3) Walk topo order, dispatching per node.
-    let mut outcomes: Vec<(String, StepOutcome)> = Vec::with_capacity(dag.nodes.len());
-
-    // Identify which steps may end up using the ATP (so we can prorate the
-    // wall-clock budget across them). Internal checks are essentially free.
-    let total_atp_steps = dag
-        .topo
-        .iter()
-        .filter(|&&i| step_needs_atp(&dag.nodes[i]))
-        .count();
-    let mut atp_steps_remaining = total_atp_steps;
+    // 3) Pass 1 (serial): run every cheap internal check and *prepare* each
+    //    ATP step (lowering premises/conclusion, then the structural
+    //    fast-paths). This pass is the only one that mutates `symbols` and
+    //    `sk_reg`, so it must run in topo order on a single thread. Structural
+    //    steps are decided here; genuine ATP steps are collected as jobs.
+    let mut names: Vec<&str> = Vec::with_capacity(dag.topo.len());
+    let mut rules: Vec<&str> = Vec::with_capacity(dag.topo.len());
+    let mut outcomes: Vec<Option<StepOutcome>> = Vec::with_capacity(dag.topo.len());
+    let mut jobs: Vec<AtpJob> = Vec::new();
 
     for &idx in &dag.topo {
-        let needs_atp = step_needs_atp(&dag.nodes[idx]);
-
-        // Compute this step's ATP budget: the smaller of the per-step cap
-        // and an even share of the remaining wall budget.
-        let budget = if needs_atp {
-            let elapsed = started.elapsed();
-            let remaining = settings
-                .total_budget
-                .checked_sub(elapsed)
-                .unwrap_or_default();
-            let share = if atp_steps_remaining == 0 {
-                Duration::ZERO
-            } else {
-                remaining / atp_steps_remaining as u32
-            };
-            // Vampire's `skolemisation` rule can rewrite many existentials
-            // in one step against several Skolem-axiom premises. These
-            // rewrites are sound by construction but combinatorially hard
-            // for the ATP, so give them a bigger per-step cap. We still
-            // honour the wall-clock remaining budget so other steps are
-            // not entirely starved.
-            let per_step_cap = if dag.nodes[idx].inference_rule == Some("skolemisation") {
-                settings.per_step_budget.max(Duration::from_secs(25))
-            } else {
-                settings.per_step_budget
-            };
-            // Skolemisation steps may claim more than their fair share but
-            // never more than the per-step cap or what remains on the wall.
-            let upper = std::cmp::min(per_step_cap, remaining);
-            let b = if dag.nodes[idx].inference_rule == Some("skolemisation") {
-                upper
-            } else {
-                std::cmp::min(settings.per_step_budget, share)
-            };
-            // Avoid 0-duration ATP calls; require at least 1s if any time left.
-            if b.is_zero() && !remaining.is_zero() {
-                Duration::from_secs(1).min(remaining)
-            } else {
-                b
+        let slot = outcomes.len();
+        names.push(dag.nodes[idx].name);
+        rules.push(dag.nodes[idx].inference_rule.unwrap_or("-"));
+        match check_node_prepare(&dag, idx, job, &mut symbols, &mut sk_reg) {
+            Prepared::Resolved(oc) => outcomes.push(Some(oc)),
+            Prepared::NeedsAtp(step) => {
+                outcomes.push(None);
+                jobs.push(AtpJob {
+                    slot,
+                    is_skolemisation: dag.nodes[idx].inference_rule == Some("skolemisation"),
+                    step,
+                });
             }
-        } else {
-            Duration::ZERO
-        };
-
-        let oc = check_node(&dag, idx, job, &mut symbols, &mut sk_reg, atp, budget);
-        let name = dag.nodes[idx].name.to_string();
-
-        if needs_atp {
-            atp_steps_remaining = atp_steps_remaining.saturating_sub(1);
         }
-
-        if settings.verbose {
-            let rule = dag.nodes[idx].inference_rule.unwrap_or("-");
-            let kind = if needs_atp { "atp" } else { "internal" };
-            eprintln!("% step {name} [{kind} rule={rule}] -> {oc:?}");
-        }
-
-        outcomes.push((name, oc));
     }
 
-    aggregate(outcomes.iter().map(|(n, o)| (n.as_str(), o.clone())))
+    // 4) Pass 2 (parallel): run the collected ATP jobs across all cores. After
+    //    Pass 1 the symbol table is complete and immutable, so `&symbols` is
+    //    shared read-only and `atp.check_step` (an external process spawn) is
+    //    a pure function of its inputs. Each job computes its budget from a
+    //    shared deadline, keeping the total wall time within `total_budget`
+    //    regardless of scheduling. Outcomes are written back to topo slots, so
+    //    the aggregated verdict (and its reason string) stay deterministic.
+    run_atp_jobs(&jobs, atp, &symbols, &mut outcomes, started, settings);
+
+    if settings.verbose {
+        for i in 0..names.len() {
+            eprintln!(
+                "% step {} [rule={}] -> {:?}",
+                names[i], rules[i], outcomes[i]
+            );
+        }
+    }
+
+    aggregate(
+        names
+            .iter()
+            .zip(outcomes)
+            .map(|(n, o)| (*n, o.expect("every step resolved in pass 1 or pass 2"))),
+    )
+}
+
+/// A single ATP-bound step queued by Pass 1 for parallel execution in Pass 2.
+struct AtpJob {
+    /// Index into the topo-ordered `outcomes` vector this job's result fills.
+    slot: usize,
+    /// Vampire `skolemisation` steps get a larger per-step budget cap.
+    is_skolemisation: bool,
+    step: AtpStep,
+}
+
+/// Everything needed to run one ATP entailment query and interpret its result,
+/// captured during Pass 1 so Pass 2 needs no access to the DAG or mutable state.
+struct AtpStep {
+    premises: Vec<Formula>,
+    conclusion: Formula,
+    /// `esa` (equisatisfiability) steps: a counter-model is expected and must
+    /// never be reported as `Unsound`.
+    esa: bool,
+    /// Inference-rule name, for diagnostic messages only.
+    rule: Option<String>,
+}
+
+/// Outcome of preparing a step in Pass 1.
+enum Prepared {
+    /// Decided without the ATP (internal check or structural fast-path).
+    Resolved(StepOutcome),
+    /// Needs an external ATP query; deferred to Pass 2.
+    NeedsAtp(AtpStep),
+}
+
+/// Run the queued ATP jobs in parallel and write each result back into its
+/// topo slot in `outcomes`.
+fn run_atp_jobs(
+    jobs: &[AtpJob],
+    atp: &dyn Atp,
+    symbols: &SymbolTable,
+    outcomes: &mut [Option<StepOutcome>],
+    started: Instant,
+    settings: &Settings,
+) {
+    if jobs.is_empty() {
+        return;
+    }
+
+    let deadline = started + settings.total_budget;
+    let per_step = settings.per_step_budget;
+    let n_workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(jobs.len());
+
+    let next = AtomicUsize::new(0);
+    let results: Mutex<Vec<(usize, StepOutcome)>> = Mutex::new(Vec::with_capacity(jobs.len()));
+
+    std::thread::scope(|scope| {
+        for _ in 0..n_workers {
+            scope.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    if i >= jobs.len() {
+                        break;
+                    }
+                    let job = &jobs[i];
+                    // `jobs.len() - i` is the number of not-yet-claimed jobs
+                    // (including this one); used to share the remaining wall
+                    // budget fairly while accounting for parallel execution.
+                    let jobs_left = jobs.len() - i;
+                    let budget = step_budget(
+                        deadline,
+                        per_step,
+                        n_workers,
+                        jobs_left,
+                        job.is_skolemisation,
+                    );
+                    let oc = finish_atp(atp, symbols, &job.step, budget);
+                    results.lock().expect("results mutex").push((job.slot, oc));
+                }
+            });
+        }
+    });
+
+    for (slot, oc) in results.into_inner().expect("results mutex") {
+        outcomes[slot] = Some(oc);
+    }
+}
+
+/// Budget for one parallel ATP job.
+///
+/// With `w` workers and `jobs_left` queued jobs, roughly `w` run at once, so a
+/// job may claim up to `remaining * min(w, jobs_left) / jobs_left` of the wall
+/// clock — i.e. the full remaining time when there are no more jobs than
+/// workers, and a fair parallel share otherwise. Capped by the per-step ceiling
+/// (raised for `skolemisation`) and floored to 1s when meaningful time remains,
+/// so we never waste a step on a sub-second query that is bound to time out.
+fn step_budget(
+    deadline: Instant,
+    per_step: Duration,
+    n_workers: usize,
+    jobs_left: usize,
+    is_skolemisation: bool,
+) -> Duration {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Duration::ZERO;
+    }
+    let parallel = n_workers.min(jobs_left).max(1) as u32;
+    let share = remaining * parallel / jobs_left.max(1) as u32;
+    let cap = if is_skolemisation {
+        per_step.max(Duration::from_secs(25))
+    } else {
+        per_step
+    };
+    let b = cap.min(share);
+    if b < Duration::from_secs(1) && remaining >= Duration::from_secs(1) {
+        Duration::from_secs(1)
+    } else {
+        b
+    }
 }
 
 /// Former name-trust list, now replaced by structural verification.
@@ -165,6 +263,10 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
 /// *checked* structural proof (NNF-canonical equivalence or conjunct
 /// projection) and otherwise falls through to the ATP. See that module for
 /// the soundness argument.
+///
+/// No longer drives budgeting (Pass 1 prepares every step unconditionally);
+/// retained as the documented routing predicate exercised by the tests below.
+#[cfg_attr(not(test), allow(dead_code))]
 fn step_needs_atp(node: &dag::Node<'_>) -> bool {
     // Leaves don't need ATP. A node is a "leaf" if it has a `file(...)`
     // provenance annotation AND its role is one a problem may legitimately
@@ -227,15 +329,13 @@ fn is_premise_role(r: FormulaRole) -> bool {
     )
 }
 
-fn check_node<'p>(
+fn check_node_prepare<'p>(
     dag: &Dag<'p>,
     idx: usize,
     job: &LoadedJob,
     symbols: &mut SymbolTable,
     sk_reg: &mut skolemize::SkolemRegistry,
-    atp: &dyn Atp,
-    budget: Duration,
-) -> StepOutcome {
+) -> Prepared {
     let node = &dag.nodes[idx];
 
     // --- Role / status routing --------------------------------------------
@@ -252,11 +352,11 @@ fn check_node<'p>(
             .and_then(|a| a.file_source())
             .is_some()
     {
-        return axiom_leaf::check_leaf(
+        return Prepared::Resolved(axiom_leaf::check_leaf(
             node.fof,
             job.problem.as_ref().map(|p| p.problem()),
             symbols,
-        );
+        ));
     }
 
     // negated_conjecture step — only the direct negation step (rule
@@ -279,7 +379,7 @@ fn check_node<'p>(
                 .parents
                 .first()
                 .and_then(|p| dag.by_name.get(p).map(|&i| dag.nodes[i].fof));
-            return neg_conjecture::check(node.fof, parent_fof, symbols);
+            return Prepared::Resolved(neg_conjecture::check(node.fof, parent_fof, symbols));
         }
         // Otherwise fall through to whatever other handling applies.
     }
@@ -290,7 +390,7 @@ fn check_node<'p>(
             .parents
             .first()
             .and_then(|p| dag.by_name.get(p).map(|&i| dag.nodes[i].fof));
-        return skolemize::check(node.fof, parent_fof, sk_reg);
+        return Prepared::Resolved(skolemize::check(node.fof, parent_fof, sk_reg));
     }
 
     // introduced(definition): predicate-definition introduction, sound as a
@@ -301,7 +401,7 @@ fn check_node<'p>(
         .as_ref()
         .is_some_and(introduced_definition::is_introduced_definition)
     {
-        return introduced_definition::check(node.fof, sk_reg);
+        return Prepared::Resolved(introduced_definition::check(node.fof, sk_reg));
     }
 
     // Vampire `skolemisation`: try the structural check before falling
@@ -314,7 +414,7 @@ fn check_node<'p>(
             .filter_map(|p| dag.by_name.get(p).map(|&i| dag.nodes[i].fof))
             .collect();
         if let Some(outcome) = vampire_skolemisation::try_check(node.fof, &parents, sk_reg) {
-            return outcome;
+            return Prepared::Resolved(outcome);
         }
         // Fall through to ATP if the structural check could not apply.
     }
@@ -333,15 +433,22 @@ fn check_node<'p>(
             .filter_map(|p| dag.by_name.get(p).map(|&i| dag.nodes[i].fof))
             .collect();
         if let Some(outcome) = trivial::try_check(node, &parents, symbols) {
-            return outcome;
+            return Prepared::Resolved(outcome);
         }
         // Fall through to ATP if the structural check could not confirm.
     }
 
-    // Other plain/thm/cth steps → delegate to ATP.
-    delegate_to_atp(dag, idx, symbols, atp, budget)
+    // Other plain/thm/cth steps → prepare an ATP query for Pass 2.
+    prepare_atp_step(dag, idx, symbols)
 }
 
+/// Decide a step via the ATP, keeping the prepare/finish split internal.
+///
+/// Retained for the unit tests that exercise the esa/thm verdict mapping with
+/// a synchronous mock backend; the production loop uses `prepare_atp_step` +
+/// `finish_atp` directly so the (expensive) `finish_atp` half can run in
+/// parallel across steps.
+#[cfg_attr(not(test), allow(dead_code))]
 fn delegate_to_atp<'p>(
     dag: &Dag<'p>,
     idx: usize,
@@ -349,13 +456,18 @@ fn delegate_to_atp<'p>(
     atp: &dyn Atp,
     budget: Duration,
 ) -> StepOutcome {
-    let node = &dag.nodes[idx];
-    if budget.is_zero() {
-        return StepOutcome::Unknown(format!(
-            "ATP budget exhausted (rule={:?})",
-            node.inference_rule
-        ));
+    match prepare_atp_step(dag, idx, symbols) {
+        Prepared::Resolved(oc) => oc,
+        Prepared::NeedsAtp(step) => finish_atp(atp, symbols, &step, budget),
     }
+}
+
+/// Lower a step's premises and conclusion and run the structural fast-paths.
+/// Returns `Resolved` when a fast-path decides the step, otherwise `NeedsAtp`
+/// with the lowered formulas captured for a deferred ATP query. Mutates
+/// `symbols` (interning during lowering); must run in Pass 1.
+fn prepare_atp_step<'p>(dag: &Dag<'p>, idx: usize, symbols: &mut SymbolTable) -> Prepared {
+    let node = &dag.nodes[idx];
     // SZS status routing. An `esa` step asserts *equisatisfiability*, not
     // logical entailment: e.g. Skolemization introduces a fresh symbol whose
     // value the premises do not pin down, so the conclusion need not be a
@@ -453,7 +565,7 @@ fn delegate_to_atp<'p>(
     ) && let Some(true) =
         crate::checks::definition_folding::try_check(&premises, &premise_is_def, &conclusion)
     {
-        return StepOutcome::Sound;
+        return Prepared::Resolved(StepOutcome::Sound);
     }
 
     // Propositional fast-path: when every premise and the conclusion are
@@ -467,7 +579,7 @@ fn delegate_to_atp<'p>(
     if let Some(outcome) =
         crate::checks::propositional_sat::try_propositional(&premises, &conclusion)
     {
-        return match outcome {
+        return Prepared::Resolved(match outcome {
             crate::checks::propositional_sat::PropOutcome::Sound => StepOutcome::Sound,
             crate::checks::propositional_sat::PropOutcome::Unsound if esa => StepOutcome::Unknown(
                 "esa step: propositional refutation is not evidence of a faulty \
@@ -477,7 +589,7 @@ fn delegate_to_atp<'p>(
             crate::checks::propositional_sat::PropOutcome::Unsound => StepOutcome::Unsound(
                 "propositional SAT solver refuted entailment by premises".into(),
             ),
-        };
+        });
     }
 
     // Propositional-abstraction fast-path: treat every argumented atom (and
@@ -489,12 +601,32 @@ fn delegate_to_atp<'p>(
     // `avatar_component_clause` (`spl <=> body` ⊢ `¬body ∨ spl`) and similar
     // CNF-of-iff extractions that the FOL ATPs stall on.
     if crate::checks::propositional_sat::try_propositional_abstraction(&premises, &conclusion) {
-        return StepOutcome::Sound;
+        return Prepared::Resolved(StepOutcome::Sound);
     }
 
-    match atp.check_step(symbols, &premises, &conclusion, budget) {
+    // No fast-path applied: defer the genuine entailment query to Pass 2.
+    Prepared::NeedsAtp(AtpStep {
+        premises,
+        conclusion,
+        esa,
+        rule: node.inference_rule.map(str::to_owned),
+    })
+}
+
+/// Run one prepared ATP query and map the verdict to a `StepOutcome`,
+/// honouring the esa downgrade rule. A zero budget yields `Unknown`.
+fn finish_atp(
+    atp: &dyn Atp,
+    symbols: &SymbolTable,
+    step: &AtpStep,
+    budget: Duration,
+) -> StepOutcome {
+    if budget.is_zero() {
+        return StepOutcome::Unknown(format!("ATP budget exhausted (rule={:?})", step.rule));
+    }
+    match atp.check_step(symbols, &step.premises, &step.conclusion, budget) {
         AtpVerdict::Sound => StepOutcome::Sound,
-        AtpVerdict::Unsound if esa => StepOutcome::Unknown(format!(
+        AtpVerdict::Unsound if step.esa => StepOutcome::Unknown(format!(
             "esa step: ATP `{}` found a counter-model, but equisatisfiability \
              steps are not entailments, so this is not a fault",
             atp.name()
@@ -503,10 +635,9 @@ fn delegate_to_atp<'p>(
             "ATP `{}` refuted entailment by premises",
             atp.name()
         )),
-        AtpVerdict::Unknown => StepOutcome::Unknown(format!(
-            "no ATP could decide step (rule={:?})",
-            node.inference_rule
-        )),
+        AtpVerdict::Unknown => {
+            StepOutcome::Unknown(format!("no ATP could decide step (rule={:?})", step.rule))
+        }
     }
 }
 
@@ -898,6 +1029,63 @@ mod esa_guard_tests {
         assert!(
             matches!(outcome_for(src, "s1"), StepOutcome::Unsound(_)),
             "thm refutation must stay Unsound"
+        );
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    #[test]
+    fn zero_when_deadline_passed() {
+        let past = Instant::now() - Duration::from_secs(1);
+        assert_eq!(
+            step_budget(past, Duration::from_secs(8), 8, 4, false),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn full_per_step_cap_when_jobs_fit_in_workers() {
+        // jobs_left <= workers ⇒ share ≈ full remaining (~30s), capped at the
+        // per-step ceiling of 8s.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        assert_eq!(
+            step_budget(deadline, Duration::from_secs(8), 8, 3, false),
+            Duration::from_secs(8)
+        );
+    }
+
+    #[test]
+    fn parallel_fair_share_when_many_jobs() {
+        // 100 jobs / 8 workers / ~30s ⇒ share ≈ 30·8/100 = 2.4s, under the cap.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let b = step_budget(deadline, Duration::from_secs(8), 8, 100, false);
+        assert!(
+            b >= Duration::from_millis(2200) && b <= Duration::from_millis(2400),
+            "got {b:?}"
+        );
+    }
+
+    #[test]
+    fn skolemisation_gets_raised_cap() {
+        // One skolemisation job ⇒ share ≈ full remaining, capped at max(8s,25s).
+        let deadline = Instant::now() + Duration::from_secs(30);
+        assert_eq!(
+            step_budget(deadline, Duration::from_secs(8), 8, 1, true),
+            Duration::from_secs(25)
+        );
+    }
+
+    #[test]
+    fn floors_sub_second_share_to_one_second() {
+        // 1000 jobs / 8 workers / ~30s ⇒ share ≈ 0.24s, floored to 1s because
+        // meaningful wall time remains.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        assert_eq!(
+            step_budget(deadline, Duration::from_secs(8), 8, 1000, false),
+            Duration::from_secs(1)
         );
     }
 }

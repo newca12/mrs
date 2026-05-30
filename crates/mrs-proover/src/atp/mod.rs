@@ -24,7 +24,12 @@ pub enum AtpVerdict {
 }
 
 /// Trait implemented by every ATP backend.
-pub trait Atp {
+///
+/// `Send + Sync` is required so a single `&dyn Atp` can be shared across the
+/// scoped worker threads that run independent per-step ATP queries in
+/// parallel (see `verify::run_atp_jobs`). Every backend holds only thread-safe
+/// state (paths, flags, `Vec<Box<dyn Atp>>`), so the bound is free.
+pub trait Atp: Send + Sync {
     /// Identifier used in error messages.
     fn name(&self) -> &'static str;
     /// Test whether `premises ⊨ conclusion` within the given wall budget.
