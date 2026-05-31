@@ -90,14 +90,27 @@ impl Substitution {
     /// a bug in the code that built the substitution) and returns the looping
     /// variable in release mode.
     pub fn apply_term(&self, term: &Term) -> Term {
+        if self.bindings.is_empty() {
+            return term.clone();
+        }
+        self.apply_term_opt(term).unwrap_or_else(|| term.clone())
+    }
+
+    fn apply_term_opt(&self, term: &Term) -> Option<Term> {
         match term {
             Term::Var(start) => {
-                // Follow the variable chain iteratively.
                 let mut current = *start;
                 let mut steps: u32 = 0;
+                let mut changed = false;
                 loop {
                     match self.bindings.get(&current) {
-                        None => return Term::Var(current),
+                        None => {
+                            if changed {
+                                return Some(Term::Var(current));
+                            } else {
+                                return None;
+                            }
+                        }
                         Some(Term::Var(next)) => {
                             steps += 1;
                             debug_assert!(
@@ -107,15 +120,33 @@ impl Substitution {
                                 self.bindings
                             );
                             current = *next;
+                            changed = true;
                         }
-                        // Chain ends at a non-variable term: recurse into it.
-                        Some(t) => return self.apply_term(t),
+                        Some(t) => {
+                            return Some(self.apply_term_opt(t).unwrap_or_else(|| t.clone()));
+                        }
                     }
                 }
             }
             Term::App(f, args) => {
-                let new_args: Vec<Term> = args.iter().map(|a| self.apply_term(a)).collect();
-                Term::App(*f, new_args)
+                let mut new_args: Option<Vec<Term>> = None;
+                for (i, arg) in args.iter().enumerate() {
+                    if let Some(new_arg) = self.apply_term_opt(arg) {
+                        if new_args.is_none() {
+                            let mut v = Vec::with_capacity(args.len());
+                            for j in 0..i {
+                                v.push(args[j].clone());
+                            }
+                            new_args = Some(v);
+                        }
+                        new_args.as_mut().unwrap().push(new_arg);
+                    } else {
+                        if let Some(v) = new_args.as_mut() {
+                            v.push(arg.clone());
+                        }
+                    }
+                }
+                new_args.map(|na| Term::App(*f, na))
             }
         }
     }

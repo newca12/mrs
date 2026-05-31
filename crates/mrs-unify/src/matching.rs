@@ -6,6 +6,7 @@
 
 use mrs_core::Substitution;
 use mrs_core::term::Term;
+use mrs_core::term_bank::{IdSubstitution, TermBank, TermId, TermNode};
 
 use crate::{UnifyError, UnifyResult};
 
@@ -19,6 +20,13 @@ use crate::{UnifyError, UnifyResult};
 pub fn match_term(pattern: &Term, target: &Term) -> UnifyResult {
     let mut subst = Substitution::new();
     match_rec(pattern, target, &mut subst)?;
+    Ok(subst)
+}
+
+/// Matches a pattern against a target term, operating on `TermId`s.
+pub fn match_term_id(pattern: TermId, target: TermId, bank: &TermBank) -> Result<IdSubstitution, UnifyError> {
+    let mut subst = IdSubstitution::new();
+    match_rec_id(pattern, target, &mut subst, bank)?;
     Ok(subst)
 }
 
@@ -64,6 +72,58 @@ fn match_rec(pattern: &Term, target: &Term, subst: &mut Substitution) -> Result<
                 }
                 // Pattern is a function, target is a variable -> can't match
                 Term::Var(_) => Err(UnifyError::SymbolClash {
+                    left: format!("{:?}", f1),
+                    right: "variable".to_string(),
+                }),
+            }
+        }
+    }
+}
+
+fn match_rec_id(
+    pattern: TermId,
+    target: TermId,
+    subst: &mut IdSubstitution,
+    bank: &TermBank,
+) -> Result<(), UnifyError> {
+    match bank.get(pattern) {
+        TermNode::Var(v) => {
+            if let Some(bound) = subst.get(*v) {
+                // Since terms are hash-consed, structural equality is exactly ID equality!
+                if bound == target {
+                    Ok(())
+                } else {
+                    Err(UnifyError::SymbolClash {
+                        left: format!("X{} (bound)", v),
+                        right: format!("{:?}", target),
+                    })
+                }
+            } else {
+                subst.bind(*v, target);
+                Ok(())
+            }
+        }
+        TermNode::App(f1, args1) => {
+            match bank.get(target) {
+                TermNode::App(f2, args2) => {
+                    if f1 != f2 {
+                        return Err(UnifyError::SymbolClash {
+                            left: format!("{:?}", f1),
+                            right: format!("{:?}", f2),
+                        });
+                    }
+                    if args1.len() != args2.len() {
+                        return Err(UnifyError::ArityMismatch {
+                            expected: args1.len(),
+                            found: args2.len(),
+                        });
+                    }
+                    for (a1, a2) in args1.iter().zip(args2.iter()) {
+                        match_rec_id(*a1, *a2, subst, bank)?;
+                    }
+                    Ok(())
+                }
+                TermNode::Var(_) => Err(UnifyError::SymbolClash {
                     left: format!("{:?}", f1),
                     right: "variable".to_string(),
                 }),
@@ -159,5 +219,27 @@ mod tests {
             sub.apply_term(&Term::var(0)),
             Term::app(g, vec![Term::constant(a)])
         );
+    }
+
+    #[test]
+    fn test_match_id() {
+        let mut st = SymbolTable::new();
+        let f = st.intern("f");
+        let a = st.intern("a");
+        let b = st.intern("b");
+
+        let mut bank = TermBank::new();
+        let v0 = bank.intern_var(0);
+        let v1 = bank.intern_var(1);
+        let c_a = bank.intern_app(a, vec![]);
+        let c_b = bank.intern_app(b, vec![]);
+        
+        // f(X, Y) matches f(a, b) => X=a, Y=b
+        let pattern = bank.intern_app(f, vec![v0, v1]);
+        let target = bank.intern_app(f, vec![c_a, c_b]);
+
+        let sub = match_term_id(pattern, target, &bank).unwrap();
+        assert_eq!(sub.get(0), Some(c_a));
+        assert_eq!(sub.get(1), Some(c_b));
     }
 }

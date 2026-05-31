@@ -16,6 +16,7 @@ pub mod formula;
 pub mod subst;
 pub mod symbol;
 pub mod term;
+pub mod term_bank;
 
 #[cfg(feature = "proover")]
 pub mod alpha;

@@ -17,6 +17,7 @@ use std::collections::HashSet;
 use mrs_core::Substitution;
 use mrs_core::SymbolId;
 use mrs_core::term::{Term, VarId};
+use mrs_core::term_bank::{IdSubstitution, TermBank, TermId, TermNode};
 
 use crate::{UnifyError, UnifyResult};
 
@@ -26,6 +27,13 @@ use crate::{UnifyError, UnifyResult};
 pub fn unify(s: &Term, t: &Term) -> UnifyResult {
     let mut subst = Substitution::new();
     unify_rec(s, t, &mut subst)?;
+    Ok(subst)
+}
+
+/// Unifies two terms using Robinson's algorithm, operating on `TermId`s.
+pub fn unify_id(s: TermId, t: TermId, bank: &TermBank) -> Result<IdSubstitution, UnifyError> {
+    let mut subst = IdSubstitution::new();
+    unify_rec_id(s, t, &mut subst, bank)?;
     Ok(subst)
 }
 
@@ -61,6 +69,43 @@ fn unify_rec(s: &Term, t: &Term, subst: &mut Substitution) -> Result<(), UnifyEr
             }
             for (a1, a2) in args1.iter().zip(args2.iter()) {
                 unify_rec(a1, a2, subst)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn unify_rec_id(
+    s: TermId,
+    t: TermId,
+    subst: &mut IdSubstitution,
+    bank: &TermBank,
+) -> Result<(), UnifyError> {
+    let s = deref_id(s, subst, bank);
+    let t = deref_id(t, subst, bank);
+
+    if s == t {
+        return Ok(());
+    }
+
+    match (bank.get(s), bank.get(t)) {
+        (TermNode::Var(v), _) => bind_var_id(*v, t, subst, bank),
+        (_, TermNode::Var(v)) => bind_var_id(*v, s, subst, bank),
+        (TermNode::App(f1, args1), TermNode::App(f2, args2)) => {
+            if f1 != f2 {
+                return Err(UnifyError::SymbolClash {
+                    left: format!("{:?}", f1),
+                    right: format!("{:?}", f2),
+                });
+            }
+            if args1.len() != args2.len() {
+                return Err(UnifyError::ArityMismatch {
+                    expected: args1.len(),
+                    found: args2.len(),
+                });
+            }
+            for (a1, a2) in args1.iter().zip(args2.iter()) {
+                unify_rec_id(*a1, *a2, subst, bank)?;
             }
             Ok(())
         }
@@ -156,6 +201,78 @@ fn unify_comm_rec(
     }
 }
 
+pub fn unify_comm_id(s: TermId, t: TermId, bank: &TermBank, comm: &HashSet<SymbolId>) -> Result<IdSubstitution, UnifyError> {
+    if comm.is_empty() {
+        return unify_id(s, t, bank);
+    }
+    let mut subst = IdSubstitution::new();
+    unify_comm_rec_id(s, t, &mut subst, bank, comm)?;
+    Ok(subst)
+}
+
+fn unify_comm_rec_id(
+    s: TermId,
+    t: TermId,
+    subst: &mut IdSubstitution,
+    bank: &TermBank,
+    comm: &HashSet<SymbolId>,
+) -> Result<(), UnifyError> {
+    let s = deref_id(s, subst, bank);
+    let t = deref_id(t, subst, bank);
+
+    if s == t {
+        return Ok(());
+    }
+
+    match (bank.get(s), bank.get(t)) {
+        (TermNode::Var(v), _) => bind_var_id(*v, t, subst, bank),
+        (_, TermNode::Var(v)) => bind_var_id(*v, s, subst, bank),
+        (TermNode::App(f1, args1), TermNode::App(f2, args2)) => {
+            if f1 != f2 {
+                return Err(UnifyError::SymbolClash {
+                    left: format!("{:?}", f1),
+                    right: format!("{:?}", f2),
+                });
+            }
+            if args1.len() != args2.len() {
+                return Err(UnifyError::ArityMismatch {
+                    expected: args1.len(),
+                    found: args2.len(),
+                });
+            }
+
+            let saved = subst.clone();
+
+            let normal_ok: Result<(), UnifyError> = (|| {
+                for (a1, a2) in args1.iter().zip(args2.iter()) {
+                    unify_comm_rec_id(*a1, *a2, subst, bank, comm)?;
+                }
+                Ok(())
+            })();
+
+            if normal_ok.is_ok() {
+                return Ok(());
+            }
+
+            if comm.contains(f1) && args1.len() == 2 {
+                let mut subst_swap = saved.clone();
+                let swap_ok: Result<(), UnifyError> = (|| {
+                    unify_comm_rec_id(args1[0], args2[1], &mut subst_swap, bank, comm)?;
+                    unify_comm_rec_id(args1[1], args2[0], &mut subst_swap, bank, comm)?;
+                    Ok(())
+                })();
+                if swap_ok.is_ok() {
+                    *subst = subst_swap;
+                    return Ok(());
+                }
+            }
+
+            *subst = saved;
+            normal_ok
+        }
+    }
+}
+
 /// Binds a variable to a term, performing the occurs check.
 ///
 /// Before storing, the current substitution is applied to `term` (path
@@ -193,6 +310,47 @@ fn bind_var(var: VarId, term: &Term, subst: &mut Substitution) -> Result<(), Uni
 
     subst.bind(var, term);
     Ok(())
+}
+
+fn deref_id(mut t: TermId, subst: &IdSubstitution, bank: &TermBank) -> TermId {
+    let mut steps = 0;
+    loop {
+        if let TermNode::Var(v) = bank.get(t) {
+            if let Some(next) = subst.get(*v) {
+                t = next;
+                steps += 1;
+                debug_assert!(steps < 100_000, "apply_term_opt cycle");
+                continue;
+            }
+        }
+        break;
+    }
+    t
+}
+
+fn bind_var_id(var: VarId, term: TermId, subst: &mut IdSubstitution, bank: &TermBank) -> Result<(), UnifyError> {
+    let term = deref_id(term, subst, bank);
+
+    if let TermNode::Var(v) = bank.get(term) {
+        if *v == var {
+            return Ok(());
+        }
+    }
+
+    if contains_var_id(term, var, subst, bank) {
+        return Err(UnifyError::OccursCheck { var });
+    }
+
+    subst.bind(var, term);
+    Ok(())
+}
+
+fn contains_var_id(term: TermId, var: VarId, subst: &IdSubstitution, bank: &TermBank) -> bool {
+    let term = deref_id(term, subst, bank);
+    match bank.get(term) {
+        TermNode::Var(v) => *v == var,
+        TermNode::App(_, args) => args.iter().any(|&a| contains_var_id(a, var, subst, bank)),
+    }
 }
 
 #[cfg(test)]
@@ -376,5 +534,36 @@ mod tests {
             vec![Term::constant(c), Term::constant(b), Term::constant(a)],
         );
         assert!(unify_comm(&t1, &t2, &comm).is_err());
+    }
+
+    #[test]
+    fn test_unify_id() {
+        let mut st = SymbolTable::new();
+        let f = st.intern("f");
+        let g = st.intern("g");
+        let a = st.intern("a");
+        let b = st.intern("b");
+
+        let mut bank = TermBank::new();
+        // t1 = f(X, g(Y))
+        let v0 = bank.intern_var(0);
+        let v1 = bank.intern_var(1);
+        let g_y = bank.intern_app(g, vec![v1]);
+        let t1 = bank.intern_app(f, vec![v0, g_y]);
+
+        // t2 = f(a, g(b))
+        let c_a = bank.intern_app(a, vec![]);
+        let c_b = bank.intern_app(b, vec![]);
+        let g_b = bank.intern_app(g, vec![c_b]);
+        let t2 = bank.intern_app(f, vec![c_a, g_b]);
+
+        let subst = unify_id(t1, t2, &bank).unwrap();
+        
+        let mut expected = IdSubstitution::new();
+        expected.bind(0, c_a);
+        expected.bind(1, c_b);
+
+        assert_eq!(subst.get(0), expected.get(0));
+        assert_eq!(subst.get(1), expected.get(1));
     }
 }
