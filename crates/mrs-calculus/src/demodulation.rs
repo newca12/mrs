@@ -152,6 +152,148 @@ fn rewrite_term(
     }
 }
 
+use mrs_core::term_bank::{IdClause, IdLiteral, TermBank, TermId, IdAtom};
+
+pub fn demodulate_id(
+    clause: &IdClause,
+    bank: &mut TermBank,
+    demod_index: &mrs_index::dtree::DTreeId<(TermId, TermId, ClauseId)>,
+    clause_store: &std::collections::HashMap<ClauseId, IdClause>,
+    id_gen: &mut ClauseIdGen,
+) -> Option<IdClause> {
+    let mut current_lits = clause.literals.clone();
+    let mut changed = false;
+    let mut used_unit_ids = Vec::new();
+
+    loop {
+        let mut changed_this_pass = false;
+        for lit in &mut current_lits {
+            if rewrite_literal_id(lit, bank, demod_index, &mut used_unit_ids) {
+                changed = true;
+                changed_this_pass = true;
+            }
+        }
+        if !changed_this_pass {
+            break;
+        }
+    }
+
+    if changed {
+        let mut parents = vec![clause.id];
+        parents.extend(used_unit_ids.iter().copied());
+
+        let mut new_avatar = clause.avatar.clone();
+        for &u_id in &used_unit_ids {
+            if let Some(u) = clause_store.get(&u_id) {
+                new_avatar.extend_from_slice(&u.avatar);
+            }
+        }
+
+        Some(IdClause::new_avatar(
+            id_gen.next(),
+            current_lits,
+            ClauseSource::Inference {
+                rule: "demodulation".into(),
+                parents,
+            },
+            new_avatar,
+        ))
+    } else {
+        None
+    }
+}
+
+fn rewrite_literal_id(
+    lit: &mut IdLiteral,
+    bank: &mut TermBank,
+    demod_index: &mrs_index::dtree::DTreeId<(TermId, TermId, ClauseId)>,
+    used_unit_ids: &mut Vec<ClauseId>,
+) -> bool {
+    let mut changed = false;
+    let new_atom = match &lit.atom {
+        IdAtom::Pred(p, args) => {
+            let new_args: Vec<TermId> = args
+                .iter()
+                .map(|&arg| {
+                    let (new_arg, ch) = rewrite_term_id(arg, bank, demod_index, used_unit_ids);
+                    if ch {
+                        changed = true;
+                    }
+                    new_arg
+                })
+                .collect();
+            IdAtom::Pred(*p, new_args)
+        }
+        IdAtom::Eq(l, r) => {
+            let (new_l, ch_l) = rewrite_term_id(*l, bank, demod_index, used_unit_ids);
+            let (new_r, ch_r) = rewrite_term_id(*r, bank, demod_index, used_unit_ids);
+            if ch_l || ch_r {
+                changed = true;
+            }
+            IdAtom::Eq(new_l, new_r)
+        }
+    };
+    if changed {
+        lit.atom = new_atom;
+    }
+    changed
+}
+
+fn rewrite_term_id(
+    term: TermId,
+    bank: &mut TermBank,
+    demod_index: &mrs_index::dtree::DTreeId<(TermId, TermId, ClauseId)>,
+    used_unit_ids: &mut Vec<ClauseId>,
+) -> (TermId, bool) {
+    let rules = demod_index.get_generalizations(term, bank);
+    for (from, to, unit_id) in rules {
+        if let Ok(sigma) = mrs_unify::matching::match_term_id(from, term, bank) {
+            if !used_unit_ids.contains(&unit_id) {
+                used_unit_ids.push(unit_id);
+            }
+            return (apply_matching_subst_id(&sigma, to, bank), true);
+        }
+    }
+
+    match bank.get(term).clone() {
+        mrs_core::term_bank::TermNode::Var(_) => (term, false),
+        mrs_core::term_bank::TermNode::App(f, args) => {
+            let mut changed = false;
+            let new_args: Vec<TermId> = args
+                .iter()
+                .map(|&arg| {
+                    let (new_arg, ch) = rewrite_term_id(arg, bank, demod_index, used_unit_ids);
+                    if ch {
+                        changed = true;
+                    }
+                    new_arg
+                })
+                .collect();
+            if changed {
+                (bank.intern_app(f, new_args), true)
+            } else {
+                (term, false)
+            }
+        }
+    }
+}
+
+fn apply_matching_subst_id(sigma: &mrs_core::term_bank::IdSubstitution, term: TermId, bank: &mut TermBank) -> TermId {
+    match bank.get(term).clone() {
+        mrs_core::term_bank::TermNode::Var(v) => match sigma.get(v) {
+            Some(t) => t,
+            None => term,
+        },
+        mrs_core::term_bank::TermNode::App(f, args) => {
+            let new_args: Vec<TermId> = args
+                .iter()
+                .map(|&a| apply_matching_subst_id(sigma, a, bank))
+                .collect();
+            bank.intern_app(f, new_args)
+        }
+    }
+}
+
 /// Applies a matching substitution without following variable chains.
 fn apply_matching_subst(sigma: &mrs_core::Substitution, term: &Term) -> Term {
     match term {

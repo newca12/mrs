@@ -144,6 +144,119 @@ pub fn equality_factor(
     results
 }
 
+use mrs_core::term_bank::{IdClause, IdLiteral, TermBank, TermId, IdAtom};
+
+pub fn equality_resolve_id(clause: &IdClause, bank: &mut TermBank, id_gen: &mut ClauseIdGen) -> Vec<IdClause> {
+    let mut results = Vec::new();
+
+    for (i, lit) in clause.literals.iter().enumerate() {
+        if lit.positive {
+            continue;
+        }
+        let (s, t) = match &lit.atom {
+            IdAtom::Eq(s, t) => (*s, *t),
+            _ => continue,
+        };
+
+        if let Ok(sigma) = mrs_unify::robinson::unify_id(s, t, bank) {
+            let new_lits: Vec<IdLiteral> = clause
+                .literals
+                .iter()
+                .enumerate()
+                .filter(|&(k, _)| k != i)
+                .map(|(_, lit)| sigma.apply_literal(lit, bank))
+                .collect();
+
+            results.push(IdClause::new_avatar(
+                id_gen.next(),
+                new_lits,
+                ClauseSource::Inference {
+                    rule: "equality_resolution".into(),
+                    parents: vec![clause.id],
+                },
+                clause.avatar.clone(),
+            ));
+        }
+    }
+
+    results
+}
+
+pub fn equality_factor_id(
+    clause: &IdClause,
+    bank: &mut TermBank,
+    ordering: &TermOrdering,
+    id_gen: &mut ClauseIdGen,
+) -> Vec<IdClause> {
+    let mut results = Vec::new();
+
+    for (i, lit1) in clause.literals.iter().enumerate() {
+        if !lit1.positive {
+            continue;
+        }
+        let (s, t) = match &lit1.atom {
+            IdAtom::Eq(s, t) => (*s, *t),
+            _ => continue,
+        };
+
+        for (j, lit2) in clause.literals.iter().enumerate() {
+            if j <= i || !lit2.positive {
+                continue;
+            }
+            let (s2, t2) = match &lit2.atom {
+                IdAtom::Eq(s2, t2) => (*s2, *t2),
+                _ => continue,
+            };
+
+            for (left1, right1, left2, right2) in [
+                (s, t, s2, t2),
+                (s, t, t2, s2),
+                (t, s, s2, t2),
+                (t, s, t2, s2),
+            ] {
+                if let Ok(sigma) = mrs_unify::robinson::unify_id(left1, left2, bank) {
+                    let l1s = sigma.apply_term(left1, bank);
+                    let r1s = sigma.apply_term(right1, bank);
+                    let comp = ordering.compare_id(l1s, r1s, bank);
+                    if comp == TermComparison::Less || comp == TermComparison::Equal {
+                        continue;
+                    }
+
+                    let mut new_lits = Vec::new();
+
+                    new_lits.push(sigma.apply_literal(lit1, bank));
+
+                    new_lits.push(IdLiteral {
+                        positive: false,
+                        atom: IdAtom::Eq(
+                            sigma.apply_term(right1, bank),
+                            sigma.apply_term(right2, bank),
+                        ),
+                    });
+
+                    for (k, lit) in clause.literals.iter().enumerate() {
+                        if k != i && k != j {
+                            new_lits.push(sigma.apply_literal(lit, bank));
+                        }
+                    }
+
+                    results.push(IdClause::new_avatar(
+                        id_gen.next(),
+                        new_lits,
+                        ClauseSource::Inference {
+                            rule: "equality_factoring".into(),
+                            parents: vec![clause.id],
+                        },
+                        clause.avatar.clone(),
+                    ));
+                }
+            }
+        }
+    }
+
+    results
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

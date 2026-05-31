@@ -71,6 +71,163 @@ fn skip_in_flat(flat: &[Cell], pos: usize) -> usize {
     }
 }
 
+use mrs_core::term_bank::{TermBank, TermId, TermNode};
+
+fn flatten_id(term: TermId, bank: &TermBank) -> Vec<Cell> {
+    let mut cells = Vec::new();
+    let mut var_map = HashMap::new();
+    let mut next_var = 0;
+    flatten_into_id(term, bank, &mut cells, &mut var_map, &mut next_var);
+    cells
+}
+
+fn flatten_into_id(
+    term: TermId,
+    bank: &TermBank,
+    out: &mut Vec<Cell>,
+    var_map: &mut HashMap<VarId, VarId>,
+    next_var: &mut VarId,
+) {
+    match bank.get(term) {
+        TermNode::Var(v) => {
+            let norm_v = *var_map.entry(*v).or_insert_with(|| {
+                let id = *next_var;
+                *next_var += 1;
+                id
+            });
+            out.push(Cell::Var(norm_v));
+        }
+        TermNode::App(sym, args) => {
+            out.push(Cell::Sym(*sym, args.len() as u8));
+            for &arg in args {
+                flatten_into_id(arg, bank, out, var_map, next_var);
+            }
+        }
+    }
+}
+
+/// A discrimination tree for `TermId`.
+pub struct DTreeId<V> {
+    children: HashMap<Cell, DTreeId<V>>,
+    leaves: Vec<V>,
+}
+
+impl<V: Clone + PartialEq> DTreeId<V> {
+    pub fn new() -> Self {
+        DTreeId {
+            children: HashMap::new(),
+            leaves: Vec::new(),
+        }
+    }
+
+    pub fn insert(&mut self, term: TermId, bank: &TermBank, value: V) {
+        let flat = flatten_id(term, bank);
+        let mut curr = self;
+        for cell in flat {
+            curr = curr.children.entry(cell).or_insert_with(DTreeId::new);
+        }
+        if !curr.leaves.contains(&value) {
+            curr.leaves.push(value);
+        }
+    }
+
+    pub fn remove(&mut self, term: TermId, bank: &TermBank, value: &V) -> bool {
+        let flat = flatten_id(term, bank);
+        self.remove_rec(&flat, 0, value)
+    }
+
+    fn remove_rec(&mut self, flat: &[Cell], pos: usize, value: &V) -> bool {
+        if pos == flat.len() {
+            let len_before = self.leaves.len();
+            self.leaves.retain(|v| v != value);
+            return self.leaves.len() < len_before;
+        }
+
+        let cell = flat[pos];
+        if let Some(child) = self.children.get_mut(&cell) {
+            let removed = child.remove_rec(flat, pos + 1, value);
+            if removed && child.is_empty() {
+                self.children.remove(&cell);
+            }
+            removed
+        } else {
+            false
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.leaves.is_empty() && self.children.is_empty()
+    }
+
+    pub fn get_generalizations(&self, query: TermId, bank: &TermBank) -> Vec<V> {
+        let mut results = Vec::new();
+        let flat = gen_flat(query, bank);
+        self.get_generalizations_rec(&flat, 0, &mut results);
+        results
+    }
+
+    fn get_generalizations_rec(&self, flat: &[Cell], pos: usize, out: &mut Vec<V>) {
+        if pos == flat.len() {
+            out.extend_from_slice(&self.leaves);
+            return;
+        }
+
+        let cell = flat[pos];
+        if let Some(child) = self.children.get(&cell) {
+            child.get_generalizations_rec(flat, pos + 1, out);
+        }
+
+        for (child_cell, child) in &self.children {
+            if let Cell::Var(_) = child_cell {
+                let next_pos = skip_in_flat(flat, pos);
+                child.get_generalizations_rec(flat, next_pos, out);
+            }
+        }
+    }
+}
+
+impl<V> Default for DTreeId<V> {
+    fn default() -> Self {
+        Self {
+            children: HashMap::new(),
+            leaves: Vec::new(),
+        }
+    }
+}
+
+fn gen_flat(term: TermId, bank: &TermBank) -> Vec<Cell> {
+    let mut cells = Vec::new();
+    let mut var_map = HashMap::new();
+    let mut next_var = 0;
+    gen_flat_into(term, bank, &mut cells, &mut var_map, &mut next_var);
+    cells
+}
+
+fn gen_flat_into(
+    term: TermId,
+    bank: &TermBank,
+    out: &mut Vec<Cell>,
+    var_map: &mut HashMap<VarId, VarId>,
+    next_var: &mut VarId,
+) {
+    match bank.get(term) {
+        TermNode::Var(v) => {
+            let norm_v = *var_map.entry(*v).or_insert_with(|| {
+                let id = *next_var;
+                *next_var += 1;
+                id
+            });
+            out.push(Cell::Var(norm_v));
+        }
+        TermNode::App(sym, args) => {
+            out.push(Cell::Sym(*sym, args.len() as u8));
+            for &arg in args {
+                gen_flat_into(arg, bank, out, var_map, next_var);
+            }
+        }
+    }
+}
+
 /// A discrimination tree mapping terms to values.
 ///
 /// Supports efficient retrieval of terms that unify with, generalize,

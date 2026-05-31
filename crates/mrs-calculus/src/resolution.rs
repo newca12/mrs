@@ -15,7 +15,8 @@ use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource};
 use mrs_core::term::Term;
 use mrs_core::{Atom, Literal};
 
-use crate::rename::{max_var, rename_clause};
+use mrs_core::term_bank::{IdClause, TermBank, TermId, IdAtom};
+use crate::rename::{max_var, max_var_id, rename_clause, rename_clause_id};
 
 /// Converts an atom to a term for unification purposes.
 ///
@@ -30,6 +31,13 @@ fn atom_to_term(atom: &Atom) -> Option<Term> {
     }
 }
 
+fn atom_to_term_id(atom: &IdAtom, bank: &mut TermBank) -> Option<TermId> {
+    match atom {
+        IdAtom::Pred(p, args) => Some(bank.intern_app(*p, args.clone())),
+        IdAtom::Eq(_, _) => None,
+    }
+}
+
 /// Produces all binary resolvents of two clauses.
 ///
 /// Renames `c2`'s variables to be disjoint from `c1`, then tries every pair
@@ -39,6 +47,10 @@ fn atom_to_term(atom: &Atom) -> Option<Term> {
 /// Returns an empty vector if no resolution is possible.
 pub fn resolve(c1: &Clause, c2: &Clause, id_gen: &mut ClauseIdGen) -> Vec<Clause> {
     resolve_selected(c1, c2, id_gen, None, None, &HashSet::new())
+}
+
+pub fn resolve_id(c1: &IdClause, c2: &IdClause, bank: &mut TermBank, id_gen: &mut ClauseIdGen) -> Vec<IdClause> {
+    resolve_selected_id(c1, c2, bank, id_gen, None, None, &HashSet::new())
 }
 
 /// Like [`resolve`], but restricted to selected literals.
@@ -106,6 +118,77 @@ pub fn resolve_selected(
                 new_avatar.extend_from_slice(&c2.avatar);
 
                 resolvents.push(Clause::new_avatar(
+                    id_gen.next(),
+                    lits,
+                    ClauseSource::Inference {
+                        rule: "resolution".to_string(),
+                        parents: vec![c1.id, c2.id],
+                    },
+                    new_avatar,
+                ));
+            }
+        }
+    }
+
+    resolvents
+}
+
+pub fn resolve_selected_id(
+    c1: &IdClause,
+    c2: &IdClause,
+    bank: &mut TermBank,
+    id_gen: &mut ClauseIdGen,
+    sel1: Option<&[usize]>,
+    sel2: Option<&[usize]>,
+    comm: &HashSet<SymbolId>,
+) -> Vec<IdClause> {
+    let offset = max_var_id(c1, bank);
+    let c2r = rename_clause_id(c2, offset, bank);
+
+    let mut resolvents = Vec::new();
+
+    for (i, l1) in c1.literals.iter().enumerate() {
+        if let Some(sel) = sel1 {
+            if !sel.contains(&i) {
+                continue;
+            }
+        }
+        for (j, l2) in c2r.literals.iter().enumerate() {
+            if let Some(sel) = sel2 {
+                if !sel.contains(&j) {
+                    continue;
+                }
+            }
+            if l1.positive == l2.positive {
+                continue;
+            }
+
+            let t1 = match atom_to_term_id(&l1.atom, bank) {
+                Some(t) => t,
+                None => continue,
+            };
+            let t2 = match atom_to_term_id(&l2.atom, bank) {
+                Some(t) => t,
+                None => continue,
+            };
+
+            if let Ok(mgu) = mrs_unify::robinson::unify_comm_id(t1, t2, bank, comm) {
+                let mut lits = Vec::new();
+                for (k, lit) in c1.literals.iter().enumerate() {
+                    if k != i {
+                        lits.push(mgu.apply_literal(lit, bank));
+                    }
+                }
+                for (k, lit) in c2r.literals.iter().enumerate() {
+                    if k != j {
+                        lits.push(mgu.apply_literal(lit, bank));
+                    }
+                }
+
+                let mut new_avatar = c1.avatar.clone();
+                new_avatar.extend_from_slice(&c2.avatar);
+
+                resolvents.push(IdClause::new_avatar(
                     id_gen.next(),
                     lits,
                     ClauseSource::Inference {

@@ -105,6 +105,15 @@ impl KBO {
         }
     }
 
+    fn weight_id(&self, t: mrs_core::term_bank::TermId, bank: &mrs_core::term_bank::TermBank) -> u32 {
+        match bank.get(t) {
+            mrs_core::term_bank::TermNode::Var(_) => self.config.w0,
+            mrs_core::term_bank::TermNode::App(f, args) => {
+                self.symbol_weight(*f) + args.iter().map(|&a| self.weight_id(a, bank)).sum::<u32>()
+            }
+        }
+    }
+
     /// Counts occurrences of each variable in a term.
     fn var_counts(t: &Term) -> HashMap<VarId, i32> {
         let mut counts = HashMap::new();
@@ -122,6 +131,94 @@ impl KBO {
                     Self::collect_var_counts(arg, counts);
                 }
             }
+        }
+    }
+
+    fn var_counts_id(t: mrs_core::term_bank::TermId, bank: &mrs_core::term_bank::TermBank) -> HashMap<VarId, i32> {
+        let mut counts = HashMap::new();
+        Self::collect_var_counts_id(t, bank, &mut counts);
+        counts
+    }
+
+    fn collect_var_counts_id(t: mrs_core::term_bank::TermId, bank: &mrs_core::term_bank::TermBank, counts: &mut HashMap<VarId, i32>) {
+        match bank.get(t) {
+            mrs_core::term_bank::TermNode::Var(v) => {
+                *counts.entry(*v).or_insert(0) += 1;
+            }
+            mrs_core::term_bank::TermNode::App(_, args) => {
+                for &arg in args {
+                    Self::collect_var_counts_id(arg, bank, counts);
+                }
+            }
+        }
+    }
+
+    pub fn compare_id(&self, s: mrs_core::term_bank::TermId, t: mrs_core::term_bank::TermId, bank: &mrs_core::term_bank::TermBank) -> TermComparison {
+        if s == t {
+            return TermComparison::Equal;
+        }
+
+        let s_counts = Self::var_counts_id(s, bank);
+        let t_counts = Self::var_counts_id(t, bank);
+
+        let s_ge_t_vars = t_counts
+            .iter()
+            .all(|(v, &ct)| s_counts.get(v).copied().unwrap_or(0) >= ct);
+        let t_ge_s_vars = s_counts
+            .iter()
+            .all(|(v, &cs)| t_counts.get(v).copied().unwrap_or(0) >= cs);
+
+        let ws = self.weight_id(s, bank);
+        let wt = self.weight_id(t, bank);
+
+        if ws > wt && s_ge_t_vars {
+            return TermComparison::Greater;
+        }
+        if wt > ws && t_ge_s_vars {
+            return TermComparison::Less;
+        }
+        if ws != wt {
+            return TermComparison::Incomparable;
+        }
+
+        match (bank.get(s), bank.get(t)) {
+            (mrs_core::term_bank::TermNode::App(f1, args1), mrs_core::term_bank::TermNode::App(f2, args2)) => {
+                if f1 != f2 {
+                    let prec1 = self.config.symbol_precedence(*f1);
+                    let prec2 = self.config.symbol_precedence(*f2);
+                    if s_ge_t_vars && prec1 > prec2 {
+                        return TermComparison::Greater;
+                    }
+                    if t_ge_s_vars && prec2 > prec1 {
+                        return TermComparison::Less;
+                    }
+                    return TermComparison::Incomparable;
+                }
+
+                for (&a1, &a2) in args1.iter().zip(args2.iter()) {
+                    let cmp = self.compare_id(a1, a2, bank);
+                    match cmp {
+                        TermComparison::Equal => continue,
+                        TermComparison::Greater => {
+                            if s_ge_t_vars {
+                                return TermComparison::Greater;
+                            } else {
+                                return TermComparison::Incomparable;
+                            }
+                        }
+                        TermComparison::Less => {
+                            if t_ge_s_vars {
+                                return TermComparison::Less;
+                            } else {
+                                return TermComparison::Incomparable;
+                            }
+                        }
+                        TermComparison::Incomparable => return TermComparison::Incomparable,
+                    }
+                }
+                TermComparison::Equal
+            }
+            _ => TermComparison::Incomparable,
         }
     }
 
@@ -234,6 +331,77 @@ impl LPO {
 
     pub fn with_config(config: Arc<SymbolConfig>) -> Self {
         Self { config }
+    }
+
+    pub fn compare_id(&self, s: mrs_core::term_bank::TermId, t: mrs_core::term_bank::TermId, bank: &mrs_core::term_bank::TermBank) -> TermComparison {
+        if s == t {
+            return TermComparison::Equal;
+        }
+        if self.lpo_gt_id(s, t, bank) {
+            TermComparison::Greater
+        } else if self.lpo_gt_id(t, s, bank) {
+            TermComparison::Less
+        } else {
+            TermComparison::Incomparable
+        }
+    }
+
+    /// Returns true if s >_lpo t.
+    fn lpo_gt_id(&self, s: mrs_core::term_bank::TermId, t: mrs_core::term_bank::TermId, bank: &mrs_core::term_bank::TermBank) -> bool {
+        // Case 1: t is a variable occurring in s (and s ≠ t)
+        if let mrs_core::term_bank::TermNode::Var(v) = bank.get(t) {
+            if s == t {
+                return false;
+            }
+            return occurs_in_id(*v, s, bank);
+        }
+
+        match bank.get(s) {
+            mrs_core::term_bank::TermNode::Var(_) => {
+                false
+            }
+            mrs_core::term_bank::TermNode::App(f, s_args) => {
+                // Case 2a: some si ≥_lpo t (subterm property)
+                for &si in s_args {
+                    if si == t || self.lpo_gt_id(si, t, bank) {
+                        return true;
+                    }
+                }
+
+                match bank.get(t) {
+                    mrs_core::term_bank::TermNode::App(g, t_args) => {
+                        let s_gt_all_tj = t_args.iter().all(|&tj| self.lpo_gt_id(s, tj, bank));
+                        if !s_gt_all_tj {
+                            return false;
+                        }
+
+                        let prec_f = self.config.symbol_precedence(*f);
+                        let prec_g = self.config.symbol_precedence(*g);
+
+                        if prec_f > prec_g {
+                            true
+                        } else if prec_f == prec_g {
+                            self.lex_gt_id(s_args, t_args, bank)
+                        } else {
+                            false
+                        }
+                    }
+                    mrs_core::term_bank::TermNode::Var(_) => {
+                        unreachable!()
+                    }
+                }
+            }
+        }
+    }
+
+    fn lex_gt_id(&self, args_s: &[mrs_core::term_bank::TermId], args_t: &[mrs_core::term_bank::TermId], bank: &mrs_core::term_bank::TermBank) -> bool {
+        for (&si, &ti) in args_s.iter().zip(args_t.iter()) {
+            if si == ti {
+                continue;
+            }
+            return self.lpo_gt_id(si, ti, bank);
+        }
+        args_s.len() > args_t.len()
     }
 
     /// Compares two terms under LPO.
@@ -350,6 +518,13 @@ fn occurs_in(v: VarId, t: &Term) -> bool {
     }
 }
 
+fn occurs_in_id(v: VarId, t: mrs_core::term_bank::TermId, bank: &mrs_core::term_bank::TermBank) -> bool {
+    match bank.get(t) {
+        mrs_core::term_bank::TermNode::Var(w) => v == *w,
+        mrs_core::term_bank::TermNode::App(_, args) => args.iter().any(|&a| occurs_in_id(v, a, bank)),
+    }
+}
+
 /// A term ordering: either KBO or LPO.
 ///
 /// Wraps both orderings in an enum so that the search engine can be
@@ -375,6 +550,15 @@ impl TermOrdering {
             TermOrdering::LPO => LPO::new().compare(s, t),
             TermOrdering::CustomKBO(config) => KBO::with_config(config.clone()).compare(s, t),
             TermOrdering::CustomLPO(config) => LPO::with_config(config.clone()).compare(s, t),
+        }
+    }
+
+    pub fn compare_id(&self, s: mrs_core::term_bank::TermId, t: mrs_core::term_bank::TermId, bank: &mrs_core::term_bank::TermBank) -> TermComparison {
+        match self {
+            TermOrdering::KBO => KBO::new().compare_id(s, t, bank),
+            TermOrdering::LPO => LPO::new().compare_id(s, t, bank),
+            TermOrdering::CustomKBO(config) => KBO::with_config(config.clone()).compare_id(s, t, bank),
+            TermOrdering::CustomLPO(config) => LPO::with_config(config.clone()).compare_id(s, t, bank),
         }
     }
 

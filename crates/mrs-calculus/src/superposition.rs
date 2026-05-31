@@ -18,7 +18,8 @@ use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource, Literal};
 use mrs_core::term::Term;
 
 use crate::ordering::{TermComparison, TermOrdering};
-use crate::rename::{max_var, rename_clause};
+use mrs_core::term_bank::{IdClause, IdLiteral, TermBank, TermId, IdAtom};
+use crate::rename::{max_var, max_var_id, rename_clause, rename_clause_id};
 
 /// Performs all superposition inferences from `eq_clause` into `target`.
 ///
@@ -33,6 +34,16 @@ pub fn superpose(
     id_gen: &mut ClauseIdGen,
 ) -> Vec<Clause> {
     superpose_selected(eq_clause, target, ordering, id_gen, None, &HashSet::new())
+}
+
+pub fn superpose_id(
+    eq_clause: &IdClause,
+    target: &IdClause,
+    bank: &mut TermBank,
+    ordering: &TermOrdering,
+    id_gen: &mut ClauseIdGen,
+) -> Vec<IdClause> {
+    superpose_selected_id(eq_clause, target, bank, ordering, id_gen, None, &HashSet::new())
 }
 
 /// Like [`superpose`], but only rewrites into selected literals of the target.
@@ -89,6 +100,163 @@ pub fn superpose_selected(
     }
 
     results
+}
+
+pub fn superpose_selected_id(
+    eq_clause: &IdClause,
+    target: &IdClause,
+    bank: &mut TermBank,
+    ordering: &TermOrdering,
+    id_gen: &mut ClauseIdGen,
+    target_sel: Option<&[usize]>,
+    comm: &HashSet<SymbolId>,
+) -> Vec<IdClause> {
+    let offset = max_var_id(eq_clause, bank);
+    let target_r = rename_clause_id(target, offset, bank);
+    let mut results = Vec::new();
+
+    for (i, eq_lit) in eq_clause.literals.iter().enumerate() {
+        if !eq_lit.positive {
+            continue;
+        }
+        let (left, right) = match &eq_lit.atom {
+            IdAtom::Eq(l, r) => (*l, *r),
+            _ => continue,
+        };
+
+        for (from, to) in [(left, right), (right, left)] {
+            if matches!(bank.get(from), mrs_core::term_bank::TermNode::Var(_)) {
+                continue;
+            }
+            superpose_with_id(
+                eq_clause,
+                &target_r,
+                i,
+                from,
+                to,
+                bank,
+                ordering,
+                id_gen,
+                target_sel,
+                comm,
+                &mut results,
+            );
+        }
+    }
+
+    results
+}
+
+#[allow(clippy::too_many_arguments)]
+fn superpose_with_id(
+    eq_clause: &IdClause,
+    target: &IdClause,
+    eq_lit_idx: usize,
+    from: TermId,
+    to: TermId,
+    bank: &mut TermBank,
+    ordering: &TermOrdering,
+    id_gen: &mut ClauseIdGen,
+    target_sel: Option<&[usize]>,
+    comm: &HashSet<SymbolId>,
+    results: &mut Vec<IdClause>,
+) {
+    for (j, target_lit) in target.literals.iter().enumerate() {
+        if let Some(sel) = target_sel {
+            if !sel.contains(&j) {
+                continue;
+            }
+        }
+        let term_positions = literal_term_positions_id(target_lit, bank);
+
+        for (arg_idx, base_term, positions) in term_positions {
+            for pos in positions {
+                let subterm = match bank.subterm_at(base_term, &pos) {
+                    Some(t) => t,
+                    None => continue,
+                };
+
+                let sigma = match mrs_unify::robinson::unify_comm_id(from, subterm, bank, comm) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+
+                let from_s = sigma.apply_term(from, bank);
+                let to_s = sigma.apply_term(to, bank);
+                let comp = ordering.compare_id(from_s, to_s, bank);
+                if comp == TermComparison::Less || comp == TermComparison::Equal {
+                    continue;
+                }
+
+                let replaced_term = bank.replace_at(base_term, &pos, to);
+                let replaced_lit = rebuild_literal_id(target_lit, arg_idx, replaced_term);
+                let replaced_lit = sigma.apply_literal(&replaced_lit, bank);
+
+                let mut new_lits = Vec::new();
+                for (k, lit) in eq_clause.literals.iter().enumerate() {
+                    if k != eq_lit_idx {
+                        new_lits.push(sigma.apply_literal(lit, bank));
+                    }
+                }
+                for (k, lit) in target.literals.iter().enumerate() {
+                    if k != j {
+                        new_lits.push(sigma.apply_literal(lit, bank));
+                    }
+                }
+                new_lits.push(replaced_lit);
+
+                let mut new_avatar = eq_clause.avatar.clone();
+                new_avatar.extend_from_slice(&target.avatar);
+
+                results.push(IdClause::new_avatar(
+                    id_gen.next(),
+                    new_lits,
+                    ClauseSource::Inference {
+                        rule: "superposition".into(),
+                        parents: vec![eq_clause.id, target.id],
+                    },
+                    new_avatar,
+                ));
+            }
+        }
+    }
+}
+
+fn literal_term_positions_id(lit: &IdLiteral, bank: &TermBank) -> Vec<(usize, TermId, Vec<Vec<usize>>)> {
+    match &lit.atom {
+        IdAtom::Pred(_, args) => args
+            .iter()
+            .enumerate()
+            .map(|(i, &arg)| (i, arg, bank.non_variable_positions(arg)))
+            .collect(),
+        IdAtom::Eq(l, r) => {
+            vec![
+                (0, *l, bank.non_variable_positions(*l)),
+                (1, *r, bank.non_variable_positions(*r)),
+            ]
+        }
+    }
+}
+
+fn rebuild_literal_id(lit: &IdLiteral, arg_idx: usize, replacement: TermId) -> IdLiteral {
+    let new_atom = match &lit.atom {
+        IdAtom::Pred(p, args) => {
+            let mut new_args = args.clone();
+            new_args[arg_idx] = replacement;
+            IdAtom::Pred(*p, new_args)
+        }
+        IdAtom::Eq(l, r) => {
+            if arg_idx == 0 {
+                IdAtom::Eq(replacement, *r)
+            } else {
+                IdAtom::Eq(*l, replacement)
+            }
+        }
+    };
+    IdLiteral {
+        positive: lit.positive,
+        atom: new_atom,
+    }
 }
 
 /// Tries superposition with a specific oriented equality `from → to`.

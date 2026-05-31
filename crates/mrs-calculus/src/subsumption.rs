@@ -11,7 +11,195 @@ use mrs_core::Substitution;
 use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource, Literal};
 use mrs_core::term::Term;
 
-use crate::rename::{max_var, rename_clause};
+use mrs_core::term_bank::{IdClause, TermBank, TermId, IdLiteral, IdSubstitution, TermNode, IdAtom};
+use crate::rename::{max_var, rename_clause, max_var_id, rename_clause_id};
+
+pub fn subsumes_id(c1: &IdClause, c2: &IdClause, bank: &mut TermBank) -> bool {
+    if c1.literals.len() > c2.literals.len() {
+        return false;
+    }
+    if c1.literals.is_empty() {
+        return true;
+    }
+
+    let offset = max_var_id(c2, bank);
+    let c1_renamed = rename_clause_id(c1, offset, bank);
+
+    let subst = IdSubstitution::new();
+    match_literals_id(&c1_renamed.literals, &c2.literals, &subst, offset, bank)
+}
+
+fn match_literals_id(
+    remaining: &[IdLiteral],
+    targets: &[IdLiteral],
+    current_subst: &IdSubstitution,
+    min_bindable: u32,
+    bank: &mut TermBank,
+) -> bool {
+    if remaining.is_empty() {
+        return true;
+    }
+
+    let lit = &remaining[0];
+    let rest = &remaining[1..];
+
+    for target_lit in targets {
+        if lit.positive != target_lit.positive {
+            continue;
+        }
+
+        if let Some(extended) =
+            match_atoms_id(&lit.atom, &target_lit.atom, current_subst, min_bindable, bank)
+        {
+            if match_literals_id(rest, targets, &extended, min_bindable, bank) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn match_atoms_id(
+    pattern: &IdAtom,
+    target: &IdAtom,
+    current_subst: &IdSubstitution,
+    min_bindable: u32,
+    bank: &mut TermBank,
+) -> Option<IdSubstitution> {
+    match (pattern, target) {
+        (IdAtom::Pred(p1, args1), IdAtom::Pred(p2, args2)) => {
+            if p1 != p2 || args1.len() != args2.len() {
+                return None;
+            }
+            let mut subst = current_subst.clone();
+            for (&a1, &a2) in args1.iter().zip(args2.iter()) {
+                let a1_applied = apply_subst_flat_id(&subst, a1, bank);
+                if !match_single_term_id(a1_applied, a2, &mut subst, min_bindable, bank) {
+                    return None;
+                }
+            }
+            Some(subst)
+        }
+        (IdAtom::Eq(l1, r1), IdAtom::Eq(l2, r2)) => {
+            let mut subst = current_subst.clone();
+            let l1_applied = apply_subst_flat_id(&subst, *l1, bank);
+            if match_single_term_id(l1_applied, *l2, &mut subst, min_bindable, bank) {
+                let r1_applied = apply_subst_flat_id(&subst, *r1, bank);
+                if match_single_term_id(r1_applied, *r2, &mut subst, min_bindable, bank) {
+                    return Some(subst);
+                }
+            }
+            let mut subst = current_subst.clone();
+            let l1_applied = apply_subst_flat_id(&subst, *l1, bank);
+            if match_single_term_id(l1_applied, *r2, &mut subst, min_bindable, bank) {
+                let r1_applied = apply_subst_flat_id(&subst, *r1, bank);
+                if match_single_term_id(r1_applied, *l2, &mut subst, min_bindable, bank) {
+                    return Some(subst);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn match_single_term_id(
+    pattern: TermId,
+    target: TermId,
+    subst: &mut IdSubstitution,
+    min_bindable: u32,
+    bank: &mut TermBank,
+) -> bool {
+    match bank.get(pattern).clone() {
+        TermNode::Var(v) => {
+            if let Some(bound) = subst.get(v) {
+                bound == target
+            } else if v < min_bindable {
+                pattern == target
+            } else {
+                let resolved = apply_subst_chain_id(subst, target, bank);
+                if let TermNode::Var(tv) = bank.get(resolved) {
+                    if *tv == v {
+                        return true;
+                    }
+                }
+                if contains_var_id(resolved, v, bank) {
+                    return false;
+                }
+                subst.bind(v, resolved);
+                true
+            }
+        }
+        TermNode::App(f1, args1) => match bank.get(target).clone() {
+            TermNode::App(f2, args2) => {
+                if f1 != f2 || args1.len() != args2.len() {
+                    return false;
+                }
+                for (&a1, &a2) in args1.iter().zip(args2.iter()) {
+                    let a1_applied = apply_subst_flat_id(subst, a1, bank);
+                    if !match_single_term_id(a1_applied, a2, subst, min_bindable, bank) {
+                        return false;
+                    }
+                }
+                true
+            }
+            TermNode::Var(_) => false,
+        },
+    }
+}
+
+fn contains_var_id(term: TermId, var: mrs_core::term::VarId, bank: &TermBank) -> bool {
+    match bank.get(term) {
+        TermNode::Var(v) => *v == var,
+        TermNode::App(_, args) => args.iter().any(|&a| contains_var_id(a, var, bank)),
+    }
+}
+
+fn apply_subst_flat_id(subst: &IdSubstitution, term: TermId, bank: &mut TermBank) -> TermId {
+    match bank.get(term).clone() {
+        TermNode::Var(v) => match subst.get(v) {
+            Some(t) => t,
+            None => term,
+        },
+        TermNode::App(f, args) => {
+            let new_args: Vec<TermId> = args
+                .iter()
+                .map(|&a| apply_subst_flat_id(subst, a, bank))
+                .collect();
+            bank.intern_app(f, new_args)
+        }
+    }
+}
+
+fn apply_subst_chain_id(subst: &IdSubstitution, mut term: TermId, bank: &mut TermBank) -> TermId {
+    let mut steps = 0;
+    loop {
+        if let TermNode::Var(v) = bank.get(term) {
+            if let Some(next) = subst.get(*v) {
+                term = next;
+                steps += 1;
+                debug_assert!(
+                    steps < 100_000,
+                    "apply_subst_chain cycle"
+                );
+                continue;
+            }
+        }
+        break;
+    }
+
+    match bank.get(term).clone() {
+        TermNode::Var(_) => term,
+        TermNode::App(f, args) => {
+            let new_args: Vec<TermId> = args
+                .iter()
+                .map(|&a| apply_subst_chain_id(subst, a, bank))
+                .collect();
+            bank.intern_app(f, new_args)
+        }
+    }
+}
 
 /// Returns `true` if `c1` subsumes `c2`.
 ///
@@ -354,6 +542,82 @@ pub fn subsumption_resolution(active_clause: &Clause, target: &Clause) -> Option
 
         let subst = Substitution::new();
         if match_literals(&active_renamed.literals, &modified_target, &subst, offset) {
+            return Some(i);
+        }
+    }
+
+    None
+}
+
+pub fn condense_id(clause: &IdClause, bank: &mut TermBank, id_gen: &mut ClauseIdGen) -> Option<IdClause> {
+    for i in 0..clause.literals.len() {
+        for j in 0..clause.literals.len() {
+            if i == j {
+                continue;
+            }
+
+            let lit_i = &clause.literals[i];
+            let lit_j = &clause.literals[j];
+
+            if lit_i.positive != lit_j.positive {
+                continue;
+            }
+
+            let subst = IdSubstitution::new();
+            if let Some(sigma) = match_atoms_id(&lit_i.atom, &lit_j.atom, &subst, 0, bank) {
+                let mut new_lits = Vec::new();
+                for (k, lit) in clause.literals.iter().enumerate() {
+                    if k != i {
+                        new_lits.push(sigma.apply_literal(lit, bank));
+                    }
+                }
+
+                let condensed = IdClause::new_avatar(
+                    id_gen.next(),
+                    new_lits,
+                    ClauseSource::Inference {
+                        rule: "condensation".into(),
+                        parents: vec![clause.id],
+                    },
+                    clause.avatar.clone(),
+                );
+
+                if subsumes_id(&condensed, clause, bank) {
+                    return Some(condensed);
+                }
+            }
+        }
+    }
+    None
+}
+
+pub fn subsumption_resolution_id(active_clause: &IdClause, target: &IdClause, bank: &mut TermBank) -> Option<usize> {
+    if active_clause.literals.len() > target.literals.len() {
+        return None;
+    }
+
+    if active_clause.literals.is_empty() {
+        return None;
+    }
+
+    let offset = max_var_id(target, bank);
+    let active_renamed = rename_clause_id(active_clause, offset, bank);
+
+    for i in 0..target.literals.len() {
+        let mut modified_target = Vec::with_capacity(target.literals.len());
+        for (j, lit) in target.literals.iter().enumerate() {
+            if i == j {
+                modified_target.push(IdLiteral {
+                    positive: !lit.positive,
+                    atom: lit.atom.clone(),
+                });
+            } else {
+                modified_target.push(lit.clone());
+            }
+        }
+
+        let subst = IdSubstitution::new();
+        if match_literals_id(&active_renamed.literals, &modified_target, &subst, offset, bank) {
             return Some(i);
         }
     }

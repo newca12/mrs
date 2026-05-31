@@ -17,6 +17,10 @@ pub fn max_var(clause: &Clause) -> VarId {
     clause.free_vars().into_iter().max().map_or(0, |m| m + 1)
 }
 
+pub fn max_var_id(clause: &mrs_core::term_bank::IdClause, bank: &mrs_core::term_bank::TermBank) -> VarId {
+    clause.free_vars(bank).into_iter().max().map_or(0, |m| m + 1)
+}
+
 /// Renames all variables in a clause by adding `offset` to each VarId.
 ///
 /// The clause's `id` and `source` are preserved.
@@ -43,6 +47,54 @@ pub fn rename_clause(clause: &Clause, offset: VarId) -> Clause {
         clause.source.clone(),
         clause.avatar.clone(),
     )
+}
+
+pub fn rename_clause_id(clause: &mrs_core::term_bank::IdClause, offset: VarId, bank: &mut mrs_core::term_bank::TermBank) -> mrs_core::term_bank::IdClause {
+    if offset == 0 {
+        return clause.clone();
+    }
+
+    let new_lits = clause
+        .literals
+        .iter()
+        .map(|l| rename_literal_id(l, offset, bank))
+        .collect();
+
+    mrs_core::term_bank::IdClause::new_avatar(
+        clause.id,
+        new_lits,
+        clause.source.clone(),
+        clause.avatar.clone(),
+    )
+}
+
+fn rename_literal_id(lit: &mrs_core::term_bank::IdLiteral, offset: VarId, bank: &mut mrs_core::term_bank::TermBank) -> mrs_core::term_bank::IdLiteral {
+    mrs_core::term_bank::IdLiteral {
+        positive: lit.positive,
+        atom: rename_atom_id(&lit.atom, offset, bank),
+    }
+}
+
+fn rename_atom_id(atom: &mrs_core::term_bank::IdAtom, offset: VarId, bank: &mut mrs_core::term_bank::TermBank) -> mrs_core::term_bank::IdAtom {
+    match atom {
+        mrs_core::term_bank::IdAtom::Pred(sym, args) => {
+            let new_args = args.iter().map(|&a| rename_term_id(a, offset, bank)).collect();
+            mrs_core::term_bank::IdAtom::Pred(*sym, new_args)
+        }
+        mrs_core::term_bank::IdAtom::Eq(l, r) => {
+            mrs_core::term_bank::IdAtom::Eq(rename_term_id(*l, offset, bank), rename_term_id(*r, offset, bank))
+        }
+    }
+}
+
+fn rename_term_id(term: mrs_core::term_bank::TermId, offset: VarId, bank: &mut mrs_core::term_bank::TermBank) -> mrs_core::term_bank::TermId {
+    match bank.get(term).clone() {
+        mrs_core::term_bank::TermNode::Var(v) => bank.intern_var(v + offset),
+        mrs_core::term_bank::TermNode::App(sym, args) => {
+            let new_args = args.iter().map(|&a| rename_term_id(a, offset, bank)).collect();
+            bank.intern_app(sym, new_args)
+        }
+    }
 }
 
 fn rename_term(term: &Term, offset: VarId) -> Term {

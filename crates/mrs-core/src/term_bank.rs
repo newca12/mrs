@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use crate::symbol::SymbolId;
 use crate::term::{Term, VarId};
+use crate::formula::Atom;
+use crate::clause::{Clause, ClauseId, ClauseSource, Literal};
 
 /// A lightweight handle to an interned term.
 /// Because terms are hash-consed, `TermId` equality implies deep structural equality.
@@ -14,6 +16,87 @@ pub struct TermId(pub u32);
 pub enum TermNode {
     Var(VarId),
     App(SymbolId, Vec<TermId>),
+}
+
+/// An atomic formula operating on `TermId`s.
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+pub enum IdAtom {
+    Pred(SymbolId, Vec<TermId>),
+    Eq(TermId, TermId),
+}
+
+impl IdAtom {
+    pub fn collect_vars(&self, bank: &TermBank, vars: &mut std::collections::HashSet<VarId>) {
+        match self {
+            IdAtom::Pred(_, args) => {
+                for &arg in args {
+                    bank.collect_vars(arg, vars);
+                }
+            }
+            IdAtom::Eq(l, r) => {
+                bank.collect_vars(*l, vars);
+                bank.collect_vars(*r, vars);
+            }
+        }
+    }
+}
+
+/// A literal operating on `TermId`s.
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+pub struct IdLiteral {
+    pub positive: bool,
+    pub atom: IdAtom,
+}
+
+impl IdLiteral {
+    pub fn collect_vars(&self, bank: &TermBank, vars: &mut std::collections::HashSet<VarId>) {
+        self.atom.collect_vars(bank, vars);
+    }
+}
+
+/// A clause operating on `TermId`s.
+#[derive(Clone, Debug)]
+pub struct IdClause {
+    pub id: ClauseId,
+    pub literals: Vec<IdLiteral>,
+    pub source: ClauseSource,
+    pub avatar: Vec<u32>,
+    pub distance: u32,
+}
+
+impl IdClause {
+    pub fn new(id: ClauseId, literals: Vec<IdLiteral>, source: ClauseSource) -> Self {
+        Self {
+            id,
+            literals,
+            source,
+            avatar: Vec::new(),
+            distance: 1000,
+        }
+    }
+
+    pub fn new_avatar(
+        id: ClauseId,
+        literals: Vec<IdLiteral>,
+        source: ClauseSource,
+        avatar: Vec<u32>,
+    ) -> Self {
+        Self {
+            id,
+            literals,
+            source,
+            avatar,
+            distance: 1000,
+        }
+    }
+
+    pub fn free_vars(&self, bank: &TermBank) -> std::collections::HashSet<VarId> {
+        let mut vars = std::collections::HashSet::new();
+        for lit in &self.literals {
+            lit.collect_vars(bank, &mut vars);
+        }
+        vars
+    }
 }
 
 /// An index-based, hash-consing arena for first-order terms.
@@ -62,6 +145,81 @@ impl TermBank {
         &self.nodes[id.0 as usize]
     }
 
+    pub fn collect_vars(&self, id: TermId, vars: &mut std::collections::HashSet<VarId>) {
+        match self.get(id) {
+            TermNode::Var(v) => {
+                vars.insert(*v);
+            }
+            TermNode::App(_, args) => {
+                for &arg in args {
+                    self.collect_vars(arg, vars);
+                }
+            }
+        }
+    }
+
+    pub fn subterm_at(&self, term: TermId, pos: &[usize]) -> Option<TermId> {
+        if pos.is_empty() {
+            return Some(term);
+        }
+        let head = pos[0];
+        let tail = &pos[1..];
+        match self.get(term) {
+            TermNode::Var(_) => None,
+            TermNode::App(_, args) => {
+                if head < args.len() {
+                    self.subterm_at(args[head], tail)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    pub fn replace_at(&mut self, term: TermId, pos: &[usize], to: TermId) -> TermId {
+        if pos.is_empty() {
+            return to;
+        }
+        let head = pos[0];
+        let tail = &pos[1..];
+        let node = self.get(term).clone();
+        match node {
+            TermNode::Var(_) => term, // Shouldn't happen if pos is valid
+            TermNode::App(sym, mut args) => {
+                if head < args.len() {
+                    args[head] = self.replace_at(args[head], tail, to);
+                }
+                self.intern_app(sym, args)
+            }
+        }
+    }
+
+    pub fn non_variable_positions(&self, term: TermId) -> Vec<Vec<usize>> {
+        let mut positions = Vec::new();
+        let mut current_path = Vec::new();
+        self.collect_non_var_positions(term, &mut current_path, &mut positions);
+        positions
+    }
+
+    fn collect_non_var_positions(
+        &self,
+        term: TermId,
+        current_path: &mut Vec<usize>,
+        positions: &mut Vec<Vec<usize>>,
+    ) {
+        match self.get(term) {
+            TermNode::Var(_) => {}
+            TermNode::App(_, args) => {
+                positions.push(current_path.clone());
+                for (i, &arg) in args.iter().enumerate() {
+                    current_path.push(i);
+                    self.collect_non_var_positions(arg, current_path, positions);
+                    current_path.pop();
+                }
+            }
+        }
+    }
+
     /// Converts an interned `TermId` back into a legacy, deeply-allocated `Term`.
     pub fn to_legacy(&self, id: TermId) -> Term {
         match self.get(id) {
@@ -84,6 +242,55 @@ impl TermBank {
                 }
                 self.intern_app(*sym, arg_ids)
             }
+        }
+    }
+
+    pub fn atom_to_legacy(&self, atom: &IdAtom) -> Atom {
+        match atom {
+            IdAtom::Pred(sym, args) => Atom::Pred(*sym, args.iter().map(|&a| self.to_legacy(a)).collect()),
+            IdAtom::Eq(l, r) => Atom::Eq(self.to_legacy(*l), self.to_legacy(*r)),
+        }
+    }
+
+    pub fn atom_from_legacy(&mut self, atom: &Atom) -> IdAtom {
+        match atom {
+            Atom::Pred(sym, args) => IdAtom::Pred(*sym, args.iter().map(|a| self.from_legacy(a)).collect()),
+            Atom::Eq(l, r) => IdAtom::Eq(self.from_legacy(l), self.from_legacy(r)),
+        }
+    }
+
+    pub fn literal_to_legacy(&self, lit: &IdLiteral) -> Literal {
+        Literal {
+            positive: lit.positive,
+            atom: self.atom_to_legacy(&lit.atom),
+        }
+    }
+
+    pub fn literal_from_legacy(&mut self, lit: &Literal) -> IdLiteral {
+        IdLiteral {
+            positive: lit.positive,
+            atom: self.atom_from_legacy(&lit.atom),
+        }
+    }
+
+    pub fn clause_to_legacy(&self, clause: &IdClause) -> Clause {
+        let mut c = Clause::new(
+            clause.id,
+            clause.literals.iter().map(|l| self.literal_to_legacy(l)).collect(),
+            clause.source.clone(),
+        );
+        c.avatar = clause.avatar.clone();
+        c.distance = clause.distance;
+        c
+    }
+
+    pub fn clause_from_legacy(&mut self, clause: &Clause) -> IdClause {
+        IdClause {
+            id: clause.id,
+            literals: clause.literals.iter().map(|l| self.literal_from_legacy(l)).collect(),
+            source: clause.source.clone(),
+            avatar: clause.avatar.clone(),
+            distance: clause.distance,
         }
     }
 }
@@ -151,6 +358,26 @@ impl IdSubstitution {
                     term
                 }
             }
+        }
+    }
+
+    pub fn apply_atom(&self, atom: &IdAtom, bank: &mut TermBank) -> IdAtom {
+        if self.bindings.is_empty() {
+            return atom.clone();
+        }
+        match atom {
+            IdAtom::Pred(sym, args) => {
+                let new_args = args.iter().map(|&a| self.apply_term(a, bank)).collect();
+                IdAtom::Pred(*sym, new_args)
+            }
+            IdAtom::Eq(l, r) => IdAtom::Eq(self.apply_term(*l, bank), self.apply_term(*r, bank)),
+        }
+    }
+
+    pub fn apply_literal(&self, lit: &IdLiteral, bank: &mut TermBank) -> IdLiteral {
+        IdLiteral {
+            positive: lit.positive,
+            atom: self.apply_atom(&lit.atom, bank),
         }
     }
 

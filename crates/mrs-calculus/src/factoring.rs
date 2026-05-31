@@ -68,6 +68,60 @@ pub fn factor(clause: &Clause, id_gen: &mut ClauseIdGen) -> Vec<Clause> {
     factors
 }
 
+use mrs_core::term_bank::{IdClause, TermBank, TermId, IdAtom};
+
+fn atom_to_term_id(atom: &IdAtom, bank: &mut TermBank) -> Option<TermId> {
+    match atom {
+        IdAtom::Pred(p, args) => Some(bank.intern_app(*p, args.clone())),
+        IdAtom::Eq(_, _) => None,
+    }
+}
+
+pub fn factor_id(clause: &IdClause, bank: &mut TermBank, id_gen: &mut ClauseIdGen) -> Vec<IdClause> {
+    let mut factors = Vec::new();
+
+    for i in 0..clause.literals.len() {
+        for j in (i + 1)..clause.literals.len() {
+            let l1 = &clause.literals[i];
+            let l2 = &clause.literals[j];
+
+            if l1.positive != l2.positive {
+                continue;
+            }
+
+            let t1 = match atom_to_term_id(&l1.atom, bank) {
+                Some(t) => t,
+                None => continue,
+            };
+            let t2 = match atom_to_term_id(&l2.atom, bank) {
+                Some(t) => t,
+                None => continue,
+            };
+
+            if let Ok(mgu) = mrs_unify::robinson::unify_id(t1, t2, bank) {
+                let mut lits = Vec::new();
+                for (k, lit) in clause.literals.iter().enumerate() {
+                    if k != j {
+                        lits.push(mgu.apply_literal(lit, bank));
+                    }
+                }
+
+                factors.push(IdClause::new_avatar(
+                    id_gen.next(),
+                    lits,
+                    ClauseSource::Inference {
+                        rule: "factoring".into(),
+                        parents: vec![clause.id],
+                    },
+                    clause.avatar.clone(),
+                ));
+            }
+        }
+    }
+
+    factors
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
