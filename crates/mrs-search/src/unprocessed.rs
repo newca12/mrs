@@ -1,9 +1,10 @@
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashSet, VecDeque};
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use mrs_calculus::ordering::SymbolConfig;
 use mrs_core::clause::{Clause, ClauseId};
+use mrs_index::fvi::FeatureVector;
 
 use crate::weight::clause_weight;
 
@@ -43,6 +44,8 @@ impl Ord for WeightWrapper {
 pub struct UnprocessedSet {
     /// The IDs of clauses currently in the unprocessed set.
     active_ids: HashSet<ClauseId>,
+    /// Feature vectors of active clauses, used for fast subsumption filtering.
+    fvs: HashMap<ClauseId, FeatureVector>,
     /// Queue ordered by arrival (age).
     age_queue: VecDeque<ClauseId>,
     /// Priority queue ordered by weight (lightest first).
@@ -58,6 +61,7 @@ impl UnprocessedSet {
     pub fn new(config: Arc<SymbolConfig>) -> Self {
         Self {
             active_ids: HashSet::new(),
+            fvs: HashMap::new(),
             age_queue: VecDeque::new(),
             weight_queue: BinaryHeap::new(),
             goal_queue: BinaryHeap::new(),
@@ -77,6 +81,7 @@ impl UnprocessedSet {
         };
 
         self.active_ids.insert(id);
+        self.fvs.insert(id, FeatureVector::from_clause(clause));
         self.age_queue.push_back(id);
         self.weight_queue.push(WeightWrapper { id, weight });
         self.goal_queue.push(WeightWrapper {
@@ -94,6 +99,7 @@ impl UnprocessedSet {
     pub fn pop_age(&mut self) -> Option<ClauseId> {
         while let Some(id) = self.age_queue.pop_front() {
             if self.active_ids.remove(&id) {
+                self.fvs.remove(&id);
                 return Some(id);
             }
         }
@@ -104,32 +110,44 @@ impl UnprocessedSet {
     pub fn pop_weight(&mut self) -> Option<ClauseId> {
         while let Some(wrapper) = self.weight_queue.pop() {
             if self.active_ids.remove(&wrapper.id) {
+                self.fvs.remove(&wrapper.id);
                 return Some(wrapper.id);
             }
         }
         None
     }
 
-    /// Pops the clause closest to the goal.
+    /// Pops the clause with the lowest distance-penalized weight.
     pub fn pop_goal_directed(&mut self) -> Option<ClauseId> {
         while let Some(wrapper) = self.goal_queue.pop() {
             if self.active_ids.remove(&wrapper.id) {
+                self.fvs.remove(&wrapper.id);
                 return Some(wrapper.id);
             }
         }
         None
     }
 
-    /// Retains only the clauses specified by the predicate.
-    /// Clauses that fail the predicate are marked for lazy deletion.
+    /// Removes clauses that do not satisfy the predicate `f`.
     pub fn retain<F>(&mut self, mut f: F)
     where
-        F: FnMut(ClauseId) -> bool,
+        F: FnMut(ClauseId, &FeatureVector) -> bool,
     {
-        self.active_ids.retain(|&id| f(id));
+        let mut to_remove = Vec::new();
+        for &id in &self.active_ids {
+            if let Some(fv) = self.fvs.get(&id) {
+                if !f(id, fv) {
+                    to_remove.push(id);
+                }
+            }
+        }
+        for id in to_remove {
+            self.active_ids.remove(&id);
+            self.fvs.remove(&id);
+        }
     }
 
-    /// Returns an iterator over the active clause IDs.
+    /// Returns an iterator over the IDs of the currently active clauses.
     pub fn iter(&self) -> impl Iterator<Item = ClauseId> + '_ {
         self.active_ids.iter().copied()
     }

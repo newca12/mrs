@@ -67,7 +67,7 @@ fn sync_active_dormant(state: &mut SearchState, ordering: &crate::TermOrdering) 
         .collect();
     state
         .unprocessed
-        .retain(|id| !inactive_unproc.contains(&id));
+        .retain(|id, _| !inactive_unproc.contains(&id));
     for id in inactive_unproc {
         let u = state.clause_store.get(&id).unwrap().clone();
         state.dormant_unprocessed.insert(id, u);
@@ -482,10 +482,9 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         }
 
         // Backward subsumption of unprocessed: remove unprocessed clauses subsumed by the given
-        state.unprocessed.retain(|id| {
-            let u = state.clause_store.get(&id).unwrap();
-            let u_fv = FeatureVector::from_clause(u);
-            if given_fv.can_subsume(&u_fv) {
+        state.unprocessed.retain(|id, u_fv| {
+            if given_fv.can_subsume(u_fv) {
+                let u = state.clause_store.get(&id).unwrap();
                 !(given.avatar_is_subset_of(u) && subsumption::subsumes(&given, u))
             } else {
                 true

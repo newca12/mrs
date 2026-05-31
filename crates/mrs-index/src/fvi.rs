@@ -2,7 +2,6 @@ use mrs_core::clause::Clause;
 use mrs_core::formula::Atom;
 use mrs_core::symbol::SymbolId;
 use mrs_core::term::Term;
-use std::collections::HashMap;
 
 /// A feature vector representing the symbol frequencies of a clause.
 /// Used for fast subsumption filtering.
@@ -17,7 +16,7 @@ pub struct FeatureVector {
     pub num_lits: u32,
     pub pos_lits: u32,
     pub neg_lits: u32,
-    pub sym_counts: HashMap<SymbolId, u32>,
+    pub sym_counts: Vec<(SymbolId, u32)>,
 }
 
 impl FeatureVector {
@@ -37,7 +36,7 @@ impl FeatureVector {
 
             match &lit.atom {
                 Atom::Pred(sym, args) => {
-                    *fv.sym_counts.entry(*sym).or_insert(0) += 1;
+                    fv.increment(*sym);
                     for arg in args {
                         fv.count_term(arg);
                     }
@@ -51,11 +50,23 @@ impl FeatureVector {
         fv
     }
 
+    fn increment(&mut self, sym: SymbolId) {
+        if let Some(pos) = self.sym_counts.iter().position(|(s, _)| *s == sym) {
+            self.sym_counts[pos].1 += 1;
+        } else {
+            self.sym_counts.push((sym, 1));
+        }
+    }
+
+    fn get_count(&self, sym: SymbolId) -> u32 {
+        self.sym_counts.iter().find(|(s, _)| *s == sym).map(|(_, c)| *c).unwrap_or(0)
+    }
+
     fn count_term(&mut self, term: &Term) {
         match term {
             Term::Var(_) => {} // Variables can map to anything, don't count them
             Term::App(sym, args) => {
-                *self.sym_counts.entry(*sym).or_insert(0) += 1;
+                self.increment(*sym);
                 for arg in args {
                     self.count_term(arg);
                 }
@@ -76,8 +87,8 @@ impl FeatureVector {
             return false;
         }
 
-        for (sym, &count) in &self.sym_counts {
-            let other_count = other.sym_counts.get(sym).copied().unwrap_or(0);
+        for &(sym, count) in &self.sym_counts {
+            let other_count = other.get_count(sym);
             if count > other_count {
                 return false;
             }
@@ -102,8 +113,8 @@ impl FeatureVector {
         }
 
         // Symbols don't change when flipping polarity.
-        for sym in self.sym_counts.keys() {
-            if !other.sym_counts.contains_key(sym) {
+        for &(sym, _) in &self.sym_counts {
+            if other.get_count(sym) == 0 {
                 return false;
             }
         }
