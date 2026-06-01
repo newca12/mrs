@@ -38,7 +38,8 @@ const MAX_INSTANCES: usize = 200_000;
 ///
 /// `id_gen` is advanced as new ground clause IDs are minted.
 pub fn preprocess_epr(clauses: &[Clause], id_gen: &mut ClauseIdGen) -> Option<Vec<Clause>> {
-    if !is_epr(clauses) {
+    let epr_check = is_epr(clauses);
+    if !epr_check {
         return None;
     }
 

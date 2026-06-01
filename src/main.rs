@@ -270,6 +270,8 @@ fn main() {
     let total_budget = Duration::from_secs(time_secs);
     let elapsed = start.elapsed();
 
+    eprintln!("debug: clausification produced {} clauses", all_clauses.len());
+
     if elapsed >= total_budget {
         println!("{}", szs_status_line(SzsStatus::Timeout, problem_name));
         #[cfg(feature = "proover")]

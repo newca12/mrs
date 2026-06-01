@@ -395,9 +395,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 .any(|l| l.is_positive() && matches!(&l.atom, Atom::Eq(_, _)));
 
             if given_has_pos_eq {
-                let mut processed_clauses: Vec<Clause> = state.processed.iter().cloned().collect();
-                processed_clauses.push(given.clone()); // Include given for self-superposition
-                for active in &processed_clauses {
+                for active in state.processed.iter() {
                     let active_sel = selected_literals(active, &config.literal_selection);
                     let sp = superposition::superpose_selected(
                         &given,
@@ -412,18 +410,24 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         return SearchResult::Timeout;
                     }
                 }
+                // self-superposition
+                let given_sel_local = selected_literals(&given, &config.literal_selection);
+                let sp = superposition::superpose_selected(
+                    &given,
+                    &given,
+                    ordering,
+                    &mut state.id_gen,
+                    Some(&given_sel_local),
+                    &state.comm_symbols,
+                );
+                new_clauses.extend(sp);
             }
 
             // (2) Processed clause as equation source, given as target.
             // Only consider processed clauses that have positive equalities.
             {
-                let eq_clauses: Vec<Clause> = state
-                    .processed
-                    .get_positive_equality_clauses()
-                    .into_iter()
-                    .cloned()
-                    .collect();
-                for active in &eq_clauses {
+                let eq_clauses = state.processed.get_positive_equality_clauses();
+                for active in eq_clauses {
                     let sp = superposition::superpose_selected(
                         active,
                         &given,
@@ -481,15 +485,8 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             }
         }
 
-        // Backward subsumption of unprocessed: remove unprocessed clauses subsumed by the given
-        state.unprocessed.retain(|id, u_fv| {
-            if given_fv.can_subsume(u_fv) {
-                let u = state.clause_store.get(&id).unwrap();
-                !(given.avatar_is_subset_of(u) && subsumption::subsumes(&given, u))
-            } else {
-                true
-            }
-        });
+        // Backward subsumption of unprocessed is omitted for performance (O(N) operation)
+        // state.unprocessed.retain(|id, u_fv| { ... });
 
         // Add given to processed set (indexed)
         state.clause_store.insert(given.id, given.clone());

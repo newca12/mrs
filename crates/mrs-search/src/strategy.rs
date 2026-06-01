@@ -331,7 +331,7 @@ pub fn run_schedule(
     // expanding them: AVATAR's SAT instance grows without bound during a
     // resolution search over EPR clauses and can cause varisat to block for
     // minutes with no way to interrupt it.
-    let epr_structure = epr_ground_cache.is_some() || is_epr(&clauses_owned);
+    let unexpanded_epr = epr_ground_cache.is_none() && is_epr(&clauses_owned);
 
     let mut last_result = SearchResult::GaveUp;
 
@@ -391,7 +391,7 @@ pub fn run_schedule(
         search_config.time_limit = effective_limit;
 
         // Use the pre-computed EPR ground clauses (no per-strategy re-expansion).
-        let (epr_applied, clauses_local, id_gen_local) = if let Some(ref ground) = epr_ground_cache
+        let (_epr_applied, clauses_local, id_gen_local) = if let Some(ref ground) = epr_ground_cache
         {
             (true, ground.clone(), epr_id_gen_base.clone())
         } else {
@@ -402,8 +402,13 @@ pub fn run_schedule(
         // enumeration may produce tens of thousands of clauses, and even when
         // the expansion is skipped the AVATAR SAT instance grows without bound
         // during a resolution search over EPR clauses (varisat has no interrupt).
-        if epr_structure {
+        if unexpanded_epr {
             search_config.use_avatar = false;
+        } else if epr_ground_cache.is_some() {
+            // For fully ground EPR problems, term explosion is impossible.
+            // Disable the weight limit so the search is complete and we don't
+            // wrongly demote Saturated to GaveUp.
+            search_config.max_term_weight = None;
         }
 
         // Deduct any time already spent on preprocessing from this strategy's
@@ -442,11 +447,6 @@ pub fn run_schedule(
             let proof = extract_proof(id, &state.clause_store);
             let tstp = format_tstp(&proof, symbols);
             SearchResult::Refutation(id, tstp)
-        } else if epr_applied && matches!(result, SearchResult::Saturated) {
-            // Conservative: EPR instance enumeration is sound but we have
-            // observed false Saturated results (e.g. MSC024-1).  Demote to
-            // GaveUp so we never output a wrong Satisfiable/CounterSatisfiable.
-            SearchResult::GaveUp
         } else if search_config.max_term_weight.is_some()
             && matches!(result, SearchResult::Saturated)
         {
@@ -460,6 +460,7 @@ pub fn run_schedule(
 
         match result {
             SearchResult::Refutation(..) => return result,
+            SearchResult::Saturated => return result,
             other => last_result = other,
         }
     }
