@@ -24,7 +24,11 @@ pub fn match_term(pattern: &Term, target: &Term) -> UnifyResult {
 }
 
 /// Matches a pattern against a target term, operating on `TermId`s.
-pub fn match_term_id(pattern: TermId, target: TermId, bank: &TermBank) -> Result<IdSubstitution, UnifyError> {
+pub fn match_term_id(
+    pattern: TermId,
+    target: TermId,
+    bank: &TermBank,
+) -> Result<IdSubstitution, UnifyError> {
     let mut subst = IdSubstitution::new();
     match_rec_id(pattern, target, &mut subst, bank)?;
     Ok(subst)
@@ -103,32 +107,30 @@ fn match_rec_id(
                 Ok(())
             }
         }
-        TermNode::App(f1, args1) => {
-            match bank.get(target) {
-                TermNode::App(f2, args2) => {
-                    if f1 != f2 {
-                        return Err(UnifyError::SymbolClash {
-                            left: format!("{:?}", f1),
-                            right: format!("{:?}", f2),
-                        });
-                    }
-                    if args1.len() != args2.len() {
-                        return Err(UnifyError::ArityMismatch {
-                            expected: args1.len(),
-                            found: args2.len(),
-                        });
-                    }
-                    for (a1, a2) in args1.iter().zip(args2.iter()) {
-                        match_rec_id(*a1, *a2, subst, bank)?;
-                    }
-                    Ok(())
+        TermNode::App(f1, args1) => match bank.get(target) {
+            TermNode::App(f2, args2) => {
+                if f1 != f2 {
+                    return Err(UnifyError::SymbolClash {
+                        left: format!("{:?}", f1),
+                        right: format!("{:?}", f2),
+                    });
                 }
-                TermNode::Var(_) => Err(UnifyError::SymbolClash {
-                    left: format!("{:?}", f1),
-                    right: "variable".to_string(),
-                }),
+                if args1.len() != args2.len() {
+                    return Err(UnifyError::ArityMismatch {
+                        expected: args1.len(),
+                        found: args2.len(),
+                    });
+                }
+                for (a1, a2) in args1.iter().zip(args2.iter()) {
+                    match_rec_id(*a1, *a2, subst, bank)?;
+                }
+                Ok(())
             }
-        }
+            TermNode::Var(_) => Err(UnifyError::SymbolClash {
+                left: format!("{:?}", f1),
+                right: "variable".to_string(),
+            }),
+        },
     }
 }
 
@@ -233,7 +235,7 @@ mod tests {
         let v1 = bank.intern_var(1);
         let c_a = bank.intern_app(a, vec![]);
         let c_b = bank.intern_app(b, vec![]);
-        
+
         // f(X, Y) matches f(a, b) => X=a, Y=b
         let pattern = bank.intern_app(f, vec![v0, v1]);
         let target = bank.intern_app(f, vec![c_a, c_b]);

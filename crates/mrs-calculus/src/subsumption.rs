@@ -11,8 +11,10 @@ use mrs_core::Substitution;
 use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource, Literal};
 use mrs_core::term::Term;
 
-use mrs_core::term_bank::{IdClause, TermBank, TermId, IdLiteral, IdSubstitution, TermNode, IdAtom};
-use crate::rename::{max_var, rename_clause, max_var_id, rename_clause_id};
+use crate::rename::{max_var, max_var_id, rename_clause, rename_clause_id};
+use mrs_core::term_bank::{
+    IdAtom, IdClause, IdLiteral, IdSubstitution, TermBank, TermId, TermNode,
+};
 
 pub fn subsumes_id(c1: &IdClause, c2: &IdClause, bank: &mut TermBank) -> bool {
     if c1.literals.len() > c2.literals.len() {
@@ -48,12 +50,15 @@ fn match_literals_id(
             continue;
         }
 
-        if let Some(extended) =
-            match_atoms_id(&lit.atom, &target_lit.atom, current_subst, min_bindable, bank)
+        if let Some(extended) = match_atoms_id(
+            &lit.atom,
+            &target_lit.atom,
+            current_subst,
+            min_bindable,
+            bank,
+        ) && match_literals_id(rest, targets, &extended, min_bindable, bank)
         {
-            if match_literals_id(rest, targets, &extended, min_bindable, bank) {
-                return true;
-            }
+            return true;
         }
     }
 
@@ -119,10 +124,10 @@ fn match_single_term_id(
                 pattern == target
             } else {
                 let resolved = apply_subst_chain_id(subst, target, bank);
-                if let TermNode::Var(tv) = bank.get(resolved) {
-                    if *tv == v {
-                        return true;
-                    }
+                if let TermNode::Var(tv) = bank.get(resolved)
+                    && *tv == v
+                {
+                    return true;
                 }
                 if contains_var_id(resolved, v, bank) {
                     return false;
@@ -175,16 +180,13 @@ fn apply_subst_flat_id(subst: &IdSubstitution, term: TermId, bank: &mut TermBank
 fn apply_subst_chain_id(subst: &IdSubstitution, mut term: TermId, bank: &mut TermBank) -> TermId {
     let mut steps = 0;
     loop {
-        if let TermNode::Var(v) = bank.get(term) {
-            if let Some(next) = subst.get(*v) {
-                term = next;
-                steps += 1;
-                debug_assert!(
-                    steps < 100_000,
-                    "apply_subst_chain cycle"
-                );
-                continue;
-            }
+        if let TermNode::Var(v) = bank.get(term)
+            && let Some(next) = subst.get(*v)
+        {
+            term = next;
+            steps += 1;
+            debug_assert!(steps < 100_000, "apply_subst_chain cycle");
+            continue;
         }
         break;
     }
@@ -549,7 +551,11 @@ pub fn subsumption_resolution(active_clause: &Clause, target: &Clause) -> Option
     None
 }
 
-pub fn condense_id(clause: &IdClause, bank: &mut TermBank, id_gen: &mut ClauseIdGen) -> Option<IdClause> {
+pub fn condense_id(
+    clause: &IdClause,
+    bank: &mut TermBank,
+    id_gen: &mut ClauseIdGen,
+) -> Option<IdClause> {
     for i in 0..clause.literals.len() {
         for j in 0..clause.literals.len() {
             if i == j {
@@ -591,7 +597,11 @@ pub fn condense_id(clause: &IdClause, bank: &mut TermBank, id_gen: &mut ClauseId
     None
 }
 
-pub fn subsumption_resolution_id(active_clause: &IdClause, target: &IdClause, bank: &mut TermBank) -> Option<usize> {
+pub fn subsumption_resolution_id(
+    active_clause: &IdClause,
+    target: &IdClause,
+    bank: &mut TermBank,
+) -> Option<usize> {
     if active_clause.literals.len() > target.literals.len() {
         return None;
     }
@@ -617,7 +627,13 @@ pub fn subsumption_resolution_id(active_clause: &IdClause, target: &IdClause, ba
         }
 
         let subst = IdSubstitution::new();
-        if match_literals_id(&active_renamed.literals, &modified_target, &subst, offset, bank) {
+        if match_literals_id(
+            &active_renamed.literals,
+            &modified_target,
+            &subst,
+            offset,
+            bank,
+        ) {
             return Some(i);
         }
     }

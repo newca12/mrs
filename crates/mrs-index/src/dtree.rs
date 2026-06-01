@@ -124,7 +124,7 @@ impl<V: Clone + PartialEq> DTreeId<V> {
         let flat = flatten_id(term, bank);
         let mut curr = self;
         for cell in flat {
-            curr = curr.children.entry(cell).or_insert_with(DTreeId::new);
+            curr = curr.children.entry(cell).or_default();
         }
         if !curr.leaves.contains(&value) {
             curr.leaves.push(value);

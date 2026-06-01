@@ -134,9 +134,7 @@ impl Substitution {
                     if let Some(new_arg) = self.apply_term_opt(arg) {
                         if new_args.is_none() {
                             let mut v = Vec::with_capacity(args.len());
-                            for j in 0..i {
-                                v.push(args[j].clone());
-                            }
+                            v.extend(args.iter().take(i).cloned());
                             new_args = Some(v);
                         }
                         new_args.as_mut().unwrap().push(new_arg);

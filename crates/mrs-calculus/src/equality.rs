@@ -144,9 +144,13 @@ pub fn equality_factor(
     results
 }
 
-use mrs_core::term_bank::{IdClause, IdLiteral, TermBank, TermId, IdAtom};
+use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank};
 
-pub fn equality_resolve_id(clause: &IdClause, bank: &mut TermBank, id_gen: &mut ClauseIdGen) -> Vec<IdClause> {
+pub fn equality_resolve_id(
+    clause: &IdClause,
+    bank: &mut TermBank,
+    id_gen: &mut ClauseIdGen,
+) -> Vec<IdClause> {
     let mut results = Vec::new();
 
     for (i, lit) in clause.literals.iter().enumerate() {

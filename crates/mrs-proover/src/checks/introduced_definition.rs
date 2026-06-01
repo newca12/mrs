@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables)]
 //! Structural check for `introduced(definition)` clauses.
 //!
 //! Two ATP families emit such clauses with slightly different shapes:
@@ -244,18 +245,15 @@ pub fn check<'p>(step: &FOFAnnotated<'p>, registry: &SkolemRegistry) -> StepOutc
     };
 
     let mut is_sound = false;
-    if let Some((name, args)) = head_predicate_with_args(left) {
-        if !registry.seen_symbols.contains(name) && check_free_vars(right, args, &universals) {
+    if let Some((name, args)) = head_predicate_with_args(left)
+        && !registry.seen_symbols.contains(name) && check_free_vars(right, args, &universals) {
             is_sound = true;
         }
-    }
-    if !is_sound {
-        if let Some((name, args)) = head_predicate_with_args(right) {
-            if !registry.seen_symbols.contains(name) && check_free_vars(left, args, &universals) {
+    if !is_sound
+        && let Some((name, args)) = head_predicate_with_args(right)
+            && !registry.seen_symbols.contains(name) && check_free_vars(left, args, &universals) {
                 is_sound = true;
             }
-        }
-    }
 
     if is_sound {
         return StepOutcome::Sound;
@@ -340,7 +338,7 @@ fn try_skolem_axiom<'p>(f: &FOFFormula<'p>, registry: &SkolemRegistry) -> Option
 
     // Arity drop check: Every witness term assigned to an existential
     // must contain all universal variables of the axiom.
-    for (_, term) in &subst {
+    for term in subst.values() {
         let mut term_vars = HashSet::new();
         collect_term_vars(term, &mut term_vars);
         for u in &universals {
@@ -523,16 +521,16 @@ fn match_term<'p>(
 
 fn free_vars<'a>(f: &FOFFormula<'a>, bound: &mut HashSet<&'a str>, free: &mut HashSet<&'a str>) {
     match f {
-        FOFFormula::Atomic(a) => {
-            match a {
-                FOFAtomicFormula::Plain(_, args) | FOFAtomicFormula::Defined(_, args) | FOFAtomicFormula::System(_, args) => {
-                    for t in args {
-                        free_vars_term(t, bound, free);
-                    }
+        FOFFormula::Atomic(a) => match a {
+            FOFAtomicFormula::Plain(_, args)
+            | FOFAtomicFormula::Defined(_, args)
+            | FOFAtomicFormula::System(_, args) => {
+                for t in args {
+                    free_vars_term(t, bound, free);
                 }
-                FOFAtomicFormula::True | FOFAtomicFormula::False => {}
             }
-        }
+            FOFAtomicFormula::True | FOFAtomicFormula::False => {}
+        },
         FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => {
             free_vars(inner, bound, free);
         }
@@ -544,7 +542,9 @@ fn free_vars<'a>(f: &FOFFormula<'a>, bound: &mut HashSet<&'a str>, free: &mut Ha
             free_vars_term(l, bound, free);
             free_vars_term(r, bound, free);
         }
-        FOFFormula::Quantified { variables, formula, .. } => {
+        FOFFormula::Quantified {
+            variables, formula, ..
+        } => {
             let mut newly_bound = Vec::new();
             for v in variables {
                 if bound.insert(*v) {
@@ -566,7 +566,9 @@ fn free_vars_term<'a>(t: &FOFTerm<'a>, bound: &HashSet<&'a str>, free: &mut Hash
                 free.insert(*v);
             }
         }
-        FOFTerm::Function(_, args) | FOFTerm::DefinedFunction(_, args) | FOFTerm::SystemFunction(_, args) => {
+        FOFTerm::Function(_, args)
+        | FOFTerm::DefinedFunction(_, args)
+        | FOFTerm::SystemFunction(_, args) => {
             for a in args {
                 free_vars_term(a, bound, free);
             }
@@ -577,8 +579,12 @@ fn free_vars_term<'a>(t: &FOFTerm<'a>, bound: &HashSet<&'a str>, free: &mut Hash
 
 pub(crate) fn collect_term_vars<'a>(t: &FOFTerm<'a>, out: &mut HashSet<&'a str>) {
     match t {
-        FOFTerm::Variable(v) => { out.insert(*v); },
-        FOFTerm::Function(_, args) | FOFTerm::DefinedFunction(_, args) | FOFTerm::SystemFunction(_, args) => {
+        FOFTerm::Variable(v) => {
+            out.insert(*v);
+        }
+        FOFTerm::Function(_, args)
+        | FOFTerm::DefinedFunction(_, args)
+        | FOFTerm::SystemFunction(_, args) => {
             for a in args {
                 collect_term_vars(a, out);
             }
@@ -609,16 +615,20 @@ fn collect_forall<'a, 'p>(f: &'a FOFFormula<'p>) -> (HashSet<&'p str>, &'a FOFFo
     (vars, cur)
 }
 
-fn check_free_vars<'a>(body: &FOFFormula<'a>, head_args: &[FOFTerm<'a>], universals: &HashSet<&'a str>) -> bool {
+fn check_free_vars<'a>(
+    body: &FOFFormula<'a>,
+    head_args: &[FOFTerm<'a>],
+    universals: &HashSet<&'a str>,
+) -> bool {
     let mut bound = HashSet::new();
     let mut free = HashSet::new();
     free_vars(body, &mut bound, &mut free);
-    
+
     let mut head_vars = HashSet::new();
     for a in head_args {
         collect_term_vars(a, &mut head_vars);
     }
-    
+
     for v in free {
         if !head_vars.contains(v) {
             return false;

@@ -59,7 +59,11 @@ impl FeatureVector {
     }
 
     fn get_count(&self, sym: SymbolId) -> u32 {
-        self.sym_counts.iter().find(|(s, _)| *s == sym).map(|(_, c)| *c).unwrap_or(0)
+        self.sym_counts
+            .iter()
+            .find(|(s, _)| *s == sym)
+            .map(|(_, c)| *c)
+            .unwrap_or(0)
     }
 
     fn count_term(&mut self, term: &Term) {

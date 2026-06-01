@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
+use crate::clause::{Clause, ClauseId, ClauseSource, Literal};
+use crate::formula::Atom;
 use crate::symbol::SymbolId;
 use crate::term::{Term, VarId};
-use crate::formula::Atom;
-use crate::clause::{Clause, ClauseId, ClauseSource, Literal};
 
 /// A lightweight handle to an interned term.
 /// Because terms are hash-consed, `TermId` equality implies deep structural equality.
@@ -247,14 +247,18 @@ impl TermBank {
 
     pub fn atom_to_legacy(&self, atom: &IdAtom) -> Atom {
         match atom {
-            IdAtom::Pred(sym, args) => Atom::Pred(*sym, args.iter().map(|&a| self.to_legacy(a)).collect()),
+            IdAtom::Pred(sym, args) => {
+                Atom::Pred(*sym, args.iter().map(|&a| self.to_legacy(a)).collect())
+            }
             IdAtom::Eq(l, r) => Atom::Eq(self.to_legacy(*l), self.to_legacy(*r)),
         }
     }
 
     pub fn atom_from_legacy(&mut self, atom: &Atom) -> IdAtom {
         match atom {
-            Atom::Pred(sym, args) => IdAtom::Pred(*sym, args.iter().map(|a| self.from_legacy(a)).collect()),
+            Atom::Pred(sym, args) => {
+                IdAtom::Pred(*sym, args.iter().map(|a| self.from_legacy(a)).collect())
+            }
             Atom::Eq(l, r) => IdAtom::Eq(self.from_legacy(l), self.from_legacy(r)),
         }
     }
@@ -276,7 +280,11 @@ impl TermBank {
     pub fn clause_to_legacy(&self, clause: &IdClause) -> Clause {
         let mut c = Clause::new(
             clause.id,
-            clause.literals.iter().map(|l| self.literal_to_legacy(l)).collect(),
+            clause
+                .literals
+                .iter()
+                .map(|l| self.literal_to_legacy(l))
+                .collect(),
             clause.source.clone(),
         );
         c.avatar = clause.avatar.clone();
@@ -287,7 +295,11 @@ impl TermBank {
     pub fn clause_from_legacy(&mut self, clause: &Clause) -> IdClause {
         IdClause {
             id: clause.id,
-            literals: clause.literals.iter().map(|l| self.literal_from_legacy(l)).collect(),
+            literals: clause
+                .literals
+                .iter()
+                .map(|l| self.literal_from_legacy(l))
+                .collect(),
             source: clause.source.clone(),
             avatar: clause.avatar.clone(),
             distance: clause.distance,
@@ -327,19 +339,20 @@ impl IdSubstitution {
         // Dereference variables iteratively
         let mut steps = 0;
         loop {
-            if let TermNode::Var(v) = bank.get(term) {
-                if let Some(next) = self.get(*v) {
-                    term = next;
-                    steps += 1;
-                    debug_assert!(steps < 100_000, "apply_term: cycle detected");
-                    continue;
-                }
+            if let TermNode::Var(v) = bank.get(term)
+                && let Some(next) = self.get(*v)
+            {
+                term = next;
+                steps += 1;
+                debug_assert!(steps < 100_000, "apply_term: cycle detected");
+                continue;
             }
             break;
         }
 
         // Apply recursively to function arguments
-        match bank.get(term).clone() { // Clone the node to decouple from bank borrow
+        match bank.get(term).clone() {
+            // Clone the node to decouple from bank borrow
             TermNode::Var(_) => term,
             TermNode::App(sym, args) => {
                 let mut changed = false;
@@ -351,7 +364,7 @@ impl IdSubstitution {
                     }
                     new_args.push(new_arg);
                 }
-                
+
                 if changed {
                     bank.intern_app(sym, new_args)
                 } else {
@@ -409,17 +422,26 @@ mod tests {
         // Constants (arity 0)
         let a1 = bank.intern_app(a, vec![]);
         let a2 = bank.intern_app(a, vec![]);
-        assert_eq!(a1, a2, "Structurally identical constants must map to the same ID");
+        assert_eq!(
+            a1, a2,
+            "Structurally identical constants must map to the same ID"
+        );
 
         // Variables
         let v1 = bank.intern_var(0);
         let v2 = bank.intern_var(0);
-        assert_eq!(v1, v2, "Structurally identical variables must map to the same ID");
+        assert_eq!(
+            v1, v2,
+            "Structurally identical variables must map to the same ID"
+        );
 
         // Applications
         let app1 = bank.intern_app(f, vec![v1, a1]);
         let app2 = bank.intern_app(f, vec![v2, a2]);
-        assert_eq!(app1, app2, "Structurally identical applications must map to the same ID");
+        assert_eq!(
+            app1, app2,
+            "Structurally identical applications must map to the same ID"
+        );
 
         // Verify total number of unique nodes: a, v, f(v, a)
         assert_eq!(bank.nodes.len(), 3);

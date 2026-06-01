@@ -152,7 +152,7 @@ fn rewrite_term(
     }
 }
 
-use mrs_core::term_bank::{IdClause, IdLiteral, TermBank, TermId, IdAtom};
+use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank, TermId};
 
 pub fn demodulate_id(
     clause: &IdClause,
@@ -278,7 +278,11 @@ fn rewrite_term_id(
     }
 }
 
-fn apply_matching_subst_id(sigma: &mrs_core::term_bank::IdSubstitution, term: TermId, bank: &mut TermBank) -> TermId {
+fn apply_matching_subst_id(
+    sigma: &mrs_core::term_bank::IdSubstitution,
+    term: TermId,
+    bank: &mut TermBank,
+) -> TermId {
     match bank.get(term).clone() {
         mrs_core::term_bank::TermNode::Var(v) => match sigma.get(v) {
             Some(t) => t,

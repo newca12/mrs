@@ -86,7 +86,7 @@ checksum = "6b947ae49db0d222b1dbc6b113ce7248a3fc3a6ca21b696717bfc000ba4484d8"
 
 [[package]]
 name = "mrs"
-version = "0.1.10"
+version = "0.1.8"
 dependencies = [
  "mrs-calculus",
  "mrs-cnf",
@@ -100,11 +100,11 @@ dependencies = [
 
 [[package]]
 name = "mrs-bench"
-version = "0.1.7"
+version = "0.1.8"
 
 [[package]]
 name = "mrs-calculus"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "mrs-core",
  "mrs-index",
@@ -113,25 +113,25 @@ dependencies = [
 
 [[package]]
 name = "mrs-cnf"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "mrs-core",
 ]
 
 [[package]]
 name = "mrs-core"
-version = "0.1.7"
+version = "0.1.8"
 
 [[package]]
 name = "mrs-index"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "mrs-core",
 ]
 
 [[package]]
 name = "mrs-proof"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "mrs-core",
  "mrs-szs",
@@ -139,7 +139,7 @@ dependencies = [
 
 [[package]]
 name = "mrs-proover"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "mrs-cnf",
  "mrs-core",
@@ -149,7 +149,7 @@ dependencies = [
 
 [[package]]
 name = "mrs-search"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "mrs-calculus",
  "mrs-core",
@@ -160,11 +160,11 @@ dependencies = [
 
 [[package]]
 name = "mrs-szs"
-version = "0.1.7"
+version = "0.1.8"
 
 [[package]]
 name = "mrs-tptp"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "pretty_assertions",
  "rayon",
@@ -173,7 +173,7 @@ dependencies = [
 
 [[package]]
 name = "mrs-unify"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "mrs-core",
 ]

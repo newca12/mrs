@@ -68,7 +68,7 @@ pub fn factor(clause: &Clause, id_gen: &mut ClauseIdGen) -> Vec<Clause> {
     factors
 }
 
-use mrs_core::term_bank::{IdClause, TermBank, TermId, IdAtom};
+use mrs_core::term_bank::{IdAtom, IdClause, TermBank, TermId};
 
 fn atom_to_term_id(atom: &IdAtom, bank: &mut TermBank) -> Option<TermId> {
     match atom {
@@ -77,7 +77,11 @@ fn atom_to_term_id(atom: &IdAtom, bank: &mut TermBank) -> Option<TermId> {
     }
 }
 
-pub fn factor_id(clause: &IdClause, bank: &mut TermBank, id_gen: &mut ClauseIdGen) -> Vec<IdClause> {
+pub fn factor_id(
+    clause: &IdClause,
+    bank: &mut TermBank,
+    id_gen: &mut ClauseIdGen,
+) -> Vec<IdClause> {
     let mut factors = Vec::new();
 
     for i in 0..clause.literals.len() {

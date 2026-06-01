@@ -105,7 +105,11 @@ impl KBO {
         }
     }
 
-    fn weight_id(&self, t: mrs_core::term_bank::TermId, bank: &mrs_core::term_bank::TermBank) -> u32 {
+    fn weight_id(
+        &self,
+        t: mrs_core::term_bank::TermId,
+        bank: &mrs_core::term_bank::TermBank,
+    ) -> u32 {
         match bank.get(t) {
             mrs_core::term_bank::TermNode::Var(_) => self.config.w0,
             mrs_core::term_bank::TermNode::App(f, args) => {
@@ -134,13 +138,20 @@ impl KBO {
         }
     }
 
-    fn var_counts_id(t: mrs_core::term_bank::TermId, bank: &mrs_core::term_bank::TermBank) -> HashMap<VarId, i32> {
+    fn var_counts_id(
+        t: mrs_core::term_bank::TermId,
+        bank: &mrs_core::term_bank::TermBank,
+    ) -> HashMap<VarId, i32> {
         let mut counts = HashMap::new();
         Self::collect_var_counts_id(t, bank, &mut counts);
         counts
     }
 
-    fn collect_var_counts_id(t: mrs_core::term_bank::TermId, bank: &mrs_core::term_bank::TermBank, counts: &mut HashMap<VarId, i32>) {
+    fn collect_var_counts_id(
+        t: mrs_core::term_bank::TermId,
+        bank: &mrs_core::term_bank::TermBank,
+        counts: &mut HashMap<VarId, i32>,
+    ) {
         match bank.get(t) {
             mrs_core::term_bank::TermNode::Var(v) => {
                 *counts.entry(*v).or_insert(0) += 1;
@@ -153,7 +164,12 @@ impl KBO {
         }
     }
 
-    pub fn compare_id(&self, s: mrs_core::term_bank::TermId, t: mrs_core::term_bank::TermId, bank: &mrs_core::term_bank::TermBank) -> TermComparison {
+    pub fn compare_id(
+        &self,
+        s: mrs_core::term_bank::TermId,
+        t: mrs_core::term_bank::TermId,
+        bank: &mrs_core::term_bank::TermBank,
+    ) -> TermComparison {
         if s == t {
             return TermComparison::Equal;
         }
@@ -182,7 +198,10 @@ impl KBO {
         }
 
         match (bank.get(s), bank.get(t)) {
-            (mrs_core::term_bank::TermNode::App(f1, args1), mrs_core::term_bank::TermNode::App(f2, args2)) => {
+            (
+                mrs_core::term_bank::TermNode::App(f1, args1),
+                mrs_core::term_bank::TermNode::App(f2, args2),
+            ) => {
                 if f1 != f2 {
                     let prec1 = self.config.symbol_precedence(*f1);
                     let prec2 = self.config.symbol_precedence(*f2);
@@ -333,7 +352,12 @@ impl LPO {
         Self { config }
     }
 
-    pub fn compare_id(&self, s: mrs_core::term_bank::TermId, t: mrs_core::term_bank::TermId, bank: &mrs_core::term_bank::TermBank) -> TermComparison {
+    pub fn compare_id(
+        &self,
+        s: mrs_core::term_bank::TermId,
+        t: mrs_core::term_bank::TermId,
+        bank: &mrs_core::term_bank::TermBank,
+    ) -> TermComparison {
         if s == t {
             return TermComparison::Equal;
         }
@@ -347,7 +371,12 @@ impl LPO {
     }
 
     /// Returns true if s >_lpo t.
-    fn lpo_gt_id(&self, s: mrs_core::term_bank::TermId, t: mrs_core::term_bank::TermId, bank: &mrs_core::term_bank::TermBank) -> bool {
+    fn lpo_gt_id(
+        &self,
+        s: mrs_core::term_bank::TermId,
+        t: mrs_core::term_bank::TermId,
+        bank: &mrs_core::term_bank::TermBank,
+    ) -> bool {
         // Case 1: t is a variable occurring in s (and s ≠ t)
         if let mrs_core::term_bank::TermNode::Var(v) = bank.get(t) {
             if s == t {
@@ -357,9 +386,7 @@ impl LPO {
         }
 
         match bank.get(s) {
-            mrs_core::term_bank::TermNode::Var(_) => {
-                false
-            }
+            mrs_core::term_bank::TermNode::Var(_) => false,
             mrs_core::term_bank::TermNode::App(f, s_args) => {
                 // Case 2a: some si ≥_lpo t (subterm property)
                 for &si in s_args {
@@ -394,7 +421,12 @@ impl LPO {
         }
     }
 
-    fn lex_gt_id(&self, args_s: &[mrs_core::term_bank::TermId], args_t: &[mrs_core::term_bank::TermId], bank: &mrs_core::term_bank::TermBank) -> bool {
+    fn lex_gt_id(
+        &self,
+        args_s: &[mrs_core::term_bank::TermId],
+        args_t: &[mrs_core::term_bank::TermId],
+        bank: &mrs_core::term_bank::TermBank,
+    ) -> bool {
         for (&si, &ti) in args_s.iter().zip(args_t.iter()) {
             if si == ti {
                 continue;
@@ -518,10 +550,16 @@ fn occurs_in(v: VarId, t: &Term) -> bool {
     }
 }
 
-fn occurs_in_id(v: VarId, t: mrs_core::term_bank::TermId, bank: &mrs_core::term_bank::TermBank) -> bool {
+fn occurs_in_id(
+    v: VarId,
+    t: mrs_core::term_bank::TermId,
+    bank: &mrs_core::term_bank::TermBank,
+) -> bool {
     match bank.get(t) {
         mrs_core::term_bank::TermNode::Var(w) => v == *w,
-        mrs_core::term_bank::TermNode::App(_, args) => args.iter().any(|&a| occurs_in_id(v, a, bank)),
+        mrs_core::term_bank::TermNode::App(_, args) => {
+            args.iter().any(|&a| occurs_in_id(v, a, bank))
+        }
     }
 }
 
@@ -553,12 +591,21 @@ impl TermOrdering {
         }
     }
 
-    pub fn compare_id(&self, s: mrs_core::term_bank::TermId, t: mrs_core::term_bank::TermId, bank: &mrs_core::term_bank::TermBank) -> TermComparison {
+    pub fn compare_id(
+        &self,
+        s: mrs_core::term_bank::TermId,
+        t: mrs_core::term_bank::TermId,
+        bank: &mrs_core::term_bank::TermBank,
+    ) -> TermComparison {
         match self {
             TermOrdering::KBO => KBO::new().compare_id(s, t, bank),
             TermOrdering::LPO => LPO::new().compare_id(s, t, bank),
-            TermOrdering::CustomKBO(config) => KBO::with_config(config.clone()).compare_id(s, t, bank),
-            TermOrdering::CustomLPO(config) => LPO::with_config(config.clone()).compare_id(s, t, bank),
+            TermOrdering::CustomKBO(config) => {
+                KBO::with_config(config.clone()).compare_id(s, t, bank)
+            }
+            TermOrdering::CustomLPO(config) => {
+                LPO::with_config(config.clone()).compare_id(s, t, bank)
+            }
         }
     }
 

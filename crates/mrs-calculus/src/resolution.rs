@@ -15,8 +15,8 @@ use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource};
 use mrs_core::term::Term;
 use mrs_core::{Atom, Literal};
 
-use mrs_core::term_bank::{IdClause, TermBank, TermId, IdAtom};
 use crate::rename::{max_var, max_var_id, rename_clause, rename_clause_id};
+use mrs_core::term_bank::{IdAtom, IdClause, TermBank, TermId};
 
 /// Converts an atom to a term for unification purposes.
 ///
@@ -49,7 +49,12 @@ pub fn resolve(c1: &Clause, c2: &Clause, id_gen: &mut ClauseIdGen) -> Vec<Clause
     resolve_selected(c1, c2, id_gen, None, None, &HashSet::new())
 }
 
-pub fn resolve_id(c1: &IdClause, c2: &IdClause, bank: &mut TermBank, id_gen: &mut ClauseIdGen) -> Vec<IdClause> {
+pub fn resolve_id(
+    c1: &IdClause,
+    c2: &IdClause,
+    bank: &mut TermBank,
+    id_gen: &mut ClauseIdGen,
+) -> Vec<IdClause> {
     resolve_selected_id(c1, c2, bank, id_gen, None, None, &HashSet::new())
 }
 
@@ -148,16 +153,16 @@ pub fn resolve_selected_id(
     let mut resolvents = Vec::new();
 
     for (i, l1) in c1.literals.iter().enumerate() {
-        if let Some(sel) = sel1 {
-            if !sel.contains(&i) {
-                continue;
-            }
+        if let Some(sel) = sel1
+            && !sel.contains(&i)
+        {
+            continue;
         }
         for (j, l2) in c2r.literals.iter().enumerate() {
-            if let Some(sel) = sel2 {
-                if !sel.contains(&j) {
-                    continue;
-                }
+            if let Some(sel) = sel2
+                && !sel.contains(&j)
+            {
+                continue;
             }
             if l1.positive == l2.positive {
                 continue;

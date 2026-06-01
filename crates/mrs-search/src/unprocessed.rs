@@ -135,10 +135,10 @@ impl UnprocessedSet {
     {
         let mut to_remove = Vec::new();
         for &id in &self.active_ids {
-            if let Some(fv) = self.fvs.get(&id) {
-                if !f(id, fv) {
-                    to_remove.push(id);
-                }
+            if let Some(fv) = self.fvs.get(&id)
+                && !f(id, fv)
+            {
+                to_remove.push(id);
             }
         }
         for id in to_remove {

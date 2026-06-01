@@ -18,8 +18,8 @@ use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource, Literal};
 use mrs_core::term::Term;
 
 use crate::ordering::{TermComparison, TermOrdering};
-use mrs_core::term_bank::{IdClause, IdLiteral, TermBank, TermId, IdAtom};
 use crate::rename::{max_var, max_var_id, rename_clause, rename_clause_id};
+use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank, TermId};
 
 /// Performs all superposition inferences from `eq_clause` into `target`.
 ///
@@ -43,7 +43,15 @@ pub fn superpose_id(
     ordering: &TermOrdering,
     id_gen: &mut ClauseIdGen,
 ) -> Vec<IdClause> {
-    superpose_selected_id(eq_clause, target, bank, ordering, id_gen, None, &HashSet::new())
+    superpose_selected_id(
+        eq_clause,
+        target,
+        bank,
+        ordering,
+        id_gen,
+        None,
+        &HashSet::new(),
+    )
 }
 
 /// Like [`superpose`], but only rewrites into selected literals of the target.
@@ -162,10 +170,10 @@ fn superpose_with_id(
     results: &mut Vec<IdClause>,
 ) {
     for (j, target_lit) in target.literals.iter().enumerate() {
-        if let Some(sel) = target_sel {
-            if !sel.contains(&j) {
-                continue;
-            }
+        if let Some(sel) = target_sel
+            && !sel.contains(&j)
+        {
+            continue;
         }
         let term_positions = literal_term_positions_id(target_lit, bank);
 
@@ -222,7 +230,10 @@ fn superpose_with_id(
     }
 }
 
-fn literal_term_positions_id(lit: &IdLiteral, bank: &TermBank) -> Vec<(usize, TermId, Vec<Vec<usize>>)> {
+fn literal_term_positions_id(
+    lit: &IdLiteral,
+    bank: &TermBank,
+) -> Vec<(usize, TermId, Vec<Vec<usize>>)> {
     match &lit.atom {
         IdAtom::Pred(_, args) => args
             .iter()

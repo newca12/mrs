@@ -201,7 +201,12 @@ fn unify_comm_rec(
     }
 }
 
-pub fn unify_comm_id(s: TermId, t: TermId, bank: &TermBank, comm: &HashSet<SymbolId>) -> Result<IdSubstitution, UnifyError> {
+pub fn unify_comm_id(
+    s: TermId,
+    t: TermId,
+    bank: &TermBank,
+    comm: &HashSet<SymbolId>,
+) -> Result<IdSubstitution, UnifyError> {
     if comm.is_empty() {
         return unify_id(s, t, bank);
     }
@@ -315,26 +320,31 @@ fn bind_var(var: VarId, term: &Term, subst: &mut Substitution) -> Result<(), Uni
 fn deref_id(mut t: TermId, subst: &IdSubstitution, bank: &TermBank) -> TermId {
     let mut steps = 0;
     loop {
-        if let TermNode::Var(v) = bank.get(t) {
-            if let Some(next) = subst.get(*v) {
-                t = next;
-                steps += 1;
-                debug_assert!(steps < 100_000, "apply_term_opt cycle");
-                continue;
-            }
+        if let TermNode::Var(v) = bank.get(t)
+            && let Some(next) = subst.get(*v)
+        {
+            t = next;
+            steps += 1;
+            debug_assert!(steps < 100_000, "apply_term_opt cycle");
+            continue;
         }
         break;
     }
     t
 }
 
-fn bind_var_id(var: VarId, term: TermId, subst: &mut IdSubstitution, bank: &TermBank) -> Result<(), UnifyError> {
+fn bind_var_id(
+    var: VarId,
+    term: TermId,
+    subst: &mut IdSubstitution,
+    bank: &TermBank,
+) -> Result<(), UnifyError> {
     let term = deref_id(term, subst, bank);
 
-    if let TermNode::Var(v) = bank.get(term) {
-        if *v == var {
-            return Ok(());
-        }
+    if let TermNode::Var(v) = bank.get(term)
+        && *v == var
+    {
+        return Ok(());
     }
 
     if contains_var_id(term, var, subst, bank) {
@@ -558,7 +568,7 @@ mod tests {
         let t2 = bank.intern_app(f, vec![c_a, g_b]);
 
         let subst = unify_id(t1, t2, &bank).unwrap();
-        
+
         let mut expected = IdSubstitution::new();
         expected.bind(0, c_a);
         expected.bind(1, c_b);

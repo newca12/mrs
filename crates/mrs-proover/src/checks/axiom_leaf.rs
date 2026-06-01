@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables)]
 //! Phase 4: leaf axiom/conjecture vs. problem-file check.
 //!
 //! For every node carrying a `file('Problems/foo.p', name)` source, we compare
@@ -109,11 +110,12 @@ pub fn check_leaf<'p>(
              (the prover may have renamed or inlined the original axiom)"
         ));
     }
-    
+
     if !roles_compatible(node.role, prob_role.unwrap()) {
         return StepOutcome::Unsound(format!(
             "leaf role '{:?}' is incompatible with problem node role '{:?}'",
-            node.role, prob_role.unwrap()
+            node.role,
+            prob_role.unwrap()
         ));
     }
 

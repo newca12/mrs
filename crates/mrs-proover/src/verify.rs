@@ -362,7 +362,9 @@ fn check_node_prepare<'p>(
     // A conjecture MUST come from the problem file. If it lacks a file source,
     // it's an adversarial fake conjecture.
     if node.role == FormulaRole::Conjecture {
-        return Prepared::Resolved(StepOutcome::Unsound("conjecture step lacks file source annotation".into()));
+        return Prepared::Resolved(StepOutcome::Unsound(
+            "conjecture step lacks file source annotation".into(),
+        ));
     }
 
     // negated_conjecture step — only the direct negation step (rule
