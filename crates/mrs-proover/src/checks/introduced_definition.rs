@@ -226,7 +226,7 @@ pub fn check<'p>(step: &FOFAnnotated<'p>, registry: &SkolemRegistry) -> StepOutc
     }
 
     // --- E shape: parse the formula for a biconditional with a fresh head. ---
-    let body = peel(logical);
+    let (universals, body) = collect_forall(logical);
     let (left, right) = match body {
         FOFFormula::Binary {
             left,
@@ -243,20 +243,27 @@ pub fn check<'p>(step: &FOFAnnotated<'p>, registry: &SkolemRegistry) -> StepOutc
         }
     };
 
-    if let Some(name) = head_predicate(left)
-        && !registry.seen_symbols.contains(name)
-    {
-        return StepOutcome::Sound;
+    let mut is_sound = false;
+    if let Some((name, args)) = head_predicate_with_args(left) {
+        if !registry.seen_symbols.contains(name) && check_free_vars(right, args, &universals) {
+            is_sound = true;
+        }
     }
-    if let Some(name) = head_predicate(right)
-        && !registry.seen_symbols.contains(name)
-    {
+    if !is_sound {
+        if let Some((name, args)) = head_predicate_with_args(right) {
+            if !registry.seen_symbols.contains(name) && check_free_vars(left, args, &universals) {
+                is_sound = true;
+            }
+        }
+    }
+
+    if is_sound {
         return StepOutcome::Sound;
     }
 
     StepOutcome::Unknown(
-        "introduced(definition) head predicate is not fresh (already seen \
-         earlier in the proof or in the linked problem)"
+        "introduced(definition) head predicate is not fresh, OR its arguments \
+         do not capture all free variables of the body"
             .into(),
     )
 }
@@ -292,7 +299,7 @@ fn try_skolem_axiom<'p>(f: &FOFFormula<'p>, registry: &SkolemRegistry) -> Option
     // Peel only universal quantifiers and parens, NOT existentials — the
     // existential is the witness we are looking to Skolemise and must be
     // visible on the left of the implication.
-    let body = peel_forall(f);
+    let (universals, body) = collect_forall(f);
     let (ante, cons) = match body {
         FOFFormula::Binary {
             left,
@@ -329,6 +336,21 @@ fn try_skolem_axiom<'p>(f: &FOFFormula<'p>, registry: &SkolemRegistry) -> Option
         // axiom (or a degenerate one we can't distinguish from the
         // identity rewrite).
         return None;
+    }
+
+    // Arity drop check: Every witness term assigned to an existential
+    // must contain all universal variables of the axiom.
+    for (_, term) in &subst {
+        let mut term_vars = HashSet::new();
+        collect_term_vars(term, &mut term_vars);
+        for u in &universals {
+            if !term_vars.contains(u) {
+                return Some(StepOutcome::Unknown(format!(
+                    "introduced(definition) Skolem term drops universal variable `{}`",
+                    u
+                )));
+            }
+        }
     }
 
     // Every newly-introduced symbol must be fresh in the registry. If
@@ -496,6 +518,123 @@ fn match_term<'p>(
             _ => false,
         },
         FOFTerm::Number(_) | FOFTerm::DistinctObject(_) => pat == conc,
+    }
+}
+
+fn free_vars<'a>(f: &FOFFormula<'a>, bound: &mut HashSet<&'a str>, free: &mut HashSet<&'a str>) {
+    match f {
+        FOFFormula::Atomic(a) => {
+            match a {
+                FOFAtomicFormula::Plain(_, args) | FOFAtomicFormula::Defined(_, args) | FOFAtomicFormula::System(_, args) => {
+                    for t in args {
+                        free_vars_term(t, bound, free);
+                    }
+                }
+                FOFAtomicFormula::True | FOFAtomicFormula::False => {}
+            }
+        }
+        FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => {
+            free_vars(inner, bound, free);
+        }
+        FOFFormula::Binary { left, right, .. } => {
+            free_vars(left, bound, free);
+            free_vars(right, bound, free);
+        }
+        FOFFormula::Equality(l, r) | FOFFormula::Inequality(l, r) => {
+            free_vars_term(l, bound, free);
+            free_vars_term(r, bound, free);
+        }
+        FOFFormula::Quantified { variables, formula, .. } => {
+            let mut newly_bound = Vec::new();
+            for v in variables {
+                if bound.insert(*v) {
+                    newly_bound.push(*v);
+                }
+            }
+            free_vars(formula, bound, free);
+            for v in newly_bound {
+                bound.remove(v);
+            }
+        }
+    }
+}
+
+fn free_vars_term<'a>(t: &FOFTerm<'a>, bound: &HashSet<&'a str>, free: &mut HashSet<&'a str>) {
+    match t {
+        FOFTerm::Variable(v) => {
+            if !bound.contains(v) {
+                free.insert(*v);
+            }
+        }
+        FOFTerm::Function(_, args) | FOFTerm::DefinedFunction(_, args) | FOFTerm::SystemFunction(_, args) => {
+            for a in args {
+                free_vars_term(a, bound, free);
+            }
+        }
+        FOFTerm::Number(_) | FOFTerm::DistinctObject(_) => {}
+    }
+}
+
+pub(crate) fn collect_term_vars<'a>(t: &FOFTerm<'a>, out: &mut HashSet<&'a str>) {
+    match t {
+        FOFTerm::Variable(v) => { out.insert(*v); },
+        FOFTerm::Function(_, args) | FOFTerm::DefinedFunction(_, args) | FOFTerm::SystemFunction(_, args) => {
+            for a in args {
+                collect_term_vars(a, out);
+            }
+        }
+        FOFTerm::Number(_) | FOFTerm::DistinctObject(_) => {}
+    }
+}
+
+fn collect_forall<'a, 'p>(f: &'a FOFFormula<'p>) -> (HashSet<&'p str>, &'a FOFFormula<'p>) {
+    let mut vars = HashSet::new();
+    let mut cur = f;
+    loop {
+        match cur {
+            FOFFormula::Parens(inner) => cur = inner,
+            FOFFormula::Quantified {
+                quantifier: Quantifier::Forall,
+                variables,
+                formula,
+            } => {
+                for v in variables {
+                    vars.insert(*v);
+                }
+                cur = formula;
+            }
+            _ => break,
+        }
+    }
+    (vars, cur)
+}
+
+fn check_free_vars<'a>(body: &FOFFormula<'a>, head_args: &[FOFTerm<'a>], universals: &HashSet<&'a str>) -> bool {
+    let mut bound = HashSet::new();
+    let mut free = HashSet::new();
+    free_vars(body, &mut bound, &mut free);
+    
+    let mut head_vars = HashSet::new();
+    for a in head_args {
+        collect_term_vars(a, &mut head_vars);
+    }
+    
+    for v in free {
+        if !head_vars.contains(v) {
+            return false;
+        }
+    }
+    true
+}
+
+fn head_predicate_with_args<'a>(f: &'a FOFFormula<'a>) -> Option<(&'a str, &'a [FOFTerm<'a>])> {
+    let stripped = match f {
+        FOFFormula::Negation(inner) => peel(inner),
+        _ => f,
+    };
+    match stripped {
+        FOFFormula::Atomic(FOFAtomicFormula::Plain(w, args)) => Some((w.as_str(), args)),
+        _ => None,
     }
 }
 

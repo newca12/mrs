@@ -359,6 +359,12 @@ fn check_node_prepare<'p>(
         ));
     }
 
+    // A conjecture MUST come from the problem file. If it lacks a file source,
+    // it's an adversarial fake conjecture.
+    if node.role == FormulaRole::Conjecture {
+        return Prepared::Resolved(StepOutcome::Unsound("conjecture step lacks file source annotation".into()));
+    }
+
     // negated_conjecture step — only the direct negation step (rule
     // `assume_negation`, `negated_conjecture`, or no rule with a conjecture
     // parent) gets the strict structural check. Downstream
@@ -503,6 +509,12 @@ fn prepare_atp_step<'p>(dag: &Dag<'p>, idx: usize, symbols: &mut SymbolTable) ->
             ctx.reset_vars();
             let mut f = lower_fof_statement(&mut ctx, &dag.nodes[pi].fof.formula);
             let negated = node.negated_parents.get(i).copied().unwrap_or(false);
+            if negated && dag.nodes[pi].role != FormulaRole::Conjecture {
+                return Prepared::Resolved(StepOutcome::Unsound(format!(
+                    "parent '{}' is wrapped in `assume_negation` but is not a conjecture",
+                    p
+                )));
+            }
             let parent_ann = dag.nodes[pi].fof.annotations.as_ref();
             // A definition introduces fresh symbols via
             // `new_symbols(naming, [..])`; a source never does. Negated

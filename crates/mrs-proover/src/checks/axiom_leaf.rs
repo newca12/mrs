@@ -50,30 +50,32 @@ pub fn check_leaf<'p>(
     // --- Anonymous-provenance fallback (Vampire's `file(_, unknown)`) -----
     if expected_name == "unknown" {
         for af in &problem.formulas {
-            // Only match against premises of the original problem — that is,
-            // roles a proof step could legitimately appeal to as a starting
-            // fact: axiom, hypothesis, assumption, definition, conjecture.
-            // Skip everything else (e.g. types) so we never accept a leaf
-            // that matches a non-premise declaration.
-            let (role, prob_f) = match af {
-                AnnotatedFormula::FOF(f) if is_premise_role(f.role) => {
+            let role = match af {
+                AnnotatedFormula::FOF(f) => f.role,
+                AnnotatedFormula::CNF(f) => f.role,
+                _ => continue,
+            };
+            if !roles_compatible(node.role, role) {
+                continue;
+            }
+            let prob_f = match af {
+                AnnotatedFormula::FOF(f) => {
                     ctx.reset_vars();
-                    (f.role, lower_fof_statement(&mut ctx, &f.formula))
+                    lower_fof_statement(&mut ctx, &f.formula)
                 }
-                AnnotatedFormula::CNF(f) if is_premise_role(f.role) => {
+                AnnotatedFormula::CNF(f) => {
                     ctx.reset_vars();
-                    (f.role, lower_cnf_statement(&mut ctx, &f.formula))
+                    lower_cnf_statement(&mut ctx, &f.formula)
                 }
                 _ => continue,
             };
-            let _ = role;
             if alpha_equiv(&proof_f, &prob_f) {
                 return StepOutcome::Sound;
             }
         }
         return StepOutcome::Unknown(
             "leaf with anonymous provenance (file(_,unknown)) does not α-match any \
-             premise-role formula in the linked problem (may differ only by \
+             compatible-role formula in the linked problem (may differ only by \
              AC-rewriting of commutative operators)"
                 .into(),
         );
@@ -85,14 +87,17 @@ pub fn check_leaf<'p>(
     // accept the entry whose name matches, regardless of dialect.
     let mut target_fof: Option<&FOFAnnotated<'_>> = None;
     let mut target_cnf: Option<&mrs_tptp::CNFAnnotated<'_>> = None;
+    let mut prob_role = None;
     for af in &problem.formulas {
         match af {
             AnnotatedFormula::FOF(f) if f.name.as_str() == expected_name => {
                 target_fof = Some(f);
+                prob_role = Some(f.role);
                 break;
             }
             AnnotatedFormula::CNF(f) if f.name.as_str() == expected_name => {
                 target_cnf = Some(f);
+                prob_role = Some(f.role);
                 break;
             }
             _ => {}
@@ -102,6 +107,13 @@ pub fn check_leaf<'p>(
         return StepOutcome::Unknown(format!(
             "leaf references axiom '{expected_name}' not present in problem file \
              (the prover may have renamed or inlined the original axiom)"
+        ));
+    }
+    
+    if !roles_compatible(node.role, prob_role.unwrap()) {
+        return StepOutcome::Unsound(format!(
+            "leaf role '{:?}' is incompatible with problem node role '{:?}'",
+            node.role, prob_role.unwrap()
         ));
     }
 
@@ -129,6 +141,27 @@ pub fn check_leaf<'p>(
             "leaf formula does not syntactically α-match axiom '{expected_name}' \
              (may differ only by AC-rewriting of commutative operators)"
         ))
+    }
+}
+
+fn is_truth_role(r: FormulaRole) -> bool {
+    matches!(
+        r,
+        FormulaRole::Axiom
+            | FormulaRole::Hypothesis
+            | FormulaRole::Assumption
+            | FormulaRole::Definition
+            | FormulaRole::Lemma
+            | FormulaRole::Theorem
+            | FormulaRole::Corollary
+    )
+}
+
+fn roles_compatible(proof_role: FormulaRole, prob_role: FormulaRole) -> bool {
+    if is_truth_role(proof_role) {
+        is_truth_role(prob_role)
+    } else {
+        proof_role == prob_role
     }
 }
 
