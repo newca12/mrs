@@ -12,13 +12,16 @@
 //!
 //! | Name      | Description                                                  |
 //! |-----------|--------------------------------------------------------------|
-//! | `casc`    | Default 9-strategy portfolio tuned for CASC-style budgets    |
-//! |           | (30s and up). Same as [`StrategySchedule::default_schedule`].|
+//! | `casc`    | Default 12-strategy portfolio tuned for CASC-style budgets   |
+//! |           | (30 s and up). Same as [`StrategySchedule::default_schedule`].|
+//! |           | Strategies 1–9 cover KBO/LPO baseline search; strategies     |
+//! |           | 10–11 target FEQ (equational) problems; strategy 12 targets  |
+//! |           | ICU (unit equational) problems.                              |
 //! | `fast`    | Single KBO `AgeWeight(5)` + `AllNegative` strategy. For      |
 //! |           | sub-second ATP-query budgets (e.g. driving `mrs-proover`).   |
 //! | `mini`    | Three-strategy portfolio: KBO `AgeWeight`, KBO               |
-//! |           | `SmallestFirst`+no-AVATAR, LPO `AgeWeight`. Aimed at 1-5s    |
-//! |           | budgets where `fast` underperforms but the full 9-strategy   |
+//! |           | `SmallestFirst`+no-AVATAR, LPO `AgeWeight`. Aimed at 1-5 s   |
+//! |           | budgets where `fast` underperforms but the full 12-strategy  |
 //! |           | rotation pays too much setup cost.                           |
 //!
 //! The CASC schedule name is `casc` (not `casc-30`): the same schedule is

@@ -40,15 +40,18 @@ pub struct StrategySchedule {
 impl StrategySchedule {
     /// Creates the default strategy schedule.
     ///
-    /// 1. AgeWeight(5) + AllNegative + KBO — balanced exploration (15%)
-    /// 2. SmallestFirst + AllNegative + KBO + no weight limit + no AVATAR — deep chain proofs (10%)
-    /// 3. SmallestFirst + AllNegative + KBO — pure best-first (10%)
-    /// 4. AgeWeight(5) + MaxNegative + KBO — aggressive selection (10%)
-    /// 5. AgeWeight(5) + All + KBO — unrestricted literal selection (10%)
-    /// 6. AgeWeight(5) + All + KBO + no AVATAR — FNE/definitional CNF proofs (10%)
-    /// 7. AgeWeight(5) + AllNegative + LPO — LPO balanced exploration (15%)
-    /// 8. GoalDirected(10) + AllNegative + LPO — LPO goal-directed (10%)
-    /// 9. SmallestFirst + AllNegative + LPO — LPO best-first (10%)
+    ///  1. AgeWeight(5) + AllNegative + KBO — balanced exploration (12%)
+    ///  2. SmallestFirst + AllNegative + KBO + no weight limit + no AVATAR — deep chain proofs (8%)
+    ///  3. SmallestFirst + AllNegative + KBO — pure best-first (8%)
+    ///  4. AgeWeight(5) + MaxNegative + KBO — aggressive selection (7%)
+    ///  5. AgeWeight(5) + All + KBO — unrestricted literal selection (8%)
+    ///  6. AgeWeight(5) + All + KBO + no AVATAR — FNE/definitional CNF proofs (10%)
+    ///  7. AgeWeight(5) + AllNegative + LPO — LPO balanced exploration (12%)
+    ///  8. GoalDirected(10) + AllNegative + LPO — LPO goal-directed (7%)
+    ///  9. SmallestFirst + AllNegative + LPO — LPO best-first (5%)
+    /// 10. SmallestFirst + All + KBO + max_weight=30 + no AVATAR — FEQ (8%)
+    /// 11. AgeWeight(5) + All + LPO + no weight limit + no AVATAR — FEQ (8%)
+    /// 12. SmallestFirst + AllNegative + KBO + max_weight=20 + no AVATAR — ICU (remainder ~7%)
     pub fn default_schedule(total_time: Duration) -> Self {
         // Allow overriding to a single strategy for diagnosis: MRS_SINGLE_STRATEGY=N
         // runs only strategy N (1-indexed) for the full time budget.
@@ -69,15 +72,19 @@ impl StrategySchedule {
 
     fn _all_strategies(total_time: Duration) -> Self {
         let ms = total_time.as_millis() as u64;
-        let t1 = Duration::from_millis(ms * 15 / 100);
-        let t2 = Duration::from_millis(ms * 10 / 100);
-        let t3 = Duration::from_millis(ms * 10 / 100);
-        let t4 = Duration::from_millis(ms * 10 / 100);
-        let t5 = Duration::from_millis(ms * 10 / 100);
-        let t6 = Duration::from_millis(ms * 10 / 100);
-        let t7 = Duration::from_millis(ms * 15 / 100);
-        let t8 = Duration::from_millis(ms * 10 / 100);
-        let t9 = total_time
+        let t1 = Duration::from_millis(ms * 12 / 100); // 12%
+        let t2 = Duration::from_millis(ms * 8 / 100); //  8%
+        let t3 = Duration::from_millis(ms * 8 / 100); //  8%
+        let t4 = Duration::from_millis(ms * 7 / 100); //  7%
+        let t5 = Duration::from_millis(ms * 8 / 100); //  8%
+        let t6 = Duration::from_millis(ms * 10 / 100); // 10%
+        let t7 = Duration::from_millis(ms * 12 / 100); // 12%
+        let t8 = Duration::from_millis(ms * 7 / 100); //  7%
+        let t9 = Duration::from_millis(ms * 5 / 100); //  5%
+        let t10 = Duration::from_millis(ms * 8 / 100); //  8%
+        let t11 = Duration::from_millis(ms * 8 / 100); //  8%
+        // t12 absorbs rounding remainder (~7% at 30 s)
+        let t12 = total_time
             .saturating_sub(t1)
             .saturating_sub(t2)
             .saturating_sub(t3)
@@ -85,11 +92,15 @@ impl StrategySchedule {
             .saturating_sub(t5)
             .saturating_sub(t6)
             .saturating_sub(t7)
-            .saturating_sub(t8);
+            .saturating_sub(t8)
+            .saturating_sub(t9)
+            .saturating_sub(t10)
+            .saturating_sub(t11);
 
         StrategySchedule {
             strategies: vec![
-                // KBO strategies
+                // ── KBO strategies ──────────────────────────────────────────
+                // s1: balanced exploration
                 (
                     SearchConfig {
                         time_limit: t1,
@@ -100,6 +111,7 @@ impl StrategySchedule {
                     },
                     t1,
                 ),
+                // s2: deep chain proofs
                 (
                     SearchConfig {
                         time_limit: t2,
@@ -115,6 +127,7 @@ impl StrategySchedule {
                     },
                     t2,
                 ),
+                // s3: pure best-first
                 (
                     SearchConfig {
                         time_limit: t3,
@@ -125,6 +138,7 @@ impl StrategySchedule {
                     },
                     t3,
                 ),
+                // s4: aggressive selection
                 (
                     SearchConfig {
                         time_limit: t4,
@@ -135,6 +149,7 @@ impl StrategySchedule {
                     },
                     t4,
                 ),
+                // s5: unrestricted literal selection
                 (
                     SearchConfig {
                         time_limit: t5,
@@ -145,6 +160,7 @@ impl StrategySchedule {
                     },
                     t5,
                 ),
+                // s6: FNE/definitional CNF proofs
                 (
                     SearchConfig {
                         time_limit: t6,
@@ -164,7 +180,8 @@ impl StrategySchedule {
                     },
                     t6,
                 ),
-                // LPO strategies
+                // ── LPO strategies ──────────────────────────────────────────
+                // s7: LPO balanced exploration
                 (
                     SearchConfig {
                         time_limit: t7,
@@ -175,6 +192,7 @@ impl StrategySchedule {
                     },
                     t7,
                 ),
+                // s8: LPO goal-directed
                 (
                     SearchConfig {
                         time_limit: t8,
@@ -185,6 +203,7 @@ impl StrategySchedule {
                     },
                     t8,
                 ),
+                // s9: LPO best-first
                 (
                     SearchConfig {
                         time_limit: t9,
@@ -195,12 +214,66 @@ impl StrategySchedule {
                     },
                     t9,
                 ),
-                // Diagnostic strategy 10: SmallestFirst + All + max_weight=12 + AVATAR
+                // ── FEQ-targeted strategies ──────────────────────────────────
+                // s10: KBO with All selection and moderate weight cap — FEQ
+                // All selection allows picking positive equality literals for
+                // paramodulation, which is critical for equational problems.
+                // Weight cap 30 keeps passive compact on large FEQ clause sets.
+                // No AVATAR: component splits interfere with equational chaining.
+                (
+                    SearchConfig {
+                        time_limit: t10,
+                        selection: SelectionStrategy::SmallestFirst,
+                        literal_selection: LiteralSelection::All,
+                        ordering: TermOrdering::KBO,
+                        max_term_weight: Some(30),
+                        use_avatar: false,
+                        unit_only_resolution: false,
+                    },
+                    t10,
+                ),
+                // s11: LPO with All selection and no weight cap — FEQ
+                // LPO handles function-symbol-heavy equational theories differently
+                // from KBO; removing the weight cap allows following long
+                // paramodulation chains to their conclusion.
+                // No AVATAR: same reason as s10.
+                (
+                    SearchConfig {
+                        time_limit: t11,
+                        selection: SelectionStrategy::AgeWeight(5),
+                        literal_selection: LiteralSelection::All,
+                        ordering: TermOrdering::LPO,
+                        max_term_weight: None,
+                        use_avatar: false,
+                        unit_only_resolution: false,
+                    },
+                    t11,
+                ),
+                // ── ICU-targeted strategy ────────────────────────────────────
+                // s12: KBO SmallestFirst + AllNegative + tight weight cap — ICU
+                // Unit equational problems have exclusively unit clauses; prioritising
+                // smallest clauses with a tight weight cap (20) prunes term explosion
+                // and keeps the passive set tractable.  No AVATAR: unit clauses never
+                // benefit from component splitting.
+                (
+                    SearchConfig {
+                        time_limit: t12,
+                        selection: SelectionStrategy::SmallestFirst,
+                        literal_selection: LiteralSelection::AllNegative,
+                        ordering: TermOrdering::KBO,
+                        max_term_weight: Some(20),
+                        use_avatar: false,
+                        unit_only_resolution: false,
+                    },
+                    t12,
+                ),
+                // ── Diagnostic strategy (zero time in normal runs) ────────────
+                // s13: SmallestFirst + All + max_weight=15 + AVATAR
                 // AVATAR splits the 46-literal all-positive main clause into 46 independent
-                // branches; with SmallestFirst+All+weight=12 each branch refutation is fast
+                // branches; with SmallestFirst+All+weight=15 each branch refutation is fast
                 // (small sub-problem, tight weight keeps passive compact).  BUR output is
                 // never weight-filtered (see given_clause.rs).
-                // (zero time in normal runs; testable via MRS_SINGLE_STRATEGY=10)
+                // (zero time in normal runs; testable via MRS_SINGLE_STRATEGY=13)
                 (
                     SearchConfig {
                         time_limit: Duration::ZERO,
@@ -314,7 +387,7 @@ pub fn run_schedule(
     let clauses_owned = clauses.to_vec();
 
     // Pre-compute EPR ground instances once.  EPR expansion can take several
-    // seconds for large problems; running it once per strategy (up to 9 times)
+    // seconds for large problems; running it once per strategy (up to 12 times)
     // would multiply that cost.  We generate the ground clauses a single time
     // and clone the result for each strategy that needs it.
     //
@@ -359,6 +432,11 @@ pub fn run_schedule(
         }
     }
 
+    // Pre-compute whether the problem has EPR structure.  is_epr scans all
+    // clauses (O(N)) — calling it once here avoids repeating it for each of
+    // the up-to-12 strategies in the loop below.
+    let epr_structure = epr_ground_cache.is_some() || is_epr(&clauses_owned);
+
     // Total time budget = sum of all strategy slices.
     let total_budget: Duration = actual_configs.iter().map(|c| c.time_limit).sum();
     let schedule_start = Instant::now();
@@ -400,11 +478,10 @@ pub fn run_schedule(
         // enumeration may produce tens of thousands of clauses, and even when
         // the expansion is skipped the AVATAR SAT instance grows without bound
         // during a resolution search over EPR clauses (varisat has no interrupt).
-        let epr_structure = epr_ground_cache.is_some() || is_epr(&clauses_owned);
         if epr_structure {
             search_config.use_avatar = false;
         }
-        
+
         if epr_ground_cache.is_some() {
             // For fully ground EPR problems, term explosion is impossible.
             // Disable the weight limit so the search is complete and we don't
