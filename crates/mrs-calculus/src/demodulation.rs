@@ -25,7 +25,13 @@ pub fn demodulate(
     loop {
         let mut changed_this_pass = false;
         for lit in &mut current_lits {
-            if rewrite_literal(lit, &clause.avatar, demod_index, clause_store, &mut used_unit_ids) {
+            if rewrite_literal(
+                lit,
+                &clause.avatar,
+                demod_index,
+                clause_store,
+                &mut used_unit_ids,
+            ) {
                 changed = true;
                 changed_this_pass = true;
             }
@@ -77,7 +83,8 @@ fn rewrite_literal(
             let new_args: Vec<Term> = args
                 .iter()
                 .map(|arg| {
-                    let (new_arg, ch) = rewrite_term(arg, target_avatar, demod_index, clause_store, used_unit_ids);
+                    let (new_arg, ch) =
+                        rewrite_term(arg, target_avatar, demod_index, clause_store, used_unit_ids);
                     if ch {
                         changed = true;
                     }
@@ -87,8 +94,10 @@ fn rewrite_literal(
             Atom::Pred(*p, new_args)
         }
         Atom::Eq(l, r) => {
-            let (new_l, ch_l) = rewrite_term(l, target_avatar, demod_index, clause_store, used_unit_ids);
-            let (new_r, ch_r) = rewrite_term(r, target_avatar, demod_index, clause_store, used_unit_ids);
+            let (new_l, ch_l) =
+                rewrite_term(l, target_avatar, demod_index, clause_store, used_unit_ids);
+            let (new_r, ch_r) =
+                rewrite_term(r, target_avatar, demod_index, clause_store, used_unit_ids);
             if ch_l || ch_r {
                 changed = true;
             }
@@ -135,7 +144,8 @@ fn rewrite_term(
             let new_args: Vec<Term> = args
                 .iter()
                 .map(|arg| {
-                    let (new_arg, ch) = rewrite_term(arg, target_avatar, demod_index, clause_store, used_unit_ids);
+                    let (new_arg, ch) =
+                        rewrite_term(arg, target_avatar, demod_index, clause_store, used_unit_ids);
                     if ch {
                         changed = true;
                     }
@@ -155,6 +165,216 @@ fn apply_matching_subst(sigma: &Substitution, term: &Term) -> Term {
     sigma.apply_term(term)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource};
+    use mrs_core::{Atom, Literal, SymbolTable, Term};
+
+    fn input_clause(id_gen: &mut ClauseIdGen, lits: Vec<Literal>, name: &str) -> Clause {
+        Clause::new(
+            id_gen.next(),
+            lits,
+            ClauseSource::Input {
+                name: name.into(),
+                role: "axiom".into(),
+            },
+        )
+    }
+
+    #[test]
+    fn demodulate_simple() {
+        // Unit: f(a) = b (f(a) > b by weight)
+        // Target: p(f(a))
+        // Expected: p(b)
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("f");
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let mut id_gen = ClauseIdGen::new();
+
+        let unit = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::eq(
+                Term::app(f, vec![Term::constant(a)]),
+                Term::constant(b),
+            ))],
+            "unit",
+        );
+
+        let target = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(
+                p,
+                vec![Term::app(f, vec![Term::constant(a)])],
+            ))],
+            "target",
+        );
+
+        let mut clause_store = HashMap::new();
+        clause_store.insert(unit.id, unit.clone());
+
+        let mut demod_index = mrs_index::dtree::DTree::new();
+        demod_index.insert(
+            &Term::app(f, vec![Term::constant(a)]),
+            (
+                Term::app(f, vec![Term::constant(a)]),
+                Term::constant(b),
+                unit.id,
+            ),
+        );
+
+        let result = demodulate(&target, &demod_index, &clause_store, &mut id_gen);
+        assert!(result.is_some());
+        let simplified = result.unwrap();
+        // Verify demodulation source is recorded
+        match &simplified.source {
+            ClauseSource::Inference { rule, parents } => {
+                assert_eq!(rule, "demodulation");
+                assert_eq!(parents[0], target.id);
+                assert_eq!(parents[1], unit.id);
+            }
+            _ => panic!("expected inference source"),
+        }
+        match &simplified.literals[0].atom {
+            Atom::Pred(_, args) => {
+                assert_eq!(args[0], Term::constant(b));
+            }
+            _ => panic!("expected predicate"),
+        }
+    }
+
+    #[test]
+    fn demodulate_no_match() {
+        // Unit: f(a) = b
+        // Target: p(g(a))  (no f(a) subterm)
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("f");
+        let g = syms.intern("g");
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let mut id_gen = ClauseIdGen::new();
+
+        let unit = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::eq(
+                Term::app(f, vec![Term::constant(a)]),
+                Term::constant(b),
+            ))],
+            "unit",
+        );
+
+        let target = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(
+                p,
+                vec![Term::app(g, vec![Term::constant(a)])],
+            ))],
+            "target",
+        );
+
+        let mut clause_store = HashMap::new();
+        clause_store.insert(unit.id, unit.clone());
+
+        let mut demod_index = mrs_index::dtree::DTree::new();
+        demod_index.insert(
+            &Term::app(f, vec![Term::constant(a)]),
+            (
+                Term::app(f, vec![Term::constant(a)]),
+                Term::constant(b),
+                unit.id,
+            ),
+        );
+
+        let result = demodulate(&target, &demod_index, &clause_store, &mut id_gen);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn demodulate_with_variable_matching() {
+        // Unit: f(X) = X (collapse rule, f(X) > X by weight)
+        // Target: p(f(a))
+        // Expected: p(a) via matching X=a
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("f");
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+
+        let unit = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::eq(
+                Term::app(f, vec![Term::var(0)]),
+                Term::var(0),
+            ))],
+            "unit",
+        );
+
+        let target = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(
+                p,
+                vec![Term::app(f, vec![Term::constant(a)])],
+            ))],
+            "target",
+        );
+
+        let mut clause_store = HashMap::new();
+        clause_store.insert(unit.id, unit.clone());
+
+        let mut demod_index = mrs_index::dtree::DTree::new();
+        demod_index.insert(
+            &Term::app(f, vec![Term::var(0)]),
+            (Term::app(f, vec![Term::var(0)]), Term::var(0), unit.id),
+        );
+
+        let result = demodulate(&target, &demod_index, &clause_store, &mut id_gen);
+        assert!(result.is_some());
+        let simplified = result.unwrap();
+        match &simplified.literals[0].atom {
+            Atom::Pred(_, args) => {
+                assert_eq!(args[0], Term::constant(a));
+            }
+            _ => panic!("expected predicate"),
+        }
+    }
+
+    #[test]
+    fn demodulate_non_unit_skipped() {
+        // Non-unit clause: a = b ∨ p(c) — not used for demodulation
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let c = syms.intern("c");
+        let mut id_gen = ClauseIdGen::new();
+
+        let _non_unit = input_clause(
+            &mut id_gen,
+            vec![
+                Literal::pos(Atom::eq(Term::constant(a), Term::constant(b))),
+                Literal::pos(Atom::pred(p, vec![Term::constant(c)])),
+            ],
+            "non_unit",
+        );
+
+        let target = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            "target",
+        );
+
+        let clause_store = HashMap::new();
+        let demod_index = mrs_index::dtree::DTree::new();
+        // non_unit is not inserted because it is not a unit equation
+
+        let result = demodulate(&target, &demod_index, &clause_store, &mut id_gen);
+        assert!(result.is_none());
+    }
+}
+
 use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank, TermId};
 
 pub fn demodulate_id(
@@ -171,7 +391,14 @@ pub fn demodulate_id(
     loop {
         let mut changed_this_pass = false;
         for lit in &mut current_lits {
-            if rewrite_literal_id(lit, &clause.avatar, bank, demod_index, clause_store, &mut used_unit_ids) {
+            if rewrite_literal_id(
+                lit,
+                &clause.avatar,
+                bank,
+                demod_index,
+                clause_store,
+                &mut used_unit_ids,
+            ) {
                 changed = true;
                 changed_this_pass = true;
             }
@@ -221,7 +448,14 @@ fn rewrite_literal_id(
             let new_args: Vec<TermId> = args
                 .iter()
                 .map(|arg| {
-                    let (new_arg, ch) = rewrite_term_id(*arg, target_avatar, bank, demod_index, clause_store, used_unit_ids);
+                    let (new_arg, ch) = rewrite_term_id(
+                        *arg,
+                        target_avatar,
+                        bank,
+                        demod_index,
+                        clause_store,
+                        used_unit_ids,
+                    );
                     if ch {
                         changed = true;
                     }
@@ -231,8 +465,22 @@ fn rewrite_literal_id(
             IdAtom::Pred(*p, new_args)
         }
         IdAtom::Eq(l, r) => {
-            let (new_l, ch_l) = rewrite_term_id(*l, target_avatar, bank, demod_index, clause_store, used_unit_ids);
-            let (new_r, ch_r) = rewrite_term_id(*r, target_avatar, bank, demod_index, clause_store, used_unit_ids);
+            let (new_l, ch_l) = rewrite_term_id(
+                *l,
+                target_avatar,
+                bank,
+                demod_index,
+                clause_store,
+                used_unit_ids,
+            );
+            let (new_r, ch_r) = rewrite_term_id(
+                *r,
+                target_avatar,
+                bank,
+                demod_index,
+                clause_store,
+                used_unit_ids,
+            );
             if ch_l || ch_r {
                 changed = true;
             }
@@ -260,7 +508,7 @@ fn rewrite_term_id(
             if !subset {
                 continue;
             }
-            
+
             if let Ok(sigma) = mrs_unify::matching::match_term_id(from, term, bank) {
                 if !used_unit_ids.contains(&unit_id) {
                     used_unit_ids.push(unit_id);
@@ -274,7 +522,14 @@ fn rewrite_term_id(
         let mut changed = false;
         let mut new_args = Vec::with_capacity(args.len());
         for arg in args {
-            let (new_arg, ch) = rewrite_term_id(arg, target_avatar, bank, demod_index, clause_store, used_unit_ids);
+            let (new_arg, ch) = rewrite_term_id(
+                arg,
+                target_avatar,
+                bank,
+                demod_index,
+                clause_store,
+                used_unit_ids,
+            );
             if ch {
                 changed = true;
             }

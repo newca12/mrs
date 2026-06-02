@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_variables)]
 //! Phase 4: leaf axiom/conjecture vs. problem-file check.
 //!
 //! For every node carrying a `file('Problems/foo.p', name)` source, we compare
@@ -165,20 +164,4 @@ fn roles_compatible(proof_role: FormulaRole, prob_role: FormulaRole) -> bool {
     } else {
         proof_role == prob_role
     }
-}
-
-/// Roles a proof leaf may legitimately re-import from the linked problem.
-fn is_premise_role(r: FormulaRole) -> bool {
-    matches!(
-        r,
-        FormulaRole::Axiom
-            | FormulaRole::Hypothesis
-            | FormulaRole::Assumption
-            | FormulaRole::Definition
-            | FormulaRole::Conjecture
-            | FormulaRole::NegatedConjecture
-            | FormulaRole::Lemma
-            | FormulaRole::Theorem
-            | FormulaRole::Corollary
-    )
 }

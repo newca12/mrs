@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_variables)]
 //! Structural check for `introduced(definition)` clauses.
 //!
 //! Two ATP families emit such clauses with slightly different shapes:
@@ -246,14 +245,18 @@ pub fn check<'p>(step: &FOFAnnotated<'p>, registry: &SkolemRegistry) -> StepOutc
 
     let mut is_sound = false;
     if let Some((name, args)) = head_predicate_with_args(left)
-        && !registry.seen_symbols.contains(name) && check_free_vars(right, args, &universals) {
-            is_sound = true;
-        }
+        && !registry.seen_symbols.contains(name)
+        && check_free_vars(right, args, &universals)
+    {
+        is_sound = true;
+    }
     if !is_sound
         && let Some((name, args)) = head_predicate_with_args(right)
-            && !registry.seen_symbols.contains(name) && check_free_vars(left, args, &universals) {
-                is_sound = true;
-            }
+        && !registry.seen_symbols.contains(name)
+        && check_free_vars(left, args, &universals)
+    {
+        is_sound = true;
+    }
 
     if is_sound {
         return StepOutcome::Sound;
@@ -618,7 +621,7 @@ fn collect_forall<'a, 'p>(f: &'a FOFFormula<'p>) -> (HashSet<&'p str>, &'a FOFFo
 fn check_free_vars<'a>(
     body: &FOFFormula<'a>,
     head_args: &[FOFTerm<'a>],
-    universals: &HashSet<&'a str>,
+    _universals: &HashSet<&'a str>,
 ) -> bool {
     let mut bound = HashSet::new();
     let mut free = HashSet::new();
@@ -739,24 +742,6 @@ fn peel<'a, 'p>(f: &'a FOFFormula<'p>) -> &'a FOFFormula<'p> {
     }
 }
 
-/// Peel leading `∀` quantifiers and `(…)` wrappers — but NOT existentials.
-/// Used when the existential structure is significant (e.g. the antecedent
-/// of a Skolem axiom).
-fn peel_forall<'a, 'p>(f: &'a FOFFormula<'p>) -> &'a FOFFormula<'p> {
-    let mut cur = f;
-    loop {
-        match cur {
-            FOFFormula::Parens(inner) => cur = inner,
-            FOFFormula::Quantified {
-                quantifier: Quantifier::Forall,
-                formula,
-                ..
-            } => cur = formula,
-            _ => return cur,
-        }
-    }
-}
-
 /// Peel only `(…)` wrappers; leave quantifiers in place.
 fn peel_parens<'a, 'p>(f: &'a FOFFormula<'p>) -> &'a FOFFormula<'p> {
     let mut cur = f;
@@ -814,21 +799,6 @@ pub(crate) fn declared_new_symbols_opt<'a>(ann: Option<&Annotations<'a>>) -> Vec
     match ann {
         Some(a) => declared_new_symbols(a),
         None => Vec::new(),
-    }
-}
-
-/// Returns the predicate-symbol name of `f` if `f` is a single (possibly
-/// negated) atomic predicate application like `P(...)` or `~P(...)`.
-/// Returns `None` for anything more complex (a connective, an equality,
-/// a quantifier, `$true`/`$false`).
-fn head_predicate<'a>(f: &'a FOFFormula<'_>) -> Option<&'a str> {
-    let stripped = match f {
-        FOFFormula::Negation(inner) => peel(inner),
-        _ => f,
-    };
-    match stripped {
-        FOFFormula::Atomic(FOFAtomicFormula::Plain(w, _)) => Some(w.as_str()),
-        _ => None,
     }
 }
 

@@ -4,13 +4,18 @@
 //! with that predicate and polarity. This dramatically reduces the number
 //! of clause pairs considered during resolution: instead of trying every
 //! processed clause, only those with a complementary predicate are examined.
+//!
+//! Stores `IdClause` values. The internal `DTree` is keyed on legacy `Term`
+//! values converted from `IdAtom` via `TermBank::to_legacy` — this avoids
+//! needing `&mut TermBank` at query time while still leveraging the existing
+//! discrimination-tree infrastructure.
 
 use std::collections::{HashMap, HashSet};
 
-use mrs_core::Atom;
-use mrs_core::clause::{Clause, ClauseId};
+use mrs_core::clause::ClauseId;
 use mrs_core::symbol::SymbolId;
 use mrs_core::term::Term;
+use mrs_core::term_bank::{IdAtom, IdClause, TermBank};
 
 use crate::dtree::DTree;
 use crate::fvi::FeatureVector;
@@ -24,11 +29,13 @@ struct LitKey {
 
 /// An index mapping predicate symbols (with polarity) to clause IDs.
 ///
-/// Maintains a secondary index alongside the processed clause set for
-/// fast lookup of resolution/superposition candidates.
+/// Stores `IdClause` values; all indexed terms are kept in an external
+/// `TermBank`. The internal discrimination tree uses legacy `Term` values
+/// (converted on insert/remove/query) so that query methods only need
+/// `&TermBank` (immutable).
 pub struct LiteralIndex {
-    /// Clauses stored in the index.
-    clauses: HashMap<ClauseId, Clause>,
+    /// `IdClause`s stored in the index.
+    clauses: HashMap<ClauseId, IdClause>,
     /// Feature vectors for stored clauses (used for subsumption filtering).
     fvs: HashMap<ClauseId, FeatureVector>,
     /// Maps (predicate, polarity) -> DTree of clause IDs.
@@ -51,15 +58,18 @@ impl LiteralIndex {
         }
     }
 
-    /// Inserts a clause into the index.
-    pub fn insert(&mut self, clause: Clause) {
+    /// Inserts an `IdClause` into the index.
+    pub fn insert(&mut self, clause: IdClause, bank: &TermBank) {
         let id = clause.id;
-        self.fvs.insert(id, FeatureVector::from_clause(&clause));
+        self.fvs
+            .insert(id, FeatureVector::from_id_clause(&clause, bank));
 
         for lit in &clause.literals {
             match &lit.atom {
-                Atom::Pred(sym, args) => {
-                    let term = Term::App(*sym, args.clone());
+                IdAtom::Pred(sym, args) => {
+                    // Build a legacy Term::App(sym, legacy_args) for the DTree key.
+                    let legacy_args: Vec<Term> = args.iter().map(|&a| bank.to_legacy(a)).collect();
+                    let term = Term::App(*sym, legacy_args);
                     self.pred_index
                         .entry(LitKey {
                             pred: *sym,
@@ -68,7 +78,7 @@ impl LiteralIndex {
                         .or_default()
                         .insert(&term, id);
                 }
-                Atom::Eq(_, _) => {
+                IdAtom::Eq(_, _) => {
                     if lit.positive {
                         self.pos_eq_clauses.insert(id);
                     } else {
@@ -81,21 +91,23 @@ impl LiteralIndex {
     }
 
     /// Removes a clause from the index by ID. Returns the removed clause if found.
-    pub fn remove(&mut self, id: ClauseId) -> Option<Clause> {
+    pub fn remove(&mut self, id: ClauseId, bank: &TermBank) -> Option<IdClause> {
         self.fvs.remove(&id);
         if let Some(clause) = self.clauses.remove(&id) {
             for lit in &clause.literals {
                 match &lit.atom {
-                    Atom::Pred(sym, args) => {
+                    IdAtom::Pred(sym, args) => {
                         if let Some(tree) = self.pred_index.get_mut(&LitKey {
                             pred: *sym,
                             positive: lit.positive,
                         }) {
-                            let term = Term::App(*sym, args.clone());
+                            let legacy_args: Vec<Term> =
+                                args.iter().map(|&a| bank.to_legacy(a)).collect();
+                            let term = Term::App(*sym, legacy_args);
                             tree.remove(&term, &id);
                         }
                     }
-                    Atom::Eq(_, _) => {
+                    IdAtom::Eq(_, _) => {
                         if lit.positive {
                             self.pos_eq_clauses.remove(&id);
                         } else {
@@ -110,59 +122,68 @@ impl LiteralIndex {
         }
     }
 
-    /// Returns clauses that have a literal with the given predicate symbol and
-    /// the *complementary* polarity, and whose arguments are unifiable with the query.
-    pub fn get_unifiable_resolution_partners(&self, atom: &Atom, positive: bool) -> Vec<&Clause> {
-        if let Atom::Pred(sym, args) = atom {
+    /// Returns cloned `IdClause`s that have a literal with the given predicate
+    /// and *complementary* polarity, whose arguments are unifiable with the query.
+    ///
+    /// Returns owned `IdClause` values (cheap: fields are vectors of `u32` handles)
+    /// so callers can freely use `&mut TermBank` for inference without borrow conflicts.
+    pub fn get_unifiable_resolution_partners(
+        &self,
+        atom: &IdAtom,
+        positive: bool,
+        bank: &TermBank,
+    ) -> Vec<IdClause> {
+        if let IdAtom::Pred(sym, args) = atom {
             let key = LitKey {
                 pred: *sym,
                 positive: !positive,
             };
             if let Some(tree) = self.pred_index.get(&key) {
-                let term = Term::App(*sym, args.clone());
-                let mut ids = tree.get_unifiable(&term);
+                let legacy_args: Vec<Term> = args.iter().map(|&a| bank.to_legacy(a)).collect();
+                let query_term = Term::App(*sym, legacy_args);
+                let mut ids = tree.get_unifiable(&query_term);
                 ids.sort_unstable();
                 ids.dedup();
                 return ids
                     .into_iter()
-                    .filter_map(|id| self.clauses.get(&id))
+                    .filter_map(|id| self.clauses.get(&id).cloned())
                     .collect();
             }
         }
         Vec::new()
     }
 
-    /// Returns all clauses that contain a positive equality literal.
-    /// These are candidates for superposition "from" (using equalities as rewrite rules).
-    pub fn get_positive_equality_clauses(&self) -> Vec<&Clause> {
+    /// Returns all clauses that contain a positive equality literal (cloned).
+    pub fn get_positive_equality_clauses(&self) -> Vec<IdClause> {
         self.pos_eq_clauses
             .iter()
-            .filter_map(|id| self.clauses.get(id))
+            .filter_map(|id| self.clauses.get(id).cloned())
             .collect()
     }
 
-    /// Returns clauses from the index that could potentially subsume the target clause,
-    /// based on feature vector filtering.
-    pub fn get_subsumption_candidates(&self, target_fv: &FeatureVector) -> Vec<&Clause> {
+    /// Returns clauses that could potentially subsume the target (cloned).
+    pub fn get_subsumption_candidates(&self, target_fv: &FeatureVector) -> Vec<IdClause> {
         self.clauses
             .iter()
             .filter(|(id, _)| self.fvs.get(*id).unwrap().can_subsume(target_fv))
-            .map(|(_, c)| c)
+            .map(|(_, c)| c.clone())
             .collect()
     }
 
-    /// Returns clauses from the index that could potentially BE subsumed by the given clause,
-    /// based on feature vector filtering.
-    pub fn get_subsumed_candidates(&self, subsumer_fv: &FeatureVector) -> Vec<&Clause> {
+    /// Returns clauses that could potentially BE subsumed by the given clause (cloned).
+    pub fn get_subsumed_candidates(&self, subsumer_fv: &FeatureVector) -> Vec<IdClause> {
         self.clauses
             .iter()
             .filter(|(id, _)| subsumer_fv.can_subsume(self.fvs.get(*id).unwrap()))
-            .map(|(_, c)| c)
+            .map(|(_, c)| c.clone())
             .collect()
     }
 
-    /// Returns clauses from the index that could potentially subsumption-resolve the target clause.
-    pub fn get_subsumption_resolution_candidates(&self, target_fv: &FeatureVector) -> Vec<&Clause> {
+    /// Returns clauses that could potentially subsumption-resolve the target (cloned).
+    pub fn get_subsumption_resolution_candidates(
+        &self,
+        target_fv: &FeatureVector,
+    ) -> Vec<IdClause> {
         self.clauses
             .iter()
             .filter(|(id, _)| {
@@ -171,17 +192,17 @@ impl LiteralIndex {
                     .unwrap()
                     .can_subsumption_resolve(target_fv)
             })
-            .map(|(_, c)| c)
+            .map(|(_, c)| c.clone())
             .collect()
     }
 
-    /// Returns a specific clause by ID.
-    pub fn get(&self, id: ClauseId) -> Option<&Clause> {
+    /// Returns a reference to a specific clause by ID.
+    pub fn get(&self, id: ClauseId) -> Option<&IdClause> {
         self.clauses.get(&id)
     }
 
     /// Returns an iterator over all stored clauses.
-    pub fn iter(&self) -> impl Iterator<Item = &Clause> {
+    pub fn iter(&self) -> impl Iterator<Item = &IdClause> {
         self.clauses.values()
     }
 
@@ -196,7 +217,7 @@ impl LiteralIndex {
     }
 
     /// Drains all clauses from the index, returning them as a Vec.
-    pub fn drain(&mut self) -> Vec<Clause> {
+    pub fn drain(&mut self) -> Vec<IdClause> {
         self.pred_index.clear();
         self.pos_eq_clauses.clear();
         self.neg_eq_clauses.clear();
@@ -205,7 +226,7 @@ impl LiteralIndex {
     }
 
     /// Retains only clauses satisfying the predicate. Rebuilds the index.
-    pub fn retain<F: FnMut(&Clause) -> bool>(&mut self, mut f: F) {
+    pub fn retain<F: FnMut(&IdClause) -> bool>(&mut self, mut f: F, bank: &TermBank) {
         let to_remove: Vec<ClauseId> = self
             .clauses
             .values()
@@ -213,7 +234,7 @@ impl LiteralIndex {
             .map(|c| c.id)
             .collect();
         for id in to_remove {
-            self.remove(id);
+            self.remove(id, bank);
         }
     }
 }

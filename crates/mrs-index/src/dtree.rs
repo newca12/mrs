@@ -159,6 +159,74 @@ impl<V: Clone + PartialEq> DTreeId<V> {
         self.leaves.is_empty() && self.children.is_empty()
     }
 
+    /// Returns all values associated with terms that may unify with the query.
+    ///
+    /// This is an *imperfect* filter: it may return false positives (terms that
+    /// don't actually unify), but never misses a truly unifiable term. Callers
+    /// should verify unifiability on the returned candidates.
+    pub fn get_unifications(&self, query: TermId, bank: &TermBank) -> Vec<V> {
+        let flat = flatten_id(query, bank);
+        let mut results = Vec::new();
+        self.unify_flat(&flat, 0, &mut results);
+        results
+    }
+
+    fn unify_flat(&self, query: &[Cell], pos: usize, results: &mut Vec<V>) {
+        if pos >= query.len() {
+            results.extend_from_slice(&self.leaves);
+            return;
+        }
+
+        match query[pos] {
+            Cell::Sym(f, n) => {
+                if let Some(child) = self.children.get(&Cell::Sym(f, n)) {
+                    child.unify_flat(query, pos + 1, results);
+                }
+                for (&key, child) in &self.children {
+                    if let Cell::Var(_) = key {
+                        let skip = skip_in_flat(query, pos);
+                        child.unify_flat(query, skip, results);
+                    }
+                }
+            }
+            Cell::Var(_) => {
+                for (&key, child) in &self.children {
+                    match key {
+                        Cell::Var(_) => {
+                            child.unify_flat(query, pos + 1, results);
+                        }
+                        Cell::Sym(_, n) => {
+                            child.skip_stored(n as usize, query, pos + 1, results);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn skip_stored(
+        &self,
+        remaining: usize,
+        query: &[Cell],
+        query_pos: usize,
+        results: &mut Vec<V>,
+    ) {
+        if remaining == 0 {
+            self.unify_flat(query, query_pos, results);
+            return;
+        }
+        for (&key, child) in &self.children {
+            match key {
+                Cell::Var(_) => {
+                    child.skip_stored(remaining - 1, query, query_pos, results);
+                }
+                Cell::Sym(_, m) => {
+                    child.skip_stored(remaining - 1 + m as usize, query, query_pos, results);
+                }
+            }
+        }
+    }
+
     pub fn get_generalizations(&self, query: TermId, bank: &TermBank) -> Vec<V> {
         let mut results = Vec::new();
         let flat = gen_flat(query, bank);
@@ -196,36 +264,9 @@ impl<V> Default for DTreeId<V> {
 }
 
 fn gen_flat(term: TermId, bank: &TermBank) -> Vec<Cell> {
-    let mut cells = Vec::new();
-    let mut var_map = HashMap::new();
-    let mut next_var = 0;
-    gen_flat_into(term, bank, &mut cells, &mut var_map, &mut next_var);
-    cells
-}
-
-fn gen_flat_into(
-    term: TermId,
-    bank: &TermBank,
-    out: &mut Vec<Cell>,
-    var_map: &mut HashMap<VarId, VarId>,
-    next_var: &mut VarId,
-) {
-    match bank.get(term) {
-        TermNode::Var(v) => {
-            let norm_v = *var_map.entry(*v).or_insert_with(|| {
-                let id = *next_var;
-                *next_var += 1;
-                id
-            });
-            out.push(Cell::Var(norm_v));
-        }
-        TermNode::App(sym, args) => {
-            out.push(Cell::Sym(*sym, args.len() as u8));
-            for &arg in args {
-                gen_flat_into(arg, bank, out, var_map, next_var);
-            }
-        }
-    }
+    // Generalization query flattening is identical to insert flattening:
+    // both normalize variables left-to-right in pre-order DFS.
+    flatten_id(term, bank)
 }
 
 /// A discrimination tree mapping terms to values.

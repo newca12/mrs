@@ -97,6 +97,70 @@ impl IdClause {
         }
         vars
     }
+
+    /// Returns `true` if this is the empty clause (contradiction).
+    pub fn is_empty(&self) -> bool {
+        self.literals.is_empty()
+    }
+
+    /// Returns the number of literals in this clause.
+    pub fn len(&self) -> usize {
+        self.literals.len()
+    }
+
+    /// Returns `true` if this clause is a tautology.
+    ///
+    /// Detects two kinds:
+    /// - Positive `s = s` (equality reflexivity): `TermId` equality is structural.
+    /// - Complementary literals: `L` and `¬L` for the same `IdAtom`.
+    pub fn is_tautology(&self) -> bool {
+        for lit in &self.literals {
+            if lit.positive
+                && let IdAtom::Eq(l, r) = &lit.atom
+                && l == r
+            {
+                return true;
+            }
+        }
+        for (i, lit1) in self.literals.iter().enumerate() {
+            for lit2 in &self.literals[i + 1..] {
+                if lit1.positive != lit2.positive && lit1.atom == lit2.atom {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Removes duplicate literals in place, keeping the first occurrence of each.
+    pub fn deduplicate(&mut self) {
+        let mut seen: Vec<IdLiteral> = Vec::new();
+        self.literals.retain(|lit| {
+            if seen.contains(lit) {
+                false
+            } else {
+                seen.push(lit.clone());
+                true
+            }
+        });
+    }
+
+    /// Returns `true` if `self.avatar` is a subset of `other.avatar`.
+    pub fn avatar_is_subset_of(&self, other: &IdClause) -> bool {
+        let mut i = 0;
+        let mut j = 0;
+        while i < self.avatar.len() && j < other.avatar.len() {
+            if self.avatar[i] < other.avatar[j] {
+                return false;
+            } else if self.avatar[i] == other.avatar[j] {
+                i += 1;
+                j += 1;
+            } else {
+                j += 1;
+            }
+        }
+        i == self.avatar.len()
+    }
 }
 
 /// An index-based, hash-consing arena for first-order terms.

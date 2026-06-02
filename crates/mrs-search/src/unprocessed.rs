@@ -3,10 +3,11 @@ use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use mrs_calculus::ordering::SymbolConfig;
-use mrs_core::clause::{Clause, ClauseId};
+use mrs_core::clause::ClauseId;
+use mrs_core::term_bank::{IdClause, TermBank};
 use mrs_index::fvi::FeatureVector;
 
-use crate::weight::clause_weight;
+use crate::weight::clause_weight_id;
 
 #[derive(Clone, Debug)]
 struct WeightWrapper {
@@ -69,10 +70,10 @@ impl UnprocessedSet {
         }
     }
 
-    /// Adds a clause to the unprocessed set.
-    pub fn push(&mut self, clause: &Clause) {
+    /// Adds an `IdClause` to the unprocessed set.
+    pub fn push(&mut self, clause: &IdClause, bank: &TermBank) {
         let id = clause.id;
-        let weight = clause_weight(clause, &self.config);
+        let weight = clause_weight_id(clause, bank, &self.config);
 
         let goal_weight = if clause.distance < 100 {
             weight + (clause.distance * 2)
@@ -81,7 +82,8 @@ impl UnprocessedSet {
         };
 
         self.active_ids.insert(id);
-        self.fvs.insert(id, FeatureVector::from_clause(clause));
+        self.fvs
+            .insert(id, FeatureVector::from_id_clause(clause, bank));
         self.age_queue.push_back(id);
         self.weight_queue.push(WeightWrapper { id, weight });
         self.goal_queue.push(WeightWrapper {

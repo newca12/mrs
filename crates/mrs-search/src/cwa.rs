@@ -325,7 +325,13 @@ pub fn try_componentwise_refute(
 
         match result {
             SearchResult::Refutation(empty_id, _) => {
-                let proof = extract_proof(empty_id, &state.clause_store);
+                // Convert IdClause store → legacy Clause store for proof extraction
+                let legacy_store: std::collections::HashMap<_, _> = state
+                    .clause_store
+                    .iter()
+                    .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
+                    .collect();
+                let proof = extract_proof(empty_id, &legacy_store);
                 let tstp = format_tstp(&proof, symbols);
                 proof_parts.push(format!(
                     "% --- componentwise branch {}/{}: predicate {:?} ---\n{}",

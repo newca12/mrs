@@ -12,6 +12,7 @@
 use mrs_core::clause::{Clause, Literal};
 use mrs_core::formula::Atom;
 use mrs_core::term::Term;
+use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank, TermId, TermNode};
 
 /// Literal selection strategy.
 #[derive(Clone, Debug)]
@@ -114,6 +115,92 @@ fn term_weight(term: &Term) -> u32 {
     match term {
         Term::Var(_) => 1,
         Term::App(_, args) => 1 + args.iter().map(term_weight).sum::<u32>(),
+    }
+}
+
+// ── IdClause / TermBank variants ────────────────────────────────────────────
+
+/// Returns the indices of selected (eligible) literals for an `IdClause`.
+pub fn selected_literals_id(
+    clause: &IdClause,
+    strategy: &LiteralSelection,
+    bank: &TermBank,
+) -> Vec<usize> {
+    match strategy {
+        LiteralSelection::All => (0..clause.literals.len()).collect(),
+        LiteralSelection::AllNegative => {
+            let neg_indices: Vec<usize> = clause
+                .literals
+                .iter()
+                .enumerate()
+                .filter(|(_, lit)| !lit.positive)
+                .map(|(i, _)| i)
+                .collect();
+            if neg_indices.is_empty() {
+                (0..clause.literals.len()).collect()
+            } else {
+                neg_indices
+            }
+        }
+        LiteralSelection::MaxNegative => {
+            let neg_indices: Vec<usize> = clause
+                .literals
+                .iter()
+                .enumerate()
+                .filter(|(_, lit)| !lit.positive)
+                .map(|(i, _)| i)
+                .collect();
+            if neg_indices.is_empty() {
+                (0..clause.literals.len()).collect()
+            } else {
+                let best = neg_indices
+                    .iter()
+                    .max_by_key(|&&i| id_literal_weight(&clause.literals[i], bank))
+                    .unwrap();
+                vec![*best]
+            }
+        }
+        LiteralSelection::MaxNegativeOrMaxPositive => {
+            let neg_indices: Vec<usize> = clause
+                .literals
+                .iter()
+                .enumerate()
+                .filter(|(_, lit)| !lit.positive)
+                .map(|(i, _)| i)
+                .collect();
+            if neg_indices.is_empty() {
+                let max_w = (0..clause.literals.len())
+                    .map(|i| id_literal_weight(&clause.literals[i], bank))
+                    .max()
+                    .unwrap_or(0);
+                (0..clause.literals.len())
+                    .filter(|&i| id_literal_weight(&clause.literals[i], bank) == max_w)
+                    .collect()
+            } else {
+                let best = neg_indices
+                    .iter()
+                    .max_by_key(|&&i| id_literal_weight(&clause.literals[i], bank))
+                    .unwrap();
+                vec![*best]
+            }
+        }
+    }
+}
+
+fn id_literal_weight(lit: &IdLiteral, bank: &TermBank) -> u32 {
+    match &lit.atom {
+        IdAtom::Pred(_, args) => 1 + args.iter().map(|&a| id_term_weight(a, bank)).sum::<u32>(),
+        IdAtom::Eq(l, r) => id_term_weight(*l, bank) + id_term_weight(*r, bank),
+    }
+}
+
+fn id_term_weight(term: TermId, bank: &TermBank) -> u32 {
+    match bank.get(term) {
+        TermNode::Var(_) => 1,
+        TermNode::App(_, args) => {
+            let args = args.clone();
+            1 + args.iter().map(|&a| id_term_weight(a, bank)).sum::<u32>()
+        }
     }
 }
 

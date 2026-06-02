@@ -2,6 +2,7 @@ use mrs_core::clause::Clause;
 use mrs_core::formula::Atom;
 use mrs_core::symbol::SymbolId;
 use mrs_core::term::Term;
+use mrs_core::term_bank::{IdAtom, IdClause, TermBank, TermId, TermNode};
 
 /// A feature vector representing the symbol frequencies of a clause.
 /// Used for fast subsumption filtering.
@@ -73,6 +74,47 @@ impl FeatureVector {
                 self.increment(*sym);
                 for arg in args {
                     self.count_term(arg);
+                }
+            }
+        }
+    }
+
+    /// Computes the feature vector for an `IdClause`.
+    pub fn from_id_clause(clause: &IdClause, bank: &TermBank) -> Self {
+        let mut fv = FeatureVector {
+            num_lits: clause.literals.len() as u32,
+            ..Default::default()
+        };
+        for lit in &clause.literals {
+            if lit.positive {
+                fv.pos_lits += 1;
+            } else {
+                fv.neg_lits += 1;
+            }
+            match &lit.atom {
+                IdAtom::Pred(sym, args) => {
+                    fv.increment(*sym);
+                    for &arg in args {
+                        fv.count_term_id(arg, bank);
+                    }
+                }
+                IdAtom::Eq(l, r) => {
+                    fv.count_term_id(*l, bank);
+                    fv.count_term_id(*r, bank);
+                }
+            }
+        }
+        fv
+    }
+
+    fn count_term_id(&mut self, term: TermId, bank: &TermBank) {
+        match bank.get(term) {
+            TermNode::Var(_) => {}
+            TermNode::App(sym, args) => {
+                self.increment(*sym);
+                let args = args.clone(); // decouple from bank borrow
+                for arg in args {
+                    self.count_term_id(arg, bank);
                 }
             }
         }

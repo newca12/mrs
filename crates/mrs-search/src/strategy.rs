@@ -522,7 +522,13 @@ pub fn run_schedule(
         }
 
         let result = if let SearchResult::Refutation(id, _) = result {
-            let proof = extract_proof(id, &state.clause_store);
+            // Convert IdClause store → legacy Clause store for proof extraction
+            let legacy_store: std::collections::HashMap<_, _> = state
+                .clause_store
+                .iter()
+                .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
+                .collect();
+            let proof = extract_proof(id, &legacy_store);
             let tstp = format_tstp(&proof, symbols);
             SearchResult::Refutation(id, tstp)
         } else if search_config.max_term_weight.is_some()

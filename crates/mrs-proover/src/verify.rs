@@ -313,7 +313,6 @@ fn step_needs_atp(node: &dag::Node<'_>) -> bool {
 }
 
 /// Roles a proof leaf may legitimately re-import from the linked problem.
-/// Mirrors `axiom_leaf::is_premise_role`; the two must stay in sync.
 fn is_premise_role(r: FormulaRole) -> bool {
     matches!(
         r,

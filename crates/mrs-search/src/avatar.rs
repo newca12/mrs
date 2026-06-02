@@ -5,6 +5,7 @@ use varisat::{ExtendFormula, Solver};
 use mrs_core::clause::{Clause, ClauseIdGen, Literal};
 use mrs_core::formula::Atom;
 use mrs_core::term::{Term, VarId};
+use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank, TermNode};
 
 pub struct AvatarContext {
     pub solver: Solver<'static>,
@@ -164,6 +165,117 @@ impl Default for AvatarContext {
     }
 }
 
+// ── IdClause variant ────────────────────────────────────────────────────────
+
+impl AvatarContext {
+    /// Splits an `IdClause` into variable-disjoint AVATAR components.
+    /// Returns `None` if the clause cannot be split (only 1 component).
+    pub fn split_clause_id(
+        &mut self,
+        clause: &IdClause,
+        id_gen: &mut ClauseIdGen,
+        bank: &TermBank,
+    ) -> Option<Vec<IdClause>> {
+        if clause.literals.len() <= 1 {
+            return None;
+        }
+
+        let n = clause.literals.len();
+        let mut parent = (0..n).collect::<Vec<_>>();
+
+        fn find(parent: &mut [usize], i: usize) -> usize {
+            if parent[i] == i {
+                i
+            } else {
+                let p = parent[i];
+                parent[i] = find(parent, p);
+                parent[i]
+            }
+        }
+
+        fn union(parent: &mut [usize], i: usize, j: usize) {
+            let pi = find(parent, i);
+            let pj = find(parent, j);
+            if pi != pj {
+                parent[pi] = pj;
+            }
+        }
+
+        let mut var_to_lit: HashMap<VarId, usize> = HashMap::new();
+        for (i, lit) in clause.literals.iter().enumerate() {
+            let vars = id_literal_vars(lit, bank);
+            for v in vars {
+                if let Some(&first_i) = var_to_lit.get(&v) {
+                    union(&mut parent, i, first_i);
+                } else {
+                    var_to_lit.insert(v, i);
+                }
+            }
+        }
+
+        let mut components: HashMap<usize, Vec<IdLiteral>> = HashMap::new();
+        let mut ground_lits: Vec<IdLiteral> = Vec::new();
+
+        for (i, lit) in clause.literals.iter().enumerate() {
+            let p = find(&mut parent, i);
+            let vars = id_literal_vars(lit, bank);
+            if vars.is_empty() {
+                ground_lits.push(lit.clone());
+            } else {
+                components.entry(p).or_default().push(lit.clone());
+            }
+        }
+
+        let num_components = components.len() + ground_lits.len();
+        if num_components <= 1 {
+            return None;
+        }
+
+        let mut parts: Vec<Vec<IdLiteral>> = components.into_values().collect();
+        for lit in ground_lits {
+            parts.push(vec![lit]);
+        }
+
+        let mut split_clauses = Vec::new();
+        let mut sat_clause = Vec::new();
+
+        for lits in parts {
+            let comp_str = canonical_component_key_id(&lits, bank);
+
+            let var = if let Some(&v) = self.component_vars.get(&comp_str) {
+                v
+            } else {
+                let v = self.next_var;
+                self.next_var += 1;
+                self.component_vars.insert(comp_str, v);
+                v
+            };
+
+            sat_clause.push(varisat::Lit::from_var(
+                varisat::Var::from_dimacs(var as isize),
+                true,
+            ));
+
+            let mut new_avatar = clause.avatar.clone();
+            new_avatar.push(var);
+
+            let new_clause =
+                IdClause::new_avatar(id_gen.next(), lits, clause.source.clone(), new_avatar);
+            split_clauses.push(new_clause);
+        }
+
+        for &a in &clause.avatar {
+            sat_clause.push(varisat::Lit::from_var(
+                varisat::Var::from_dimacs(a as isize),
+                false,
+            ));
+        }
+
+        self.solver.add_clause(&sat_clause);
+        Some(split_clauses)
+    }
+}
+
 fn literal_vars(lit: &Literal) -> HashSet<VarId> {
     let mut vars = HashSet::new();
     match &lit.atom {
@@ -285,6 +397,111 @@ fn push_u32(s: &mut String, mut n: u32) {
     }
     buf[..len].reverse();
     s.push_str(std::str::from_utf8(&buf[..len]).unwrap());
+}
+
+fn id_literal_vars(lit: &IdLiteral, bank: &TermBank) -> HashSet<VarId> {
+    let mut vars = HashSet::new();
+    match &lit.atom {
+        IdAtom::Pred(_, args) => {
+            for &a in args {
+                id_collect_vars(a, bank, &mut vars);
+            }
+        }
+        IdAtom::Eq(l, r) => {
+            id_collect_vars(*l, bank, &mut vars);
+            id_collect_vars(*r, bank, &mut vars);
+        }
+    }
+    vars
+}
+
+fn id_collect_vars(term: mrs_core::term_bank::TermId, bank: &TermBank, vars: &mut HashSet<VarId>) {
+    match bank.get(term) {
+        TermNode::Var(v) => {
+            vars.insert(*v);
+        }
+        TermNode::App(_, args) => {
+            let args = args.clone();
+            for a in args {
+                id_collect_vars(a, bank, vars);
+            }
+        }
+    }
+}
+
+/// Returns a canonical string key for a set of `IdLiteral`s, invariant
+/// under variable renaming (same algorithm as `canonical_component_key`).
+fn canonical_component_key_id(lits: &[IdLiteral], bank: &TermBank) -> String {
+    let mut var_map: HashMap<VarId, u32> = HashMap::new();
+    let mut next: u32 = 0;
+    let mut s = String::new();
+    for (i, lit) in lits.iter().enumerate() {
+        if i > 0 {
+            s.push('|');
+        }
+        if !lit.positive {
+            s.push('~');
+        }
+        match &lit.atom {
+            IdAtom::Pred(sym, args) => {
+                s.push('P');
+                push_u32(&mut s, sym.index());
+                if !args.is_empty() {
+                    s.push('(');
+                    for (j, &a) in args.iter().enumerate() {
+                        if j > 0 {
+                            s.push(',');
+                        }
+                        write_id_term_canonical(a, bank, &mut s, &mut var_map, &mut next);
+                    }
+                    s.push(')');
+                }
+            }
+            IdAtom::Eq(l, r) => {
+                s.push_str("Eq(");
+                write_id_term_canonical(*l, bank, &mut s, &mut var_map, &mut next);
+                s.push(',');
+                write_id_term_canonical(*r, bank, &mut s, &mut var_map, &mut next);
+                s.push(')');
+            }
+        }
+    }
+    s
+}
+
+fn write_id_term_canonical(
+    term: mrs_core::term_bank::TermId,
+    bank: &TermBank,
+    s: &mut String,
+    var_map: &mut HashMap<VarId, u32>,
+    next: &mut u32,
+) {
+    match bank.get(term) {
+        TermNode::Var(v) => {
+            let id = *var_map.entry(*v).or_insert_with(|| {
+                let id = *next;
+                *next += 1;
+                id
+            });
+            s.push('V');
+            push_u32(s, id);
+        }
+        TermNode::App(sym, args) => {
+            s.push('F');
+            push_u32(s, sym.index());
+            let args = args.clone();
+            if !args.is_empty() {
+                s.push('(');
+                for (i, a) in args.iter().enumerate() {
+                    if i > 0 {
+                        s.push(',');
+                    }
+                    write_id_term_canonical(*a, bank, s, var_map, next);
+                }
+                s.push(')');
+            }
+        }
+    }
 }
 
 #[cfg(test)]

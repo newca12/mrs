@@ -64,32 +64,39 @@ pub fn select(
 mod tests {
     use super::*;
     use mrs_core::clause::{Clause, ClauseSource};
+    use mrs_core::term_bank::TermBank;
     use mrs_core::{Atom, Literal, SymbolTable, Term};
 
-    fn make_clause(id: u64, num_lits: usize) -> Clause {
+    fn make_id_clause(
+        id: u64,
+        num_lits: usize,
+        bank: &mut TermBank,
+    ) -> mrs_core::term_bank::IdClause {
         let mut syms = SymbolTable::new();
         let p = syms.intern("p");
         let lits = (0..num_lits)
             .map(|i| Literal::pos(Atom::pred(p, vec![Term::var(i as u32)])))
             .collect();
-        Clause::new(
+        let clause = Clause::new(
             ClauseId(id),
             lits,
             ClauseSource::Input {
                 name: "test".into(),
                 role: "axiom".into(),
             },
-        )
+        );
+        bank.clause_from_legacy(&clause)
     }
 
     #[test]
     fn fifo_returns_oldest() {
+        let mut bank = TermBank::new();
         let mut unproc = UnprocessedSet::new(std::sync::Arc::new(
             mrs_calculus::ordering::SymbolConfig::default(),
         ));
-        unproc.push(&make_clause(0, 3));
-        unproc.push(&make_clause(1, 1));
-        unproc.push(&make_clause(2, 2));
+        unproc.push(&make_id_clause(0, 3, &mut bank), &bank);
+        unproc.push(&make_id_clause(1, 1, &mut bank), &bank);
+        unproc.push(&make_id_clause(2, 2, &mut bank), &bank);
 
         let selected = select(&mut unproc, &SelectionStrategy::Fifo, 0).unwrap();
         assert_eq!(selected, ClauseId(0));
@@ -97,12 +104,13 @@ mod tests {
 
     #[test]
     fn smallest_returns_shortest() {
+        let mut bank = TermBank::new();
         let mut unproc = UnprocessedSet::new(std::sync::Arc::new(
             mrs_calculus::ordering::SymbolConfig::default(),
         ));
-        unproc.push(&make_clause(0, 3));
-        unproc.push(&make_clause(1, 1));
-        unproc.push(&make_clause(2, 2));
+        unproc.push(&make_id_clause(0, 3, &mut bank), &bank);
+        unproc.push(&make_id_clause(1, 1, &mut bank), &bank);
+        unproc.push(&make_id_clause(2, 2, &mut bank), &bank);
 
         let selected = select(&mut unproc, &SelectionStrategy::SmallestFirst, 0).unwrap();
         assert_eq!(selected, ClauseId(1));
@@ -110,11 +118,12 @@ mod tests {
 
     #[test]
     fn age_weight_alternates() {
+        let mut bank = TermBank::new();
         let mut unproc = UnprocessedSet::new(std::sync::Arc::new(
             mrs_calculus::ordering::SymbolConfig::default(),
         ));
-        unproc.push(&make_clause(0, 3)); // oldest, largest
-        unproc.push(&make_clause(1, 1)); // smallest
+        unproc.push(&make_id_clause(0, 3, &mut bank), &bank); // oldest, largest
+        unproc.push(&make_id_clause(1, 1, &mut bank), &bank); // smallest
 
         // ratio=2: iteration 0 -> age (FIFO), iteration 1 -> weight
         let s0 = select(&mut unproc, &SelectionStrategy::AgeWeight(2), 0).unwrap();

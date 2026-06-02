@@ -10,6 +10,7 @@ use mrs_calculus::ordering::SymbolConfig;
 use mrs_core::clause::{Clause, Literal};
 use mrs_core::formula::Atom;
 use mrs_core::term::Term;
+use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank, TermId, TermNode};
 
 /// Returns the weight of a clause: the sum of symbol occurrences across all literals.
 ///
@@ -70,6 +71,64 @@ pub fn term_weight(term: &Term, config: &SymbolConfig) -> u32 {
             Term::App(sym, args) => {
                 weight = weight.saturating_add(config.symbol_weight(*sym));
                 stack.extend(args.iter());
+            }
+        }
+    }
+    weight
+}
+
+// ── IdClause / TermBank variants ────────────────────────────────────────────
+
+/// Returns the weight of an `IdClause`.
+pub fn clause_weight_id(clause: &IdClause, bank: &TermBank, config: &SymbolConfig) -> u32 {
+    clause
+        .literals
+        .iter()
+        .map(|lit| literal_weight_id(lit, bank, config))
+        .sum()
+}
+
+/// Returns true if the `IdClause` weight exceeds `max`. Bails out early.
+pub fn clause_weight_exceeds_id(
+    clause: &IdClause,
+    max: u32,
+    bank: &TermBank,
+    config: &SymbolConfig,
+) -> bool {
+    let mut total: u32 = 0;
+    for lit in &clause.literals {
+        total = total.saturating_add(literal_weight_id(lit, bank, config));
+        if total > max {
+            return true;
+        }
+    }
+    false
+}
+
+fn literal_weight_id(lit: &IdLiteral, bank: &TermBank, config: &SymbolConfig) -> u32 {
+    match &lit.atom {
+        IdAtom::Pred(sym, args) => {
+            config.symbol_weight(*sym)
+                + args
+                    .iter()
+                    .map(|&a| term_weight_id(a, bank, config))
+                    .sum::<u32>()
+        }
+        IdAtom::Eq(l, r) => term_weight_id(*l, bank, config) + term_weight_id(*r, bank, config),
+    }
+}
+
+fn term_weight_id(term: TermId, bank: &TermBank, config: &SymbolConfig) -> u32 {
+    let mut stack: Vec<TermId> = vec![term];
+    let mut weight: u32 = 0;
+    while let Some(t) = stack.pop() {
+        match bank.get(t) {
+            TermNode::Var(_) => {
+                weight = weight.saturating_add(config.w0);
+            }
+            TermNode::App(sym, args) => {
+                weight = weight.saturating_add(config.symbol_weight(*sym));
+                stack.extend_from_slice(args);
             }
         }
     }
