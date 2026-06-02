@@ -73,7 +73,10 @@ fn sync_active_dormant(state: &mut SearchState, ordering: &crate::TermOrdering) 
         state.dormant_unprocessed.insert(id, u);
     }
 
-    // 3. Dormant -> Processed
+    // 3. Dormant Processed -> Unprocessed
+    // We cannot move them directly to Processed, because they might have missed
+    // inferences with other clauses that were Processed while they were Dormant.
+    // To preserve completeness, they must go through the Given Clause loop again.
     let to_restore_proc: Vec<_> = state
         .dormant_processed
         .keys()
@@ -82,17 +85,7 @@ fn sync_active_dormant(state: &mut SearchState, ordering: &crate::TermOrdering) 
         .collect();
     for id in to_restore_proc {
         let p = state.dormant_processed.remove(&id).unwrap();
-        if is_unit_positive_equality(&p)
-            && let Atom::Eq(l, r) = &p.literals[0].atom
-        {
-            use mrs_calculus::ordering::TermComparison;
-            if ordering.compare(l, r) == TermComparison::Greater {
-                state.demod_index.insert(l, (l.clone(), r.clone(), p.id));
-            } else if ordering.compare(r, l) == TermComparison::Greater {
-                state.demod_index.insert(r, (r.clone(), l.clone(), p.id));
-            }
-        }
-        state.processed.insert(p);
+        state.unprocessed.push(&p);
     }
 
     // 4. Dormant -> Unprocessed

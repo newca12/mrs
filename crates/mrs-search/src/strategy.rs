@@ -331,8 +331,6 @@ pub fn run_schedule(
     // expanding them: AVATAR's SAT instance grows without bound during a
     // resolution search over EPR clauses and can cause varisat to block for
     // minutes with no way to interrupt it.
-    let unexpanded_epr = epr_ground_cache.is_none() && is_epr(&clauses_owned);
-
     let mut last_result = SearchResult::GaveUp;
 
     // FVO pre-pass: for clause sets where all predicate arguments are variables
@@ -402,9 +400,12 @@ pub fn run_schedule(
         // enumeration may produce tens of thousands of clauses, and even when
         // the expansion is skipped the AVATAR SAT instance grows without bound
         // during a resolution search over EPR clauses (varisat has no interrupt).
-        if unexpanded_epr {
+        let epr_structure = epr_ground_cache.is_some() || is_epr(&clauses_owned);
+        if epr_structure {
             search_config.use_avatar = false;
-        } else if epr_ground_cache.is_some() {
+        }
+        
+        if epr_ground_cache.is_some() {
             // For fully ground EPR problems, term explosion is impossible.
             // Disable the weight limit so the search is complete and we don't
             // wrongly demote Saturated to GaveUp.
