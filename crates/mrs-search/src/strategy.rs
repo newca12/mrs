@@ -40,18 +40,17 @@ pub struct StrategySchedule {
 impl StrategySchedule {
     /// Creates the default strategy schedule.
     ///
-    ///  1. AgeWeight(5) + AllNegative + KBO — balanced exploration (12%)
-    ///  2. SmallestFirst + AllNegative + KBO + no weight limit + no AVATAR — deep chain proofs (8%)
-    ///  3. SmallestFirst + AllNegative + KBO — pure best-first (8%)
-    ///  4. AgeWeight(5) + MaxNegative + KBO — aggressive selection (7%)
-    ///  5. AgeWeight(5) + All + KBO — unrestricted literal selection (8%)
+    ///  1. AgeWeight(5) + AllNegative + KBO — balanced exploration (14%)
+    ///  2. SmallestFirst + AllNegative + KBO + no weight limit + no AVATAR — deep chain proofs (10%)
+    ///  3. SmallestFirst + AllNegative + KBO — pure best-first (10%)
+    ///  4. AgeWeight(5) + MaxNegative + KBO — aggressive selection (9%)
+    ///  5. AgeWeight(5) + All + KBO — unrestricted literal selection (9%)
     ///  6. AgeWeight(5) + All + KBO + no AVATAR — FNE/definitional CNF proofs (10%)
-    ///  7. AgeWeight(5) + AllNegative + LPO — LPO balanced exploration (12%)
-    ///  8. GoalDirected(10) + AllNegative + LPO — LPO goal-directed (7%)
-    ///  9. SmallestFirst + AllNegative + LPO — LPO best-first (5%)
-    /// 10. SmallestFirst + All + KBO + max_weight=30 + no AVATAR — FEQ (8%)
-    /// 11. AgeWeight(5) + All + LPO + no weight limit + no AVATAR — FEQ (8%)
-    /// 12. SmallestFirst + AllNegative + KBO + max_weight=20 + no AVATAR — ICU (remainder ~7%)
+    ///  7. AgeWeight(5) + AllNegative + LPO — LPO balanced exploration (14%)
+    ///  8. GoalDirected(10) + AllNegative + LPO — LPO goal-directed (9%)
+    ///  9. SmallestFirst + AllNegative + LPO — LPO best-first (9%)
+    /// 10. SmallestFirst + All + KBO + max_weight=30 + no AVATAR — FEQ (4%)
+    /// 11. AgeWeight(5) + All + LPO + no weight limit + no AVATAR — FEQ (remainder ~2%)
     pub fn default_schedule(total_time: Duration) -> Self {
         // Allow overriding to a single strategy for diagnosis: MRS_SINGLE_STRATEGY=N
         // runs only strategy N (1-indexed) for the full time budget.
@@ -72,19 +71,21 @@ impl StrategySchedule {
 
     fn _all_strategies(total_time: Duration) -> Self {
         let ms = total_time.as_millis() as u64;
-        let t1 = Duration::from_millis(ms * 12 / 100); // 12%
-        let t2 = Duration::from_millis(ms * 8 / 100); //  8%
-        let t3 = Duration::from_millis(ms * 8 / 100); //  8%
-        let t4 = Duration::from_millis(ms * 7 / 100); //  7%
-        let t5 = Duration::from_millis(ms * 8 / 100); //  8%
+        // s1–s9: restored close to original proportions (92% combined for a 30 s budget)
+        // s10–s11: small FEQ-targeted bonus budgets (8% combined)
+        let t1 = Duration::from_millis(ms * 14 / 100); // 14% (was 15%)
+        let t2 = Duration::from_millis(ms * 10 / 100); // 10%
+        let t3 = Duration::from_millis(ms * 10 / 100); // 10%
+        let t4 = Duration::from_millis(ms * 9 / 100); //   9% (was 10%)
+        let t5 = Duration::from_millis(ms * 9 / 100); //   9% (was 10%)
         let t6 = Duration::from_millis(ms * 10 / 100); // 10%
-        let t7 = Duration::from_millis(ms * 12 / 100); // 12%
-        let t8 = Duration::from_millis(ms * 7 / 100); //  7%
-        let t9 = Duration::from_millis(ms * 5 / 100); //  5%
-        let t10 = Duration::from_millis(ms * 8 / 100); //  8%
-        let t11 = Duration::from_millis(ms * 8 / 100); //  8%
-        // t12 absorbs rounding remainder (~7% at 30 s)
-        let t12 = total_time
+        let t7 = Duration::from_millis(ms * 14 / 100); // 14% (was 15%)
+        let t8 = Duration::from_millis(ms * 9 / 100); //   9% (was 10%)
+        let t9 = Duration::from_millis(ms * 9 / 100); //   9% (was ~10%)
+        // s1–s9 total: 94%
+        let t10 = Duration::from_millis(ms * 4 / 100); //  4% FEQ KBO
+        // t11 absorbs rounding remainder (~2% at 30 s) — FEQ LPO
+        let t11 = total_time
             .saturating_sub(t1)
             .saturating_sub(t2)
             .saturating_sub(t3)
@@ -94,8 +95,7 @@ impl StrategySchedule {
             .saturating_sub(t7)
             .saturating_sub(t8)
             .saturating_sub(t9)
-            .saturating_sub(t10)
-            .saturating_sub(t11);
+            .saturating_sub(t10);
 
         StrategySchedule {
             strategies: vec![
@@ -220,6 +220,8 @@ impl StrategySchedule {
                 // paramodulation, which is critical for equational problems.
                 // Weight cap 30 keeps passive compact on large FEQ clause sets.
                 // No AVATAR: component splits interfere with equational chaining.
+                // Small budget (4%): provides FEQ coverage without stealing time
+                // from the main s1-s9 portfolio.
                 (
                     SearchConfig {
                         time_limit: t10,
@@ -237,6 +239,7 @@ impl StrategySchedule {
                 // from KBO; removing the weight cap allows following long
                 // paramodulation chains to their conclusion.
                 // No AVATAR: same reason as s10.
+                // Absorbs rounding remainder (~2% at 30 s).
                 (
                     SearchConfig {
                         time_limit: t11,
@@ -249,31 +252,13 @@ impl StrategySchedule {
                     },
                     t11,
                 ),
-                // ── ICU-targeted strategy ────────────────────────────────────
-                // s12: KBO SmallestFirst + AllNegative + tight weight cap — ICU
-                // Unit equational problems have exclusively unit clauses; prioritising
-                // smallest clauses with a tight weight cap (20) prunes term explosion
-                // and keeps the passive set tractable.  No AVATAR: unit clauses never
-                // benefit from component splitting.
-                (
-                    SearchConfig {
-                        time_limit: t12,
-                        selection: SelectionStrategy::SmallestFirst,
-                        literal_selection: LiteralSelection::AllNegative,
-                        ordering: TermOrdering::KBO,
-                        max_term_weight: Some(20),
-                        use_avatar: false,
-                        unit_only_resolution: false,
-                    },
-                    t12,
-                ),
                 // ── Diagnostic strategy (zero time in normal runs) ────────────
-                // s13: SmallestFirst + All + max_weight=15 + AVATAR
+                // s12: SmallestFirst + All + max_weight=15 + AVATAR
                 // AVATAR splits the 46-literal all-positive main clause into 46 independent
                 // branches; with SmallestFirst+All+weight=15 each branch refutation is fast
                 // (small sub-problem, tight weight keeps passive compact).  BUR output is
                 // never weight-filtered (see given_clause.rs).
-                // (zero time in normal runs; testable via MRS_SINGLE_STRATEGY=13)
+                // (zero time in normal runs; testable via MRS_SINGLE_STRATEGY=12)
                 (
                     SearchConfig {
                         time_limit: Duration::ZERO,

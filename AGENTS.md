@@ -92,10 +92,9 @@ Named schedules live in `mrs_search::strategy::named` (`crates/mrs-search/src/st
 | `fast` | 1 KBO `AgeWeight(5)+AllNegative` | Sub-second ATP queries (e.g. `mrs-proover` backend) |
 | `mini` | 3-strategy compact portfolio | 1–5 s budgets |
 
-The `casc` portfolio runs strategies 1–9 (KBO/LPO baseline), 10–11 (FEQ-targeted: `All` literal
-selection + paramodulation-friendly settings), and 12 (ICU-targeted: `SmallestFirst` + tight weight
-cap 20 + no AVATAR).  A 13th diagnostic strategy is always present but gets `Duration::ZERO` in
-normal runs; use `MRS_SINGLE_STRATEGY=13` to run it alone for the full budget.
+The `casc` portfolio runs strategies 1–9 (KBO/LPO baseline, ~94% of budget) and 10–11 (FEQ-targeted: `All` literal
+selection + paramodulation-friendly settings, ~6% combined).  A 12th diagnostic strategy is always present but gets `Duration::ZERO` in
+normal runs; use `MRS_SINGLE_STRATEGY=12` to run it alone for the full budget.
 
 To add a new schedule: implement a constructor in `strategy::named`, then add its name to `ALL` and the `by_name` match. `default_schedule()` must stay synonymous with `casc` so unflagged CASC runs are unaffected.
 
@@ -134,7 +133,7 @@ The root `Cargo.toml` is both `[workspace]` and `[package]` — valid but unusua
 
 ## Architecture notes
 
-- **Strategy portfolio:** 12 active strategies run **serially**, each with a fresh `SearchState`. No shared state between strategies. A 13th diagnostic strategy (`MRS_SINGLE_STRATEGY=13`) gets `Duration::ZERO` in normal runs.
+- **Strategy portfolio:** 11 active strategies run **serially**, each with a fresh `SearchState`. No shared state between strategies. A 12th diagnostic strategy (`MRS_SINGLE_STRATEGY=12`) gets `Duration::ZERO` in normal runs.
 - **Default time budget:** 30 seconds; overridable with `--time <seconds>`.
 - **`max_clauses`:** 50,000 per strategy. Hitting this gives `ResourceOut`, not `Timeout`.
 - **Refutation-based:** conjectures are negated before search. A problem with no `conjecture` role checks satisfiability (outputs `Unsatisfiable`/`Satisfiable`).
