@@ -11,6 +11,7 @@
 //! - A time or clause limit is exceeded
 
 use std::collections::HashSet;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use mrs_calculus::demodulation;
@@ -123,7 +124,12 @@ fn avatar_refute_branch(
     avatar: &[u32],
     ordering: &crate::TermOrdering,
 ) -> bool {
-    if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+    if state.search_deadline.is_some_and(|d| Instant::now() >= d)
+        || state
+            .stop_flag
+            .as_ref()
+            .is_some_and(|f| f.load(Ordering::Relaxed))
+    {
         return true;
     }
     let sat_clause: Vec<varisat::Lit> = avatar
@@ -221,8 +227,13 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             continue;
         }
 
-        // Check time limit
-        if start.elapsed() >= config.time_limit {
+        // Check time limit (and parallel stop-flag)
+        if start.elapsed() >= config.time_limit
+            || state
+                .stop_flag
+                .as_ref()
+                .is_some_and(|f| f.load(Ordering::Relaxed))
+        {
             return SearchResult::Timeout;
         }
 

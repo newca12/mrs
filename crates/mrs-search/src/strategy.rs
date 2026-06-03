@@ -10,7 +10,8 @@
 pub mod named;
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use mrs_calculus::ordering::SymbolConfig;
@@ -389,7 +390,6 @@ pub fn run_schedule(
     // expanding them: AVATAR's SAT instance grows without bound during a
     // resolution search over EPR clauses and can cause varisat to block for
     // minutes with no way to interrupt it.
-    let mut last_result = SearchResult::GaveUp;
 
     // FVO pre-pass: for clause sets where all predicate arguments are variables
     // (no equality, no function terms), the first-order problem is
@@ -426,115 +426,146 @@ pub fn run_schedule(
     let total_budget: Duration = actual_configs.iter().map(|c| c.time_limit).sum();
     let schedule_start = Instant::now();
 
-    // Run strategies serially.  Each strategy gets its own time slice; the
-    // total wall-clock time across all strategies equals the full budget.
-    for (strategy_idx, search_config) in actual_configs.iter().enumerate() {
-        // Guard: if the overall budget is already exhausted (e.g. because
-        // prior strategies' preprocessing took longer than their slice),
-        // stop launching new strategies.
-        let elapsed = schedule_start.elapsed();
-        if elapsed >= total_budget {
-            break;
+    // Run strategies in parallel.  Each non-zero strategy runs for the full
+    // remaining budget instead of only its proportional slice — with N threads
+    // running simultaneously the wall-clock time is bounded by the total budget
+    // while we explore N different search directions at once.
+    //
+    // A shared stop-flag is set by the first thread that finds a Refutation or
+    // a genuine Saturation; every other thread notices it on its next time-check
+    // iteration and returns Timeout.
+    //
+    // SearchState (and the varisat::Solver it contains) is NOT Send, so each
+    // thread constructs its own SearchState from the cloned clause data.
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let (tx, rx) = mpsc::channel::<(usize, SearchResult)>();
+
+    // Compute how much time remains after all pre-processing steps.
+    let remaining_at_spawn = total_budget.saturating_sub(schedule_start.elapsed());
+
+    std::thread::scope(|s| {
+        for (strategy_idx, search_config) in actual_configs.iter().enumerate() {
+            // Skip zero-budget strategies (e.g. the diagnostic s12).
+            if search_config.time_limit.is_zero() {
+                continue;
+            }
+            // Bail out if the overall budget is already gone.
+            if remaining_at_spawn.is_zero() {
+                break;
+            }
+
+            let stop = Arc::clone(&stop_flag);
+            let tx = tx.clone();
+
+            // Clone all inputs the thread needs; SearchState is created inside.
+            let clauses_for_thread: Vec<Clause> = match &epr_ground_cache {
+                Some(ground) => ground.clone(),
+                None => clauses_owned.clone(),
+            };
+            let id_gen_thread = if epr_ground_cache.is_some() {
+                epr_id_gen_base.clone()
+            } else {
+                id_gen.clone()
+            };
+            let config_thread = Arc::clone(&config);
+
+            // Override the individual time slice with the full remaining budget so
+            // that all strategies run simultaneously for the same wall-clock window.
+            let mut sc = search_config.clone();
+            sc.time_limit = remaining_at_spawn;
+
+            // Apply EPR constraints.
+            if epr_structure {
+                sc.use_avatar = false;
+            }
+            if epr_ground_cache.is_some() {
+                sc.max_term_weight = None;
+            }
+
+            s.spawn(move || {
+                // Don't even start if a sibling thread already finished.
+                if stop.load(Ordering::Relaxed) {
+                    return;
+                }
+
+                let mut state = SearchState::new(
+                    clauses_for_thread,
+                    id_gen_thread,
+                    config_thread,
+                    sc.use_avatar,
+                );
+                state.stop_flag = Some(Arc::clone(&stop));
+
+                let raw = search(&mut state, &sc);
+
+                if std::env::var("TRACE_SEARCH").is_ok() {
+                    eprintln!(
+                        "[TRACE] strategy {} ({:?}+{:?}+no_weight={}) result={:?} elapsed={:.2}s",
+                        strategy_idx + 1,
+                        sc.selection,
+                        sc.literal_selection,
+                        sc.max_term_weight.is_none(),
+                        raw,
+                        schedule_start.elapsed().as_secs_f64(),
+                    );
+                }
+
+                // Convert raw result: format proof TSTP while state is still live;
+                // demote Saturated→GaveUp for incomplete (weight-bounded) strategies.
+                let result = match raw {
+                    SearchResult::Refutation(id, _) => {
+                        let legacy_store: std::collections::HashMap<_, _> = state
+                            .clause_store
+                            .iter()
+                            .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
+                            .collect();
+                        let proof = extract_proof(id, &legacy_store);
+                        let tstp = format_tstp(&proof, symbols);
+                        SearchResult::Refutation(id, tstp)
+                    }
+                    SearchResult::Saturated if sc.max_term_weight.is_some() => SearchResult::GaveUp,
+                    other => other,
+                };
+
+                // Signal siblings only for definitive results.
+                if matches!(
+                    result,
+                    SearchResult::Refutation(..) | SearchResult::Saturated
+                ) {
+                    stop.store(true, Ordering::Relaxed);
+                }
+
+                let _ = tx.send((strategy_idx, result));
+            });
         }
 
-        // Trim this strategy's time limit so that preprocessing + search
-        // together never exceed the remaining overall budget.
-        let remaining = total_budget - elapsed;
-        let effective_limit = search_config.time_limit.min(remaining);
-        // Skip strategies with zero effective time limit (e.g., diagnostic
-        // strategies configured with Duration::ZERO that are only run via
-        // MRS_SINGLE_STRATEGY).  Running search() with a zero budget yields
-        // an immediate Timeout that would overwrite a prior Saturated/GaveUp.
-        if effective_limit.is_zero() {
-            continue;
+        // Drop the main sender so the channel closes when all threads finish.
+        drop(tx);
+
+        // Collect results: track the best definitive answer seen.
+        // Priority: Refutation > Saturated > GaveUp > Timeout
+        let mut best: SearchResult = SearchResult::GaveUp;
+        for (_idx, res) in rx.into_iter() {
+            match &res {
+                SearchResult::Refutation(..) => {
+                    best = res;
+                    // Keep draining the channel so threads can finish cleanly.
+                }
+                SearchResult::Saturated => {
+                    if !matches!(best, SearchResult::Refutation(..)) {
+                        best = res;
+                    }
+                }
+                SearchResult::GaveUp => {
+                    if matches!(best, SearchResult::Timeout) {
+                        best = res;
+                    }
+                }
+                SearchResult::Timeout => { /* lowest priority — keep existing best */ }
+            }
         }
-        let mut search_config = search_config.clone();
-        search_config.time_limit = effective_limit;
-
-        // Use the pre-computed EPR ground clauses (no per-strategy re-expansion).
-        let (_epr_applied, clauses_local, id_gen_local) = if let Some(ref ground) = epr_ground_cache
-        {
-            (true, ground.clone(), epr_id_gen_base.clone())
-        } else {
-            (false, clauses_owned.clone(), id_gen.clone())
-        };
-
-        // Disable AVATAR for EPR instances (expanded or not): the ground
-        // enumeration may produce tens of thousands of clauses, and even when
-        // the expansion is skipped the AVATAR SAT instance grows without bound
-        // during a resolution search over EPR clauses (varisat has no interrupt).
-        if epr_structure {
-            search_config.use_avatar = false;
-        }
-
-        if epr_ground_cache.is_some() {
-            // For fully ground EPR problems, term explosion is impossible.
-            // Disable the weight limit so the search is complete and we don't
-            // wrongly demote Saturated to GaveUp.
-            search_config.max_term_weight = None;
-        }
-
-        // Deduct any time already spent on preprocessing from this strategy's
-        // time limit, so the search loop itself stays within the slice.
-        let after_preprocess = schedule_start.elapsed();
-        let used_in_preprocess = after_preprocess.saturating_sub(elapsed);
-        search_config.time_limit = search_config.time_limit.saturating_sub(used_in_preprocess);
-
-        let mut state = SearchState::new(
-            clauses_local,
-            id_gen_local,
-            config.clone(),
-            search_config.use_avatar,
-        );
-
-        // Deduct SearchState::new time (AVATAR splitting, etc.) as well.
-        let after_init = schedule_start.elapsed();
-        let used_in_init = after_init.saturating_sub(after_preprocess);
-        search_config.time_limit = search_config.time_limit.saturating_sub(used_in_init);
-
-        let result = search(&mut state, &search_config);
-
-        if std::env::var("TRACE_SEARCH").is_ok() {
-            eprintln!(
-                "[TRACE] strategy {} ({:?}+{:?}+no_weight={}) result={:?} elapsed={:.2}s",
-                strategy_idx + 1,
-                search_config.selection,
-                search_config.literal_selection,
-                search_config.max_term_weight.is_none(),
-                result,
-                schedule_start.elapsed().as_secs_f64(),
-            );
-        }
-
-        let result = if let SearchResult::Refutation(id, _) = result {
-            // Convert IdClause store → legacy Clause store for proof extraction
-            let legacy_store: std::collections::HashMap<_, _> = state
-                .clause_store
-                .iter()
-                .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
-                .collect();
-            let proof = extract_proof(id, &legacy_store);
-            let tstp = format_tstp(&proof, symbols);
-            SearchResult::Refutation(id, tstp)
-        } else if search_config.max_term_weight.is_some()
-            && matches!(result, SearchResult::Saturated)
-        {
-            // Weight-bounded search is incomplete: saturation only means "no
-            // proof exists within the weight budget", not genuine unsatisfiability.
-            // Demote to GaveUp so we never emit a wrong CounterSatisfiable.
-            SearchResult::GaveUp
-        } else {
-            result
-        };
-
-        match result {
-            SearchResult::Refutation(..) => return result,
-            SearchResult::Saturated => return result,
-            other => last_result = other,
-        }
-    }
-
-    last_result
+        best
+    })
 }
 
 #[cfg(test)]

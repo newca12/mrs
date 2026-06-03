@@ -7,15 +7,23 @@
 #   crates/mrs-bench/casc.sh [OPTIONS]
 #
 # Options:
-#   --edition   <name>         Competition edition directory (default: casc-30)
-#   --systems   <s1,s2,...>    Comma-separated system names (default: all in
-#                              crates/mrs-bench/systems/ EXCEPT `reference`,
-#                              which is a stub system retained only for
-#                              regenerating answers.tsv)
-#   --divisions <d1,d2,...>    Comma-separated division names (default: fne,feq,epu,eps,ueq,icu)
-#   --time      <secs>         Per-problem time limit in seconds (default: 120)
-#   --jobs      <N>            Parallel jobs (default: 1)
-#   --output    <dir>          Output directory (default: crates/mrs-bench/results/<edition>/TIMESTAMP)
+#   --edition     <name>         Competition edition directory (default: casc-30)
+#   --systems     <s1,s2,...>    Comma-separated system names (default: all in
+#                                crates/mrs-bench/systems/ EXCEPT `reference`)
+#   --divisions   <d1,d2,...>    Comma-separated division names
+#                                (default: fne,feq,epu,eps,ueq,icu)
+#   --time        <secs>         Per-problem time limit for ALL divisions (default: 120)
+#                                Overridden per-division by --casc-times or --time-DIV.
+#   --casc-times                 Use official CASC-30 times per division:
+#                                  fne/feq/ueq → 240s, eps/epu → 120s,
+#                                  icu → 480s, slh → 15s
+#                                (overrides --time for the named divisions)
+#   --time-DIV    <secs>         Override time limit for a specific division, e.g.
+#                                --time-feq 120  --time-ueq 240
+#                                (takes precedence over both --time and --casc-times)
+#   --jobs        <N>            Parallel jobs (default: 1)
+#   --output      <dir>          Output directory
+#                                (default: crates/mrs-bench/results/<edition>/TIMESTAMP)
 #
 # Output:
 #   <output>/run.csv    — one row per (problem, system)
@@ -37,23 +45,66 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EDITION="casc-30"
 SYSTEMS=""          # empty = auto-discover
 DIVISIONS="fne,feq,epu,eps,ueq,icu"
-TIME_LIMIT=120
+TIME_LIMIT=120      # global fallback (seconds)
 JOBS=1
 OUTPUT=""
+USE_CASC_TIMES=0    # 0 = use TIME_LIMIT for all; 1 = use CASC-30 official times
+
+# Official CASC-30 wall-clock time limits per division (seconds).
+# SLH is CPU-time limited but we approximate with wall clock here.
+declare -A CASC30_TIMES=(
+    [fne]=240   # FOF, no equality
+    [feq]=240   # FOF, with equality
+    [eps]=120   # EPR, satisfiable
+    [epu]=120   # EPR, unsatisfiable
+    [ueq]=240   # unit equality
+    [icu]=480   # ICU
+    [slh]=15    # SLH (CPU time at competition; wall clock approximation here)
+    [tne]=240   # THF, no equality
+    [teq]=240   # THF, with equality
+    [tfi]=120   # TFA, integer arithmetic
+    [tfe]=120   # TFA, real arithmetic
+    [tfn]=120   # TFN (typed first-order non-theorems)
+)
+
+# Per-division overrides set via --time-DIV flags; populated during arg parsing.
+declare -A DIV_OVERRIDE=()
 
 # ---------- arg parsing ----------
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --edition)   EDITION="$2";    shift 2 ;;
-        --systems)   SYSTEMS="$2";    shift 2 ;;
-        --divisions) DIVISIONS="$2";  shift 2 ;;
-        --time)      TIME_LIMIT="$2"; shift 2 ;;
-        --jobs)      JOBS="$2";       shift 2 ;;
-        --output)    OUTPUT="$2";     shift 2 ;;
+        --edition)    EDITION="$2";    shift 2 ;;
+        --systems)    SYSTEMS="$2";    shift 2 ;;
+        --divisions)  DIVISIONS="$2";  shift 2 ;;
+        --time)       TIME_LIMIT="$2"; shift 2 ;;
+        --casc-times) USE_CASC_TIMES=1; shift ;;
+        --jobs)       JOBS="$2";       shift 2 ;;
+        --output)     OUTPUT="$2";     shift 2 ;;
+        --time-*)
+            # --time-DIV N  e.g. --time-feq 240
+            div_key="${1#--time-}"   # strip "--time-"
+            DIV_OVERRIDE["${div_key}"]="$2"
+            shift 2
+            ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
 done
 
+# ---------- resolve per-division time limit ----------
+# Priority (highest to lowest):
+#   1. --time-DIV N  (explicit per-division override)
+#   2. --casc-times  (official CASC-30 defaults)
+#   3. --time N      (global fallback)
+div_time() {
+    local div="$1"
+    if [[ -n "${DIV_OVERRIDE[${div}]+x}" ]]; then
+        echo "${DIV_OVERRIDE[${div}]}"
+    elif [[ "${USE_CASC_TIMES}" -eq 1 && -n "${CASC30_TIMES[${div}]+x}" ]]; then
+        echo "${CASC30_TIMES[${div}]}"
+    else
+        echo "${TIME_LIMIT}"
+    fi
+}
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 if [[ -z "${OUTPUT}" ]]; then
     OUTPUT="${SCRIPT_DIR}/results/${EDITION}/${TIMESTAMP}"
@@ -130,29 +181,43 @@ for div in "${DIVISION_LIST[@]}"; do
         echo "WARNING: no list file for division '${div}' at ${list}" >&2
         continue
     fi
+    t="$(div_time "${div}")"
+    div_upper="${div^^}"
     while IFS= read -r problem || [[ -n "${problem}" ]]; do
         [[ -z "${problem}" ]] && continue
-        domain="${problem:0:3}"
-        div_upper="${div^^}"
         prob_path="${PROBLEMS_ROOT}/${div_upper}/${problem}.p"
         for sys in "${SYSTEMS_LIST[@]}"; do
-            printf '%s\t%s\t%s\t%s\n' "${div}" "${problem}" "${prob_path}" "${sys}" >> "${JOBS_FILE}"
+            # Fields: div  problem  prob_path  sys  time_limit
+            printf '%s\t%s\t%s\t%s\t%s\n' \
+                "${div}" "${problem}" "${prob_path}" "${sys}" "${t}" >> "${JOBS_FILE}"
             (( total_problems++ )) || true
         done
     done < "${list}"
 done
 
-echo "[casc] Edition:   ${EDITION}" >&2
-echo "[casc] Systems:   ${SYSTEMS_LIST[*]}" >&2
-echo "[casc] Divisions: ${DIVISION_LIST[*]}" >&2
-echo "[casc] Time/prob: ${TIME_LIMIT}s" >&2
-echo "[casc] Jobs:      ${TOTAL_JOBS:-${total_problems}} (parallelism: ${JOBS})" >&2
-echo "[casc] Output:    ${OUTPUT}" >&2
-echo "[casc] TPTP:      ${TPTP}" >&2
-echo "[casc] Total jobs: ${total_problems}" >&2
+# Build a human-readable summary of per-division times for the log.
+div_times_summary=""
+for div in "${DIVISION_LIST[@]}"; do
+    t="$(div_time "${div}")"
+    div_times_summary+="${div}=${t}s "
+done
+
+echo "[casc] Edition:     ${EDITION}" >&2
+echo "[casc] Systems:     ${SYSTEMS_LIST[*]}" >&2
+echo "[casc] Divisions:   ${DIVISION_LIST[*]}" >&2
+echo "[casc] Time limits: ${div_times_summary% }" >&2
+if [[ "${USE_CASC_TIMES}" -eq 1 ]]; then
+    echo "[casc] Mode:        --casc-times (official CASC-30 wall-clock limits)" >&2
+else
+    echo "[casc] Mode:        --time ${TIME_LIMIT} (uniform, all divisions)" >&2
+fi
+echo "[casc] Jobs:        ${JOBS} (parallel)" >&2
+echo "[casc] Output:      ${OUTPUT}" >&2
+echo "[casc] TPTP:        ${TPTP}" >&2
+echo "[casc] Total jobs:  ${total_problems}" >&2
 
 # ---------- worker function ----------
-# Arguments: div  problem  prob_path  sys
+# Arguments: div  problem  prob_path  sys  time_limit
 #
 # Emits one CSV row:
 #   edition,division,problem,system,szs_status,expected,verdict,wall_time_s
@@ -166,15 +231,15 @@ echo "[casc] Total jobs: ${total_problems}" >&2
 #   unknown — system gave up / timed out, or no reference answer
 #             exists for this problem
 run_one() {
-    local div="$1" problem="$2" prob_path="$3" sys="$4"
+    local div="$1" problem="$2" prob_path="$3" sys="$4" tlimit="$5"
     local invoke="${SCRIPT_DIR}/systems/${sys}/invoke.sh"
     local tmp
     tmp="$(mktemp)"
 
     local start_ms end_ms wall_s szs exit_code
     start_ms=$(date +%s%3N)
-    # Give the system TIME_LIMIT seconds; add 10s grace for it to flush output.
-    timeout $(( TIME_LIMIT + 10 )) "${invoke}" "${prob_path}" "${TIME_LIMIT}" \
+    # Give the system tlimit seconds; add 10s grace for it to flush output.
+    timeout $(( tlimit + 10 )) "${invoke}" "${prob_path}" "${tlimit}" \
         > "${tmp}" 2>/dev/null
     exit_code=$?
     end_ms=$(date +%s%3N)
@@ -182,9 +247,9 @@ run_one() {
     wall_s=$(echo "scale=3; (${end_ms} - ${start_ms}) / 1000" | bc)
 
     # If the OS timeout fired, cap wall time to the stated limit (the +10s
-    # grace period would otherwise make it appear as TIME_LIMIT+10).
+    # grace period would otherwise make it appear as tlimit+10).
     if [[ ${exit_code} -eq 124 ]]; then
-        wall_s=$(printf '%.3f' "${TIME_LIMIT}")
+        wall_s=$(printf '%.3f' "${tlimit}")
     fi
 
     # Extract SZS status from output.
@@ -243,10 +308,9 @@ szs_class() {
     esac
 }
 export -f run_one szs_class
-export SCRIPT_DIR TIME_LIMIT EDITION ANSWERS
+export SCRIPT_DIR EDITION ANSWERS
 
 # ---------- execute ----------
-GRACE=$((TIME_LIMIT + 10))
 
 # Worker shared by both serial and parallel paths. Appends one CSV row
 # (under flock so concurrent writers don't interleave) and refreshes a
@@ -256,9 +320,9 @@ GRACE=$((TIME_LIMIT + 10))
 # rather than printed, to keep the live output a single line.
 run_and_append() {
     local line="$1"
-    IFS=$'\t' read -r div problem prob_path sys <<< "${line}"
+    IFS=$'\t' read -r div problem prob_path sys tlimit <<< "${line}"
     local row
-    row=$(run_one "${div}" "${problem}" "${prob_path}" "${sys}")
+    row=$(run_one "${div}" "${problem}" "${prob_path}" "${sys}" "${tlimit}")
     local completed
     (
         flock 9

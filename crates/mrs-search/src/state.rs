@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use mrs_calculus::ordering::SymbolConfig;
@@ -47,6 +48,12 @@ pub struct SearchState {
     pub search_deadline: Option<Instant>,
     /// Interned-term arena shared by all clauses in this search.
     pub term_bank: TermBank,
+    /// Optional stop-flag shared across parallel strategy threads.
+    ///
+    /// When set to `true` by another thread (e.g. because it found a
+    /// refutation), the search loop treats it as an additional timeout and
+    /// returns `SearchResult::Timeout` at the next time-check iteration.
+    pub stop_flag: Option<Arc<AtomicBool>>,
 }
 
 impl SearchState {
@@ -96,6 +103,7 @@ impl SearchState {
             comm_symbols: HashSet::new(),
             search_deadline: None,
             term_bank,
+            stop_flag: None,
         }
     }
 
