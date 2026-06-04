@@ -169,6 +169,12 @@ fn main() {
     let has_conjecture = !lowered.conjectures.is_empty();
 
     // --- SInE Filtering ---
+    // Backup formulas in case SInE over-prunes and we need to retry.
+    let backup_axioms = lowered.axioms.clone();
+    let backup_conjectures = lowered.conjectures.clone();
+    let backup_cnf_clauses = lowered.cnf_clauses.clone();
+    let backup_id_gen = lowered.id_gen.clone();
+
     // In problems with massive axiomatizations, use SInE to filter.
     // If there are more than 100 axioms, try filtering.
     let mut sine_triggered = false;
@@ -232,100 +238,121 @@ fn main() {
         cnf_count
     );
 
-    // --- Clausification ---
-    let mut id_gen = lowered.id_gen;
-    let mut all_clauses: Vec<Clause> = lowered
-        .cnf_clauses
-        .into_iter()
-        .map(|c| c.with_distance(100))
-        .collect();
-
-    // Clausify axioms directly
-    for f in &lowered.axioms {
-        let clauses = mrs_cnf::clausify(
-            &f.formula,
-            &mut lowered.symbols,
-            &mut id_gen,
-            &f.name,
-            &f.role,
-        );
-        all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(100)));
-    }
-
-    // Negate conjectures for refutation-based proving:
-    // To prove P, we show that axioms ∧ ¬P is unsatisfiable.
-    for f in &lowered.conjectures {
-        let negated = Formula::neg(f.formula.clone());
-        let clauses = mrs_cnf::clausify(
-            &negated,
-            &mut lowered.symbols,
-            &mut id_gen,
-            &f.name,
-            "negated_conjecture",
-        );
-        all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(0)));
-    }
-
-    // --- Proof search ---
     let total_budget = Duration::from_secs(time_secs);
-    let elapsed = start.elapsed();
+    let mut final_result = SearchResult::GaveUp;
+    let mut final_status = SzsStatus::GaveUp;
+    
+    // We run the search up to 2 times: once with SInE (if triggered), and once without if it saturated prematurely.
+    let mut attempt = 0;
+    while attempt < 2 {
+        attempt += 1;
+        
+        // --- Clausification ---
+        let mut id_gen = lowered.id_gen.clone();
+        let mut all_clauses: Vec<Clause> = lowered
+            .cnf_clauses
+            .clone()
+            .into_iter()
+            .map(|c| c.with_distance(100))
+            .collect();
 
-    if elapsed >= total_budget {
-        println!("{}", szs_status_line(SzsStatus::Timeout, problem_name));
-        #[cfg(feature = "proover")]
-        {
-            if !quiet {
-                print_statistics(SzsStatus::Timeout, elapsed);
+        // Clausify axioms directly
+        for f in &lowered.axioms {
+            let clauses = mrs_cnf::clausify(
+                &f.formula,
+                &mut lowered.symbols,
+                &mut id_gen,
+                &f.name,
+                &f.role,
+            );
+            all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(100)));
+        }
+
+        // Negate conjectures for refutation-based proving:
+        // To prove P, we show that axioms ∧ ¬P is unsatisfiable.
+        for f in &lowered.conjectures {
+            let negated = Formula::neg(f.formula.clone());
+            let clauses = mrs_cnf::clausify(
+                &negated,
+                &mut lowered.symbols,
+                &mut id_gen,
+                &f.name,
+                "negated_conjecture",
+            );
+            all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(0)));
+        }
+
+        let elapsed = start.elapsed();
+        if elapsed >= total_budget {
+            final_status = SzsStatus::Timeout;
+            final_result = SearchResult::Timeout;
+            break;
+        }
+
+        let search_budget = total_budget - elapsed;
+        let schedule = match schedule_name.as_deref() {
+            None => StrategySchedule::default_schedule(search_budget),
+            Some(name) => match mrs_search::strategy::named::by_name(name, search_budget) {
+                Some(s) => s,
+                None => {
+                    eprintln!(
+                        "Error: unknown schedule {:?} (known: {})",
+                        name,
+                        mrs_search::strategy::named::ALL.join(", "),
+                    );
+                    process::exit(1);
+                }
+            },
+        };
+        
+        let search_start = std::time::Instant::now();
+        let result = run_schedule(&all_clauses, id_gen, &schedule, &lowered.symbols);
+        let search_elapsed = search_start.elapsed();
+        
+        let status = match &result {
+            SearchResult::Refutation(..) => {
+                if has_conjecture {
+                    SzsStatus::Theorem
+                } else {
+                    SzsStatus::Unsatisfiable
+                }
             }
+            SearchResult::Saturated => {
+                if sine_triggered {
+                    // If SInE dropped axioms, saturation is incomplete for the full problem.
+                    SzsStatus::GaveUp
+                } else if has_conjecture {
+                    SzsStatus::CounterSatisfiable
+                } else {
+                    SzsStatus::Satisfiable
+                }
+            }
+            SearchResult::Timeout => SzsStatus::Timeout,
+            SearchResult::GaveUp => SzsStatus::GaveUp,
+        };
+        
+        final_result = result;
+        final_status = status.clone();
+        
+        // SInE Fallback check
+        if attempt == 1 && sine_triggered && matches!(final_status, SzsStatus::GaveUp) && search_elapsed < Duration::from_secs(1) {
+            info!("% SInE over-pruning suspected (saturated in {:.3}s). Restarting without SInE.", search_elapsed.as_secs_f64());
+            sine_triggered = false;
+            lowered.axioms = backup_axioms.clone();
+            lowered.conjectures = backup_conjectures.clone();
+            lowered.cnf_clauses = backup_cnf_clauses.clone();
+            lowered.id_gen = backup_id_gen.clone();
+            continue;
         }
-        #[cfg(not(feature = "proover"))]
-        {
-            print_statistics(SzsStatus::Timeout, elapsed);
-        }
-        process::exit(0);
+        
+        // Otherwise, break out of loop
+        break;
     }
 
-    let search_budget = total_budget - elapsed;
-    let schedule = match schedule_name.as_deref() {
-        None => StrategySchedule::default_schedule(search_budget),
-        Some(name) => match mrs_search::strategy::named::by_name(name, search_budget) {
-            Some(s) => s,
-            None => {
-                eprintln!(
-                    "Error: unknown schedule {:?} (known: {})",
-                    name,
-                    mrs_search::strategy::named::ALL.join(", "),
-                );
-                process::exit(1);
-            }
-        },
-    };
-    let result = run_schedule(&all_clauses, id_gen, &schedule, &lowered.symbols);
+    let status = final_status;
+    let result = final_result;
 
-    // --- Output result ---
-    let status = match &result {
-        SearchResult::Refutation(..) => {
-            if has_conjecture {
-                SzsStatus::Theorem
-            } else {
-                SzsStatus::Unsatisfiable
-            }
-        }
-        SearchResult::Saturated => {
-            if sine_triggered {
-                // If SInE dropped axioms, saturation is incomplete for the full problem.
-                SzsStatus::GaveUp
-            } else if has_conjecture {
-                SzsStatus::CounterSatisfiable
-            } else {
-                SzsStatus::Satisfiable
-            }
-        }
-        SearchResult::Timeout => SzsStatus::Timeout,
-        SearchResult::GaveUp => SzsStatus::GaveUp,
-    };
-
-    println!("{}", szs_status_line(status, problem_name));
+    println!("{}", szs_status_line(status.clone(), problem_name));
 
     // Output proof if refutation found (skip in quiet mode: mrs-proover only
     // cares about the SZS line).
