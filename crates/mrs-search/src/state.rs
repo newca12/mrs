@@ -48,6 +48,8 @@ pub struct SearchState {
     pub search_deadline: Option<Instant>,
     /// Interned-term arena shared by all clauses in this search.
     pub term_bank: TermBank,
+    /// Maps a clause ID to the IDs of all clauses generated from it (its children).
+    pub children: HashMap<ClauseId, Vec<ClauseId>>,
     /// Optional stop-flag shared across parallel strategy threads.
     ///
     /// When set to `true` by another thread (e.g. because it found a
@@ -103,6 +105,7 @@ impl SearchState {
             comm_symbols: HashSet::new(),
             search_deadline: None,
             term_bank,
+            children: HashMap::new(),
             stop_flag: None,
         }
     }
@@ -112,11 +115,66 @@ impl SearchState {
         self.clause_store.len()
     }
 
+    /// Removes a clause and all its descendants from all active and passive sets.
+    /// This is Global Subsumption (Orphan Elimination).
+    pub fn remove_clause_and_orphans(
+        &mut self,
+        id: ClauseId,
+        ordering: &crate::TermOrdering,
+    ) {
+        let mut stack = vec![id];
+        let mut visited = HashSet::new();
+
+        while let Some(current) = stack.pop() {
+            if !visited.insert(current) {
+                continue;
+            }
+
+            // Remove from processed and demod_index
+            if let Some(p) = self.processed.remove(current, &self.term_bank)
+                && p.literals.len() == 1
+                && p.literals[0].positive
+            {
+                use mrs_core::term_bank::IdAtom;
+                use mrs_calculus::ordering::TermComparison;
+                if let IdAtom::Eq(l, r) = &p.literals[0].atom {
+                    if ordering.compare_id(*l, *r, &self.term_bank) == TermComparison::Greater {
+                        self.demod_index.remove(*l, &self.term_bank, &(*l, *r, p.id));
+                    } else if ordering.compare_id(*r, *l, &self.term_bank) == TermComparison::Greater {
+                        self.demod_index.remove(*r, &self.term_bank, &(*r, *l, p.id));
+                    }
+                }
+            }
+
+            // Remove from unprocessed
+            self.unprocessed.remove(current);
+
+            // Remove from dormant sets
+            self.dormant_processed.remove(&current);
+            self.dormant_unprocessed.remove(&current);
+
+            // Add children to stack
+            if let Some(children) = self.children.get(&current) {
+                stack.extend(children.iter().copied());
+            }
+        }
+    }
+
     /// Checks if a clause is active under the current AVATAR model.
     pub fn is_active(&self, clause: &IdClause) -> bool {
         clause
             .avatar
             .iter()
             .all(|&a| self.avatar.current_model.contains(&a))
+    }
+
+    /// Registers a new clause in the store and tracks its dependencies.
+    pub fn register_clause(&mut self, clause: &IdClause) {
+        self.clause_store.insert(clause.id, clause.clone());
+        if let mrs_core::clause::ClauseSource::Inference { parents, .. } = &clause.source {
+            for &parent in parents {
+                self.children.entry(parent).or_default().push(clause.id);
+            }
+        }
     }
 }

@@ -268,7 +268,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         },
                         given.avatar.clone(),
                     );
-                    state.clause_store.insert(given.id, given.clone());
+                    state.register_clause(&given.clone());
                     changed = true;
                     break;
                 }
@@ -331,7 +331,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 &state.clause_store,
                 &mut state.id_gen,
             ) {
-                state.clause_store.insert(given.id, given);
+                state.register_clause(&given);
                 simplified
             } else {
                 given
@@ -342,7 +342,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         let given = if let Some(condensed) =
             subsumption::condense_id(&given, &mut state.term_bank, &mut state.id_gen)
         {
-            state.clause_store.insert(given.id, given);
+            state.register_clause(&given);
             condensed
         } else {
             given
@@ -476,7 +476,6 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         ));
 
         // Backward subsumption: remove processed clauses subsumed by the given
-        let mut to_remove_from_demod: Vec<IdClause> = Vec::new();
         let mut to_remove_from_processed = Vec::new();
         {
             let candidates = state.processed.get_subsumed_candidates(&given_fv);
@@ -485,34 +484,16 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     && subsumption::subsumes_id(&given, &p, &mut state.term_bank)
                 {
                     to_remove_from_processed.push(p.id);
-                    if is_unit_positive_equality_id(&p) {
-                        to_remove_from_demod.push(p);
-                    }
                 }
             }
         }
 
         for id in to_remove_from_processed {
-            state.processed.remove(id, &state.term_bank);
-        }
-
-        for p in to_remove_from_demod {
-            if let IdAtom::Eq(l, r) = &p.literals[0].atom {
-                use mrs_calculus::ordering::TermComparison;
-                if ordering.compare_id(*l, *r, &state.term_bank) == TermComparison::Greater {
-                    state
-                        .demod_index
-                        .remove(*l, &state.term_bank, &(*l, *r, p.id));
-                } else if ordering.compare_id(*r, *l, &state.term_bank) == TermComparison::Greater {
-                    state
-                        .demod_index
-                        .remove(*r, &state.term_bank, &(*r, *l, p.id));
-                }
-            }
+            state.remove_clause_and_orphans(id, ordering);
         }
 
         // Add given to processed set (indexed)
-        state.clause_store.insert(given.id, given.clone());
+        state.register_clause(&given.clone());
         state.processed.insert(given.clone(), &state.term_bank);
         if is_unit_positive_equality_id(&given)
             && let IdAtom::Eq(l, r) = &given.literals[0].atom
@@ -584,7 +565,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         &state.clause_store,
                         &mut state.id_gen,
                     ) {
-                        state.clause_store.insert(proc.id, proc);
+                        state.register_clause(&proc);
 
                         // Build index from already-processed units for chained rewriting
                         let mut all_units_index: mrs_index::dtree::DTreeId<(
@@ -617,14 +598,14 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                                 &state.clause_store,
                                 &mut state.id_gen,
                             ) {
-                            state.clause_store.insert(simplified.id, simplified);
+                            state.register_clause(&simplified);
                             further
                         } else {
                             simplified
                         };
 
                         if simplified.is_empty() {
-                            state.clause_store.insert(simplified.id, simplified.clone());
+                            state.register_clause(&simplified.clone());
                             backward_demod_empty.push(simplified);
                             continue;
                         }
@@ -638,8 +619,8 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                                 },
                                 simplified.avatar.clone(),
                             );
-                            state.clause_store.insert(simplified.id, simplified);
-                            state.clause_store.insert(empty.id, empty.clone());
+                            state.register_clause(&simplified);
+                            state.register_clause(&empty.clone());
                             backward_demod_empty.push(empty);
                             continue;
                         }
@@ -647,7 +628,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                             if is_unit_positive_equality_id(&simplified) {
                                 created_units.push(simplified.clone());
                             }
-                            state.clause_store.insert(simplified.id, simplified.clone());
+                            state.register_clause(&simplified.clone());
                             next_processed.push(simplified);
                         }
                     } else {
@@ -737,7 +718,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     }
 
                     for split in splits {
-                        state.clause_store.insert(split.id, split.clone());
+                        state.register_clause(&split.clone());
                         final_new_clauses.push(split);
                     }
                 } else {
@@ -776,7 +757,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             clause.deduplicate();
 
             if clause.is_empty() {
-                state.clause_store.insert(clause.id, clause.clone());
+                state.register_clause(&clause.clone());
 
                 if clause.avatar.is_empty() || !config.use_avatar {
                     return SearchResult::Refutation(clause.id, String::new());
@@ -811,14 +792,14 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     &state.clause_store,
                     &mut state.id_gen,
                 ) {
-                    state.clause_store.insert(clause.id, clause);
+                    state.register_clause(&clause);
                     simplified
                 } else {
                     clause
                 };
 
                 if clause.is_empty() {
-                    state.clause_store.insert(clause.id, clause.clone());
+                    state.register_clause(&clause.clone());
                     if clause.avatar.is_empty() || !config.use_avatar {
                         return SearchResult::Refutation(clause.id, String::new());
                     }
@@ -840,8 +821,8 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         },
                         clause.avatar.clone(),
                     );
-                    state.clause_store.insert(clause.id, clause.clone());
-                    state.clause_store.insert(empty.id, empty.clone());
+                    state.register_clause(&clause.clone());
+                    state.register_clause(&empty.clone());
                     if empty.avatar.is_empty() || !config.use_avatar {
                         return SearchResult::Refutation(empty.id, String::new());
                     }
@@ -861,7 +842,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 let clause = if let Some(condensed) =
                     subsumption::condense_id(&clause, &mut state.term_bank, &mut state.id_gen)
                 {
-                    state.clause_store.insert(clause.id, clause);
+                    state.register_clause(&clause);
                     condensed
                 } else {
                     clause
@@ -891,7 +872,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     }
                 }
 
-                state.clause_store.insert(clause.id, clause.clone());
+                state.register_clause(&clause.clone());
                 state.unprocessed.push(&clause, &state.term_bank);
             }
         }

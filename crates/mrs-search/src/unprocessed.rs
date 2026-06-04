@@ -130,6 +130,18 @@ impl UnprocessedSet {
         None
     }
 
+    /// Removes a specific clause by ID from the unprocessed set.
+    /// Does not physically remove it from the priority queues (lazy deletion),
+    /// but removes it from `active_ids` and `fvs` so it will be ignored when popped.
+    pub fn remove(&mut self, id: ClauseId) -> bool {
+        if self.active_ids.remove(&id) {
+            self.fvs.remove(&id);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Removes clauses that do not satisfy the predicate `f`.
     pub fn retain<F>(&mut self, mut f: F)
     where
