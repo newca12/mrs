@@ -14,10 +14,8 @@ use std::collections::{HashMap, HashSet};
 
 use mrs_core::clause::ClauseId;
 use mrs_core::symbol::SymbolId;
-use mrs_core::term::Term;
 use mrs_core::term_bank::{IdAtom, IdClause, TermBank};
 
-use crate::dtree::DTree;
 use crate::fvi::FeatureVector;
 
 /// Key for the literal index: a predicate symbol with a polarity.
@@ -39,7 +37,7 @@ pub struct LiteralIndex {
     /// Feature vectors for stored clauses (used for subsumption filtering).
     fvs: HashMap<ClauseId, FeatureVector>,
     /// Maps (predicate, polarity) -> DTree of clause IDs.
-    pred_index: HashMap<LitKey, DTree<ClauseId>>,
+    pred_index: HashMap<LitKey, crate::dtree::DTreeId<ClauseId>>,
     /// Clause IDs that contain at least one positive equality.
     pos_eq_clauses: HashSet<ClauseId>,
     /// Clause IDs that contain at least one negative equality.
@@ -66,17 +64,14 @@ impl LiteralIndex {
 
         for lit in &clause.literals {
             match &lit.atom {
-                IdAtom::Pred(sym, args) => {
-                    // Build a legacy Term::App(sym, legacy_args) for the DTree key.
-                    let legacy_args: Vec<Term> = args.iter().map(|&a| bank.to_legacy(a)).collect();
-                    let term = Term::App(*sym, legacy_args);
+                IdAtom::Pred(sym, _args) => {
                     self.pred_index
                         .entry(LitKey {
                             pred: *sym,
                             positive: lit.positive,
                         })
                         .or_default()
-                        .insert(&term, id);
+                        .insert_atom(&lit.atom, bank, id);
                 }
                 IdAtom::Eq(_, _) => {
                     if lit.positive {
@@ -96,15 +91,12 @@ impl LiteralIndex {
         if let Some(clause) = self.clauses.remove(&id) {
             for lit in &clause.literals {
                 match &lit.atom {
-                    IdAtom::Pred(sym, args) => {
+                    IdAtom::Pred(sym, _args) => {
                         if let Some(tree) = self.pred_index.get_mut(&LitKey {
                             pred: *sym,
                             positive: lit.positive,
                         }) {
-                            let legacy_args: Vec<Term> =
-                                args.iter().map(|&a| bank.to_legacy(a)).collect();
-                            let term = Term::App(*sym, legacy_args);
-                            tree.remove(&term, &id);
+                            tree.remove_atom(&lit.atom, bank, &id);
                         }
                     }
                     IdAtom::Eq(_, _) => {
@@ -133,15 +125,13 @@ impl LiteralIndex {
         positive: bool,
         bank: &TermBank,
     ) -> Vec<IdClause> {
-        if let IdAtom::Pred(sym, args) = atom {
+        if let IdAtom::Pred(sym, _args) = atom {
             let key = LitKey {
                 pred: *sym,
                 positive: !positive,
             };
             if let Some(tree) = self.pred_index.get(&key) {
-                let legacy_args: Vec<Term> = args.iter().map(|&a| bank.to_legacy(a)).collect();
-                let query_term = Term::App(*sym, legacy_args);
-                let mut ids = tree.get_unifiable(&query_term);
+                let mut ids = tree.get_unifications_atom(atom, bank);
                 ids.sort_unstable();
                 ids.dedup();
                 return ids

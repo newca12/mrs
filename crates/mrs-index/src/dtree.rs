@@ -71,13 +71,29 @@ fn skip_in_flat(flat: &[Cell], pos: usize) -> usize {
     }
 }
 
-use mrs_core::term_bank::{TermBank, TermId, TermNode};
+use mrs_core::term_bank::{TermBank, TermId, TermNode, IdAtom};
 
 fn flatten_id(term: TermId, bank: &TermBank) -> Vec<Cell> {
     let mut cells = Vec::new();
     let mut var_map = HashMap::new();
     let mut next_var = 0;
     flatten_into_id(term, bank, &mut cells, &mut var_map, &mut next_var);
+    cells
+}
+
+fn flatten_atom_id(atom: &IdAtom, bank: &TermBank) -> Vec<Cell> {
+    let mut cells = Vec::new();
+    let mut var_map = HashMap::new();
+    let mut next_var = 0;
+    match atom {
+        IdAtom::Pred(sym, args) => {
+            cells.push(Cell::Sym(*sym, args.len() as u8));
+            for &arg in args {
+                flatten_into_id(arg, bank, &mut cells, &mut var_map, &mut next_var);
+            }
+        }
+        IdAtom::Eq(_, _) => unreachable!("Eq atoms are not indexed in DTree"),
+    }
     cells
 }
 
@@ -118,6 +134,22 @@ impl<V: Clone + PartialEq> DTreeId<V> {
             children: HashMap::new(),
             leaves: Vec::new(),
         }
+    }
+
+    pub fn insert_atom(&mut self, atom: &IdAtom, bank: &TermBank, value: V) {
+        let flat = flatten_atom_id(atom, bank);
+        let mut curr = self;
+        for cell in flat {
+            curr = curr.children.entry(cell).or_default();
+        }
+        if !curr.leaves.contains(&value) {
+            curr.leaves.push(value);
+        }
+    }
+
+    pub fn remove_atom(&mut self, atom: &IdAtom, bank: &TermBank, value: &V) -> bool {
+        let flat = flatten_atom_id(atom, bank);
+        self.remove_rec(&flat, 0, value)
     }
 
     pub fn insert(&mut self, term: TermId, bank: &TermBank, value: V) {
@@ -167,11 +199,26 @@ impl<V: Clone + PartialEq> DTreeId<V> {
     pub fn get_unifications(&self, query: TermId, bank: &TermBank) -> Vec<V> {
         let flat = flatten_id(query, bank);
         let mut results = Vec::new();
-        self.unify_flat(&flat, 0, &mut results);
+        let mut bindings = Vec::new();
+        self.unify_flat(&flat, 0, &mut results, &mut bindings);
         results
     }
 
-    fn unify_flat(&self, query: &[Cell], pos: usize, results: &mut Vec<V>) {
+    pub fn get_unifications_atom(&self, atom: &IdAtom, bank: &TermBank) -> Vec<V> {
+        let flat = flatten_atom_id(atom, bank);
+        let mut results = Vec::new();
+        let mut bindings = Vec::new();
+        self.unify_flat(&flat, 0, &mut results, &mut bindings);
+        results
+    }
+
+    fn unify_flat(
+        &self,
+        query: &[Cell],
+        pos: usize,
+        results: &mut Vec<V>,
+        bindings: &mut Vec<Option<std::ops::Range<usize>>>,
+    ) {
         if pos >= query.len() {
             results.extend_from_slice(&self.leaves);
             return;
@@ -180,23 +227,57 @@ impl<V: Clone + PartialEq> DTreeId<V> {
         match query[pos] {
             Cell::Sym(f, n) => {
                 if let Some(child) = self.children.get(&Cell::Sym(f, n)) {
-                    child.unify_flat(query, pos + 1, results);
+                    child.unify_flat(query, pos + 1, results, bindings);
                 }
                 for (&key, child) in &self.children {
-                    if let Cell::Var(_) = key {
+                    if let Cell::Var(v) = key {
                         let skip = skip_in_flat(query, pos);
-                        child.unify_flat(query, skip, results);
+                        let v_usize = v as usize;
+                        if v_usize >= bindings.len() {
+                            bindings.resize(v_usize + 1, None);
+                        }
+                        if let Some(ref bound_range) = bindings[v_usize] {
+                            let r1 = &query[bound_range.clone()];
+                            let r2 = &query[pos..skip];
+                            let r1_has_var = r1.iter().any(|c| matches!(c, Cell::Var(_)));
+                            let r2_has_var = r2.iter().any(|c| matches!(c, Cell::Var(_)));
+                            if r1_has_var || r2_has_var || r1 == r2 {
+                                child.unify_flat(query, skip, results, bindings);
+                            }
+                        } else {
+                            bindings[v_usize] = Some(pos..skip);
+                            child.unify_flat(query, skip, results, bindings);
+                            bindings[v_usize] = None;
+                        }
                     }
                 }
             }
             Cell::Var(_) => {
                 for (&key, child) in &self.children {
                     match key {
-                        Cell::Var(_) => {
-                            child.unify_flat(query, pos + 1, results);
+                        Cell::Var(v) => {
+                            // Both are variables. We could check query bindings, but since the query
+                            // variable spans exactly 1 cell, we just advance.
+                            let v_usize = v as usize;
+                            if v_usize >= bindings.len() {
+                                bindings.resize(v_usize + 1, None);
+                            }
+                            if let Some(ref bound_range) = bindings[v_usize] {
+                                let r1 = &query[bound_range.clone()];
+                                let r2 = &query[pos..pos+1];
+                                let r1_has_var = r1.iter().any(|c| matches!(c, Cell::Var(_)));
+                                let r2_has_var = r2.iter().any(|c| matches!(c, Cell::Var(_)));
+                                if r1_has_var || r2_has_var || r1 == r2 {
+                                    child.unify_flat(query, pos + 1, results, bindings);
+                                }
+                            } else {
+                                bindings[v_usize] = Some(pos..pos+1);
+                                child.unify_flat(query, pos + 1, results, bindings);
+                                bindings[v_usize] = None;
+                            }
                         }
                         Cell::Sym(_, n) => {
-                            child.skip_stored(n as usize, query, pos + 1, results);
+                            child.skip_stored(n as usize, query, pos + 1, results, bindings);
                         }
                     }
                 }
@@ -210,18 +291,19 @@ impl<V: Clone + PartialEq> DTreeId<V> {
         query: &[Cell],
         query_pos: usize,
         results: &mut Vec<V>,
+        bindings: &mut Vec<Option<std::ops::Range<usize>>>,
     ) {
         if remaining == 0 {
-            self.unify_flat(query, query_pos, results);
+            self.unify_flat(query, query_pos, results, bindings);
             return;
         }
         for (&key, child) in &self.children {
             match key {
                 Cell::Var(_) => {
-                    child.skip_stored(remaining - 1, query, query_pos, results);
+                    child.skip_stored(remaining - 1, query, query_pos, results, bindings);
                 }
                 Cell::Sym(_, m) => {
-                    child.skip_stored(remaining - 1 + m as usize, query, query_pos, results);
+                    child.skip_stored(remaining - 1 + m as usize, query, query_pos, results, bindings);
                 }
             }
         }
