@@ -20,3 +20,12 @@ Thumbs.db
 # Machine-specific logs
 laptop_i.err
 laptop_i.out
+
+# Profiling output
+heaptrack.*.zst
+*.zst
+
+# Scratch / temp files
+*.patch
+nohup.out
+out.txt
