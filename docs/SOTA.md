@@ -1,6 +1,6 @@
 # State of the Art (SOTA) in Automated Theorem Proving
 
-To build a state-of-the-art (SOTA) Automated Theorem Prover (ATP) capable of rivaling giants like **Vampire** or **E**, the system must implement a massive stack of specific calculi, indexing data structures, redundancy elimination techniques, and search heuristics. 
+To build a state-of-the-art (SOTA) Automated Theorem Prover (ATP) capable of rivaling giants like **Vampire** or **E**, the system must implement a massive stack of specific calculi, indexing data structures, redundancy elimination techniques, and search heuristics.
 
 Here is a comprehensive breakdown of what defines a SOTA prover, the seminal research papers behind these concepts, and a gap analysis of what `mrs` has achieved versus what remains to be built.
 
@@ -9,29 +9,29 @@ Here is a comprehensive breakdown of what defines a SOTA prover, the seminal res
 ### 1. Core Calculus & Architecture
 The foundation of modern first-order logic provers.
 
-*   **Superposition Calculus**: The complete, equational inference system that replaces naive resolution. 
+*   **Superposition Calculus**: The complete, equational inference system that replaces naive resolution.
     *   *Paper:* [Rewrite-based Equational Theorem Proving with Selection and Simplification (Bachmair & Ganzinger, 1994)](https://link.springer.com/chapter/10.1007/3-540-58462-0_52)
     *   ✅ **Implemented:** Standard rules (Resolution, Factoring, Equality Resolution, Equality Factoring, Superposition).
 *   **The Given-Clause Loop**: The driving algorithm (Otter / DISCOUNT variants) that manages the active/passive clause sets.
     *   *Paper:* [A DISCOUNT-based architecture for E (Schulz, 2002)](https://www.eprover.org/OLD/DISCOUNT_Architecture.pdf)
     *   ✅ **Implemented:** Standard Otter loop.
 *   **AVATAR (Advanced Vampire Architecture)**: Delegates propositional reasoning and clause splitting to a SAT solver.
-    *   *Paper:* [AVATAR: The Architecture for First-Order Theorem Provers (Voronkov, 2014)](https://link.springer.com/chapter/10.1007/97-8-3-319-08867-9_46)
-    *   ✅ **Implemented:** Fully integrated with `varisat`.
-*   **Instantiation-Based Methods (InstGen)**: Highly efficient algorithms tailored specifically for the Effectively Propositional (EPR) fragment where superposition struggles.
+    *   *Paper:* [AVATAR: The Architecture for First-Order Theorem Provers (Voronkov, 2014)](https://link.springer.com/chapter/10.1007/978-3-319-08867-9_46)
+    *   ✅ **Implemented:** Fully integrated with `varisat`. EPR-structured problems are now handled lazily by AVATAR instead of naive pre-expansion.
+*   **Instantiation-Based Methods (InstGen)**: Highly efficient algorithms tailored specifically for the Effectively Propositional (EPR) fragment.
     *   *Paper:* [New Directions in Instantiation-Based Theorem Proving (Ganzinger & Korovin, 2003)](https://link.springer.com/chapter/10.1007/3-540-45085-8_6)
-    *   ✅ **Implemented:** `preprocess_epr` detects EPR problems and enumerates ground instances before the given-clause loop.
+    *   ⚠️ **Superseded:** Naive ground pre-expansion (`preprocess_epr`) was disabled after causing OOM on large EPR problems. AVATAR now handles EPR dynamically. True lazy InstGen remains unimplemented.
 
 ### 2. Term Indexing Data Structures
 Without highly optimized indices, linear scans cause the prover to time out instantly.
 
-*   **Discrimination Trees & Trie Variants**: For incredibly fast term retrieval during unification and matching.
+*   **Discrimination Trees & Trie Variants**: For fast term retrieval during unification and matching.
     *   *Paper:* [Experiments with Discrimination-Tree Indexing and Path Indexing (McCune, 1992)](https://link.springer.com/article/10.1007/BF00881903)
-    *   ✅ **Partially Implemented:** `mrs` uses an *imperfect* Discrimination Tree for unification and demodulation.
-    *   ❌ **Missing:** Perfect Discrimination Trees or Substitution Trees (which Vampire uses heavily to avoid redundant post-retrieval unification checks).
+    *   ✅ **Implemented:** `DTreeId` now tracks variable bindings through traversal, making both unification (`unify_flat`) and generalization (`get_generalizations_rec`) binding-consistent (perfect index). False positives are eliminated at the index level.
+    *   ❌ **Missing:** Substitution Trees (used by Vampire) share common subterm contexts across all stored clauses, drastically reducing memory footprint for large clause sets.
 *   **Feature Vector Indexing (FVI)**: Constant-time filtering for subsumption.
     *   *Paper:* [Simple and Efficient Clause Subsumption with Feature Vector Indexing (Schulz, 2004)](https://link.springer.com/chapter/10.1007/978-3-540-25984-8_20)
-    *   ✅ **Implemented:** Symbol frequency and polarity vectors.
+    *   ✅ **Implemented:** Symbol frequency and polarity vectors, cached inside `UnprocessedSet`.
 
 ### 3. Redundancy Elimination & Simplification
 The primary reason Vampire wins is its ability to aggressively delete useless clauses before they explode the search space.
@@ -39,34 +39,32 @@ The primary reason Vampire wins is its ability to aggressively delete useless cl
 *   **Forward/Backward Subsumption & Demodulation**: Deleting less general clauses and rewriting terms to their simplest forms.
     *   ✅ **Implemented:** Full index-driven forward/backward loops.
     *   ✅ **Implemented:** Condensation and Tautology deletion.
-*   **Subsumption Resolution (Contextual Literal Cutting)**: If you have $C_1 = P \lor Q$ and $C_2 = \neg P \lor Q \lor R$, you can simplify $C_2$ directly to $Q \lor R$. 
-    *   *Paper:* [Subsumption Resolution in SMT/ATP (Various)](https://eprover.org/OLD/SubsumptionResolution.pdf)
+*   **Subsumption Resolution (Contextual Literal Cutting)**: If you have $C_1 = P \lor Q$ and $C_2 = \neg P \lor Q \lor R$, simplify $C_2$ directly to $Q \lor R$.
     *   ✅ **Implemented:** Index-driven via the Feature Vector Index in `mrs-index`.
-*   **Global Subsumption & Orphan Elimination**: 
+*   **Global Subsumption & Orphan Elimination**: Deleting clauses generated by parents that were later subsumed.
     *   *Paper:* [Orphan Elimination in Vampire (Voronkov, 2010)]
-    *   ❌ **Not Implemented:** Deleting clauses generated by parents that were later subsumed.
+    *   ✅ **Implemented:** `SearchState` tracks a `children` map; `remove_clause_and_orphans` walks the dependency graph and evicts the entire subtree from processed, unprocessed, and dormant sets.
 
 ### 4. Search Control & Heuristics
 Deciding *which* clause to process next.
 
 *   **Sumo Inference Engine (SInE)**: Trimming massive axiomatizations before search begins.
     *   *Paper:* [Sine qua non for large theory reasoning (Hoder & Voronkov, 2011)](https://link.springer.com/chapter/10.1007/978-3-642-22438-6_23)
-    *   ✅ **Implemented:** Depth-limited SInE filter.
+    *   ✅ **Implemented:** Depth-limited SInE filter with **automatic fallback**: if SInE is triggered and the search saturates in under 1 second, `main.rs` restarts the given-clause loop without SInE to avoid over-pruning.
 *   **Term Orderings (KBO/LPO)**:
     *   ✅ **Implemented:** LPO and KBO with dynamic rarity-based precedence.
+*   **Strategy Portfolios**:
+    *   ✅ **Implemented:** 11 active strategies run **in parallel** via `std::thread::scope`. Each thread constructs its own `SearchState`; a shared `Arc<AtomicBool>` stop-flag signals siblings the moment a refutation is found.
 *   **Machine Learning Guided Selection (ENIGMA / Deepire)**: Using GNNs or XGBoost to evaluate clause usefulness based on past proofs.
     *   *Paper:* [Deepire: Deep Learning for Clause Selection in Vampire (Selsam et al., 2020)](https://arxiv.org/abs/2004.09503)
-    *   ❌ **Not Implemented:** `mrs` relies purely on static Age/Weight ratios.
+    *   ❌ **Not Implemented:** `mrs` relies purely on static Age/Weight ratios and goal-distance.
 *   **Goal-Directed Equational Reasoning**:
     *   ✅ **Implemented:** Distance-to-conjecture is tracked in the `Clause` structure. The `GoalDirected` selection strategy uses this to strongly penalize pure-axiom clauses in weight-based selection.
 
 ### 5. Advanced Equational Theory
 *   **Associative-Commutative (AC) Unification**:
     *   *Paper:* [AC-Superposition (Bachmair & Ganzinger, 1994)]
-    *   ❌ **Not Implemented:** If an axiom states $f(x,y) = f(y,x)$, `mrs` will generate infinite permutations. Vampire uses built-in AC-unification to treat permutations as identical terms algorithmically, entirely avoiding the combinatoric explosion.
-
-### 6. Concurrency
-*   **Strategy Portfolios**:
-    *   ✅ **Implemented:** `mrs` schedules 9 strategies serially, each with a proportional time slice from the total budget. A refutation in any strategy exits immediately.
+    *   ✅ **Partially Implemented:** `mrs` detects AC axioms at search startup, eliminates the permutation axiom clauses from the passive set, and uses a heuristic AC-unification (`unify_ac_id`) that flattens associative chains and tries both orderings for commutativity.
+    *   ❌ **Missing:** Full AC-Superposition requires AC-compatible term orderings (AC-RPO or AC-KBO). The current standard LPO/KBO cannot soundly orient terms modulo AC, so some necessary search paths may still be pruned incorrectly.
 *   **Clause Sharing**:
-    *   ❌ **Not Implemented:** In a parallel portfolio (e.g. Vampire), if one thread derives a unit equality it broadcasts it to other threads' demodulation loops. `mrs` strategies are completely siloed.
+    *   ❌ **Not Implemented:** In a true parallel portfolio (e.g. Vampire), if one thread derives a unit equality it broadcasts it to other threads' demodulation loops. `mrs` strategies are completely siloed — each starts from scratch and cannot benefit from discoveries made by siblings.
