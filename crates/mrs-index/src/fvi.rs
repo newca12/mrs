@@ -112,8 +112,7 @@ impl FeatureVector {
             TermNode::Var(_) => {}
             TermNode::App(sym, args) => {
                 self.increment(*sym);
-                let args = args.clone(); // decouple from bank borrow
-                for arg in args {
+                for &arg in args {
                     self.count_term_id(arg, bank);
                 }
             }

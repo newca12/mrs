@@ -227,14 +227,15 @@ impl<V: Clone + PartialEq> DTreeId<V> {
         }
     }
 
-    pub fn get_generalizations(&self, query: TermId, bank: &TermBank) -> Vec<V> {
+    pub fn get_generalizations(&self, query: TermId, bank: &mrs_core::term_bank::TermBank) -> Vec<V> {
         let mut results = Vec::new();
         let flat = gen_flat(query, bank);
-        self.get_generalizations_rec(&flat, 0, &mut results);
+        let mut bindings = Vec::new();
+        self.get_generalizations_rec(&flat, 0, &mut results, &mut bindings);
         results
     }
 
-    fn get_generalizations_rec(&self, flat: &[Cell], pos: usize, out: &mut Vec<V>) {
+    fn get_generalizations_rec<'a>(&self, flat: &'a [Cell], pos: usize, out: &mut Vec<V>, bindings: &mut Vec<Option<&'a [Cell]>>) {
         if pos == flat.len() {
             out.extend_from_slice(&self.leaves);
             return;
@@ -242,13 +243,31 @@ impl<V: Clone + PartialEq> DTreeId<V> {
 
         let cell = flat[pos];
         if let Some(child) = self.children.get(&cell) {
-            child.get_generalizations_rec(flat, pos + 1, out);
+            child.get_generalizations_rec(flat, pos + 1, out, bindings);
         }
 
         for (child_cell, child) in &self.children {
-            if let Cell::Var(_) = child_cell {
+            if let Cell::Var(v) = child_cell {
+                let v = *v as usize;
                 let next_pos = skip_in_flat(flat, pos);
-                child.get_generalizations_rec(flat, next_pos, out);
+                let subterm = &flat[pos..next_pos];
+
+                if v < bindings.len() {
+                    if let Some(bound) = bindings[v] {
+                        if bound == subterm {
+                            child.get_generalizations_rec(flat, next_pos, out, bindings);
+                        }
+                    } else {
+                        bindings[v] = Some(subterm);
+                        child.get_generalizations_rec(flat, next_pos, out, bindings);
+                        bindings[v] = None;
+                    }
+                } else {
+                    bindings.resize(v + 1, None);
+                    bindings[v] = Some(subterm);
+                    child.get_generalizations_rec(flat, next_pos, out, bindings);
+                    bindings[v] = None;
+                }
             }
         }
     }

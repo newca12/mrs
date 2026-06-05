@@ -11,3 +11,4 @@ rust-version.workspace = true
 mrs-core = { workspace = true }
 mrs-unify = { workspace = true }
 mrs-index = { workspace = true }
+smallvec = "1.15.1"

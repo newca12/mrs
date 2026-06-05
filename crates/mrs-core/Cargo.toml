@@ -12,3 +12,4 @@ default = []
 proover = []
 
 [dependencies]
+smallvec = "1.15.1"

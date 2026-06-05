@@ -118,7 +118,7 @@ fn rename_term_id(
     match bank.get(term).clone() {
         mrs_core::term_bank::TermNode::Var(v) => bank.intern_var(v + offset),
         mrs_core::term_bank::TermNode::App(sym, args) => {
-            let new_args = args
+            let new_args: smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]> = args
                 .iter()
                 .map(|&a| rename_term_id(a, offset, bank))
                 .collect();

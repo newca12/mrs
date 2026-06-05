@@ -109,6 +109,7 @@ dependencies = [
  "mrs-core",
  "mrs-index",
  "mrs-unify",
+ "smallvec",
 ]
 
 [[package]]
@@ -121,6 +122,9 @@ dependencies = [
 [[package]]
 name = "mrs-core"
 version = "0.1.9"
+dependencies = [
+ "smallvec",
+]
 
 [[package]]
 name = "mrs-index"

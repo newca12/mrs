@@ -445,7 +445,7 @@ fn rewrite_literal_id(
     let mut changed = false;
     let new_atom = match &lit.atom {
         IdAtom::Pred(p, args) => {
-            let new_args: Vec<TermId> = args
+            let new_args: smallvec::SmallVec<[TermId; 4]> = args
                 .iter()
                 .map(|arg| {
                     let (new_arg, ch) = rewrite_term_id(

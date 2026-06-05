@@ -198,7 +198,6 @@ fn id_term_weight(term: TermId, bank: &TermBank) -> u32 {
     match bank.get(term) {
         TermNode::Var(_) => 1,
         TermNode::App(_, args) => {
-            let args = args.clone();
             1 + args.iter().map(|&a| id_term_weight(a, bank)).sum::<u32>()
         }
     }

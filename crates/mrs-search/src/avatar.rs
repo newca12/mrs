@@ -421,8 +421,7 @@ fn id_collect_vars(term: mrs_core::term_bank::TermId, bank: &TermBank, vars: &mu
             vars.insert(*v);
         }
         TermNode::App(_, args) => {
-            let args = args.clone();
-            for a in args {
+            for &a in args {
                 id_collect_vars(a, bank, vars);
             }
         }
@@ -489,7 +488,6 @@ fn write_id_term_canonical(
         TermNode::App(sym, args) => {
             s.push('F');
             push_u32(s, sym.index());
-            let args = args.clone();
             if !args.is_empty() {
                 s.push('(');
                 for (i, a) in args.iter().enumerate() {

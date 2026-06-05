@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use smallvec::SmallVec;
 
 use crate::clause::{Clause, ClauseId, ClauseSource, Literal};
 use crate::formula::Atom;
@@ -15,13 +16,13 @@ pub struct TermId(pub u32);
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum TermNode {
     Var(VarId),
-    App(SymbolId, Vec<TermId>),
+    App(SymbolId, SmallVec<[TermId; 4]>),
 }
 
 /// An atomic formula operating on `TermId`s.
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub enum IdAtom {
-    Pred(SymbolId, Vec<TermId>),
+    Pred(SymbolId, SmallVec<[TermId; 4]>),
     Eq(TermId, TermId),
 }
 
@@ -192,8 +193,8 @@ impl TermBank {
     }
 
     /// Interns a function application into the term bank.
-    pub fn intern_app(&mut self, sym: SymbolId, args: Vec<TermId>) -> TermId {
-        let node = TermNode::App(sym, args);
+    pub fn intern_app(&mut self, sym: SymbolId, args: impl Into<SmallVec<[TermId; 4]>>) -> TermId {
+        let node = TermNode::App(sym, args.into());
         if let Some(&id) = self.dedup.get(&node) {
             return id;
         }
