@@ -118,7 +118,7 @@ pub fn try_check<'p>(
         .filter(|s| registry.seen_symbols.contains(*s))
         .collect();
     if !stale.is_empty() {
-        return Some(StepOutcome::Unknown(format!(
+        return Some(StepOutcome::Unsound(format!(
             "skolemisation: declared Skolem(s) {stale:?} clash with the problem's symbols"
         )));
     }
@@ -996,7 +996,7 @@ fof(step, plain, (q(sK0)), \
     }
 
     #[test]
-    fn stale_skolem_returns_unknown() {
+    fn stale_skolem_returns_unsound() {
         let input = "\
 fof(prob, axiom, p(sK0)).
 fof(src, plain, (? [X0] : p(X0)), inference(ennf_transformation, [], [])).
@@ -1007,8 +1007,8 @@ fof(step, plain, (p(sK0)), \
 ";
         let outcome = run(input, "step", &["src", "ax"]);
         assert!(
-            matches!(outcome, Some(StepOutcome::Unknown(_))),
-            "expected Unknown, got {outcome:?}"
+            matches!(outcome, Some(StepOutcome::Unsound(_))),
+            "expected Unsound, got {outcome:?}"
         );
     }
 
