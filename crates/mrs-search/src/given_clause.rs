@@ -147,10 +147,14 @@ fn avatar_refute_branch(
     }
 }
 
-/// Scans the clause store for commutativity axioms of the form `f(X,Y) = f(Y,X)`
-/// and returns the set of all such binary function symbols.
-fn detect_comm_symbols(state: &crate::state::SearchState) -> HashSet<SymbolId> {
+/// Scans the clause store for commutativity and associativity axioms:
+/// Commutativity: `f(X,Y) = f(Y,X)`
+/// Associativity: `f(f(X,Y),Z) = f(X,f(Y,Z))` or `f(X,f(Y,Z)) = f(f(X,Y),Z)`
+/// Returns the set of commutative symbols, associative symbols, and the IDs of the axioms to remove.
+fn detect_ac_symbols(state: &crate::state::SearchState) -> (HashSet<SymbolId>, HashSet<SymbolId>, Vec<mrs_core::clause::ClauseId>) {
     let mut comm = HashSet::new();
+    let mut assoc = HashSet::new();
+    let mut to_remove = Vec::new();
     for clause in state.clause_store.values() {
         if clause.len() == 1
             && clause.literals[0].positive
@@ -160,20 +164,73 @@ fn detect_comm_symbols(state: &crate::state::SearchState) -> HashSet<SymbolId> {
             && f1 == f2
             && args1.len() == 2
             && args2.len() == 2
-            && let (TermNode::Var(x1), TermNode::Var(y1), TermNode::Var(x2), TermNode::Var(y2)) = (
+        {
+            // Commutativity: f(x,y) = f(y,x)
+            if let (TermNode::Var(x1), TermNode::Var(y1), TermNode::Var(x2), TermNode::Var(y2)) = (
                 state.term_bank.get(args1[0]),
                 state.term_bank.get(args1[1]),
                 state.term_bank.get(args2[0]),
                 state.term_bank.get(args2[1]),
             )
-            && x1 != y1
-            && x1 == y2
-            && y1 == x2
-        {
-            comm.insert(*f1);
+                && x1 != y1 && x1 == y2 && y1 == x2 {
+                    comm.insert(*f1);
+                    to_remove.push(clause.id);
+                    continue;
+                }
+
+            // Associativity: f(f(x,y),z) = f(x,f(y,z))
+            // Left side: f(f(x,y),z)
+            let is_assoc_left = if let TermNode::App(fl, args_l) = state.term_bank.get(args1[0]) {
+                fl == f1 && args_l.len() == 2
+            } else { false };
+
+            // Right side: f(x,f(y,z))
+            let is_assoc_right = if let TermNode::App(fr, args_r) = state.term_bank.get(args2[1]) {
+                fr == f2 && args_r.len() == 2
+            } else { false };
+
+            if is_assoc_left && is_assoc_right {
+                let TermNode::App(_, args_l) = state.term_bank.get(args1[0]) else { unreachable!() };
+                let TermNode::App(_, args_r) = state.term_bank.get(args2[1]) else { unreachable!() };
+                
+                if let (TermNode::Var(x1), TermNode::Var(y1), TermNode::Var(z1),
+                        TermNode::Var(x2), TermNode::Var(y2), TermNode::Var(z2)) = (
+                    state.term_bank.get(args_l[0]), state.term_bank.get(args_l[1]), state.term_bank.get(args1[1]),
+                    state.term_bank.get(args2[0]), state.term_bank.get(args_r[0]), state.term_bank.get(args_r[1])
+                )
+                    && x1 != y1 && y1 != z1 && x1 != z1 && x1 == x2 && y1 == y2 && z1 == z2 {
+                        assoc.insert(*f1);
+                        to_remove.push(clause.id);
+                        continue;
+                    }
+            }
+            
+            // Associativity reversed: f(x,f(y,z)) = f(f(x,y),z)
+            let is_assoc_left_rev = if let TermNode::App(fl, args_l) = state.term_bank.get(args1[1]) {
+                fl == f1 && args_l.len() == 2
+            } else { false };
+            let is_assoc_right_rev = if let TermNode::App(fr, args_r) = state.term_bank.get(args2[0]) {
+                fr == f2 && args_r.len() == 2
+            } else { false };
+            
+            if is_assoc_left_rev && is_assoc_right_rev {
+                let TermNode::App(_, args_l) = state.term_bank.get(args1[1]) else { unreachable!() };
+                let TermNode::App(_, args_r) = state.term_bank.get(args2[0]) else { unreachable!() };
+                
+                if let (TermNode::Var(x1), TermNode::Var(y1), TermNode::Var(z1),
+                        TermNode::Var(x2), TermNode::Var(y2), TermNode::Var(z2)) = (
+                    state.term_bank.get(args1[0]), state.term_bank.get(args_l[0]), state.term_bank.get(args_l[1]),
+                    state.term_bank.get(args_r[0]), state.term_bank.get(args_r[1]), state.term_bank.get(args2[1])
+                )
+                    && x1 != y1 && y1 != z1 && x1 != z1 && x1 == x2 && y1 == y2 && z1 == z2 {
+                        assoc.insert(*f1);
+                        to_remove.push(clause.id);
+                        continue;
+                    }
+            }
         }
     }
-    comm
+    (comm, assoc, to_remove)
 }
 
 /// Runs the given-clause proof search.
@@ -185,7 +242,13 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
     let ordering = &config.ordering;
     let sym_config = ordering.symbol_config();
 
-    state.comm_symbols = detect_comm_symbols(state);
+    let (comm_syms, assoc_syms, to_remove) = detect_ac_symbols(state);
+    state.comm_symbols = comm_syms;
+    state.assoc_symbols = assoc_syms;
+
+    for id in to_remove {
+        state.remove_clause_and_orphans(id, ordering);
+    }
 
     let start = Instant::now();
     state.search_deadline = Some(start + config.time_limit);
@@ -379,6 +442,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                             Some(&given_sel),
                             Some(&active_sel),
                             &state.comm_symbols,
+                            &state.assoc_symbols,
                         );
                         new_clauses.extend(resolvents);
                         if start.elapsed() >= config.time_limit {
@@ -413,6 +477,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         &mut state.id_gen,
                         Some(&active_sel),
                         &state.comm_symbols,
+                        &state.assoc_symbols,
                     );
                     new_clauses.extend(sp);
                     if start.elapsed() >= config.time_limit {
@@ -430,6 +495,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     &mut state.id_gen,
                     Some(&given_sel_local),
                     &state.comm_symbols,
+                    &state.assoc_symbols,
                 );
                 new_clauses.extend(sp);
             }
@@ -446,6 +512,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         &mut state.id_gen,
                         Some(&given_sel),
                         &state.comm_symbols,
+                        &state.assoc_symbols,
                     );
                     new_clauses.extend(sp);
                     if start.elapsed() >= config.time_limit {

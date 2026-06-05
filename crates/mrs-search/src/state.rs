@@ -44,6 +44,8 @@ pub struct SearchState {
     pub dormant_unprocessed: HashMap<ClauseId, IdClause>,
     /// Binary function symbols detected as commutative (from `f(X,Y)=f(Y,X)` axioms).
     pub comm_symbols: HashSet<SymbolId>,
+    /// Binary function symbols detected as associative.
+    pub assoc_symbols: HashSet<SymbolId>,
     /// Wall-clock deadline for the current search.
     pub search_deadline: Option<Instant>,
     /// Interned-term arena shared by all clauses in this search.
@@ -103,6 +105,7 @@ impl SearchState {
             dormant_processed: HashMap::new(),
             dormant_unprocessed: HashMap::new(),
             comm_symbols: HashSet::new(),
+            assoc_symbols: HashSet::new(),
             search_deadline: None,
             term_bank,
             children: HashMap::new(),

@@ -42,6 +42,8 @@ pub fn superpose_id(
     bank: &mut TermBank,
     ordering: &TermOrdering,
     id_gen: &mut ClauseIdGen,
+    comm: &HashSet<SymbolId>,
+    assoc: &HashSet<SymbolId>,
 ) -> Vec<IdClause> {
     superpose_selected_id(
         eq_clause,
@@ -50,7 +52,8 @@ pub fn superpose_id(
         ordering,
         id_gen,
         None,
-        &HashSet::new(),
+        comm,
+        assoc,
     )
 }
 
@@ -110,6 +113,7 @@ pub fn superpose_selected(
     results
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn superpose_selected_id(
     eq_clause: &IdClause,
     target: &IdClause,
@@ -118,6 +122,7 @@ pub fn superpose_selected_id(
     id_gen: &mut ClauseIdGen,
     target_sel: Option<&[usize]>,
     comm: &HashSet<SymbolId>,
+    assoc: &HashSet<SymbolId>,
 ) -> Vec<IdClause> {
     let offset = max_var_id(eq_clause, bank);
     let target_r = rename_clause_id(target, offset, bank);
@@ -147,6 +152,7 @@ pub fn superpose_selected_id(
                 id_gen,
                 target_sel,
                 comm,
+                assoc,
                 &mut results,
             );
         }
@@ -167,6 +173,7 @@ fn superpose_with_id(
     id_gen: &mut ClauseIdGen,
     target_sel: Option<&[usize]>,
     comm: &HashSet<SymbolId>,
+    assoc: &HashSet<SymbolId>,
     results: &mut Vec<IdClause>,
 ) {
     for (j, target_lit) in target.literals.iter().enumerate() {
@@ -184,7 +191,7 @@ fn superpose_with_id(
                     None => continue,
                 };
 
-                let sigma = match mrs_unify::robinson::unify_comm_id(from, subterm, bank, comm) {
+                let sigma = match mrs_unify::robinson::unify_ac_id(from, subterm, bank, comm, assoc) {
                     Ok(s) => s,
                     Err(_) => continue,
                 };

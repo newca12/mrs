@@ -201,26 +201,53 @@ fn unify_comm_rec(
     }
 }
 
-pub fn unify_comm_id(
+pub fn unify_ac_id(
     s: TermId,
     t: TermId,
     bank: &TermBank,
     comm: &HashSet<SymbolId>,
+    assoc: &HashSet<SymbolId>,
 ) -> Result<IdSubstitution, UnifyError> {
-    if comm.is_empty() {
+    if comm.is_empty() && assoc.is_empty() {
         return unify_id(s, t, bank);
     }
     let mut subst = IdSubstitution::new();
-    unify_comm_rec_id(s, t, &mut subst, bank, comm)?;
+    unify_ac_rec_id(s, t, &mut subst, bank, comm, assoc)?;
     Ok(subst)
 }
 
-fn unify_comm_rec_id(
+fn flatten_assoc(
+    t: TermId,
+    f: SymbolId,
+    subst: &IdSubstitution,
+    bank: &TermBank,
+    assoc: &HashSet<SymbolId>,
+) -> Vec<TermId> {
+    let mut result = Vec::new();
+    let mut stack = vec![t];
+    while let Some(current) = stack.pop() {
+        let current = deref_id(current, subst, bank);
+        if let TermNode::App(g, args) = bank.get(current)
+            && *g == f && assoc.contains(&f) {
+                // It's the same associative symbol, push arguments to stack in reverse
+                // so they are processed left-to-right
+                for arg in args.iter().rev() {
+                    stack.push(*arg);
+                }
+                continue;
+            }
+        result.push(current);
+    }
+    result
+}
+
+fn unify_ac_rec_id(
     s: TermId,
     t: TermId,
     subst: &mut IdSubstitution,
     bank: &TermBank,
     comm: &HashSet<SymbolId>,
+    assoc: &HashSet<SymbolId>,
 ) -> Result<(), UnifyError> {
     let s = deref_id(s, subst, bank);
     let t = deref_id(t, subst, bank);
@@ -232,13 +259,78 @@ fn unify_comm_rec_id(
     match (bank.get(s), bank.get(t)) {
         (TermNode::Var(v), _) => bind_var_id(*v, t, subst, bank),
         (_, TermNode::Var(v)) => bind_var_id(*v, s, subst, bank),
-        (TermNode::App(f1, args1), TermNode::App(f2, args2)) => {
+        (TermNode::App(f1, _args1), TermNode::App(f2, _args2)) => {
             if f1 != f2 {
                 return Err(UnifyError::SymbolClash {
                     left: format!("{:?}", f1),
                     right: format!("{:?}", f2),
                 });
             }
+
+            let saved = subst.clone();
+
+            if assoc.contains(f1) {
+                let flat1 = flatten_assoc(s, *f1, subst, bank, assoc);
+                let flat2 = flatten_assoc(t, *f2, subst, bank, assoc);
+
+                if flat1.len() != flat2.len() {
+                    return Err(UnifyError::ArityMismatch {
+                        expected: flat1.len(),
+                        found: flat2.len(),
+                    });
+                }
+
+                if comm.contains(f1) {
+                    // Try to sort or match greedily?
+                    // For a simple heuristic, just try the normal and reversed order (not full N!)
+                    // A proper implementation would do bipartite matching, but we'll try a fast path.
+                    let _ok = false;
+                    
+                    // 1. Normal order
+                    let mut subst_try = saved.clone();
+                    let mut normal_ok = true;
+                    for (a1, a2) in flat1.iter().zip(flat2.iter()) {
+                        if unify_ac_rec_id(*a1, *a2, &mut subst_try, bank, comm, assoc).is_err() {
+                            normal_ok = false;
+                            break;
+                        }
+                    }
+                    if normal_ok {
+                        *subst = subst_try;
+                        return Ok(());
+                    }
+
+                    // 2. Try reversing flat2
+                    let mut subst_rev = saved.clone();
+                    let mut rev_ok = true;
+                    for (a1, a2) in flat1.iter().zip(flat2.iter().rev()) {
+                        if unify_ac_rec_id(*a1, *a2, &mut subst_rev, bank, comm, assoc).is_err() {
+                            rev_ok = false;
+                            break;
+                        }
+                    }
+                    if rev_ok {
+                        *subst = subst_rev;
+                        return Ok(());
+                    }
+
+                    return Err(UnifyError::SymbolClash {
+                        left: "AC mismatch".into(),
+                        right: "AC mismatch".into(),
+                    });
+                } else {
+                    // Associative only, just unify elements left-to-right
+                    for (a1, a2) in flat1.iter().zip(flat2.iter()) {
+                        unify_ac_rec_id(*a1, *a2, subst, bank, comm, assoc)?;
+                    }
+                    return Ok(());
+                }
+            }
+
+            // Normal binary/n-ary unification
+            let TermNode::App(_, args1) = bank.get(s) else { unreachable!() };
+            let TermNode::App(_, args2) = bank.get(t) else { unreachable!() };
+
             if args1.len() != args2.len() {
                 return Err(UnifyError::ArityMismatch {
                     expected: args1.len(),
@@ -246,11 +338,9 @@ fn unify_comm_rec_id(
                 });
             }
 
-            let saved = subst.clone();
-
             let normal_ok: Result<(), UnifyError> = (|| {
                 for (a1, a2) in args1.iter().zip(args2.iter()) {
-                    unify_comm_rec_id(*a1, *a2, subst, bank, comm)?;
+                    unify_ac_rec_id(*a1, *a2, subst, bank, comm, assoc)?;
                 }
                 Ok(())
             })();
@@ -262,8 +352,8 @@ fn unify_comm_rec_id(
             if comm.contains(f1) && args1.len() == 2 {
                 let mut subst_swap = saved.clone();
                 let swap_ok: Result<(), UnifyError> = (|| {
-                    unify_comm_rec_id(args1[0], args2[1], &mut subst_swap, bank, comm)?;
-                    unify_comm_rec_id(args1[1], args2[0], &mut subst_swap, bank, comm)?;
+                    unify_ac_rec_id(args1[0], args2[1], &mut subst_swap, bank, comm, assoc)?;
+                    unify_ac_rec_id(args1[1], args2[0], &mut subst_swap, bank, comm, assoc)?;
                     Ok(())
                 })();
                 if swap_ok.is_ok() {

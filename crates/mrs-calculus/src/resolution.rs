@@ -54,8 +54,10 @@ pub fn resolve_id(
     c2: &IdClause,
     bank: &mut TermBank,
     id_gen: &mut ClauseIdGen,
+    comm: &HashSet<SymbolId>,
+    assoc: &HashSet<SymbolId>,
 ) -> Vec<IdClause> {
-    resolve_selected_id(c1, c2, bank, id_gen, None, None, &HashSet::new())
+    resolve_selected_id(c1, c2, bank, id_gen, None, None, comm, assoc)
 }
 
 /// Like [`resolve`], but restricted to selected literals.
@@ -138,6 +140,7 @@ pub fn resolve_selected(
     resolvents
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn resolve_selected_id(
     c1: &IdClause,
     c2: &IdClause,
@@ -146,6 +149,7 @@ pub fn resolve_selected_id(
     sel1: Option<&[usize]>,
     sel2: Option<&[usize]>,
     comm: &HashSet<SymbolId>,
+    assoc: &HashSet<SymbolId>,
 ) -> Vec<IdClause> {
     let offset = max_var_id(c1, bank);
     let c2r = rename_clause_id(c2, offset, bank);
@@ -177,7 +181,7 @@ pub fn resolve_selected_id(
                 None => continue,
             };
 
-            if let Ok(mgu) = mrs_unify::robinson::unify_comm_id(t1, t2, bank, comm) {
+            if let Ok(mgu) = mrs_unify::robinson::unify_ac_id(t1, t2, bank, comm, assoc) {
                 let mut lits = Vec::new();
                 for (k, lit) in c1.literals.iter().enumerate() {
                     if k != i {
