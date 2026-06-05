@@ -35,14 +35,30 @@ fn formula_eq(
         (Formula::Atom(x), Formula::Atom(y)) => atom_eq(x, y, left, right),
         (Formula::Neg(x), Formula::Neg(y)) => formula_eq(x, y, left, right, depth),
         (Formula::And(xs), Formula::And(ys)) | (Formula::Or(xs), Formula::Or(ys)) => {
-            xs.len() == ys.len()
-                && xs
-                    .iter()
-                    .zip(ys.iter())
-                    .all(|(x, y)| formula_eq(x, y, left, right, depth))
+            if xs.len() != ys.len() {
+                return false;
+            }
+            let mut used = vec![false; ys.len()];
+            for x in xs {
+                let mut matched = false;
+                for (j, y) in ys.iter().enumerate() {
+                    if !used[j] && formula_eq(x, y, left, right, depth) {
+                        used[j] = true;
+                        matched = true;
+                        break;
+                    }
+                }
+                if !matched {
+                    return false;
+                }
+            }
+            true
         }
-        (Formula::Implies(a1, b1), Formula::Implies(a2, b2))
-        | (Formula::Iff(a1, b1), Formula::Iff(a2, b2)) => {
+        (Formula::Iff(a1, b1), Formula::Iff(a2, b2)) => {
+            (formula_eq(a1, a2, left, right, depth) && formula_eq(b1, b2, left, right, depth))
+                || (formula_eq(a1, b2, left, right, depth) && formula_eq(b1, a2, left, right, depth))
+        }
+        (Formula::Implies(a1, b1), Formula::Implies(a2, b2)) => {
             formula_eq(a1, a2, left, right, depth) && formula_eq(b1, b2, left, right, depth)
         }
         (Formula::Forall(v1, body1), Formula::Forall(v2, body2))
@@ -86,7 +102,8 @@ fn atom_eq(a: &Atom, b: &Atom, left: &HashMap<VarId, u32>, right: &HashMap<VarId
                     .all(|(x, y)| term_eq(x, y, left, right))
         }
         (Atom::Eq(l1, r1), Atom::Eq(l2, r2)) => {
-            term_eq(l1, l2, left, right) && term_eq(r1, r2, left, right)
+            (term_eq(l1, l2, left, right) && term_eq(r1, r2, left, right))
+                || (term_eq(l1, r2, left, right) && term_eq(r1, l2, left, right))
         }
         _ => false,
     }

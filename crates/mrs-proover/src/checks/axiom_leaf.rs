@@ -73,7 +73,7 @@ pub fn check_leaf<'p>(
                 return StepOutcome::Sound;
             }
         }
-        return StepOutcome::Unknown(
+        return StepOutcome::Unsound(
             "leaf with anonymous provenance (file(_,unknown)) does not α-match any \
              compatible-role formula in the linked problem (may differ only by \
              AC-rewriting of commutative operators)"
@@ -133,12 +133,9 @@ pub fn check_leaf<'p>(
         // happens when the proof tool (e.g. E) reparses and normalises
         // the conjecture, reordering disjuncts under commutative
         // operators or rearranging parenthesisation. Our `alpha_equiv`
-        // is purely positional and does not account for AC-rewriting,
-        // so we cannot tell the two cases apart from this comparison
-        // alone. Return `Unknown` rather than `Unsound` to avoid a
-        // false-positive `FailedVerified` (−1) — `NotVerified` (0)
-        // is the conservative score.
-        StepOutcome::Unknown(format!(
+        // purely positional and did not account for AC-rewriting,
+        // but now it does! So a mismatch is a genuine Unsound.
+        StepOutcome::Unsound(format!(
             "leaf formula does not syntactically α-match axiom '{expected_name}' \
              (may differ only by AC-rewriting of commutative operators)"
         ))

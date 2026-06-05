@@ -156,27 +156,51 @@ pub fn check<'p>(step: &FOFAnnotated<'p>, registry: &SkolemRegistry) -> StepOutc
         let declared = declared_new_symbols(ann);
         if declared.len() == 1 {
             let sym = declared[0];
-            if !registry.seen_symbols.contains(sym) {
+            if registry.seen_symbols.contains(sym) {
+                return StepOutcome::Unsound(format!(
+                    "introduced(definition) declares already-seen symbol `{sym}`"
+                ));
+            }
+            
+            // To prevent definition laundering (evil_definition_false, etc.),
+            // we must structurally validate that the formula is a valid naming fragment.
+            // A valid naming fragment is a clause containing the fresh symbol.
+            let logical = match &step.formula {
+                FOFStatement::Logical(f) => f,
+                FOFStatement::Sequent(..) => {
+                    return StepOutcome::Unknown("Sequent not supported".into());
+                }
+            };
+            
+            let (_, body) = collect_forall(logical);
+            if is_naming_clause(body, sym) {
                 return StepOutcome::Sound;
             }
-            return StepOutcome::Unknown(format!(
-                "introduced(definition) declares already-seen symbol `{sym}`"
-            ));
-        }
-        if declared.len() > 1 {
-            // Multiple new symbols at once: unusual but conservative — accept
-            // only if *all* are fresh.
+            
+            // If it's not a naming clause, fall through to try_skolem_axiom and try_distinctness_axiom
+        } else if declared.len() > 1 {
             let all_fresh = declared.iter().all(|s| !registry.seen_symbols.contains(*s));
-            if all_fresh {
+            if !all_fresh {
+                return StepOutcome::Unsound(
+                    "introduced(definition) declares multiple new symbols and at \
+                     least one is already known"
+                        .into(),
+                );
+            }
+            
+            let logical = match &step.formula {
+                FOFStatement::Logical(f) => f,
+                FOFStatement::Sequent(..) => {
+                    return StepOutcome::Unknown("Sequent not supported".into());
+                }
+            };
+            
+            let (_, body) = collect_forall(logical);
+            let all_valid = declared.iter().all(|&sym| is_naming_clause(body, sym));
+            if all_valid {
                 return StepOutcome::Sound;
             }
-            return StepOutcome::Unknown(
-                "introduced(definition) declares multiple new symbols and at \
-                 least one is already known"
-                    .into(),
-            );
         }
-        // No new_symbols entry — fall through to the structural paths.
     }
 
     let logical = match &step.formula {
@@ -234,7 +258,7 @@ pub fn check<'p>(step: &FOFAnnotated<'p>, registry: &SkolemRegistry) -> StepOutc
             right,
         } => (peel(left), peel(right)),
         _ => {
-            return StepOutcome::Unknown(
+            return StepOutcome::Unsound(
                 "introduced(definition) with no new_symbols entry and body is \
                  not a biconditional or Skolem axiom after peeling \
                  quantifiers/parens"
@@ -262,11 +286,70 @@ pub fn check<'p>(step: &FOFAnnotated<'p>, registry: &SkolemRegistry) -> StepOutc
         return StepOutcome::Sound;
     }
 
-    StepOutcome::Unknown(
+    StepOutcome::Unsound(
         "introduced(definition) head predicate is not fresh, OR its arguments \
          do not capture all free variables of the body"
             .into(),
     )
+}
+
+/// Returns true if the formula is a valid naming clause: a disjunction of literals
+/// (or a single literal) where at least one literal's predicate is exactly `sym`.
+fn is_naming_clause(f: &FOFFormula<'_>, sym: &str) -> bool {
+    fn is_literal_with_sym(f: &FOFFormula<'_>, sym: &str) -> (bool, bool) {
+        let peeled = peel_parens(f);
+        match peeled {
+            FOFFormula::Atomic(FOFAtomicFormula::Plain(AtomicWord::Lower(p) | AtomicWord::SingleQuoted(p), _)) => {
+                (true, *p == sym)
+            }
+            FOFFormula::Atomic(FOFAtomicFormula::Defined(w, _)) => {
+                (true, w.0 == sym)
+            }
+            FOFFormula::Atomic(FOFAtomicFormula::System(w, _)) => {
+                (true, w.0 == sym)
+            }
+            FOFFormula::Negation(inner) => {
+                let inner_peeled = peel_parens(inner);
+                match inner_peeled {
+                    FOFFormula::Atomic(FOFAtomicFormula::Plain(AtomicWord::Lower(p) | AtomicWord::SingleQuoted(p), _)) => {
+                        (true, *p == sym)
+                    }
+                    FOFFormula::Atomic(FOFAtomicFormula::Defined(w, _)) => {
+                        (true, w.0 == sym)
+                    }
+                    FOFFormula::Atomic(FOFAtomicFormula::System(w, _)) => {
+                        (true, w.0 == sym)
+                    }
+                    _ => (false, false)
+                }
+            }
+            _ => (false, false)
+        }
+    }
+
+    let mut stack = vec![peel_parens(f)];
+    let mut found_sym = false;
+
+    while let Some(curr) = stack.pop() {
+        let peeled = peel_parens(curr);
+        match peeled {
+            FOFFormula::Binary { left, connective: BinaryConnective::Or, right } => {
+                stack.push(left);
+                stack.push(right);
+            }
+            _ => {
+                let (is_lit, has_sym) = is_literal_with_sym(peeled, sym);
+                if !is_lit {
+                    return false; // Not a clause!
+                }
+                if has_sym {
+                    found_sym = true;
+                }
+            }
+        }
+    }
+
+    found_sym
 }
 
 /// Try to match a Skolem-axiom shape and certify it.
@@ -346,7 +429,7 @@ fn try_skolem_axiom<'p>(f: &FOFFormula<'p>, registry: &SkolemRegistry) -> Option
         collect_term_vars(term, &mut term_vars);
         for u in &universals {
             if !term_vars.contains(u) {
-                return Some(StepOutcome::Unknown(format!(
+                return Some(StepOutcome::Unsound(format!(
                     "introduced(definition) Skolem term drops universal variable `{}`",
                     u
                 )));
@@ -364,7 +447,7 @@ fn try_skolem_axiom<'p>(f: &FOFFormula<'p>, registry: &SkolemRegistry) -> Option
         .filter(|s| registry.seen_symbols.contains(*s))
         .collect();
     if !stale.is_empty() {
-        return Some(StepOutcome::Unknown(format!(
+        return Some(StepOutcome::Unsound(format!(
             "introduced(definition) Skolem axiom reuses already-seen symbol(s): {stale:?}"
         )));
     }
@@ -881,7 +964,7 @@ mod tests {
              introduced(definition,[],[distinctness_axiom])).",
         );
         let reg = SkolemRegistry::new();
-        assert!(matches!(check(af, &reg), StepOutcome::Unknown(_)));
+        assert!(matches!(check(af, &reg), StepOutcome::Unsound(_)));
     }
 
     #[test]
@@ -890,7 +973,7 @@ mod tests {
         let af =
             first_fof("fof(f3, plain, (a != b), introduced(definition,[],[distinctness_axiom])).");
         let reg = SkolemRegistry::new();
-        assert!(matches!(check(af, &reg), StepOutcome::Unknown(_)));
+        assert!(matches!(check(af, &reg), StepOutcome::Unsound(_)));
     }
 
     #[test]
@@ -899,7 +982,7 @@ mod tests {
         let mut reg = SkolemRegistry::new();
         reg.record("p"); // already seen
         reg.record("q"); // also seen → neither side qualifies
-        assert!(matches!(check(af, &reg), StepOutcome::Unknown(_)));
+        assert!(matches!(check(af, &reg), StepOutcome::Unsound(_)));
     }
 
     #[test]
@@ -914,7 +997,7 @@ mod tests {
     fn rejects_non_biconditional_without_new_symbols() {
         let af = first_fof("fof(c1, plain, (epred1_0 => q), introduced(definition)).");
         let reg = SkolemRegistry::new();
-        assert!(matches!(check(af, &reg), StepOutcome::Unknown(_)));
+        assert!(matches!(check(af, &reg), StepOutcome::Unsound(_)));
     }
 
     #[test]
@@ -940,7 +1023,7 @@ mod tests {
         );
         let mut reg = SkolemRegistry::new();
         reg.record("sP2");
-        assert!(matches!(check(af, &reg), StepOutcome::Unknown(_)));
+        assert!(matches!(check(af, &reg), StepOutcome::Unsound(_)));
     }
 
     // --- Vampire skolem_symbol_introduction (Skolem axiom shape) ---
@@ -980,7 +1063,7 @@ mod tests {
         );
         let mut reg = SkolemRegistry::new();
         reg.record("sK1"); // already seen elsewhere → must not reuse
-        assert!(matches!(check(af, &reg), StepOutcome::Unknown(_)));
+        assert!(matches!(check(af, &reg), StepOutcome::Unsound(_)));
     }
 
     #[test]
@@ -988,7 +1071,7 @@ mod tests {
         // Not a Skolem axiom — antecedent is a plain conjunction.
         let af = first_fof("fof(c1, plain, ((p & q) => r(sK1)), introduced(definition)).");
         let reg = SkolemRegistry::new();
-        assert!(matches!(check(af, &reg), StepOutcome::Unknown(_)));
+        assert!(matches!(check(af, &reg), StepOutcome::Unsound(_)));
     }
 
     #[test]
@@ -1002,7 +1085,7 @@ mod tests {
         );
         let mut reg = SkolemRegistry::new();
         reg.record("c0"); // c0 already known → consequent has no new sym
-        assert!(matches!(check(af, &reg), StepOutcome::Unknown(_)));
+        assert!(matches!(check(af, &reg), StepOutcome::Unsound(_)));
     }
 
     // --- Adversarial shapes (evil-proofs corpus) -----------------------
@@ -1021,7 +1104,7 @@ mod tests {
         );
         let reg = SkolemRegistry::new();
         assert!(
-            matches!(check(af, &reg), StepOutcome::Unknown(_)),
+            matches!(check(af, &reg), StepOutcome::Unsound(_)),
             "must NOT certify an unsound disguised Skolem axiom"
         );
     }
@@ -1037,7 +1120,7 @@ mod tests {
              introduced(definition,[],[skolem_symbol_introduction])).",
         );
         let reg = SkolemRegistry::new();
-        assert!(matches!(check(af, &reg), StepOutcome::Unknown(_)));
+        assert!(matches!(check(af, &reg), StepOutcome::Unsound(_)));
     }
 
     #[test]
@@ -1050,6 +1133,6 @@ mod tests {
              introduced(definition,[],[skolem_symbol_introduction])).",
         );
         let reg = SkolemRegistry::new();
-        assert!(matches!(check(af, &reg), StepOutcome::Unknown(_)));
+        assert!(matches!(check(af, &reg), StepOutcome::Unsound(_)));
     }
 }
