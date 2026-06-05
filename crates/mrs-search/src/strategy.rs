@@ -25,7 +25,7 @@ use mrs_proof::tstp::format_tstp;
 use crate::cwa::try_componentwise_refute;
 use crate::fvo::try_fvo_refutation;
 use crate::given_clause::search;
-use crate::instgen::{is_epr, preprocess_epr};
+use crate::instgen::is_epr;
 use crate::state::SearchState;
 use crate::{LiteralSelection, SearchConfig, SearchResult, SelectionStrategy, TermOrdering};
 
@@ -372,17 +372,11 @@ pub fn run_schedule(
 
     let clauses_owned = clauses.to_vec();
 
-    // Pre-compute EPR ground instances once.  EPR expansion can take several
-    // seconds for large problems; running it once per strategy (up to 12 times)
-    // would multiply that cost.  We generate the ground clauses a single time
-    // and clone the result for each strategy that needs it.
-    //
-    // `epr_id_gen_base` is advanced past the IDs used for the ground clauses;
-    // each strategy then clones it so newly derived clauses get unique IDs
-    // that do not collide with the pre-computed ground ones.
-    let mut epr_id_gen_base = id_gen.clone();
-    let epr_ground_cache: Option<Vec<Clause>> =
-        preprocess_epr(&clauses_owned, &mut epr_id_gen_base);
+    // EPR pre-grounding is disabled: naive ground instance enumeration causes
+    // OOM on large EPR problems (tens of thousands of ground clauses inflate
+    // varisat's SAT instance beyond memory limits).  AVATAR handles EPR
+    // structure lazily and correctly without pre-expansion.
+    let epr_ground_cache: Option<Vec<Clause>> = None;
 
     // Detect EPR structure even when the full expansion exceeds MAX_INSTANCES.
     // EPR problems (only variables and ground terms, no function symbols of
@@ -390,6 +384,9 @@ pub fn run_schedule(
     // expanding them: AVATAR's SAT instance grows without bound during a
     // resolution search over EPR clauses and can cause varisat to block for
     // minutes with no way to interrupt it.
+    // NOTE: EPR grounding is disabled (epr_ground_cache is always None).
+    //       is_epr is retained for future use (e.g. re-enabling AVATAR guard).
+    let _ = is_epr(&clauses_owned);
 
     // FVO pre-pass: for clause sets where all predicate arguments are variables
     // (no equality, no function terms), the first-order problem is
@@ -416,11 +413,6 @@ pub fn run_schedule(
             return result;
         }
     }
-
-    // Pre-compute whether the problem has EPR structure.  is_epr scans all
-    // clauses (O(N)) — calling it once here avoids repeating it for each of
-    // the up-to-12 strategies in the loop below.
-    let epr_structure = epr_ground_cache.is_some() || is_epr(&clauses_owned);
 
     // Total time budget = sum of all strategy slices.
     let total_budget: Duration = actual_configs.iter().map(|c| c.time_limit).sum();
@@ -458,15 +450,9 @@ pub fn run_schedule(
             let tx = tx.clone();
 
             // Clone all inputs the thread needs; SearchState is created inside.
-            let clauses_for_thread: Vec<Clause> = match &epr_ground_cache {
-                Some(ground) => ground.clone(),
-                None => clauses_owned.clone(),
-            };
-            let id_gen_thread = if epr_ground_cache.is_some() {
-                epr_id_gen_base.clone()
-            } else {
-                id_gen.clone()
-            };
+            // epr_ground_cache is always None so clauses_owned is always used.
+            let clauses_for_thread: Vec<Clause> = clauses_owned.clone();
+            let id_gen_thread = id_gen.clone();
             let config_thread = Arc::clone(&config);
 
             // Override the individual time slice with the full remaining budget so
@@ -474,10 +460,7 @@ pub fn run_schedule(
             let mut sc = search_config.clone();
             sc.time_limit = remaining_at_spawn;
 
-            // Apply EPR constraints.
-            if epr_structure {
-                sc.use_avatar = false;
-            }
+            // EPR grounding is disabled; epr_ground_cache is always None.
             if epr_ground_cache.is_some() {
                 sc.max_term_weight = None;
             }

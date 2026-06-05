@@ -332,7 +332,7 @@ fn main() {
         };
         
         final_result = result;
-        final_status = status.clone();
+        final_status = status;
         
         // SInE Fallback check
         if attempt == 1 && sine_triggered && matches!(final_status, SzsStatus::GaveUp) && search_elapsed < Duration::from_secs(1) {
@@ -352,7 +352,7 @@ fn main() {
     let status = final_status;
     let result = final_result;
 
-    println!("{}", szs_status_line(status.clone(), problem_name));
+    println!("{}", szs_status_line(status, problem_name));
 
     // Output proof if refutation found (skip in quiet mode: mrs-proover only
     // cares about the SZS line).
