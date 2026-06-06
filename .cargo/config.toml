@@ -1,0 +1,4 @@
+[env]
+CXX = "g++"
+CC = "gcc"
+RUSTFLAGS = "-C target-cpu=native"

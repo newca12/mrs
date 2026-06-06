@@ -15,9 +15,9 @@
 
 use mrs_core::SymbolTable;
 use mrs_core::alpha::alpha_equiv;
-use mrs_tptp::{AnnotatedFormula, FOFAnnotated, FormulaRole, TPTPProblem};
+use mrs_tptp::{AnnotatedFormula, FormulaRole, TPTPProblem};
 
-use crate::lower::{LowerCtx, lower_cnf_statement, lower_fof_statement};
+use crate::lower::{LowerCtx, lower_annotated_formula};
 use crate::verdict::StepOutcome;
 
 /// Check a single proof leaf whose source is `file('…', name)`.
@@ -27,11 +27,11 @@ use crate::verdict::StepOutcome;
 /// is the literal `unknown` (common in Vampire output), we instead try every
 /// axiom-role formula in the problem and accept the leaf if any α-matches.
 pub fn check_leaf<'p>(
-    node: &FOFAnnotated<'p>,
+    node: &AnnotatedFormula<'p>,
     problem: Option<&TPTPProblem<'_>>,
     symbols: &mut SymbolTable,
 ) -> StepOutcome {
-    let Some(ann) = &node.annotations else {
+    let Some(ann) = node.annotations() else {
         // No annotation → cannot prove provenance. Conservative.
         return StepOutcome::Unknown("leaf without source annotation".into());
     };
@@ -45,7 +45,7 @@ pub fn check_leaf<'p>(
     // Lower the proof leaf formula once for either matching strategy.
     let mut ctx = LowerCtx::new(symbols);
     ctx.reset_vars();
-    let proof_f = lower_fof_statement(&mut ctx, &node.formula);
+    let proof_f = lower_annotated_formula(&mut ctx, node);
 
     // --- Anonymous-provenance fallback (Vampire's `file(_, unknown)`) -----
     if expected_name == "unknown" {
@@ -55,21 +55,14 @@ pub fn check_leaf<'p>(
                 AnnotatedFormula::CNF(f) => f.role,
                 _ => continue,
             };
-            if !roles_compatible(node.role, role) {
+            if !roles_compatible(node.role(), role) {
                 continue;
             }
-            let prob_f = match af {
-                AnnotatedFormula::FOF(f) => {
-                    ctx.reset_vars();
-                    lower_fof_statement(&mut ctx, &f.formula)
-                }
-                AnnotatedFormula::CNF(f) => {
-                    ctx.reset_vars();
-                    lower_cnf_statement(&mut ctx, &f.formula)
-                }
-                _ => continue,
-            };
-            if alpha_equiv(&proof_f, &prob_f) {
+            ctx.reset_vars();
+            let prob_f = lower_annotated_formula(&mut ctx, af);
+            if alpha_equiv(&proof_f, &prob_f)
+                || crate::checks::definition_folding::canon_eq(&proof_f, &prob_f)
+            {
                 return StepOutcome::Sound;
             }
         }
@@ -85,47 +78,36 @@ pub fn check_leaf<'p>(
     // Look up the named entry in either dialect (the prover may have
     // converted a CNF problem to FOF in the proof, or vice versa). We
     // accept the entry whose name matches, regardless of dialect.
-    let mut target_fof: Option<&FOFAnnotated<'_>> = None;
-    let mut target_cnf: Option<&mrs_tptp::CNFAnnotated<'_>> = None;
+    let mut target_af: Option<&AnnotatedFormula<'_>> = None;
     let mut prob_role = None;
     for af in &problem.formulas {
-        match af {
-            AnnotatedFormula::FOF(f) if f.name.as_str() == expected_name => {
-                target_fof = Some(f);
-                prob_role = Some(f.role);
-                break;
-            }
-            AnnotatedFormula::CNF(f) if f.name.as_str() == expected_name => {
-                target_cnf = Some(f);
-                prob_role = Some(f.role);
-                break;
-            }
-            _ => {}
+        if af.name() == expected_name {
+            target_af = Some(af);
+            prob_role = Some(af.role());
+            break;
         }
     }
-    if target_fof.is_none() && target_cnf.is_none() {
+    if target_af.is_none() {
         return StepOutcome::Unknown(format!(
             "leaf references axiom '{expected_name}' not present in problem file \
              (the prover may have renamed or inlined the original axiom)"
         ));
     }
 
-    if !roles_compatible(node.role, prob_role.unwrap()) {
+    if !roles_compatible(node.role(), prob_role.unwrap()) {
         return StepOutcome::Unsound(format!(
             "leaf role '{:?}' is incompatible with problem node role '{:?}'",
-            node.role,
+            node.role(),
             prob_role.unwrap()
         ));
     }
 
     ctx.reset_vars();
-    let prob_f = if let Some(t) = target_fof {
-        lower_fof_statement(&mut ctx, &t.formula)
-    } else {
-        lower_cnf_statement(&mut ctx, &target_cnf.unwrap().formula)
-    };
+    let prob_f = lower_annotated_formula(&mut ctx, target_af.unwrap());
 
-    if alpha_equiv(&proof_f, &prob_f) {
+    if alpha_equiv(&proof_f, &prob_f)
+        || crate::checks::definition_folding::canon_eq(&proof_f, &prob_f)
+    {
         StepOutcome::Sound
     } else {
         // The proof leaf does not α-match the named axiom. This can be a

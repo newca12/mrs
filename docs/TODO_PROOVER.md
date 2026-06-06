@@ -119,14 +119,14 @@ The current ATP-ladder fallback re-invokes an external ATP subprocess for every 
 
 | Task | Priority | Status |
 |------|----------|--------|
-| Free Variable Skolemization block | Critical | ❌ TODO |
-| Accept CNF Steps in Proof DAG | High | ❌ TODO |
+| Free Variable Skolemization block | Critical | ✅ Done |
+| Accept CNF Steps in Proof DAG | High | ✅ Done |
 | Definition laundering blocked | High | ✅ Done |
 | Vampire Skolem arity-drop → Unsound | High | ✅ Done |
-| AC-equivalence in `axiom_leaf.rs` | High | ❌ TODO |
+| AC-equivalence in `axiom_leaf.rs` | High | ✅ Done |
 | Fix `test_tptp_solutions.sh` HTML Stripping Bug | High | ✅ Done |
-| Cyclic/recursive definition chain detection | High | ❌ TODO |
-| E-prover Skolemization variable leakage | Medium | ❌ TODO |
+| Cyclic/recursive definition chain detection | High | ✅ Done |
+| E-prover Skolemization variable leakage | Medium | ✅ Done |
 | Batch ATP subprocess calls | Medium | ❌ TODO |
 | Broader Unsound coverage in structural checks | Low–Medium | ❌ TODO |
 | Benchmark against Nörgler | After fixes | ❌ TODO |

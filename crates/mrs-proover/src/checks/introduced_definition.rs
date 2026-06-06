@@ -56,7 +56,7 @@ use std::collections::{HashMap, HashSet};
 
 use mrs_tptp::ast::common::{AtomicWord, GeneralTerm, Quantifier};
 use mrs_tptp::{
-    Annotations, BinaryConnective, FOFAnnotated, FOFAtomicFormula, FOFFormula, FOFStatement,
+    AnnotatedFormula, Annotations, BinaryConnective, FOFAtomicFormula, FOFFormula, FOFStatement,
     FOFTerm,
 };
 
@@ -150,9 +150,13 @@ pub fn is_predicate_definition_introduction(ann: Option<&Annotations<'_>>) -> bo
 ///
 /// The caller is responsible for invoking this only when
 /// [`is_introduced_definition`] returns true.
-pub fn check<'p>(step: &FOFAnnotated<'p>, registry: &SkolemRegistry) -> StepOutcome {
+pub fn check<'p>(step: &AnnotatedFormula<'p>, registry: &SkolemRegistry) -> StepOutcome {
     // --- Vampire shape: annotation declares the new symbol(s) directly. ---
-    if let Some(ann) = step.annotations.as_ref() {
+    let step_fof = match step.as_fof() {
+        Some(f) => f,
+        None => return StepOutcome::Unknown("introduced(definition) step is not FOF".into()),
+    };
+    if let Some(ann) = step.annotations() {
         let declared = declared_new_symbols(ann);
         if declared.len() == 1 {
             let sym = declared[0];
@@ -165,7 +169,7 @@ pub fn check<'p>(step: &FOFAnnotated<'p>, registry: &SkolemRegistry) -> StepOutc
             // To prevent definition laundering (evil_definition_false, etc.),
             // we must structurally validate that the formula is a valid naming fragment.
             // A valid naming fragment is a clause containing the fresh symbol.
-            let logical = match &step.formula {
+            let logical = match &step_fof.formula {
                 FOFStatement::Logical(f) => f,
                 FOFStatement::Sequent(..) => {
                     return StepOutcome::Unknown("Sequent not supported".into());
@@ -188,7 +192,7 @@ pub fn check<'p>(step: &FOFAnnotated<'p>, registry: &SkolemRegistry) -> StepOutc
                 );
             }
 
-            let logical = match &step.formula {
+            let logical = match &step_fof.formula {
                 FOFStatement::Logical(f) => f,
                 FOFStatement::Sequent(..) => {
                     return StepOutcome::Unknown("Sequent not supported".into());
@@ -203,7 +207,7 @@ pub fn check<'p>(step: &FOFAnnotated<'p>, registry: &SkolemRegistry) -> StepOutc
         }
     }
 
-    let logical = match &step.formula {
+    let logical = match &step_fof.formula {
         FOFStatement::Logical(f) => f,
         FOFStatement::Sequent(..) => {
             return StepOutcome::Unknown(
@@ -378,6 +382,19 @@ fn is_naming_clause(f: &FOFFormula<'_>, sym: &str) -> bool {
 ///     over the antecedent (the Skolem witnesses) must be absent from the
 ///     registry, so the extension is conservative.
 fn try_skolem_axiom<'p>(f: &FOFFormula<'p>, registry: &SkolemRegistry) -> Option<StepOutcome> {
+    // Free variable check: an introduced Skolem axiom must not contain free variables.
+    // In TPTP, free variables are implicitly universally quantified at the top level,
+    // which could allow an attacker to bypass explicit arity checks.
+    let mut bound = HashSet::new();
+    let mut free = HashSet::new();
+    free_vars(f, &mut bound, &mut free);
+    if !free.is_empty() {
+        return Some(StepOutcome::Unsound(format!(
+            "introduced(definition) Skolem axiom contains free variables: {:?}",
+            free
+        )));
+    }
+
     // Peel only universal quantifiers and parens, NOT existentials — the
     // existential is the witness we are looking to Skolemise and must be
     // visible on the left of the implication.
@@ -603,7 +620,11 @@ fn match_term<'p>(
     }
 }
 
-fn free_vars<'a>(f: &FOFFormula<'a>, bound: &mut HashSet<&'a str>, free: &mut HashSet<&'a str>) {
+pub(crate) fn free_vars<'a>(
+    f: &FOFFormula<'a>,
+    bound: &mut HashSet<&'a str>,
+    free: &mut HashSet<&'a str>,
+) {
     match f {
         FOFFormula::Atomic(a) => match a {
             FOFAtomicFormula::Plain(_, args)
@@ -888,18 +909,15 @@ mod tests {
     use super::*;
     use mrs_tptp::parse_tptp;
 
-    fn first_fof<'p>(input: &'p str) -> &'p FOFAnnotated<'p> {
+    fn first_fof<'p>(input: &'p str) -> &'p AnnotatedFormula<'p> {
         let problem = Box::leak(Box::new(parse_tptp(input).expect("parse")));
-        match &problem.formulas[0] {
-            mrs_tptp::AnnotatedFormula::FOF(f) => f,
-            _ => panic!("expected FOF"),
-        }
+        &problem.formulas[0]
     }
 
     #[test]
     fn detects_source_keyword() {
         let af = first_fof("fof(c1, plain, (p0 <=> q), introduced(definition)).");
-        let ann = af.annotations.as_ref().unwrap();
+        let ann = af.annotations().unwrap();
         assert!(is_introduced_definition(ann));
     }
 
@@ -910,14 +928,14 @@ mod tests {
              introduced(definition,[new_symbols(naming,[sP2])],\
                                    [predicate_definition_introduction])).",
         );
-        let ann = af.annotations.as_ref().unwrap();
+        let ann = af.annotations().unwrap();
         assert!(is_introduced_definition(ann));
     }
 
     #[test]
     fn rejects_non_definition_source() {
         let af = first_fof("fof(c1, plain, (p0 <=> q), inference(rw, [status(thm)], [a])).");
-        let ann = af.annotations.as_ref().unwrap();
+        let ann = af.annotations().unwrap();
         assert!(!is_introduced_definition(ann));
     }
 
@@ -1122,6 +1140,7 @@ mod tests {
     }
 
     #[test]
+    #[test]
     fn rejects_skolem_axiom_inconsistent_witness() {
         // Same existential variable witnessed by two *different* terms in
         // the consequent (`sK1` vs `sK2`): not a valid Skolemisation.
@@ -1132,5 +1151,104 @@ mod tests {
         );
         let reg = SkolemRegistry::new();
         assert!(matches!(check(af, &reg), StepOutcome::Unsound(_)));
+    }
+}
+
+pub fn check_cycles(dag: &crate::dag::Dag<'_>) -> Result<(), String> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut defs: HashMap<&str, HashSet<&str>> = HashMap::new();
+
+    // Collect all introduced definitions and the symbols they define.
+    for node in &dag.nodes {
+        if let Some(ann) = node.formula.annotations()
+            && is_introduced_definition(ann)
+        {
+            let declared = declared_new_symbols(ann);
+            let step_fof = match node.formula.as_fof() {
+                Some(f) => f,
+                None => continue,
+            };
+            let mut body_syms = HashSet::new();
+            if let FOFStatement::Logical(form) = &step_fof.formula {
+                collect_fun_syms(form, &mut body_syms);
+            }
+            // Also collect predicate symbols for the dependency graph
+            collect_pred_syms(&step_fof.formula, &mut body_syms);
+
+            for d in declared {
+                let mut deps = body_syms.clone();
+                deps.remove(d);
+                defs.insert(d, deps);
+            }
+        }
+    }
+
+    // DFS for cycle detection
+    #[derive(PartialEq)]
+    enum Mark {
+        Visiting,
+        Done,
+    }
+    let mut marks: HashMap<&str, Mark> = HashMap::new();
+
+    fn dfs<'a>(
+        v: &'a str,
+        defs: &HashMap<&'a str, HashSet<&'a str>>,
+        marks: &mut HashMap<&'a str, Mark>,
+    ) -> Result<(), String> {
+        match marks.get(v) {
+            Some(Mark::Visiting) => {
+                return Err(format!("cyclic definition detected involving `{}`", v));
+            }
+            Some(Mark::Done) => return Ok(()),
+            None => {}
+        }
+        marks.insert(v, Mark::Visiting);
+        if let Some(deps) = defs.get(v) {
+            for &dep in deps {
+                dfs(dep, defs, marks)?;
+            }
+        }
+        marks.insert(v, Mark::Done);
+        Ok(())
+    }
+
+    for &v in defs.keys() {
+        dfs(v, &defs, &mut marks)?;
+    }
+
+    Ok(())
+}
+
+fn collect_pred_syms<'a>(f: &FOFStatement<'a>, out: &mut HashSet<&'a str>) {
+    if let FOFStatement::Logical(form) = f {
+        collect_pred_syms_formula(form, out);
+    }
+}
+
+fn collect_pred_syms_formula<'a>(f: &FOFFormula<'a>, out: &mut HashSet<&'a str>) {
+    match f {
+        FOFFormula::Atomic(a) => match a {
+            FOFAtomicFormula::Plain(w, _) => {
+                out.insert(w.as_str());
+            }
+            FOFAtomicFormula::Defined(w, _) => {
+                out.insert(w.0);
+            }
+            FOFAtomicFormula::System(w, _) => {
+                out.insert(w.0);
+            }
+            _ => {}
+        },
+        FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => {
+            collect_pred_syms_formula(inner, out)
+        }
+        FOFFormula::Quantified { formula, .. } => collect_pred_syms_formula(formula, out),
+        FOFFormula::Binary { left, right, .. } => {
+            collect_pred_syms_formula(left, out);
+            collect_pred_syms_formula(right, out);
+        }
+        FOFFormula::Equality(_, _) | FOFFormula::Inequality(_, _) => {}
     }
 }

@@ -58,6 +58,10 @@ pub struct SearchState {
     /// refutation), the search loop treats it as an additional timeout and
     /// returns `SearchResult::Timeout` at the next time-check iteration.
     pub stop_flag: Option<Arc<AtomicBool>>,
+    /// Shared pool of globally discovered unit equalities.
+    pub shared_pool: Option<Arc<std::sync::RwLock<Vec<Clause>>>>,
+    /// Number of clauses already consumed from the shared pool.
+    pub shared_pool_read: usize,
 }
 
 impl SearchState {
@@ -110,6 +114,8 @@ impl SearchState {
             term_bank,
             children: HashMap::new(),
             stop_flag: None,
+            shared_pool: None,
+            shared_pool_read: 0,
         }
     }
 

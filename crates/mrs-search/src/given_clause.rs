@@ -25,7 +25,6 @@ use mrs_core::SymbolId;
 use mrs_core::clause::ClauseSource;
 use mrs_core::term_bank::{IdAtom, IdClause, TermId, TermNode};
 use mrs_index::fvi::FeatureVector;
-use varisat::ExtendFormula;
 
 use crate::select::select;
 use crate::state::SearchState;
@@ -104,14 +103,10 @@ fn sync_active_dormant(state: &mut SearchState, ordering: &crate::TermOrdering) 
 
 /// Update the SAT model from the solver's current assignment.
 fn update_model(state: &mut SearchState) {
-    let model = state.avatar.solver.model().unwrap();
     state.avatar.current_model.clear();
-    for lit in model {
-        if lit.is_positive() {
-            state
-                .avatar
-                .current_model
-                .insert(lit.var().to_dimacs() as u32);
+    for v in 1..state.avatar.next_var {
+        if state.avatar.solver.value(v as i32) == Some(true) {
+            state.avatar.current_model.insert(v);
         }
     }
 }
@@ -132,13 +127,10 @@ fn avatar_refute_branch(
     {
         return true;
     }
-    let sat_clause: Vec<varisat::Lit> = avatar
-        .iter()
-        .map(|&a| varisat::Lit::from_var(varisat::Var::from_dimacs(a as isize), false))
-        .collect();
-    state.avatar.solver.add_clause(&sat_clause);
+    let sat_clause: Vec<i32> = avatar.iter().map(|&a| -(a as i32)).collect();
+    state.avatar.solver.add_clause(sat_clause);
 
-    if matches!(state.avatar.solver.solve(), Ok(true)) {
+    if matches!(state.avatar.solver.solve(), Some(true)) {
         update_model(state);
         sync_active_dormant(state, ordering);
         true
@@ -295,15 +287,22 @@ fn detect_ac_symbols(
 /// `SearchResult::Saturated` if all clauses are processed without contradiction,
 /// or `SearchResult::Timeout` on timeout.
 pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
-    let ordering = &config.ordering;
+    let mut ordering = config.ordering.clone();
     let sym_config = ordering.symbol_config();
 
     let (comm_syms, assoc_syms, to_remove) = detect_ac_symbols(state);
-    state.comm_symbols = comm_syms;
-    state.assoc_symbols = assoc_syms;
+    state.comm_symbols = comm_syms.clone();
+    state.assoc_symbols = assoc_syms.clone();
+
+    let ac_syms: HashSet<SymbolId> = comm_syms.intersection(&assoc_syms).copied().collect();
+    if !ac_syms.is_empty()
+        && matches!(ordering, crate::TermOrdering::KBO | crate::TermOrdering::CustomKBO(_))
+    {
+        ordering = crate::TermOrdering::CustomACKBO(sym_config.clone(), std::sync::Arc::new(ac_syms));
+    }
 
     for id in to_remove {
-        state.remove_clause_and_orphans(id, ordering);
+        state.remove_clause_and_orphans(id, &ordering);
     }
 
     let start = Instant::now();
@@ -312,7 +311,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
     // Initial SAT sync
     if config.use_avatar {
         state.avatar.current_model.clear();
-        if matches!(state.avatar.solver.solve(), Ok(true)) {
+        if matches!(state.avatar.solver.solve(), Some(true)) {
             update_model(state);
         } else {
             return SearchResult::Refutation(mrs_core::clause::ClauseId(0), String::new());
@@ -329,7 +328,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             } else {
                 let avatar = clause.avatar.clone();
                 let cid = clause.id;
-                if !avatar_refute_branch(state, &avatar, ordering) {
+                if !avatar_refute_branch(state, &avatar, &ordering) {
                     return SearchResult::Refutation(cid, String::new());
                 }
             }
@@ -338,7 +337,40 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
 
     let mut iteration: u64 = 0;
 
-    while let Some(given_id) = select(&mut state.unprocessed, &config.selection, iteration) {
+    loop {
+        // Ingest shared clauses
+        if let Some(pool_lock) = &state.shared_pool {
+            let mut to_add = Vec::new();
+            if let Ok(pool) = pool_lock.read()
+                && state.shared_pool_read < pool.len()
+            {
+                to_add.extend_from_slice(&pool[state.shared_pool_read..]);
+                state.shared_pool_read = pool.len();
+            }
+            for mut c in to_add {
+                c.id = state.id_gen.next();
+                c.source = ClauseSource::Inference {
+                    rule: "shared".into(),
+                    parents: vec![],
+                };
+                let id_clause = state.term_bank.clause_from_legacy(&c);
+                let fv = FeatureVector::from_id_clause(&id_clause, &state.term_bank);
+                let candidates = state.processed.get_subsumption_candidates(&fv);
+                if !candidates.iter().any(|p| {
+                    p.avatar_is_subset_of(&id_clause)
+                        && subsumption::subsumes_id(p, &id_clause, &mut state.term_bank)
+                }) {
+                    state.register_clause(&id_clause.clone());
+                    state.unprocessed.push(&id_clause, &state.term_bank);
+                }
+            }
+        }
+
+        let given_id = match select(&mut state.unprocessed, &config.selection, iteration) {
+            Some(id) => id,
+            None => break,
+        };
+
         let given = state.clause_store.get(&given_id).unwrap().clone();
 
         if !state.is_active(&given) {
@@ -415,7 +447,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         id.0, avatar
                     );
                 }
-                if !avatar_refute_branch(state, &avatar, ordering) {
+                if !avatar_refute_branch(state, &avatar, &ordering) {
                     if std::env::var("TRACE_AVATAR").is_ok() {
                         eprintln!(
                             "[AVATAR] empty given {}: avatar_refute_branch returned false → Refutation",
@@ -529,7 +561,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         &given,
                         active,
                         &mut state.term_bank,
-                        ordering,
+                        &ordering,
                         &mut state.id_gen,
                         Some(&active_sel),
                         &state.comm_symbols,
@@ -547,7 +579,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     &given,
                     &given,
                     &mut state.term_bank,
-                    ordering,
+                    &ordering,
                     &mut state.id_gen,
                     Some(&given_sel_local),
                     &state.comm_symbols,
@@ -564,7 +596,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         &active,
                         &given,
                         &mut state.term_bank,
-                        ordering,
+                        &ordering,
                         &mut state.id_gen,
                         Some(&given_sel),
                         &state.comm_symbols,
@@ -594,7 +626,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         new_clauses.extend(equality::equality_factor_id(
             &given,
             &mut state.term_bank,
-            ordering,
+            &ordering,
             &mut state.id_gen,
         ));
 
@@ -612,12 +644,22 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         }
 
         for id in to_remove_from_processed {
-            state.remove_clause_and_orphans(id, ordering);
+            state.remove_clause_and_orphans(id, &ordering);
         }
 
         // Add given to processed set (indexed)
         state.register_clause(&given.clone());
         state.processed.insert(given.clone(), &state.term_bank);
+
+        if is_unit_positive_equality_id(&given)
+            && given.avatar.is_empty()
+            && let Some(pool_lock) = &state.shared_pool
+            && let Ok(mut pool) = pool_lock.write()
+        {
+            let legacy = state.term_bank.clause_to_legacy(&given);
+            pool.push(legacy);
+        }
+
         if is_unit_positive_equality_id(&given)
             && let IdAtom::Eq(l, r) = &given.literals[0].atom
         {
@@ -762,6 +804,16 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 let time_ok = start.elapsed() < config.time_limit;
                 for clause in next_processed {
                     state.processed.insert(clause.clone(), &state.term_bank);
+
+                    if is_unit_positive_equality_id(&clause)
+                        && clause.avatar.is_empty()
+                        && let Some(pool_lock) = &state.shared_pool
+                        && let Ok(mut pool) = pool_lock.write()
+                    {
+                        let legacy = state.term_bank.clause_to_legacy(&clause);
+                        pool.push(legacy);
+                    }
+
                     if time_ok
                         && is_unit_positive_equality_id(&clause)
                         && let IdAtom::Eq(l, r) = &clause.literals[0].atom
@@ -790,7 +842,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 }
                 let avatar = empty.avatar.clone();
                 let id = empty.id;
-                if !avatar_refute_branch(state, &avatar, ordering) {
+                if !avatar_refute_branch(state, &avatar, &ordering) {
                     return SearchResult::Refutation(id, String::new());
                 }
             }
@@ -861,9 +913,9 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         given.id.0
                     );
                 }
-                if matches!(state.avatar.solver.solve(), Ok(true)) {
+                if matches!(state.avatar.solver.solve(), Some(true)) {
                     update_model(state);
-                    sync_active_dormant(state, ordering);
+                    sync_active_dormant(state, &ordering);
                 } else {
                     if trace_avatar {
                         eprintln!(
@@ -893,7 +945,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                             id.0, avatar
                         );
                     }
-                    if !avatar_refute_branch(state, &avatar, ordering) {
+                    if !avatar_refute_branch(state, &avatar, &ordering) {
                         if trace_avatar {
                             eprintln!(
                                 "[AVATAR] avatar_refute_branch returned false → SAT UNSAT → Refutation({})",
@@ -928,7 +980,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     }
                     let avatar = clause.avatar.clone();
                     let id = clause.id;
-                    if !avatar_refute_branch(state, &avatar, ordering) {
+                    if !avatar_refute_branch(state, &avatar, &ordering) {
                         return SearchResult::Refutation(id, String::new());
                     }
                     continue;
@@ -951,7 +1003,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     }
                     let avatar = empty.avatar.clone();
                     let id = empty.id;
-                    if !avatar_refute_branch(state, &avatar, ordering) {
+                    if !avatar_refute_branch(state, &avatar, &ordering) {
                         return SearchResult::Refutation(id, String::new());
                     }
                     continue;

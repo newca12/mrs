@@ -11,7 +11,7 @@
 //!
 //! The algorithm:
 //! 1. Detect FVO (no equality, all predicate args are variables).
-//! 2. Use `varisat` as a fast oracle to check propositional UNSAT.
+//! 2. Use `cadical` as a fast oracle to check propositional UNSAT.
 //! 3. If UNSAT, run a BFS resolution prover to produce a step-by-step proof.
 //! 4. Lift each propositional resolution step to first-order by introducing
 //!    fresh variables for each predicate argument.
@@ -25,7 +25,6 @@ use mrs_core::formula::Atom;
 use mrs_core::symbol::SymbolId;
 use mrs_core::term::Term;
 use mrs_proof::tstp::format_tstp;
-use varisat::ExtendFormula;
 
 use crate::SearchResult;
 
@@ -266,19 +265,15 @@ pub fn try_fvo_refutation(
 
     let abs = PropAbstraction::build(clauses);
 
-    // Fast oracle: use varisat to check propositional UNSAT before BFS.
+    // Fast oracle: use cadical to check propositional UNSAT before BFS.
     // This avoids O(n²) BFS work when the problem is actually satisfiable.
     {
-        let mut solver = varisat::Solver::new();
+        let mut solver: cadical::Solver = cadical::Solver::new();
         for pc in &abs.prop_clauses {
-            let sat_lits: Vec<varisat::Lit> = pc
-                .iter()
-                .map(|&l| varisat::Lit::from_dimacs(l as isize))
-                .collect();
-            solver.add_clause(&sat_lits);
+            solver.add_clause(pc.iter().copied());
         }
         match solver.solve() {
-            Ok(false) => {}   // UNSAT: proceed to proof extraction
+            Some(false) => {} // UNSAT: proceed to proof extraction
             _ => return None, // SAT or solver error: give up
         }
     }

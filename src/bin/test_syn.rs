@@ -33,9 +33,7 @@ fn main() {
     let mut var_map = HashMap::new();
     let mut next_var = 1;
 
-    let mut solver = varisat::Solver::new();
-    use varisat::ExtendFormula;
-
+    let mut solver: cadical::Solver = cadical::Solver::new();
     for c in &all_clauses {
         let mut sat_clause = Vec::new();
         for lit in &c.literals {
@@ -46,12 +44,14 @@ fn main() {
                 next_var += 1;
                 id
             });
-            let var = varisat::Var::from_dimacs(v as isize);
-            sat_clause.push(varisat::Lit::from_var(var, lit.positive));
+            sat_clause.push(if lit.positive { v as i32 } else { -(v as i32) });
         }
-        solver.add_clause(&sat_clause);
+        solver.add_clause(sat_clause);
     }
 
-    let result = solver.solve().unwrap();
-    println!("VARISAT RESULT on purely propositional clauses: {}", result);
+    let result = solver.solve();
+    println!(
+        "CADICAL RESULT on purely propositional clauses: {:?}",
+        result
+    );
 }

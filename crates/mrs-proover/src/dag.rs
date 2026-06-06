@@ -27,7 +27,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use mrs_tptp::{AnnotatedFormula, FOFAtomicFormula, FOFFormula, FOFStatement, FormulaRole};
+use mrs_tptp::{
+    AnnotatedFormula, CNFAtomicFormula, CNFFormula, CNFLiteral, CNFStatement, FOFAtomicFormula,
+    FOFFormula, FOFStatement, FormulaRole,
+};
 
 /// A single node in the proof DAG. We keep only `FOF` nodes — anything else
 /// is reported as a structural failure upstream.
@@ -43,7 +46,7 @@ pub struct Node<'p> {
     pub inference_rule: Option<&'p str>,
     pub status: Option<&'p str>,
     pub is_false: bool,
-    pub fof: &'p mrs_tptp::FOFAnnotated<'p>,
+    pub formula: &'p mrs_tptp::AnnotatedFormula<'p>,
 }
 
 /// The proof DAG.
@@ -104,17 +107,14 @@ pub fn build<'p>(proof: &'p mrs_tptp::TPTPProblem<'p>) -> Result<Dag<'p>, DagErr
     let mut by_name: HashMap<&'p str, usize> = HashMap::with_capacity(proof.formulas.len());
 
     for af in &proof.formulas {
-        let fof = match af {
-            AnnotatedFormula::FOF(f) => f,
-            other => {
-                return Err(DagError::UnsupportedDialect(other.name().to_string()));
-            }
-        };
-        let name = fof.name.as_str();
+        if !af.is_fof() && !af.is_cnf() {
+            return Err(DagError::UnsupportedDialect(af.name().to_string()));
+        }
+        let name = af.name();
         if by_name.contains_key(name) {
             return Err(DagError::DuplicateName(name.to_string()));
         }
-        let (parents, negated_parents, rule, status) = if let Some(ann) = &fof.annotations {
+        let (parents, negated_parents, rule, status) = if let Some(ann) = af.annotations() {
             let refs = ann.parent_refs();
             let rule = ann.inference_rule();
             let status = ann.status();
@@ -128,17 +128,17 @@ pub fn build<'p>(proof: &'p mrs_tptp::TPTPProblem<'p>) -> Result<Dag<'p>, DagErr
         } else {
             (Vec::new(), Vec::new(), None, None)
         };
-        let is_false = is_false_statement(&fof.formula);
+        let is_false = is_false_formula(af);
         by_name.insert(name, nodes.len());
         nodes.push(Node {
             name,
-            role: fof.role,
+            role: af.role(),
             parents,
             negated_parents,
             inference_rule: rule,
             status,
             is_false,
-            fof,
+            formula: af,
         });
     }
 
@@ -249,17 +249,35 @@ fn topo_sort<'p>(
     Ok(order)
 }
 
-fn is_false_statement(s: &FOFStatement<'_>) -> bool {
-    match s {
-        FOFStatement::Logical(f) => is_false_formula(f),
+fn is_false_formula(af: &AnnotatedFormula<'_>) -> bool {
+    match af {
+        AnnotatedFormula::FOF(f) => match &f.formula {
+            FOFStatement::Logical(form) => is_false_fof_formula(form),
+            _ => false,
+        },
+        AnnotatedFormula::CNF(c) => match &c.formula {
+            CNFStatement::Logical(form) => is_false_cnf_formula(form),
+        },
         _ => false,
     }
 }
 
-fn is_false_formula(f: &FOFFormula<'_>) -> bool {
+fn is_false_cnf_formula(f: &CNFFormula<'_>) -> bool {
+    match f {
+        CNFFormula::Disjunction(lits) => {
+            lits.is_empty()
+                || lits
+                    .iter()
+                    .all(|lit| matches!(lit, CNFLiteral::Positive(CNFAtomicFormula::False)))
+        }
+        CNFFormula::Parens(inner) => is_false_cnf_formula(inner),
+    }
+}
+
+fn is_false_fof_formula(f: &FOFFormula<'_>) -> bool {
     match f {
         FOFFormula::Atomic(FOFAtomicFormula::False) => true,
-        FOFFormula::Parens(inner) => is_false_formula(inner),
+        FOFFormula::Parens(inner) => is_false_fof_formula(inner),
         _ => false,
     }
 }

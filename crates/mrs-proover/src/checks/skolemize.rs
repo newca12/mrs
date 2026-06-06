@@ -16,7 +16,7 @@
 use std::collections::HashSet;
 
 use mrs_tptp::{
-    AtomicWord, FOFAnnotated, FOFAtomicFormula, FOFFormula, FOFStatement, FOFTerm, Quantifier,
+    AnnotatedFormula, AtomicWord, FOFAtomicFormula, FOFFormula, FOFStatement, FOFTerm, Quantifier,
 };
 
 use crate::verdict::StepOutcome;
@@ -110,12 +110,12 @@ impl Default for SkolemRegistry {
 
 /// Check a single `skolemize` step.
 pub fn check<'p>(
-    step: &FOFAnnotated<'p>,
-    parent: Option<&FOFAnnotated<'p>>,
+    step: &AnnotatedFormula<'p>,
+    parent: Option<&AnnotatedFormula<'p>>,
     registry: &mut SkolemRegistry,
 ) -> StepOutcome {
     // 1) status must be 'esa'.
-    let Some(ann) = &step.annotations else {
+    let Some(ann) = step.annotations() else {
         return StepOutcome::Unsound("skolemize step lacks annotations".into());
     };
     if ann.status() != Some("esa") {
@@ -166,7 +166,11 @@ pub fn check<'p>(
     let Some(parent) = parent else {
         return StepOutcome::Unsound("skolemize step has no parent".into());
     };
-    let parent_f = match &parent.formula {
+    let parent_fof = match parent.as_fof() {
+        Some(f) => f,
+        None => return StepOutcome::Unknown("skolemize parent is not FOF".into()),
+    };
+    let parent_f = match &parent_fof.formula {
         FOFStatement::Logical(f) => f,
         _ => return StepOutcome::Unsound("skolemize parent is a sequent".into()),
     };
@@ -213,7 +217,11 @@ pub fn check<'p>(
     let expected_body = subst_var_in_formula(body_after_existential, info.var, &sk_term);
     let expected = wrap_universals(&universals, expected_body);
 
-    let step_f = match &step.formula {
+    let step_fof = match step.as_fof() {
+        Some(f) => f,
+        None => return StepOutcome::Unknown("skolemize step is not FOF".into()),
+    };
+    let step_f = match &step_fof.formula {
         FOFStatement::Logical(f) => f,
         _ => return StepOutcome::Unsound("skolemize step is a sequent".into()),
     };
@@ -270,6 +278,38 @@ fn find_existential_binder<'p>(
                         return None;
                     }
                     return Some((universals, formula));
+                }
+                return None;
+            }
+            _ => return None,
+        }
+    }
+}
+
+fn find_outermost_existential<'p>(
+    f: &'p FOFFormula<'p>,
+) -> Option<(&'p str, Vec<&'p str>, &'p FOFFormula<'p>)> {
+    let mut universals: Vec<&'p str> = Vec::new();
+    let mut cur = strip_parens(f);
+    loop {
+        match cur {
+            FOFFormula::Quantified {
+                quantifier: Quantifier::Forall,
+                variables,
+                formula,
+            } => {
+                for v in variables {
+                    universals.push(*v);
+                }
+                cur = strip_parens(formula);
+            }
+            FOFFormula::Quantified {
+                quantifier: Quantifier::Exists,
+                variables,
+                formula,
+            } => {
+                if let Some(&var) = variables.first() {
+                    return Some((var, universals, formula));
                 }
                 return None;
             }
@@ -504,18 +544,26 @@ fn term_eq(a: &FOFTerm<'_>, b: &FOFTerm<'_>) -> bool {
 /// `Unknown` propagates to `NotVerified`, scoring 0 instead of the −1 a
 /// false-positive `FailedVerified` would cost).
 fn check_e_style_skolemize<'p>(
-    step: &FOFAnnotated<'p>,
-    parent: Option<&FOFAnnotated<'p>>,
+    step: &AnnotatedFormula<'p>,
+    parent: Option<&AnnotatedFormula<'p>>,
     registry: &mut SkolemRegistry,
 ) -> StepOutcome {
     let Some(parent) = parent else {
         return StepOutcome::Unknown("skolemize step has no parent".into());
     };
-    let step_f = match &step.formula {
+    let step_fof = match step.as_fof() {
+        Some(f) => f,
+        None => return StepOutcome::Unknown("skolemize step is not FOF".into()),
+    };
+    let step_f = match &step_fof.formula {
         FOFStatement::Logical(f) => f,
         _ => return StepOutcome::Unknown("skolemize step is a sequent".into()),
     };
-    let parent_f = match &parent.formula {
+    let parent_fof = match parent.as_fof() {
+        Some(f) => f,
+        None => return StepOutcome::Unknown("skolemize parent is not FOF".into()),
+    };
+    let parent_f = match &parent_fof.formula {
         FOFStatement::Logical(f) => f,
         _ => return StepOutcome::Unknown("skolemize parent is a sequent".into()),
     };
@@ -544,6 +592,100 @@ fn check_e_style_skolemize<'p>(
             "skolemize step missing annotation and candidate Skolem symbol(s) {stale:?} \
              clash with the problem's symbols"
         ));
+    }
+
+    // Try to enforce arity and free-variable safety if the parent is prenex.
+    if let Some((_, universals, _)) = find_outermost_existential(parent_f) {
+        let mut parent_bound = HashSet::new();
+        let mut parent_free = HashSet::new();
+        crate::checks::introduced_definition::free_vars(
+            parent_f,
+            &mut parent_bound,
+            &mut parent_free,
+        );
+
+        let mut expected_vars: HashSet<&str> = universals.iter().copied().collect();
+        expected_vars.extend(parent_free);
+
+        for &sk in &fresh {
+            // Find all applications of `sk` in step_f and check their arguments.
+            let mut bad_args = false;
+            let mut check_sk_args = |args: &[FOFTerm<'_>]| {
+                let mut arg_vars = HashSet::new();
+                for a in args {
+                    crate::checks::introduced_definition::collect_term_vars(a, &mut arg_vars);
+                }
+                if arg_vars != expected_vars {
+                    bad_args = true;
+                }
+            };
+
+            fn walk_fof<'a, F: FnMut(&[FOFTerm<'a>])>(f: &FOFFormula<'a>, sk: &str, cb: &mut F) {
+                match f {
+                    FOFFormula::Atomic(a) => match a {
+                        FOFAtomicFormula::Plain(_, args)
+                        | FOFAtomicFormula::Defined(_, args)
+                        | FOFAtomicFormula::System(_, args) => {
+                            for arg in args {
+                                walk_term(arg, sk, cb);
+                            }
+                        }
+                        _ => {}
+                    },
+                    FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => {
+                        walk_fof(inner, sk, cb)
+                    }
+                    FOFFormula::Binary { left, right, .. } => {
+                        walk_fof(left, sk, cb);
+                        walk_fof(right, sk, cb);
+                    }
+                    FOFFormula::Quantified { formula, .. } => walk_fof(formula, sk, cb),
+                    FOFFormula::Equality(l, r) | FOFFormula::Inequality(l, r) => {
+                        walk_term(l, sk, cb);
+                        walk_term(r, sk, cb);
+                    }
+                }
+            }
+
+            fn walk_term<'a, F: FnMut(&[FOFTerm<'a>])>(t: &FOFTerm<'a>, sk: &str, cb: &mut F) {
+                match t {
+                    FOFTerm::Function(w, args) => {
+                        if w.as_str() == sk {
+                            cb(args);
+                        }
+                        for a in args {
+                            walk_term(a, sk, cb);
+                        }
+                    }
+                    FOFTerm::DefinedFunction(w, args) => {
+                        if w.0 == sk {
+                            cb(args);
+                        }
+                        for a in args {
+                            walk_term(a, sk, cb);
+                        }
+                    }
+                    FOFTerm::SystemFunction(w, args) => {
+                        if w.0 == sk {
+                            cb(args);
+                        }
+                        for a in args {
+                            walk_term(a, sk, cb);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            walk_fof(step_f, sk, &mut check_sk_args);
+
+            if bad_args {
+                return StepOutcome::Unsound(format!(
+                    "skolemize step introduces Skolem `{}` with incorrect variable capture/arity",
+                    sk
+                ));
+            }
+        }
     }
 
     for s in &fresh {

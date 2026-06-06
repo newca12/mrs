@@ -15,40 +15,13 @@ This document tracks what remains to be built in `mrs` (the prover) to maximise 
 | Perfect DTree (binding consistency in unify_flat) | `efd4c502` |
 | Parallel 11-strategy portfolio with stop-flag | `34338df3` |
 | SmallVec for TermNode/IdAtom | `c83e01c6` |
+| Clause Sharing Across Parallel Strategies | `c30b201a` |
+| Full AC-Superposition (AC-compatible Term Orderings) | `a8047913` |
+| Replace `varisat` with a `Send`-Compatible SAT Solver | `bb46b4d6` |
 
 ---
 
 ## Remaining Work (ordered by expected CASC impact)
-
-### 1. Clause Sharing Across Parallel Strategies
-**Impact:** Every division. High.
-
-Currently each of the 11 parallel strategies starts from a clean `SearchState` and never communicates with siblings. If strategy 3 derives a short unit equality that would simplify 10,000 passive clauses, strategies 4–11 never learn of it.
-
-**Implementation sketch:**
-- After each given-clause iteration, collect newly derived unit equalities.
-- Broadcast them via a `crossbeam::channel` or `std::sync::Mutex<Vec<IdClause>>` to a shared "demodulator pool".
-- All threads consume from the pool at the top of each iteration.
-- Difficulty: `TermBank` is not shared (varisat is not `Send`). Short-term: share a serialized form of unit equalities (the two `Term` sides + source); each thread re-interns them into its own bank. Long-term: replace `varisat` with a `Send`-compatible SAT solver to allow a shared `Arc<RwLock<TermBank>>`.
-
-### 2. Full AC-Superposition (AC-compatible Term Orderings)
-**Impact:** UEQ, FEQ. High.
-
-The current AC-matching heuristic (`unify_ac_id`) stops the permutation explosion but does not make the search *complete* modulo AC. Standard KBO/LPO cannot soundly orient equations like `f(a, f(b, c)) ≥ f(f(a, b), c)` because associativity makes the comparison undefined. Without an AC-compatible ordering (AC-KBO or AC-RPO), the prover may silently discard necessary inferences.
-
-**Implementation sketch:**
-- Implement AC-KBO: weighting is the same but the comparison step uses the flattened form.
-- Gate it on whether any AC axiom was detected: if `assoc_symbols` is non-empty, switch ordering to `TermOrdering::CustomACKBO`.
-- Reference: [Bachmair & Ganzinger, 1994; Rubio & Nieuwenhuis, 1993 for AC-RPO].
-
-### 3. Replace `varisat` with a `Send`-Compatible SAT Solver
-**Impact:** Enables clause sharing and reduces RAM. Medium-High.
-
-`varisat::Solver<'static>` holds bare `dyn Trait` pointers without `+ Send`, making `AvatarContext` and `SearchState` non-`Send`. This forces each parallel strategy to clone the full initial clause set and run an isolated `TermBank`. On a 30-second CASC run with 11 strategies this means 11× the RAM of a serial run.
-
-**Implementation sketch:**
-- Drop-in replacement candidates: `cadical` (Rust bindings via `cadical-sys`), `minisat`, or a pure-Rust CDCL (e.g. `rustsat`).
-- Once `SearchState: Send`, `run_schedule` can use a single `Arc<Mutex<TermBank>>` for intern lookups and a `crossbeam` channel for clause sharing.
 
 ### 4. Substitution Trees (Indexing Evolution)
 **Impact:** FEQ, FNE. Medium.
@@ -79,6 +52,16 @@ The SInE fallback (restart on <1s saturation) is a binary switch. A finer approa
 Rust's default `HashMap` uses SipHash (cryptographically secure, DoS-resistant). In a theorem prover, keys are small integers (ClauseId, VarId, TermId) not adversarial strings. Swapping to `rustc_hash::FxHashMap` or `ahash::AHashMap` typically yields 10–15% speedup for free.
 
 **Implementation:** Add `rustc-hash` to workspace dependencies, define a type alias `type HashMap<K,V> = rustc_hash::FxHashMap<K,V>`, and replace all `std::collections::HashMap` uses inside `mrs-core`, `mrs-index`, `mrs-search`, `mrs-calculus`.
+
+### 8. SIMD-optimized Feature Vector Index — **+2% performance**
+**File:** `crates/mrs-index/src/fvi.rs`
+
+**The Problem:** The current `can_subsume` check uses a linear scan over a sparse `Vec<(SymbolId, u32)>`. While fine for small clauses, as clause sets grow in FEQ/FNE, the overhead of this linear scan becomes a bottleneck.
+
+**Implementation:**
+- Convert `FeatureVector` to a dense, fixed-size array (e.g., `[u16; 64]`) tracking the most common symbols.
+- Vectorize `can_subsume` using `std::simd` (AVX2-compatible) to compare 16-32 symbol counts in a single instruction.
+- Ensure compatibility with CASC hardware (AVX2, not AVX-512) to avoid SIGILL crashes.
 
 ---
 

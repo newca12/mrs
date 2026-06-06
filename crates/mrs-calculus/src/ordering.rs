@@ -8,7 +8,7 @@
 //! Both are used to orient equalities and determine which inferences are
 //! necessary for completeness.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use mrs_core::SymbolId;
@@ -76,6 +76,7 @@ pub enum TermComparison {
 #[derive(Clone, Debug)]
 pub struct KBO {
     config: Arc<SymbolConfig>,
+    ac_symbols: Option<Arc<HashSet<SymbolId>>>,
 }
 
 impl KBO {
@@ -83,11 +84,16 @@ impl KBO {
     pub fn new() -> Self {
         Self {
             config: Arc::new(SymbolConfig::default()),
+            ac_symbols: None,
         }
     }
 
     pub fn with_config(config: Arc<SymbolConfig>) -> Self {
-        Self { config }
+        Self { config, ac_symbols: None }
+    }
+
+    pub fn with_ac(config: Arc<SymbolConfig>, ac_symbols: Arc<HashSet<SymbolId>>) -> Self {
+        Self { config, ac_symbols: Some(ac_symbols) }
     }
 
     /// Returns the weight of a function symbol.
@@ -214,6 +220,77 @@ impl KBO {
                     return TermComparison::Incomparable;
                 }
 
+                if let Some(ac) = &self.ac_symbols
+                    && ac.contains(f1)
+                {
+                    let mut s_args_flat = Vec::new();
+                    let mut stack = vec![s];
+                    while let Some(curr) = stack.pop() {
+                        if let mrs_core::term_bank::TermNode::App(g, args) = bank.get(curr)
+                            && g == f1
+                        {
+                            stack.extend(args.iter().copied());
+                            continue;
+                        }
+                        s_args_flat.push(curr);
+                    }
+
+                    let mut t_args_flat = Vec::new();
+                    let mut stack = vec![t];
+                    while let Some(curr) = stack.pop() {
+                        if let mrs_core::term_bank::TermNode::App(g, args) = bank.get(curr)
+                            && g == f2
+                        {
+                            stack.extend(args.iter().copied());
+                            continue;
+                        }
+                        t_args_flat.push(curr);
+                    }
+
+                    let mut i = 0;
+                    while i < s_args_flat.len() {
+                        if let Some(j) = t_args_flat.iter().position(|&x| x == s_args_flat[i]) {
+                            s_args_flat.swap_remove(i);
+                            t_args_flat.swap_remove(j);
+                        } else {
+                            i += 1;
+                        }
+                    }
+
+                    if s_args_flat.is_empty() && t_args_flat.is_empty() {
+                        return TermComparison::Equal;
+                    }
+                    if s_args_flat.is_empty() {
+                        if t_ge_s_vars {
+                            return TermComparison::Less;
+                        } else {
+                            return TermComparison::Incomparable;
+                        }
+                    }
+                    if t_args_flat.is_empty() {
+                        if s_ge_t_vars {
+                            return TermComparison::Greater;
+                        } else {
+                            return TermComparison::Incomparable;
+                        }
+                    }
+
+                    let s_gt_t = t_args_flat.iter().all(|&tj| {
+                        s_args_flat.iter().any(|&si| self.compare_id(si, tj, bank) == TermComparison::Greater)
+                    });
+                    let t_gt_s = s_args_flat.iter().all(|&si| {
+                        t_args_flat.iter().any(|&tj| self.compare_id(tj, si, bank) == TermComparison::Greater)
+                    });
+
+                    if s_gt_t && !t_gt_s && s_ge_t_vars {
+                        return TermComparison::Greater;
+                    }
+                    if t_gt_s && !s_gt_t && t_ge_s_vars {
+                        return TermComparison::Less;
+                    }
+                    return TermComparison::Incomparable;
+                }
+
                 for (&a1, &a2) in args1.iter().zip(args2.iter()) {
                     let cmp = self.compare_id(a1, a2, bank);
                     match cmp {
@@ -293,6 +370,77 @@ impl KBO {
                         return TermComparison::Greater;
                     }
                     if t_ge_s_vars && prec2 > prec1 {
+                        return TermComparison::Less;
+                    }
+                    return TermComparison::Incomparable;
+                }
+
+                if let Some(ac) = &self.ac_symbols
+                    && ac.contains(f1)
+                {
+                    let mut s_args_flat = Vec::new();
+                    let mut stack = vec![s];
+                    while let Some(curr) = stack.pop() {
+                        if let Term::App(g, args) = curr
+                            && g == f1
+                        {
+                            stack.extend(args.iter());
+                            continue;
+                        }
+                        s_args_flat.push(curr);
+                    }
+
+                    let mut t_args_flat = Vec::new();
+                    let mut stack = vec![t];
+                    while let Some(curr) = stack.pop() {
+                        if let Term::App(g, args) = curr
+                            && g == f2
+                        {
+                            stack.extend(args.iter());
+                            continue;
+                        }
+                        t_args_flat.push(curr);
+                    }
+
+                    let mut i = 0;
+                    while i < s_args_flat.len() {
+                        if let Some(j) = t_args_flat.iter().position(|&x| x == s_args_flat[i]) {
+                            s_args_flat.swap_remove(i);
+                            t_args_flat.swap_remove(j);
+                        } else {
+                            i += 1;
+                        }
+                    }
+
+                    if s_args_flat.is_empty() && t_args_flat.is_empty() {
+                        return TermComparison::Equal;
+                    }
+                    if s_args_flat.is_empty() {
+                        if t_ge_s_vars {
+                            return TermComparison::Less;
+                        } else {
+                            return TermComparison::Incomparable;
+                        }
+                    }
+                    if t_args_flat.is_empty() {
+                        if s_ge_t_vars {
+                            return TermComparison::Greater;
+                        } else {
+                            return TermComparison::Incomparable;
+                        }
+                    }
+
+                    let s_gt_t = t_args_flat.iter().all(|&tj| {
+                        s_args_flat.iter().any(|&si| self.compare(si, tj) == TermComparison::Greater)
+                    });
+                    let t_gt_s = s_args_flat.iter().all(|&si| {
+                        t_args_flat.iter().any(|&tj| self.compare(tj, si) == TermComparison::Greater)
+                    });
+
+                    if s_gt_t && !t_gt_s && s_ge_t_vars {
+                        return TermComparison::Greater;
+                    }
+                    if t_gt_s && !s_gt_t && t_ge_s_vars {
                         return TermComparison::Less;
                     }
                     return TermComparison::Incomparable;
@@ -576,6 +724,8 @@ pub enum TermOrdering {
     LPO,
     /// KBO with custom configuration.
     CustomKBO(Arc<SymbolConfig>),
+    /// KBO with custom configuration and AC symbols.
+    CustomACKBO(Arc<SymbolConfig>, Arc<HashSet<SymbolId>>),
     /// LPO with custom configuration.
     CustomLPO(Arc<SymbolConfig>),
 }
@@ -587,6 +737,7 @@ impl TermOrdering {
             TermOrdering::KBO => KBO::new().compare(s, t),
             TermOrdering::LPO => LPO::new().compare(s, t),
             TermOrdering::CustomKBO(config) => KBO::with_config(config.clone()).compare(s, t),
+            TermOrdering::CustomACKBO(config, ac) => KBO::with_ac(config.clone(), ac.clone()).compare(s, t),
             TermOrdering::CustomLPO(config) => LPO::with_config(config.clone()).compare(s, t),
         }
     }
@@ -603,6 +754,9 @@ impl TermOrdering {
             TermOrdering::CustomKBO(config) => {
                 KBO::with_config(config.clone()).compare_id(s, t, bank)
             }
+            TermOrdering::CustomACKBO(config, ac) => {
+                KBO::with_ac(config.clone(), ac.clone()).compare_id(s, t, bank)
+            }
             TermOrdering::CustomLPO(config) => {
                 LPO::with_config(config.clone()).compare_id(s, t, bank)
             }
@@ -613,7 +767,7 @@ impl TermOrdering {
     pub fn symbol_config(&self) -> Arc<SymbolConfig> {
         match self {
             TermOrdering::KBO | TermOrdering::LPO => Arc::new(SymbolConfig::default()),
-            TermOrdering::CustomKBO(config) | TermOrdering::CustomLPO(config) => config.clone(),
+            TermOrdering::CustomKBO(config) | TermOrdering::CustomACKBO(config, _) | TermOrdering::CustomLPO(config) => config.clone(),
         }
     }
 }
