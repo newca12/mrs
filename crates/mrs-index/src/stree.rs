@@ -38,7 +38,7 @@ use std::ops::Range;
 
 use mrs_core::term_bank::{IdAtom, TermBank, TermId};
 
-use crate::dtree::{flatten_atom_id, flatten_id, skip_in_flat, Cell};
+use crate::dtree::{Cell, flatten_atom_id, flatten_id, skip_in_flat};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -302,16 +302,7 @@ impl<V: Clone + PartialEq> STreeId<V> {
         }
 
         for (first_cell, (edge_rest, child)) in &self.children {
-            gen_walk_edge(
-                *first_cell,
-                edge_rest,
-                0,
-                flat,
-                pos,
-                child,
-                out,
-                bindings,
-            );
+            gen_walk_edge(*first_cell, edge_rest, 0, flat, pos, child, out, bindings);
         }
     }
 }
@@ -400,15 +391,20 @@ fn unify_walk_edge<V: Clone + PartialEq>(
                     let r2_has_var = r2.iter().any(|c| matches!(c, Cell::Var(_)));
                     if r1_has_var || r2_has_var || r1 == r2 {
                         unify_walk_edge(
-                            first, rest, e + 1, query, skip_q, child, results, bindings,
+                            first,
+                            rest,
+                            e + 1,
+                            query,
+                            skip_q,
+                            child,
+                            results,
+                            bindings,
                         );
                     }
                 }
                 None => {
                     bindings[v_idx] = Some(q..skip_q);
-                    unify_walk_edge(
-                        first, rest, e + 1, query, skip_q, child, results, bindings,
-                    );
+                    unify_walk_edge(first, rest, e + 1, query, skip_q, child, results, bindings);
                     bindings[v_idx] = old;
                 }
             }
@@ -428,16 +424,12 @@ fn unify_walk_edge<V: Clone + PartialEq>(
                     let r1_has_var = r1.iter().any(|c| matches!(c, Cell::Var(_)));
                     let r2_has_var = r2.iter().any(|c| matches!(c, Cell::Var(_)));
                     if r1_has_var || r2_has_var || r1 == r2 {
-                        unify_walk_edge(
-                            first, rest, e + 1, query, q + 1, child, results, bindings,
-                        );
+                        unify_walk_edge(first, rest, e + 1, query, q + 1, child, results, bindings);
                     }
                 }
                 None => {
                     bindings[v_idx] = Some(q..q + 1);
-                    unify_walk_edge(
-                        first, rest, e + 1, query, q + 1, child, results, bindings,
-                    );
+                    unify_walk_edge(first, rest, e + 1, query, q + 1, child, results, bindings);
                     bindings[v_idx] = old;
                 }
             }
@@ -579,7 +571,10 @@ mod tests {
         tree.insert(stored, &bank, 1);
 
         let results = tree.get_unifications(query, &bank);
-        assert!(results.contains(&1), "stored f(X) should unify with query f(a)");
+        assert!(
+            results.contains(&1),
+            "stored f(X) should unify with query f(a)"
+        );
     }
 
     #[test]
@@ -593,7 +588,10 @@ mod tests {
         tree.insert(stored, &bank, 2);
 
         let results = tree.get_unifications(query, &bank);
-        assert!(results.contains(&2), "stored f(a) should unify with query f(X)");
+        assert!(
+            results.contains(&2),
+            "stored f(a) should unify with query f(X)"
+        );
     }
 
     #[test]
@@ -630,15 +628,17 @@ mod tests {
         let mut bank = TermBank::new();
         let t1 = intern_term(&mut bank, &app(f, vec![app(g, vec![cst(a)]), cst(a)]));
         let t2 = intern_term(&mut bank, &app(f, vec![var(0), cst(a)]));
-        let query =
-            intern_term(&mut bank, &app(f, vec![app(g, vec![cst(a)]), var(0)]));
+        let query = intern_term(&mut bank, &app(f, vec![app(g, vec![cst(a)]), var(0)]));
 
         let mut tree: STreeId<i32> = STreeId::new();
         tree.insert(t1, &bank, 10);
         tree.insert(t2, &bank, 20);
 
         let results = tree.get_unifications(query, &bank);
-        assert!(results.contains(&10), "f(g(a),a) should unify with f(g(a),X)");
+        assert!(
+            results.contains(&10),
+            "f(g(a),a) should unify with f(g(a),X)"
+        );
         assert!(results.contains(&20), "f(X,a) should unify with f(g(a),X)");
     }
 
@@ -646,8 +646,7 @@ mod tests {
     fn unify_query_var_skips_stored_subtree() {
         let (_, f, g, a, b) = make_symbols();
         let mut bank = TermBank::new();
-        let stored =
-            intern_term(&mut bank, &app(f, vec![app(g, vec![cst(a), cst(b)])]));
+        let stored = intern_term(&mut bank, &app(f, vec![app(g, vec![cst(a), cst(b)])]));
         let query = intern_term(&mut bank, &app(f, vec![var(0)]));
 
         let mut tree: STreeId<i32> = STreeId::new();
@@ -832,10 +831,8 @@ mod tests {
         let h = st.intern("h");
 
         let mut bank = TermBank::new();
-        let t1 =
-            intern_term(&mut bank, &app(f, vec![app(g, vec![app(h, vec![cst(a)])])]));
-        let t2 =
-            intern_term(&mut bank, &app(f, vec![app(g, vec![app(h, vec![cst(b)])])]));
+        let t1 = intern_term(&mut bank, &app(f, vec![app(g, vec![app(h, vec![cst(a)])])]));
+        let t2 = intern_term(&mut bank, &app(f, vec![app(g, vec![app(h, vec![cst(b)])])]));
 
         let mut tree: STreeId<i32> = STreeId::new();
         tree.insert(t1, &bank, 1);

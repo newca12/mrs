@@ -11,9 +11,9 @@
 //! - **Generalization**: returns terms more general than the query (for demodulation)
 //! - **Instance**: returns terms more specific than the query
 
+use crate::HashMap;
 use mrs_core::symbol::SymbolId;
 use mrs_core::term::{Term, VarId};
-use crate::HashMap;
 
 /// A cell in the flattened term representation.
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Debug)]

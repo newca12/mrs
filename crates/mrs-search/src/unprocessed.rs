@@ -1,6 +1,6 @@
+use crate::{HashMap, HashSet};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, VecDeque};
-use crate::{HashMap, HashSet};
 use std::sync::Arc;
 
 use mrs_calculus::ordering::SymbolConfig;

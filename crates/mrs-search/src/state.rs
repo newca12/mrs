@@ -9,8 +9,8 @@ use mrs_calculus::ordering::SymbolConfig;
 use mrs_core::SymbolId;
 use mrs_core::clause::{Clause, ClauseId, ClauseIdGen};
 use mrs_core::term_bank::{IdClause, TermBank, TermId};
-use mrs_index::stree::STreeId;
 use mrs_index::literal_index::LiteralIndex;
+use mrs_index::stree::STreeId;
 
 use crate::avatar::AvatarContext;
 use crate::unprocessed::UnprocessedSet;

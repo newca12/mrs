@@ -296,9 +296,13 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
 
     let ac_syms: HashSet<SymbolId> = comm_syms.intersection(&assoc_syms).copied().collect();
     if !ac_syms.is_empty()
-        && matches!(ordering, crate::TermOrdering::KBO | crate::TermOrdering::CustomKBO(_))
+        && matches!(
+            ordering,
+            crate::TermOrdering::KBO | crate::TermOrdering::CustomKBO(_)
+        )
     {
-        ordering = crate::TermOrdering::CustomACKBO(sym_config.clone(), std::sync::Arc::new(ac_syms));
+        ordering =
+            crate::TermOrdering::CustomACKBO(sym_config.clone(), std::sync::Arc::new(ac_syms));
     }
 
     for id in to_remove {

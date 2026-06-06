@@ -29,8 +29,8 @@
 //! pattern doesn't match, `try_componentwise_refute` returns `None` and the
 //! caller falls through to the regular strategy schedule.
 
-use std::collections::VecDeque;
 use crate::{HashMap, HashSet};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 

@@ -33,7 +33,14 @@ pub fn superpose(
     ordering: &TermOrdering,
     id_gen: &mut ClauseIdGen,
 ) -> Vec<Clause> {
-    superpose_selected(eq_clause, target, ordering, id_gen, None, &HashSet::default())
+    superpose_selected(
+        eq_clause,
+        target,
+        ordering,
+        id_gen,
+        None,
+        &HashSet::default(),
+    )
 }
 
 pub fn superpose_id(

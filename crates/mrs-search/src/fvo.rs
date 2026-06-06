@@ -17,8 +17,8 @@
 //!    fresh variables for each predicate argument.
 //! 5. Return `SearchResult::Refutation` with the TSTP-formatted proof.
 
-use std::collections::VecDeque;
 use crate::{HashMap, HashSet};
+use std::collections::VecDeque;
 
 use mrs_core::SymbolTable;
 use mrs_core::clause::{Clause, ClauseId, ClauseIdGen, ClauseSource, Literal};

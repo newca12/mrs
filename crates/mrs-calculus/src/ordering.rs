@@ -89,11 +89,17 @@ impl KBO {
     }
 
     pub fn with_config(config: Arc<SymbolConfig>) -> Self {
-        Self { config, ac_symbols: None }
+        Self {
+            config,
+            ac_symbols: None,
+        }
     }
 
     pub fn with_ac(config: Arc<SymbolConfig>, ac_symbols: Arc<HashSet<SymbolId>>) -> Self {
-        Self { config, ac_symbols: Some(ac_symbols) }
+        Self {
+            config,
+            ac_symbols: Some(ac_symbols),
+        }
     }
 
     /// Returns the weight of a function symbol.
@@ -276,10 +282,14 @@ impl KBO {
                     }
 
                     let s_gt_t = t_args_flat.iter().all(|&tj| {
-                        s_args_flat.iter().any(|&si| self.compare_id(si, tj, bank) == TermComparison::Greater)
+                        s_args_flat
+                            .iter()
+                            .any(|&si| self.compare_id(si, tj, bank) == TermComparison::Greater)
                     });
                     let t_gt_s = s_args_flat.iter().all(|&si| {
-                        t_args_flat.iter().any(|&tj| self.compare_id(tj, si, bank) == TermComparison::Greater)
+                        t_args_flat
+                            .iter()
+                            .any(|&tj| self.compare_id(tj, si, bank) == TermComparison::Greater)
                     });
 
                     if s_gt_t && !t_gt_s && s_ge_t_vars {
@@ -431,10 +441,14 @@ impl KBO {
                     }
 
                     let s_gt_t = t_args_flat.iter().all(|&tj| {
-                        s_args_flat.iter().any(|&si| self.compare(si, tj) == TermComparison::Greater)
+                        s_args_flat
+                            .iter()
+                            .any(|&si| self.compare(si, tj) == TermComparison::Greater)
                     });
                     let t_gt_s = s_args_flat.iter().all(|&si| {
-                        t_args_flat.iter().any(|&tj| self.compare(tj, si) == TermComparison::Greater)
+                        t_args_flat
+                            .iter()
+                            .any(|&tj| self.compare(tj, si) == TermComparison::Greater)
                     });
 
                     if s_gt_t && !t_gt_s && s_ge_t_vars {
@@ -737,7 +751,9 @@ impl TermOrdering {
             TermOrdering::KBO => KBO::new().compare(s, t),
             TermOrdering::LPO => LPO::new().compare(s, t),
             TermOrdering::CustomKBO(config) => KBO::with_config(config.clone()).compare(s, t),
-            TermOrdering::CustomACKBO(config, ac) => KBO::with_ac(config.clone(), ac.clone()).compare(s, t),
+            TermOrdering::CustomACKBO(config, ac) => {
+                KBO::with_ac(config.clone(), ac.clone()).compare(s, t)
+            }
             TermOrdering::CustomLPO(config) => LPO::with_config(config.clone()).compare(s, t),
         }
     }
@@ -767,7 +783,9 @@ impl TermOrdering {
     pub fn symbol_config(&self) -> Arc<SymbolConfig> {
         match self {
             TermOrdering::KBO | TermOrdering::LPO => Arc::new(SymbolConfig::default()),
-            TermOrdering::CustomKBO(config) | TermOrdering::CustomACKBO(config, _) | TermOrdering::CustomLPO(config) => config.clone(),
+            TermOrdering::CustomKBO(config)
+            | TermOrdering::CustomACKBO(config, _)
+            | TermOrdering::CustomLPO(config) => config.clone(),
         }
     }
 }

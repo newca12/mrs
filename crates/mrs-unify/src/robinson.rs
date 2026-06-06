@@ -462,8 +462,8 @@ fn contains_var_id(term: TermId, var: VarId, subst: &IdSubstitution, bank: &Term
 
 #[cfg(test)]
 mod tests {
-use std::collections::HashSet;
-use std::hash::BuildHasher;
+    use std::collections::HashSet;
+    use std::hash::BuildHasher;
 
     use super::*;
     use mrs_core::{SymbolId, SymbolTable};
