@@ -8,8 +8,8 @@ use std::collections::HashMap;
 
 use mrs_core::{Atom, Formula, SymbolId, SymbolTable, Term, VarId};
 use mrs_tptp::{
-    AnnotatedFormula, BinaryConnective, CNFAtomicFormula, CNFFormula, CNFLiteral, CNFStatement, FOFAtomicFormula,
-    FOFFormula, FOFStatement, FOFTerm, Quantifier,
+    AnnotatedFormula, BinaryConnective, CNFAtomicFormula, CNFFormula, CNFLiteral, CNFStatement,
+    FOFAtomicFormula, FOFFormula, FOFStatement, FOFTerm, Quantifier,
 };
 
 /// Lowering context: shared symbol table plus a per-formula variable map.

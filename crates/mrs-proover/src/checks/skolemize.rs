@@ -598,7 +598,11 @@ fn check_e_style_skolemize<'p>(
     if let Some((_, universals, _)) = find_outermost_existential(parent_f) {
         let mut parent_bound = HashSet::new();
         let mut parent_free = HashSet::new();
-        crate::checks::introduced_definition::free_vars(parent_f, &mut parent_bound, &mut parent_free);
+        crate::checks::introduced_definition::free_vars(
+            parent_f,
+            &mut parent_bound,
+            &mut parent_free,
+        );
 
         let mut expected_vars: HashSet<&str> = universals.iter().copied().collect();
         expected_vars.extend(parent_free);
@@ -619,14 +623,18 @@ fn check_e_style_skolemize<'p>(
             fn walk_fof<'a, F: FnMut(&[FOFTerm<'a>])>(f: &FOFFormula<'a>, sk: &str, cb: &mut F) {
                 match f {
                     FOFFormula::Atomic(a) => match a {
-                        FOFAtomicFormula::Plain(_, args) | FOFAtomicFormula::Defined(_, args) | FOFAtomicFormula::System(_, args) => {
+                        FOFAtomicFormula::Plain(_, args)
+                        | FOFAtomicFormula::Defined(_, args)
+                        | FOFAtomicFormula::System(_, args) => {
                             for arg in args {
                                 walk_term(arg, sk, cb);
                             }
                         }
                         _ => {}
                     },
-                    FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => walk_fof(inner, sk, cb),
+                    FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => {
+                        walk_fof(inner, sk, cb)
+                    }
                     FOFFormula::Binary { left, right, .. } => {
                         walk_fof(left, sk, cb);
                         walk_fof(right, sk, cb);
@@ -638,7 +646,7 @@ fn check_e_style_skolemize<'p>(
                     }
                 }
             }
-            
+
             fn walk_term<'a, F: FnMut(&[FOFTerm<'a>])>(t: &FOFTerm<'a>, sk: &str, cb: &mut F) {
                 match t {
                     FOFTerm::Function(w, args) => {
@@ -668,9 +676,9 @@ fn check_e_style_skolemize<'p>(
                     _ => {}
                 }
             }
-            
+
             walk_fof(step_f, sk, &mut check_sk_args);
-            
+
             if bad_args {
                 return StepOutcome::Unsound(format!(
                     "skolemize step introduces Skolem `{}` with incorrect variable capture/arity",

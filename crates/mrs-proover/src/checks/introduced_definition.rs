@@ -176,7 +176,7 @@ pub fn check<'p>(step: &AnnotatedFormula<'p>, registry: &SkolemRegistry) -> Step
                 }
             };
 
-            let (_, body) = collect_forall(&logical);
+            let (_, body) = collect_forall(logical);
             if is_naming_clause(body, sym) {
                 return StepOutcome::Sound;
             }
@@ -199,7 +199,7 @@ pub fn check<'p>(step: &AnnotatedFormula<'p>, registry: &SkolemRegistry) -> Step
                 }
             };
 
-            let (_, body) = collect_forall(&logical);
+            let (_, body) = collect_forall(logical);
             let all_valid = declared.iter().all(|&sym| is_naming_clause(body, sym));
             if all_valid {
                 return StepOutcome::Sound;
@@ -233,7 +233,7 @@ pub fn check<'p>(step: &AnnotatedFormula<'p>, registry: &SkolemRegistry) -> Step
     // it as a choice function) and admits the slight generalisations
     // where the implication is wrapped in additional universal binders
     // or where φ/ψ are themselves quantified.
-    if let Some(outcome) = try_skolem_axiom(&logical, registry) {
+    if let Some(outcome) = try_skolem_axiom(logical, registry) {
         return outcome;
     }
 
@@ -249,12 +249,12 @@ pub fn check<'p>(step: &AnnotatedFormula<'p>, registry: &SkolemRegistry) -> Step
     // `Inequality(DistinctObject(a), DistinctObject(b))` with `a != b`.
     // Anything else — equality, inequality of plain terms, etc. — is
     // rejected and falls through to the iff check below.
-    if let Some(outcome) = try_distinctness_axiom(&logical) {
+    if let Some(outcome) = try_distinctness_axiom(logical) {
         return outcome;
     }
 
     // --- E shape: parse the formula for a biconditional with a fresh head. ---
-    let (universals, body) = collect_forall(&logical);
+    let (universals, body) = collect_forall(logical);
     let (left, right) = match body {
         FOFFormula::Binary {
             left,
@@ -620,7 +620,11 @@ fn match_term<'p>(
     }
 }
 
-pub(crate) fn free_vars<'a>(f: &FOFFormula<'a>, bound: &mut HashSet<&'a str>, free: &mut HashSet<&'a str>) {
+pub(crate) fn free_vars<'a>(
+    f: &FOFFormula<'a>,
+    bound: &mut HashSet<&'a str>,
+    free: &mut HashSet<&'a str>,
+) {
     match f {
         FOFFormula::Atomic(a) => match a {
             FOFAtomicFormula::Plain(_, args)
@@ -1160,25 +1164,25 @@ pub fn check_cycles(dag: &crate::dag::Dag<'_>) -> Result<(), String> {
 
     // Collect all introduced definitions and the symbols they define.
     for node in &dag.nodes {
-        if let Some(ann) = node.formula.annotations() {
-            if is_introduced_definition(ann) {
-                let declared = declared_new_symbols(ann);
-                let step_fof = match node.formula.as_fof() {
-                    Some(f) => f,
-                    None => continue,
-                };
-                let mut body_syms = HashSet::new();
-                if let FOFStatement::Logical(form) = &step_fof.formula {
-                    collect_fun_syms(form, &mut body_syms);
-                }
-                // Also collect predicate symbols for the dependency graph
-                collect_pred_syms(&step_fof.formula, &mut body_syms);
+        if let Some(ann) = node.formula.annotations()
+            && is_introduced_definition(ann)
+        {
+            let declared = declared_new_symbols(ann);
+            let step_fof = match node.formula.as_fof() {
+                Some(f) => f,
+                None => continue,
+            };
+            let mut body_syms = HashSet::new();
+            if let FOFStatement::Logical(form) = &step_fof.formula {
+                collect_fun_syms(form, &mut body_syms);
+            }
+            // Also collect predicate symbols for the dependency graph
+            collect_pred_syms(&step_fof.formula, &mut body_syms);
 
-                for d in declared {
-                    let mut deps = body_syms.clone();
-                    deps.remove(d);
-                    defs.insert(d, deps);
-                }
+            for d in declared {
+                let mut deps = body_syms.clone();
+                deps.remove(d);
+                defs.insert(d, deps);
             }
         }
     }
@@ -1197,7 +1201,9 @@ pub fn check_cycles(dag: &crate::dag::Dag<'_>) -> Result<(), String> {
         marks: &mut HashMap<&'a str, Mark>,
     ) -> Result<(), String> {
         match marks.get(v) {
-            Some(Mark::Visiting) => return Err(format!("cyclic definition detected involving `{}`", v)),
+            Some(Mark::Visiting) => {
+                return Err(format!("cyclic definition detected involving `{}`", v));
+            }
             Some(Mark::Done) => return Ok(()),
             None => {}
         }
@@ -1226,21 +1232,21 @@ fn collect_pred_syms<'a>(f: &FOFStatement<'a>, out: &mut HashSet<&'a str>) {
 
 fn collect_pred_syms_formula<'a>(f: &FOFFormula<'a>, out: &mut HashSet<&'a str>) {
     match f {
-        FOFFormula::Atomic(a) => {
-            match a {
-                FOFAtomicFormula::Plain(w, _) => {
-                    out.insert(w.as_str());
-                }
-                FOFAtomicFormula::Defined(w, _) => {
-                    out.insert(w.0);
-                }
-                FOFAtomicFormula::System(w, _) => {
-                    out.insert(w.0);
-                }
-                _ => {}
+        FOFFormula::Atomic(a) => match a {
+            FOFAtomicFormula::Plain(w, _) => {
+                out.insert(w.as_str());
             }
+            FOFAtomicFormula::Defined(w, _) => {
+                out.insert(w.0);
+            }
+            FOFAtomicFormula::System(w, _) => {
+                out.insert(w.0);
+            }
+            _ => {}
+        },
+        FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => {
+            collect_pred_syms_formula(inner, out)
         }
-        FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => collect_pred_syms_formula(inner, out),
         FOFFormula::Quantified { formula, .. } => collect_pred_syms_formula(formula, out),
         FOFFormula::Binary { left, right, .. } => {
             collect_pred_syms_formula(left, out);

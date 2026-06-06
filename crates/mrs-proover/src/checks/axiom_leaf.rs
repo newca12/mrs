@@ -60,7 +60,9 @@ pub fn check_leaf<'p>(
             }
             ctx.reset_vars();
             let prob_f = lower_annotated_formula(&mut ctx, af);
-            if alpha_equiv(&proof_f, &prob_f) || crate::checks::definition_folding::canon_eq(&proof_f, &prob_f) {
+            if alpha_equiv(&proof_f, &prob_f)
+                || crate::checks::definition_folding::canon_eq(&proof_f, &prob_f)
+            {
                 return StepOutcome::Sound;
             }
         }
@@ -103,7 +105,9 @@ pub fn check_leaf<'p>(
     ctx.reset_vars();
     let prob_f = lower_annotated_formula(&mut ctx, target_af.unwrap());
 
-    if alpha_equiv(&proof_f, &prob_f) || crate::checks::definition_folding::canon_eq(&proof_f, &prob_f) {
+    if alpha_equiv(&proof_f, &prob_f)
+        || crate::checks::definition_folding::canon_eq(&proof_f, &prob_f)
+    {
         StepOutcome::Sound
     } else {
         // The proof leaf does not α-match the named axiom. This can be a

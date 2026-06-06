@@ -574,10 +574,10 @@ fn prepare_atp_step<'p>(dag: &Dag<'p>, idx: usize, symbols: &mut SymbolTable) ->
     if matches!(
         node.inference_rule,
         Some("definition_folding") | Some("avatar_split_clause")
-    ) {
-        if let Some(outcome) = crate::checks::definition_folding::try_check(&premises, &premise_is_def, &conclusion) {
-            return Prepared::Resolved(outcome);
-        }
+    ) && let Some(outcome) =
+            crate::checks::definition_folding::try_check(&premises, &premise_is_def, &conclusion)
+    {
+        return Prepared::Resolved(outcome);
     }
 
     // Propositional fast-path: when every premise and the conclusion are

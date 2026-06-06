@@ -75,7 +75,11 @@ impl Guard {
 ///
 /// Returns `Some(crate::verdict::StepOutcome::Sound)` on a confirmed structural match; `None`
 /// otherwise. Never returns `Some(false)`.
-pub fn try_check(premises: &[Formula], is_def: &[bool], conclusion: &Formula) -> Option<crate::verdict::StepOutcome> {
+pub fn try_check(
+    premises: &[Formula],
+    is_def: &[bool],
+    conclusion: &Formula,
+) -> Option<crate::verdict::StepOutcome> {
     let g = Guard::default();
 
     // Pre-flight size gate: cheap walk, bounded by MAX_INPUT_NODES.
@@ -121,7 +125,9 @@ pub fn try_check(premises: &[Formula], is_def: &[bool], conclusion: &Formula) ->
     }
 
     if has_dependency_cycle(&defs) {
-        return Some(crate::verdict::StepOutcome::Unsound("recursive/cyclic definition unfolding".into()));
+        return Some(crate::verdict::StepOutcome::Unsound(
+            "recursive/cyclic definition unfolding".into(),
+        ));
     }
 
     // Fresh-variable supply for capture-avoiding unfolding. Each premise
@@ -724,7 +730,10 @@ mod tests {
         let def = Formula::forall(0, Formula::iff(p_app, q_app));
         let src = Formula::Atom(Atom::Pred(q_sym, vec![Term::constant(a_sym)]));
         let concl = Formula::Atom(Atom::Pred(p_sym, vec![Term::constant(a_sym)]));
-        assert_eq!(try_check(&[def, src], &[true, false], &concl), Some(crate::verdict::StepOutcome::Sound));
+        assert_eq!(
+            try_check(&[def, src], &[true, false], &concl),
+            Some(crate::verdict::StepOutcome::Sound)
+        );
     }
 
     #[test]
@@ -745,7 +754,10 @@ mod tests {
             Formula::Atom(Atom::Pred(r_sym, vec![Term::constant(a_sym)])),
         ]);
         let concl = Formula::Atom(Atom::Pred(p_sym, vec![Term::constant(a_sym)]));
-        assert_eq!(try_check(&[def, src], &[true, false], &concl), Some(crate::verdict::StepOutcome::Sound));
+        assert_eq!(
+            try_check(&[def, src], &[true, false], &concl),
+            Some(crate::verdict::StepOutcome::Sound)
+        );
     }
 
     #[test]
@@ -838,7 +850,10 @@ mod tests {
         );
         let src = Formula::forall(1, Formula::Atom(Atom::Pred(q, vec![Term::var(1)])));
         let concl = Formula::forall(1, Formula::Atom(Atom::Pred(p, vec![Term::var(1)])));
-        assert_eq!(try_check(&[def, src], &[true, false], &concl), Some(crate::verdict::StepOutcome::Sound));
+        assert_eq!(
+            try_check(&[def, src], &[true, false], &concl),
+            Some(crate::verdict::StepOutcome::Sound)
+        );
     }
 
     #[test]

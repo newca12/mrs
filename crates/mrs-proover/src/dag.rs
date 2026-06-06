@@ -27,7 +27,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use mrs_tptp::{AnnotatedFormula, FOFAtomicFormula, FOFFormula, FOFStatement, FormulaRole, CNFFormula, CNFLiteral, CNFAtomicFormula, CNFStatement};
+use mrs_tptp::{
+    AnnotatedFormula, CNFAtomicFormula, CNFFormula, CNFLiteral, CNFStatement, FOFAtomicFormula,
+    FOFFormula, FOFStatement, FormulaRole,
+};
 
 /// A single node in the proof DAG. We keep only `FOF` nodes — anything else
 /// is reported as a structural failure upstream.
@@ -262,10 +265,8 @@ fn is_false_formula(af: &AnnotatedFormula<'_>) -> bool {
 fn is_false_cnf_formula(f: &CNFFormula<'_>) -> bool {
     match f {
         CNFFormula::Disjunction(lits) => {
-            lits.is_empty() || lits.iter().all(|lit| match lit {
-                CNFLiteral::Positive(CNFAtomicFormula::False) => true,
-                _ => false,
-            })
+            lits.is_empty()
+                || lits.iter().all(|lit| matches!(lit, CNFLiteral::Positive(CNFAtomicFormula::False)))
         }
         CNFFormula::Parens(inner) => is_false_cnf_formula(inner),
     }
