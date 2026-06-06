@@ -435,7 +435,9 @@ pub fn run_schedule(
     let shared_pool = Arc::new(std::sync::RwLock::new(Vec::new()));
     let (tx, rx) = mpsc::channel::<(usize, SearchResult)>();
 
-    let available_cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    let available_cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
     let num_workers = available_cores.min(actual_configs.len());
     let next_strategy = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let has_epr = epr_ground_cache.is_some();
@@ -465,7 +467,7 @@ pub fn run_schedule(
                     }
 
                     let search_config = &actual_configs_ref[strategy_idx];
-                    
+
                     if search_config.time_limit.is_zero() {
                         continue;
                     }
