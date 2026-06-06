@@ -132,7 +132,7 @@ fn avatar_refute_branch(
 
     if matches!(state.avatar.solver.solve(), Some(true)) {
         update_model(state);
-        sync_active_dormant(state, ordering);
+        sync_active_dormant(state, &ordering);
         true
     } else {
         false
@@ -287,15 +287,22 @@ fn detect_ac_symbols(
 /// `SearchResult::Saturated` if all clauses are processed without contradiction,
 /// or `SearchResult::Timeout` on timeout.
 pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
-    let ordering = &config.ordering;
+    let mut ordering = config.ordering.clone();
     let sym_config = ordering.symbol_config();
 
     let (comm_syms, assoc_syms, to_remove) = detect_ac_symbols(state);
-    state.comm_symbols = comm_syms;
-    state.assoc_symbols = assoc_syms;
+    state.comm_symbols = comm_syms.clone();
+    state.assoc_symbols = assoc_syms.clone();
+
+    let ac_syms: HashSet<SymbolId> = comm_syms.intersection(&assoc_syms).copied().collect();
+    if !ac_syms.is_empty() {
+        if matches!(ordering, crate::TermOrdering::KBO | crate::TermOrdering::CustomKBO(_)) {
+            ordering = crate::TermOrdering::CustomACKBO(sym_config.clone(), std::sync::Arc::new(ac_syms));
+        }
+    }
 
     for id in to_remove {
-        state.remove_clause_and_orphans(id, ordering);
+        state.remove_clause_and_orphans(id, &ordering);
     }
 
     let start = Instant::now();
@@ -321,7 +328,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             } else {
                 let avatar = clause.avatar.clone();
                 let cid = clause.id;
-                if !avatar_refute_branch(state, &avatar, ordering) {
+                if !avatar_refute_branch(state, &avatar, &ordering) {
                     return SearchResult::Refutation(cid, String::new());
                 }
             }
@@ -440,7 +447,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         id.0, avatar
                     );
                 }
-                if !avatar_refute_branch(state, &avatar, ordering) {
+                if !avatar_refute_branch(state, &avatar, &ordering) {
                     if std::env::var("TRACE_AVATAR").is_ok() {
                         eprintln!(
                             "[AVATAR] empty given {}: avatar_refute_branch returned false → Refutation",
@@ -554,7 +561,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         &given,
                         active,
                         &mut state.term_bank,
-                        ordering,
+                        &ordering,
                         &mut state.id_gen,
                         Some(&active_sel),
                         &state.comm_symbols,
@@ -572,7 +579,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     &given,
                     &given,
                     &mut state.term_bank,
-                    ordering,
+                    &ordering,
                     &mut state.id_gen,
                     Some(&given_sel_local),
                     &state.comm_symbols,
@@ -589,7 +596,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         &active,
                         &given,
                         &mut state.term_bank,
-                        ordering,
+                        &ordering,
                         &mut state.id_gen,
                         Some(&given_sel),
                         &state.comm_symbols,
@@ -619,7 +626,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         new_clauses.extend(equality::equality_factor_id(
             &given,
             &mut state.term_bank,
-            ordering,
+            &ordering,
             &mut state.id_gen,
         ));
 
@@ -637,7 +644,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         }
 
         for id in to_remove_from_processed {
-            state.remove_clause_and_orphans(id, ordering);
+            state.remove_clause_and_orphans(id, &ordering);
         }
 
         // Add given to processed set (indexed)
@@ -835,7 +842,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 }
                 let avatar = empty.avatar.clone();
                 let id = empty.id;
-                if !avatar_refute_branch(state, &avatar, ordering) {
+                if !avatar_refute_branch(state, &avatar, &ordering) {
                     return SearchResult::Refutation(id, String::new());
                 }
             }
@@ -908,7 +915,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 }
                 if matches!(state.avatar.solver.solve(), Some(true)) {
                     update_model(state);
-                    sync_active_dormant(state, ordering);
+                    sync_active_dormant(state, &ordering);
                 } else {
                     if trace_avatar {
                         eprintln!(
@@ -938,7 +945,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                             id.0, avatar
                         );
                     }
-                    if !avatar_refute_branch(state, &avatar, ordering) {
+                    if !avatar_refute_branch(state, &avatar, &ordering) {
                         if trace_avatar {
                             eprintln!(
                                 "[AVATAR] avatar_refute_branch returned false → SAT UNSAT → Refutation({})",
@@ -973,7 +980,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     }
                     let avatar = clause.avatar.clone();
                     let id = clause.id;
-                    if !avatar_refute_branch(state, &avatar, ordering) {
+                    if !avatar_refute_branch(state, &avatar, &ordering) {
                         return SearchResult::Refutation(id, String::new());
                     }
                     continue;
@@ -996,7 +1003,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     }
                     let avatar = empty.avatar.clone();
                     let id = empty.id;
-                    if !avatar_refute_branch(state, &avatar, ordering) {
+                    if !avatar_refute_branch(state, &avatar, &ordering) {
                         return SearchResult::Refutation(id, String::new());
                     }
                     continue;

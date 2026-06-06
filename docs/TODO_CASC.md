@@ -22,15 +22,7 @@ This document tracks what remains to be built in `mrs` (the prover) to maximise 
 
 | Clause Sharing Across Parallel Strategies | `c30b201a` |
 
-### 2. Full AC-Superposition (AC-compatible Term Orderings)
-**Impact:** UEQ, FEQ. High.
-
-The current AC-matching heuristic (`unify_ac_id`) stops the permutation explosion but does not make the search *complete* modulo AC. Standard KBO/LPO cannot soundly orient equations like `f(a, f(b, c)) ≥ f(f(a, b), c)` because associativity makes the comparison undefined. Without an AC-compatible ordering (AC-KBO or AC-RPO), the prover may silently discard necessary inferences.
-
-**Implementation sketch:**
-- Implement AC-KBO: weighting is the same but the comparison step uses the flattened form.
-- Gate it on whether any AC axiom was detected: if `assoc_symbols` is non-empty, switch ordering to `TermOrdering::CustomACKBO`.
-- Reference: [Bachmair & Ganzinger, 1994; Rubio & Nieuwenhuis, 1993 for AC-RPO].
+| Full AC-Superposition (AC-compatible Term Orderings) | `a8047913` |
 
 | Replace `varisat` with a `Send`-Compatible SAT Solver | `bb46b4d6` |
 
