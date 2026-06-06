@@ -22,6 +22,7 @@ This document tracks what remains to be built in `mrs` (the prover) to maximise 
 | LTO (`fat`) + native CPU instruction set (`-C target-cpu=native`) | `349d6470` |
 | ProoVer 2026: skolemize free-var safety, AnnotatedFormula API | `619e2bcc` |
 | Substitution Trees: path-compressed `STreeId` replaces `DTreeId` | HEAD |
+| Performance: FxHashMap for Internal HashMaps | HEAD |
 
 ---
 
@@ -42,13 +43,6 @@ This document tracks what remains to be built in `mrs` (the prover) to maximise 
 **Impact:** FNE, FEQ. Low-Medium.
 
 The SInE fallback (restart on <1s saturation) is a binary switch. A finer approach would try multiple SInE tolerance levels in parallel: one strict, one relaxed, one disabled — each as a separate portfolio strategy. The per-division CASC run data from `benchmarks` can guide threshold selection.
-
-### 7. Performance: FxHashMap for Internal HashMaps
-**Impact:** All divisions. Low effort, 5–15% global speedup.
-
-Rust's default `HashMap` uses SipHash (cryptographically secure, DoS-resistant). In a theorem prover, keys are small integers (ClauseId, VarId, TermId) not adversarial strings. Swapping to `rustc_hash::FxHashMap` or `ahash::AHashMap` typically yields 10–15% speedup for free.
-
-**Implementation:** Add `rustc-hash` to workspace dependencies, define a type alias `type HashMap<K,V> = rustc_hash::FxHashMap<K,V>`, and replace all `std::collections::HashMap` uses inside `mrs-core`, `mrs-index`, `mrs-search`, `mrs-calculus`.
 
 ### 8. SIMD-optimized Feature Vector Index — **+2% performance**
 **File:** `crates/mrs-index/src/fvi.rs`
