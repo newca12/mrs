@@ -22,6 +22,10 @@ mrs-search = { path = "crates/mrs-search", version = "0.1.9" }
 winnow = "1.0.3"
 cadical = "0.1.16"
 
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
 [package]
 name = "mrs"
 version = "0.1.9"
