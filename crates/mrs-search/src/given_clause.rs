@@ -127,10 +127,7 @@ fn avatar_refute_branch(
     {
         return true;
     }
-    let sat_clause: Vec<i32> = avatar
-        .iter()
-        .map(|&a| -(a as i32))
-        .collect();
+    let sat_clause: Vec<i32> = avatar.iter().map(|&a| -(a as i32)).collect();
     state.avatar.solver.add_clause(sat_clause);
 
     if matches!(state.avatar.solver.solve(), Some(true)) {
@@ -333,7 +330,40 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
 
     let mut iteration: u64 = 0;
 
-    while let Some(given_id) = select(&mut state.unprocessed, &config.selection, iteration) {
+    loop {
+        // Ingest shared clauses
+        if let Some(pool_lock) = &state.shared_pool {
+            let mut to_add = Vec::new();
+            if let Ok(pool) = pool_lock.read() {
+                if state.shared_pool_read < pool.len() {
+                    to_add.extend_from_slice(&pool[state.shared_pool_read..]);
+                    state.shared_pool_read = pool.len();
+                }
+            }
+            for mut c in to_add {
+                c.id = state.id_gen.next();
+                c.source = ClauseSource::Inference {
+                    rule: "shared".into(),
+                    parents: vec![],
+                };
+                let id_clause = state.term_bank.clause_from_legacy(&c);
+                let fv = FeatureVector::from_id_clause(&id_clause, &state.term_bank);
+                let candidates = state.processed.get_subsumption_candidates(&fv);
+                if !candidates.iter().any(|p| {
+                    p.avatar_is_subset_of(&id_clause)
+                        && subsumption::subsumes_id(p, &id_clause, &mut state.term_bank)
+                }) {
+                    state.register_clause(&id_clause.clone());
+                    state.unprocessed.push(&id_clause, &state.term_bank);
+                }
+            }
+        }
+
+        let given_id = match select(&mut state.unprocessed, &config.selection, iteration) {
+            Some(id) => id,
+            None => break,
+        };
+
         let given = state.clause_store.get(&given_id).unwrap().clone();
 
         if !state.is_active(&given) {
@@ -613,6 +643,16 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         // Add given to processed set (indexed)
         state.register_clause(&given.clone());
         state.processed.insert(given.clone(), &state.term_bank);
+
+        if is_unit_positive_equality_id(&given) && given.avatar.is_empty() {
+            if let Some(pool_lock) = &state.shared_pool {
+                if let Ok(mut pool) = pool_lock.write() {
+                    let legacy = state.term_bank.clause_to_legacy(&given);
+                    pool.push(legacy);
+                }
+            }
+        }
+
         if is_unit_positive_equality_id(&given)
             && let IdAtom::Eq(l, r) = &given.literals[0].atom
         {
@@ -757,6 +797,16 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 let time_ok = start.elapsed() < config.time_limit;
                 for clause in next_processed {
                     state.processed.insert(clause.clone(), &state.term_bank);
+
+                    if is_unit_positive_equality_id(&clause) && clause.avatar.is_empty() {
+                        if let Some(pool_lock) = &state.shared_pool {
+                            if let Ok(mut pool) = pool_lock.write() {
+                                let legacy = state.term_bank.clause_to_legacy(&clause);
+                                pool.push(legacy);
+                            }
+                        }
+                    }
+
                     if time_ok
                         && is_unit_positive_equality_id(&clause)
                         && let IdAtom::Eq(l, r) = &clause.literals[0].atom

@@ -28,8 +28,8 @@
 
 use std::collections::HashMap;
 
-use mrs_core::{Atom, Formula};
 use cadical::Solver;
+use mrs_core::{Atom, Formula};
 
 /// Outcome of the propositional fast-path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,15 +198,11 @@ impl Encoder {
                 // For the pure-propositional caller this is just the 0-ary
                 // predicate; for the abstraction caller it treats every
                 // distinct argumented atom as an opaque boolean.
-                let var = *self
-                    .atom_vars
-                    .entry(atom.clone())
-                    .or_insert_with(|| {
-                        let v = self.next_var;
-                        self.next_var += 1;
-                        v
-                    });
-                var
+                *self.atom_vars.entry(atom.clone()).or_insert_with(|| {
+                    let v = self.next_var;
+                    self.next_var += 1;
+                    v
+                })
             }
             Formula::Neg(g) => -self.encode(g, solver),
             Formula::And(gs) => {

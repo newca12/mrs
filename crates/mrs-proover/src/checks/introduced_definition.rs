@@ -909,18 +909,15 @@ mod tests {
     use super::*;
     use mrs_tptp::parse_tptp;
 
-    fn first_fof<'p>(input: &'p str) -> &'p FOFAnnotated<'p> {
+    fn first_fof<'p>(input: &'p str) -> &'p AnnotatedFormula<'p> {
         let problem = Box::leak(Box::new(parse_tptp(input).expect("parse")));
-        match &problem.formulas[0] {
-            mrs_tptp::AnnotatedFormula::FOF(f) => f,
-            _ => panic!("expected FOF"),
-        }
+        &problem.formulas[0]
     }
 
     #[test]
     fn detects_source_keyword() {
         let af = first_fof("fof(c1, plain, (p0 <=> q), introduced(definition)).");
-        let ann = af.annotations.as_ref().unwrap();
+        let ann = af.annotations().unwrap();
         assert!(is_introduced_definition(ann));
     }
 
@@ -931,14 +928,14 @@ mod tests {
              introduced(definition,[new_symbols(naming,[sP2])],\
                                    [predicate_definition_introduction])).",
         );
-        let ann = af.annotations.as_ref().unwrap();
+        let ann = af.annotations().unwrap();
         assert!(is_introduced_definition(ann));
     }
 
     #[test]
     fn rejects_non_definition_source() {
         let af = first_fof("fof(c1, plain, (p0 <=> q), inference(rw, [status(thm)], [a])).");
-        let ann = af.annotations.as_ref().unwrap();
+        let ann = af.annotations().unwrap();
         assert!(!is_introduced_definition(ann));
     }
 

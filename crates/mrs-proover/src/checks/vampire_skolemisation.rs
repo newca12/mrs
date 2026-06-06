@@ -904,26 +904,24 @@ mod tests {
     /// Parse a TPTP problem string and return references to its FOF
     /// annotated formulas. Leaks the parsed problem so the borrows
     /// live for the entire test.
-    fn parse_fofs(input: &'static str) -> Vec<&'static FOFAnnotated<'static>> {
+    fn parse_fofs(input: &'static str) -> Vec<&'static AnnotatedFormula<'static>> {
         let problem = Box::leak(Box::new(parse_tptp(input).expect("parse")));
-        let mut out: Vec<&'static FOFAnnotated<'static>> = Vec::new();
+        let mut out: Vec<&'static AnnotatedFormula<'static>> = Vec::new();
         for f in &problem.formulas {
-            if let mrs_tptp::AnnotatedFormula::FOF(a) = f {
-                let a_static: &'static FOFAnnotated<'static> = unsafe {
-                    std::mem::transmute::<&FOFAnnotated<'_>, &'static FOFAnnotated<'static>>(a)
-                };
-                out.push(a_static);
-            }
+            let a_static: &'static AnnotatedFormula<'static> = unsafe {
+                std::mem::transmute::<&AnnotatedFormula<'_>, &'static AnnotatedFormula<'static>>(f)
+            };
+            out.push(a_static);
         }
         out
     }
 
     fn run(input: &'static str, step_name: &str, parent_names: &[&str]) -> Option<StepOutcome> {
         let fofs = parse_fofs(input);
-        let by_name: HashMap<&str, &FOFAnnotated<'static>> =
-            fofs.iter().map(|a| (a.name.as_str(), *a)).collect();
+        let by_name: HashMap<&str, &AnnotatedFormula<'static>> =
+            fofs.iter().map(|a| (a.name(), *a)).collect();
         let step = *by_name.get(step_name).expect("step not found");
-        let parents: Vec<&FOFAnnotated<'static>> = parent_names
+        let parents: Vec<&AnnotatedFormula<'static>> = parent_names
             .iter()
             .map(|n| *by_name.get(*n).expect("parent not found"))
             .collect();
@@ -932,14 +930,16 @@ mod tests {
         // original problem input (axioms/conjectures without an
         // inference annotation), matching what the live verifier does.
         for p in &fofs {
-            if p.annotations.is_some() {
+            if p.annotations().is_some() {
                 continue;
             }
-            if let FOFStatement::Logical(f) = &p.formula {
-                let mut syms: std::collections::HashSet<&str> = std::collections::HashSet::new();
-                crate::checks::introduced_definition::collect_fun_syms(f, &mut syms);
-                for s in syms {
-                    reg.record(s);
+            if let Some(fof) = p.as_fof() {
+                if let FOFStatement::Logical(f) = &fof.formula {
+                    let mut syms: std::collections::HashSet<&str> = std::collections::HashSet::new();
+                    crate::checks::introduced_definition::collect_fun_syms(f, &mut syms);
+                    for s in syms {
+                        reg.record(s);
+                    }
                 }
             }
         }

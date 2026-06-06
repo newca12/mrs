@@ -427,9 +427,12 @@ pub fn run_schedule(
     // a genuine Saturation; every other thread notices it on its next time-check
     // iteration and returns Timeout.
     //
-    // SearchState (and the varisat::Solver it contains) is NOT Send, so each
-    // thread constructs its own SearchState from the cloned clause data.
+    // SearchState (and the cadical::Solver it contains) is Send, but TermBank
+    // is heavily thread-local (interning IDs are only valid locally). So each
+    // thread constructs its own SearchState from the cloned clause data, but
+    // we share a pool of globally discovered unit equalities via an RwLock.
     let stop_flag = Arc::new(AtomicBool::new(false));
+    let shared_pool = Arc::new(std::sync::RwLock::new(Vec::new()));
     let (tx, rx) = mpsc::channel::<(usize, SearchResult)>();
 
     // Compute how much time remains after all pre-processing steps.
@@ -447,6 +450,7 @@ pub fn run_schedule(
             }
 
             let stop = Arc::clone(&stop_flag);
+            let pool = Arc::clone(&shared_pool);
             let tx = tx.clone();
 
             // Clone all inputs the thread needs; SearchState is created inside.
@@ -478,6 +482,7 @@ pub fn run_schedule(
                     sc.use_avatar,
                 );
                 state.stop_flag = Some(Arc::clone(&stop));
+                state.shared_pool = Some(pool);
 
                 let raw = search(&mut state, &sc);
 

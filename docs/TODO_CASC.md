@@ -20,16 +20,7 @@ This document tracks what remains to be built in `mrs` (the prover) to maximise 
 
 ## Remaining Work (ordered by expected CASC impact)
 
-### 1. Clause Sharing Across Parallel Strategies
-**Impact:** Every division. High.
-
-Currently each of the 11 parallel strategies starts from a clean `SearchState` and never communicates with siblings. If strategy 3 derives a short unit equality that would simplify 10,000 passive clauses, strategies 4–11 never learn of it.
-
-**Implementation sketch:**
-- After each given-clause iteration, collect newly derived unit equalities.
-- Broadcast them via a `crossbeam::channel` or `std::sync::Mutex<Vec<IdClause>>` to a shared "demodulator pool".
-- All threads consume from the pool at the top of each iteration.
-- Difficulty: `TermBank` is not shared (varisat is not `Send`). Short-term: share a serialized form of unit equalities (the two `Term` sides + source); each thread re-interns them into its own bank. Long-term: replace `varisat` with a `Send`-compatible SAT solver to allow a shared `Arc<RwLock<TermBank>>`.
+| Clause Sharing Across Parallel Strategies | `c30b201a` |
 
 ### 2. Full AC-Superposition (AC-compatible Term Orderings)
 **Impact:** UEQ, FEQ. High.

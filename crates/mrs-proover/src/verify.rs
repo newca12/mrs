@@ -575,7 +575,7 @@ fn prepare_atp_step<'p>(dag: &Dag<'p>, idx: usize, symbols: &mut SymbolTable) ->
         node.inference_rule,
         Some("definition_folding") | Some("avatar_split_clause")
     ) && let Some(outcome) =
-            crate::checks::definition_folding::try_check(&premises, &premise_is_def, &conclusion)
+        crate::checks::definition_folding::try_check(&premises, &premise_is_def, &conclusion)
     {
         return Prepared::Resolved(outcome);
     }
@@ -927,10 +927,7 @@ mod false_guard_tests {
 
     fn first_fof(src: &'static str) -> &'static AnnotatedFormula<'static> {
         let prob = Box::leak(Box::new(parse_tptp(src).expect("parse")));
-        match prob.formulas.first().expect("formula") {
-            mrs_tptp::AnnotatedFormula::FOF(f) => f,
-            _ => panic!("expected FOF"),
-        }
+        &prob.formulas[0]
     }
 
     fn false_node() -> dag::Node<'static> {
@@ -945,7 +942,7 @@ mod false_guard_tests {
             inference_rule: Some("fof_simplification"),
             status: None,
             is_false: true,
-            fof: first_fof("fof(s2, plain, $false, inference(fof_simplification, [], []))."),
+            formula: first_fof("fof(s2, plain, $false, inference(fof_simplification, [], []))."),
         }
     }
 
@@ -967,7 +964,7 @@ mod false_guard_tests {
         // still receive a real budget. So `step_needs_atp` reports `true`.
         let node = dag::Node {
             is_false: false,
-            fof: first_fof("fof(s2, plain, p(a), inference(fof_simplification, [], [a]))."),
+            formula: first_fof("fof(s2, plain, p(a), inference(fof_simplification, [], [a]))."),
             ..false_node()
         };
         assert!(step_needs_atp(&node));

@@ -215,16 +215,17 @@ mod tests {
     use super::*;
     use mrs_tptp::{AnnotatedFormula, parse_tptp};
 
-    fn fof(src: &'static str) -> &'static FOFAnnotated<'static> {
+    fn fof(src: &'static str) -> &'static AnnotatedFormula<'static> {
         let prob = Box::leak(Box::new(parse_tptp(src).expect("parse")));
         match prob.formulas.first().expect("formula") {
-            AnnotatedFormula::FOF(f) => f,
-            _ => panic!("expected FOF"),
+            f => unsafe {
+                std::mem::transmute::<&AnnotatedFormula<'_>, &'static AnnotatedFormula<'static>>(f)
+            },
         }
     }
 
     fn node_for(
-        concl: &'static FOFAnnotated<'static>,
+        concl: &'static AnnotatedFormula<'static>,
         rule: &'static str,
         is_false: bool,
     ) -> Node<'static> {
@@ -236,7 +237,7 @@ mod tests {
             inference_rule: Some(rule),
             status: None,
             is_false,
-            fof: concl,
+            formula: concl,
         }
     }
 

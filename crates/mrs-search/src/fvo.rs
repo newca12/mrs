@@ -270,7 +270,7 @@ pub fn try_fvo_refutation(
     {
         let mut solver: cadical::Solver = cadical::Solver::new();
         for pc in &abs.prop_clauses {
-            solver.add_clause(pc.iter().map(|&l| l as i32));
+            solver.add_clause(pc.iter().copied());
         }
         match solver.solve() {
             Some(false) => {} // UNSAT: proceed to proof extraction

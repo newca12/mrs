@@ -50,5 +50,8 @@ fn main() {
     }
 
     let result = solver.solve();
-    println!("CADICAL RESULT on purely propositional clauses: {:?}", result);
+    println!(
+        "CADICAL RESULT on purely propositional clauses: {:?}",
+        result
+    );
 }
