@@ -11,7 +11,7 @@
 //!
 //! This module exposes [`try_propositional`], which detects when every
 //! input formula is purely propositional (only 0-ary `Atom::Pred`, no
-//! `Atom::Eq`, no quantifiers) and, if so, asks varisat whether
+//! `Atom::Eq`, no quantifiers) and, if so, asks cadical whether
 //! `(premises) ∧ ¬conclusion` is satisfiable. UNSAT means the step is
 //! sound; SAT means it is unsound (there's a propositional
 //! counter-model). Returns `None` whenever any input contains a
@@ -29,7 +29,7 @@
 use std::collections::HashMap;
 
 use mrs_core::{Atom, Formula};
-use varisat::{ExtendFormula, Lit, Solver, Var};
+use cadical::Solver;
 
 /// Outcome of the propositional fast-path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,15 +64,15 @@ pub fn try_propositional(premises: &[Formula], conclusion: &Formula) -> Option<P
     let mut solver = Solver::new();
     for p in premises {
         let lit = enc.encode(p, &mut solver);
-        solver.add_clause(&[lit]);
+        solver.add_clause([lit]);
     }
     let neg_concl = enc.encode(conclusion, &mut solver);
-    solver.add_clause(&[!neg_concl]);
+    solver.add_clause([-neg_concl]);
 
     match solver.solve() {
-        Ok(false) => Some(PropOutcome::Sound),
-        Ok(true) => Some(PropOutcome::Unsound),
-        Err(_) => None,
+        Some(false) => Some(PropOutcome::Sound),
+        Some(true) => Some(PropOutcome::Unsound),
+        None => None,
     }
 }
 
@@ -113,13 +113,13 @@ pub fn try_propositional_abstraction(premises: &[Formula], conclusion: &Formula)
     let mut solver = Solver::new();
     for p in premises {
         let lit = enc.encode(p, &mut solver);
-        solver.add_clause(&[lit]);
+        solver.add_clause([lit]);
     }
     let neg_concl = enc.encode(conclusion, &mut solver);
-    solver.add_clause(&[!neg_concl]);
+    solver.add_clause([-neg_concl]);
 
     // UNSAT ⇒ truly entailed (sound). SAT ⇒ abstraction too coarse, defer.
-    matches!(solver.solve(), Ok(false))
+    matches!(solver.solve(), Some(false))
 }
 
 /// Walks `f` returning `true` iff it contains no quantifier. Unlike
@@ -155,28 +155,43 @@ fn is_propositional(f: &Formula) -> bool {
 /// Tseitin encoder: each propositional atom gets a stable SAT variable
 /// (cached by `SymbolId`) and each compound subformula gets a fresh
 /// auxiliary variable with the connective clauses added on-encounter.
-#[derive(Default)]
 struct Encoder {
-    atom_vars: HashMap<Atom, Var>,
+    atom_vars: HashMap<Atom, i32>,
+    next_var: i32,
+}
+
+impl Default for Encoder {
+    fn default() -> Self {
+        Self {
+            atom_vars: HashMap::new(),
+            next_var: 1, // cadical variables start from 1
+        }
+    }
 }
 
 impl Encoder {
+    fn new_var(&mut self) -> i32 {
+        let v = self.next_var;
+        self.next_var += 1;
+        v
+    }
+
     /// Encode `f` and return a literal that is true exactly when `f` is
     /// true under the SAT assignment. May add clauses to `solver` as a
     /// side-effect.
-    fn encode(&mut self, f: &Formula, solver: &mut Solver) -> Lit {
+    fn encode(&mut self, f: &Formula, solver: &mut Solver) -> i32 {
         match f {
             Formula::True => {
                 // A fresh variable forced to true. Cheaper than threading
                 // a constant through the encoder.
-                let v = solver.new_var();
-                solver.add_clause(&[Lit::from_var(v, true)]);
-                Lit::from_var(v, true)
+                let v = self.new_var();
+                solver.add_clause([v]);
+                v
             }
             Formula::False => {
-                let v = solver.new_var();
-                solver.add_clause(&[Lit::from_var(v, false)]);
-                Lit::from_var(v, true)
+                let v = self.new_var();
+                solver.add_clause([-v]);
+                v // returning the variable itself is fine, it's forced to false, wait no, we should return -v or false literal
             }
             Formula::Atom(atom) => {
                 // Key on the full atom (any arity, including equalities).
@@ -186,61 +201,65 @@ impl Encoder {
                 let var = *self
                     .atom_vars
                     .entry(atom.clone())
-                    .or_insert_with(|| solver.new_var());
-                Lit::from_var(var, true)
+                    .or_insert_with(|| {
+                        let v = self.next_var;
+                        self.next_var += 1;
+                        v
+                    });
+                var
             }
-            Formula::Neg(g) => !self.encode(g, solver),
+            Formula::Neg(g) => -self.encode(g, solver),
             Formula::And(gs) => {
                 // y ↔ (a₁ ∧ … ∧ aₙ):
                 //   for each i: ¬y ∨ aᵢ   (y → aᵢ)
                 //   one clause:  y ∨ ¬a₁ ∨ … ∨ ¬aₙ   (a₁ ∧ … ∧ aₙ → y)
-                let y = Lit::from_var(solver.new_var(), true);
+                let y = self.new_var();
                 let mut big = Vec::with_capacity(gs.len() + 1);
                 big.push(y);
                 for g in gs {
                     let a = self.encode(g, solver);
-                    solver.add_clause(&[!y, a]);
-                    big.push(!a);
+                    solver.add_clause([-y, a]);
+                    big.push(-a);
                 }
-                solver.add_clause(&big);
+                solver.add_clause(big);
                 y
             }
             Formula::Or(gs) => {
                 // y ↔ (a₁ ∨ … ∨ aₙ):
                 //   one clause:  ¬y ∨ a₁ ∨ … ∨ aₙ   (y → at least one aᵢ)
                 //   for each i: y ∨ ¬aᵢ            (aᵢ → y)
-                let y = Lit::from_var(solver.new_var(), true);
+                let y = self.new_var();
                 let mut big = Vec::with_capacity(gs.len() + 1);
-                big.push(!y);
+                big.push(-y);
                 for g in gs {
                     let a = self.encode(g, solver);
-                    solver.add_clause(&[y, !a]);
+                    solver.add_clause([y, -a]);
                     big.push(a);
                 }
-                solver.add_clause(&big);
+                solver.add_clause(big);
                 y
             }
             Formula::Implies(a, b) => {
                 // a → b  ≡  ¬a ∨ b
                 let la = self.encode(a, solver);
                 let lb = self.encode(b, solver);
-                let y = Lit::from_var(solver.new_var(), true);
+                let y = self.new_var();
                 // y ↔ (¬a ∨ b):
-                solver.add_clause(&[!y, !la, lb]);
-                solver.add_clause(&[y, la]);
-                solver.add_clause(&[y, !lb]);
+                solver.add_clause([-y, -la, lb]);
+                solver.add_clause([y, la]);
+                solver.add_clause([y, -lb]);
                 y
             }
             Formula::Iff(a, b) => {
                 // a ↔ b  ≡  (¬a ∨ b) ∧ (a ∨ ¬b)
                 let la = self.encode(a, solver);
                 let lb = self.encode(b, solver);
-                let y = Lit::from_var(solver.new_var(), true);
+                let y = self.new_var();
                 // y ↔ (la ↔ lb):
-                solver.add_clause(&[!y, !la, lb]);
-                solver.add_clause(&[!y, la, !lb]);
-                solver.add_clause(&[y, !la, !lb]);
-                solver.add_clause(&[y, la, lb]);
+                solver.add_clause([-y, -la, lb]);
+                solver.add_clause([-y, la, -lb]);
+                solver.add_clause([y, -la, -lb]);
+                solver.add_clause([y, la, lb]);
                 y
             }
             Formula::Forall(..) | Formula::Exists(..) => {
@@ -316,7 +335,7 @@ mod tests {
 
     #[test]
     fn counter_model_is_unsound() {
-        // p ⊨ q  is invalid; varisat finds the counter-model p=true, q=false.
+        // p ⊨ q  is invalid; cadical finds the counter-model p=true, q=false.
         let mut s = SymbolTable::new();
         let pp = p(&mut s, "p");
         let pq = p(&mut s, "q");

@@ -12,4 +12,4 @@ mrs-core = { workspace = true }
 mrs-calculus = { workspace = true }
 mrs-index = { workspace = true }
 mrs-proof = { workspace = true }
-varisat = { workspace = true }
+cadical = { workspace = true }

@@ -25,7 +25,6 @@ use mrs_core::SymbolId;
 use mrs_core::clause::ClauseSource;
 use mrs_core::term_bank::{IdAtom, IdClause, TermId, TermNode};
 use mrs_index::fvi::FeatureVector;
-use varisat::ExtendFormula;
 
 use crate::select::select;
 use crate::state::SearchState;
@@ -104,14 +103,10 @@ fn sync_active_dormant(state: &mut SearchState, ordering: &crate::TermOrdering) 
 
 /// Update the SAT model from the solver's current assignment.
 fn update_model(state: &mut SearchState) {
-    let model = state.avatar.solver.model().unwrap();
     state.avatar.current_model.clear();
-    for lit in model {
-        if lit.is_positive() {
-            state
-                .avatar
-                .current_model
-                .insert(lit.var().to_dimacs() as u32);
+    for v in 1..state.avatar.next_var {
+        if state.avatar.solver.value(v as i32) == Some(true) {
+            state.avatar.current_model.insert(v);
         }
     }
 }
@@ -132,13 +127,13 @@ fn avatar_refute_branch(
     {
         return true;
     }
-    let sat_clause: Vec<varisat::Lit> = avatar
+    let sat_clause: Vec<i32> = avatar
         .iter()
-        .map(|&a| varisat::Lit::from_var(varisat::Var::from_dimacs(a as isize), false))
+        .map(|&a| -(a as i32))
         .collect();
-    state.avatar.solver.add_clause(&sat_clause);
+    state.avatar.solver.add_clause(sat_clause);
 
-    if matches!(state.avatar.solver.solve(), Ok(true)) {
+    if matches!(state.avatar.solver.solve(), Some(true)) {
         update_model(state);
         sync_active_dormant(state, ordering);
         true
@@ -312,7 +307,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
     // Initial SAT sync
     if config.use_avatar {
         state.avatar.current_model.clear();
-        if matches!(state.avatar.solver.solve(), Ok(true)) {
+        if matches!(state.avatar.solver.solve(), Some(true)) {
             update_model(state);
         } else {
             return SearchResult::Refutation(mrs_core::clause::ClauseId(0), String::new());
@@ -861,7 +856,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         given.id.0
                     );
                 }
-                if matches!(state.avatar.solver.solve(), Ok(true)) {
+                if matches!(state.avatar.solver.solve(), Some(true)) {
                     update_model(state);
                     sync_active_dormant(state, ordering);
                 } else {

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use varisat::{ExtendFormula, Solver};
+use cadical::Solver;
 
 use mrs_core::clause::{Clause, ClauseIdGen, Literal};
 use mrs_core::formula::Atom;
@@ -8,7 +8,7 @@ use mrs_core::term::{Term, VarId};
 use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank, TermNode};
 
 pub struct AvatarContext {
-    pub solver: Solver<'static>,
+    pub solver: Solver,
     // Mapping from normalized split component to AVATAR propositional variable (u32).
     // Using string representation as a simple normalization for now.
     pub component_vars: HashMap<String, u32>,
@@ -23,7 +23,7 @@ impl AvatarContext {
         Self {
             solver: Solver::new(),
             component_vars: HashMap::new(),
-            next_var: 1, // varisat variables start from 1
+            next_var: 1, // cadical variables start from 1
             current_model: HashSet::new(),
         }
     }
@@ -129,10 +129,7 @@ impl AvatarContext {
                 v
             };
 
-            sat_clause.push(varisat::Lit::from_var(
-                varisat::Var::from_dimacs(var as isize),
-                true,
-            ));
+            sat_clause.push(var as i32);
 
             let mut new_avatar = clause.avatar.clone();
             new_avatar.push(var);
@@ -147,13 +144,10 @@ impl AvatarContext {
         // So `A1 & A2 ... -> (S1 | S2 ...)`
         // `~A1 | ~A2 ... | S1 | S2 ...`
         for &a in &clause.avatar {
-            sat_clause.push(varisat::Lit::from_var(
-                varisat::Var::from_dimacs(a as isize),
-                false,
-            ));
+            sat_clause.push(-(a as i32));
         }
 
-        self.solver.add_clause(&sat_clause);
+        self.solver.add_clause(sat_clause);
 
         Some(split_clauses)
     }
@@ -251,10 +245,7 @@ impl AvatarContext {
                 v
             };
 
-            sat_clause.push(varisat::Lit::from_var(
-                varisat::Var::from_dimacs(var as isize),
-                true,
-            ));
+            sat_clause.push(var as i32);
 
             let mut new_avatar = clause.avatar.clone();
             new_avatar.push(var);
@@ -265,13 +256,10 @@ impl AvatarContext {
         }
 
         for &a in &clause.avatar {
-            sat_clause.push(varisat::Lit::from_var(
-                varisat::Var::from_dimacs(a as isize),
-                false,
-            ));
+            sat_clause.push(-(a as i32));
         }
 
-        self.solver.add_clause(&sat_clause);
+        self.solver.add_clause(sat_clause);
         Some(split_clauses)
     }
 }

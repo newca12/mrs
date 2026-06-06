@@ -20,7 +20,7 @@ mrs-index = { path = "crates/mrs-index", version = "0.1.9" }
 mrs-proof = { path = "crates/mrs-proof", version = "0.1.9" }
 mrs-search = { path = "crates/mrs-search", version = "0.1.9" }
 winnow = "1.0.3"
-varisat = "0.2.2"
+cadical = "0.1.16"
 
 [package]
 name = "mrs"
@@ -43,7 +43,7 @@ mrs-unify = { workspace = true }
 mrs-cnf = { workspace = true }
 mrs-calculus = { workspace = true }
 mrs-search = { workspace = true }
-varisat.workspace = true
+cadical.workspace = true
 
 [features]
 default = []

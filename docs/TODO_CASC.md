@@ -41,14 +41,7 @@ The current AC-matching heuristic (`unify_ac_id`) stops the permutation explosio
 - Gate it on whether any AC axiom was detected: if `assoc_symbols` is non-empty, switch ordering to `TermOrdering::CustomACKBO`.
 - Reference: [Bachmair & Ganzinger, 1994; Rubio & Nieuwenhuis, 1993 for AC-RPO].
 
-### 3. Replace `varisat` with a `Send`-Compatible SAT Solver
-**Impact:** Enables clause sharing and reduces RAM. Medium-High.
-
-`varisat::Solver<'static>` holds bare `dyn Trait` pointers without `+ Send`, making `AvatarContext` and `SearchState` non-`Send`. This forces each parallel strategy to clone the full initial clause set and run an isolated `TermBank`. On a 30-second CASC run with 11 strategies this means 11× the RAM of a serial run.
-
-**Implementation sketch:**
-- Drop-in replacement candidates: `cadical` (Rust bindings via `cadical-sys`), `minisat`, or a pure-Rust CDCL (e.g. `rustsat`).
-- Once `SearchState: Send`, `run_schedule` can use a single `Arc<Mutex<TermBank>>` for intern lookups and a `crossbeam` channel for clause sharing.
+| Replace `varisat` with a `Send`-Compatible SAT Solver | `bb46b4d6` |
 
 ### 4. Substitution Trees (Indexing Evolution)
 **Impact:** FEQ, FNE. Medium.
