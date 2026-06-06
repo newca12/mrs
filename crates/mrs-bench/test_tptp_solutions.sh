@@ -53,7 +53,7 @@ for PROB in "${PROBLEMS[@]}"; do
         /<pre>/ { inside=1; sub(".*<pre>", ""); if ($0 == "") next }
         /<\/pre>/ { sub("</pre>.*", ""); print; inside=0; next }
         inside { print }
-    ' "${RAW_PROB}" | sed -e 's/<[^>]*>//g' > "${WORK_DIR}/Problems/${PROB}.p"
+    ' "${RAW_PROB}" | sed -E -e 's/<a [^>]+>//g' -e 's/<\/a>//g' > "${WORK_DIR}/Problems/${PROB}.p"
 
     # Skip CNF problems to avoid implicit quantifier ordering mismatch
     if grep -q "^cnf(" "${WORK_DIR}/Problems/${PROB}.p"; then
@@ -76,7 +76,7 @@ for PROB in "${PROBLEMS[@]}"; do
             /<pre>/ { inside=1; sub(".*<pre>", ""); if ($0 == "") next }
             /<\/pre>/ { sub("</pre>.*", ""); print; inside=0; next }
             inside { print }
-        ' "${RAW_SOL}" | sed -e 's/<[^>]*>//g' | sed -E -e 's/^cnf\(/fof(/' -e 's/^%cnf\(/%fof(/'
+        ' "${RAW_SOL}" | sed -E -e 's/<a [^>]+>//g' -e 's/<\/a>//g' | sed -E -e 's/^cnf\(/fof(/' -e 's/^%cnf\(/%fof(/'
     } > "${WORK_DIR}/Proofs/${PROB}.s"
 
     rm "${RAW_SOL}" "${RAW_PROB}"
