@@ -30,7 +30,7 @@
 
 use std::collections::HashMap;
 
-use mrs_tptp::{FOFAnnotated, FOFAtomicFormula, FOFFormula, FOFStatement, FOFTerm, Quantifier};
+use mrs_tptp::{AnnotatedFormula, FOFAtomicFormula, FOFFormula, FOFStatement, FOFTerm, Quantifier};
 
 use crate::checks::skolemize::SkolemRegistry;
 use crate::verdict::StepOutcome;
@@ -49,11 +49,11 @@ use crate::verdict::StepOutcome;
 /// - `None` — the step does not have the expected skolemisation shape; the
 ///   caller should try the ATP instead.
 pub fn try_check<'p>(
-    step: &'p FOFAnnotated<'p>,
-    parents: &[&'p FOFAnnotated<'p>],
+    step: &'p AnnotatedFormula<'p>,
+    parents: &[&'p AnnotatedFormula<'p>],
     registry: &mut SkolemRegistry,
 ) -> Option<StepOutcome> {
-    let ann = step.annotations.as_ref()?;
+    let ann = step.annotations()?;
     if ann.status() != Some("esa") {
         return None;
     }
@@ -84,7 +84,8 @@ pub fn try_check<'p>(
                 // Multiple non-Skolem parents — unexpected shape.
                 return None;
             }
-            source = Some(match &p.formula {
+            let fof = p.as_fof()?;
+            source = Some(match &fof.formula {
                 FOFStatement::Logical(f) => f,
                 _ => return None,
             });
@@ -238,7 +239,8 @@ pub fn try_check<'p>(
     }
     let current: &FOFFormula<'p> = arena.last().unwrap();
 
-    let step_f = match &step.formula {
+    let step_fof = step.as_fof()?;
+    let step_f = match &step_fof.formula {
         FOFStatement::Logical(f) => f,
         _ => return None,
     };
@@ -292,13 +294,14 @@ struct SkolemAxiom<'p> {
     skolem_symbols: Vec<&'p str>,
 }
 
-fn is_skolem_intro<'p>(node: &FOFAnnotated<'p>) -> bool {
-    crate::checks::introduced_definition::is_skolem_symbol_introduction(node.annotations.as_ref())
+fn is_skolem_intro<'p>(node: &AnnotatedFormula<'p>) -> bool {
+    crate::checks::introduced_definition::is_skolem_symbol_introduction(node.annotations())
 }
 
 /// Parse a Skolem-axiom body of shape `∀U. (∃V. φ) → ψ`.
-fn parse_skolem_axiom<'p>(node: &'p FOFAnnotated<'p>) -> Option<SkolemAxiom<'p>> {
-    let f = match &node.formula {
+fn parse_skolem_axiom<'p>(node: &'p AnnotatedFormula<'p>) -> Option<SkolemAxiom<'p>> {
+    let fof = node.as_fof()?;
+    let f = match &fof.formula {
         FOFStatement::Logical(f) => f,
         _ => return None,
     };

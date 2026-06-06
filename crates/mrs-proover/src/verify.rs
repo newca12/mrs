@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use mrs_core::{Formula, SymbolTable};
-use mrs_tptp::{FOFAnnotated, FormulaRole};
+use mrs_tptp::{AnnotatedFormula, FormulaRole};
 
 use crate::atp::{Atp, AtpVerdict, NoopAtp};
 use crate::checks::{
@@ -14,7 +14,7 @@ use crate::checks::{
 };
 use crate::dag::{self, Dag};
 use crate::load::LoadedJob;
-use crate::lower::{LowerCtx, lower_fof_statement};
+use crate::lower::{LowerCtx, lower_annotated_formula};
 use crate::verdict::{StepOutcome, Verdict, aggregate};
 
 /// Settings controlling the verification run.
@@ -57,6 +57,10 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
         Ok(d) => d,
         Err(e) => return Verdict::FailedVerified(format!("structural: {e}")),
     };
+
+    if let Err(e) = crate::checks::introduced_definition::check_cycles(&dag) {
+        return Verdict::FailedVerified(format!("structural: {e}"));
+    }
 
     // Defensive: must have a $false root.
     if dag.root.is_none() {
@@ -274,9 +278,8 @@ fn step_needs_atp(node: &dag::Node<'_>) -> bool {
     // leaf check so `check_node` and this function agree.
     if is_premise_role(node.role)
         && node
-            .fof
-            .annotations
-            .as_ref()
+            .formula
+            .annotations()
             .and_then(|a| a.file_source())
             .is_some()
     {
@@ -296,9 +299,8 @@ fn step_needs_atp(node: &dag::Node<'_>) -> bool {
     // Predicate-definition introductions: handled by a dedicated structural
     // check, no ATP needed.
     if node
-        .fof
-        .annotations
-        .as_ref()
+        .formula
+        .annotations()
         .is_some_and(introduced_definition::is_introduced_definition)
     {
         return false;
@@ -345,14 +347,13 @@ fn check_node_prepare<'p>(
     // (`file(_, unknown)`) cases.
     if is_premise_role(node.role)
         && node
-            .fof
-            .annotations
-            .as_ref()
+            .formula
+            .annotations()
             .and_then(|a| a.file_source())
             .is_some()
     {
         return Prepared::Resolved(axiom_leaf::check_leaf(
-            node.fof,
+            node.formula,
             job.problem.as_ref().map(|p| p.problem()),
             symbols,
         ));
@@ -385,8 +386,8 @@ fn check_node_prepare<'p>(
             let parent_fof = node
                 .parents
                 .first()
-                .and_then(|p| dag.by_name.get(p).map(|&i| dag.nodes[i].fof));
-            return Prepared::Resolved(neg_conjecture::check(node.fof, parent_fof, symbols));
+                .and_then(|p| dag.by_name.get(p).map(|&i| dag.nodes[i].formula));
+            return Prepared::Resolved(neg_conjecture::check(node.formula, parent_fof, symbols));
         }
         // Otherwise fall through to whatever other handling applies.
     }
@@ -396,31 +397,30 @@ fn check_node_prepare<'p>(
         let parent_fof = node
             .parents
             .first()
-            .and_then(|p| dag.by_name.get(p).map(|&i| dag.nodes[i].fof));
-        return Prepared::Resolved(skolemize::check(node.fof, parent_fof, sk_reg));
+            .and_then(|p| dag.by_name.get(p).map(|&i| dag.nodes[i].formula));
+        return Prepared::Resolved(skolemize::check(node.formula, parent_fof, sk_reg));
     }
 
     // introduced(definition): predicate-definition introduction, sound as a
     // conservative extension when the head predicate is fresh.
     if node
-        .fof
-        .annotations
-        .as_ref()
+        .formula
+        .annotations()
         .is_some_and(introduced_definition::is_introduced_definition)
     {
-        return Prepared::Resolved(introduced_definition::check(node.fof, sk_reg));
+        return Prepared::Resolved(introduced_definition::check(node.formula, sk_reg));
     }
 
     // Vampire `skolemisation`: try the structural check before falling
     // back to the ATP. The structural check is much faster than the ATP
     // and handles the multi-Skolem rewrites that often time out the ATP.
     if node.inference_rule == Some("skolemisation") {
-        let parents: Vec<&FOFAnnotated<'_>> = node
+        let parents: Vec<&AnnotatedFormula<'_>> = node
             .parents
             .iter()
-            .filter_map(|p| dag.by_name.get(p).map(|&i| dag.nodes[i].fof))
+            .filter_map(|p| dag.by_name.get(p).map(|&i| dag.nodes[i].formula))
             .collect();
-        if let Some(outcome) = vampire_skolemisation::try_check(node.fof, &parents, sk_reg) {
+        if let Some(outcome) = vampire_skolemisation::try_check(node.formula, &parents, sk_reg) {
             return Prepared::Resolved(outcome);
         }
         // Fall through to ATP if the structural check could not apply.
@@ -434,10 +434,10 @@ fn check_node_prepare<'p>(
     // through to the real entailment check below. `$false`-concluding steps
     // are excluded by `trivial::try_check` itself and always reach the ATP.
     if trivial::is_trivial_rule(node.inference_rule) {
-        let parents: Vec<&FOFAnnotated<'_>> = node
+        let parents: Vec<&AnnotatedFormula<'_>> = node
             .parents
             .iter()
-            .filter_map(|p| dag.by_name.get(p).map(|&i| dag.nodes[i].fof))
+            .filter_map(|p| dag.by_name.get(p).map(|&i| dag.nodes[i].formula))
             .collect();
         if let Some(outcome) = trivial::try_check(node, &parents, symbols) {
             return Prepared::Resolved(outcome);
@@ -508,7 +508,7 @@ fn prepare_atp_step<'p>(dag: &Dag<'p>, idx: usize, symbols: &mut SymbolTable) ->
     for (i, p) in node.parents.iter().enumerate() {
         if let Some(&pi) = dag.by_name.get(p) {
             ctx.reset_vars();
-            let mut f = lower_fof_statement(&mut ctx, &dag.nodes[pi].fof.formula);
+            let mut f = lower_annotated_formula(&mut ctx, dag.nodes[pi].formula);
             let negated = node.negated_parents.get(i).copied().unwrap_or(false);
             if negated && dag.nodes[pi].role != FormulaRole::Conjecture {
                 return Prepared::Resolved(StepOutcome::Unsound(format!(
@@ -516,7 +516,7 @@ fn prepare_atp_step<'p>(dag: &Dag<'p>, idx: usize, symbols: &mut SymbolTable) ->
                     p
                 )));
             }
-            let parent_ann = dag.nodes[pi].fof.annotations.as_ref();
+            let parent_ann = dag.nodes[pi].formula.annotations();
             // A definition introduces fresh symbols via
             // `new_symbols(naming, [..])`; a source never does. Negated
             // parents go through `assume_negation` and are sources.
@@ -554,7 +554,7 @@ fn prepare_atp_step<'p>(dag: &Dag<'p>, idx: usize, symbols: &mut SymbolTable) ->
         }
     }
     ctx.reset_vars();
-    let conclusion = lower_fof_statement(&mut ctx, &node.fof.formula);
+    let conclusion = lower_annotated_formula(&mut ctx, node.formula);
 
     // Structural definition_folding: when Vampire emits a step whose
     // sole non-def parent is the unfolded source and the rest are
@@ -574,10 +574,10 @@ fn prepare_atp_step<'p>(dag: &Dag<'p>, idx: usize, symbols: &mut SymbolTable) ->
     if matches!(
         node.inference_rule,
         Some("definition_folding") | Some("avatar_split_clause")
-    ) && let Some(true) =
-        crate::checks::definition_folding::try_check(&premises, &premise_is_def, &conclusion)
-    {
-        return Prepared::Resolved(StepOutcome::Sound);
+    ) {
+        if let Some(outcome) = crate::checks::definition_folding::try_check(&premises, &premise_is_def, &conclusion) {
+            return Prepared::Resolved(outcome);
+        }
     }
 
     // Propositional fast-path: when every premise and the conclusion are
@@ -925,7 +925,7 @@ mod false_guard_tests {
     use super::*;
     use mrs_tptp::parse_tptp;
 
-    fn first_fof(src: &'static str) -> &'static FOFAnnotated<'static> {
+    fn first_fof(src: &'static str) -> &'static AnnotatedFormula<'static> {
         let prob = Box::leak(Box::new(parse_tptp(src).expect("parse")));
         match prob.formulas.first().expect("formula") {
             mrs_tptp::AnnotatedFormula::FOF(f) => f,

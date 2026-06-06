@@ -42,10 +42,10 @@
 use mrs_cnf::nnf::to_nnf;
 use mrs_core::alpha::alpha_equiv;
 use mrs_core::{Formula, SymbolTable, VarId};
-use mrs_tptp::FOFAnnotated;
+use mrs_tptp::AnnotatedFormula;
 
 use crate::dag::Node;
-use crate::lower::{LowerCtx, lower_fof_statement};
+use crate::lower::{LowerCtx, lower_annotated_formula};
 use crate::verdict::StepOutcome;
 
 /// Single-premise rules whose conclusion the prover claims is *logically
@@ -86,7 +86,7 @@ pub fn is_trivial_rule(rule: Option<&str>) -> bool {
 /// stay conservative and defer to the entailment checker.
 pub fn try_check<'p>(
     node: &Node<'p>,
-    parents: &[&FOFAnnotated<'p>],
+    parents: &[&AnnotatedFormula<'p>],
     symbols: &mut SymbolTable,
 ) -> Option<StepOutcome> {
     let rule = node.inference_rule?;
@@ -104,9 +104,9 @@ pub fn try_check<'p>(
 
     let mut ctx = LowerCtx::new(symbols);
     ctx.reset_vars();
-    let parent_f = lower_fof_statement(&mut ctx, &parent.formula);
+    let parent_f = lower_annotated_formula(&mut ctx, parent);
     ctx.reset_vars();
-    let concl_f = lower_fof_statement(&mut ctx, &node.fof.formula);
+    let concl_f = lower_annotated_formula(&mut ctx, node.formula);
 
     if EQUIV_RULES.contains(&rule) && equiv(&parent_f, &concl_f) {
         return Some(StepOutcome::Sound);

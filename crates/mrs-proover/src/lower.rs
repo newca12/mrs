@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use mrs_core::{Atom, Formula, SymbolId, SymbolTable, Term, VarId};
 use mrs_tptp::{
-    BinaryConnective, CNFAtomicFormula, CNFFormula, CNFLiteral, CNFStatement, FOFAtomicFormula,
+    AnnotatedFormula, BinaryConnective, CNFAtomicFormula, CNFFormula, CNFLiteral, CNFStatement, FOFAtomicFormula,
     FOFFormula, FOFStatement, FOFTerm, Quantifier,
 };
 
@@ -43,6 +43,14 @@ impl<'a> LowerCtx<'a> {
 
     fn intern(&mut self, name: &str) -> SymbolId {
         self.symbols.intern(name)
+    }
+}
+
+pub fn lower_annotated_formula(ctx: &mut LowerCtx<'_>, af: &AnnotatedFormula<'_>) -> Formula {
+    match af {
+        AnnotatedFormula::FOF(f) => lower_fof_statement(ctx, &f.formula),
+        AnnotatedFormula::CNF(c) => lower_cnf_statement(ctx, &c.formula),
+        _ => panic!("Unsupported formula type in lower_annotated_formula"),
     }
 }
 
