@@ -690,11 +690,11 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     break;
                 }
 
-                let mut temp_demod_index: mrs_index::dtree::DTreeId<(
+                let mut temp_demod_index: mrs_index::stree::STreeId<(
                     TermId,
                     TermId,
                     mrs_core::clause::ClauseId,
-                )> = mrs_index::dtree::DTreeId::new();
+                )> = mrs_index::stree::STreeId::new();
                 for u in &new_units {
                     if let IdAtom::Eq(l, r) = &u.literals[0].atom {
                         use mrs_calculus::ordering::TermComparison;
@@ -710,7 +710,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 }
 
                 let all_processed = state.processed.drain();
-                state.demod_index = mrs_index::dtree::DTreeId::new();
+                state.demod_index = mrs_index::stree::STreeId::new();
                 let mut next_processed = Vec::new();
                 let mut created_units = Vec::new();
 
@@ -733,11 +733,11 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         state.register_clause(&proc);
 
                         // Build index from already-processed units for chained rewriting
-                        let mut all_units_index: mrs_index::dtree::DTreeId<(
+                        let mut all_units_index: mrs_index::stree::STreeId<(
                             TermId,
                             TermId,
                             mrs_core::clause::ClauseId,
-                        )> = mrs_index::dtree::DTreeId::new();
+                        )> = mrs_index::stree::STreeId::new();
                         for c in &next_processed {
                             if is_unit_positive_equality_id(c)
                                 && let IdAtom::Eq(l, r) = &c.literals[0].atom

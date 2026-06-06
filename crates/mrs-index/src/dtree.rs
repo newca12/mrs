@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 /// A cell in the flattened term representation.
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Debug)]
-enum Cell {
+pub(crate) enum Cell {
     /// Function symbol with its arity.
     Sym(SymbolId, u8),
     /// Variable with its normalized ID.
@@ -25,7 +25,7 @@ enum Cell {
 }
 
 /// Flatten a term into its pre-order DFS cell representation, normalizing variables.
-fn flatten(term: &Term) -> Vec<Cell> {
+pub(crate) fn flatten(term: &Term) -> Vec<Cell> {
     let mut cells = Vec::new();
     let mut var_map = HashMap::new();
     let mut next_var = 0;
@@ -58,7 +58,7 @@ fn flatten_into(
 }
 
 /// Returns the position after the subterm starting at `pos` in a flat representation.
-fn skip_in_flat(flat: &[Cell], pos: usize) -> usize {
+pub(crate) fn skip_in_flat(flat: &[Cell], pos: usize) -> usize {
     match flat[pos] {
         Cell::Var(_) => pos + 1,
         Cell::Sym(_, n) => {
@@ -73,7 +73,7 @@ fn skip_in_flat(flat: &[Cell], pos: usize) -> usize {
 
 use mrs_core::term_bank::{IdAtom, TermBank, TermId, TermNode};
 
-fn flatten_id(term: TermId, bank: &TermBank) -> Vec<Cell> {
+pub(crate) fn flatten_id(term: TermId, bank: &TermBank) -> Vec<Cell> {
     let mut cells = Vec::new();
     let mut var_map = HashMap::new();
     let mut next_var = 0;
@@ -81,7 +81,7 @@ fn flatten_id(term: TermId, bank: &TermBank) -> Vec<Cell> {
     cells
 }
 
-fn flatten_atom_id(atom: &IdAtom, bank: &TermBank) -> Vec<Cell> {
+pub(crate) fn flatten_atom_id(atom: &IdAtom, bank: &TermBank) -> Vec<Cell> {
     let mut cells = Vec::new();
     let mut var_map = HashMap::new();
     let mut next_var = 0;
@@ -97,7 +97,7 @@ fn flatten_atom_id(atom: &IdAtom, bank: &TermBank) -> Vec<Cell> {
     cells
 }
 
-fn flatten_into_id(
+pub(crate) fn flatten_into_id(
     term: TermId,
     bank: &TermBank,
     out: &mut Vec<Cell>,

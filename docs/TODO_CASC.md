@@ -21,17 +21,11 @@ This document tracks what remains to be built in `mrs` (the prover) to maximise 
 | Optimize parallel portfolio scheduling for hardware cores | `82427ec9` |
 | LTO (`fat`) + native CPU instruction set (`-C target-cpu=native`) | `349d6470` |
 | ProoVer 2026: skolemize free-var safety, AnnotatedFormula API | `619e2bcc` |
+| Substitution Trees: path-compressed `STreeId` replaces `DTreeId` | HEAD |
 
 ---
 
 ## Remaining Work (ordered by expected CASC impact)
-
-### 4. Substitution Trees (Indexing Evolution)
-**Impact:** FEQ, FNE. Medium.
-
-The current `DTreeId` is a perfect discrimination tree — it eliminates false positives via binding consistency checks. However, D-Trees duplicate shared prefixes: if 10,000 clauses all start with `f(g(`, each path independently stores that prefix. Substitution Trees merge these contexts into a DAG, drastically reducing memory footprint for large clause sets (common in FEQ with 400 problems at up to 120,000 derived clauses).
-
-**Reference:** [Graf, 1996; Schulz & Sutcliffe, various].
 
 ### 5. Machine-Learning Guided Clause Selection (ENIGMA/Deepire)
 **Impact:** FNE, FEQ. Medium (high ceiling, high effort).
@@ -72,11 +66,11 @@ Rust's default `HashMap` uses SipHash (cryptographically secure, DoS-resistant).
 
 | Division | Problems | Current (c0816a7a) | Highest-ROI fix |
 |----------|----------|-------------------|-----------------|
-| FEQ | 400 | 27 (7%) | Clause sharing ✓, AC-Superposition ✓ |
-| FNE | 100 | 24 (24%) | Clause sharing ✓, SInE tuning |
-| UEQ | 300 | 13 (4%) | AC-Superposition ✓, clause sharing ✓ |
+| FEQ | 400 | 27 (7%) | Clause sharing ✓, AC-Superposition ✓, STree ✓ |
+| FNE | 100 | 24 (24%) | Clause sharing ✓, SInE tuning, STree ✓ |
+| UEQ | 300 | 13 (4%) | AC-Superposition ✓, clause sharing ✓, STree ✓ |
 | EPS | 100 | 13 (13%) | AVATAR EPR (improved), LTO ✓ |
 | EPU | 100 | 8 (8%) | AVATAR EPR (improved), LTO ✓ |
 | ICU | 101 | 1 (1%) | Orphan elimination ✓, clause sharing ✓ |
 
-*Scores based on commit `c0816a7a` at 120s; newer commits (cadical, clause sharing, AC-KBO, LTO, scheduling) expected to improve all divisions.*
+*Scores based on commit `c0816a7a` at 120s; newer commits (cadical, clause sharing, AC-KBO, LTO, scheduling, STree) expected to improve all divisions.*

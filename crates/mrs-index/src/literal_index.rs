@@ -36,8 +36,8 @@ pub struct LiteralIndex {
     clauses: HashMap<ClauseId, IdClause>,
     /// Feature vectors for stored clauses (used for subsumption filtering).
     fvs: HashMap<ClauseId, FeatureVector>,
-    /// Maps (predicate, polarity) -> DTree of clause IDs.
-    pred_index: HashMap<LitKey, crate::dtree::DTreeId<ClauseId>>,
+    /// Maps (predicate, polarity) -> STree of clause IDs.
+    pred_index: HashMap<LitKey, crate::stree::STreeId<ClauseId>>,
     /// Clause IDs that contain at least one positive equality.
     pos_eq_clauses: HashSet<ClauseId>,
     /// Clause IDs that contain at least one negative equality.

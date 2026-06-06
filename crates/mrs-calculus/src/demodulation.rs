@@ -380,7 +380,7 @@ use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank, TermId};
 pub fn demodulate_id(
     clause: &IdClause,
     bank: &mut TermBank,
-    demod_index: &mrs_index::dtree::DTreeId<(TermId, TermId, ClauseId)>,
+    demod_index: &mrs_index::stree::STreeId<(TermId, TermId, ClauseId)>,
     clause_store: &std::collections::HashMap<ClauseId, IdClause>,
     id_gen: &mut ClauseIdGen,
 ) -> Option<IdClause> {
@@ -438,7 +438,7 @@ fn rewrite_literal_id(
     lit: &mut IdLiteral,
     target_avatar: &[u32],
     bank: &mut TermBank,
-    demod_index: &mrs_index::dtree::DTreeId<(TermId, TermId, ClauseId)>,
+    demod_index: &mrs_index::stree::STreeId<(TermId, TermId, ClauseId)>,
     clause_store: &std::collections::HashMap<ClauseId, IdClause>,
     used_unit_ids: &mut Vec<ClauseId>,
 ) -> bool {
@@ -497,7 +497,7 @@ fn rewrite_term_id(
     term: TermId,
     target_avatar: &[u32],
     bank: &mut TermBank,
-    demod_index: &mrs_index::dtree::DTreeId<(TermId, TermId, ClauseId)>,
+    demod_index: &mrs_index::stree::STreeId<(TermId, TermId, ClauseId)>,
     clause_store: &std::collections::HashMap<ClauseId, IdClause>,
     used_unit_ids: &mut Vec<ClauseId>,
 ) -> (TermId, bool) {

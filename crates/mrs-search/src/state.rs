@@ -9,7 +9,7 @@ use mrs_calculus::ordering::SymbolConfig;
 use mrs_core::SymbolId;
 use mrs_core::clause::{Clause, ClauseId, ClauseIdGen};
 use mrs_core::term_bank::{IdClause, TermBank, TermId};
-use mrs_index::dtree::DTreeId;
+use mrs_index::stree::STreeId;
 use mrs_index::literal_index::LiteralIndex;
 
 use crate::avatar::AvatarContext;
@@ -25,9 +25,9 @@ pub struct SearchState {
     /// Clauses that have been selected and had all inferences generated.
     /// Indexed by predicate symbol for fast resolution partner lookup.
     pub processed: LiteralIndex,
-    /// DTree indexing the LHS of oriented unit equalities for fast demodulation.
+    /// STree indexing the LHS of oriented unit equalities for fast demodulation.
     /// The value is (from_id, to_id, unit_clause_id).
-    pub demod_index: DTreeId<(TermId, TermId, ClauseId)>,
+    pub demod_index: STreeId<(TermId, TermId, ClauseId)>,
     /// Clauses waiting to be selected.
     pub unprocessed: UnprocessedSet,
     /// Maps clause IDs to `IdClause` (for proof extraction).
@@ -100,7 +100,7 @@ impl SearchState {
 
         Self {
             processed: LiteralIndex::new(),
-            demod_index: DTreeId::new(),
+            demod_index: STreeId::new(),
             unprocessed,
             clause_store,
             id_gen,
