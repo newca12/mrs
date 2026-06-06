@@ -47,17 +47,14 @@ The scoring is highly asymmetric. A single `−10` requires 10 correct `+1` veri
 - Update `dag.rs` to accept `cnf(...)` annotated formulas.
 - Convert them internally to FOF during parsing/DAG construction, or support them natively in the verification loop.
 
-### 3. AC-Equivalence Matching in `axiom_leaf.rs` — **+1 per valid proof**
-**File:** `crates/mrs-proover/src/checks/axiom_leaf.rs`
+### 3. Parse-ability for CASC Hardening Dataset
+**Goal:** Ingest the CASC dataset to harden `mrs-proover` against panics, OOMs, and bugs.
 
-**The Problem:** When an ATP like E or Vampire produces a proof, conjecture clauses are often reordered: `p | q` becomes `q | p`, or `a & b & c` becomes `b & c & a`. The current leaf-node check uses strict positional alpha-equivalence and returns `Unknown` (0 points) rather than risk a false positive.
-
-Real-world impact: this fires on a large fraction of valid proofs produced by Vampire and E because both systems aggressively reorder and flatten clauses. Every `Unknown` on a good proof is a missed `+1`.
-
-**Implementation:**
-- In `axiom_leaf.rs`, after the strict alpha-equiv check fails, attempt a **commutative alpha-equivalence check**: treat `|` and `&` as AC operators and try all permutations (bounded to avoid exponential blowup — memoize or limit to ≤ 8 literals).
-- Alternatively, canonicalise both sides before comparison: sort disjuncts/conjuncts lexicographically by their string representation, then compare.
-- Reference: `crates/mrs-core/src/alpha.rs` already implements alpha-equivalence — add a variant that normalises literal order before comparing.
+While the ProoVer competition uses generic TPTP rule formats, we still want to massively test `mrs-proover` on the CASC solutions dataset (which is full of E and Vampire specific outputs) to harden the system's memory, parsing, and DAG construction. 
+To do this efficiently:
+- We need basic parsing for E and Vampire structural steps.
+- **However:** We do *not* need to harden these specific parsers to detect exploits (i.e. returning `Unsound` instead of `Unknown`). If an E or Vampire step looks slightly malformed, we can safely just return `Unknown`. The competition's "evil proofs" will use generic formats, so our exploit-detection focus should remain 100% on the generic TPTP formats.
+- We should still implement AC-Equivalence or clause-reordering checks if they prevent `Unknown` fallbacks on valid CASC proofs, purely to speed up the testing pipeline and avoid launching the external ATP fallback on every step.
 
 ### 4. Fix `test_tptp_solutions.sh` HTML Stripping Bug — **recover +1s**
 **File:** `crates/mrs-bench/test_tptp_solutions.sh`
@@ -80,18 +77,6 @@ Real-world impact: this fires on a large fraction of valid proofs produced by Va
 - Run a topological sort / cycle detection (`petgraph::algo::toposort` or hand-written DFS).
 - If a cycle is found, return `StepOutcome::Unsound` for all definitions involved.
 - This check is O(N²) in the number of definitions but definitions are rare in practice.
-
-### 6. E-prover Skolemization Variable Leakage — **prevent −10**
-**File:** `crates/mrs-proover/src/checks/vampire_skolemisation.rs` (and potentially a new `e_skolemisation.rs`)
-
-**The Problem:** `vampire_skolemisation.rs` has been hardened for Vampire's specific output shapes. E-prover uses a different Skolemization format (`skolemize(Var, sk(...))` steps). The current fallback for E-prover shapes returns `Unknown` rather than verifying the step, which is safe (0 points) but misses `+2` when the step is malformed.
-
-More critically, E-prover steps may be vulnerable to subtle variable shadowing if the internal `skolemize.rs` alpha-check does not track binder depth perfectly. A crafted step could introduce a Skolem term that captures a free variable from an outer scope.
-
-**Implementation:**
-- Add an E-prover-specific structural check: verify that the Skolem function introduced has the correct arity (equals the number of universally quantified variables in scope at the point of the existential).
-- Check that no free variable of the original formula is captured in the Skolem term's arguments.
-- On violation, return `StepOutcome::Unsound` rather than `Unknown`.
 
 ### 7. Stronger Structural Coverage → More `+2` Points
 **Files:** Various `crates/mrs-proover/src/checks/`
@@ -122,11 +107,9 @@ The current ATP-ladder fallback re-invokes an external ATP subprocess for every 
 | Free Variable Skolemization block | Critical | ✅ Done |
 | Accept CNF Steps in Proof DAG | High | ✅ Done |
 | Definition laundering blocked | High | ✅ Done |
-| Vampire Skolem arity-drop → Unsound | High | ✅ Done |
-| AC-equivalence in `axiom_leaf.rs` | High | ✅ Done |
 | Fix `test_tptp_solutions.sh` HTML Stripping Bug | High | ✅ Done |
 | Cyclic/recursive definition chain detection | High | ✅ Done |
-| E-prover Skolemization variable leakage | Medium | ✅ Done |
+| Basic E/Vampire structural parsing for CASC dataset hardening | Medium | ❌ TODO |
 | Batch ATP subprocess calls | Medium | ❌ TODO |
-| Broader Unsound coverage in structural checks | Low–Medium | ❌ TODO |
+| Broader Unsound coverage in generic structural checks | Low–Medium | ❌ TODO |
 | Benchmark against Nörgler | After fixes | ❌ TODO |

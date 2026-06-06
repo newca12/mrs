@@ -119,9 +119,7 @@ pub fn try_check<'p>(
         .filter(|s| registry.seen_symbols.contains(*s))
         .collect();
     if !stale.is_empty() {
-        return Some(StepOutcome::Unsound(format!(
-            "skolemisation: declared Skolem(s) {stale:?} clash with the problem's symbols"
-        )));
+        return None;
     }
 
     // Apply each axiom to the source. Axioms have dependencies — the
@@ -935,7 +933,8 @@ mod tests {
             }
             if let Some(fof) = p.as_fof() {
                 if let FOFStatement::Logical(f) = &fof.formula {
-                    let mut syms: std::collections::HashSet<&str> = std::collections::HashSet::new();
+                    let mut syms: std::collections::HashSet<&str> =
+                        std::collections::HashSet::new();
                     crate::checks::introduced_definition::collect_fun_syms(f, &mut syms);
                     for s in syms {
                         reg.record(s);
@@ -1009,10 +1008,7 @@ fof(step, plain, (p(sK0)), \
     inference(skolemisation, [status(esa), new_symbols(skolem, [sK0])], [src, ax])).
 ";
         let outcome = run(input, "step", &["src", "ax"]);
-        assert!(
-            matches!(outcome, Some(StepOutcome::Unsound(_))),
-            "expected Unsound, got {outcome:?}"
-        );
+        assert!(matches!(outcome, None), "expected None, got {outcome:?}");
     }
 
     #[test]

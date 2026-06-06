@@ -260,7 +260,7 @@ pub fn check<'p>(step: &AnnotatedFormula<'p>, registry: &SkolemRegistry) -> Step
             left,
             connective: BinaryConnective::Iff,
             right,
-        } => (peel(left), peel(right)),
+        } => (peel_parens(left), peel_parens(right)),
         _ => {
             return StepOutcome::Unsound(
                 "introduced(definition) with no new_symbols entry and body is \

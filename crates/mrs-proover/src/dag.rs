@@ -86,7 +86,7 @@ pub enum DagError {
 impl std::fmt::Display for DagError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DagError::UnsupportedDialect(n) => write!(f, "node {n} is not FOF"),
+            DagError::UnsupportedDialect(n) => write!(f, "node {n} is not FOF or CNF"),
             DagError::DuplicateName(n) => write!(f, "duplicate node name {n}"),
             DagError::UnknownParent { node, parent } => {
                 write!(f, "node {node} references unknown parent {parent}")
