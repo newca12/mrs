@@ -20,6 +20,9 @@ The scoring is highly asymmetric. A single `−10` requires 10 correct `+1` veri
 
 | Item | Commit |
 |------|--------|
+| E-prover `introduced(definition)` peeling bug fixed | HEAD |
+| `test_tptp_solutions.sh` HTML Stripping Bug | HEAD |
+| Accept CNF Steps in Proof DAG | HEAD |
 | `introduced(definition)` formula-body validation (definition laundering fix) | `202aae96` |
 | Evil-proof test suite (9 exploit cases) | `202aae96` |
 | `vampire_skolemisation.rs`: `Unknown` → `Unsound` on arity drops and shape violations | `c722f998` |
@@ -37,32 +40,6 @@ The scoring is highly asymmetric. A single `−10` requires 10 correct `+1` veri
 
 **Implementation:**
 - Reject any `introduced(definition)` Skolem axiom that contains free variables. Ensure all variables in the formula are explicitly bound by quantifiers.
-
-### 2. Accept CNF Steps in Proof DAG — **prevent −1 & recover +1s**
-**File:** `crates/mrs-proover/src/dag.rs`
-
-**The Problem:** The DAG builder strictly rejects any node that is not `fof(...)` with an `UnsupportedDialect` error. Modern ATPs (like E and Vampire) output their actual refutation steps using `cnf(...)` clauses. Because `mrs-proover` drops these nodes, it fails to find the `$false` root, causing a structural failure (`proof does not derive $false`) and falsely rejecting valid proofs.
-
-**Implementation:**
-- Update `dag.rs` to accept `cnf(...)` annotated formulas.
-- Convert them internally to FOF during parsing/DAG construction, or support them natively in the verification loop.
-
-### 3. Parse-ability for CASC Hardening Dataset
-**Goal:** Ingest the CASC dataset to harden `mrs-proover` against panics, OOMs, and bugs.
-
-While the ProoVer competition uses generic TPTP rule formats, we still want to massively test `mrs-proover` on the CASC solutions dataset (which is full of E and Vampire specific outputs) to harden the system's memory, parsing, and DAG construction. 
-To do this efficiently:
-- We need basic parsing for E and Vampire structural steps.
-- **However:** We do *not* need to harden these specific parsers to detect exploits (i.e. returning `Unsound` instead of `Unknown`). If an E or Vampire step looks slightly malformed, we can safely just return `Unknown`. The competition's "evil proofs" will use generic formats, so our exploit-detection focus should remain 100% on the generic TPTP formats.
-- We should still implement AC-Equivalence or clause-reordering checks if they prevent `Unknown` fallbacks on valid CASC proofs, purely to speed up the testing pipeline and avoid launching the external ATP fallback on every step.
-
-### 4. Fix `test_tptp_solutions.sh` HTML Stripping Bug — **recover +1s**
-**File:** `crates/mrs-bench/test_tptp_solutions.sh`
-
-**The Problem:** The benchmark script downloads TPTP problems and solutions from the web and uses `sed -e 's/<[^>]*>//g'` to strip HTML tags. Unfortunately, this regex accidentally deletes standard TPTP logical operators like `<=>` (iff) and `<=` (reverse implication), corrupting the files before they even reach the verifier and causing `mrs-tptp` to throw syntax errors.
-
-**Implementation:**
-- Replace the overly aggressive `sed` command with a targeted one that only removes anchor tags (e.g., `sed -E -e 's/<a [^>]+>//g' -e 's/<\/a>//g'`).
 
 ### 5. Recursive / Cyclic Definition Chain Detection — **prevent −10**
 **File:** `crates/mrs-proover/src/checks/introduced_definition.rs`
