@@ -423,10 +423,10 @@ fn apply_subst_flat(subst: &Substitution, term: &Term) -> Term {
 ///   bind 5 → Var(4)                   -- direct occurs check: Var(4).contains(5)=false ← BUG
 ///   apply_subst_chain resolves Var(4) → App(f,[Var(5)]), contains(5)=true → rejected ✓
 fn apply_subst_chain(subst: &Substitution, term: &Term) -> Term {
-    use std::collections::HashSet;
+    use crate::HashSet;
 
     let mut current = term.clone();
-    let mut seen: HashSet<u32> = HashSet::new();
+    let mut seen: HashSet<u32> = HashSet::default();
     loop {
         match current {
             Term::Var(v) => {

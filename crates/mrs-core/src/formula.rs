@@ -7,7 +7,7 @@
 //! Formulas are used as the input language (e.g., parsed from TPTP FOF format)
 //! before clausification converts them to [`Clause`](crate::clause::Clause) sets.
 
-use std::collections::HashSet;
+use crate::HashSet;
 
 use crate::symbol::SymbolId;
 use crate::term::{Term, VarId};
@@ -56,7 +56,7 @@ impl Atom {
 
     /// Returns the set of free variables in this atom.
     pub fn free_vars(&self) -> HashSet<VarId> {
-        let mut vars = HashSet::new();
+        let mut vars = HashSet::default();
         self.collect_vars(&mut vars);
         vars
     }
@@ -156,8 +156,8 @@ impl Formula {
     ///
     /// Bound variables (those under a matching quantifier) are NOT included.
     pub fn free_vars(&self) -> HashSet<VarId> {
-        let mut free = HashSet::new();
-        let mut bound = HashSet::new();
+        let mut free = HashSet::default();
+        let mut bound = HashSet::default();
         self.collect_free_vars(&mut free, &mut bound);
         free
     }

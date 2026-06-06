@@ -17,7 +17,8 @@
 //!    fresh variables for each predicate argument.
 //! 5. Return `SearchResult::Refutation` with the TSTP-formatted proof.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
+use crate::{HashMap, HashSet};
 
 use mrs_core::SymbolTable;
 use mrs_core::clause::{Clause, ClauseId, ClauseIdGen, ClauseSource, Literal};
@@ -68,7 +69,7 @@ struct PropAbstraction {
 
 impl PropAbstraction {
     fn build(clauses: &[Clause]) -> Self {
-        let mut sym_to_var: HashMap<u32, u32> = HashMap::new();
+        let mut sym_to_var: HashMap<u32, u32> = HashMap::default();
         let mut var_to_sym_arity: Vec<(SymbolId, usize)> = Vec::new();
 
         let prop_clauses: Vec<PC> = clauses
@@ -153,7 +154,7 @@ const MAX_DERIVED: usize = 100_000;
 fn prop_bfs_refute(input: &[PC]) -> Option<(Vec<PC>, Vec<PSrc>, usize)> {
     let mut clauses: Vec<PC> = Vec::new();
     let mut sources: Vec<PSrc> = Vec::new();
-    let mut seen: HashSet<PC> = HashSet::new();
+    let mut seen: HashSet<PC> = HashSet::default();
 
     // Load input clauses, deduplicating identical ones.
     for (i, c) in input.iter().enumerate() {
@@ -249,7 +250,7 @@ fn lift_clause(
 ///
 /// Returns `Some(SearchResult::Refutation(id, tstp))` if:
 /// - The problem is FVO (all predicate args are variables, no equality), **and**
-/// - The propositional skeleton is UNSAT (confirmed by `varisat`), **and**
+/// - The propositional skeleton is UNSAT (confirmed by `cadical`), **and**
 /// - A BFS resolution proof is found within `MAX_DERIVED` derived clauses.
 ///
 /// Returns `None` in all other cases; the caller should try the regular
@@ -282,7 +283,7 @@ pub fn try_fvo_refutation(
     let (prop_clauses, prop_sources, empty_idx) = prop_bfs_refute(&abs.prop_clauses)?;
 
     // Collect the proof ancestors in topological order (parents before children).
-    let mut visited: HashSet<usize> = HashSet::new();
+    let mut visited: HashSet<usize> = HashSet::default();
     let mut queue: VecDeque<usize> = VecDeque::new();
     let mut order: Vec<usize> = Vec::new();
 
@@ -304,7 +305,7 @@ pub fn try_fvo_refutation(
     order.reverse(); // topological: inputs first, empty clause last
 
     // Build the lifted FOF proof.
-    let mut prop_idx_to_fof_id: HashMap<usize, ClauseId> = HashMap::new();
+    let mut prop_idx_to_fof_id: HashMap<usize, ClauseId> = HashMap::default();
     let mut fof_proof: Vec<Clause> = Vec::with_capacity(order.len());
 
     for &prop_idx in &order {

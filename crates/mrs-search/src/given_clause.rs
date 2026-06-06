@@ -10,7 +10,7 @@
 //! - All clauses are processed (saturation)
 //! - A time or clause limit is exceeded
 
-use std::collections::HashSet;
+use crate::HashSet;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
@@ -150,8 +150,8 @@ fn detect_ac_symbols(
     HashSet<SymbolId>,
     Vec<mrs_core::clause::ClauseId>,
 ) {
-    let mut comm = HashSet::new();
-    let mut assoc = HashSet::new();
+    let mut comm = HashSet::default();
+    let mut assoc = HashSet::default();
     let mut to_remove = Vec::new();
     for clause in state.clause_store.values() {
         if clause.len() == 1
@@ -507,7 +507,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
 
         // --- Resolution ---
         {
-            let mut resolution_partner_ids = HashSet::new();
+            let mut resolution_partner_ids = HashSet::default();
             'resolution: for &lit_idx in &given_sel {
                 let lit = &given.literals[lit_idx];
                 let partners = state.processed.get_unifiable_resolution_partners(

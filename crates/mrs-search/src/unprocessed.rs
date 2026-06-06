@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
+use std::collections::{BinaryHeap, VecDeque};
+use crate::{HashMap, HashSet};
 use std::sync::Arc;
 
 use mrs_calculus::ordering::SymbolConfig;
@@ -61,8 +62,8 @@ impl UnprocessedSet {
     /// Creates a new, empty unprocessed set.
     pub fn new(config: Arc<SymbolConfig>) -> Self {
         Self {
-            active_ids: HashSet::new(),
-            fvs: HashMap::new(),
+            active_ids: HashSet::default(),
+            fvs: HashMap::default(),
             age_queue: VecDeque::new(),
             weight_queue: BinaryHeap::new(),
             goal_queue: BinaryHeap::new(),

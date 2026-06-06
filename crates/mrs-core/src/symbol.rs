@@ -4,7 +4,7 @@
 //! in first-order logic. Interning converts strings to compact integer IDs
 //! for efficient comparison and storage.
 
-use std::collections::HashMap;
+use crate::HashMap;
 
 /// An interned symbol identifier.
 ///
@@ -51,7 +51,7 @@ impl SymbolTable {
     pub fn new() -> Self {
         Self {
             names: Vec::new(),
-            ids: HashMap::new(),
+            ids: HashMap::default(),
         }
     }
 

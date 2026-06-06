@@ -10,7 +10,7 @@
 //! needing `&mut TermBank` at query time while still leveraging the existing
 //! discrimination-tree infrastructure.
 
-use std::collections::{HashMap, HashSet};
+use crate::{HashMap, HashSet};
 
 use mrs_core::clause::ClauseId;
 use mrs_core::symbol::SymbolId;
@@ -48,11 +48,11 @@ impl LiteralIndex {
     /// Creates an empty literal index.
     pub fn new() -> Self {
         LiteralIndex {
-            clauses: HashMap::new(),
-            fvs: HashMap::new(),
-            pred_index: HashMap::new(),
-            pos_eq_clauses: HashSet::new(),
-            neg_eq_clauses: HashSet::new(),
+            clauses: HashMap::default(),
+            fvs: HashMap::default(),
+            pred_index: HashMap::default(),
+            pos_eq_clauses: HashSet::default(),
+            neg_eq_clauses: HashSet::default(),
         }
     }
 

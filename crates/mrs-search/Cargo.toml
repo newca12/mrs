@@ -13,3 +13,4 @@ mrs-calculus = { workspace = true }
 mrs-index = { workspace = true }
 mrs-proof = { workspace = true }
 cadical = { workspace = true }
+rustc-hash = { workspace = true }

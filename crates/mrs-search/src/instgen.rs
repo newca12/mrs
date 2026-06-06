@@ -18,7 +18,7 @@
 //! explosions caused by clauses with many variables.  When the limit would be
 //! exceeded we return `None` and the caller falls back to the standard loop.
 
-use std::collections::HashSet;
+use crate::HashSet;
 
 use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource, Literal};
 use mrs_core::formula::Atom;
@@ -131,7 +131,7 @@ fn term_is_epr(term: &Term) -> bool {
 
 /// Collects all distinct constants (nullary function symbols) from `clauses`.
 fn collect_constants(clauses: &[Clause]) -> Vec<SymbolId> {
-    let mut seen: HashSet<SymbolId> = HashSet::new();
+    let mut seen: HashSet<SymbolId> = HashSet::default();
     let mut constants: Vec<SymbolId> = Vec::new();
     for clause in clauses {
         for lit in &clause.literals {
@@ -163,7 +163,7 @@ fn collect_constants_term(term: &Term, seen: &mut HashSet<SymbolId>, out: &mut V
 
 /// Collects all distinct variable IDs from a single clause.
 fn collect_clause_vars(clause: &Clause) -> HashSet<VarId> {
-    let mut vars: HashSet<VarId> = HashSet::new();
+    let mut vars: HashSet<VarId> = HashSet::default();
     for lit in &clause.literals {
         match &lit.atom {
             Atom::Pred(_, args) => {

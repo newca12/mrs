@@ -3,15 +3,15 @@
 //! Two formulas are α-equivalent if they differ only in the names of bound
 //! variables. Free variables must have the same identifiers.
 
-use std::collections::HashMap;
+use crate::HashMap;
 
 use crate::formula::{Atom, Formula};
 use crate::term::{Term, VarId};
 
 /// Returns `true` if the two formulas are α-equivalent.
 pub fn alpha_equiv(a: &Formula, b: &Formula) -> bool {
-    let mut left = HashMap::new();
-    let mut right = HashMap::new();
+    let mut left = HashMap::default();
+    let mut right = HashMap::default();
     let mut depth: u32 = 0;
     formula_eq(a, b, &mut left, &mut right, &mut depth)
 }
@@ -19,7 +19,7 @@ pub fn alpha_equiv(a: &Formula, b: &Formula) -> bool {
 /// Returns `true` if two terms are equal modulo free-variable identity.
 /// (No binders inside terms, so this is structural equality.)
 pub fn alpha_equiv_term(a: &Term, b: &Term) -> bool {
-    let empty = HashMap::new();
+    let empty = HashMap::default();
     term_eq(a, b, &empty, &empty)
 }
 

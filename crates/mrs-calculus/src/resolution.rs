@@ -8,7 +8,7 @@
 //!
 //! Before resolution, C2's variables are renamed to be disjoint from C1's.
 
-use std::collections::HashSet;
+use crate::HashSet;
 
 use mrs_core::SymbolId;
 use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource};
@@ -46,7 +46,7 @@ fn atom_to_term_id(atom: &IdAtom, bank: &mut TermBank) -> Option<TermId> {
 ///
 /// Returns an empty vector if no resolution is possible.
 pub fn resolve(c1: &Clause, c2: &Clause, id_gen: &mut ClauseIdGen) -> Vec<Clause> {
-    resolve_selected(c1, c2, id_gen, None, None, &HashSet::new())
+    resolve_selected(c1, c2, id_gen, None, None, &HashSet::default())
 }
 
 pub fn resolve_id(

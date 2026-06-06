@@ -6,7 +6,7 @@
 //! Variables are identified by unique integer IDs ([`VarId`]) rather than names,
 //! which simplifies variable renaming during inference.
 
-use std::collections::HashSet;
+use crate::HashSet;
 
 use crate::symbol::SymbolId;
 
@@ -67,7 +67,7 @@ impl Term {
 
     /// Collects all free variable IDs occurring in this term.
     pub fn free_vars(&self) -> HashSet<VarId> {
-        let mut vars = HashSet::new();
+        let mut vars = HashSet::default();
         self.collect_vars(&mut vars);
         vars
     }

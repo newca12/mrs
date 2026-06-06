@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use crate::{HashMap, HashSet};
 
 use cadical::Solver;
 
@@ -22,9 +22,9 @@ impl AvatarContext {
     pub fn new() -> Self {
         Self {
             solver: Solver::new(),
-            component_vars: HashMap::new(),
+            component_vars: HashMap::default(),
             next_var: 1, // cadical variables start from 1
-            current_model: HashSet::new(),
+            current_model: HashSet::default(),
         }
     }
 
@@ -66,7 +66,7 @@ impl AvatarContext {
         }
 
         // Map VarId to literal index
-        let mut var_to_lit: HashMap<VarId, usize> = HashMap::new();
+        let mut var_to_lit: HashMap<VarId, usize> = HashMap::default();
 
         for (i, lit) in clause.literals.iter().enumerate() {
             let vars = literal_vars(lit);
@@ -80,7 +80,7 @@ impl AvatarContext {
         }
 
         // Group literals by component
-        let mut components: HashMap<usize, Vec<Literal>> = HashMap::new();
+        let mut components: HashMap<usize, Vec<Literal>> = HashMap::default();
         let mut ground_lits: Vec<Literal> = Vec::new();
 
         for (i, lit) in clause.literals.iter().enumerate() {
@@ -195,7 +195,7 @@ impl AvatarContext {
             }
         }
 
-        let mut var_to_lit: HashMap<VarId, usize> = HashMap::new();
+        let mut var_to_lit: HashMap<VarId, usize> = HashMap::default();
         for (i, lit) in clause.literals.iter().enumerate() {
             let vars = id_literal_vars(lit, bank);
             for v in vars {
@@ -207,7 +207,7 @@ impl AvatarContext {
             }
         }
 
-        let mut components: HashMap<usize, Vec<IdLiteral>> = HashMap::new();
+        let mut components: HashMap<usize, Vec<IdLiteral>> = HashMap::default();
         let mut ground_lits: Vec<IdLiteral> = Vec::new();
 
         for (i, lit) in clause.literals.iter().enumerate() {
@@ -265,7 +265,7 @@ impl AvatarContext {
 }
 
 fn literal_vars(lit: &Literal) -> HashSet<VarId> {
-    let mut vars = HashSet::new();
+    let mut vars = HashSet::default();
     match &lit.atom {
         Atom::Pred(_, args) => {
             for a in args {
@@ -299,7 +299,7 @@ fn collect_vars(term: &Term, vars: &mut HashSet<VarId>) {
 /// traversal of the literals.  This means two alpha-equivalent components
 /// produce the same key, enabling the SAT solver to share AVATAR variables.
 fn canonical_component_key(lits: &[Literal]) -> String {
-    let mut var_map: HashMap<VarId, u32> = HashMap::new();
+    let mut var_map: HashMap<VarId, u32> = HashMap::default();
     let mut next: u32 = 0;
     let mut s = String::new();
     for (i, lit) in lits.iter().enumerate() {
@@ -388,7 +388,7 @@ fn push_u32(s: &mut String, mut n: u32) {
 }
 
 fn id_literal_vars(lit: &IdLiteral, bank: &TermBank) -> HashSet<VarId> {
-    let mut vars = HashSet::new();
+    let mut vars = HashSet::default();
     match &lit.atom {
         IdAtom::Pred(_, args) => {
             for &a in args {
@@ -419,7 +419,7 @@ fn id_collect_vars(term: mrs_core::term_bank::TermId, bank: &TermBank, vars: &mu
 /// Returns a canonical string key for a set of `IdLiteral`s, invariant
 /// under variable renaming (same algorithm as `canonical_component_key`).
 fn canonical_component_key_id(lits: &[IdLiteral], bank: &TermBank) -> String {
-    let mut var_map: HashMap<VarId, u32> = HashMap::new();
+    let mut var_map: HashMap<VarId, u32> = HashMap::default();
     let mut next: u32 = 0;
     let mut s = String::new();
     for (i, lit) in lits.iter().enumerate() {
@@ -571,11 +571,11 @@ mod tests {
 
         // Collect the AVATAR variables allocated for each split.
         // For alpha-equivalent components the variables must coincide.
-        let vars1: std::collections::HashSet<u32> = splits1
+        let vars1: HashSet<u32> = splits1
             .iter()
             .flat_map(|s| s.avatar.iter().copied())
             .collect();
-        let vars2: std::collections::HashSet<u32> = splits2
+        let vars2: HashSet<u32> = splits2
             .iter()
             .flat_map(|s| s.avatar.iter().copied())
             .collect();

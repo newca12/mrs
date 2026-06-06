@@ -10,6 +10,9 @@
 //!   traversal of terms. Supports unification retrieval (imperfect),
 //!   generalization retrieval, and instance retrieval.
 
+pub(crate) use rustc_hash::FxHashMap as HashMap;
+pub(crate) use rustc_hash::FxHashSet as HashSet;
+
 pub mod dtree;
 pub mod fvi;
 pub mod literal_index;

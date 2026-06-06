@@ -8,7 +8,7 @@
 //! Both are used to orient equalities and determine which inferences are
 //! necessary for completeness.
 
-use std::collections::{HashMap, HashSet};
+use crate::{HashMap, HashSet};
 use std::sync::Arc;
 
 use mrs_core::SymbolId;
@@ -126,7 +126,7 @@ impl KBO {
 
     /// Counts occurrences of each variable in a term.
     fn var_counts(t: &Term) -> HashMap<VarId, i32> {
-        let mut counts = HashMap::new();
+        let mut counts = HashMap::default();
         Self::collect_var_counts(t, &mut counts);
         counts
     }
@@ -148,7 +148,7 @@ impl KBO {
         t: mrs_core::term_bank::TermId,
         bank: &mrs_core::term_bank::TermBank,
     ) -> HashMap<VarId, i32> {
-        let mut counts = HashMap::new();
+        let mut counts = HashMap::default();
         Self::collect_var_counts_id(t, bank, &mut counts);
         counts
     }

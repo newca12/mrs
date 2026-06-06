@@ -14,6 +14,9 @@
 //! Variable renaming ([`rename`]) ensures clauses have disjoint variables
 //! before inference. Term orderings ([`ordering`]) orient equalities.
 
+pub(crate) use rustc_hash::FxHashMap as HashMap;
+pub(crate) use rustc_hash::FxHashSet as HashSet;
+
 pub mod demodulation;
 pub mod equality;
 pub mod factoring;

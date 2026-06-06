@@ -4,7 +4,7 @@
 //! term replaces each mapped variable with its corresponding term.
 //! Substitutions are the core mechanism for unification and inference.
 
-use std::collections::HashMap;
+use crate::HashMap;
 
 use crate::clause::Literal;
 use crate::formula::{Atom, Formula};
@@ -40,7 +40,7 @@ impl Substitution {
     /// Creates an empty substitution.
     pub fn new() -> Self {
         Self {
-            bindings: HashMap::new(),
+            bindings: HashMap::default(),
         }
     }
 

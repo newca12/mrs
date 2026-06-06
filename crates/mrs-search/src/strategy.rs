@@ -9,7 +9,7 @@
 
 pub mod named;
 
-use std::collections::HashMap;
+use crate::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
@@ -285,7 +285,7 @@ impl StrategySchedule {
 ///
 /// `symbols` is required so that the TSTP proof string can be formatted inside the
 /// worker thread (while `SearchState` is still live), before the non-`Send`
-/// `varisat::Solver` is dropped.
+/// `cadical::Solver` is dropped.
 pub fn run_schedule(
     clauses: &[Clause],
     id_gen: ClauseIdGen,
@@ -293,7 +293,7 @@ pub fn run_schedule(
     symbols: &SymbolTable,
 ) -> SearchResult {
     // 1. Analyze problem for symbol frequencies to configure KBO/LPO and weights.
-    let mut sym_counts: HashMap<SymbolId, u32> = HashMap::new();
+    let mut sym_counts: HashMap<SymbolId, u32> = HashMap::default();
     for clause in clauses {
         for lit in &clause.literals {
             match &lit.atom {
@@ -374,7 +374,7 @@ pub fn run_schedule(
 
     // EPR pre-grounding is disabled: naive ground instance enumeration causes
     // OOM on large EPR problems (tens of thousands of ground clauses inflate
-    // varisat's SAT instance beyond memory limits).  AVATAR handles EPR
+    // cadical's SAT instance beyond memory limits).  AVATAR handles EPR
     // structure lazily and correctly without pre-expansion.
     let epr_ground_cache: Option<Vec<Clause>> = None;
 
@@ -382,7 +382,7 @@ pub fn run_schedule(
     // EPR problems (only variables and ground terms, no function symbols of
     // arity ≥ 1) must run without AVATAR regardless of whether we succeeded in
     // expanding them: AVATAR's SAT instance grows without bound during a
-    // resolution search over EPR clauses and can cause varisat to block for
+    // resolution search over EPR clauses and can cause cadical to block for
     // minutes with no way to interrupt it.
     // NOTE: EPR grounding is disabled (epr_ground_cache is always None).
     //       is_epr is retained for future use (e.g. re-enabling AVATAR guard).
@@ -507,7 +507,7 @@ pub fn run_schedule(
 
                     let result = match raw {
                         SearchResult::Refutation(id, _) => {
-                            let legacy_store: std::collections::HashMap<_, _> = state
+                            let legacy_store: HashMap<_, _> = state
                                 .clause_store
                                 .iter()
                                 .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))

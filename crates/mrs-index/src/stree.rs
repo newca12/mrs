@@ -33,7 +33,7 @@
 //! Identical to `DTreeId<V>`: imperfect unification (superset), exact
 //! generalization.  Variable bindings are threaded and checked for consistency.
 
-use std::collections::HashMap;
+use crate::HashMap;
 use std::ops::Range;
 
 use mrs_core::term_bank::{IdAtom, TermBank, TermId};
@@ -85,7 +85,7 @@ impl<V: Clone + PartialEq> STreeId<V> {
     /// Creates an empty substitution tree.
     pub fn new() -> Self {
         STreeId {
-            children: HashMap::new(),
+            children: HashMap::default(),
             leaves: Vec::new(),
         }
     }
@@ -319,7 +319,7 @@ impl<V: Clone + PartialEq> STreeId<V> {
 impl<V> Default for STreeId<V> {
     fn default() -> Self {
         Self {
-            children: HashMap::new(),
+            children: HashMap::default(),
             leaves: Vec::new(),
         }
     }

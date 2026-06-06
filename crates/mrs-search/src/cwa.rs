@@ -29,7 +29,8 @@
 //! pattern doesn't match, `try_componentwise_refute` returns `None` and the
 //! caller falls through to the regular strategy schedule.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
+use crate::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -68,7 +69,7 @@ struct TopDisjunction {
 
 /// Collects the set of predicate symbols mentioned by a clause's literals.
 fn clause_predicate_symbols(clause: &Clause) -> HashSet<SymbolId> {
-    let mut out = HashSet::new();
+    let mut out = HashSet::default();
     for lit in &clause.literals {
         if let Atom::Pred(sym, _) = &lit.atom {
             out.insert(*sym);
@@ -96,7 +97,7 @@ fn detect_top_disjunction(clauses: &[Clause]) -> Option<TopDisjunction> {
         // refutation is universally quantified over the unit's variables, so
         // sharing imposes no constraint on independence.)
         let mut preds: Vec<SymbolId> = Vec::with_capacity(clause.literals.len());
-        let mut seen_preds: HashSet<SymbolId> = HashSet::new();
+        let mut seen_preds: HashSet<SymbolId> = HashSet::default();
         let mut ok = true;
         let mut why_rejected = "";
         for lit in &clause.literals {
@@ -185,7 +186,7 @@ fn extract_branch_clauses(top: &TopDisjunction, clauses: &[Clause]) -> Vec<Vec<u
     // For each branch predicate, collect indices of definition clauses
     // mentioning it (direct).  Then BFS transitively through the
     // predicate-sharing graph.
-    let mut pred_to_clauses: HashMap<SymbolId, Vec<usize>> = HashMap::new();
+    let mut pred_to_clauses: HashMap<SymbolId, Vec<usize>> = HashMap::default();
     for (idx, preds) in &def_clauses {
         for p in preds {
             pred_to_clauses.entry(*p).or_default().push(*idx);
@@ -194,9 +195,9 @@ fn extract_branch_clauses(top: &TopDisjunction, clauses: &[Clause]) -> Vec<Vec<u
 
     let mut result: Vec<Vec<usize>> = Vec::with_capacity(top.branch_predicates.len());
     for &start_pred in &top.branch_predicates {
-        let mut included: HashSet<usize> = HashSet::new();
+        let mut included: HashSet<usize> = HashSet::default();
         let mut frontier: VecDeque<SymbolId> = VecDeque::new();
-        let mut seen_preds: HashSet<SymbolId> = HashSet::new();
+        let mut seen_preds: HashSet<SymbolId> = HashSet::default();
         frontier.push_back(start_pred);
         seen_preds.insert(start_pred);
 
@@ -326,7 +327,7 @@ pub fn try_componentwise_refute(
         match result {
             SearchResult::Refutation(empty_id, _) => {
                 // Convert IdClause store → legacy Clause store for proof extraction
-                let legacy_store: std::collections::HashMap<_, _> = state
+                let legacy_store: HashMap<_, _> = state
                     .clause_store
                     .iter()
                     .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))

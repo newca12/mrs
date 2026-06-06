@@ -13,7 +13,7 @@
 
 use mrs_core::symbol::SymbolId;
 use mrs_core::term::{Term, VarId};
-use std::collections::HashMap;
+use crate::HashMap;
 
 /// A cell in the flattened term representation.
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Debug)]
@@ -27,7 +27,7 @@ pub(crate) enum Cell {
 /// Flatten a term into its pre-order DFS cell representation, normalizing variables.
 pub(crate) fn flatten(term: &Term) -> Vec<Cell> {
     let mut cells = Vec::new();
-    let mut var_map = HashMap::new();
+    let mut var_map = HashMap::default();
     let mut next_var = 0;
     flatten_into(term, &mut cells, &mut var_map, &mut next_var);
     cells
@@ -75,7 +75,7 @@ use mrs_core::term_bank::{IdAtom, TermBank, TermId, TermNode};
 
 pub(crate) fn flatten_id(term: TermId, bank: &TermBank) -> Vec<Cell> {
     let mut cells = Vec::new();
-    let mut var_map = HashMap::new();
+    let mut var_map = HashMap::default();
     let mut next_var = 0;
     flatten_into_id(term, bank, &mut cells, &mut var_map, &mut next_var);
     cells
@@ -83,7 +83,7 @@ pub(crate) fn flatten_id(term: TermId, bank: &TermBank) -> Vec<Cell> {
 
 pub(crate) fn flatten_atom_id(atom: &IdAtom, bank: &TermBank) -> Vec<Cell> {
     let mut cells = Vec::new();
-    let mut var_map = HashMap::new();
+    let mut var_map = HashMap::default();
     let mut next_var = 0;
     match atom {
         IdAtom::Pred(sym, args) => {
@@ -131,7 +131,7 @@ pub struct DTreeId<V> {
 impl<V: Clone + PartialEq> DTreeId<V> {
     pub fn new() -> Self {
         DTreeId {
-            children: HashMap::new(),
+            children: HashMap::default(),
             leaves: Vec::new(),
         }
     }
@@ -374,7 +374,7 @@ impl<V: Clone + PartialEq> DTreeId<V> {
 impl<V> Default for DTreeId<V> {
     fn default() -> Self {
         Self {
-            children: HashMap::new(),
+            children: HashMap::default(),
             leaves: Vec::new(),
         }
     }
@@ -399,7 +399,7 @@ impl<V: Clone + PartialEq> DTree<V> {
     /// Creates an empty discrimination tree.
     pub fn new() -> Self {
         DTree {
-            children: HashMap::new(),
+            children: HashMap::default(),
             leaves: Vec::new(),
         }
     }

@@ -1,5 +1,5 @@
 use smallvec::SmallVec;
-use std::collections::HashMap;
+use crate::{HashMap, HashSet};
 
 use crate::clause::{Clause, ClauseId, ClauseSource, Literal};
 use crate::formula::Atom;
@@ -27,7 +27,7 @@ pub enum IdAtom {
 }
 
 impl IdAtom {
-    pub fn collect_vars(&self, bank: &TermBank, vars: &mut std::collections::HashSet<VarId>) {
+    pub fn collect_vars(&self, bank: &TermBank, vars: &mut HashSet<VarId>) {
         match self {
             IdAtom::Pred(_, args) => {
                 for &arg in args {
@@ -50,7 +50,7 @@ pub struct IdLiteral {
 }
 
 impl IdLiteral {
-    pub fn collect_vars(&self, bank: &TermBank, vars: &mut std::collections::HashSet<VarId>) {
+    pub fn collect_vars(&self, bank: &TermBank, vars: &mut HashSet<VarId>) {
         self.atom.collect_vars(bank, vars);
     }
 }
@@ -91,8 +91,8 @@ impl IdClause {
         }
     }
 
-    pub fn free_vars(&self, bank: &TermBank) -> std::collections::HashSet<VarId> {
-        let mut vars = std::collections::HashSet::new();
+    pub fn free_vars(&self, bank: &TermBank) -> HashSet<VarId> {
+        let mut vars = HashSet::default();
         for lit in &self.literals {
             lit.collect_vars(bank, &mut vars);
         }
@@ -210,7 +210,7 @@ impl TermBank {
         &self.nodes[id.0 as usize]
     }
 
-    pub fn collect_vars(&self, id: TermId, vars: &mut std::collections::HashSet<VarId>) {
+    pub fn collect_vars(&self, id: TermId, vars: &mut HashSet<VarId>) {
         match self.get(id) {
             TermNode::Var(v) => {
                 vars.insert(*v);

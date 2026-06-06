@@ -1,6 +1,6 @@
 //! Search state: processed and unprocessed clause sets.
 
-use std::collections::{HashMap, HashSet};
+use crate::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
@@ -76,7 +76,7 @@ impl SearchState {
         use_avatar: bool,
     ) -> Self {
         let mut term_bank = TermBank::new();
-        let mut clause_store: HashMap<ClauseId, IdClause> = HashMap::new();
+        let mut clause_store: HashMap<ClauseId, IdClause> = HashMap::default();
         let mut unprocessed = UnprocessedSet::new(config.clone());
         let mut avatar = AvatarContext::new();
 
@@ -106,13 +106,13 @@ impl SearchState {
             id_gen,
             config,
             avatar,
-            dormant_processed: HashMap::new(),
-            dormant_unprocessed: HashMap::new(),
-            comm_symbols: HashSet::new(),
-            assoc_symbols: HashSet::new(),
+            dormant_processed: HashMap::default(),
+            dormant_unprocessed: HashMap::default(),
+            comm_symbols: HashSet::default(),
+            assoc_symbols: HashSet::default(),
             search_deadline: None,
             term_bank,
-            children: HashMap::new(),
+            children: HashMap::default(),
             stop_flag: None,
             shared_pool: None,
             shared_pool_read: 0,
@@ -128,7 +128,7 @@ impl SearchState {
     /// This is Global Subsumption (Orphan Elimination).
     pub fn remove_clause_and_orphans(&mut self, id: ClauseId, ordering: &crate::TermOrdering) {
         let mut stack = vec![id];
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
 
         while let Some(current) = stack.pop() {
             if !visited.insert(current) {

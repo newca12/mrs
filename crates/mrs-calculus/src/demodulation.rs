@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::{HashMap, HashSet};
 
 use mrs_core::clause::{Clause, ClauseId, ClauseIdGen, ClauseSource, Literal};
 use mrs_core::formula::Atom;
@@ -47,7 +47,7 @@ pub fn demodulate(
 
         // Deduplicate the parents list (retaining insertion order)
         let mut unique_parents = Vec::new();
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashSet::default();
         for p in parents {
             if seen.insert(p) {
                 unique_parents.push(p);
@@ -212,7 +212,7 @@ mod tests {
             "target",
         );
 
-        let mut clause_store = HashMap::new();
+        let mut clause_store = HashMap::default();
         clause_store.insert(unit.id, unit.clone());
 
         let mut demod_index = mrs_index::dtree::DTree::new();
@@ -275,7 +275,7 @@ mod tests {
             "target",
         );
 
-        let mut clause_store = HashMap::new();
+        let mut clause_store = HashMap::default();
         clause_store.insert(unit.id, unit.clone());
 
         let mut demod_index = mrs_index::dtree::DTree::new();
@@ -321,7 +321,7 @@ mod tests {
             "target",
         );
 
-        let mut clause_store = HashMap::new();
+        let mut clause_store = HashMap::default();
         clause_store.insert(unit.id, unit.clone());
 
         let mut demod_index = mrs_index::dtree::DTree::new();
@@ -366,7 +366,7 @@ mod tests {
             "target",
         );
 
-        let clause_store = HashMap::new();
+        let clause_store = HashMap::default();
         let demod_index = mrs_index::dtree::DTree::new();
         // non_unit is not inserted because it is not a unit equation
 
@@ -381,7 +381,7 @@ pub fn demodulate_id(
     clause: &IdClause,
     bank: &mut TermBank,
     demod_index: &mrs_index::stree::STreeId<(TermId, TermId, ClauseId)>,
-    clause_store: &std::collections::HashMap<ClauseId, IdClause>,
+    clause_store: &HashMap<ClauseId, IdClause>,
     id_gen: &mut ClauseIdGen,
 ) -> Option<IdClause> {
     let mut current_lits = clause.literals.clone();
@@ -413,7 +413,7 @@ pub fn demodulate_id(
         parents.extend_from_slice(&used_unit_ids);
 
         let mut unique_parents = Vec::new();
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashSet::default();
         for p in parents {
             if seen.insert(p) {
                 unique_parents.push(p);
@@ -439,7 +439,7 @@ fn rewrite_literal_id(
     target_avatar: &[u32],
     bank: &mut TermBank,
     demod_index: &mrs_index::stree::STreeId<(TermId, TermId, ClauseId)>,
-    clause_store: &std::collections::HashMap<ClauseId, IdClause>,
+    clause_store: &HashMap<ClauseId, IdClause>,
     used_unit_ids: &mut Vec<ClauseId>,
 ) -> bool {
     let mut changed = false;
@@ -498,7 +498,7 @@ fn rewrite_term_id(
     target_avatar: &[u32],
     bank: &mut TermBank,
     demod_index: &mrs_index::stree::STreeId<(TermId, TermId, ClauseId)>,
-    clause_store: &std::collections::HashMap<ClauseId, IdClause>,
+    clause_store: &HashMap<ClauseId, IdClause>,
     used_unit_ids: &mut Vec<ClauseId>,
 ) -> (TermId, bool) {
     let rules = demod_index.get_generalizations(term, bank);

@@ -26,6 +26,9 @@
 //! assert!(matches!(result, SearchResult::Saturated));
 //! ```
 
+pub(crate) use rustc_hash::FxHashMap as HashMap;
+pub(crate) use rustc_hash::FxHashSet as HashSet;
+
 pub mod avatar;
 pub mod cwa;
 pub mod fvo;

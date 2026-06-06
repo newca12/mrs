@@ -13,3 +13,4 @@ proover = []
 
 [dependencies]
 smallvec = "1.15.1"
+rustc-hash = { workspace = true }

@@ -5,6 +5,7 @@
 //! The result is topologically sorted: input clauses first, empty clause last.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::BuildHasher;
 
 use mrs_core::clause::{Clause, ClauseId, ClauseSource};
 
@@ -17,9 +18,9 @@ use mrs_core::clause::{Clause, ClauseId, ClauseSource};
 /// any clause that depends on them. The empty clause is last.
 ///
 /// Handles DAGs correctly: shared parent clauses appear only once.
-pub fn extract_proof(
+pub fn extract_proof<S: BuildHasher>(
     empty_clause_id: ClauseId,
-    clause_store: &HashMap<ClauseId, Clause>,
+    clause_store: &HashMap<ClauseId, Clause, S>,
 ) -> Vec<Clause> {
     // Collect all relevant clause IDs via BFS
     let mut visited = HashSet::new();

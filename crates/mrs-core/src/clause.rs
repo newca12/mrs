@@ -4,7 +4,7 @@
 //! A [`Clause`] is a disjunction of literals, implicitly universally quantified
 //! over all its variables. This is the working format for resolution-based provers.
 
-use std::collections::HashSet;
+use crate::HashSet;
 
 use crate::formula::Atom;
 use crate::term::VarId;
@@ -181,7 +181,7 @@ impl Clause {
 
     /// Collects all variable IDs occurring in this clause.
     pub fn free_vars(&self) -> HashSet<VarId> {
-        let mut vars = HashSet::new();
+        let mut vars = HashSet::default();
         for lit in &self.literals {
             lit.collect_vars(&mut vars);
         }

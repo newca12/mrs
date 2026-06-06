@@ -122,7 +122,7 @@ pub fn unify(s: &Term, t: &Term) -> UnifyResult {
 pub fn unify_comm(
     s: &Term,
     t: &Term,
-    comm: &std::collections::HashSet<mrs_core::SymbolId>,
+    comm: &std::collections::HashSet<mrs_core::SymbolId, impl std::hash::BuildHasher>,
 ) -> UnifyResult {
     robinson::unify_comm(s, t, comm)
 }

@@ -10,6 +10,12 @@
 //! - [`Substitution`] - Variable-to-term mappings
 //! - [`SymbolTable`] - Bidirectional symbol interning
 
+// Fast hash collections used throughout the crate.
+// FxHashMap/FxHashSet use a multiplicative hash ideal for small integer keys
+// (TermId, VarId, SymbolId, ClauseId) — 10-25% faster than SipHash on those.
+pub(crate) use rustc_hash::FxHashMap as HashMap;
+pub(crate) use rustc_hash::FxHashSet as HashSet;
+
 pub mod clause;
 pub mod display;
 pub mod formula;

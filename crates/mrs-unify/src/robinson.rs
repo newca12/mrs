@@ -13,6 +13,7 @@
 //! 4. Otherwise, fail.
 
 use std::collections::HashSet;
+use std::hash::BuildHasher;
 
 use mrs_core::Substitution;
 use mrs_core::SymbolId;
@@ -120,7 +121,7 @@ fn unify_rec_id(
 ///
 /// Only one MGU is returned per pair of terms; full C-unification (multiple
 /// incomparable unifiers) is not implemented.
-pub fn unify_comm(s: &Term, t: &Term, comm: &HashSet<SymbolId>) -> UnifyResult {
+pub fn unify_comm<S: BuildHasher>(s: &Term, t: &Term, comm: &HashSet<SymbolId, S>) -> UnifyResult {
     if comm.is_empty() {
         return unify(s, t);
     }
@@ -130,11 +131,11 @@ pub fn unify_comm(s: &Term, t: &Term, comm: &HashSet<SymbolId>) -> UnifyResult {
 }
 
 /// Recursive unification with commutativity, accumulating bindings in `subst`.
-fn unify_comm_rec(
+fn unify_comm_rec<S: BuildHasher>(
     s: &Term,
     t: &Term,
     subst: &mut Substitution,
-    comm: &HashSet<SymbolId>,
+    comm: &HashSet<SymbolId, S>,
 ) -> Result<(), UnifyError> {
     // Apply current substitution to both sides
     let s = subst.apply_term(s);
@@ -201,12 +202,12 @@ fn unify_comm_rec(
     }
 }
 
-pub fn unify_ac_id(
+pub fn unify_ac_id<S: BuildHasher>(
     s: TermId,
     t: TermId,
     bank: &TermBank,
-    comm: &HashSet<SymbolId>,
-    assoc: &HashSet<SymbolId>,
+    comm: &HashSet<SymbolId, S>,
+    assoc: &HashSet<SymbolId, S>,
 ) -> Result<IdSubstitution, UnifyError> {
     if comm.is_empty() && assoc.is_empty() {
         return unify_id(s, t, bank);
@@ -216,12 +217,12 @@ pub fn unify_ac_id(
     Ok(subst)
 }
 
-fn flatten_assoc(
+fn flatten_assoc<S: BuildHasher>(
     t: TermId,
     f: SymbolId,
     subst: &IdSubstitution,
     bank: &TermBank,
-    assoc: &HashSet<SymbolId>,
+    assoc: &HashSet<SymbolId, S>,
 ) -> Vec<TermId> {
     let mut result = Vec::new();
     let mut stack = vec![t];
@@ -243,13 +244,13 @@ fn flatten_assoc(
     result
 }
 
-fn unify_ac_rec_id(
+fn unify_ac_rec_id<S: BuildHasher>(
     s: TermId,
     t: TermId,
     subst: &mut IdSubstitution,
     bank: &TermBank,
-    comm: &HashSet<SymbolId>,
-    assoc: &HashSet<SymbolId>,
+    comm: &HashSet<SymbolId, S>,
+    assoc: &HashSet<SymbolId, S>,
 ) -> Result<(), UnifyError> {
     let s = deref_id(s, subst, bank);
     let t = deref_id(t, subst, bank);
@@ -461,7 +462,8 @@ fn contains_var_id(term: TermId, var: VarId, subst: &IdSubstitution, bank: &Term
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+use std::collections::HashSet;
+use std::hash::BuildHasher;
 
     use super::*;
     use mrs_core::{SymbolId, SymbolTable};

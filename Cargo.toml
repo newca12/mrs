@@ -21,6 +21,7 @@ mrs-proof = { path = "crates/mrs-proof", version = "0.1.9" }
 mrs-search = { path = "crates/mrs-search", version = "0.1.9" }
 winnow = "1.0.3"
 cadical = "0.1.16"
+rustc-hash = "2.1"
 
 [profile.release]
 lto = "fat"
