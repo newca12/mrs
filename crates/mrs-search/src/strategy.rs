@@ -435,95 +435,100 @@ pub fn run_schedule(
     let shared_pool = Arc::new(std::sync::RwLock::new(Vec::new()));
     let (tx, rx) = mpsc::channel::<(usize, SearchResult)>();
 
+    let available_cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    let num_workers = available_cores.min(actual_configs.len());
+    let next_strategy = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let has_epr = epr_ground_cache.is_some();
+
     // Compute how much time remains after all pre-processing steps.
     let remaining_at_spawn = total_budget.saturating_sub(schedule_start.elapsed());
 
     std::thread::scope(|s| {
-        for (strategy_idx, search_config) in actual_configs.iter().enumerate() {
-            // Skip zero-budget strategies (e.g. the diagnostic s12).
-            if search_config.time_limit.is_zero() {
-                continue;
-            }
-            // Bail out if the overall budget is already gone.
-            if remaining_at_spawn.is_zero() {
-                break;
-            }
-
+        for _ in 0..num_workers {
             let stop = Arc::clone(&stop_flag);
             let pool = Arc::clone(&shared_pool);
             let tx = tx.clone();
-
-            // Clone all inputs the thread needs; SearchState is created inside.
-            // epr_ground_cache is always None so clauses_owned is always used.
-            let clauses_for_thread: Vec<Clause> = clauses_owned.clone();
+            let next_strategy = Arc::clone(&next_strategy);
+            let clauses_for_thread = clauses_owned.clone();
             let id_gen_thread = id_gen.clone();
             let config_thread = Arc::clone(&config);
-
-            // Override the individual time slice with the full remaining budget so
-            // that all strategies run simultaneously for the same wall-clock window.
-            let mut sc = search_config.clone();
-            sc.time_limit = remaining_at_spawn;
-
-            // EPR grounding is disabled; epr_ground_cache is always None.
-            if epr_ground_cache.is_some() {
-                sc.max_term_weight = None;
-            }
+            let actual_configs_ref = &actual_configs;
 
             s.spawn(move || {
-                // Don't even start if a sibling thread already finished.
-                if stop.load(Ordering::Relaxed) {
-                    return;
-                }
-
-                let mut state = SearchState::new(
-                    clauses_for_thread,
-                    id_gen_thread,
-                    config_thread,
-                    sc.use_avatar,
-                );
-                state.stop_flag = Some(Arc::clone(&stop));
-                state.shared_pool = Some(pool);
-
-                let raw = search(&mut state, &sc);
-
-                if std::env::var("TRACE_SEARCH").is_ok() {
-                    eprintln!(
-                        "[TRACE] strategy {} ({:?}+{:?}+no_weight={}) result={:?} elapsed={:.2}s",
-                        strategy_idx + 1,
-                        sc.selection,
-                        sc.literal_selection,
-                        sc.max_term_weight.is_none(),
-                        raw,
-                        schedule_start.elapsed().as_secs_f64(),
-                    );
-                }
-
-                // Convert raw result: format proof TSTP while state is still live;
-                // demote Saturated→GaveUp for incomplete (weight-bounded) strategies.
-                let result = match raw {
-                    SearchResult::Refutation(id, _) => {
-                        let legacy_store: std::collections::HashMap<_, _> = state
-                            .clause_store
-                            .iter()
-                            .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
-                            .collect();
-                        let proof = extract_proof(id, &legacy_store);
-                        let tstp = format_tstp(&proof, symbols);
-                        SearchResult::Refutation(id, tstp)
+                loop {
+                    if stop.load(Ordering::Relaxed) {
+                        break;
                     }
-                    SearchResult::Saturated if sc.max_term_weight.is_some() => SearchResult::GaveUp,
-                    other => other,
-                };
+                    let strategy_idx = next_strategy.fetch_add(1, Ordering::Relaxed);
+                    if strategy_idx >= actual_configs_ref.len() {
+                        break;
+                    }
 
-                // Signal siblings only for definitive results.
-                if matches!(
-                    result,
-                    SearchResult::Refutation(..) | SearchResult::Saturated
-                ) {
-                    stop.store(true, Ordering::Relaxed);
+                    let search_config = &actual_configs_ref[strategy_idx];
+                    
+                    if search_config.time_limit.is_zero() {
+                        continue;
+                    }
+                    if remaining_at_spawn.is_zero() {
+                        break;
+                    }
+
+                    let mut sc = search_config.clone();
+                    // Scale the individual time slice by the number of workers, capped by wall-clock limit.
+                    let scaled_ms = (sc.time_limit.as_millis() as u64).saturating_mul(num_workers as u64);
+                    sc.time_limit = Duration::from_millis(scaled_ms).min(remaining_at_spawn);
+
+                    if has_epr {
+                        sc.max_term_weight = None;
+                    }
+
+                    let mut state = SearchState::new(
+                        clauses_for_thread.clone(),
+                        id_gen_thread.clone(),
+                        config_thread.clone(),
+                        sc.use_avatar,
+                    );
+                    state.stop_flag = Some(Arc::clone(&stop));
+                    state.shared_pool = Some(Arc::clone(&pool));
+
+                    let raw = search(&mut state, &sc);
+
+                    if std::env::var("TRACE_SEARCH").is_ok() {
+                        eprintln!(
+                            "[TRACE] strategy {} ({:?}+{:?}+no_weight={}) result={:?} elapsed={:.2}s",
+                            strategy_idx + 1,
+                            sc.selection,
+                            sc.literal_selection,
+                            sc.max_term_weight.is_none(),
+                            raw,
+                            schedule_start.elapsed().as_secs_f64(),
+                        );
+                    }
+
+                    let result = match raw {
+                        SearchResult::Refutation(id, _) => {
+                            let legacy_store: std::collections::HashMap<_, _> = state
+                                .clause_store
+                                .iter()
+                                .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
+                                .collect();
+                            let proof = extract_proof(id, &legacy_store);
+                            let tstp = format_tstp(&proof, symbols);
+                            SearchResult::Refutation(id, tstp)
+                        }
+                        SearchResult::Saturated if sc.max_term_weight.is_some() => SearchResult::GaveUp,
+                        other => other,
+                    };
+
+                    if matches!(
+                        result,
+                        SearchResult::Refutation(..) | SearchResult::Saturated
+                    ) {
+                        stop.store(true, Ordering::Relaxed);
+                    }
+
+                    let _ = tx.send((strategy_idx, result));
                 }
-
-                let _ = tx.send((strategy_idx, result));
             });
         }
 
