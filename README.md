@@ -5,7 +5,7 @@
 
 An automated theorem prover written in Rust, targeting the [CASC](http://www.tptp.org/CASC/) competition.
 
-Reads [TPTP](https://www.tptp.org/) problem files and outputs results in [SZS/TSTP](https://tptp.org/Seminars/TPTPContentAndStandards/SZSPresentationSlides.pdf) format using a superposition calculus with a given-clause loop and a strategy portfolio scheduler.
+Reads [TPTP](https://www.tptp.org/) problem files and outputs results in [SZS/TSTP](https://tptp.org/Seminars/TPTPContentAndStandards/SZSPresentationSlides.pdf) format. It employs a **parallel strategy portfolio scheduler** running a **superposition calculus** within a **given-clause loop**, augmented by **AVATAR** (using CaDiCaL) for advanced clause splitting and **cross-strategy clause sharing**.
 
 ## Install
 
@@ -80,24 +80,26 @@ The pipeline for each problem:
 1. **Parse** — `mrs-tptp` converts TPTP text to a zero-copy AST.
 2. **Lower** — `src/lowering.rs` maps the AST to `mrs-core` types.
 3. **Clausify** — `mrs-cnf` transforms formulas to CNF (NNF → Skolemization → definitional CNF). Conjectures are negated for refutation-based proving.
-4. **Search** — `mrs-search` runs a given-clause loop with a strategy portfolio of 9 configurations tried in sequence; the first refutation found wins.
+4. **Search** — `mrs-search` runs a given-clause loop with a strategy portfolio of 11 configurations tried in parallel; the first refutation found wins.
 5. **Output** — `mrs-szs` formats the SZS status line; `mrs-proof` extracts and formats the TSTP proof on refutation.
 
 ### Strategy portfolio
 
-Nine strategies run serially, each with a fresh search state. Time is split proportionally from the total budget:
+11 strategies run in parallel, each with a fresh search state but sharing a pool of globally discovered unit equalities. Time is distributed from the total budget to bound execution:
 
-| # | Selection | Literal selection | Ordering | Time share |
-|---|-----------|-------------------|----------|------------|
-| 1 | AgeWeight(5) | AllNegative | KBO | 15% |
-| 2 | GoalDirected(5) | AllNegative | KBO | 10% |
-| 3 | SmallestFirst | AllNegative | KBO | 10% |
-| 4 | AgeWeight(5) | MaxNegativeOrMaxPositive | KBO | 10% |
-| 5 | AgeWeight(5) | All | KBO | 10% |
-| 6 | FIFO | AllNegative | KBO | 10% |
-| 7 | AgeWeight(5) | AllNegative | LPO | 15% |
-| 8 | GoalDirected(10) | AllNegative | LPO | 10% |
-| 9 | SmallestFirst | AllNegative | LPO | ~10% |
+| # | Selection | Literal selection | Ordering | Time share | Notes |
+|---|-----------|-------------------|----------|------------|-------|
+| 1 | AgeWeight(5) | AllNegative | KBO | 14% | balanced exploration |
+| 2 | SmallestFirst | AllNegative | KBO | 10% | no weight limit + no AVATAR (deep chain proofs) |
+| 3 | SmallestFirst | AllNegative | KBO | 10% | pure best-first |
+| 4 | AgeWeight(5) | MaxNegativeOrMaxPositive | KBO | 9% | aggressive selection |
+| 5 | AgeWeight(5) | All | KBO | 9% | unrestricted literal selection |
+| 6 | AgeWeight(5) | All | KBO | 10% | no AVATAR (FNE/definitional CNF proofs) |
+| 7 | AgeWeight(5) | AllNegative | LPO | 14% | LPO balanced exploration |
+| 8 | GoalDirected(10) | AllNegative | LPO | 9% | LPO goal-directed |
+| 9 | SmallestFirst | AllNegative | LPO | 9% | LPO best-first |
+| 10 | SmallestFirst | All | KBO | 4% | max_weight=30 + no AVATAR (FEQ) |
+| 11 | AgeWeight(5) | All | LPO | ~2% | no weight limit + no AVATAR (FEQ) |
 
 Each strategy runs until its time slice expires or the search space is exhausted.
 

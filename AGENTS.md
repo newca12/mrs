@@ -4,7 +4,7 @@ Quick-start context for AI agents working in this repo.
 
 ## What this is
 
-`mrs` is an automated theorem prover in Rust targeting the CASC competition. It reads **TPTP** problem files and outputs **SZS/TSTP**-formatted results using a superposition calculus with a given-clause loop and strategy portfolio scheduler.
+`mrs` is an automated theorem prover in Rust targeting the CASC competition. It reads **TPTP** problem files and outputs **SZS/TSTP**-formatted results. It employs a **parallel strategy portfolio scheduler** running a **superposition calculus** within a **given-clause loop**, augmented by **AVATAR** (using CaDiCaL) for advanced clause splitting and **cross-strategy clause sharing**.
 
 ## mrs-tptp
 
@@ -133,7 +133,7 @@ The root `Cargo.toml` is both `[workspace]` and `[package]` — valid but unusua
 
 ## Architecture notes
 
-- **Strategy portfolio:** 11 active strategies run **serially**, each with a fresh `SearchState`. No shared state between strategies. A 12th diagnostic strategy (`MRS_SINGLE_STRATEGY=12`) gets `Duration::ZERO` in normal runs.
+- **Strategy portfolio:** 11 active strategies run **in parallel**, sharing a pool of derived unit equalities. A 12th diagnostic strategy (`MRS_SINGLE_STRATEGY=12`) gets `Duration::ZERO` in normal runs.
 - **Default time budget:** 30 seconds; overridable with `--time <seconds>`.
 - **`max_clauses`:** 50,000 per strategy. Hitting this gives `ResourceOut`, not `Timeout`.
 - **Refutation-based:** conjectures are negated before search. A problem with no `conjecture` role checks satisfiability (outputs `Unsatisfiable`/`Satisfiable`).
