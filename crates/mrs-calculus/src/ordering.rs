@@ -220,75 +220,75 @@ impl KBO {
                     return TermComparison::Incomparable;
                 }
 
-                if let Some(ac) = &self.ac_symbols {
-                    if ac.contains(f1) {
-                        let mut s_args_flat = Vec::new();
-                        let mut stack = vec![s];
-                        while let Some(curr) = stack.pop() {
-                            if let mrs_core::term_bank::TermNode::App(g, args) = bank.get(curr) {
-                                if g == f1 {
-                                    stack.extend(args.iter().copied());
-                                    continue;
-                                }
-                            }
-                            s_args_flat.push(curr);
+                if let Some(ac) = &self.ac_symbols
+                    && ac.contains(f1)
+                {
+                    let mut s_args_flat = Vec::new();
+                    let mut stack = vec![s];
+                    while let Some(curr) = stack.pop() {
+                        if let mrs_core::term_bank::TermNode::App(g, args) = bank.get(curr)
+                            && g == f1
+                        {
+                            stack.extend(args.iter().copied());
+                            continue;
                         }
-
-                        let mut t_args_flat = Vec::new();
-                        let mut stack = vec![t];
-                        while let Some(curr) = stack.pop() {
-                            if let mrs_core::term_bank::TermNode::App(g, args) = bank.get(curr) {
-                                if g == f2 {
-                                    stack.extend(args.iter().copied());
-                                    continue;
-                                }
-                            }
-                            t_args_flat.push(curr);
-                        }
-
-                        let mut i = 0;
-                        while i < s_args_flat.len() {
-                            if let Some(j) = t_args_flat.iter().position(|&x| x == s_args_flat[i]) {
-                                s_args_flat.swap_remove(i);
-                                t_args_flat.swap_remove(j);
-                            } else {
-                                i += 1;
-                            }
-                        }
-
-                        if s_args_flat.is_empty() && t_args_flat.is_empty() {
-                            return TermComparison::Equal;
-                        }
-                        if s_args_flat.is_empty() {
-                            if t_ge_s_vars {
-                                return TermComparison::Less;
-                            } else {
-                                return TermComparison::Incomparable;
-                            }
-                        }
-                        if t_args_flat.is_empty() {
-                            if s_ge_t_vars {
-                                return TermComparison::Greater;
-                            } else {
-                                return TermComparison::Incomparable;
-                            }
-                        }
-
-                        let s_gt_t = t_args_flat.iter().all(|&tj| {
-                            s_args_flat.iter().any(|&si| self.compare_id(si, tj, bank) == TermComparison::Greater)
-                        });
-                        let t_gt_s = s_args_flat.iter().all(|&si| {
-                            t_args_flat.iter().any(|&tj| self.compare_id(tj, si, bank) == TermComparison::Greater)
-                        });
-
-                        if s_gt_t && !t_gt_s && s_ge_t_vars {
-                            return TermComparison::Greater;
-                        }
-                        if t_gt_s && !s_gt_t && t_ge_s_vars {
-                            return TermComparison::Less;
-                        }
-                        return TermComparison::Incomparable;
+                        s_args_flat.push(curr);
                     }
+
+                    let mut t_args_flat = Vec::new();
+                    let mut stack = vec![t];
+                    while let Some(curr) = stack.pop() {
+                        if let mrs_core::term_bank::TermNode::App(g, args) = bank.get(curr)
+                            && g == f2
+                        {
+                            stack.extend(args.iter().copied());
+                            continue;
+                        }
+                        t_args_flat.push(curr);
+                    }
+
+                    let mut i = 0;
+                    while i < s_args_flat.len() {
+                        if let Some(j) = t_args_flat.iter().position(|&x| x == s_args_flat[i]) {
+                            s_args_flat.swap_remove(i);
+                            t_args_flat.swap_remove(j);
+                        } else {
+                            i += 1;
+                        }
+                    }
+
+                    if s_args_flat.is_empty() && t_args_flat.is_empty() {
+                        return TermComparison::Equal;
+                    }
+                    if s_args_flat.is_empty() {
+                        if t_ge_s_vars {
+                            return TermComparison::Less;
+                        } else {
+                            return TermComparison::Incomparable;
+                        }
+                    }
+                    if t_args_flat.is_empty() {
+                        if s_ge_t_vars {
+                            return TermComparison::Greater;
+                        } else {
+                            return TermComparison::Incomparable;
+                        }
+                    }
+
+                    let s_gt_t = t_args_flat.iter().all(|&tj| {
+                        s_args_flat.iter().any(|&si| self.compare_id(si, tj, bank) == TermComparison::Greater)
+                    });
+                    let t_gt_s = s_args_flat.iter().all(|&si| {
+                        t_args_flat.iter().any(|&tj| self.compare_id(tj, si, bank) == TermComparison::Greater)
+                    });
+
+                    if s_gt_t && !t_gt_s && s_ge_t_vars {
+                        return TermComparison::Greater;
+                    }
+                    if t_gt_s && !s_gt_t && t_ge_s_vars {
+                        return TermComparison::Less;
+                    }
+                    return TermComparison::Incomparable;
                 }
 
                 for (&a1, &a2) in args1.iter().zip(args2.iter()) {
@@ -375,75 +375,75 @@ impl KBO {
                     return TermComparison::Incomparable;
                 }
 
-                if let Some(ac) = &self.ac_symbols {
-                    if ac.contains(f1) {
-                        let mut s_args_flat = Vec::new();
-                        let mut stack = vec![s];
-                        while let Some(curr) = stack.pop() {
-                            if let Term::App(g, args) = curr {
-                                if g == f1 {
-                                    stack.extend(args.iter());
-                                    continue;
-                                }
-                            }
-                            s_args_flat.push(curr);
+                if let Some(ac) = &self.ac_symbols
+                    && ac.contains(f1)
+                {
+                    let mut s_args_flat = Vec::new();
+                    let mut stack = vec![s];
+                    while let Some(curr) = stack.pop() {
+                        if let Term::App(g, args) = curr
+                            && g == f1
+                        {
+                            stack.extend(args.iter());
+                            continue;
                         }
-
-                        let mut t_args_flat = Vec::new();
-                        let mut stack = vec![t];
-                        while let Some(curr) = stack.pop() {
-                            if let Term::App(g, args) = curr {
-                                if g == f2 {
-                                    stack.extend(args.iter());
-                                    continue;
-                                }
-                            }
-                            t_args_flat.push(curr);
-                        }
-
-                        let mut i = 0;
-                        while i < s_args_flat.len() {
-                            if let Some(j) = t_args_flat.iter().position(|&x| x == s_args_flat[i]) {
-                                s_args_flat.swap_remove(i);
-                                t_args_flat.swap_remove(j);
-                            } else {
-                                i += 1;
-                            }
-                        }
-
-                        if s_args_flat.is_empty() && t_args_flat.is_empty() {
-                            return TermComparison::Equal;
-                        }
-                        if s_args_flat.is_empty() {
-                            if t_ge_s_vars {
-                                return TermComparison::Less;
-                            } else {
-                                return TermComparison::Incomparable;
-                            }
-                        }
-                        if t_args_flat.is_empty() {
-                            if s_ge_t_vars {
-                                return TermComparison::Greater;
-                            } else {
-                                return TermComparison::Incomparable;
-                            }
-                        }
-
-                        let s_gt_t = t_args_flat.iter().all(|&tj| {
-                            s_args_flat.iter().any(|&si| self.compare(si, tj) == TermComparison::Greater)
-                        });
-                        let t_gt_s = s_args_flat.iter().all(|&si| {
-                            t_args_flat.iter().any(|&tj| self.compare(tj, si) == TermComparison::Greater)
-                        });
-
-                        if s_gt_t && !t_gt_s && s_ge_t_vars {
-                            return TermComparison::Greater;
-                        }
-                        if t_gt_s && !s_gt_t && t_ge_s_vars {
-                            return TermComparison::Less;
-                        }
-                        return TermComparison::Incomparable;
+                        s_args_flat.push(curr);
                     }
+
+                    let mut t_args_flat = Vec::new();
+                    let mut stack = vec![t];
+                    while let Some(curr) = stack.pop() {
+                        if let Term::App(g, args) = curr
+                            && g == f2
+                        {
+                            stack.extend(args.iter());
+                            continue;
+                        }
+                        t_args_flat.push(curr);
+                    }
+
+                    let mut i = 0;
+                    while i < s_args_flat.len() {
+                        if let Some(j) = t_args_flat.iter().position(|&x| x == s_args_flat[i]) {
+                            s_args_flat.swap_remove(i);
+                            t_args_flat.swap_remove(j);
+                        } else {
+                            i += 1;
+                        }
+                    }
+
+                    if s_args_flat.is_empty() && t_args_flat.is_empty() {
+                        return TermComparison::Equal;
+                    }
+                    if s_args_flat.is_empty() {
+                        if t_ge_s_vars {
+                            return TermComparison::Less;
+                        } else {
+                            return TermComparison::Incomparable;
+                        }
+                    }
+                    if t_args_flat.is_empty() {
+                        if s_ge_t_vars {
+                            return TermComparison::Greater;
+                        } else {
+                            return TermComparison::Incomparable;
+                        }
+                    }
+
+                    let s_gt_t = t_args_flat.iter().all(|&tj| {
+                        s_args_flat.iter().any(|&si| self.compare(si, tj) == TermComparison::Greater)
+                    });
+                    let t_gt_s = s_args_flat.iter().all(|&si| {
+                        t_args_flat.iter().any(|&tj| self.compare(tj, si) == TermComparison::Greater)
+                    });
+
+                    if s_gt_t && !t_gt_s && s_ge_t_vars {
+                        return TermComparison::Greater;
+                    }
+                    if t_gt_s && !s_gt_t && t_ge_s_vars {
+                        return TermComparison::Less;
+                    }
+                    return TermComparison::Incomparable;
                 }
 
                 // Same symbol: lexicographic comparison of arguments

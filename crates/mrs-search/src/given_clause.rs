@@ -132,7 +132,7 @@ fn avatar_refute_branch(
 
     if matches!(state.avatar.solver.solve(), Some(true)) {
         update_model(state);
-        sync_active_dormant(state, &ordering);
+        sync_active_dormant(state, ordering);
         true
     } else {
         false
@@ -295,10 +295,10 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
     state.assoc_symbols = assoc_syms.clone();
 
     let ac_syms: HashSet<SymbolId> = comm_syms.intersection(&assoc_syms).copied().collect();
-    if !ac_syms.is_empty() {
-        if matches!(ordering, crate::TermOrdering::KBO | crate::TermOrdering::CustomKBO(_)) {
-            ordering = crate::TermOrdering::CustomACKBO(sym_config.clone(), std::sync::Arc::new(ac_syms));
-        }
+    if !ac_syms.is_empty()
+        && matches!(ordering, crate::TermOrdering::KBO | crate::TermOrdering::CustomKBO(_))
+    {
+        ordering = crate::TermOrdering::CustomACKBO(sym_config.clone(), std::sync::Arc::new(ac_syms));
     }
 
     for id in to_remove {
@@ -341,11 +341,11 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         // Ingest shared clauses
         if let Some(pool_lock) = &state.shared_pool {
             let mut to_add = Vec::new();
-            if let Ok(pool) = pool_lock.read() {
-                if state.shared_pool_read < pool.len() {
-                    to_add.extend_from_slice(&pool[state.shared_pool_read..]);
-                    state.shared_pool_read = pool.len();
-                }
+            if let Ok(pool) = pool_lock.read()
+                && state.shared_pool_read < pool.len()
+            {
+                to_add.extend_from_slice(&pool[state.shared_pool_read..]);
+                state.shared_pool_read = pool.len();
             }
             for mut c in to_add {
                 c.id = state.id_gen.next();
@@ -651,13 +651,13 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         state.register_clause(&given.clone());
         state.processed.insert(given.clone(), &state.term_bank);
 
-        if is_unit_positive_equality_id(&given) && given.avatar.is_empty() {
-            if let Some(pool_lock) = &state.shared_pool {
-                if let Ok(mut pool) = pool_lock.write() {
-                    let legacy = state.term_bank.clause_to_legacy(&given);
-                    pool.push(legacy);
-                }
-            }
+        if is_unit_positive_equality_id(&given)
+            && given.avatar.is_empty()
+            && let Some(pool_lock) = &state.shared_pool
+            && let Ok(mut pool) = pool_lock.write()
+        {
+            let legacy = state.term_bank.clause_to_legacy(&given);
+            pool.push(legacy);
         }
 
         if is_unit_positive_equality_id(&given)
@@ -805,13 +805,13 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 for clause in next_processed {
                     state.processed.insert(clause.clone(), &state.term_bank);
 
-                    if is_unit_positive_equality_id(&clause) && clause.avatar.is_empty() {
-                        if let Some(pool_lock) = &state.shared_pool {
-                            if let Ok(mut pool) = pool_lock.write() {
-                                let legacy = state.term_bank.clause_to_legacy(&clause);
-                                pool.push(legacy);
-                            }
-                        }
+                    if is_unit_positive_equality_id(&clause)
+                        && clause.avatar.is_empty()
+                        && let Some(pool_lock) = &state.shared_pool
+                        && let Ok(mut pool) = pool_lock.write()
+                    {
+                        let legacy = state.term_bank.clause_to_legacy(&clause);
+                        pool.push(legacy);
                     }
 
                     if time_ok

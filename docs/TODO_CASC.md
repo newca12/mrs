@@ -15,16 +15,13 @@ This document tracks what remains to be built in `mrs` (the prover) to maximise 
 | Perfect DTree (binding consistency in unify_flat) | `efd4c502` |
 | Parallel 11-strategy portfolio with stop-flag | `34338df3` |
 | SmallVec for TermNode/IdAtom | `c83e01c6` |
+| Clause Sharing Across Parallel Strategies | `c30b201a` |
+| Full AC-Superposition (AC-compatible Term Orderings) | `a8047913` |
+| Replace `varisat` with a `Send`-Compatible SAT Solver | `bb46b4d6` |
 
 ---
 
 ## Remaining Work (ordered by expected CASC impact)
-
-| Clause Sharing Across Parallel Strategies | `c30b201a` |
-
-| Full AC-Superposition (AC-compatible Term Orderings) | `a8047913` |
-
-| Replace `varisat` with a `Send`-Compatible SAT Solver | `bb46b4d6` |
 
 ### 4. Substitution Trees (Indexing Evolution)
 **Impact:** FEQ, FNE. Medium.
@@ -55,6 +52,16 @@ The SInE fallback (restart on <1s saturation) is a binary switch. A finer approa
 Rust's default `HashMap` uses SipHash (cryptographically secure, DoS-resistant). In a theorem prover, keys are small integers (ClauseId, VarId, TermId) not adversarial strings. Swapping to `rustc_hash::FxHashMap` or `ahash::AHashMap` typically yields 10–15% speedup for free.
 
 **Implementation:** Add `rustc-hash` to workspace dependencies, define a type alias `type HashMap<K,V> = rustc_hash::FxHashMap<K,V>`, and replace all `std::collections::HashMap` uses inside `mrs-core`, `mrs-index`, `mrs-search`, `mrs-calculus`.
+
+### 8. SIMD-optimized Feature Vector Index — **+2% performance**
+**File:** `crates/mrs-index/src/fvi.rs`
+
+**The Problem:** The current `can_subsume` check uses a linear scan over a sparse `Vec<(SymbolId, u32)>`. While fine for small clauses, as clause sets grow in FEQ/FNE, the overhead of this linear scan becomes a bottleneck.
+
+**Implementation:**
+- Convert `FeatureVector` to a dense, fixed-size array (e.g., `[u16; 64]`) tracking the most common symbols.
+- Vectorize `can_subsume` using `std::simd` (AVX2-compatible) to compare 16-32 symbol counts in a single instruction.
+- Ensure compatibility with CASC hardware (AVX2, not AVX-512) to avoid SIGILL crashes.
 
 ---
 
