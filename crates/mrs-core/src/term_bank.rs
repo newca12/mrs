@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use smallvec::SmallVec;
+use std::collections::HashMap;
 
 use crate::clause::{Clause, ClauseId, ClauseSource, Literal};
 use crate::formula::Atom;

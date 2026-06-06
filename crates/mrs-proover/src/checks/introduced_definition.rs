@@ -161,7 +161,7 @@ pub fn check<'p>(step: &FOFAnnotated<'p>, registry: &SkolemRegistry) -> StepOutc
                     "introduced(definition) declares already-seen symbol `{sym}`"
                 ));
             }
-            
+
             // To prevent definition laundering (evil_definition_false, etc.),
             // we must structurally validate that the formula is a valid naming fragment.
             // A valid naming fragment is a clause containing the fresh symbol.
@@ -171,12 +171,12 @@ pub fn check<'p>(step: &FOFAnnotated<'p>, registry: &SkolemRegistry) -> StepOutc
                     return StepOutcome::Unknown("Sequent not supported".into());
                 }
             };
-            
+
             let (_, body) = collect_forall(logical);
             if is_naming_clause(body, sym) {
                 return StepOutcome::Sound;
             }
-            
+
             // If it's not a naming clause, fall through to try_skolem_axiom and try_distinctness_axiom
         } else if declared.len() > 1 {
             let all_fresh = declared.iter().all(|s| !registry.seen_symbols.contains(*s));
@@ -187,14 +187,14 @@ pub fn check<'p>(step: &FOFAnnotated<'p>, registry: &SkolemRegistry) -> StepOutc
                         .into(),
                 );
             }
-            
+
             let logical = match &step.formula {
                 FOFStatement::Logical(f) => f,
                 FOFStatement::Sequent(..) => {
                     return StepOutcome::Unknown("Sequent not supported".into());
                 }
             };
-            
+
             let (_, body) = collect_forall(logical);
             let all_valid = declared.iter().all(|&sym| is_naming_clause(body, sym));
             if all_valid {
@@ -299,31 +299,25 @@ fn is_naming_clause(f: &FOFFormula<'_>, sym: &str) -> bool {
     fn is_literal_with_sym(f: &FOFFormula<'_>, sym: &str) -> (bool, bool) {
         let peeled = peel_parens(f);
         match peeled {
-            FOFFormula::Atomic(FOFAtomicFormula::Plain(AtomicWord::Lower(p) | AtomicWord::SingleQuoted(p), _)) => {
-                (true, *p == sym)
-            }
-            FOFFormula::Atomic(FOFAtomicFormula::Defined(w, _)) => {
-                (true, w.0 == sym)
-            }
-            FOFFormula::Atomic(FOFAtomicFormula::System(w, _)) => {
-                (true, w.0 == sym)
-            }
+            FOFFormula::Atomic(FOFAtomicFormula::Plain(
+                AtomicWord::Lower(p) | AtomicWord::SingleQuoted(p),
+                _,
+            )) => (true, *p == sym),
+            FOFFormula::Atomic(FOFAtomicFormula::Defined(w, _)) => (true, w.0 == sym),
+            FOFFormula::Atomic(FOFAtomicFormula::System(w, _)) => (true, w.0 == sym),
             FOFFormula::Negation(inner) => {
                 let inner_peeled = peel_parens(inner);
                 match inner_peeled {
-                    FOFFormula::Atomic(FOFAtomicFormula::Plain(AtomicWord::Lower(p) | AtomicWord::SingleQuoted(p), _)) => {
-                        (true, *p == sym)
-                    }
-                    FOFFormula::Atomic(FOFAtomicFormula::Defined(w, _)) => {
-                        (true, w.0 == sym)
-                    }
-                    FOFFormula::Atomic(FOFAtomicFormula::System(w, _)) => {
-                        (true, w.0 == sym)
-                    }
-                    _ => (false, false)
+                    FOFFormula::Atomic(FOFAtomicFormula::Plain(
+                        AtomicWord::Lower(p) | AtomicWord::SingleQuoted(p),
+                        _,
+                    )) => (true, *p == sym),
+                    FOFFormula::Atomic(FOFAtomicFormula::Defined(w, _)) => (true, w.0 == sym),
+                    FOFFormula::Atomic(FOFAtomicFormula::System(w, _)) => (true, w.0 == sym),
+                    _ => (false, false),
                 }
             }
-            _ => (false, false)
+            _ => (false, false),
         }
     }
 
@@ -333,7 +327,11 @@ fn is_naming_clause(f: &FOFFormula<'_>, sym: &str) -> bool {
     while let Some(curr) = stack.pop() {
         let peeled = peel_parens(curr);
         match peeled {
-            FOFFormula::Binary { left, connective: BinaryConnective::Or, right } => {
+            FOFFormula::Binary {
+                left,
+                connective: BinaryConnective::Or,
+                right,
+            } => {
                 stack.push(left);
                 stack.push(right);
             }

@@ -71,7 +71,7 @@ fn skip_in_flat(flat: &[Cell], pos: usize) -> usize {
     }
 }
 
-use mrs_core::term_bank::{TermBank, TermId, TermNode, IdAtom};
+use mrs_core::term_bank::{IdAtom, TermBank, TermId, TermNode};
 
 fn flatten_id(term: TermId, bank: &TermBank) -> Vec<Cell> {
     let mut cells = Vec::new();
@@ -264,14 +264,14 @@ impl<V: Clone + PartialEq> DTreeId<V> {
                             }
                             if let Some(ref bound_range) = bindings[v_usize] {
                                 let r1 = &query[bound_range.clone()];
-                                let r2 = &query[pos..pos+1];
+                                let r2 = &query[pos..pos + 1];
                                 let r1_has_var = r1.iter().any(|c| matches!(c, Cell::Var(_)));
                                 let r2_has_var = r2.iter().any(|c| matches!(c, Cell::Var(_)));
                                 if r1_has_var || r2_has_var || r1 == r2 {
                                     child.unify_flat(query, pos + 1, results, bindings);
                                 }
                             } else {
-                                bindings[v_usize] = Some(pos..pos+1);
+                                bindings[v_usize] = Some(pos..pos + 1);
                                 child.unify_flat(query, pos + 1, results, bindings);
                                 bindings[v_usize] = None;
                             }
@@ -303,13 +303,23 @@ impl<V: Clone + PartialEq> DTreeId<V> {
                     child.skip_stored(remaining - 1, query, query_pos, results, bindings);
                 }
                 Cell::Sym(_, m) => {
-                    child.skip_stored(remaining - 1 + m as usize, query, query_pos, results, bindings);
+                    child.skip_stored(
+                        remaining - 1 + m as usize,
+                        query,
+                        query_pos,
+                        results,
+                        bindings,
+                    );
                 }
             }
         }
     }
 
-    pub fn get_generalizations(&self, query: TermId, bank: &mrs_core::term_bank::TermBank) -> Vec<V> {
+    pub fn get_generalizations(
+        &self,
+        query: TermId,
+        bank: &mrs_core::term_bank::TermBank,
+    ) -> Vec<V> {
         let mut results = Vec::new();
         let flat = gen_flat(query, bank);
         let mut bindings = Vec::new();
@@ -317,7 +327,13 @@ impl<V: Clone + PartialEq> DTreeId<V> {
         results
     }
 
-    fn get_generalizations_rec<'a>(&self, flat: &'a [Cell], pos: usize, out: &mut Vec<V>, bindings: &mut Vec<Option<&'a [Cell]>>) {
+    fn get_generalizations_rec<'a>(
+        &self,
+        flat: &'a [Cell],
+        pos: usize,
+        out: &mut Vec<V>,
+        bindings: &mut Vec<Option<&'a [Cell]>>,
+    ) {
         if pos == flat.len() {
             out.extend_from_slice(&self.leaves);
             return;

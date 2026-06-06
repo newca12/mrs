@@ -228,14 +228,16 @@ fn flatten_assoc(
     while let Some(current) = stack.pop() {
         let current = deref_id(current, subst, bank);
         if let TermNode::App(g, args) = bank.get(current)
-            && *g == f && assoc.contains(&f) {
-                // It's the same associative symbol, push arguments to stack in reverse
-                // so they are processed left-to-right
-                for arg in args.iter().rev() {
-                    stack.push(*arg);
-                }
-                continue;
+            && *g == f
+            && assoc.contains(&f)
+        {
+            // It's the same associative symbol, push arguments to stack in reverse
+            // so they are processed left-to-right
+            for arg in args.iter().rev() {
+                stack.push(*arg);
             }
+            continue;
+        }
         result.push(current);
     }
     result
@@ -285,7 +287,7 @@ fn unify_ac_rec_id(
                     // For a simple heuristic, just try the normal and reversed order (not full N!)
                     // A proper implementation would do bipartite matching, but we'll try a fast path.
                     let _ok = false;
-                    
+
                     // 1. Normal order
                     let mut subst_try = saved.clone();
                     let mut normal_ok = true;
@@ -328,8 +330,12 @@ fn unify_ac_rec_id(
             }
 
             // Normal binary/n-ary unification
-            let TermNode::App(_, args1) = bank.get(s) else { unreachable!() };
-            let TermNode::App(_, args2) = bank.get(t) else { unreachable!() };
+            let TermNode::App(_, args1) = bank.get(s) else {
+                unreachable!()
+            };
+            let TermNode::App(_, args2) = bank.get(t) else {
+                unreachable!()
+            };
 
             if args1.len() != args2.len() {
                 return Err(UnifyError::ArityMismatch {

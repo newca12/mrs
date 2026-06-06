@@ -151,7 +151,13 @@ fn avatar_refute_branch(
 /// Commutativity: `f(X,Y) = f(Y,X)`
 /// Associativity: `f(f(X,Y),Z) = f(X,f(Y,Z))` or `f(X,f(Y,Z)) = f(f(X,Y),Z)`
 /// Returns the set of commutative symbols, associative symbols, and the IDs of the axioms to remove.
-fn detect_ac_symbols(state: &crate::state::SearchState) -> (HashSet<SymbolId>, HashSet<SymbolId>, Vec<mrs_core::clause::ClauseId>) {
+fn detect_ac_symbols(
+    state: &crate::state::SearchState,
+) -> (
+    HashSet<SymbolId>,
+    HashSet<SymbolId>,
+    Vec<mrs_core::clause::ClauseId>,
+) {
     let mut comm = HashSet::new();
     let mut assoc = HashSet::new();
     let mut to_remove = Vec::new();
@@ -171,62 +177,112 @@ fn detect_ac_symbols(state: &crate::state::SearchState) -> (HashSet<SymbolId>, H
                 state.term_bank.get(args1[1]),
                 state.term_bank.get(args2[0]),
                 state.term_bank.get(args2[1]),
-            )
-                && x1 != y1 && x1 == y2 && y1 == x2 {
-                    comm.insert(*f1);
-                    to_remove.push(clause.id);
-                    continue;
-                }
+            ) && x1 != y1
+                && x1 == y2
+                && y1 == x2
+            {
+                comm.insert(*f1);
+                to_remove.push(clause.id);
+                continue;
+            }
 
             // Associativity: f(f(x,y),z) = f(x,f(y,z))
             // Left side: f(f(x,y),z)
             let is_assoc_left = if let TermNode::App(fl, args_l) = state.term_bank.get(args1[0]) {
                 fl == f1 && args_l.len() == 2
-            } else { false };
+            } else {
+                false
+            };
 
             // Right side: f(x,f(y,z))
             let is_assoc_right = if let TermNode::App(fr, args_r) = state.term_bank.get(args2[1]) {
                 fr == f2 && args_r.len() == 2
-            } else { false };
+            } else {
+                false
+            };
 
             if is_assoc_left && is_assoc_right {
-                let TermNode::App(_, args_l) = state.term_bank.get(args1[0]) else { unreachable!() };
-                let TermNode::App(_, args_r) = state.term_bank.get(args2[1]) else { unreachable!() };
-                
-                if let (TermNode::Var(x1), TermNode::Var(y1), TermNode::Var(z1),
-                        TermNode::Var(x2), TermNode::Var(y2), TermNode::Var(z2)) = (
-                    state.term_bank.get(args_l[0]), state.term_bank.get(args_l[1]), state.term_bank.get(args1[1]),
-                    state.term_bank.get(args2[0]), state.term_bank.get(args_r[0]), state.term_bank.get(args_r[1])
-                )
-                    && x1 != y1 && y1 != z1 && x1 != z1 && x1 == x2 && y1 == y2 && z1 == z2 {
-                        assoc.insert(*f1);
-                        to_remove.push(clause.id);
-                        continue;
-                    }
+                let TermNode::App(_, args_l) = state.term_bank.get(args1[0]) else {
+                    unreachable!()
+                };
+                let TermNode::App(_, args_r) = state.term_bank.get(args2[1]) else {
+                    unreachable!()
+                };
+
+                if let (
+                    TermNode::Var(x1),
+                    TermNode::Var(y1),
+                    TermNode::Var(z1),
+                    TermNode::Var(x2),
+                    TermNode::Var(y2),
+                    TermNode::Var(z2),
+                ) = (
+                    state.term_bank.get(args_l[0]),
+                    state.term_bank.get(args_l[1]),
+                    state.term_bank.get(args1[1]),
+                    state.term_bank.get(args2[0]),
+                    state.term_bank.get(args_r[0]),
+                    state.term_bank.get(args_r[1]),
+                ) && x1 != y1
+                    && y1 != z1
+                    && x1 != z1
+                    && x1 == x2
+                    && y1 == y2
+                    && z1 == z2
+                {
+                    assoc.insert(*f1);
+                    to_remove.push(clause.id);
+                    continue;
+                }
             }
-            
+
             // Associativity reversed: f(x,f(y,z)) = f(f(x,y),z)
-            let is_assoc_left_rev = if let TermNode::App(fl, args_l) = state.term_bank.get(args1[1]) {
+            let is_assoc_left_rev = if let TermNode::App(fl, args_l) = state.term_bank.get(args1[1])
+            {
                 fl == f1 && args_l.len() == 2
-            } else { false };
-            let is_assoc_right_rev = if let TermNode::App(fr, args_r) = state.term_bank.get(args2[0]) {
-                fr == f2 && args_r.len() == 2
-            } else { false };
-            
+            } else {
+                false
+            };
+            let is_assoc_right_rev =
+                if let TermNode::App(fr, args_r) = state.term_bank.get(args2[0]) {
+                    fr == f2 && args_r.len() == 2
+                } else {
+                    false
+                };
+
             if is_assoc_left_rev && is_assoc_right_rev {
-                let TermNode::App(_, args_l) = state.term_bank.get(args1[1]) else { unreachable!() };
-                let TermNode::App(_, args_r) = state.term_bank.get(args2[0]) else { unreachable!() };
-                
-                if let (TermNode::Var(x1), TermNode::Var(y1), TermNode::Var(z1),
-                        TermNode::Var(x2), TermNode::Var(y2), TermNode::Var(z2)) = (
-                    state.term_bank.get(args1[0]), state.term_bank.get(args_l[0]), state.term_bank.get(args_l[1]),
-                    state.term_bank.get(args_r[0]), state.term_bank.get(args_r[1]), state.term_bank.get(args2[1])
-                )
-                    && x1 != y1 && y1 != z1 && x1 != z1 && x1 == x2 && y1 == y2 && z1 == z2 {
-                        assoc.insert(*f1);
-                        to_remove.push(clause.id);
-                        continue;
-                    }
+                let TermNode::App(_, args_l) = state.term_bank.get(args1[1]) else {
+                    unreachable!()
+                };
+                let TermNode::App(_, args_r) = state.term_bank.get(args2[0]) else {
+                    unreachable!()
+                };
+
+                if let (
+                    TermNode::Var(x1),
+                    TermNode::Var(y1),
+                    TermNode::Var(z1),
+                    TermNode::Var(x2),
+                    TermNode::Var(y2),
+                    TermNode::Var(z2),
+                ) = (
+                    state.term_bank.get(args1[0]),
+                    state.term_bank.get(args_l[0]),
+                    state.term_bank.get(args_l[1]),
+                    state.term_bank.get(args_r[0]),
+                    state.term_bank.get(args_r[1]),
+                    state.term_bank.get(args2[1]),
+                ) && x1 != y1
+                    && y1 != z1
+                    && x1 != z1
+                    && x1 == x2
+                    && y1 == y2
+                    && z1 == z2
+                {
+                    assoc.insert(*f1);
+                    to_remove.push(clause.id);
+                    continue;
+                }
             }
         }
     }

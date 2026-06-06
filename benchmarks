@@ -1,3 +1,11 @@
+Results for mrs commit a3cc272eddf2fd408b4705dd650025dbde44a1e0
+
+ongoing
+crates/mrs-bench/casc.sh --systems mrs --casc-times --jobs 2
+
+ongoing
+hack@pve:~/mrs$ crates/mrs-bench/casc.sh --systems mrs  --casc-times --divisions feq
+
 Results for mrs commit 65a6aebe14d676ba8ab990a1397b4a340483c36f (HEAD -> casc-improvements, origin/fix-imperfect-indexing, origin/casc-improvements)
 
 ongoing
@@ -39,8 +47,27 @@ POLARITY VIOLATIONS — none detected.
 
 Results for mrs commit ee8aaf20cfbf7a9c6fefff21303c5eb038191e09 (HEAD -> fix-sine-over-pruning, origin/fix-sine-over-pruning)
 
-ongoing
 [PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ crates/mrs-bench/casc.sh --systems mrs --casc-times --jobs 2
+
+CASC-30 Results — 2026-06-06 06:35  (1101 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        32   18.431
+FEQ            400        46   17.958
+EPU            100         8    0.603
+EPS            100        23   15.448
+UEQ            300        36   44.200
+ICU            101         1   10.395
+------------------  --------------------
+TOTAL         1101       146   23.134
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
 
 Results for mrs commit 34338df31d907db20e708e6dc4d74e63a29d2e9a
 

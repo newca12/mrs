@@ -124,7 +124,7 @@ The current ATP-ladder fallback re-invokes an external ATP subprocess for every 
 | Definition laundering blocked | High | ✅ Done |
 | Vampire Skolem arity-drop → Unsound | High | ✅ Done |
 | AC-equivalence in `axiom_leaf.rs` | High | ❌ TODO |
-| Fix `mrs-tptp` parser crashes | High | ❌ TODO |
+| Fix `test_tptp_solutions.sh` HTML Stripping Bug | High | ✅ Done |
 | Cyclic/recursive definition chain detection | High | ❌ TODO |
 | E-prover Skolemization variable leakage | Medium | ❌ TODO |
 | Batch ATP subprocess calls | Medium | ❌ TODO |

@@ -120,11 +120,7 @@ impl SearchState {
 
     /// Removes a clause and all its descendants from all active and passive sets.
     /// This is Global Subsumption (Orphan Elimination).
-    pub fn remove_clause_and_orphans(
-        &mut self,
-        id: ClauseId,
-        ordering: &crate::TermOrdering,
-    ) {
+    pub fn remove_clause_and_orphans(&mut self, id: ClauseId, ordering: &crate::TermOrdering) {
         let mut stack = vec![id];
         let mut visited = HashSet::new();
 
@@ -138,13 +134,17 @@ impl SearchState {
                 && p.literals.len() == 1
                 && p.literals[0].positive
             {
-                use mrs_core::term_bank::IdAtom;
                 use mrs_calculus::ordering::TermComparison;
+                use mrs_core::term_bank::IdAtom;
                 if let IdAtom::Eq(l, r) = &p.literals[0].atom {
                     if ordering.compare_id(*l, *r, &self.term_bank) == TermComparison::Greater {
-                        self.demod_index.remove(*l, &self.term_bank, &(*l, *r, p.id));
-                    } else if ordering.compare_id(*r, *l, &self.term_bank) == TermComparison::Greater {
-                        self.demod_index.remove(*r, &self.term_bank, &(*r, *l, p.id));
+                        self.demod_index
+                            .remove(*l, &self.term_bank, &(*l, *r, p.id));
+                    } else if ordering.compare_id(*r, *l, &self.term_bank)
+                        == TermComparison::Greater
+                    {
+                        self.demod_index
+                            .remove(*r, &self.term_bank, &(*r, *l, p.id));
                     }
                 }
             }

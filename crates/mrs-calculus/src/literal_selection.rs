@@ -197,9 +197,7 @@ fn id_literal_weight(lit: &IdLiteral, bank: &TermBank) -> u32 {
 fn id_term_weight(term: TermId, bank: &TermBank) -> u32 {
     match bank.get(term) {
         TermNode::Var(_) => 1,
-        TermNode::App(_, args) => {
-            1 + args.iter().map(|&a| id_term_weight(a, bank)).sum::<u32>()
-        }
+        TermNode::App(_, args) => 1 + args.iter().map(|&a| id_term_weight(a, bank)).sum::<u32>(),
     }
 }
 

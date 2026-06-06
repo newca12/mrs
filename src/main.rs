@@ -241,12 +241,12 @@ fn main() {
     let total_budget = Duration::from_secs(time_secs);
     let mut final_result = SearchResult::GaveUp;
     let mut final_status = SzsStatus::GaveUp;
-    
+
     // We run the search up to 2 times: once with SInE (if triggered), and once without if it saturated prematurely.
     let mut attempt = 0;
     while attempt < 2 {
         attempt += 1;
-        
+
         // --- Clausification ---
         let mut id_gen = lowered.id_gen.clone();
         let mut all_clauses: Vec<Clause> = lowered
@@ -304,11 +304,11 @@ fn main() {
                 }
             },
         };
-        
+
         let search_start = std::time::Instant::now();
         let result = run_schedule(&all_clauses, id_gen, &schedule, &lowered.symbols);
         let search_elapsed = search_start.elapsed();
-        
+
         let status = match &result {
             SearchResult::Refutation(..) => {
                 if has_conjecture {
@@ -330,13 +330,20 @@ fn main() {
             SearchResult::Timeout => SzsStatus::Timeout,
             SearchResult::GaveUp => SzsStatus::GaveUp,
         };
-        
+
         final_result = result;
         final_status = status;
-        
+
         // SInE Fallback check
-        if attempt == 1 && sine_triggered && matches!(final_status, SzsStatus::GaveUp) && search_elapsed < Duration::from_secs(1) {
-            info!("% SInE over-pruning suspected (saturated in {:.3}s). Restarting without SInE.", search_elapsed.as_secs_f64());
+        if attempt == 1
+            && sine_triggered
+            && matches!(final_status, SzsStatus::GaveUp)
+            && search_elapsed < Duration::from_secs(1)
+        {
+            info!(
+                "% SInE over-pruning suspected (saturated in {:.3}s). Restarting without SInE.",
+                search_elapsed.as_secs_f64()
+            );
             sine_triggered = false;
             lowered.axioms = backup_axioms.clone();
             lowered.conjectures = backup_conjectures.clone();
@@ -344,7 +351,7 @@ fn main() {
             lowered.id_gen = backup_id_gen.clone();
             continue;
         }
-        
+
         // Otherwise, break out of loop
         break;
     }

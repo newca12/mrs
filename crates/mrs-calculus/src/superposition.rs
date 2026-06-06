@@ -45,16 +45,7 @@ pub fn superpose_id(
     comm: &HashSet<SymbolId>,
     assoc: &HashSet<SymbolId>,
 ) -> Vec<IdClause> {
-    superpose_selected_id(
-        eq_clause,
-        target,
-        bank,
-        ordering,
-        id_gen,
-        None,
-        comm,
-        assoc,
-    )
+    superpose_selected_id(eq_clause, target, bank, ordering, id_gen, None, comm, assoc)
 }
 
 /// Like [`superpose`], but only rewrites into selected literals of the target.
@@ -191,7 +182,8 @@ fn superpose_with_id(
                     None => continue,
                 };
 
-                let sigma = match mrs_unify::robinson::unify_ac_id(from, subterm, bank, comm, assoc) {
+                let sigma = match mrs_unify::robinson::unify_ac_id(from, subterm, bank, comm, assoc)
+                {
                     Ok(s) => s,
                     Err(_) => continue,
                 };
