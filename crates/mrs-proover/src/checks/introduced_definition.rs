@@ -262,6 +262,30 @@ pub fn check<'p>(step: &AnnotatedFormula<'p>, registry: &SkolemRegistry) -> Step
             right,
         } => (peel_parens(left), peel_parens(right)),
         _ => {
+            // The formula is not a biconditional.  Check whether the
+            // annotation carries an intro tag we recognise (but couldn't
+            // fully verify) vs. a bare `introduced(definition)` with no
+            // tag (E's convention that the body MUST be an iff).
+            //
+            // If the annotation carries an *unrecognised* intro tag (e.g.
+            // `general_splitting_component_introduction` used by some
+            // Vampire versions for case-split components), we cannot verify
+            // the step structurally, but we also cannot call it Unsound —
+            // that would cost −1 on a valid proof.  Return Unknown and let
+            // the ATP ladder decide.
+            //
+            // If there is no recognisable intro tag (bare
+            // `introduced(definition)` or only the empty intro list `[]`),
+            // then by the TPTP convention the formula must be an iff.
+            // Anything else is evidence of tampering → Unsound.
+            let ann = step.annotations();
+            if has_unrecognised_intro_tag(ann) {
+                return StepOutcome::Unknown(
+                    "introduced(definition) with unrecognised intro tag and \
+                     non-biconditional body; delegating to ATP"
+                        .into(),
+                );
+            }
             return StepOutcome::Unsound(
                 "introduced(definition) with no new_symbols entry and body is \
                  not a biconditional or Skolem axiom after peeling \
@@ -914,6 +938,49 @@ pub(crate) fn declared_new_symbols_opt<'a>(ann: Option<&Annotations<'a>>) -> Vec
     }
 }
 
+/// The intro-list tags (third argument to `introduced(definition,…,…)`)
+/// that we explicitly handle.  Any OTHER tag encountered in the intro
+/// list is "unrecognised": we cannot verify the step structurally, but
+/// we also cannot assert it is unsound — it may be a valid proof step in
+/// a Vampire dialect we don't fully model yet.
+const RECOGNISED_INTRO_TAGS: &[&str] = &[
+    "skolem_symbol_introduction",
+    "distinctness_axiom",
+    "predicate_definition_introduction",
+    "avatar_definition",
+];
+
+/// Returns `true` if the annotation has a third argument (intro list)
+/// that contains at least one tag NOT in `RECOGNISED_INTRO_TAGS`.
+///
+/// Used by the fallback in `check()`: an unrecognised tag means the
+/// prover is using a proof-construction technique we don't model, so
+/// we return `Unknown` (rather than `Unsound`) to avoid a false
+/// `FailedVerified` penalty on a valid proof.
+fn has_unrecognised_intro_tag(ann: Option<&Annotations<'_>>) -> bool {
+    let Some(ann) = ann else { return false };
+    let GeneralTerm::Function(AtomicWord::Lower("introduced"), args) = &ann.source else {
+        return false;
+    };
+    if args.len() < 3 {
+        return false; // No intro list → recognised (or bare introduced(definition))
+    }
+    let GeneralTerm::List(intro_list) = &args[2] else {
+        return false;
+    };
+    if intro_list.is_empty() {
+        return false; // Empty intro list → no unrecognised tag
+    }
+    // Return true if ANY tag in the list is NOT in RECOGNISED_INTRO_TAGS.
+    intro_list.iter().any(|t| {
+        let tag = match t {
+            GeneralTerm::Word(AtomicWord::Lower(s) | AtomicWord::SingleQuoted(s)) => *s,
+            _ => return true, // Unknown term shape → treat as unrecognised
+        };
+        !RECOGNISED_INTRO_TAGS.contains(&tag)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1161,6 +1228,37 @@ mod tests {
         );
         let reg = SkolemRegistry::new();
         assert!(matches!(check(af, &reg), StepOutcome::Unsound(_)));
+    }
+
+    #[test]
+    fn unknown_for_unrecognised_intro_tag() {
+        // Vampire emits introduced(definition,[],[general_splitting_component_introduction])
+        // for general case-split components.  The formula is a non-iff, non-Skolem
+        // clause, but it is a legitimate conservative extension.  We cannot verify it
+        // structurally, so we must return Unknown (not Unsound — that would falsely
+        // penalise a valid proof).
+        let af = first_fof(
+            "fof(f53, plain, (p(a) | q(b)), \
+             introduced(definition,[],[general_splitting_component_introduction])).",
+        );
+        let reg = SkolemRegistry::new();
+        assert!(
+            matches!(check(af, &reg), StepOutcome::Unknown(_)),
+            "unrecognised intro tag must give Unknown, not Unsound"
+        );
+    }
+
+    #[test]
+    fn unsound_for_bare_introduced_definition_non_iff() {
+        // Bare introduced(definition) with no extra args and a non-iff body:
+        // E's convention is that this MUST be a biconditional.  Anything else
+        // is evidence of tampering and must be Unsound.
+        let af = first_fof("fof(c1, plain, (p(a) | q(b)), introduced(definition)).");
+        let reg = SkolemRegistry::new();
+        assert!(
+            matches!(check(af, &reg), StepOutcome::Unsound(_)),
+            "bare introduced(definition) with non-iff body must be Unsound"
+        );
     }
 }
 
