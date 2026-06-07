@@ -145,28 +145,37 @@ impl LiteralIndex {
 
     /// Returns all clauses that contain a positive equality literal (cloned).
     pub fn get_positive_equality_clauses(&self) -> Vec<IdClause> {
-        self.pos_eq_clauses
+        let mut res: Vec<IdClause> = self
+            .pos_eq_clauses
             .iter()
             .filter_map(|id| self.clauses.get(id).cloned())
-            .collect()
+            .collect();
+        res.sort_unstable_by_key(|c| c.id);
+        res
     }
 
     /// Returns clauses that could potentially subsume the target (cloned).
     pub fn get_subsumption_candidates(&self, target_fv: &FeatureVector) -> Vec<IdClause> {
-        self.clauses
+        let mut res: Vec<IdClause> = self
+            .clauses
             .iter()
             .filter(|(id, _)| self.fvs.get(*id).unwrap().can_subsume(target_fv))
             .map(|(_, c)| c.clone())
-            .collect()
+            .collect();
+        res.sort_unstable_by_key(|c| c.id);
+        res
     }
 
     /// Returns clauses that could potentially BE subsumed by the given clause (cloned).
     pub fn get_subsumed_candidates(&self, subsumer_fv: &FeatureVector) -> Vec<IdClause> {
-        self.clauses
+        let mut res: Vec<IdClause> = self
+            .clauses
             .iter()
             .filter(|(id, _)| subsumer_fv.can_subsume(self.fvs.get(*id).unwrap()))
             .map(|(_, c)| c.clone())
-            .collect()
+            .collect();
+        res.sort_unstable_by_key(|c| c.id);
+        res
     }
 
     /// Returns clauses that could potentially subsumption-resolve the target (cloned).
@@ -174,7 +183,8 @@ impl LiteralIndex {
         &self,
         target_fv: &FeatureVector,
     ) -> Vec<IdClause> {
-        self.clauses
+        let mut res: Vec<IdClause> = self
+            .clauses
             .iter()
             .filter(|(id, _)| {
                 self.fvs
@@ -183,7 +193,9 @@ impl LiteralIndex {
                     .can_subsumption_resolve(target_fv)
             })
             .map(|(_, c)| c.clone())
-            .collect()
+            .collect();
+        res.sort_unstable_by_key(|c| c.id);
+        res
     }
 
     /// Returns a reference to a specific clause by ID.

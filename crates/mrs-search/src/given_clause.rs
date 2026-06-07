@@ -557,7 +557,9 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 .any(|l| l.positive && matches!(&l.atom, IdAtom::Eq(_, _)));
 
             if given_has_pos_eq {
-                let processed_clauses: Vec<IdClause> = state.processed.iter().cloned().collect();
+                let mut processed_clauses: Vec<IdClause> =
+                    state.processed.iter().cloned().collect();
+                processed_clauses.sort_unstable_by_key(|c| c.id);
                 for active in &processed_clauses {
                     let active_sel =
                         selected_literals_id(active, &config.literal_selection, &state.term_bank);

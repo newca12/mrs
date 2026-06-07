@@ -321,7 +321,7 @@ pub fn run_schedule(
     }
 
     let mut syms_by_freq: Vec<(SymbolId, u32)> = sym_counts.into_iter().collect();
-    syms_by_freq.sort_by_key(|&(_, count)| count); // lowest count first (rarest)
+    syms_by_freq.sort_unstable_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0))); // lowest count first (rarest)
 
     // Rare symbols get HIGHER precedence to eliminate them quickly.
     let mut precedence = vec![

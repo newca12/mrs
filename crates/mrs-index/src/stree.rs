@@ -5,7 +5,7 @@
 //!
 //! # Structure
 //!
-//! Every trie node stores a `HashMap<Cell, (Vec<Cell>, STreeId<V>)>`:
+//! Every trie node stores a `BTreeMap<Cell, (Vec<Cell>, STreeId<V>)>`:
 //! - **Key** = first `Cell` of the edge (fast O(1) dispatch on symbol / variable).
 //! - **Value** = `(edge_rest, child)` where `edge_rest` is the remainder of the
 //!   compressed edge label (may be empty, equivalent to `DTreeId`).
@@ -33,7 +33,7 @@
 //! Identical to `DTreeId<V>`: imperfect unification (superset), exact
 //! generalization.  Variable bindings are threaded and checked for consistency.
 
-use crate::HashMap;
+use std::collections::BTreeMap;
 use std::ops::Range;
 
 use mrs_core::term_bank::{IdAtom, TermBank, TermId};
@@ -48,22 +48,6 @@ fn common_prefix_len(a: &[Cell], b: &[Cell]) -> usize {
     a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
 }
 
-/// Skip past the stored subterm starting at edge position `e` in the logical
-/// sequence `[first] ++ rest`.
-fn skip_in_edge(first: Cell, rest: &[Cell], e: usize) -> usize {
-    let cell = if e == 0 { first } else { rest[e - 1] };
-    match cell {
-        Cell::Var(_) => e + 1,
-        Cell::Sym(_, n) => {
-            let mut p = e + 1;
-            for _ in 0..n {
-                p = skip_in_edge(first, rest, p);
-            }
-            p
-        }
-    }
-}
-
 // ── STreeId ──────────────────────────────────────────────────────────────────
 
 /// A path-compressed discrimination tree for `TermId`-keyed terms.
@@ -76,7 +60,7 @@ pub struct STreeId<V> {
     /// Value = `(edge_rest, child)`:
     ///   - `edge_rest`: remaining cells on this edge after the key cell.
     ///   - `child`:     sub-tree rooted after the full edge `[key] ++ edge_rest`.
-    children: HashMap<Cell, (Vec<Cell>, STreeId<V>)>,
+    children: BTreeMap<Cell, (Vec<Cell>, STreeId<V>)>,
     /// Values stored at this node (full path consumed).
     leaves: Vec<V>,
 }
@@ -85,7 +69,7 @@ impl<V: Clone + PartialEq> STreeId<V> {
     /// Creates an empty substitution tree.
     pub fn new() -> Self {
         STreeId {
-            children: HashMap::default(),
+            children: BTreeMap::new(),
             leaves: Vec::new(),
         }
     }
@@ -310,12 +294,76 @@ impl<V: Clone + PartialEq> STreeId<V> {
 impl<V> Default for STreeId<V> {
     fn default() -> Self {
         Self {
-            children: HashMap::default(),
+            children: BTreeMap::new(),
             leaves: Vec::new(),
         }
     }
 }
 
+impl<V: Clone + PartialEq> STreeId<V> {
+    fn skip_stored(
+        &self,
+        remaining: usize,
+        query: &[Cell],
+        q: usize,
+        results: &mut Vec<V>,
+        bindings: &mut Vec<Option<Range<usize>>>,
+    ) {
+        if remaining == 0 {
+            self.unify_flat(query, q, results, bindings);
+            return;
+        }
+
+        for (first_cell, (edge_rest, child)) in &self.children {
+            skip_walk_edge(
+                *first_cell,
+                edge_rest,
+                0,
+                remaining,
+                query,
+                q,
+                child,
+                results,
+                bindings,
+            );
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn skip_walk_edge<V: Clone + PartialEq>(
+    first: Cell,
+    rest: &[Cell],
+    e: usize,
+    mut remaining: usize,
+    query: &[Cell],
+    q: usize,
+    child: &STreeId<V>,
+    results: &mut Vec<V>,
+    bindings: &mut Vec<Option<Range<usize>>>,
+) {
+    let edge_len = 1 + rest.len();
+    let mut e = e;
+
+    while e < edge_len && remaining > 0 {
+        let sc = if e == 0 { first } else { rest[e - 1] };
+        e += 1;
+        match sc {
+            Cell::Var(_) => {
+                remaining -= 1;
+            }
+            Cell::Sym(_, m) => {
+                remaining = remaining - 1 + m as usize;
+            }
+        }
+    }
+
+    if remaining == 0 {
+        unify_walk_edge(first, rest, e, query, q, child, results, bindings);
+    } else {
+        child.skip_stored(remaining, query, q, results, bindings);
+    }
+}
 // ── edge walking — unification ────────────────────────────────────────────────
 //
 // `unify_walk_edge` mirrors `DTreeId::unify_flat` / `DTreeId::skip_stored` but
@@ -371,8 +419,7 @@ fn unify_walk_edge<V: Clone + PartialEq>(
         (Cell::Sym(_, _sn), Cell::Var(_)) => {
             // Query variable matches the entire stored subterm in the edge.
             // Advance query by 1; skip the whole stored subterm in the edge.
-            let e_skip = skip_in_edge(first, rest, e);
-            unify_walk_edge(first, rest, e_skip, query, q + 1, child, results, bindings);
+            skip_walk_edge(first, rest, e + 1, _sn as usize, query, q + 1, child, results, bindings);
         }
 
         (Cell::Var(v), Cell::Sym(_, _)) => {
@@ -444,8 +491,7 @@ fn unify_walk_edge<V: Clone + PartialEq>(
 // sub-children), we need to skip those `n` stored subterms in the edge.
 //
 // This mirrors `DTreeId::skip_stored` but operates on a compressed edge.
-// `unify_walk_edge` already calls `skip_in_edge` which does the right thing
-// for the stored side, so there is no separate skip_stored needed here.
+// `unify_walk_edge` already handles skipping stored subterms properly.
 
 // ── edge walking — generalization ─────────────────────────────────────────────
 

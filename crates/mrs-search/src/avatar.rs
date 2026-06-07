@@ -100,10 +100,9 @@ impl AvatarContext {
             return None; // Cannot be split
         }
 
-        let mut parts = Vec::new();
-        for (_, lits) in components {
-            parts.push(lits);
-        }
+        let mut parts_raw: Vec<(usize, Vec<Literal>)> = components.into_iter().collect();
+        parts_raw.sort_unstable_by_key(|(k, _)| *k);
+        let mut parts: Vec<Vec<Literal>> = parts_raw.into_iter().map(|(_, lits)| lits).collect();
         for lit in ground_lits {
             parts.push(vec![lit]);
         }
@@ -225,7 +224,9 @@ impl AvatarContext {
             return None;
         }
 
-        let mut parts: Vec<Vec<IdLiteral>> = components.into_values().collect();
+        let mut parts_raw: Vec<(usize, Vec<IdLiteral>)> = components.into_iter().collect();
+        parts_raw.sort_unstable_by_key(|(k, _)| *k);
+        let mut parts: Vec<Vec<IdLiteral>> = parts_raw.into_iter().map(|(_, lits)| lits).collect();
         for lit in ground_lits {
             parts.push(vec![lit]);
         }
