@@ -174,21 +174,19 @@ pub fn build<'p>(proof: &'p mrs_tptp::TPTPProblem<'p>) -> Result<Dag<'p>, DagErr
     if falses.is_empty() {
         return Err(DagError::NoFalseRoot);
     }
-    // Determine which nodes are referenced as parents anywhere in the proof.
-    let mut used_as_parent: HashSet<usize> = HashSet::with_capacity(nodes.len());
-    for n in &nodes {
-        for p in &n.parents {
-            if let Some(&pi) = by_name.get(p) {
-                used_as_parent.insert(pi);
-            }
-        }
-    }
-    let unused_falses: Vec<usize> = falses
+    // Valid refutation root: a $false node that is not used as a parent
+    // by any node that is NOT itself a $false node.
+    let refutation_roots: Vec<usize> = falses
         .iter()
         .copied()
-        .filter(|i| !used_as_parent.contains(i))
+        .filter(|&i| {
+            !nodes
+                .iter()
+                .any(|n| n.parents.contains(&nodes[i].name) && !n.is_false)
+        })
         .collect();
-    let root = match unused_falses.as_slice() {
+
+    let root = match refutation_roots.as_slice() {
         [single] => Some(*single),
         [] => {
             // Every $false is consumed by some downstream node — there is no
