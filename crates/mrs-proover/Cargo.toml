@@ -18,4 +18,5 @@ path = "src/bin/mrs-proover.rs"
 mrs-tptp = { workspace = true, features = ["proover", "owned"] }
 mrs-core = { workspace = true, features = ["proover"] }
 mrs-cnf = { workspace = true }
+mrs-search = { workspace = true }
 cadical = { workspace = true }

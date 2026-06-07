@@ -140,18 +140,136 @@ fn projects_conjunct(parent: &Formula, concl: &Formula) -> bool {
         Formula::And(cs) => cs.iter().collect(),
         _ => return false,
     };
-    let concl_canon = canon(&to_nnf(concl));
+    let concl_nnf = to_nnf(concl);
     for c in conjuncts {
         // Re-wrap the conjunct in the peeled universal prefix.
         let mut wrapped = c.clone();
         for &v in binders.iter().rev() {
             wrapped = Formula::forall(v, wrapped);
         }
-        if alpha_equiv(&canon(&wrapped), &concl_canon) {
+        if strict_alpha_equiv(&wrapped, &concl_nnf) {
             return true;
         }
     }
     false
+}
+
+/// A strict version of alpha-equivalence that does NOT ignore order of
+/// associative-commutative operators like And/Or.
+fn strict_alpha_equiv(a: &Formula, b: &Formula) -> bool {
+    let mut left = std::collections::HashMap::new();
+    let mut right = std::collections::HashMap::new();
+    let mut depth: u32 = 0;
+    strict_formula_eq(a, b, &mut left, &mut right, &mut depth)
+}
+
+fn strict_formula_eq(
+    a: &Formula,
+    b: &Formula,
+    left: &mut std::collections::HashMap<VarId, u32>,
+    right: &mut std::collections::HashMap<VarId, u32>,
+    depth: &mut u32,
+) -> bool {
+    match (a, b) {
+        (Formula::True, Formula::True) | (Formula::False, Formula::False) => true,
+        (Formula::Atom(x), Formula::Atom(y)) => atom_eq(x, y, left, right),
+        (Formula::Neg(x), Formula::Neg(y)) => strict_formula_eq(x, y, left, right, depth),
+        (Formula::And(xs), Formula::And(ys)) | (Formula::Or(xs), Formula::Or(ys)) => {
+            if xs.len() != ys.len() {
+                return false;
+            }
+            for (x, y) in xs.iter().zip(ys.iter()) {
+                if !strict_formula_eq(x, y, left, right, depth) {
+                    return false;
+                }
+            }
+            true
+        }
+        (Formula::Iff(a1, b1), Formula::Iff(a2, b2)) => {
+            (strict_formula_eq(a1, a2, left, right, depth)
+                && strict_formula_eq(b1, b2, left, right, depth))
+                || (strict_formula_eq(a1, b2, left, right, depth)
+                    && strict_formula_eq(b1, a2, left, right, depth))
+        }
+        (Formula::Implies(a1, b1), Formula::Implies(a2, b2)) => {
+            strict_formula_eq(a1, a2, left, right, depth)
+                && strict_formula_eq(b1, b2, left, right, depth)
+        }
+        (Formula::Forall(v1, body1), Formula::Forall(v2, body2))
+        | (Formula::Exists(v1, body1), Formula::Exists(v2, body2)) => {
+            let d = *depth;
+            *depth += 1;
+            let old_l = left.insert(*v1, d);
+            let old_r = right.insert(*v2, d);
+            let ok = strict_formula_eq(body1, body2, left, right, depth);
+            match old_l {
+                Some(v) => {
+                    left.insert(*v1, v);
+                }
+                None => {
+                    left.remove(v1);
+                }
+            }
+            match old_r {
+                Some(v) => {
+                    right.insert(*v2, v);
+                }
+                None => {
+                    right.remove(v2);
+                }
+            }
+            *depth -= 1;
+            ok
+        }
+        _ => false,
+    }
+}
+
+fn atom_eq(
+    a: &mrs_core::Atom,
+    b: &mrs_core::Atom,
+    left: &std::collections::HashMap<VarId, u32>,
+    right: &std::collections::HashMap<VarId, u32>,
+) -> bool {
+    match (a, b) {
+        (mrs_core::Atom::Pred(s1, args1), mrs_core::Atom::Pred(s2, args2)) => {
+            s1 == s2
+                && args1.len() == args2.len()
+                && args1
+                    .iter()
+                    .zip(args2.iter())
+                    .all(|(t1, t2)| term_eq(t1, t2, left, right))
+        }
+        (mrs_core::Atom::Eq(l1, r1), mrs_core::Atom::Eq(l2, r2)) => {
+            (term_eq(l1, l2, left, right) && term_eq(r1, r2, left, right))
+                || (term_eq(l1, r2, left, right) && term_eq(r1, l2, left, right))
+        }
+        _ => false,
+    }
+}
+
+fn term_eq(
+    a: &mrs_core::Term,
+    b: &mrs_core::Term,
+    left: &std::collections::HashMap<VarId, u32>,
+    right: &std::collections::HashMap<VarId, u32>,
+) -> bool {
+    match (a, b) {
+        (mrs_core::Term::Var(v1), mrs_core::Term::Var(v2)) => match (left.get(v1), right.get(v2)) {
+            (Some(d1), Some(d2)) => d1 == d2,
+            (None, None) => v1 == v2,
+            _ => false,
+        },
+        (mrs_core::Term::App(f1, args1), mrs_core::Term::App(f2, args2)) => {
+            f1 == f2
+                && args1.len() == args2.len()
+                && args1
+                    .iter()
+                    .zip(args2.iter())
+                    .all(|(t1, t2)| term_eq(t1, t2, left, right))
+        }
+        _ => false,
+    }
 }
 
 /// Canonicalise an NNF formula by flattening, sorting, and de-duplicating
@@ -327,6 +445,23 @@ mod tests {
             "fof_nnf",
         );
         assert!(oc.is_none(), "weakening is not equivalence; got {oc:?}");
+    }
+
+    #[test]
+    fn split_conjunct_weakening_with_reordering_rejected() {
+        // ((a & b) & c) ⊢ (b & a)
+        // is a projection of (a & b) followed by an AC-reorder.
+        // It must NOT be accepted as a pure split_conjunct rule because we
+        // require exact structural projection, avoiding combined operations.
+        let oc = run(
+            "fof(p, plain, ((a & b) & c)).",
+            "fof(s, plain, (b & a), inference(split_conjunct, [], [p])).",
+            "split_conjunct",
+        );
+        assert!(
+            oc.is_none(),
+            "reordered projection should not be accepted; got {oc:?}"
+        );
     }
 
     #[test]

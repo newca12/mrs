@@ -2,11 +2,31 @@
 set -euo pipefail
 
 # test_tptp_solutions.sh
-# Downloads 10 random FOF solutions from TPTP and tests them with mrs-proover.
+#
+# Ad-hoc LIVE spot-check: download random FOF proofs from TPTP and verify them
+# with mrs-proover. Unlike the committed corpus (build_proover_corpus.sh +
+# verify_proover_corpus.sh), this hits the network and samples fresh each run,
+# so it is for exploration, not for a stable regression gate.
+#
+# To avoid the "every run discovers a new failure" problem, this script now
+# samples ONLY systems whose proofs are standard TSTP FOF refutations — the
+# format the ProoVer 2026 competition actually uses (E and Vampire). Random
+# selection across all ~40 TPTP systems pulls in Alethe (cvc5/Z3), TFF
+# (Beagle/iProver), connection-matrix (leanCoP/nanoCoP) and model-finder
+# (Darwin/Paradox) outputs that mrs-proover legitimately cannot verify, which
+# produced misleading "failures" that were really just unsupported formats.
+#
+# For the deterministic, offline regression gate run instead:
+#   crates/mrs-bench/verify_proover_corpus.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 PROOVER="${WORKSPACE_ROOT}/target/release/mrs-proover"
+
+# Systems whose proofs are standard TSTP FOF refutations. The competition's
+# own examples are E and cvc5; E and Vampire are the CASC champions and emit
+# clean fof(...)/cnf(...) derivations ending in $false.
+ALLOWED_SYSTEM_REGEX='System=(E---|Vampire---)'
 
 if [[ ! -x "${PROOVER}" ]]; then
     echo "Building mrs-proover..."
@@ -32,14 +52,15 @@ for PROB in "${PROBLEMS[@]}"; do
     fi
 
     # Find a solution file (.s) for this problem.
-    SOL_URL_PART=$(curl -m 10 -s "https://tptp.org/cgi-bin/SeeTPTP?Category=Solutions&Domain=SYN&File=${PROB}" | grep -oP 'SeeTPTP\?Category=Solutions&Domain=SYN&File=[^"]+\.s' | shuf -n 1 || true)
-    
+    # Restrict to E / Vampire THM refutations (standard TSTP FOF) — see header.
+    SOL_URL_PART=$(curl -m 10 -s "https://tptp.org/cgi-bin/SeeTPTP?Category=Solutions&Domain=SYN&File=${PROB}" | grep -oP 'SeeTPTP\?Category=Solutions&Domain=SYN&File=[^"]+\.s' | grep "THM-" | grep -E "${ALLOWED_SYSTEM_REGEX}" | shuf -n 1 || true)
+
     if [[ -z "${SOL_URL_PART}" ]]; then
         continue
     fi
 
     echo "Found solution for ${PROB}. Downloading..."
-    
+
     # Download the solution file
     RAW_SOL="${WORK_DIR}/Proofs/${PROB}.raw.s"
     curl -m 10 -s "https://tptp.org/cgi-bin/${SOL_URL_PART}" > "${RAW_SOL}"

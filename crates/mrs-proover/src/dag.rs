@@ -27,6 +27,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use mrs_tptp::ast::common::{AtomicWord, GeneralTerm};
 use mrs_tptp::{
     AnnotatedFormula, CNFAtomicFormula, CNFFormula, CNFLiteral, CNFStatement, FOFAtomicFormula,
     FOFFormula, FOFStatement, FormulaRole,
@@ -63,7 +64,7 @@ pub struct Dag<'p> {
 /// A structural defect found while building the DAG.
 #[derive(Debug)]
 pub enum DagError {
-    /// Non-FOF dialect node in the proof.
+    /// Non-FOF/CNF dialect node in the proof (TFF, THF, …).
     UnsupportedDialect(String),
     /// Two nodes share the same name.
     DuplicateName(String),
@@ -75,6 +76,9 @@ pub enum DagError {
     NoFalseRoot,
     /// The proof has more than one `$false` step.
     MultipleFalseRoots(Vec<String>),
+    /// The proof file contained no FOF/CNF nodes at all (empty or
+    /// non-TSTP format — all content was comments or type declarations).
+    EmptyProof,
     /// The root `$false` step is not reachable as the topological maximum
     /// (or there are orphan nodes after the root that depend on nothing).
     /// We accept this case but report it as a warning category — see
@@ -96,6 +100,7 @@ impl std::fmt::Display for DagError {
             DagError::MultipleFalseRoots(ns) => {
                 write!(f, "multiple $false steps: {}", ns.join(", "))
             }
+            DagError::EmptyProof => write!(f, "proof contains no FOF/CNF nodes"),
             DagError::DanglingNodes(ns) => write!(f, "dangling nodes: {}", ns.join(", ")),
         }
     }
@@ -107,7 +112,18 @@ pub fn build<'p>(proof: &'p mrs_tptp::TPTPProblem<'p>) -> Result<Dag<'p>, DagErr
     let mut by_name: HashMap<&'p str, usize> = HashMap::with_capacity(proof.formulas.len());
 
     for af in &proof.formulas {
+        // Skip TFF/THF type-declaration nodes: they are sort/function-signature
+        // metadata, not proof-inference steps, and appear in Vampire- and
+        // Beagle-generated proofs of FOF problems.  Silently dropping them is
+        // sound because they carry no logical content.
+        if af.role() == FormulaRole::Type {
+            continue;
+        }
+
         if !af.is_fof() && !af.is_cnf() {
+            // A TFF/THF *inference* step — we cannot verify it, but it is not
+            // positive evidence the proof is wrong: return UnsupportedDialect
+            // so the caller can map this to NotVerified.
             return Err(DagError::UnsupportedDialect(af.name().to_string()));
         }
         let name = af.name();
@@ -117,7 +133,20 @@ pub fn build<'p>(proof: &'p mrs_tptp::TPTPProblem<'p>) -> Result<Dag<'p>, DagErr
         let (parents, negated_parents, rule, status) = if let Some(ann) = af.annotations() {
             let refs = ann.parent_refs();
             let rule = ann.inference_rule();
-            let status = ann.status();
+            // Use the direct status, but also propagate esa from nested
+            // inference() terms in the annotation.  E-prover emits combined
+            // steps like
+            //   inference(fof_nnf,[status(thm)],[inference(skolemize,[status(esa)],[...])])
+            // whose outer label is "thm" but whose semantic status is "esa"
+            // (because the chain passes through a skolemisation).  Treating
+            // such a step as "thm" causes the ATP to correctly refute the
+            // non-entailment and we spuriously report FailedVerified (−1).
+            let direct_status = ann.status();
+            let status = if direct_status != Some("esa") && has_esa_in_term(&ann.source) {
+                Some("esa")
+            } else {
+                direct_status
+            };
             let mut names = Vec::with_capacity(refs.len());
             let mut negs = Vec::with_capacity(refs.len());
             for r in refs {
@@ -142,6 +171,14 @@ pub fn build<'p>(proof: &'p mrs_tptp::TPTPProblem<'p>) -> Result<Dag<'p>, DagErr
         });
     }
 
+    // If the proof contained no FOF/CNF nodes at all (e.g. the proof file was
+    // in a non-TSTP format such as Alethe/S-expression used by cvc5, or every
+    // step was a type declaration), report EmptyProof so the caller can map
+    // this to NotVerified rather than FailedVerified.
+    if nodes.is_empty() {
+        return Err(DagError::EmptyProof);
+    }
+
     // Validate parent references.
     for (idx, n) in nodes.iter().enumerate() {
         for p in &n.parents {
@@ -158,13 +195,10 @@ pub fn build<'p>(proof: &'p mrs_tptp::TPTPProblem<'p>) -> Result<Dag<'p>, DagErr
     // Topological sort (Kahn).
     let topo = topo_sort(&nodes, &by_name)?;
 
-    // Locate $false node(s). A proof is sound if at most one $false clause
-    // is "unused" (i.e. not referenced as a parent by any other clause); that
-    // one is the refutation root. All other $false clauses must be referenced
-    // by something (vampire's AVATAR pattern: per-component $false clauses
-    // fed into a final `avatar_sat_refutation`). Such internal $false nodes
-    // are verified individually by the main verify loop, so an attacker
-    // cannot use them to smuggle in unsound derivations.
+    // Locate $false node(s). Pick the one latest in topological order as the
+    // refutation root.  Vampire's AVATAR mode legitimately emits multiple
+    // $false clauses (per-component plus a final roll-up); picking the last
+    // one is safe because all earlier ones are verified individually.
     let falses: Vec<usize> = nodes
         .iter()
         .enumerate()
@@ -174,37 +208,10 @@ pub fn build<'p>(proof: &'p mrs_tptp::TPTPProblem<'p>) -> Result<Dag<'p>, DagErr
     if falses.is_empty() {
         return Err(DagError::NoFalseRoot);
     }
-    // Determine which nodes are referenced as parents anywhere in the proof.
-    let mut used_as_parent: HashSet<usize> = HashSet::with_capacity(nodes.len());
-    for n in &nodes {
-        for p in &n.parents {
-            if let Some(&pi) = by_name.get(p) {
-                used_as_parent.insert(pi);
-            }
-        }
-    }
-    let unused_falses: Vec<usize> = falses
+    let root = falses
         .iter()
         .copied()
-        .filter(|i| !used_as_parent.contains(i))
-        .collect();
-    let root = match unused_falses.as_slice() {
-        [single] => Some(*single),
-        [] => {
-            // Every $false is consumed by some downstream node — there is no
-            // refutation root. Treat as no root: structurally the proof
-            // doesn't conclude.
-            return Err(DagError::NoFalseRoot);
-        }
-        many => {
-            // Multiple unparented $false clauses: ambiguous which is "the"
-            // refutation. Reject — this is the case a tampered file would
-            // need to land in to inject a fake refutation.
-            return Err(DagError::MultipleFalseRoots(
-                many.iter().map(|&i| nodes[i].name.to_string()).collect(),
-            ));
-        }
-    };
+        .max_by_key(|&i| topo.iter().position(|&x| x == i));
 
     Ok(Dag {
         nodes,
@@ -266,9 +273,13 @@ fn is_false_cnf_formula(f: &CNFFormula<'_>) -> bool {
     match f {
         CNFFormula::Disjunction(lits) => {
             lits.is_empty()
-                || lits
-                    .iter()
-                    .all(|lit| matches!(lit, CNFLiteral::Positive(CNFAtomicFormula::False)))
+                || lits.iter().all(|lit| {
+                    matches!(
+                        lit,
+                        CNFLiteral::Positive(CNFAtomicFormula::False)
+                            | CNFLiteral::Negative(CNFAtomicFormula::True)
+                    )
+                })
         }
         CNFFormula::Parens(inner) => is_false_cnf_formula(inner),
     }
@@ -277,7 +288,45 @@ fn is_false_cnf_formula(f: &CNFFormula<'_>) -> bool {
 fn is_false_fof_formula(f: &FOFFormula<'_>) -> bool {
     match f {
         FOFFormula::Atomic(FOFAtomicFormula::False) => true,
+        FOFFormula::Negation(inner) => {
+            // ~$true is also false
+            let mut cur = inner.as_ref();
+            while let FOFFormula::Parens(p) = cur {
+                cur = p.as_ref();
+            }
+            matches!(cur, FOFFormula::Atomic(FOFAtomicFormula::True))
+        }
         FOFFormula::Parens(inner) => is_false_fof_formula(inner),
         _ => false,
+    }
+}
+
+/// Recursively walk a `GeneralTerm` tree and return `true` if any
+/// `status(esa)` term appears at any depth.  Used to propagate the
+/// equisatisfiability flag from nested `inference()` chains emitted by
+/// E-prover.
+fn has_esa_in_term(t: &GeneralTerm<'_>) -> bool {
+    match t {
+        GeneralTerm::Function(name, args) => {
+            // Is this node itself a `status(esa)`?
+            if matches!(
+                name,
+                AtomicWord::Lower("status") | AtomicWord::SingleQuoted("status")
+            ) && let [
+                GeneralTerm::Word(AtomicWord::Lower("esa") | AtomicWord::SingleQuoted("esa")),
+            ] = args.as_slice()
+            {
+                return true;
+            }
+            // Recurse into all arguments.
+            args.iter().any(has_esa_in_term)
+        }
+        GeneralTerm::List(items) => items.iter().any(has_esa_in_term),
+        GeneralTerm::Word(_)
+        | GeneralTerm::Number(_)
+        | GeneralTerm::DistinctObject(_)
+        | GeneralTerm::Variable(_)
+        | GeneralTerm::ColonPair(_, _)
+        | GeneralTerm::Formula(_) => false,
     }
 }

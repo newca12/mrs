@@ -270,6 +270,17 @@ fn collect_parent_refs<'a>(t: &GeneralTerm<'a>, negated: bool, out: &mut Vec<Par
                 }
             }
         }
+        // Metis (and other TSTP producers) write parents with an attached
+        // substitution as a colon-pair: `parent_name : [bind(X, $fot(t)), …]`.
+        // The parent is the LEFT side; the right side is the binding list
+        // (an instantiation that is applied to the parent), not a parent
+        // itself. Recurse only into the left so the real parent name is
+        // extracted. Without this, a `inference(subst, [], [p:[bind…]])`
+        // step is seen as having no parent, the entailment query gets empty
+        // premises, and a sound instantiation step is wrongly refuted.
+        GeneralTerm::ColonPair(left, _bindings) => {
+            collect_parent_refs(left, negated, out);
+        }
         _ => {}
     }
 }
@@ -354,5 +365,23 @@ mod tests {
         assert_eq!(refs.len(), 2);
         assert_eq!(refs[0].name, "c_0_3");
         assert_eq!(refs[1].name, "c_0_4");
+    }
+
+    #[test]
+    fn metis_colon_pair_parent_is_extracted() {
+        // Metis writes substitution steps with the parent attached to a
+        // binding list as a colon-pair: `parent : [bind(X, $fot(t))]`.
+        // The parent name is the LEFT side of the colon-pair; the binding
+        // list is an instantiation, not a parent. We must extract
+        // `refute_0_8` and ignore the bindings.
+        let ann = parse_single(
+            "fof(refute_0_11, plain, big_g(z, z), \
+             inference(subst, [], \
+               [refute_0_8 : [bind(X, $fot(z)), bind(Y, $fot(z))]])).",
+        );
+        let refs = ann.parent_refs();
+        assert_eq!(refs.len(), 1, "expected exactly one parent, got {refs:?}");
+        assert_eq!(refs[0].name, "refute_0_8");
+        assert!(!refs[0].negated);
     }
 }

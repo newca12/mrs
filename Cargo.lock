@@ -173,6 +173,7 @@ dependencies = [
  "cadical",
  "mrs-cnf",
  "mrs-core",
+ "mrs-search",
  "mrs-tptp",
 ]
 

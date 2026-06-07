@@ -1,0 +1,179 @@
+# mrs-proover Test Harness: History & Implementation
+
+This note documents the **test/regression infrastructure** for `mrs-proover`
+(the ProoVer 2026 proof verifier). It explains *why* the harness looks the way
+it does, what went wrong with the earlier approach, and how the current
+deterministic corpus works. For the verifier's *scoring* roadmap see
+[`TODO_PROOVER.md`](./TODO_PROOVER.md).
+
+---
+
+## 1. Scoring context (why false rejections matter)
+
+| Outcome | Points |
+|---------|--------|
+| Correctly identify evil proof (`FailedVerified`) | **+2** |
+| Correctly identify good proof (`Verified`) | **+1** |
+| Give up / timeout (`NotVerified`) | 0 |
+| **Falsely reject a good proof (`FailedVerified` on a valid proof)** | **−1** |
+| Falsely verify an evil proof | **−10 (fatal)** |
+
+For the *test harness* the key consequence is the **−1 for a false
+`FailedVerified`**. Verifying a stream of known-valid proofs, the only *wrong*
+outcome is `FailedVerified`; `Verified` is ideal and `NotVerified` is merely a
+missed `+1`, never a penalty. So the regression invariant is simply:
+
+> **No known-valid proof may ever be reported `FailedVerified`.**
+
+---
+
+## 2. History: the random-sampling harness and why it failed
+
+The first harness, `test_tptp_solutions.sh`, did this:
+
+1. Fetch the list of solved FOF problems in TPTP's `SYN` domain.
+2. For each problem, pick **one solution at random** (`shuf -n 1`) out of the
+   ~40 systems TPTP stores per problem.
+3. Strip the SeeTPTP HTML, rewrite `cnf(` → `fof(`, inject a `% Proof :`
+   header, and run `mrs-proover`.
+
+This produced a **different result set on every run** ("each run discovers new
+failures"). The root cause was not a stream of verifier bugs — it was the
+sample. TPTP stores proofs from systems that emit wildly different formats:
+
+| System family | Output format | mrs-proover result | Correct? |
+|---------------|---------------|--------------------|----------|
+| cvc5, Z3 | Alethe S-expressions (`(step @p4 :rule …)`) | `NotVerified: no FOF/CNF nodes` | ✅ 0 pts |
+| Beagle, iProver(TFF), Leo | TFF/THF with `type` decls | `NotVerified: unsupported dialect` | ✅ 0 pts |
+| leanCoP, nanoCoP, ConnectPP | connection-matrix proofs | `NotVerified` / parse-skip | ✅ 0 pts |
+| Darwin, Paradox, Equinox | finite models (`CounterSatisfiable`/`Assurance`) | empty / `NotVerified` | ✅ 0 pts |
+| Metis | `inference(subst,[],[p:[bind…]])` colon-pairs | (was) `FailedVerified` | ❌ −1 bug |
+| SPASS, Otter | clausified anonymous `file(_,unknown)` leaves | (was) `FailedVerified` | ❌ −1 bug |
+| **E, Vampire** | **standard TSTP FOF refutations** | **`Verified`** | ✅ +1 |
+
+The overwhelming majority of "failures" were actually **correct `NotVerified`
+(0 pts)** on formats `mrs-proover` legitimately cannot verify. Only a handful
+were real `−1` bugs, and they were drowned in format noise that changed every
+run.
+
+### What the competition actually feeds
+
+The official ProoVer 2026 examples (`crates/mrs-proover/tests/fixtures/`) are
+**E** and **cvc5** proofs, and every leaf uses **named** provenance
+(`file('Problems/x.p', axiomname)`), never the anonymous `file(_,unknown)`
+form. The competition's distribution is narrow and well-formed (TPTP/TSTP FOF,
+in practice the CASC champions E and Vampire). Hardening against all ~40 exotic
+TPTP systems was both an endless game of whack-a-mole *and* unrepresentative of
+the real target.
+
+---
+
+## 3. The fix: a curated, deterministic, offline corpus
+
+The harness was split into three pieces with a clear separation of concerns.
+
+### 3.1 `build_proover_corpus.sh` — (re)generate fixtures (network)
+
+- Iterates a **fixed list** of ~25 small, fast FOF theorems (`PROBLEMS=(…)`).
+- For each, downloads the problem file plus every **allowlisted** system's THM
+  proof. The allowlist (`ALLOWED_SYSTEMS`) is currently `E---` and `Vampire---`
+  — exactly the systems that emit standard TSTP FOF refutations.
+- Normalises each proof the same way the competition wrapper does (HTML strip,
+  `cnf(`→`fof(`, `% Proof :` header) and stores it under:
+
+  ```
+  crates/mrs-bench/proover-corpus/Problems/<PROB>.p
+  crates/mrs-bench/proover-corpus/proofs/<PROB>__<system>.s
+  ```
+
+- Drops any download that is not a usable refutation (no `fof(`, no `$false`).
+
+This is the **only** networked piece, run only when refreshing the corpus.
+Current corpus: 25 problems × {E, Vampire} ≈ **46 proof files, ~660 KB**, all
+committed to the repo.
+
+### 3.2 `verify_proover_corpus.sh` — the regression gate (offline)
+
+- Verifies every committed proof against its committed problem with a fixed
+  per-proof budget (default 10 s).
+- Tallies `Verified` / `NotVerified` / `FailedVerified`.
+- **Exit 1 iff any proof is `FailedVerified`** — that is the regression
+  invariant from §1. `NotVerified` is reported but tolerated.
+- Never touches the network, so its result is **stable across runs and
+  machines**. This is what CI / pre-commit should run.
+
+Representative output (after the fixes in §4):
+
+```
+[corpus]   Verified      :  42
+[corpus]   NotVerified   :   4
+[corpus]   FailedVerified:   0  (must be 0)
+[corpus] PASS: no known-valid proof was FailedVerified.
+```
+
+The 4 `NotVerified` are E proofs of the PEL-style problems where E folds
+Skolemisation into a `thm`-labelled `fof_nnf` step; the lightweight ATP cannot
+close them in-budget. They cost 0 points, and Vampire verifies the same
+problems, so they are acceptable.
+
+### 3.3 `test_tptp_solutions.sh` — live spot-check (network, exploratory)
+
+Retained for ad-hoc exploration, but now restricted to the **same allowlist**
+(`System=(E---|Vampire---)`) so a live run is representative rather than noisy.
+It is explicitly *not* a regression gate — use `verify_proover_corpus.sh` for
+that.
+
+---
+
+## 4. Real bugs surfaced and fixed along the way
+
+Curating the corpus did not just hide noise — it isolated the two genuine
+`−1` bugs (both from clausifying provers), which were then fixed in the
+library:
+
+1. **Metis colon-pair parents** (`mrs-tptp/src/proover.rs`,
+   `collect_parent_refs`). Metis writes substitution steps as
+   `inference(subst, [], [parent : [bind(X, $fot(t))]])`. The parent is the
+   *left* of the `:`-pair; the right is an instantiation. The old catch-all
+   dropped the parent entirely, so the entailment query got empty premises and
+   a sound instantiation was refuted. Fixed by recursing into the left of a
+   `GeneralTerm::ColonPair`.
+
+2. **Clausified anonymous leaves** (`mrs-proover/src/checks/axiom_leaf.rs`).
+   Provers that clausify the problem up front (SPASS, Otter, …) emit anonymous
+   `file(_,unknown)` leaves that are the NNF/Skolemised/CNF form of an axiom
+   (e.g. `~big_p(u)|big_q(u)|big_r(u)` for `big_p(X)=>(big_q(X)|big_r(X))`).
+   These are faithful but not structurally α/AC-matchable, so the old code
+   returned `Unsound` → `FailedVerified` (−1). Now the anonymous fallback
+   returns `Unknown` instead, **except** when the leaf is itself `$false` /
+   `~$true` (axiom spoofing), which stays `Unsound`. This does not weaken
+   evil-proof detection: the official examples and the `axiom_spoofing` exploit
+   use the *named* path, which is unchanged.
+
+Both fixes are safe under the −10/−1/+2 asymmetry: they only ever turn a false
+`FailedVerified` into `Unknown`/`NotVerified` (or a correctly-extracted
+parent), never the reverse.
+
+---
+
+## 5. How to use the harness
+
+```bash
+# Deterministic, offline regression gate (run this in CI / before committing):
+crates/mrs-bench/verify_proover_corpus.sh
+
+# Refresh the committed fixtures (only when you want new/updated proofs):
+crates/mrs-bench/build_proover_corpus.sh
+
+# Exploratory live spot-check against fresh E/Vampire proofs from TPTP:
+crates/mrs-bench/test_tptp_solutions.sh
+```
+
+### Extending the corpus
+
+Add problem names to `PROBLEMS=(…)` in `build_proover_corpus.sh`, re-run it to
+download the new fixtures, then run `verify_proover_corpus.sh`. If you want
+coverage of another standard-TSTP system, add its `System=` prefix to
+`ALLOWED_SYSTEMS` — but keep the bar high: only add systems whose proofs are
+genuine TSTP FOF refutations, or you will reintroduce the format noise this
+harness was built to eliminate.

@@ -158,24 +158,20 @@ impl Atp for VampireFmbAtp {
     }
 }
 
-/// Backend that calls the in-tree `mrs` binary as a subprocess.
-/// `mrs` is the cheapest rung of the ladder because it is purpose-built for
-/// short FOF problems and reports back a plain SZS line. Requires `mrs` to
-/// be built with the `proover` feature, which adds `--quiet` and stdin (`-`)
-/// input. The `--schedule fast` flag is unconditional (works on any mrs
-/// build). Falls back to a tempfile if the feature is missing, at which
-/// point the only loss is some I/O overhead and noisier output — `parse_szs`
-/// still extracts the SZS line correctly.
+use mrs_core::clause::ClauseIdGen;
+use mrs_search::SearchResult;
+
+/// Backend that calls the in-tree `mrs` binary logic.
+/// Previously called the binary as a subprocess, but now runs completely in-process
+/// using the `mrs-search` library to eliminate subprocess launch overhead (which saves
+/// seconds per proof verification).
 pub struct MrsAtp {
     pub binary: PathBuf,
-    /// When true (default), use `--quiet --schedule fast -` (stdin). When
-    /// false, fall back to the legacy tempfile-based invocation that works
-    /// on any mrs build.
     pub use_proover_mode: bool,
 }
 
 impl MrsAtp {
-    /// Construct an `MrsAtp` pointing at the binary we were compiled with.
+    /// Construct an `MrsAtp` (binary path is ignored now that it is in-process).
     pub fn new() -> Self {
         Self {
             binary: super::discover::find_mrs().unwrap_or_else(|| PathBuf::from("mrs")),
@@ -190,8 +186,6 @@ impl MrsAtp {
         }
     }
 
-    /// Disable proover mode (stdin + `--quiet --schedule fast`). Useful for
-    /// benchmarking the unmodified mrs binary.
     pub fn legacy_mode(mut self) -> Self {
         self.use_proover_mode = false;
         self
@@ -216,33 +210,44 @@ impl Atp for MrsAtp {
         conclusion: &Formula,
         budget: Duration,
     ) -> AtpVerdict {
-        let problem = build_fof_problem(symbols, premises, conclusion);
-        // mrs itself only accepts integer --time, so floor to 1s and
-        // rely on the wall-clock kill for sub-second budgets.
-        let secs = budget.as_secs().max(1).to_string();
+        let mut local_symbols = symbols.clone();
+        let mut id_gen = ClauseIdGen::new();
+        let mut all_clauses = Vec::new();
 
-        if self.use_proover_mode {
-            // Featured mrs: read TPTP from stdin, write only the SZS line.
-            return run_atp(
-                &self.binary,
-                &["--time", &secs, "--quiet", "--schedule", "fast", "-"],
-                &problem,
-                budget,
-            );
+        // 1. Clausify premises (axioms)
+        for (i, p) in premises.iter().enumerate() {
+            let closed = close_universally(p);
+            let name = format!("p{}", i);
+            let clauses =
+                mrs_cnf::clausify(&closed, &mut local_symbols, &mut id_gen, &name, "axiom");
+            all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(100)));
         }
 
-        // Legacy path: write a tempfile and pass it as a positional arg.
-        let tmpdir = std::env::temp_dir();
-        let nonce = std::process::id();
-        let counter = NEXT_TMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = tmpdir.join(format!("mrs-proover-{nonce}-{counter}.p"));
-        if std::fs::write(&path, problem.as_bytes()).is_err() {
-            return AtpVerdict::Unknown;
+        // 2. Clausify conclusion (negated conjecture)
+        let closed_g = close_universally(conclusion);
+        let negated_g = Formula::neg(closed_g);
+        let clauses = mrs_cnf::clausify(
+            &negated_g,
+            &mut local_symbols,
+            &mut id_gen,
+            "g",
+            "negated_conjecture",
+        );
+        all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(0)));
+
+        // 3. Setup fast schedule
+        let schedule = mrs_search::strategy::named::fast(budget);
+
+        // 4. Run schedule in memory
+        let result =
+            mrs_search::strategy::run_schedule(&all_clauses, id_gen, &schedule, &local_symbols);
+
+        match result {
+            SearchResult::Refutation(..) => AtpVerdict::Sound,
+            SearchResult::Saturated => AtpVerdict::Unsound,
+            SearchResult::Timeout => AtpVerdict::Unknown,
+            SearchResult::GaveUp => AtpVerdict::Unknown,
         }
-        let path_str = path.to_string_lossy().into_owned();
-        let verdict = run_atp_file(&self.binary, &["--time", &secs, &path_str], budget);
-        let _ = std::fs::remove_file(&path);
-        verdict
     }
 }
 
@@ -302,22 +307,6 @@ fn run_atp(binary: &std::path::Path, args: &[&str], problem: &str, budget: Durat
     let stdout_bytes = drain_to_bytes(child.stdout.take());
     let (verdict, stdout) = wait_with_timeout(&mut child, budget, stdout_bytes);
     maybe_debug_dump(binary, args, problem, &stdout, verdict);
-    verdict
-}
-
-/// Run an ATP that reads from a file path (rather than stdin).
-fn run_atp_file(binary: &std::path::Path, args: &[&str], budget: Duration) -> AtpVerdict {
-    let Ok(mut child) = Command::new(binary)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
-        return AtpVerdict::Unknown;
-    };
-    let stdout_bytes = drain_to_bytes(child.stdout.take());
-    let (verdict, _stdout) = wait_with_timeout(&mut child, budget, stdout_bytes);
     verdict
 }
 

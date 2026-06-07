@@ -87,6 +87,6 @@ The current ATP-ladder fallback re-invokes an external ATP subprocess for every 
 | Fix `test_tptp_solutions.sh` HTML Stripping Bug | High | ✅ Done |
 | Cyclic/recursive definition chain detection | High | ✅ Done |
 | Basic E/Vampire structural parsing for CASC dataset hardening | Medium | ❌ TODO |
-| Batch ATP subprocess calls | Medium | ❌ TODO |
-| Broader Unsound coverage in generic structural checks | Low–Medium | ❌ TODO |
+| Batch ATP subprocess calls | Medium | ✅ Done |
+| Broader Unsound coverage in generic structural checks | Low–Medium | ✅ Done |
 | Benchmark against Nörgler | After fixes | ❌ TODO |

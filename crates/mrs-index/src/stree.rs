@@ -419,7 +419,17 @@ fn unify_walk_edge<V: Clone + PartialEq>(
         (Cell::Sym(_, _sn), Cell::Var(_)) => {
             // Query variable matches the entire stored subterm in the edge.
             // Advance query by 1; skip the whole stored subterm in the edge.
-            skip_walk_edge(first, rest, e + 1, _sn as usize, query, q + 1, child, results, bindings);
+            skip_walk_edge(
+                first,
+                rest,
+                e + 1,
+                _sn as usize,
+                query,
+                q + 1,
+                child,
+                results,
+                bindings,
+            );
         }
 
         (Cell::Var(v), Cell::Sym(_, _)) => {
