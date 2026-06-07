@@ -218,21 +218,29 @@ impl Atp for MrsAtp {
         for (i, p) in premises.iter().enumerate() {
             let closed = close_universally(p);
             let name = format!("p{}", i);
-            let clauses = mrs_cnf::clausify(&closed, &mut local_symbols, &mut id_gen, &name, "axiom");
+            let clauses =
+                mrs_cnf::clausify(&closed, &mut local_symbols, &mut id_gen, &name, "axiom");
             all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(100)));
         }
 
         // 2. Clausify conclusion (negated conjecture)
         let closed_g = close_universally(conclusion);
         let negated_g = Formula::neg(closed_g);
-        let clauses = mrs_cnf::clausify(&negated_g, &mut local_symbols, &mut id_gen, "g", "negated_conjecture");
+        let clauses = mrs_cnf::clausify(
+            &negated_g,
+            &mut local_symbols,
+            &mut id_gen,
+            "g",
+            "negated_conjecture",
+        );
         all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(0)));
 
         // 3. Setup fast schedule
         let schedule = mrs_search::strategy::named::fast(budget);
 
         // 4. Run schedule in memory
-        let result = mrs_search::strategy::run_schedule(&all_clauses, id_gen, &schedule, &local_symbols);
+        let result =
+            mrs_search::strategy::run_schedule(&all_clauses, id_gen, &schedule, &local_symbols);
 
         match result {
             SearchResult::Refutation(..) => AtpVerdict::Sound,
@@ -301,7 +309,6 @@ fn run_atp(binary: &std::path::Path, args: &[&str], problem: &str, budget: Durat
     maybe_debug_dump(binary, args, problem, &stdout, verdict);
     verdict
 }
-
 
 /// Spawn a background thread that reads the child's stdout into a
 /// shared byte buffer. Returns a join handle and the shared buffer.

@@ -266,10 +266,12 @@ fn is_false_cnf_formula(f: &CNFFormula<'_>) -> bool {
     match f {
         CNFFormula::Disjunction(lits) => {
             lits.is_empty()
-                || lits.iter().all(|lit| match lit {
-                    CNFLiteral::Positive(CNFAtomicFormula::False) => true,
-                    CNFLiteral::Negative(CNFAtomicFormula::True) => true,
-                    _ => false,
+                || lits.iter().all(|lit| {
+                    matches!(
+                        lit,
+                        CNFLiteral::Positive(CNFAtomicFormula::False)
+                            | CNFLiteral::Negative(CNFAtomicFormula::True)
+                    )
                 })
         }
         CNFFormula::Parens(inner) => is_false_cnf_formula(inner),

@@ -186,12 +186,14 @@ fn strict_formula_eq(
             true
         }
         (Formula::Iff(a1, b1), Formula::Iff(a2, b2)) => {
-            (strict_formula_eq(a1, a2, left, right, depth) && strict_formula_eq(b1, b2, left, right, depth))
+            (strict_formula_eq(a1, a2, left, right, depth)
+                && strict_formula_eq(b1, b2, left, right, depth))
                 || (strict_formula_eq(a1, b2, left, right, depth)
                     && strict_formula_eq(b1, a2, left, right, depth))
         }
         (Formula::Implies(a1, b1), Formula::Implies(a2, b2)) => {
-            strict_formula_eq(a1, a2, left, right, depth) && strict_formula_eq(b1, b2, left, right, depth)
+            strict_formula_eq(a1, a2, left, right, depth)
+                && strict_formula_eq(b1, b2, left, right, depth)
         }
         (Formula::Forall(v1, body1), Formula::Forall(v2, body2))
         | (Formula::Exists(v1, body1), Formula::Exists(v2, body2)) => {
@@ -223,7 +225,12 @@ fn strict_formula_eq(
     }
 }
 
-fn atom_eq(a: &mrs_core::Atom, b: &mrs_core::Atom, left: &std::collections::HashMap<VarId, u32>, right: &std::collections::HashMap<VarId, u32>) -> bool {
+fn atom_eq(
+    a: &mrs_core::Atom,
+    b: &mrs_core::Atom,
+    left: &std::collections::HashMap<VarId, u32>,
+    right: &std::collections::HashMap<VarId, u32>,
+) -> bool {
     match (a, b) {
         (mrs_core::Atom::Pred(s1, args1), mrs_core::Atom::Pred(s2, args2)) => {
             s1 == s2
@@ -241,15 +248,18 @@ fn atom_eq(a: &mrs_core::Atom, b: &mrs_core::Atom, left: &std::collections::Hash
     }
 }
 
-fn term_eq(a: &mrs_core::Term, b: &mrs_core::Term, left: &std::collections::HashMap<VarId, u32>, right: &std::collections::HashMap<VarId, u32>) -> bool {
+fn term_eq(
+    a: &mrs_core::Term,
+    b: &mrs_core::Term,
+    left: &std::collections::HashMap<VarId, u32>,
+    right: &std::collections::HashMap<VarId, u32>,
+) -> bool {
     match (a, b) {
-        (mrs_core::Term::Var(v1), mrs_core::Term::Var(v2)) => {
-            match (left.get(v1), right.get(v2)) {
-                (Some(d1), Some(d2)) => d1 == d2,
-                (None, None) => v1 == v2,
-                _ => false,
-            }
-        }
+        (mrs_core::Term::Var(v1), mrs_core::Term::Var(v2)) => match (left.get(v1), right.get(v2)) {
+            (Some(d1), Some(d2)) => d1 == d2,
+            (None, None) => v1 == v2,
+            _ => false,
+        },
         (mrs_core::Term::App(f1, args1), mrs_core::Term::App(f2, args2)) => {
             f1 == f2
                 && args1.len() == args2.len()
@@ -448,7 +458,10 @@ mod tests {
             "fof(s, plain, (b & a), inference(split_conjunct, [], [p])).",
             "split_conjunct",
         );
-        assert!(oc.is_none(), "reordered projection should not be accepted; got {oc:?}");
+        assert!(
+            oc.is_none(),
+            "reordered projection should not be accepted; got {oc:?}"
+        );
     }
 
     #[test]
