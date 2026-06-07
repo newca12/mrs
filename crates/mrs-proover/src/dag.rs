@@ -266,9 +266,11 @@ fn is_false_cnf_formula(f: &CNFFormula<'_>) -> bool {
     match f {
         CNFFormula::Disjunction(lits) => {
             lits.is_empty()
-                || lits
-                    .iter()
-                    .all(|lit| matches!(lit, CNFLiteral::Positive(CNFAtomicFormula::False)))
+                || lits.iter().all(|lit| match lit {
+                    CNFLiteral::Positive(CNFAtomicFormula::False) => true,
+                    CNFLiteral::Negative(CNFAtomicFormula::True) => true,
+                    _ => false,
+                })
         }
         CNFFormula::Parens(inner) => is_false_cnf_formula(inner),
     }
@@ -277,6 +279,14 @@ fn is_false_cnf_formula(f: &CNFFormula<'_>) -> bool {
 fn is_false_fof_formula(f: &FOFFormula<'_>) -> bool {
     match f {
         FOFFormula::Atomic(FOFAtomicFormula::False) => true,
+        FOFFormula::Negation(inner) => {
+            // ~$true is also false
+            let mut cur = inner.as_ref();
+            while let FOFFormula::Parens(p) = cur {
+                cur = p.as_ref();
+            }
+            matches!(cur, FOFFormula::Atomic(FOFAtomicFormula::True))
+        }
         FOFFormula::Parens(inner) => is_false_fof_formula(inner),
         _ => false,
     }
