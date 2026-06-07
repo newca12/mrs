@@ -20,60 +20,58 @@ The scoring is highly asymmetric. A single `−10` requires 10 correct `+1` veri
 
 | Item | Commit |
 |------|--------|
-| E-prover `introduced(definition)` peeling bug fixed | HEAD |
-| `test_tptp_solutions.sh` HTML Stripping Bug | HEAD |
-| Accept CNF Steps in Proof DAG | HEAD |
+| E-prover `introduced(definition)` peeling bug fixed | `4239d51d` |
+| `test_tptp_solutions.sh` HTML Stripping Bug | `4239d51d` |
+| Accept CNF Steps in Proof DAG | `4239d51d` |
 | `introduced(definition)` formula-body validation (definition laundering fix) | `202aae96` |
 | Evil-proof test suite (9 exploit cases) | `202aae96` |
 | `vampire_skolemisation.rs`: `Unknown` → `Unsound` on arity drops and shape violations | `c722f998` |
 | Propositional SAT fast-path for AVATAR/rat/sat_conversion steps | (pre-existing) |
 | Structural definition-folding via unfold + alpha-equivalence | (pre-existing) |
+| Free Variable Skolemization block (`try_skolem_axiom` free-var check) | `c53c0ad6` |
+| `split_conjunct` AC-reorder exploit closed (`strict_alpha_equiv`) | `c53c0ad6` |
+| `MrsAtp` in-process backend (zero subprocess overhead per step) | `c53c0ad6` |
+| `~$true` recognised as valid `$false` root in DAG | `22ab3d02` |
+| Refutation root: pick topologically last `$false` node (AVATAR multi-`$false`) | `1cbc351d` |
+| TFF type-decls skipped; `EmptyProof`/`UnsupportedDialect` → `NotVerified` | `4ed23bdf` |
+| `has_esa_in_term`: propagate `[status(esa)]` from nested E-prover inference chains | `4ed23bdf` |
+| `match_formula` permuted quantifier variable lists (Vampire multi-var Skolem) | `4ed23bdf` |
+| Unrecognised `introduced(definition)` intro tags (e.g. `general_splitting_component_introduction`) → `Unknown` | `c621b94b` |
+| `introduced(choice_axiom)` routed through Skolem-axiom verifier (SnakeForV/Vampire) | `38187884` |
+| Metis `ColonPair` parent extraction (`inference(subst,[],[p:[bind…]])`) | `8f8b3d50` |
+| Clausified anonymous `file(_,unknown)` leaves → `Unknown` (except `$false` spoofing stays `Unsound`) | `8f8b3d50` |
+| Cyclic/recursive definition chain detection (`check_cycles` DFS over DAG) | `4ed23bdf` |
+| Broader structural coverage: `strict_alpha_equiv` for `split_conjunct` projection | `c53c0ad6` |
+| Batch ATP queries: in-process `mrs_search` replaces per-step subprocess | `c53c0ad6` |
+| Deterministic offline E+Vampire regression corpus (46 proofs, 0 `FailedVerified`) | `8f275b16` |
+| `test_tptp_solutions.sh` restricted to E/Vampire allowlist (no format noise) | `8f275b16` |
 
 ---
 
-## Remaining Work (ordered by scoring impact)
+## Remaining Work
 
-### 1. Free Variable Skolemization Exploit — **prevent −10**
-**File:** `crates/mrs-proover/src/checks/introduced_definition.rs`
-
-**The Problem:** The `try_skolem_axiom` check ensures all explicit universal variables are present in the Skolem term, but it *fails to check for free variables*. In TPTP, free variables are implicitly universally quantified. This allows an attacker to introduce a tautological Skolem axiom with a free variable (e.g., `(? [Y]: Y = Z) => sk = Z`), which unsoundly collapses the domain and derives `$false`. This exploit currently bypasses the verifier.
-
-**Implementation:**
-- Reject any `introduced(definition)` Skolem axiom that contains free variables. Ensure all variables in the formula are explicitly bound by quantifiers.
-
-### 5. Recursive / Cyclic Definition Chain Detection — **prevent −10**
-**File:** `crates/mrs-proover/src/checks/introduced_definition.rs`
-
-**The Problem:** The current `is_naming_clause` check ensures each `introduced(definition)` step introduces a *fresh* predicate symbol whose body does not contain a contradiction in isolation. However, it does not check for cycles across *multiple* definitions. An adversary could:
-1. Introduce `p(X) ⟺ ¬q(X)` (fresh `p`, valid).
-2. Introduce `q(X) ⟺ ¬p(X)` (fresh `q`, valid in isolation).
-3. Derive `p(a)` from `q(a)` and step 1, and `q(a)` from `p(a)` and step 2 — contradiction without any genuine inference.
-
-**Implementation:**
-- After collecting all `introduced(definition)` steps, build a dependency graph: `p → q` if the definition of `p` mentions `q`.
-- Run a topological sort / cycle detection (`petgraph::algo::toposort` or hand-written DFS).
-- If a cycle is found, return `StepOutcome::Unsound` for all definitions involved.
-- This check is O(N²) in the number of definitions but definitions are rare in practice.
-
-### 7. Stronger Structural Coverage → More `+2` Points
+### Basic E/Vampire Structural Parsing for CASC Dataset Hardening — **more `+2` points**
 **Files:** Various `crates/mrs-proover/src/checks/`
 
-Several check modules still return `StepOutcome::Unknown` for shapes they do not recognise, scoring 0 when the proof step is actually malformed. The philosophy should be:
-- `Unknown` → "I cannot parse or understand this step at all."
-- `Unsound` → "I understand the step and it violates the rules."
+Several check modules still return `StepOutcome::Unknown` for shapes they do not
+recognise, scoring 0 when the proof step is actually malformed.
 
-Specific targets to harden (from the evil-proofs analysis):
-- `definition_folding.rs`: The recursive body check (`rejects_recursive_definition`) works but only catches one level. Multi-step recursive unfolding through chains of `definition_folding` steps should also trigger `Unsound`.
-- `trivial.rs`: The `weakening_not_accepted_as_equivalence` test passes, but weakenings via conjunction-reordering (`A & B ⊢ B & A`) should be explicitly ruled as `Unknown`, not accidentally accepted via the AC-reorder path.
+Specific targets (from the evil-proofs analysis and CASC dataset experience):
 
-### 8. Performance: Avoid Re-parsing the Problem File Per Step
-**File:** `crates/mrs-proover/src/verify.rs`
+- `definition_folding.rs`: The recursive body check (`rejects_recursive_definition`)
+  works but only catches a *single* level of self-reference inside one definition's
+  body.  Multi-step recursive unfolding through chains of `definition_folding` steps
+  should also trigger `Unsound` (the `has_dependency_cycle` guard already exists at
+  the per-step level; extend it across the whole proof DAG).
 
-The current ATP-ladder fallback re-invokes an external ATP subprocess for every unverified step. On a 100-step proof where 30 steps are `resolution` (not structurally verifiable), this means 30 separate `eprover` process launches, each taking 0.5–2s. On a 30-second wall-clock limit, this easily times out.
+- Anonymous `file(_,unknown)` leaves from pre-clausifying provers (SPASS, Otter)
+  currently return `Unknown`.  An AC-normalising comparison against the Skolemised /
+  CNF form of each axiom would turn these into `Verified` (+1) rather than
+  `NotVerified` (0).  Low priority vs. soundness work but meaningful at scale.
 
-**Implementation:**
-- Batch all ATP queries for a single proof into one subprocess call using the `-m` flag or batch-query format.
-- Alternatively, use an in-process ATP library (the `mrs` binary itself, compiled with `--features proover`) to avoid subprocess overhead entirely.
+### Benchmark Against Nörgler
+Compare `mrs-proover`'s score distribution on the CASC-30 SYN/FOF dataset against
+the Nörgler reference verifier to identify systematic gaps before the competition.
 
 ---
 
@@ -81,12 +79,20 @@ The current ATP-ladder fallback re-invokes an external ATP subprocess for every 
 
 | Task | Priority | Status |
 |------|----------|--------|
-| Free Variable Skolemization block | Critical | ✅ Done |
-| Accept CNF Steps in Proof DAG | High | ✅ Done |
-| Definition laundering blocked | High | ✅ Done |
-| Fix `test_tptp_solutions.sh` HTML Stripping Bug | High | ✅ Done |
-| Cyclic/recursive definition chain detection | High | ✅ Done |
-| Basic E/Vampire structural parsing for CASC dataset hardening | Medium | ❌ TODO |
-| Batch ATP subprocess calls | Medium | ✅ Done |
-| Broader Unsound coverage in generic structural checks | Low–Medium | ✅ Done |
+| Free Variable Skolemization block | Critical | ✅ Done (`c53c0ad6`) |
+| Accept CNF Steps in Proof DAG | High | ✅ Done (`4239d51d`) |
+| Definition laundering blocked | High | ✅ Done (`202aae96`) |
+| Fix `test_tptp_solutions.sh` HTML Stripping Bug | High | ✅ Done (`4239d51d`) |
+| Cyclic/recursive definition chain detection | High | ✅ Done (`4ed23bdf`) |
+| `split_conjunct` AC-reorder exploit closed | High | ✅ Done (`c53c0ad6`) |
+| In-process ATP backend (zero subprocess overhead) | Medium | ✅ Done (`c53c0ad6`) |
+| TFF/non-TSTP proofs → `NotVerified` not `FailedVerified` | Medium | ✅ Done (`4ed23bdf`) |
+| Nested `[status(esa)]` propagation (E combined steps) | Medium | ✅ Done (`4ed23bdf`) |
+| Permuted quantifier variable lists in Skolem axioms | Medium | ✅ Done (`4ed23bdf`) |
+| Unrecognised `introduced(definition)` intro tags | Medium | ✅ Done (`c621b94b`) |
+| `introduced(choice_axiom)` variant | Medium | ✅ Done (`38187884`) |
+| Metis `ColonPair` parent extraction | Medium | ✅ Done (`8f8b3d50`) |
+| Anonymous leaves from clausifying provers → `Unknown` | Medium | ✅ Done (`8f8b3d50`) |
+| Deterministic offline regression corpus | Medium | ✅ Done (`8f275b16`) |
+| Basic E/Vampire structural parsing for CASC dataset hardening | Low–Medium | ❌ TODO |
 | Benchmark against Nörgler | After fixes | ❌ TODO |
