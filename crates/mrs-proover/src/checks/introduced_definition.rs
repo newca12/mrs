@@ -69,8 +69,15 @@ pub fn is_introduced_definition(ann: &Annotations<'_>) -> bool {
         GeneralTerm::Function(AtomicWord::Lower("introduced"), args) if !args.is_empty() => {
             matches!(
                 &args[0],
-                GeneralTerm::Word(AtomicWord::Lower("definition"))
-                    | GeneralTerm::Word(AtomicWord::SingleQuoted("definition"))
+                GeneralTerm::Word(
+                    AtomicWord::Lower("definition")
+                        | AtomicWord::SingleQuoted("definition")
+                        // Vampire/SnakeForV `introduced(choice_axiom,[])` steps are
+                        // conservative extensions structurally identical to Skolem
+                        // axioms.  Route them through the same verification path.
+                        | AtomicWord::Lower("choice_axiom")
+                        | AtomicWord::SingleQuoted("choice_axiom")
+                )
             )
         }
         // `introduced(definition)` with zero further args is sometimes
