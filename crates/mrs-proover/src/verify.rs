@@ -12,7 +12,7 @@ use crate::atp::{Atp, AtpVerdict, NoopAtp};
 use crate::checks::{
     axiom_leaf, introduced_definition, neg_conjecture, skolemize, trivial, vampire_skolemisation,
 };
-use crate::dag::{self, Dag};
+use crate::dag::{self, Dag, DagError};
 use crate::load::LoadedJob;
 use crate::lower::{LowerCtx, lower_annotated_formula};
 use crate::verdict::{StepOutcome, Verdict, aggregate};
@@ -55,6 +55,21 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
     // 1) Build the DAG.
     let dag = match dag::build(job.proof.problem()) {
         Ok(d) => d,
+        // A non-FOF/CNF dialect node (TFF, THF, Alethe, …) means we cannot
+        // verify the proof, but it is NOT evidence the proof is wrong.
+        // Map to NotVerified (0 pts) rather than FailedVerified (−1 pts).
+        Err(DagError::UnsupportedDialect(n)) => {
+            return Verdict::NotVerified(format!(
+                "structural: node {n} uses an unsupported proof dialect (not FOF/CNF)"
+            ));
+        }
+        // An empty proof (no FOF/CNF nodes at all, e.g. Alethe/S-expression
+        // format, or all content was type declarations) is also not verifiable.
+        Err(DagError::EmptyProof) => {
+            return Verdict::NotVerified(
+                "structural: proof contains no FOF/CNF nodes (unsupported format)".into(),
+            );
+        }
         Err(e) => return Verdict::FailedVerified(format!("structural: {e}")),
     };
 

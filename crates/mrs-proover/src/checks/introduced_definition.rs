@@ -530,7 +530,17 @@ fn match_formula<'p>(
                 variables: v2,
                 formula: f2,
             },
-        ) => q1 == q2 && v1 == v2 && match_formula(f1, f2, exists, subst),
+        ) => {
+            // In FOF the order of variables inside a quantifier is semantically
+            // irrelevant: `! [X,Y]: phi` is the same as `! [Y,X]: phi`.
+            // Vampire (and other provers) may permute the bound variable list
+            // when emitting Skolem axiom steps, so we must compare as sets.
+            if q1 != q2 || v1.len() != v2.len() {
+                return false;
+            }
+            let set2: HashSet<&&str> = v2.iter().collect();
+            v1.iter().all(|v| set2.contains(v)) && match_formula(f1, f2, exists, subst)
+        }
         (
             FOFFormula::Binary {
                 left: l1,

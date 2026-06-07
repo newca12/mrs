@@ -32,7 +32,9 @@ for PROB in "${PROBLEMS[@]}"; do
     fi
 
     # Find a solution file (.s) for this problem.
-    SOL_URL_PART=$(curl -m 10 -s "https://tptp.org/cgi-bin/SeeTPTP?Category=Solutions&Domain=SYN&File=${PROB}" | grep -oP 'SeeTPTP\?Category=Solutions&Domain=SYN&File=[^"]+\.s' | shuf -n 1 || true)
+    # Only pick THM (Theorem) refutation-style proofs; skip CSA (CounterSatisfiable),
+    # SAT (Satisfiable), and Ass (Assumption/model-based) solutions.
+    SOL_URL_PART=$(curl -m 10 -s "https://tptp.org/cgi-bin/SeeTPTP?Category=Solutions&Domain=SYN&File=${PROB}" | grep -oP 'SeeTPTP\?Category=Solutions&Domain=SYN&File=[^"]+\.s' | grep "THM-\|UNS-" | grep -v "CSA\|Sat\.\|Ass\." | shuf -n 1 || true)
     
     if [[ -z "${SOL_URL_PART}" ]]; then
         continue
