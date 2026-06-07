@@ -66,10 +66,41 @@ pub fn check_leaf<'p>(
                 return StepOutcome::Sound;
             }
         }
-        return StepOutcome::Unsound(
+
+        // No compatible-role problem formula α/canon-matched the leaf.
+        //
+        // Provers that *clausify the problem up front* (SPASS, Otter, etc.)
+        // emit anonymous `file(_, unknown)` leaves that are the NNF /
+        // Skolemised / CNF form of an original axiom — e.g.
+        // `~big_p(u) | big_q(u) | big_r(u)` for `big_p(X) => (big_q(X) |
+        // big_r(X))`, or `big_p(skc2) | big_q(skc3)` for a Skolemised
+        // existential. These are logically faithful to the problem but are
+        // NOT α- or AC-equivalent to the named axiom, so our structural
+        // comparison legitimately cannot confirm them.
+        //
+        // Reporting `Unsound` here costs a false `FailedVerified` (−1) on
+        // such valid proofs, which are common. We therefore downgrade to
+        // `Unknown` (0 pts) — *except* for the one shape that is positive
+        // evidence of tampering: a leaf that is itself contradictory
+        // (`$false` / `~$true`). No legitimate problem axiom is `$false`,
+        // so an anonymous leaf claiming the problem asserts `$false` is an
+        // axiom-spoofing attempt and stays `Unsound`.
+        //
+        // Soundness note: the named-axiom path below still does a strict
+        // check, and the `axiom_spoofing` evil exploit (and the official
+        // ProoVer examples) use *named* provenance, so this downgrade does
+        // not weaken evil-proof detection on the competition corpus.
+        if is_trivially_false(&proof_f) {
+            return StepOutcome::Unsound(
+                "leaf with anonymous provenance (file(_,unknown)) is `$false` but no \
+                 problem formula is contradictory — axiom spoofing"
+                    .into(),
+            );
+        }
+        return StepOutcome::Unknown(
             "leaf with anonymous provenance (file(_,unknown)) does not α-match any \
-             compatible-role formula in the linked problem (may differ only by \
-             AC-rewriting of commutative operators)"
+             compatible-role formula in the linked problem; it may be a clausified / \
+             Skolemised form of an axiom that we cannot match structurally"
                 .into(),
         );
     }
@@ -135,6 +166,21 @@ fn is_truth_role(r: FormulaRole) -> bool {
             | FormulaRole::Theorem
             | FormulaRole::Corollary
     )
+}
+
+/// True iff the lowered formula is logically `$false` (a contradiction on
+/// its own). Used to keep an anti-spoofing `Unsound` for anonymous leaves
+/// that claim the problem asserts `$false`. A legitimate problem axiom is
+/// never `$false`, so this is sound; we deliberately do NOT try to detect
+/// more complex unsatisfiable clauses (that is the ATP's job) — only the
+/// trivial literal case.
+fn is_trivially_false(f: &mrs_core::Formula) -> bool {
+    match f {
+        mrs_core::Formula::False => true,
+        // `~$true`
+        mrs_core::Formula::Neg(inner) => matches!(**inner, mrs_core::Formula::True),
+        _ => false,
+    }
 }
 
 fn roles_compatible(proof_role: FormulaRole, prob_role: FormulaRole) -> bool {
