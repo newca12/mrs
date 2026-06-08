@@ -277,10 +277,34 @@ fn unify_ac_rec_id<S: BuildHasher>(
                 let flat2 = flatten_assoc(t, *f2, subst, bank, assoc);
 
                 if flat1.len() != flat2.len() {
-                    return Err(UnifyError::ArityMismatch {
-                        expected: flat1.len(),
-                        found: flat2.len(),
-                    });
+                    // Fallback to normal unification when heuristic fails
+                    if comm.contains(f1) && !assoc.contains(f1) {
+                        // For purely commutative, arity mismatch means it's not the same function or invalid
+                        return Err(UnifyError::ArityMismatch {
+                            expected: flat1.len(),
+                            found: flat2.len(),
+                        });
+                    }
+                    
+                    let args1 = match bank.get(s) {
+                        TermNode::App(_, args) => args,
+                        _ => unreachable!(),
+                    };
+                    let args2 = match bank.get(t) {
+                        TermNode::App(_, args) => args,
+                        _ => unreachable!(),
+                    };
+                    
+                    if args1.len() != args2.len() {
+                        return Err(UnifyError::ArityMismatch {
+                            expected: args1.len(),
+                            found: args2.len(),
+                        });
+                    }
+                    for (a1, a2) in args1.iter().zip(args2.iter()) {
+                        unify_ac_rec_id(*a1, *a2, subst, bank, comm, assoc)?;
+                    }
+                    return Ok(());
                 }
 
                 if comm.contains(f1) {

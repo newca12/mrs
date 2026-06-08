@@ -223,7 +223,7 @@ fn detect_ac_symbols(
                     && z1 == z2
                 {
                     assoc.insert(*f1);
-                    to_remove.push(clause.id);
+                    // to_remove.push(clause.id); // DO NOT remove associativity axioms
                     continue;
                 }
             }
@@ -272,7 +272,7 @@ fn detect_ac_symbols(
                     && z1 == z2
                 {
                     assoc.insert(*f1);
-                    to_remove.push(clause.id);
+                    // to_remove.push(clause.id); // DO NOT remove associativity axioms
                     continue;
                 }
             }
