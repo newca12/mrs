@@ -8,6 +8,15 @@ repository.workspace = true
 rust-version.workspace = true
 description = "CASC benchmark harness and report tool for mrs"
 
+[dependencies]
+mrs-core = { workspace = true }
+mrs-tptp = { workspace = true }
+walkdir = "2.5.0"
+
 [[bin]]
 name = "bench_report"
 path = "src/main.rs"
+
+[[bin]]
+name = "categorize_tptp"
+path = "src/bin/categorize_tptp.rs"
