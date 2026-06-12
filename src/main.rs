@@ -26,7 +26,11 @@ fn main() {
     let mut path: Option<String> = None;
     let mut time_secs: u64 = 30;
     let mut schedule_name: Option<String> = None;
+    let mut log_ml_data: Option<String> = None;
+    let mut ml_log_csv = false;
+    let mut ml_weights: Option<String> = None;
     let mut workers: Option<usize> = None;
+
     #[cfg(feature = "proover")]
     let mut quiet = false;
     let mut args = env::args().skip(1);
@@ -64,6 +68,27 @@ fn main() {
                     process::exit(1);
                 });
                 schedule_name = Some(val);
+            }
+            "--log-ml-data" => {
+                let val = args.next().unwrap_or_else(|| {
+                    eprintln!("Error: --log-ml-data requires a directory path");
+                    process::exit(1);
+                });
+                log_ml_data = Some(val);
+            }
+            "--ml-log-csv" => {
+                ml_log_csv = true;
+            }
+            "--ml-weights" => {
+                let val = args.next().unwrap_or_else(|| {
+                    eprintln!("Error: --ml-weights requires a file path");
+                    process::exit(1);
+                });
+                ml_weights = Some(val);
+                // If ml weights are provided but no schedule is selected, default to the `ml` schedule.
+                if schedule_name.is_none() {
+                    schedule_name = Some("ml".to_string());
+                }
             }
             // Deprecated alias: --fast is now --schedule fast.
             "--fast" => {
@@ -303,12 +328,13 @@ fn main() {
             break;
         }
 
-        let search_budget = total_budget - elapsed;
         let actual_workers = workers.unwrap_or_else(|| {
             std::thread::available_parallelism()
                 .map(|n| n.get())
                 .unwrap_or(1)
         });
+
+        let search_budget = total_budget - elapsed;
         let schedule = match schedule_name.as_deref() {
             None => StrategySchedule::default_schedule(search_budget, actual_workers),
             Some(name) => {
@@ -327,7 +353,18 @@ fn main() {
         };
 
         let search_start = std::time::Instant::now();
-        let result = run_schedule(&all_clauses, id_gen, &schedule, &lowered.symbols, workers);
+        let result = run_schedule(
+            &all_clauses,
+            id_gen,
+            &schedule,
+            &lowered.symbols,
+            mrs_search::strategy::MlOptions {
+                log_dir: log_ml_data.clone(),
+                log_csv: ml_log_csv,
+                weights: ml_weights.clone(),
+            },
+            workers,
+        );
         let search_elapsed = search_start.elapsed();
 
         let status = match &result {

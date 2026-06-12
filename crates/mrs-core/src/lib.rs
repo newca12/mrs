@@ -27,6 +27,9 @@ pub mod term_bank;
 #[cfg(feature = "proover")]
 pub mod alpha;
 
+#[cfg(feature = "ml")]
+pub mod ml;
+
 pub use clause::{Clause, ClauseId, ClauseSource, Literal};
 pub use formula::{Atom, Formula};
 pub use subst::Substitution;

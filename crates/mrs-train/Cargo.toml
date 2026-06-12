@@ -1,0 +1,26 @@
+[package]
+name = "mrs-train"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["wgpu"]
+cuda = ["burn/tch"]
+wgpu = ["burn/wgpu"]
+
+[dependencies]
+mrs-core = { workspace = true, features = ["ml"] }
+# Note: default-features = false drops burn-train's `tui` (ratatui) and
+# `sys-metrics` extras; ratatui-widgets 0.3.1 fails to compile on rustc >= 1.96
+# (E0119 coherence conflict with the `time` crate), and a training TUI is not
+# needed for batch runs on the GPU server.
+burn = { version = "0.21.0", default-features = false, features = [
+    "std",
+    "train",
+    "dataset",
+] }
+wincode = "0.5.5"
+walkdir = "2.5.0"

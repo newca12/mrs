@@ -300,7 +300,10 @@ mod tests {
         let (_st, _f, _g, a) = make_symbols();
         let t = Term::constant(a);
         let positions = t.non_variable_positions();
-        assert_eq!(positions, vec![vec![]]);
+        // Explicit type: with the `ml` feature enabled, transitive deps add
+        // `PartialEq` impls that make `vec![vec![]]` ambiguous to infer.
+        let expected: Vec<Vec<usize>> = vec![vec![]];
+        assert_eq!(positions, expected);
     }
 
     #[test]

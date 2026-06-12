@@ -266,7 +266,7 @@ fn make_branch_unit(top_clause: &Clause, k: usize, id_gen: &mut ClauseIdGen) -> 
 pub fn try_componentwise_refute(
     clauses: &[Clause],
     id_gen: &mut ClauseIdGen,
-    symbols: &SymbolTable,
+    symbols: std::sync::Arc<SymbolTable>,
     sym_config: Arc<SymbolConfig>,
 ) -> Option<SearchResult> {
     let top = detect_top_disjunction(clauses)?;
@@ -301,7 +301,13 @@ pub fn try_componentwise_refute(
         let unit = make_branch_unit(top_clause, k, id_gen);
         branch_clauses.push(unit);
 
-        let mut state = SearchState::new(branch_clauses, id_gen.clone(), sym_config.clone(), false);
+        let mut state = SearchState::new(
+            branch_clauses,
+            id_gen.clone(),
+            sym_config.clone(),
+            symbols.clone(),
+            false,
+        );
         let result = search(&mut state, &sub_config);
 
         // Advance the caller's id_gen past any IDs used by this sub-search.
@@ -333,7 +339,7 @@ pub fn try_componentwise_refute(
                     .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
                     .collect();
                 let proof = extract_proof(empty_id, &legacy_store);
-                let tstp = format_tstp(&proof, symbols);
+                let tstp = format_tstp(&proof, &symbols);
                 proof_parts.push(format!(
                     "% --- componentwise branch {}/{}: predicate {:?} ---\n{}",
                     k + 1,
@@ -427,7 +433,7 @@ mod tests {
         let top = make_clause(&mut id_gen, top_lits, "top");
         clauses.push(top);
 
-        let result = try_componentwise_refute(&clauses, &mut id_gen, &syms, make_sym_config());
+        let result = try_componentwise_refute(&clauses, &mut id_gen, std::sync::Arc::new(syms.clone()), make_sym_config());
         assert!(
             matches!(result, Some(SearchResult::Refutation(..))),
             "expected Refutation, got {:?}",
@@ -444,7 +450,7 @@ mod tests {
             make_clause(&mut id_gen, vec![Literal::pos(Atom::prop(p))], "c1"),
             make_clause(&mut id_gen, vec![Literal::neg(Atom::prop(p))], "c2"),
         ];
-        let result = try_componentwise_refute(&clauses, &mut id_gen, &syms, make_sym_config());
+        let result = try_componentwise_refute(&clauses, &mut id_gen, std::sync::Arc::new(syms.clone()), make_sym_config());
         assert!(result.is_none(), "expected None for non-CWA problem");
     }
 

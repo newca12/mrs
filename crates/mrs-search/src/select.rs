@@ -21,6 +21,8 @@ pub enum SelectionStrategy {
     AgeWeight(u32),
     /// Alternate: every `ratio`-th pick is by age (FIFO), rest by distance-penalized weight.
     GoalDirected(u32),
+    /// Alternate: every `ratio`-th pick is by age (FIFO), rest by ML-guided score blended with weight using `alpha`.
+    MlGuided { ratio: u32, alpha: f32 },
 }
 
 /// Selects and removes a clause ID from the unprocessed set.
@@ -55,6 +57,23 @@ pub fn select(
                 unprocessed.pop_age()
             } else {
                 unprocessed.pop_goal_directed()
+            }
+        }
+
+        SelectionStrategy::MlGuided { ratio, .. } => {
+            if *ratio == 0 || iteration.is_multiple_of(*ratio as u64) {
+                unprocessed.pop_age()
+            } else {
+                #[cfg(feature = "ml-guidance")]
+                {
+                    unprocessed.pop_ml()
+                }
+                #[cfg(not(feature = "ml-guidance"))]
+                {
+                    // Without the ml-guidance feature there is no ML queue;
+                    // degrade gracefully to plain weight-based selection.
+                    unprocessed.pop_weight()
+                }
             }
         }
     }
@@ -94,9 +113,9 @@ mod tests {
         let mut unproc = UnprocessedSet::new(std::sync::Arc::new(
             mrs_calculus::ordering::SymbolConfig::default(),
         ));
-        unproc.push(&make_id_clause(0, 3, &mut bank), &bank);
-        unproc.push(&make_id_clause(1, 1, &mut bank), &bank);
-        unproc.push(&make_id_clause(2, 2, &mut bank), &bank);
+        unproc.push(&make_id_clause(0, 3, &mut bank), &bank, None);
+        unproc.push(&make_id_clause(1, 1, &mut bank), &bank, None);
+        unproc.push(&make_id_clause(2, 2, &mut bank), &bank, None);
 
         let selected = select(&mut unproc, &SelectionStrategy::Fifo, 0).unwrap();
         assert_eq!(selected, ClauseId(0));
@@ -108,9 +127,9 @@ mod tests {
         let mut unproc = UnprocessedSet::new(std::sync::Arc::new(
             mrs_calculus::ordering::SymbolConfig::default(),
         ));
-        unproc.push(&make_id_clause(0, 3, &mut bank), &bank);
-        unproc.push(&make_id_clause(1, 1, &mut bank), &bank);
-        unproc.push(&make_id_clause(2, 2, &mut bank), &bank);
+        unproc.push(&make_id_clause(0, 3, &mut bank), &bank, None);
+        unproc.push(&make_id_clause(1, 1, &mut bank), &bank, None);
+        unproc.push(&make_id_clause(2, 2, &mut bank), &bank, None);
 
         let selected = select(&mut unproc, &SelectionStrategy::SmallestFirst, 0).unwrap();
         assert_eq!(selected, ClauseId(1));
@@ -122,8 +141,8 @@ mod tests {
         let mut unproc = UnprocessedSet::new(std::sync::Arc::new(
             mrs_calculus::ordering::SymbolConfig::default(),
         ));
-        unproc.push(&make_id_clause(0, 3, &mut bank), &bank); // oldest, largest
-        unproc.push(&make_id_clause(1, 1, &mut bank), &bank); // smallest
+        unproc.push(&make_id_clause(0, 3, &mut bank), &bank, None); // oldest, largest
+        unproc.push(&make_id_clause(1, 1, &mut bank), &bank, None); // smallest
 
         // ratio=2: iteration 0 -> age (FIFO), iteration 1 -> weight
         let s0 = select(&mut unproc, &SelectionStrategy::AgeWeight(2), 0).unwrap();

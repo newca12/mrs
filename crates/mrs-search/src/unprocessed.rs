@@ -54,6 +54,9 @@ pub struct UnprocessedSet {
     weight_queue: BinaryHeap<WeightWrapper>,
     /// Priority queue ordered by distance to conjecture + weight.
     goal_queue: BinaryHeap<WeightWrapper>,
+    /// Priority queue ordered by ML-guided score + weight.
+    #[cfg(feature = "ml-guidance")]
+    ml_queue: BinaryHeap<WeightWrapper>,
     /// Configuration for symbol precedence and weights.
     config: Arc<SymbolConfig>,
 }
@@ -67,12 +70,20 @@ impl UnprocessedSet {
             age_queue: VecDeque::new(),
             weight_queue: BinaryHeap::new(),
             goal_queue: BinaryHeap::new(),
+            #[cfg(feature = "ml-guidance")]
+            ml_queue: BinaryHeap::new(),
             config,
         }
     }
 
     /// Adds an `IdClause` to the unprocessed set.
-    pub fn push(&mut self, clause: &IdClause, bank: &TermBank) {
+    ///
+    /// `ml_score` is the raw logit from the ML clause classifier; it only
+    /// affects the ML priority queue (`ml-guidance` feature). In the default
+    /// build the parameter is ignored and costs nothing.
+    pub fn push(&mut self, clause: &IdClause, bank: &TermBank, ml_score: Option<f32>) {
+        #[cfg(not(feature = "ml-guidance"))]
+        let _ = ml_score;
         let id = clause.id;
         let weight = clause_weight_id(clause, bank, &self.config);
 
@@ -91,6 +102,24 @@ impl UnprocessedSet {
             id,
             weight: goal_weight,
         });
+        #[cfg(feature = "ml-guidance")]
+        {
+            // ML priority = α * norm(weight) + (1 - α) * (1 - σ(score))
+            // We use α = 0.3, K = 20 for normalization.
+            let ml_priority = if let Some(score) = ml_score {
+                let alpha = 0.3;
+                let norm_weight = weight as f32 / (weight as f32 + 20.0);
+                let sigmoid = 1.0 / (1.0 + (-score).exp());
+                let priority_f32 = alpha * norm_weight + (1.0 - alpha) * (1.0 - sigmoid);
+                (priority_f32 * 1_000_000.0) as u32
+            } else {
+                weight // Fallback
+            };
+            self.ml_queue.push(WeightWrapper {
+                id,
+                weight: ml_priority,
+            });
+        }
     }
 
     /// Returns `true` if there are no clauses in the set.
@@ -123,6 +152,18 @@ impl UnprocessedSet {
     /// Pops the clause with the lowest distance-penalized weight.
     pub fn pop_goal_directed(&mut self) -> Option<ClauseId> {
         while let Some(wrapper) = self.goal_queue.pop() {
+            if self.active_ids.remove(&wrapper.id) {
+                self.fvs.remove(&wrapper.id);
+                return Some(wrapper.id);
+            }
+        }
+        None
+    }
+
+    /// Pops the clause with the lowest ML priority.
+    #[cfg(feature = "ml-guidance")]
+    pub fn pop_ml(&mut self) -> Option<ClauseId> {
+        while let Some(wrapper) = self.ml_queue.pop() {
             if self.active_ids.remove(&wrapper.id) {
                 self.fvs.remove(&wrapper.id);
                 return Some(wrapper.id);

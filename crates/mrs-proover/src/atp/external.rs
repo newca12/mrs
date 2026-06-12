@@ -244,6 +244,7 @@ impl Atp for MrsAtp {
             id_gen,
             &schedule,
             &local_symbols,
+            mrs_search::strategy::MlOptions::default(),
             None,
         );
 

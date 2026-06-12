@@ -85,7 +85,11 @@ fn sync_active_dormant(state: &mut SearchState, ordering: &crate::TermOrdering) 
         .collect();
     for id in to_restore_proc {
         let p = state.dormant_processed.remove(&id).unwrap();
-        state.unprocessed.push(&p, &state.term_bank);
+        #[cfg(feature = "ml-guidance")]
+        let score = state.get_ml_score(&p);
+        #[cfg(not(feature = "ml-guidance"))]
+        let score = None;
+        state.unprocessed.push(&p, &state.term_bank, score);
     }
 
     // 4. Dormant Unprocessed -> Unprocessed
@@ -97,7 +101,11 @@ fn sync_active_dormant(state: &mut SearchState, ordering: &crate::TermOrdering) 
         .collect();
     for id in to_restore_unproc {
         let u = state.dormant_unprocessed.remove(&id).unwrap();
-        state.unprocessed.push(&u, &state.term_bank);
+        #[cfg(feature = "ml-guidance")]
+        let score = state.get_ml_score(&u);
+        #[cfg(not(feature = "ml-guidance"))]
+        let score = None;
+        state.unprocessed.push(&u, &state.term_bank, score);
     }
 }
 
@@ -365,7 +373,11 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         && subsumption::subsumes_id(p, &id_clause, &mut state.term_bank)
                 }) {
                     state.register_clause(&id_clause.clone());
-                    state.unprocessed.push(&id_clause, &state.term_bank);
+                    #[cfg(feature = "ml-guidance")]
+                    let score = state.get_ml_score(&id_clause);
+                    #[cfg(not(feature = "ml-guidance"))]
+                    let score = None;
+                    state.unprocessed.push(&id_clause, &state.term_bank, score);
                 }
             }
         }
@@ -1054,7 +1066,11 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 }
 
                 state.register_clause(&clause.clone());
-                state.unprocessed.push(&clause, &state.term_bank);
+                #[cfg(feature = "ml-guidance")]
+                let score = state.get_ml_score(&clause);
+                #[cfg(not(feature = "ml-guidance"))]
+                let score = None;
+                state.unprocessed.push(&clause, &state.term_bank, score);
             }
         }
 
@@ -1130,6 +1146,7 @@ mod tests {
             vec![c1, c2],
             id_gen,
             std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+            std::sync::Arc::new(mrs_core::SymbolTable::new()),
             true,
         );
         let config = SearchConfig::default();
@@ -1177,6 +1194,7 @@ mod tests {
             vec![c1, c2, c3],
             id_gen,
             std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+            std::sync::Arc::new(mrs_core::SymbolTable::new()),
             true,
         );
         let config = SearchConfig::default();
@@ -1210,6 +1228,7 @@ mod tests {
             vec![c1, c2],
             id_gen,
             std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+            std::sync::Arc::new(mrs_core::SymbolTable::new()),
             true,
         );
         let config = SearchConfig::default();
@@ -1292,6 +1311,7 @@ mod tests {
             clauses.clone(),
             id_gen.clone(),
             std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+            std::sync::Arc::new(mrs_core::SymbolTable::new()),
             true,
         );
         let config = SearchConfig {
@@ -1346,6 +1366,7 @@ mod tests {
             vec![clause_a, clause_b],
             id_gen,
             std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+            std::sync::Arc::new(mrs_core::SymbolTable::new()),
             true,
         );
         let config = SearchConfig {
@@ -1437,6 +1458,7 @@ mod tests {
             clauses,
             id_gen,
             std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+            std::sync::Arc::new(mrs_core::SymbolTable::new()),
             true,
         );
         let config = SearchConfig {
@@ -1465,6 +1487,7 @@ mod tests {
             vec![c],
             id_gen,
             std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+            std::sync::Arc::new(mrs_core::SymbolTable::new()),
             true,
         );
         let config = SearchConfig::default();

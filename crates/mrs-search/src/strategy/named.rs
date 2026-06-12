@@ -37,7 +37,8 @@ use super::StrategySchedule;
 /// All built-in schedule names, in the order they should be listed in
 /// `--help` output.
 pub const ALL: &[&str] = &[
-    "casc", "casc_feq", "casc_fne", "casc_ueq", "casc_epr", "fast", "mini",
+    "casc", "casc_feq", "casc_fne", "casc_ueq", "casc_epr", "fast", "mini", "ml", "ml_feq",
+    "ml_fne", "ml_ueq", "ml_epr",
 ];
 
 /// Look up a schedule by name. Returns `None` if the name is unknown.
@@ -51,6 +52,10 @@ pub fn by_name(name: &str, total_time: Duration, workers: usize) -> Option<Strat
         "casc_epr" => Some(casc_epr(total_time, workers)),
         "fast" => Some(fast(total_time, workers)),
         "mini" => Some(mini(total_time, workers)),
+        "ml" | "ml_feq" => Some(ml_feq(total_time, workers)),
+        "ml_fne" => Some(ml_fne(total_time, workers)),
+        "ml_ueq" => Some(ml_ueq(total_time, workers)),
+        "ml_epr" => Some(ml_epr(total_time, workers)),
         _ => None,
     }
 }
@@ -112,6 +117,271 @@ pub fn mini(total_time: Duration, _workers: usize) -> StrategySchedule {
             ),
         ],
     }
+}
+
+/// A schedule that relies heavily on ML-guided selection, built on the CASC 11-strategy chassis.
+pub fn ml_feq(total_time: Duration, _workers: usize) -> StrategySchedule {
+    let ms = total_time.as_millis() as u64;
+    let t1 = Duration::from_millis(ms * 14 / 100);
+    let t2 = Duration::from_millis(ms * 10 / 100);
+    let t3 = Duration::from_millis(ms * 10 / 100);
+    let t4 = Duration::from_millis(ms * 9 / 100);
+    let t5 = Duration::from_millis(ms * 9 / 100);
+    let t6 = Duration::from_millis(ms * 10 / 100);
+    let t7 = Duration::from_millis(ms * 14 / 100);
+    let t8 = Duration::from_millis(ms * 9 / 100);
+    let t9 = Duration::from_millis(ms * 9 / 100);
+    let t10 = Duration::from_millis(ms * 4 / 100);
+    let t11 = total_time
+        .saturating_sub(t1)
+        .saturating_sub(t2)
+        .saturating_sub(t3)
+        .saturating_sub(t4)
+        .saturating_sub(t5)
+        .saturating_sub(t6)
+        .saturating_sub(t7)
+        .saturating_sub(t8)
+        .saturating_sub(t9)
+        .saturating_sub(t10);
+
+    StrategySchedule {
+        strategies: vec![
+            // s1: ML-Guided balanced exploration
+            (
+                SearchConfig {
+                    time_limit: t1,
+                    selection: SelectionStrategy::MlGuided {
+                        ratio: 5,
+                        alpha: 0.3,
+                    },
+                    literal_selection: LiteralSelection::AllNegative,
+                    ordering: TermOrdering::KBO,
+                    ..SearchConfig::default()
+                },
+                t1,
+            ),
+            // s2: ML-Guided deep chain proofs
+            (
+                SearchConfig {
+                    time_limit: t2,
+                    selection: SelectionStrategy::MlGuided {
+                        ratio: 10,
+                        alpha: 0.1,
+                    },
+                    literal_selection: LiteralSelection::AllNegative,
+                    ordering: TermOrdering::KBO,
+                    max_term_weight: None,
+                    use_avatar: false,
+                    unit_only_resolution: false,
+                },
+                t2,
+            ),
+            // s3: pure best-first (static fallback)
+            (
+                SearchConfig {
+                    time_limit: t3,
+                    selection: SelectionStrategy::SmallestFirst,
+                    literal_selection: LiteralSelection::AllNegative,
+                    ordering: TermOrdering::KBO,
+                    ..SearchConfig::default()
+                },
+                t3,
+            ),
+            // s4: ML-Guided aggressive selection
+            (
+                SearchConfig {
+                    time_limit: t4,
+                    selection: SelectionStrategy::MlGuided {
+                        ratio: 3,
+                        alpha: 0.5,
+                    },
+                    literal_selection: LiteralSelection::MaxNegativeOrMaxPositive,
+                    ordering: TermOrdering::KBO,
+                    ..SearchConfig::default()
+                },
+                t4,
+            ),
+            // s5: unrestricted literal selection (for FEQ)
+            (
+                SearchConfig {
+                    time_limit: t5,
+                    selection: SelectionStrategy::AgeWeight(5),
+                    literal_selection: LiteralSelection::All,
+                    ordering: TermOrdering::KBO,
+                    ..SearchConfig::default()
+                },
+                t5,
+            ),
+            // s6: FNE/definitional CNF proofs (static fallback)
+            (
+                SearchConfig {
+                    time_limit: t6,
+                    selection: SelectionStrategy::AgeWeight(5),
+                    literal_selection: LiteralSelection::All,
+                    ordering: TermOrdering::KBO,
+                    max_term_weight: None,
+                    use_avatar: false,
+                    unit_only_resolution: false,
+                },
+                t6,
+            ),
+            // s7: ML-Guided LPO balanced
+            (
+                SearchConfig {
+                    time_limit: t7,
+                    selection: SelectionStrategy::MlGuided {
+                        ratio: 5,
+                        alpha: 0.3,
+                    },
+                    literal_selection: LiteralSelection::AllNegative,
+                    ordering: TermOrdering::LPO,
+                    ..SearchConfig::default()
+                },
+                t7,
+            ),
+            // s8: LPO goal-directed
+            (
+                SearchConfig {
+                    time_limit: t8,
+                    selection: SelectionStrategy::GoalDirected(10),
+                    literal_selection: LiteralSelection::AllNegative,
+                    ordering: TermOrdering::LPO,
+                    ..SearchConfig::default()
+                },
+                t8,
+            ),
+            // s9: LPO best-first
+            (
+                SearchConfig {
+                    time_limit: t9,
+                    selection: SelectionStrategy::SmallestFirst,
+                    literal_selection: LiteralSelection::AllNegative,
+                    ordering: TermOrdering::LPO,
+                    ..SearchConfig::default()
+                },
+                t9,
+            ),
+            // s10: ML-Guided FEQ-targeted KBO
+            (
+                SearchConfig {
+                    time_limit: t10,
+                    selection: SelectionStrategy::MlGuided {
+                        ratio: 5,
+                        alpha: 0.1,
+                    },
+                    literal_selection: LiteralSelection::All,
+                    ordering: TermOrdering::KBO,
+                    max_term_weight: Some(30),
+                    use_avatar: false,
+                    unit_only_resolution: false,
+                },
+                t10,
+            ),
+            // s11: FEQ-targeted LPO
+            (
+                SearchConfig {
+                    time_limit: t11,
+                    selection: SelectionStrategy::AgeWeight(5),
+                    literal_selection: LiteralSelection::All,
+                    ordering: TermOrdering::LPO,
+                    max_term_weight: None,
+                    use_avatar: false,
+                    unit_only_resolution: false,
+                },
+                t11,
+            ),
+        ],
+    }
+}
+
+/// A schedule optimized for FNE (First-Order No Equality).
+/// Deep-chain resolution with SmallestFirst and no weight limits.
+pub fn ml_fne(total_time: Duration, workers: usize) -> StrategySchedule {
+    let workers = workers.max(1);
+    let t_part = Duration::from_millis((total_time.as_millis() / workers as u128) as u64);
+    let t_last = total_time.saturating_sub(t_part * (workers as u32 - 1));
+
+    let mut strategies = Vec::new();
+    for i in 0..workers {
+        let t = if i == workers - 1 { t_last } else { t_part };
+        let alpha = 0.1 + ((i % 10) as f32 * 0.05); // Cycle alphas
+        let ratio = 3 + (i % 5) as u32; // Cycle ratios
+        strategies.push((
+            SearchConfig {
+                time_limit: t,
+                selection: SelectionStrategy::MlGuided { ratio, alpha },
+                literal_selection: LiteralSelection::AllNegative,
+                ordering: if i % 2 == 0 {
+                    TermOrdering::KBO
+                } else {
+                    TermOrdering::LPO
+                },
+                max_term_weight: None,
+                ..SearchConfig::default()
+            },
+            t,
+        ));
+    }
+    StrategySchedule { strategies }
+}
+
+/// A schedule optimized for UEQ (Unit Equality).
+/// No AVATAR, unit-only resolution, aggressive KBO/LPO.
+pub fn ml_ueq(total_time: Duration, workers: usize) -> StrategySchedule {
+    let workers = workers.max(1);
+    let t_part = Duration::from_millis((total_time.as_millis() / workers as u128) as u64);
+    let t_last = total_time.saturating_sub(t_part * (workers as u32 - 1));
+
+    let mut strategies = Vec::new();
+    for i in 0..workers {
+        let t = if i == workers - 1 { t_last } else { t_part };
+        let alpha = 0.1 + ((i % 10) as f32 * 0.05); // Cycle alphas
+        let ratio = 3 + (i % 5) as u32; // Cycle ratios
+        strategies.push((
+            SearchConfig {
+                time_limit: t,
+                selection: SelectionStrategy::MlGuided { ratio, alpha },
+                literal_selection: LiteralSelection::MaxNegativeOrMaxPositive,
+                ordering: if i % 2 == 0 {
+                    TermOrdering::KBO
+                } else {
+                    TermOrdering::LPO
+                },
+                use_avatar: false,
+                unit_only_resolution: true,
+                ..SearchConfig::default()
+            },
+            t,
+        ));
+    }
+    StrategySchedule { strategies }
+}
+
+/// A schedule optimized for EPR (Effectively Propositional).
+/// Extreme AVATAR SAT-splitting.
+pub fn ml_epr(total_time: Duration, workers: usize) -> StrategySchedule {
+    let workers = workers.max(1);
+    let t_part = Duration::from_millis((total_time.as_millis() / workers as u128) as u64);
+    let t_last = total_time.saturating_sub(t_part * (workers as u32 - 1));
+
+    let mut strategies = Vec::new();
+    for i in 0..workers {
+        let t = if i == workers - 1 { t_last } else { t_part };
+        let alpha = 0.2 + ((i % 10) as f32 * 0.05); // Cycle alphas
+        let ratio = 5;
+        strategies.push((
+            SearchConfig {
+                time_limit: t,
+                selection: SelectionStrategy::MlGuided { ratio, alpha },
+                literal_selection: LiteralSelection::AllNegative,
+                ordering: TermOrdering::KBO,
+                use_avatar: true,
+                ..SearchConfig::default()
+            },
+            t,
+        ));
+    }
+    StrategySchedule { strategies }
 }
 
 /// A purely static schedule optimized for FNE (First-Order No Equality).
@@ -255,7 +525,9 @@ mod tests {
     #[test]
     fn division_schedules_scale_with_workers() {
         let t = Duration::from_secs(8);
-        for name in ["casc_fne", "casc_ueq", "casc_epr"] {
+        for name in [
+            "casc_fne", "casc_ueq", "casc_epr", "ml_fne", "ml_ueq", "ml_epr",
+        ] {
             let s = by_name(name, t, 8).unwrap();
             assert_eq!(s.strategies.len(), 8, "{name} should have 8 strategies");
             let total: Duration = s.strategies.iter().map(|(_, t)| *t).sum();

@@ -347,7 +347,7 @@ mod tests {
         let clauses = vec![pos, neg];
         let ground = preprocess_epr(&clauses, &mut id_gen).expect("should detect EPR");
 
-        let mut state = SearchState::new(ground, id_gen, Arc::new(SymbolConfig::default()), false);
+        let mut state = SearchState::new(ground, id_gen, Arc::new(SymbolConfig::default()), std::sync::Arc::new(mrs_core::SymbolTable::new()), false);
         let result = search(&mut state, &SearchConfig::default());
         assert!(
             matches!(result, SearchResult::Refutation(..)),

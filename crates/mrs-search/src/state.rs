@@ -48,6 +48,8 @@ pub struct SearchState {
     pub assoc_symbols: HashSet<SymbolId>,
     /// Wall-clock deadline for the current search.
     pub search_deadline: Option<Instant>,
+    /// Symbol table for mapping SymbolId to strings (used by ML features and TSTP output).
+    pub symbols: Arc<mrs_core::SymbolTable>,
     /// Interned-term arena shared by all clauses in this search.
     pub term_bank: TermBank,
     /// Maps a clause ID to the IDs of all clauses generated from it (its children).
@@ -62,6 +64,16 @@ pub struct SearchState {
     pub shared_pool: Option<Arc<std::sync::RwLock<Vec<Clause>>>>,
     /// Number of clauses already consumed from the shared pool.
     pub shared_pool_read: usize,
+    /// Directory to log ML feature vectors and labels to.
+    pub log_ml_data: Option<String>,
+    /// Whether to log in CSV format instead of wincode.
+    pub ml_log_csv: bool,
+    /// Loaded ML model for clause scoring.
+    #[cfg(feature = "ml-guidance")]
+    pub ml_model: Option<Arc<mrs_core::ml::model::ClauseClassifier<burn::backend::NdArray>>>,
+    /// Cached scores for clauses
+    #[cfg(feature = "ml-guidance")]
+    pub scores: HashMap<ClauseId, f32>,
 }
 
 impl SearchState {
@@ -71,14 +83,36 @@ impl SearchState {
     /// to `IdClause`. AVATAR splitting is performed if `use_avatar` is true.
     pub fn new(
         initial_clauses: Vec<Clause>,
-        mut id_gen: ClauseIdGen,
+        id_gen: ClauseIdGen,
         config: Arc<SymbolConfig>,
+        symbols: Arc<mrs_core::SymbolTable>,
         use_avatar: bool,
+    ) -> Self {
+        Self::new_with_ml(
+            initial_clauses,
+            id_gen,
+            config,
+            symbols,
+            use_avatar,
+            None,
+            false,
+        )
+    }
+
+    pub fn new_with_ml(
+        initial_clauses: Vec<Clause>,
+        id_gen: ClauseIdGen,
+        config: Arc<SymbolConfig>,
+        symbols: Arc<mrs_core::SymbolTable>,
+        use_avatar: bool,
+        log_ml_data: Option<String>,
+        ml_log_csv: bool,
     ) -> Self {
         let mut term_bank = TermBank::new();
         let mut clause_store: HashMap<ClauseId, IdClause> = HashMap::default();
         let mut unprocessed = UnprocessedSet::new(config.clone());
         let mut avatar = AvatarContext::new();
+        let mut id_gen = id_gen;
 
         for clause in initial_clauses {
             let id_clause = term_bank.clause_from_legacy(&clause);
@@ -86,15 +120,15 @@ impl SearchState {
                 if let Some(splits) = avatar.split_clause_id(&id_clause, &mut id_gen, &term_bank) {
                     for split in splits {
                         clause_store.insert(split.id, split.clone());
-                        unprocessed.push(&split, &term_bank);
+                        unprocessed.push(&split, &term_bank, None);
                     }
                 } else {
                     clause_store.insert(id_clause.id, id_clause.clone());
-                    unprocessed.push(&id_clause, &term_bank);
+                    unprocessed.push(&id_clause, &term_bank, None);
                 }
             } else {
                 clause_store.insert(id_clause.id, id_clause.clone());
-                unprocessed.push(&id_clause, &term_bank);
+                unprocessed.push(&id_clause, &term_bank, None);
             }
         }
 
@@ -111,11 +145,42 @@ impl SearchState {
             comm_symbols: HashSet::default(),
             assoc_symbols: HashSet::default(),
             search_deadline: None,
+            symbols,
             term_bank,
             children: HashMap::default(),
             stop_flag: None,
             shared_pool: None,
             shared_pool_read: 0,
+            log_ml_data,
+            ml_log_csv,
+            #[cfg(feature = "ml-guidance")]
+            ml_model: None,
+            #[cfg(feature = "ml-guidance")]
+            scores: HashMap::default(),
+        }
+    }
+
+    /// Computes and caches the ML score for a clause.
+    #[cfg(feature = "ml-guidance")]
+    pub fn get_ml_score(&mut self, clause: &IdClause) -> Option<f32> {
+        if let Some(model) = &self.ml_model {
+            if let Some(&score) = self.scores.get(&clause.id) {
+                return Some(score);
+            }
+            let weight =
+                crate::weight::clause_weight_id(clause, &self.term_bank, &self.config) as f32;
+            let feats =
+                mrs_core::ml::features::extract(clause, &self.term_bank, &self.symbols, weight);
+
+            use burn::tensor::Tensor;
+            let tensor =
+                Tensor::<burn::backend::NdArray, 1>::from_floats(feats, &Default::default());
+            let tensor = tensor.reshape([1, 128]); // batch size 1
+            let logit = model.forward(tensor).into_scalar();
+            self.scores.insert(clause.id, logit);
+            Some(logit)
+        } else {
+            None
         }
     }
 

@@ -286,11 +286,27 @@ impl StrategySchedule {
 /// `symbols` is required so that the TSTP proof string can be formatted inside the
 /// worker thread (while `SearchState` is still live), before the non-`Send`
 /// `cadical::Solver` is dropped.
+/// Options controlling ML data logging and ML-guided selection.
+///
+/// Plain data in every build; only acted upon when the `ml-guidance`
+/// feature is enabled (except `log_dir`, which also drives offline trace
+/// collection). `MlOptions::default()` disables everything.
+#[derive(Debug, Clone, Default)]
+pub struct MlOptions {
+    /// Directory to write labeled clause-feature traces to after a refutation.
+    pub log_dir: Option<String>,
+    /// Write traces as CSV instead of wincode.
+    pub log_csv: bool,
+    /// Path to trained model weights for ML-guided clause selection.
+    pub weights: Option<String>,
+}
+
 pub fn run_schedule(
     clauses: &[Clause],
     id_gen: ClauseIdGen,
     schedule: &StrategySchedule,
     symbols: &SymbolTable,
+    ml: MlOptions,
     workers: Option<usize>,
 ) -> SearchResult {
     // 1. Analyze problem for symbol frequencies to configure KBO/LPO and weights.
@@ -401,6 +417,10 @@ pub fn run_schedule(
         }
     }
 
+    // Clone the symbol table into an Arc once; threads and the componentwise
+    // pre-pass share it without further copies.
+    let symbols_arc = std::sync::Arc::new(symbols.clone());
+
     // Componentwise AVATAR pre-pass: for problems produced by definitional CNF
     // on a top-level conjunction, the input contains a single large positive
     // disjunction `def_1(X̄₁) ∨ ... ∨ def_N(X̄_N)` with distinct predicate
@@ -408,9 +428,12 @@ pub fn run_schedule(
     // branch independently.
     {
         let mut cwa_id_gen = id_gen.clone();
-        if let Some(result) =
-            try_componentwise_refute(&clauses_owned, &mut cwa_id_gen, symbols, config.clone())
-        {
+        if let Some(result) = try_componentwise_refute(
+            &clauses_owned,
+            &mut cwa_id_gen,
+            symbols_arc.clone(),
+            config.clone(),
+        ) {
             return result;
         }
     }
@@ -445,6 +468,34 @@ pub fn run_schedule(
     let next_strategy = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let has_epr = epr_ground_cache.is_some();
 
+    #[cfg(not(feature = "ml-guidance"))]
+    if ml.weights.is_some() {
+        eprintln!(
+            "Warning: ML weights provided but this build lacks the `ml-guidance` feature; ignoring."
+        );
+    }
+    #[cfg(feature = "ml-guidance")]
+    let ml_model = ml.weights.as_ref().and_then(|path| {
+        use burn::backend::NdArray;
+        use burn::module::Module;
+        use burn::record::{BinFileRecorder, Recorder};
+        use mrs_core::ml::model::ClauseClassifier;
+
+        match BinFileRecorder::<burn::record::HalfPrecisionSettings>::default()
+            .load(path.into(), &Default::default())
+        {
+            Ok(record) => {
+                let model =
+                    ClauseClassifier::<NdArray>::new(&Default::default()).load_record(record);
+                Some(Arc::new(model))
+            }
+            Err(e) => {
+                eprintln!("Failed to load ML weights from {}: {:?}", path, e);
+                None
+            }
+        }
+    });
+
     // Compute how much time remains after all pre-processing steps.
     let remaining_at_spawn = total_budget.saturating_sub(schedule_start.elapsed());
 
@@ -457,7 +508,12 @@ pub fn run_schedule(
             let clauses_for_thread = clauses_owned.clone();
             let id_gen_thread = id_gen.clone();
             let config_thread = Arc::clone(&config);
+            let symbols_thread = symbols_arc.clone();
             let actual_configs_ref = &actual_configs;
+
+            #[cfg(feature = "ml-guidance")]
+            let ml_model_thread = ml_model.clone();
+            let log_ml_data_thread = ml.log_dir.clone();
 
             s.spawn(move || {
                 loop {
@@ -487,12 +543,19 @@ pub fn run_schedule(
                         sc.max_term_weight = None;
                     }
 
-                    let mut state = SearchState::new(
+                    let mut state = SearchState::new_with_ml(
                         clauses_for_thread.clone(),
                         id_gen_thread.clone(),
                         config_thread.clone(),
+                        symbols_thread.clone(),
                         sc.use_avatar,
+                        log_ml_data_thread.clone(),
+                        ml.log_csv,
                     );
+                    #[cfg(feature = "ml-guidance")]
+                    {
+                        state.ml_model = ml_model_thread.clone();
+                    }
                     state.stop_flag = Some(Arc::clone(&stop));
                     state.shared_pool = Some(Arc::clone(&pool));
 
@@ -512,6 +575,50 @@ pub fn run_schedule(
 
                     let result = match raw {
                         SearchResult::Refutation(id, _) => {
+                            #[cfg(feature = "ml-guidance")]
+                            if let Some(log_dir) = &state.log_ml_data {
+                                let positive_ids = mrs_proof::extract::extract_proof_ids(id, &state.clause_store);
+                                let pos_set: std::collections::HashSet<_> = positive_ids.iter().copied().collect();
+
+                                let mut all_samples = Vec::new();
+
+                                for (&cid, clause) in &state.clause_store {
+                                    let is_pos = pos_set.contains(&cid);
+
+                                    // Negative subsampling: keep all positives, sample ~10% of negatives
+                                    if !is_pos && rand::random::<f32>() > 0.1 {
+                                        continue;
+                                    }
+
+                                    let label = if is_pos { 1.0 } else { 0.0 };
+                                    let weight = crate::weight::clause_weight_id(clause, &state.term_bank, &state.config) as f32;
+                                    let feats = mrs_core::ml::features::extract(clause, &state.term_bank, symbols, weight);
+                                    all_samples.push(mrs_core::ml::sample::LabeledSample { label, feats });
+                                }
+
+                                let problem_name = std::env::var("PROBLEM_NAME").unwrap_or_else(|_| "unknown_problem".to_string());
+                                let file_stem = format!("{}_{}_{}", problem_name, strategy_idx, id.0);
+                                let log_path = std::path::Path::new(log_dir);
+                                std::fs::create_dir_all(log_path).ok();
+
+                                if state.ml_log_csv {
+                                    if let Ok(mut w) = std::fs::File::create(log_path.join(format!("{}.csv", file_stem))) {
+                                        use std::io::Write;
+                                        for s in &all_samples {
+                                            let feats_str = s.feats.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(",");
+                                            let _ = writeln!(w, "{},{}", s.label, feats_str);
+                                        }
+                                    }
+                                } else {
+                                    if let Ok(mut w) = std::fs::File::create(log_path.join(format!("{}.wincode", file_stem))) {
+                                        let mut std_write = wincode::io::std_write::WriteAdapter::new(&mut w);
+                                        for s in &all_samples {
+                                            let _ = wincode::serialize_into(&mut std_write, s);
+                                        }
+                                    }
+                                }
+                            }
+
                             let legacy_store: HashMap<_, _> = state
                                 .clause_store
                                 .iter()
@@ -602,7 +709,14 @@ mod tests {
         );
 
         let schedule = StrategySchedule::default_schedule(Duration::from_secs(5), 1);
-        let result = run_schedule(&[c1, c2], id_gen, &schedule, &syms, None);
+        let result = run_schedule(
+            &[c1, c2],
+            id_gen,
+            &schedule,
+            &syms,
+            MlOptions::default(),
+            None,
+        );
         assert!(matches!(result, SearchResult::Refutation(..)));
     }
 
@@ -627,7 +741,14 @@ mod tests {
         );
 
         let schedule = StrategySchedule::default_schedule(Duration::from_secs(5), 1);
-        let result = run_schedule(&[c1, c2], id_gen, &schedule, &syms, None);
+        let result = run_schedule(
+            &[c1, c2],
+            id_gen,
+            &schedule,
+            &syms,
+            MlOptions::default(),
+            None,
+        );
         // After EPR preprocessing, a saturated ground search is demoted to
         // GaveUp (conservative: avoids outputting a wrong Satisfiable).
         assert!(

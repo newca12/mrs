@@ -59,3 +59,5 @@ default = []
 #   the small ATP queries emitted by `mrs-proover`.
 # All three are no-ops in the default build.
 proover = []
+ml = ["mrs-core/ml", "mrs-search/ml-guidance"]
+ml-guidance = ["mrs-core/ml", "mrs-search/ml-guidance"]

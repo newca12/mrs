@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::BuildHasher;
 
 use mrs_core::clause::{Clause, ClauseId, ClauseSource};
+use mrs_core::term_bank::IdClause;
 
 /// Extracts the proof DAG from the clause store.
 ///
@@ -52,6 +53,35 @@ pub fn extract_proof<S: BuildHasher>(
         .into_iter()
         .filter_map(|id| clause_store.get(&id).cloned())
         .collect()
+}
+
+pub fn extract_proof_ids<S: BuildHasher>(
+    empty_clause_id: ClauseId,
+    clause_store: &HashMap<ClauseId, IdClause, S>,
+) -> Vec<ClauseId> {
+    let mut visited = HashSet::new();
+    let mut queue = VecDeque::new();
+    let mut order = Vec::new();
+
+    queue.push_back(empty_clause_id);
+    visited.insert(empty_clause_id);
+
+    while let Some(id) = queue.pop_front() {
+        order.push(id);
+
+        if let Some(clause) = clause_store.get(&id)
+            && let ClauseSource::Inference { parents, .. } = &clause.source
+        {
+            for &parent_id in parents {
+                if visited.insert(parent_id) {
+                    queue.push_back(parent_id);
+                }
+            }
+        }
+    }
+
+    order.reverse();
+    order
 }
 
 #[cfg(test)]

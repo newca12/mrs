@@ -80,6 +80,7 @@ fn main() {
         clauses.clone(),
         id_gen.clone(),
         Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+        Arc::new(syms),
         true,
     );
     let config = SearchConfig {
