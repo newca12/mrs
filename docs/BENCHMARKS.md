@@ -1,7 +1,152 @@
-Results for mrs commit a3cc272eddf2fd408b4705dd650025dbde44a1e0
+# Benchmark Log
+
+Append-only log of CASC benchmark runs (`crates/mrs-bench/casc.sh`), newest first.
+Each entry records the mrs commit and the exact command used.
+
+
+commit 6ad04a4743507b27d91fba37b8b4efce864d6543 (HEAD -> feature/ml-guided-clause-selection, origin/feature/ml-guided-clause-selection)
 
 ongoing
-crates/mrs-bench/casc.sh --systems mrs --casc-times --jobs 2
+[root@mtsdev02 mrs]# INPUT_PROBLEMS_LIST=./casc_problem_lists/epr.list ./crates/mrs-bench/collect_ml_data.sh /mnt/sde1/TPTP-v9.2.1 ./ml_logs_epr 1 960 8
+
+ongoing
+hack@pve:~/mrs$ INPUT_PROBLEMS_LIST=./casc_problem_lists/ueq.list ./crates/mrs-bench/collect_ml_data.sh /home/hack/TPTP-v9.2.1 ./ml_logs_ueq 1 960 4
+
+ongoing
+[www@teenf9901 mrs]$ INPUT_PROBLEMS_LIST=./casc_problem_lists/fne.list ./crates/mrs-bench/collect_ml_data.sh /DATA/ai/TPTP-v9.2.1 ./ml_logs_fne 1 480 30
+
+ongoing
+[PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ INPUT_PROBLEMS_LIST=./casc_problem_lists/feq.list ./crates/mrs-bench/collect_ml_data.sh /DATA/ai/TPTP-v9.2.1 ./ml_logs_feq 1 480 30
+
+commit 4252ef646b2bfeda3ef1baedb3bc47034fcc0776 (HEAD -> feature/ml-guided-clause-selection
+
+[www@teenf9901 mrs]$ INPUT_PROBLEMS_LIST=./casc_problem_lists/fne.list ./crates/mrs-bench/collect_ml_data.sh /DATA/ai/TPTP-v9.2.1 ./ml_logs_fne 3 480
+
+commit 369f48eccbe77c4cbd917a22d60d785dce9fd0a8 (HEAD -> feature/ml-guided-clause-selection, origin/feature/ml-guided-clause-selection)
+
+ongoing
+[PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ crates/mrs-bench/casc.sh --systems mrs --casc-times --jobs 3 --divisions fne
+
+commit 3380e2d65a43eab76b3f37a20c39efb123896fb8 (HEAD -> feature/ml-guided-clause-selection
+
+[PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ ./crates/mrs-bench/casc.sh --systems mrs-ml --casc-times --jobs 3 --divisions feq,fne,ueq
+CASC-30 Results — 2026-06-12 11:55  (800 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs-ml
+                      Solved  Avg (s)
+------------------  --------------------
+FEQ            400        43   37.395
+FNE            100        27   18.097
+UEQ            300        18   32.996
+------------------  --------------------
+TOTAL          800        88   30.574
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+293abae65eda29d45d2a40111dcbec641b8dbc89
+
+[PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ ./crates/mrs-bench/collect_ml_data.sh /path/to/TPTP-v9.2.1 ./ml_logs 16 30
+
+
+
+Results for mrs commit b0ca6c15f18a5561ac795690c96f191ef61f79d7
+
+ongoing
+[www@teenf9901 mrs]$ crates/mrs-bench/casc.sh --systems vampire --casc-times
+
+
+hack@pve:~/mrs$ crates/mrs-bench/casc.sh --systems vampire  --casc-times --divisions eps
+
+CASC-30 Results — 2026-06-09 06:11  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    vampire
+                      Solved  Avg (s)
+------------------  --------------------
+EPS            100        86    5.027
+------------------  --------------------
+TOTAL          100        86    5.027
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+
+[www@teenf9901 mrs]$ crates/mrs-bench/casc.sh --systems mrs --casc-times --jobs 2 --divisions ueq
+
+CASC-30 Results — 2026-06-09 07:35  (300 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+UEQ            300        20   23.312
+------------------  --------------------
+TOTAL          300        20   23.312
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+[root@mtsdev02 mrs]# TPTP=/mnt/sda1/mrs/crates/mrs-bench/problems/casc-30 crates/mrs-bench/casc.sh --systems mrs --casc-times --divisions epu
+CASC-30 Results — 2026-06-09 07:25  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+EPU            100         8    1.808
+------------------  --------------------
+TOTAL          100         8    1.808
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+
+hack@pve:~/mrs$ crates/mrs-bench/casc.sh --systems mrs  --casc-times --divisions eps
+
+CASC-30 Results — 2026-06-08 21:14  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+EPS            100        22   16.077
+------------------  --------------------
+TOTAL          100        22   16.077
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+Results for mrs commit 4ea73eb2d96e6364ca73ef455cfd52d1f62bdea2
+
+partial ongoing
+[PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ crates/mrs-bench/casc.sh --systems mrs --casc-times --jobs 2
+------------------  --------------------
+FNE            100        31   25.060
+FEQ            400        48   41.741
+EPU            100         9   12.152
+EPS            100        26   13.328
+UEQ            300        23   15.731
+ICU             87         1   15.711
+------------------  --------------------
+TOTAL         1087       138   26.187
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — 2 case(s) of wrong SZS polarity:
+  UEQ     GRP024-5                        mrs=Satisfiable  (expected one of ["Unsatisfiable"])  ⚠ UNSOUND
+  UEQ     GRP196-1                        mrs=Satisfiable  (expected one of ["Unsatisfiable"])  ⚠ UNSOUND
+
+
+
+Results for mrs commit a3cc272eddf2fd408b4705dd650025dbde44a1e0
+
 
 crash ?
 hack@pve:~/mrs$ crates/mrs-bench/casc.sh --systems mrs  --casc-times --divisions feq

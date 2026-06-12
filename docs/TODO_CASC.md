@@ -42,7 +42,7 @@ This document tracks what remains to be built in `mrs` (the prover) to maximise 
 ### 6. SInE Threshold Tuning
 **Impact:** FNE, FEQ. Low-Medium.
 
-The SInE fallback (restart on <1s saturation) is a binary switch. A finer approach would try multiple SInE tolerance levels in parallel: one strict, one relaxed, one disabled — each as a separate portfolio strategy. The per-division CASC run data from `benchmarks` can guide threshold selection.
+The SInE fallback (restart on <1s saturation) is a binary switch. A finer approach would try multiple SInE tolerance levels in parallel: one strict, one relaxed, one disabled — each as a separate portfolio strategy. The per-division CASC run data from `docs/BENCHMARKS.md` can guide threshold selection.
 
 ### 8. SIMD-optimized Feature Vector Index — **+2% performance**
 **File:** `crates/mrs-index/src/fvi.rs`
