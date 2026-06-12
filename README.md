@@ -45,13 +45,14 @@ fof(goal, conjecture, mortal(socrates)).
 ## Options
 
 ```
-mrs [--time <seconds>] [--schedule <name>] <file.p>
+mrs [--time <seconds>] [--workers <N>] [--schedule <name>] <file.p>
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--time <n>` | `30` | Wall-clock time limit in seconds |
-| `--schedule <name>` | `casc` | Strategy schedule to run. Built-ins: `casc` (the default 9-strategy CASC portfolio), `fast` (single KBO strategy for short budgets), `mini` (3-strategy compact portfolio). |
+| `--workers <N>` | all cores | Maximum number of parallel search threads |
+| `--schedule <name>` | `casc` | Strategy schedule to run. Built-ins: `casc` (the default CASC portfolio; aliases `default`, `casc_feq`), `casc_fne`/`casc_ueq`/`casc_epr` (division-tuned portfolios, one strategy per worker), `fast` (single KBO strategy for short budgets), `mini` (3-strategy compact portfolio), and `ml*` variants for ML-guided selection (require an `ml-guidance` build and `--ml-weights`). |
 | `--list-schedules` | — | Print known schedule names and exit |
 
 ## TPTP `%include` directives

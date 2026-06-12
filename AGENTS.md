@@ -78,9 +78,13 @@ cargo run --release -- --list-schedules
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--time <seconds>` | `30` | Wall-clock time limit |
+| `--workers <N>` | all cores | Max parallel search threads |
 | `--schedule <name>` | `casc` | Strategy schedule; see registry below |
 | `--list-schedules` | — | Print known schedule names and exit |
 | `--fast` | — | Deprecated alias for `--schedule fast` |
+| `--log-ml-data <dir>` | — | Write labeled clause traces after a refutation; **needs `ml` feature build** to actually log |
+| `--ml-log-csv` | — | Trace format: CSV instead of wincode |
+| `--ml-weights <file>` | — | Load Burn model weights for ML-guided selection; **needs `ml-guidance`**, defaults schedule to `ml` |
 | `--quiet` | — | Suppress non-SZS stderr; **requires `proover` feature** |
 | `-` (positional) | — | Read TPTP from stdin; **requires `proover` feature** |
 
@@ -88,9 +92,11 @@ Named schedules live in `mrs_search::strategy::named` (`crates/mrs-search/src/st
 
 | Name | Strategies | Use case |
 |------|------------|----------|
-| `casc` (alias `default`) | 12-strategy portfolio | CASC competition; default behavior |
+| `casc` (aliases `default`, `casc_feq`) | 12-strategy portfolio | CASC competition; default behavior |
+| `casc_fne` / `casc_ueq` / `casc_epr` | one strategy per worker (scales with `--workers`) | division-tuned static portfolios |
 | `fast` | 1 KBO `AgeWeight(5)+AllNegative` | Sub-second ATP queries (e.g. `mrs-proover` backend) |
 | `mini` | 3-strategy compact portfolio | 1–5 s budgets |
+| `ml` (alias `ml_feq`), `ml_fne`, `ml_ueq`, `ml_epr` | ML-guided variants | require `ml-guidance` build + `--ml-weights`; degrade to weight-based selection otherwise |
 
 The `casc` portfolio runs strategies 1–9 (KBO/LPO baseline, ~94% of budget) and 10–11 (FEQ-targeted: `All` literal
 selection + paramodulation-friendly settings, ~6% combined).  A 12th diagnostic strategy is always present but gets `Duration::ZERO` in
@@ -103,8 +109,10 @@ To add a new schedule: implement a constructor in `strategy::named`, then add it
 | Feature | Off-by-default | Effect |
 |---------|----------------|--------|
 | `proover` | yes | Enables `--quiet` and stdin (`-`); used by `mrs-proover`'s in-process `MrsAtp` backend. Build with `cargo build --release --features proover --bin mrs`. |
+| `ml` | yes | Enables ML trace logging (`--log-ml-data`); pulls `mrs-core/ml` + `mrs-search/ml-guidance` (Burn, wincode). Used by `crates/mrs-bench/collect_ml_data.sh`. |
+| `ml-guidance` | yes | Same flags as `ml`; enables in-process inference with `--ml-weights`. |
 
-`--schedule`, `--list-schedules`, and `--fast` are **unconditional** — they work in any build.
+`--schedule`, `--list-schedules`, `--workers`, and `--fast` are **unconditional** — they work in any build. The `--log-ml-data`/`--ml-weights` flags parse in any build but are no-ops (with a warning for `--ml-weights`) without the `ml`/`ml-guidance` features.
 
 ## Workspace layout
 
@@ -125,7 +133,8 @@ mrs/                  ← workspace root AND the binary crate (src/main.rs)
 │   ├── mrs-search/   ← given-clause loop, clause weighting, strategy scheduler
 │   ├── mrs-tptp/     ← TPTP parser
 │   ├── mrs-proover/  ← TSTP proof verifier (ProoVer 2026 entry); see crates/mrs-proover/README.md
-│   └── mrs-bench/    ← CASC benchmark harness (casc.sh, setup.sh) + bench_report binary
+│   ├── mrs-train/    ← offline GPU training for ML-guided clause selection (Burn); see crates/mrs-train/README.md
+│   └── mrs-bench/    ← CASC benchmark harness (casc.sh, setup.sh) + bench_report and categorize_tptp binaries
 └── problems/         ← curated TPTP .p files for manual testing (not wired into cargo test)
 ```
 
