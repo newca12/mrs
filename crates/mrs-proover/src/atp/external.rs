@@ -236,11 +236,16 @@ impl Atp for MrsAtp {
         all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(0)));
 
         // 3. Setup fast schedule
-        let schedule = mrs_search::strategy::named::fast(budget);
+        let schedule = mrs_search::strategy::named::fast(budget, 1);
 
         // 4. Run schedule in memory
-        let result =
-            mrs_search::strategy::run_schedule(&all_clauses, id_gen, &schedule, &local_symbols);
+        let result = mrs_search::strategy::run_schedule(
+            &all_clauses,
+            id_gen,
+            &schedule,
+            &local_symbols,
+            None,
+        );
 
         match result {
             SearchResult::Refutation(..) => AtpVerdict::Sound,

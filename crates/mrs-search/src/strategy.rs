@@ -52,13 +52,13 @@ impl StrategySchedule {
     ///  9. SmallestFirst + AllNegative + LPO — LPO best-first (9%)
     /// 10. SmallestFirst + All + KBO + max_weight=30 + no AVATAR — FEQ (4%)
     /// 11. AgeWeight(5) + All + LPO + no weight limit + no AVATAR — FEQ (remainder ~2%)
-    pub fn default_schedule(total_time: Duration) -> Self {
+    pub fn default_schedule(total_time: Duration, workers: usize) -> Self {
         // Allow overriding to a single strategy for diagnosis: MRS_SINGLE_STRATEGY=N
         // runs only strategy N (1-indexed) for the full time budget.
         if let Ok(val) = std::env::var("MRS_SINGLE_STRATEGY")
             && let Ok(n) = val.trim().parse::<usize>()
         {
-            let full = StrategySchedule::_all_strategies(total_time);
+            let full = StrategySchedule::_all_strategies(total_time, workers);
             if n >= 1 && n <= full.strategies.len() {
                 let (mut cfg, _) = full.strategies[n - 1].clone();
                 cfg.time_limit = total_time;
@@ -67,10 +67,10 @@ impl StrategySchedule {
                 };
             }
         }
-        Self::_all_strategies(total_time)
+        Self::_all_strategies(total_time, workers)
     }
 
-    fn _all_strategies(total_time: Duration) -> Self {
+    fn _all_strategies(total_time: Duration, _workers: usize) -> Self {
         let ms = total_time.as_millis() as u64;
         // s1–s9: restored close to original proportions (92% combined for a 30 s budget)
         // s10–s11: small FEQ-targeted bonus budgets (8% combined)
@@ -291,6 +291,7 @@ pub fn run_schedule(
     id_gen: ClauseIdGen,
     schedule: &StrategySchedule,
     symbols: &SymbolTable,
+    workers: Option<usize>,
 ) -> SearchResult {
     // 1. Analyze problem for symbol frequencies to configure KBO/LPO and weights.
     let mut sym_counts: HashMap<SymbolId, u32> = HashMap::default();
@@ -435,9 +436,11 @@ pub fn run_schedule(
     let shared_pool = Arc::new(std::sync::RwLock::new(Vec::new()));
     let (tx, rx) = mpsc::channel::<(usize, SearchResult)>();
 
-    let available_cores = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
+    let available_cores = workers.unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    });
     let num_workers = available_cores.min(actual_configs.len());
     let next_strategy = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let has_epr = epr_ground_cache.is_some();
@@ -598,8 +601,8 @@ mod tests {
             "ax2",
         );
 
-        let schedule = StrategySchedule::default_schedule(Duration::from_secs(5));
-        let result = run_schedule(&[c1, c2], id_gen, &schedule, &syms);
+        let schedule = StrategySchedule::default_schedule(Duration::from_secs(5), 1);
+        let result = run_schedule(&[c1, c2], id_gen, &schedule, &syms, None);
         assert!(matches!(result, SearchResult::Refutation(..)));
     }
 
@@ -623,8 +626,8 @@ mod tests {
             "ax2",
         );
 
-        let schedule = StrategySchedule::default_schedule(Duration::from_secs(5));
-        let result = run_schedule(&[c1, c2], id_gen, &schedule, &syms);
+        let schedule = StrategySchedule::default_schedule(Duration::from_secs(5), 1);
+        let result = run_schedule(&[c1, c2], id_gen, &schedule, &syms, None);
         // After EPR preprocessing, a saturated ground search is demoted to
         // GaveUp (conservative: avoids outputting a wrong Satisfiable).
         assert!(

@@ -285,7 +285,7 @@ fn unify_ac_rec_id<S: BuildHasher>(
                             found: flat2.len(),
                         });
                     }
-                    
+
                     let args1 = match bank.get(s) {
                         TermNode::App(_, args) => args,
                         _ => unreachable!(),
@@ -294,7 +294,7 @@ fn unify_ac_rec_id<S: BuildHasher>(
                         TermNode::App(_, args) => args,
                         _ => unreachable!(),
                     };
-                    
+
                     if args1.len() != args2.len() {
                         return Err(UnifyError::ArityMismatch {
                             expected: args1.len(),

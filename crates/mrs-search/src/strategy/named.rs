@@ -39,18 +39,18 @@ use super::StrategySchedule;
 pub const ALL: &[&str] = &["casc", "fast", "mini"];
 
 /// Look up a schedule by name. Returns `None` if the name is unknown.
-pub fn by_name(name: &str, total_time: Duration) -> Option<StrategySchedule> {
+pub fn by_name(name: &str, total_time: Duration, workers: usize) -> Option<StrategySchedule> {
     match name {
-        "casc" | "default" => Some(StrategySchedule::default_schedule(total_time)),
-        "fast" => Some(fast(total_time)),
-        "mini" => Some(mini(total_time)),
+        "casc" | "default" => Some(StrategySchedule::default_schedule(total_time, workers)),
+        "fast" => Some(fast(total_time, workers)),
+        "mini" => Some(mini(total_time, workers)),
         _ => None,
     }
 }
 
 /// One KBO strategy for the full budget. Best for very short budgets where
 /// 9-way setup overhead dominates the actual search time.
-pub fn fast(total_time: Duration) -> StrategySchedule {
+pub fn fast(total_time: Duration, _workers: usize) -> StrategySchedule {
     StrategySchedule {
         strategies: vec![(
             SearchConfig {
@@ -66,7 +66,7 @@ pub fn fast(total_time: Duration) -> StrategySchedule {
 }
 
 /// Three-strategy compact portfolio. Equal time slices.
-pub fn mini(total_time: Duration) -> StrategySchedule {
+pub fn mini(total_time: Duration, _workers: usize) -> StrategySchedule {
     let slice = total_time / 3;
     let last = total_time.saturating_sub(slice * 2);
     StrategySchedule {
@@ -114,38 +114,38 @@ mod tests {
     #[test]
     fn casc_is_the_default() {
         let t = Duration::from_secs(30);
-        let s = by_name("casc", t).expect("casc must exist");
-        let d = StrategySchedule::default_schedule(t);
+        let s = by_name("casc", t, 1).expect("casc must exist");
+        let d = StrategySchedule::default_schedule(t, 1);
         assert_eq!(s.strategies.len(), d.strategies.len());
     }
 
     #[test]
     fn default_alias_works() {
-        assert!(by_name("default", Duration::from_secs(5)).is_some());
+        assert!(by_name("default", Duration::from_secs(5), 1).is_some());
     }
 
     #[test]
     fn fast_is_single_strategy() {
-        let s = by_name("fast", Duration::from_secs(2)).unwrap();
+        let s = by_name("fast", Duration::from_secs(2), 1).unwrap();
         assert_eq!(s.strategies.len(), 1);
     }
 
     #[test]
     fn mini_is_three_strategies() {
-        let s = by_name("mini", Duration::from_secs(3)).unwrap();
+        let s = by_name("mini", Duration::from_secs(3), 1).unwrap();
         assert_eq!(s.strategies.len(), 3);
     }
 
     #[test]
     fn unknown_returns_none() {
-        assert!(by_name("nonexistent-schedule", Duration::from_secs(1)).is_none());
+        assert!(by_name("nonexistent-schedule", Duration::from_secs(1), 1).is_none());
     }
 
     #[test]
     fn all_names_resolve() {
         for name in ALL {
             assert!(
-                by_name(name, Duration::from_secs(1)).is_some(),
+                by_name(name, Duration::from_secs(1), 1).is_some(),
                 "named schedule `{name}` is in ALL but by_name() doesn't know it",
             );
         }

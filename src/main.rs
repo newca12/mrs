@@ -26,6 +26,7 @@ fn main() {
     let mut path: Option<String> = None;
     let mut time_secs: u64 = 30;
     let mut schedule_name: Option<String> = None;
+    let mut workers: Option<usize> = None;
     #[cfg(feature = "proover")]
     let mut quiet = false;
     let mut args = env::args().skip(1);
@@ -40,6 +41,19 @@ fn main() {
                     eprintln!("Error: --time requires a positive integer, got {:?}", val);
                     process::exit(1);
                 });
+            }
+            "--workers" => {
+                let val = args.next().unwrap_or_else(|| {
+                    eprintln!("Usage: mrs [--workers <N>] <file.p>");
+                    process::exit(1);
+                });
+                workers = Some(val.parse().unwrap_or_else(|_| {
+                    eprintln!(
+                        "Error: --workers requires a positive integer, got {:?}",
+                        val
+                    );
+                    process::exit(1);
+                }));
             }
             "--schedule" => {
                 let val = args.next().unwrap_or_else(|| {
@@ -290,23 +304,30 @@ fn main() {
         }
 
         let search_budget = total_budget - elapsed;
+        let actual_workers = workers.unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+        });
         let schedule = match schedule_name.as_deref() {
-            None => StrategySchedule::default_schedule(search_budget),
-            Some(name) => match mrs_search::strategy::named::by_name(name, search_budget) {
-                Some(s) => s,
-                None => {
-                    eprintln!(
-                        "Error: unknown schedule {:?} (known: {})",
-                        name,
-                        mrs_search::strategy::named::ALL.join(", "),
-                    );
-                    process::exit(1);
+            None => StrategySchedule::default_schedule(search_budget, actual_workers),
+            Some(name) => {
+                match mrs_search::strategy::named::by_name(name, search_budget, actual_workers) {
+                    Some(s) => s,
+                    None => {
+                        eprintln!(
+                            "Error: unknown schedule {:?} (known: {})",
+                            name,
+                            mrs_search::strategy::named::ALL.join(", "),
+                        );
+                        process::exit(1);
+                    }
                 }
-            },
+            }
         };
 
         let search_start = std::time::Instant::now();
-        let result = run_schedule(&all_clauses, id_gen, &schedule, &lowered.symbols);
+        let result = run_schedule(&all_clauses, id_gen, &schedule, &lowered.symbols, workers);
         let search_elapsed = search_start.elapsed();
 
         let status = match &result {
