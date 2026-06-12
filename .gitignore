@@ -29,3 +29,20 @@ heaptrack.*.zst
 *.patch
 nohup.out
 out.txt
+
+# Profiling / perf artifacts
+perf.data
+perf.data.old
+
+# ML training artifacts and data-collection output
+weights*.bin
+ml_logs*/
+meta.json
+
+# Benchmark scratch output
+crates/mrs-bench/run.log
+casc_problem_lists/
+
+# Stray TPTP problems / archives at repo root
+/*.p
+/*.zip
