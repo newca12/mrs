@@ -8,6 +8,7 @@ use std::path::Path;
 use walkdir::WalkDir;
 
 #[derive(Debug, PartialEq, Eq)]
+#[allow(clippy::upper_case_acronyms)]
 enum Category {
     EPR,
     UEQ,
@@ -48,16 +49,14 @@ fn determine_category(ast: &TPTPProblem) -> Category {
 
                 for lit in lits {
                     match lit {
-                        CNFLiteral::Equality(..) |
-                        CNFLiteral::Inequality(..) => {
+                        CNFLiteral::Equality(..) | CNFLiteral::Inequality(..) => {
                             has_equality = true;
                         }
-                        CNFLiteral::Positive(_) |
-                        CNFLiteral::Negative(_) => {
+                        CNFLiteral::Positive(_) | CNFLiteral::Negative(_) => {
                             all_equalities = false;
                         }
                     }
-                    
+
                     // Check for functions arity > 0
                     check_cnf_literal(&lit, &mut has_functions);
                 }
@@ -67,7 +66,9 @@ fn determine_category(ast: &TPTPProblem) -> Category {
                 all_unit = false;
                 all_equalities = false;
                 match &fof.formula {
-                    FOFStatement::Logical(f) => check_fof_formula(f, &mut has_equality, &mut has_functions),
+                    FOFStatement::Logical(f) => {
+                        check_fof_formula(f, &mut has_equality, &mut has_functions)
+                    }
                     FOFStatement::Sequent(..) => return Category::Other,
                 }
             }
@@ -78,11 +79,11 @@ fn determine_category(ast: &TPTPProblem) -> Category {
     if !has_functions {
         return Category::EPR;
     }
-    
+
     if is_cnf && all_unit && all_equalities {
         return Category::UEQ;
     }
-    
+
     if has_equality {
         Category::FEQ
     } else {
@@ -92,14 +93,13 @@ fn determine_category(ast: &TPTPProblem) -> Category {
 
 fn check_cnf_literal(lit: &CNFLiteral, has_functions: &mut bool) {
     match lit {
-        CNFLiteral::Positive(CNFAtomicFormula::Plain(_, args)) |
-        CNFLiteral::Negative(CNFAtomicFormula::Plain(_, args)) => {
+        CNFLiteral::Positive(CNFAtomicFormula::Plain(_, args))
+        | CNFLiteral::Negative(CNFAtomicFormula::Plain(_, args)) => {
             for arg in args {
                 check_term(arg, has_functions);
             }
         }
-        CNFLiteral::Equality(t1, t2) |
-        CNFLiteral::Inequality(t1, t2) => {
+        CNFLiteral::Equality(t1, t2) | CNFLiteral::Inequality(t1, t2) => {
             check_term(t1, has_functions);
             check_term(t2, has_functions);
         }
@@ -131,16 +131,13 @@ fn check_fof_formula(formula: &FOFFormula, has_eq: &mut bool, has_funcs: &mut bo
 }
 
 fn check_term(term: &FOFTerm, has_funcs: &mut bool) {
-    match term {
-        FOFTerm::Function(_, args) => {
-            if !args.is_empty() {
-                *has_funcs = true;
-            }
-            for arg in args {
-                check_term(arg, has_funcs);
-            }
+    if let FOFTerm::Function(_, args) = term {
+        if !args.is_empty() {
+            *has_funcs = true;
         }
-        _ => {}
+        for arg in args {
+            check_term(arg, has_funcs);
+        }
     }
 }
 
@@ -170,17 +167,25 @@ fn main() {
                 Ok(c) => c,
                 Err(_) => continue,
             };
-            
+
             match parse_tptp(&content) {
                 Ok(ast) => {
                     let cat = determine_category(&ast);
                     let line = format!("{}\n", path.display());
                     match cat {
-                        Category::FEQ => { let _ = feq_list.write_all(line.as_bytes()); },
-                        Category::FNE => { let _ = fne_list.write_all(line.as_bytes()); },
-                        Category::UEQ => { let _ = ueq_list.write_all(line.as_bytes()); },
-                        Category::EPR => { let _ = epr_list.write_all(line.as_bytes()); },
-                        Category::Other => {},
+                        Category::FEQ => {
+                            let _ = feq_list.write_all(line.as_bytes());
+                        }
+                        Category::FNE => {
+                            let _ = fne_list.write_all(line.as_bytes());
+                        }
+                        Category::UEQ => {
+                            let _ = ueq_list.write_all(line.as_bytes());
+                        }
+                        Category::EPR => {
+                            let _ = epr_list.write_all(line.as_bytes());
+                        }
+                        Category::Other => {}
                     }
                     count += 1;
                     if count % 1000 == 0 {
@@ -193,6 +198,6 @@ fn main() {
             }
         }
     }
-    
+
     println!("Total successfully categorized: {}", count);
 }
