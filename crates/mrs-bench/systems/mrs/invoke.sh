@@ -24,4 +24,16 @@ if [[ -z "${TPTP:-}" ]]; then
     export TPTP="${SCRIPT_DIR}/../../problems/casc-30"
 fi
 
-exec "${BINARY}" --time "${TIME_LIMIT}" "${PROBLEM}"
+# Determine the CASC division from the file path
+DIVISION=$(basename $(dirname "$PROBLEM"))
+DIV_LOWER="${DIVISION,,}"
+
+# Select the appropriate static schedule
+SCHEDULE="casc_${DIV_LOWER}"
+
+# Fallback to standard casc if we don't have a specialized schedule
+if [[ "$SCHEDULE" != "casc_feq" && "$SCHEDULE" != "casc_fne" && "$SCHEDULE" != "casc_ueq" && "$SCHEDULE" != "casc_epr" ]]; then
+    SCHEDULE="casc"
+fi
+
+exec "${BINARY}" --time "${TIME_LIMIT}" --workers "${MRS_WORKERS:-8}" --schedule "${SCHEDULE}" "${PROBLEM}"
