@@ -1,3 +1,4 @@
+<<<<<<< Updated upstream:docs/BENCHMARKS.md
 # Benchmark Log
 
 Append-only log of CASC benchmark runs (`crates/mrs-bench/casc.sh`), newest first.
@@ -5,6 +6,27 @@ Each entry records the mrs commit and the exact command used.
 
 
 commit 6ad04a4743507b27d91fba37b8b4efce864d6543 (HEAD -> feature/ml-guided-clause-selection, origin/feature/ml-guided-clause-selection)
+=======
+
+Results for mrs commit 6911c93361d7dbf854e9ee293fb50c9ec822ba4e
+
+hack@pve:~/mrs$ crates/mrs-bench/casc.sh --systems mrs  --casc-times --divisions feq
+CASC-30 Results — 2026-06-07 07:15  (400 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+FEQ            400        10    5.946
+------------------  --------------------
+TOTAL          400        10    5.946
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+Results for mrs commit a3cc272eddf2fd408b4705dd650025dbde44a1e0
+>>>>>>> Stashed changes:benchmarks
 
 ongoing
 [root@mtsdev02 mrs]# INPUT_PROBLEMS_LIST=./casc_problem_lists/epr.list ./crates/mrs-bench/collect_ml_data.sh /mnt/sde1/TPTP-v9.2.1 ./ml_logs_epr 1 960 8
@@ -883,3 +905,30 @@ POLARITY VIOLATIONS — 7 case(s) of wrong SZS polarity:
 [root@mtsdev02 mrs]# TPTP=/mnt/sda1/mrs/crates/mrs-bench/problems/casc-30 crates/mrs-bench/casc.sh --systems mrs
 POLARITY VIOLATIONS — 1 case(s) of wrong SZS polarity:
   EPU     MSC024-1                        mrs=Satisfiable  (expected one of ["Unsatisfiable"])  ⚠ UNSOUND
+
+---
+## Phase 2 Results (2026-06-13)
+
+### Commit d96eb0fa — new heuristics branch
+
+FNE at 30s (90/100 problems completed, 4 parallel jobs):
+
+| Portfolio | FNE solved | Avg (s) |
+|-----------|-----------|---------|
+| Old (11 strategies) | 20/90 | 5.3 |
+| New (16 strategies, s10-s15) | 20/90 | 4.9 |
+
+**No regressions; +0 new solves at 30s.** The new strategies (SOS, ConjSymbolBoost, HornPenalty) solve additional *unique* problems in solo benchmarks (S11 solo: 23/100 vs S1 solo: 19/100 at 8s; S11 uniquely solves NUN060+1, NUN081+1, CSR061+2, KRS258+1 vs S1), but at 30s with 4 workers the gains are not yet visible because:
+1. Hard FNE problems require E-style search space navigation that mrs still lacks
+2. Problems that mrs can solve are already covered by s1-s9 at 30s
+
+Expected improvement: visible at CASC times (240s) on problems requiring 50-200s.
+
+### Solo strategy analysis (FNE, 8s budget):
+
+| Strategy | Solved | Unique vs s1 |
+|----------|--------|-------------|
+| s1 (baseline AgeWeight+KBO) | 19/100 | — |
+| s10 (SOS+KBO) | 20/100 | CSR060+2, CSR115+98 |
+| s11 (ConjSymbolBoost) | **23/100** | CSR061+2, CSR115+98, KRS258+1, NUN060+1, NUN081+1 |
+| s12 (HornPenalty) | 19/100 | CSR115+98, KRS258+1, SWB012+3 |
