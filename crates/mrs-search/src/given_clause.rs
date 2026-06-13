@@ -387,6 +387,28 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             }
         }
 
+        // --- Limited Resource Strategy (LRS) Periodic Pruning ---
+        if iteration % 100 == 0 && iteration >= 100 {
+            let elapsed = start.elapsed();
+            let remaining_time = config.time_limit.saturating_sub(elapsed);
+            
+            let avg_nanos = (elapsed.as_nanos() / iteration as u128).max(1) as u64;
+            let remaining_nanos = remaining_time.as_nanos() as u64;
+            
+            let remaining_iterations = remaining_nanos / avg_nanos;
+            let target_size = (remaining_iterations as usize).max(2000);
+            
+            if state.unprocessed.active_count() > target_size.saturating_add(1000) {
+                let discarded = state.unprocessed.prune(target_size);
+                if std::env::var("TRACE_LRS").is_ok() {
+                    eprintln!(
+                        "[LRS] pruned passive queue to target={} (discarded {})",
+                        target_size, discarded
+                    );
+                }
+            }
+        }
+
         let given_id = match select(
             &mut state.unprocessed,
             &config.selection,
