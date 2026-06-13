@@ -195,10 +195,29 @@ pub enum ClauseWeightFn {
     Standard,
     /// Depth-weighted: heavier for deeply nested terms.
     FunctionDepth,
+    /// Quadratic depth-weighted: heavier for deeply nested terms with quadratic scaling.
+    FunctionWeightPenalty,
+    /// Exponential depth-weighted: extremely heavy for deeply nested terms with exponential scaling.
+    FunctionWeightPenaltyExp,
     /// Horn preference: non-Horn clauses pay a 3× multiplier.
     HornPenalty,
+    /// Horn progressive multiplier: non-Horn clauses pay a multiplier equal to positive literals.
+    HornHeuristic,
+    /// Horn exponential multiplier: non-Horn clauses pay a 2^(pos_count - 1) multiplier.
+    HornHeuristicExp,
     /// Goal-symbol boost: symbols not in the conjecture closure are 3×.
     ConjSymbolBoost,
+    /// Precedence-based symbol weight: each symbol's cost equals its KBO/LPO
+    /// precedence rank.  Rare symbols have higher precedence and therefore cost
+    /// more, so clauses that contain many rare symbols are treated as heavier
+    /// and processed later.  This nudges the prover toward clauses whose
+    /// vocabulary is dominated by common (low-precedence) symbols, which tend
+    /// to interact well with the rewrite rules already in the active set.
+    ///
+    /// Note: the effect is complementary to `ConjSymbolBoost`.  Whereas
+    /// `ConjSymbolBoost` rewards goal-symbol overlap, `SymbolWeight` penalises
+    /// rare symbols regardless of whether they appear in the conjecture.
+    SymbolWeight,
 }
 
 /// Configuration for the search engine.
