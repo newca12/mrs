@@ -84,9 +84,16 @@ impl StrategySchedule {
         let t8 = Duration::from_millis(ms * 9 / 100); //   9% (was 10%)
         let t9 = Duration::from_millis(ms * 9 / 100); //   9% (was ~10%)
         // s1–s9 total: 94%
-        let t10 = Duration::from_millis(ms * 4 / 100); //  4% FEQ KBO
-        // t11 absorbs rounding remainder (~2% at 30 s) — FEQ LPO
-        let t11 = total_time
+        // s1-s9: proven baseline portfolio (88% combined)
+        // s10-s15: new strategies exploiting distance propagation, SOS, and
+        //          goal-symbol heuristics (~12% combined)
+        let t10 = Duration::from_millis(ms * 5 / 100); //  5% SOS
+        let t11 = Duration::from_millis(ms * 5 / 100); //  5% ConjSymbolBoost
+        let t12 = Duration::from_millis(ms * 3 / 100); //  3% HornPenalty (FNE)
+        let t13 = Duration::from_millis(ms * 2 / 100); //  2% SOS + GoalDirected + LPO
+        let t14 = Duration::from_millis(ms * 2 / 100); //  2% ConjSymbolBoost + All (FEQ)
+        // t15 absorbs rounding remainder (~1% at 30 s) — FunctionDepth + LPO
+        let t15 = total_time
             .saturating_sub(t1)
             .saturating_sub(t2)
             .saturating_sub(t3)
@@ -96,7 +103,11 @@ impl StrategySchedule {
             .saturating_sub(t7)
             .saturating_sub(t8)
             .saturating_sub(t9)
-            .saturating_sub(t10);
+            .saturating_sub(t10)
+            .saturating_sub(t11)
+            .saturating_sub(t12)
+            .saturating_sub(t13)
+            .saturating_sub(t14);
 
         StrategySchedule {
             strategies: vec![
@@ -217,53 +228,113 @@ impl StrategySchedule {
                     },
                     t9,
                 ),
-                // ── FEQ-targeted strategies ──────────────────────────────────
-                // s10: KBO with All selection and moderate weight cap — FEQ
-                // All selection allows picking positive equality literals for
-                // paramodulation, which is critical for equational problems.
-                // Weight cap 30 keeps passive compact on large FEQ clause sets.
-                // No AVATAR: component splits interfere with equational chaining.
-                // Small budget (4%): provides FEQ coverage without stealing time
-                // from the main s1-s9 portfolio.
+                // ── New heuristic strategies ─────────────────────────────────
+                // s10: SOS-restricted + AgeWeight(5) + AllNegative + KBO
+                // Set-of-Support: weight picks only return goal-connected clauses
+                // (distance < 100), steering resolution toward the conjecture.
+                // Based on the audit showing E finds proofs with 10-100x fewer
+                // clauses; SOS is its key mechanism on FNE/FEQ problems.
                 (
                     SearchConfig {
                         time_limit: t10,
-                        selection: SelectionStrategy::SmallestFirst,
-                        literal_selection: LiteralSelection::All,
+                        selection: SelectionStrategy::AgeWeight(5),
+                        literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::KBO,
-                        max_term_weight: Some(30),
-                        use_avatar: false,
-                        unit_only_resolution: false,
+                        sos_depth: 100,
                         ..SearchConfig::default()
                     },
                     t10,
                 ),
-                // s11: LPO with All selection and no weight cap — FEQ
-                // LPO handles function-symbol-heavy equational theories differently
-                // from KBO; removing the weight cap allows following long
-                // paramodulation chains to their conclusion.
-                // No AVATAR: same reason as s10.
-                // Absorbs rounding remainder (~2% at 30 s).
+                // s11: ConjSymbolBoost + AgeWeight(5) + AllNegative + KBO
+                // Symbols not appearing in the conjecture closure cost 3x.
+                // Approximates E's 'prefer goal-relevant symbols' weight function,
+                // which is the single most effective heuristic in E's portfolio.
                 (
                     SearchConfig {
                         time_limit: t11,
                         selection: SelectionStrategy::AgeWeight(5),
-                        literal_selection: LiteralSelection::All,
-                        ordering: TermOrdering::LPO,
+                        literal_selection: LiteralSelection::AllNegative,
+                        ordering: TermOrdering::KBO,
+                        weight_fn: crate::ClauseWeightFn::ConjSymbolBoost,
+                        ..SearchConfig::default()
+                    },
+                    t11,
+                ),
+                // s12: HornPenalty + AgeWeight(5) + AllNegative + KBO, no AVATAR
+                // FNE problems are mostly Horn; 3x penalty on non-Horn clauses
+                // keeps the proof search Horn-focused. No AVATAR to avoid
+                // spurious SAT-solver overhead on purely Horn problems.
+                (
+                    SearchConfig {
+                        time_limit: t12,
+                        selection: SelectionStrategy::AgeWeight(5),
+                        literal_selection: LiteralSelection::AllNegative,
+                        ordering: TermOrdering::KBO,
+                        weight_fn: crate::ClauseWeightFn::HornPenalty,
                         max_term_weight: None,
                         use_avatar: false,
                         unit_only_resolution: false,
                         ..SearchConfig::default()
                     },
-                    t11,
+                    t12,
+                ),
+                // s13: SOS + GoalDirected(5) + AllNegative + LPO
+                // Combines SOS restriction with LPO ordering and goal-directed
+                // distance-penalised selection. On LPO-friendly equational theories
+                // this can find proofs that SOS+KBO misses.
+                (
+                    SearchConfig {
+                        time_limit: t13,
+                        selection: SelectionStrategy::GoalDirected(5),
+                        literal_selection: LiteralSelection::AllNegative,
+                        ordering: TermOrdering::LPO,
+                        sos_depth: 100,
+                        ..SearchConfig::default()
+                    },
+                    t13,
+                ),
+                // s14: ConjSymbolBoost + SmallestFirst + All + KBO, no AVATAR
+                // FEQ variant: All selection + conjecture-symbol boost + tight weight.
+                // No AVATAR: equational chains need unrestricted paramodulation.
+                (
+                    SearchConfig {
+                        time_limit: t14,
+                        selection: SelectionStrategy::SmallestFirst,
+                        literal_selection: LiteralSelection::All,
+                        ordering: TermOrdering::KBO,
+                        weight_fn: crate::ClauseWeightFn::ConjSymbolBoost,
+                        max_term_weight: Some(100),
+                        use_avatar: false,
+                        unit_only_resolution: false,
+                        ..SearchConfig::default()
+                    },
+                    t14,
+                ),
+                // s15: FunctionDepth + AgeWeight(5) + All + LPO, no AVATAR
+                // Depth-weighted terms penalise deep nesting — fights the term-tower
+                // explosion seen in hard equational problems. LPO for equational.
+                // Absorbs rounding remainder (~1% at 30 s).
+                (
+                    SearchConfig {
+                        time_limit: t15,
+                        selection: SelectionStrategy::AgeWeight(5),
+                        literal_selection: LiteralSelection::All,
+                        ordering: TermOrdering::LPO,
+                        weight_fn: crate::ClauseWeightFn::FunctionDepth,
+                        max_term_weight: None,
+                        use_avatar: false,
+                        unit_only_resolution: false,
+                        ..SearchConfig::default()
+                    },
+                    t15,
                 ),
                 // ── Diagnostic strategy (zero time in normal runs) ────────────
-                // s12: SmallestFirst + All + max_weight=15 + AVATAR
+                // s16: SmallestFirst + All + max_weight=15 + AVATAR
                 // AVATAR splits the 46-literal all-positive main clause into 46 independent
                 // branches; with SmallestFirst+All+weight=15 each branch refutation is fast
                 // (small sub-problem, tight weight keeps passive compact).  BUR output is
                 // never weight-filtered (see given_clause.rs).
-                // (zero time in normal runs; testable via MRS_SINGLE_STRATEGY=12)
+                // (zero time in normal runs; testable via MRS_SINGLE_STRATEGY=16)
                 (
                     SearchConfig {
                         time_limit: Duration::ZERO,
