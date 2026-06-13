@@ -125,6 +125,7 @@ impl StrategySchedule {
                         // No AVATAR: avoids overhead and incorrect dormancy on chain proofs.
                         use_avatar: false,
                         unit_only_resolution: false,
+                        ..SearchConfig::default()
                     },
                     t2,
                 ),
@@ -178,6 +179,7 @@ impl StrategySchedule {
                         // the SAT model, blocking key resolutions in FNE-style problems.
                         use_avatar: false,
                         unit_only_resolution: false,
+                        ..SearchConfig::default()
                     },
                     t6,
                 ),
@@ -232,6 +234,7 @@ impl StrategySchedule {
                         max_term_weight: Some(30),
                         use_avatar: false,
                         unit_only_resolution: false,
+                        ..SearchConfig::default()
                     },
                     t10,
                 ),
@@ -250,6 +253,7 @@ impl StrategySchedule {
                         max_term_weight: None,
                         use_avatar: false,
                         unit_only_resolution: false,
+                        ..SearchConfig::default()
                     },
                     t11,
                 ),
@@ -269,6 +273,7 @@ impl StrategySchedule {
                         max_term_weight: Some(15),
                         use_avatar: true,
                         unit_only_resolution: false,
+                        ..SearchConfig::default()
                     },
                     Duration::ZERO,
                 ),
@@ -551,6 +556,7 @@ pub fn run_schedule(
                         sc.use_avatar,
                         log_ml_data_thread.clone(),
                         ml.log_csv,
+                        sc.weight_fn.clone(),
                     );
                     #[cfg(feature = "ml-guidance")]
                     {

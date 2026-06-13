@@ -76,6 +76,12 @@ pub struct SearchState {
     pub scores: HashMap<ClauseId, f32>,
     /// Per-strategy performance counters (incremented by `given_clause::search`).
     pub stats: crate::SearchStats,
+    /// Weight function used for passive-queue priority.  Copied from `SearchConfig`
+    /// at `new_with_ml` time so every call site can access it cheaply.
+    pub weight_fn: crate::ClauseWeightFn,
+    /// Symbols that appear in any goal-connected clause (distance < 100).
+    /// Used by the `ConjSymbolBoost` weight function.
+    pub goal_symbols: rustc_hash::FxHashSet<mrs_core::SymbolId>,
 }
 
 impl SearchState {
@@ -98,9 +104,11 @@ impl SearchState {
             use_avatar,
             None,
             false,
+            crate::ClauseWeightFn::Standard,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_ml(
         initial_clauses: Vec<Clause>,
         id_gen: ClauseIdGen,
@@ -109,6 +117,7 @@ impl SearchState {
         use_avatar: bool,
         log_ml_data: Option<String>,
         ml_log_csv: bool,
+        weight_fn: crate::ClauseWeightFn,
     ) -> Self {
         let mut term_bank = TermBank::new();
         let mut clause_store: HashMap<ClauseId, IdClause> = HashMap::default();
@@ -116,21 +125,67 @@ impl SearchState {
         let mut avatar = AvatarContext::new();
         let mut id_gen = id_gen;
 
+        // Pre-compute goal symbols from conjecture-connected input clauses.
+        let goal_symbols = {
+            let mut syms: rustc_hash::FxHashSet<mrs_core::SymbolId> =
+                rustc_hash::FxHashSet::default();
+            for c in initial_clauses.iter().filter(|c| c.distance < 100) {
+                for lit in &c.literals {
+                    match &lit.atom {
+                        mrs_core::formula::Atom::Pred(s, args) => {
+                            syms.insert(*s);
+                            let mut stack: Vec<&mrs_core::term::Term> = args.iter().collect();
+                            while let Some(t) = stack.pop() {
+                                if let mrs_core::term::Term::App(f, a) = t {
+                                    syms.insert(*f);
+                                    stack.extend(a.iter());
+                                }
+                            }
+                        }
+                        mrs_core::formula::Atom::Eq(l, r) => {
+                            let mut stack = vec![l, r];
+                            while let Some(t) = stack.pop() {
+                                if let mrs_core::term::Term::App(f, a) = t {
+                                    syms.insert(*f);
+                                    stack.extend(a.iter());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            syms
+        };
+
         for clause in initial_clauses {
             let id_clause = term_bank.clause_from_legacy(&clause);
+            let w = crate::weight::clause_weight_fn(
+                &id_clause,
+                &term_bank,
+                &config,
+                &weight_fn,
+                &goal_symbols,
+            );
             if use_avatar {
                 if let Some(splits) = avatar.split_clause_id(&id_clause, &mut id_gen, &term_bank) {
                     for split in splits {
+                        let sw = crate::weight::clause_weight_fn(
+                            &split,
+                            &term_bank,
+                            &config,
+                            &weight_fn,
+                            &goal_symbols,
+                        );
                         clause_store.insert(split.id, split.clone());
-                        unprocessed.push(&split, &term_bank, None);
+                        unprocessed.push(&split, &term_bank, sw, None);
                     }
                 } else {
                     clause_store.insert(id_clause.id, id_clause.clone());
-                    unprocessed.push(&id_clause, &term_bank, None);
+                    unprocessed.push(&id_clause, &term_bank, w, None);
                 }
             } else {
                 clause_store.insert(id_clause.id, id_clause.clone());
-                unprocessed.push(&id_clause, &term_bank, None);
+                unprocessed.push(&id_clause, &term_bank, w, None);
             }
         }
 
@@ -160,7 +215,20 @@ impl SearchState {
             #[cfg(feature = "ml-guidance")]
             scores: HashMap::default(),
             stats: crate::SearchStats::default(),
+            weight_fn,
+            goal_symbols,
         }
+    }
+
+    /// Computes the clause weight using the strategy's configured weight function.
+    pub fn compute_weight(&self, clause: &IdClause) -> u32 {
+        crate::weight::clause_weight_fn(
+            clause,
+            &self.term_bank,
+            &self.config,
+            &self.weight_fn,
+            &self.goal_symbols,
+        )
     }
 
     /// Computes and caches the ML score for a clause.

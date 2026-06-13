@@ -167,6 +167,40 @@ pub enum SearchResult {
     GaveUp,
 }
 
+/// How clause weights are computed for the passive-queue priority heaps.
+///
+/// All variants are sums over all symbol occurrences in all literals; they
+/// differ in how individual occurrences are weighted:
+///
+/// * `Standard`     — every symbol costs 1, every variable costs `w0`.
+///   This is the default and reproduces the historical behaviour.
+///
+/// * `FunctionDepth` — terms are weighted by `symbol_weight * (depth + 1)`.
+///   Deeply nested terms become heavier, discouraging the prover from
+///   building tall term towers during superposition chains.
+///
+/// * `HornPenalty`  — same as Standard, but clauses with more than one
+///   positive literal pay a 3× multiplier penalty.  Horn clauses (≤1
+///   positive literal) are preferred, which helps on FNE / mixed problems.
+///
+/// * `ConjSymbolBoost` — counts symbols that *also appear in a
+///   goal-connected clause* (distance < 100) as weight 1; symbols that
+///   do not appear in any goal clause are penalised (weight 3).
+///   This approximates E's "prefer clauses that share symbols with the
+///   conjecture" heuristic.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ClauseWeightFn {
+    /// Every symbol costs 1, variable costs `w0`.  (default)
+    #[default]
+    Standard,
+    /// Depth-weighted: heavier for deeply nested terms.
+    FunctionDepth,
+    /// Horn preference: non-Horn clauses pay a 3× multiplier.
+    HornPenalty,
+    /// Goal-symbol boost: symbols not in the conjecture closure are 3×.
+    ConjSymbolBoost,
+}
+
 /// Configuration for the search engine.
 #[derive(Clone, Debug)]
 pub struct SearchConfig {
@@ -193,6 +227,21 @@ pub struct SearchConfig {
     /// proofs consist entirely of unit-chain derivations.  The restriction is
     /// incomplete for general clause sets but correct (sound) everywhere.
     pub unit_only_resolution: bool,
+    /// Weight function used when inserting clauses into the passive-queue heaps.
+    ///
+    /// Defaults to `Standard` (unchanged historical behaviour).
+    pub weight_fn: ClauseWeightFn,
+    /// Set-of-Support (SOS) restriction.
+    ///
+    /// When `true`, the weight-based priority queue only offers clauses whose
+    /// `distance` is below this threshold for the *weight* pop.  Age picks
+    /// (FIFO) are unrestricted.  Setting this to `u32::MAX` disables SOS
+    /// (equivalent to `false`).
+    ///
+    /// Suggested value: `100` — keeps all conjecture descendants (distance 0–99)
+    /// in the SOS.  Axiom-only clauses (distance ≥ 100) are still reachable via
+    /// the age queue slot of AgeWeight/GoalDirected strategies.
+    pub sos_depth: u32,
 }
 
 impl Default for SearchConfig {
@@ -205,6 +254,8 @@ impl Default for SearchConfig {
             max_term_weight: Some(200),
             use_avatar: true,
             unit_only_resolution: false,
+            weight_fn: ClauseWeightFn::Standard,
+            sos_depth: u32::MAX, // disabled
         }
     }
 }

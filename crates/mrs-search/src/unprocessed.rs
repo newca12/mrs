@@ -8,12 +8,11 @@ use mrs_core::clause::ClauseId;
 use mrs_core::term_bank::{IdClause, TermBank};
 use mrs_index::fvi::FeatureVector;
 
-use crate::weight::clause_weight_id;
-
 #[derive(Clone, Debug)]
 struct WeightWrapper {
     id: ClauseId,
     weight: u32,
+    distance: u32,
 }
 
 impl PartialEq for WeightWrapper {
@@ -58,6 +57,8 @@ pub struct UnprocessedSet {
     #[cfg(feature = "ml-guidance")]
     ml_queue: BinaryHeap<WeightWrapper>,
     /// Configuration for symbol precedence and weights.
+    /// Retained for future use (e.g. adaptive weight re-scoring).
+    #[allow(dead_code)]
     config: Arc<SymbolConfig>,
 }
 
@@ -78,14 +79,16 @@ impl UnprocessedSet {
 
     /// Adds an `IdClause` to the unprocessed set.
     ///
+    /// `weight` is the precomputed clause weight (using the strategy's chosen
+    /// weight function).  The caller is responsible for computing it.
+    ///
     /// `ml_score` is the raw logit from the ML clause classifier; it only
     /// affects the ML priority queue (`ml-guidance` feature). In the default
     /// build the parameter is ignored and costs nothing.
-    pub fn push(&mut self, clause: &IdClause, bank: &TermBank, ml_score: Option<f32>) {
+    pub fn push(&mut self, clause: &IdClause, bank: &TermBank, weight: u32, ml_score: Option<f32>) {
         #[cfg(not(feature = "ml-guidance"))]
         let _ = ml_score;
         let id = clause.id;
-        let weight = clause_weight_id(clause, bank, &self.config);
 
         let goal_weight = if clause.distance < 100 {
             weight + (clause.distance * 2)
@@ -97,10 +100,15 @@ impl UnprocessedSet {
         self.fvs
             .insert(id, FeatureVector::from_id_clause(clause, bank));
         self.age_queue.push_back(id);
-        self.weight_queue.push(WeightWrapper { id, weight });
+        self.weight_queue.push(WeightWrapper {
+            id,
+            weight,
+            distance: clause.distance,
+        });
         self.goal_queue.push(WeightWrapper {
             id,
             weight: goal_weight,
+            distance: clause.distance,
         });
         #[cfg(feature = "ml-guidance")]
         {
@@ -118,6 +126,7 @@ impl UnprocessedSet {
             self.ml_queue.push(WeightWrapper {
                 id,
                 weight: ml_priority,
+                distance: clause.distance,
             });
         }
     }
@@ -152,6 +161,46 @@ impl UnprocessedSet {
             }
         }
         None
+    }
+
+    /// Pops the lightest SOS-eligible clause (distance < `sos_depth`).
+    ///
+    /// Skips clauses whose distance exceeds `sos_depth`, falling back to
+    /// `pop_age()` if no SOS clause is ready.  This implements the
+    /// Set-of-Support restriction: the weight-based pick only considers
+    /// goal-connected clauses; all clauses remain reachable via the age queue.
+    pub fn pop_weight_sos(&mut self, sos_depth: u32) -> Option<ClauseId> {
+        // Drain until we find an active SOS-eligible clause.
+        // Non-SOS clauses that are active are put back into a temporary
+        // buffer and re-inserted after the search.
+        let mut skipped: Vec<WeightWrapper> = Vec::new();
+        let result = loop {
+            match self.weight_queue.pop() {
+                None => break None,
+                Some(wrapper) => {
+                    if !self.active_ids.contains(&wrapper.id) {
+                        // Tombstone — skip without re-inserting.
+                        continue;
+                    }
+                    if wrapper.distance < sos_depth {
+                        self.active_ids.remove(&wrapper.id);
+                        self.fvs.remove(&wrapper.id);
+                        break Some(wrapper.id);
+                    } else {
+                        skipped.push(wrapper);
+                        // Stop after examining a bounded window to avoid O(n) scan.
+                        if skipped.len() >= 32 {
+                            break None;
+                        }
+                    }
+                }
+            }
+        };
+        // Re-insert skipped clauses.
+        for w in skipped {
+            self.weight_queue.push(w);
+        }
+        result
     }
 
     /// Pops the clause with the lowest distance-penalized weight.

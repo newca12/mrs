@@ -27,28 +27,40 @@ pub enum SelectionStrategy {
 
 /// Selects and removes a clause ID from the unprocessed set.
 ///
+/// `sos_depth`: if `< u32::MAX`, the weight-based pop uses SOS restriction
+/// (only returns clauses with `distance < sos_depth`).
+///
 /// Returns `None` if the set is empty.
 pub fn select(
     unprocessed: &mut UnprocessedSet,
     strategy: &SelectionStrategy,
     iteration: u64,
+    sos_depth: u32,
 ) -> Option<ClauseId> {
     if unprocessed.is_empty() {
         return None;
     }
 
+    let pop_weight = |u: &mut UnprocessedSet| {
+        if sos_depth < u32::MAX {
+            u.pop_weight_sos(sos_depth).or_else(|| u.pop_age()) // age fallback when no SOS clause is ready
+        } else {
+            u.pop_weight()
+        }
+    };
+
     match strategy {
         SelectionStrategy::Fifo => unprocessed.pop_age(),
 
-        SelectionStrategy::SmallestFirst => unprocessed.pop_weight(),
+        SelectionStrategy::SmallestFirst => pop_weight(unprocessed),
 
         SelectionStrategy::AgeWeight(ratio) => {
             if *ratio == 0 || iteration.is_multiple_of(*ratio as u64) {
                 // Age pick: FIFO
                 unprocessed.pop_age()
             } else {
-                // Weight pick: lightest clause
-                unprocessed.pop_weight()
+                // Weight pick: lightest clause (SOS-restricted if enabled)
+                pop_weight(unprocessed)
             }
         }
 
@@ -72,7 +84,7 @@ pub fn select(
                 {
                     // Without the ml-guidance feature there is no ML queue;
                     // degrade gracefully to plain weight-based selection.
-                    unprocessed.pop_weight()
+                    pop_weight(unprocessed)
                 }
             }
         }
@@ -107,17 +119,27 @@ mod tests {
         bank.clause_from_legacy(&clause)
     }
 
+    fn push_clause(id: u64, num_lits: usize, bank: &mut TermBank, unproc: &mut UnprocessedSet) {
+        let c = make_id_clause(id, num_lits, bank);
+        let w = crate::weight::clause_weight_id(
+            &c,
+            bank,
+            &mrs_calculus::ordering::SymbolConfig::default(),
+        );
+        unproc.push(&c, bank, w, None);
+    }
+
     #[test]
     fn fifo_returns_oldest() {
         let mut bank = TermBank::new();
         let mut unproc = UnprocessedSet::new(std::sync::Arc::new(
             mrs_calculus::ordering::SymbolConfig::default(),
         ));
-        unproc.push(&make_id_clause(0, 3, &mut bank), &bank, None);
-        unproc.push(&make_id_clause(1, 1, &mut bank), &bank, None);
-        unproc.push(&make_id_clause(2, 2, &mut bank), &bank, None);
+        push_clause(0, 3, &mut bank, &mut unproc);
+        push_clause(1, 1, &mut bank, &mut unproc);
+        push_clause(2, 2, &mut bank, &mut unproc);
 
-        let selected = select(&mut unproc, &SelectionStrategy::Fifo, 0).unwrap();
+        let selected = select(&mut unproc, &SelectionStrategy::Fifo, 0, u32::MAX).unwrap();
         assert_eq!(selected, ClauseId(0));
     }
 
@@ -127,11 +149,11 @@ mod tests {
         let mut unproc = UnprocessedSet::new(std::sync::Arc::new(
             mrs_calculus::ordering::SymbolConfig::default(),
         ));
-        unproc.push(&make_id_clause(0, 3, &mut bank), &bank, None);
-        unproc.push(&make_id_clause(1, 1, &mut bank), &bank, None);
-        unproc.push(&make_id_clause(2, 2, &mut bank), &bank, None);
+        push_clause(0, 3, &mut bank, &mut unproc);
+        push_clause(1, 1, &mut bank, &mut unproc);
+        push_clause(2, 2, &mut bank, &mut unproc);
 
-        let selected = select(&mut unproc, &SelectionStrategy::SmallestFirst, 0).unwrap();
+        let selected = select(&mut unproc, &SelectionStrategy::SmallestFirst, 0, u32::MAX).unwrap();
         assert_eq!(selected, ClauseId(1));
     }
 
@@ -141,13 +163,13 @@ mod tests {
         let mut unproc = UnprocessedSet::new(std::sync::Arc::new(
             mrs_calculus::ordering::SymbolConfig::default(),
         ));
-        unproc.push(&make_id_clause(0, 3, &mut bank), &bank, None); // oldest, largest
-        unproc.push(&make_id_clause(1, 1, &mut bank), &bank, None); // smallest
+        push_clause(0, 3, &mut bank, &mut unproc); // oldest, largest
+        push_clause(1, 1, &mut bank, &mut unproc); // smallest
 
         // ratio=2: iteration 0 -> age (FIFO), iteration 1 -> weight
-        let s0 = select(&mut unproc, &SelectionStrategy::AgeWeight(2), 0).unwrap();
+        let s0 = select(&mut unproc, &SelectionStrategy::AgeWeight(2), 0, u32::MAX).unwrap();
         assert_eq!(s0, ClauseId(0)); // FIFO pick
-        let s1 = select(&mut unproc, &SelectionStrategy::AgeWeight(2), 1).unwrap();
+        let s1 = select(&mut unproc, &SelectionStrategy::AgeWeight(2), 1, u32::MAX).unwrap();
         assert_eq!(s1, ClauseId(1)); // smallest pick (only one left)
     }
 
@@ -156,6 +178,6 @@ mod tests {
         let mut unproc = UnprocessedSet::new(std::sync::Arc::new(
             mrs_calculus::ordering::SymbolConfig::default(),
         ));
-        assert!(select(&mut unproc, &SelectionStrategy::Fifo, 0).is_none());
+        assert!(select(&mut unproc, &SelectionStrategy::Fifo, 0, u32::MAX).is_none());
     }
 }

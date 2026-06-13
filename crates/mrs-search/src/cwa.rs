@@ -290,6 +290,7 @@ pub fn try_componentwise_refute(
         max_term_weight: Some(PER_BRANCH_WEIGHT),
         use_avatar: false,
         unit_only_resolution: false,
+        ..SearchConfig::default()
     };
 
     let mut proof_parts: Vec<String> = Vec::with_capacity(n);
@@ -433,7 +434,12 @@ mod tests {
         let top = make_clause(&mut id_gen, top_lits, "top");
         clauses.push(top);
 
-        let result = try_componentwise_refute(&clauses, &mut id_gen, std::sync::Arc::new(syms.clone()), make_sym_config());
+        let result = try_componentwise_refute(
+            &clauses,
+            &mut id_gen,
+            std::sync::Arc::new(syms.clone()),
+            make_sym_config(),
+        );
         assert!(
             matches!(result, Some(SearchResult::Refutation(..))),
             "expected Refutation, got {:?}",
@@ -450,7 +456,12 @@ mod tests {
             make_clause(&mut id_gen, vec![Literal::pos(Atom::prop(p))], "c1"),
             make_clause(&mut id_gen, vec![Literal::neg(Atom::prop(p))], "c2"),
         ];
-        let result = try_componentwise_refute(&clauses, &mut id_gen, std::sync::Arc::new(syms.clone()), make_sym_config());
+        let result = try_componentwise_refute(
+            &clauses,
+            &mut id_gen,
+            std::sync::Arc::new(syms.clone()),
+            make_sym_config(),
+        );
         assert!(result.is_none(), "expected None for non-CWA problem");
     }
 

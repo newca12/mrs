@@ -102,6 +102,7 @@ pub fn mini(total_time: Duration, _workers: usize) -> StrategySchedule {
                     max_term_weight: None,
                     use_avatar: false,
                     unit_only_resolution: false,
+                    ..SearchConfig::default()
                 },
                 slice,
             ),
@@ -173,6 +174,7 @@ pub fn ml_feq(total_time: Duration, _workers: usize) -> StrategySchedule {
                     max_term_weight: None,
                     use_avatar: false,
                     unit_only_resolution: false,
+                    ..SearchConfig::default()
                 },
                 t2,
             ),
@@ -222,6 +224,7 @@ pub fn ml_feq(total_time: Duration, _workers: usize) -> StrategySchedule {
                     max_term_weight: None,
                     use_avatar: false,
                     unit_only_resolution: false,
+                    ..SearchConfig::default()
                 },
                 t6,
             ),
@@ -274,6 +277,7 @@ pub fn ml_feq(total_time: Duration, _workers: usize) -> StrategySchedule {
                     max_term_weight: Some(30),
                     use_avatar: false,
                     unit_only_resolution: false,
+                    ..SearchConfig::default()
                 },
                 t10,
             ),
@@ -287,6 +291,7 @@ pub fn ml_feq(total_time: Duration, _workers: usize) -> StrategySchedule {
                     max_term_weight: None,
                     use_avatar: false,
                     unit_only_resolution: false,
+                    ..SearchConfig::default()
                 },
                 t11,
             ),

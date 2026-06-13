@@ -89,7 +89,8 @@ fn sync_active_dormant(state: &mut SearchState, ordering: &crate::TermOrdering) 
         let score = state.get_ml_score(&p);
         #[cfg(not(feature = "ml-guidance"))]
         let score = None;
-        state.unprocessed.push(&p, &state.term_bank, score);
+        let w = state.compute_weight(&p);
+        state.unprocessed.push(&p, &state.term_bank, w, score);
     }
 
     // 4. Dormant Unprocessed -> Unprocessed
@@ -105,7 +106,8 @@ fn sync_active_dormant(state: &mut SearchState, ordering: &crate::TermOrdering) 
         let score = state.get_ml_score(&u);
         #[cfg(not(feature = "ml-guidance"))]
         let score = None;
-        state.unprocessed.push(&u, &state.term_bank, score);
+        let w = state.compute_weight(&u);
+        state.unprocessed.push(&u, &state.term_bank, w, score);
     }
 }
 
@@ -377,12 +379,20 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     let score = state.get_ml_score(&id_clause);
                     #[cfg(not(feature = "ml-guidance"))]
                     let score = None;
-                    state.unprocessed.push(&id_clause, &state.term_bank, score);
+                    let w = state.compute_weight(&id_clause);
+                    state
+                        .unprocessed
+                        .push(&id_clause, &state.term_bank, w, score);
                 }
             }
         }
 
-        let given_id = match select(&mut state.unprocessed, &config.selection, iteration) {
+        let given_id = match select(
+            &mut state.unprocessed,
+            &config.selection,
+            iteration,
+            config.sos_depth,
+        ) {
             Some(id) => id,
             None => break,
         };
@@ -950,6 +960,20 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         }
 
         for mut clause in final_new_clauses {
+            // Propagate goal-distance from parent clauses so that GoalDirected
+            // and SOS strategies can reward descendants of the negated conjecture.
+            // distance = min(parent distances) + 1; defaults to 1000 if no parent
+            // has been tracked yet (e.g. AVATAR introduction steps).
+            if let ClauseSource::Inference { parents, .. } = &clause.source {
+                let min_parent_dist = parents
+                    .iter()
+                    .filter_map(|id| state.clause_store.get(id))
+                    .map(|p| p.distance)
+                    .min()
+                    .unwrap_or(1000);
+                clause.distance = min_parent_dist.saturating_add(1);
+            }
+
             clause.deduplicate();
 
             if clause.is_empty() {
@@ -1074,7 +1098,8 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 let score = state.get_ml_score(&clause);
                 #[cfg(not(feature = "ml-guidance"))]
                 let score = None;
-                state.unprocessed.push(&clause, &state.term_bank, score);
+                let w = state.compute_weight(&clause);
+                state.unprocessed.push(&clause, &state.term_bank, w, score);
                 state.stats.generated += 1;
             }
         }
