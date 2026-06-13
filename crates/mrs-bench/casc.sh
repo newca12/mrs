@@ -352,8 +352,11 @@ else
         parallel --jobs "${JOBS}" --will-cite \
             'run_and_append {}' :::: "${JOBS_FILE}"
     else
-        xargs -P "${JOBS}" -I '{}' bash -c 'run_and_append "$@"' _ '{}' \
-            < "${JOBS_FILE}"
+        # xargs -P launches fresh bash subprocesses that don't inherit exported
+        # bash functions (export -f is a bashism that doesn't cross process
+        # boundaries via xargs).  Work around this by passing the worker body
+        # as a here-string that sources the required functions inline.
+        xargs -P "${JOBS}" -I '{}' bash -c "$(declare -f run_one szs_class run_and_append); run_and_append \"{}\""  < "${JOBS_FILE}"
     fi
 fi
 
