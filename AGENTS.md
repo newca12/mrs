@@ -92,15 +92,15 @@ Named schedules live in `mrs_search::strategy::named` (`crates/mrs-search/src/st
 
 | Name | Strategies | Use case |
 |------|------------|----------|
-| `casc` (aliases `default`, `casc_feq`) | 12-strategy portfolio | CASC competition; default behavior |
+| `casc` (aliases `default`, `casc_feq`) | 16-strategy portfolio (15 active + 1 diagnostic) | CASC competition; default behavior |
 | `casc_fne` / `casc_ueq` / `casc_epr` | one strategy per worker (scales with `--workers`) | division-tuned static portfolios |
 | `fast` | 1 KBO `AgeWeight(5)+AllNegative` | Sub-second ATP queries (e.g. `mrs-proover` backend) |
 | `mini` | 3-strategy compact portfolio | 1–5 s budgets |
 | `ml` (alias `ml_feq`), `ml_fne`, `ml_ueq`, `ml_epr` | ML-guided variants | require `ml-guidance` build + `--ml-weights`; degrade to weight-based selection otherwise |
 
 The `casc` portfolio runs strategies 1–9 (KBO/LPO baseline, ~94% of budget) and 10–11 (FEQ-targeted: `All` literal
-selection + paramodulation-friendly settings, ~6% combined).  A 12th diagnostic strategy is always present but gets `Duration::ZERO` in
-normal runs; use `MRS_SINGLE_STRATEGY=12` to run it alone for the full budget.
+selection + paramodulation-friendly settings, ~6% combined).  A 16th diagnostic strategy is always present but gets `Duration::ZERO` in
+normal runs; use `MRS_SINGLE_STRATEGY=16` to run it alone for the full budget.
 
 To add a new schedule: implement a constructor in `strategy::named`, then add its name to `ALL` and the `by_name` match. `default_schedule()` must stay synonymous with `casc` so unflagged CASC runs are unaffected.
 
@@ -142,7 +142,7 @@ The root `Cargo.toml` is both `[workspace]` and `[package]` — valid but unusua
 
 ## Architecture notes
 
-- **Strategy portfolio:** 11 active strategies run **in parallel**, sharing a pool of derived unit equalities. A 12th diagnostic strategy (`MRS_SINGLE_STRATEGY=12`) gets `Duration::ZERO` in normal runs.
+- **Strategy portfolio:** 15 active strategies run **in parallel**, sharing a pool of derived unit equalities. A 16th diagnostic strategy (`MRS_SINGLE_STRATEGY=16`) gets `Duration::ZERO` in normal runs.
 - **Default time budget:** 30 seconds; overridable with `--time <seconds>`.
 - **`max_clauses`:** 50,000 per strategy. Hitting this gives `ResourceOut`, not `Timeout`.
 - **Refutation-based:** conjectures are negated before search. A problem with no `conjecture` role checks satisfiability (outputs `Unsatisfiable`/`Satisfiable`).

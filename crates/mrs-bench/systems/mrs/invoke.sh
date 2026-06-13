@@ -31,9 +31,13 @@ DIV_LOWER="${DIVISION,,}"
 # Select the appropriate static schedule
 SCHEDULE="casc_${DIV_LOWER}"
 
-# Fallback to standard casc if we don't have a specialized schedule
-if [[ "$SCHEDULE" != "casc_feq" && "$SCHEDULE" != "casc_fne" && "$SCHEDULE" != "casc_ueq" && "$SCHEDULE" != "casc_epr" ]]; then
-    SCHEDULE="casc"
-fi
+# Map CASC division names to available schedules; EPR-family divisions
+# (EPS = EPR Satisfiable, EPU = EPR Unsatisfiable) both use casc_epr.
+case "${SCHEDULE}" in
+    casc_feq|casc_fne|casc_ueq) ;;   # already have dedicated schedules
+    casc_epr|casc_eps|casc_epu)       # EPR family → use casc_epr
+        SCHEDULE="casc_epr" ;;
+    *) SCHEDULE="casc" ;;             # fallback for ICU, SLH, etc.
+esac
 
 exec "${BINARY}" --time "${TIME_LIMIT}" --workers "${MRS_WORKERS:-8}" --schedule "${SCHEDULE}" "${PROBLEM}"
