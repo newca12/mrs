@@ -543,6 +543,12 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     &state.term_bank,
                 );
                 for partner in partners {
+                    if config.sos_depth < u32::MAX
+                        && given.distance >= config.sos_depth
+                        && partner.distance >= config.sos_depth
+                    {
+                        continue;
+                    }
                     if resolution_partner_ids.insert(partner.id) {
                         let active_sel = selected_literals_id(
                             &partner,
@@ -584,6 +590,12 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     state.processed.iter().cloned().collect();
                 processed_clauses.sort_unstable_by_key(|c| c.id);
                 for active in &processed_clauses {
+                    if config.sos_depth < u32::MAX
+                        && given.distance >= config.sos_depth
+                        && active.distance >= config.sos_depth
+                    {
+                        continue;
+                    }
                     let active_sel =
                         selected_literals_id(active, &config.literal_selection, &state.term_bank);
                     let sp = superposition::superpose_selected_id(
@@ -602,25 +614,33 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     }
                 }
                 // self-superposition
-                let given_sel_local =
-                    selected_literals_id(&given, &config.literal_selection, &state.term_bank);
-                let sp = superposition::superpose_selected_id(
-                    &given,
-                    &given,
-                    &mut state.term_bank,
-                    &ordering,
-                    &mut state.id_gen,
-                    Some(&given_sel_local),
-                    &state.comm_symbols,
-                    &state.assoc_symbols,
-                );
-                new_clauses.extend(sp);
+                if config.sos_depth == u32::MAX || given.distance < config.sos_depth {
+                    let given_sel_local =
+                        selected_literals_id(&given, &config.literal_selection, &state.term_bank);
+                    let sp = superposition::superpose_selected_id(
+                        &given,
+                        &given,
+                        &mut state.term_bank,
+                        &ordering,
+                        &mut state.id_gen,
+                        Some(&given_sel_local),
+                        &state.comm_symbols,
+                        &state.assoc_symbols,
+                    );
+                    new_clauses.extend(sp);
+                }
             }
 
             // (2) Processed clause as equation source, given as target
             {
                 let eq_clauses = state.processed.get_positive_equality_clauses();
                 for active in eq_clauses {
+                    if config.sos_depth < u32::MAX
+                        && given.distance >= config.sos_depth
+                        && active.distance >= config.sos_depth
+                    {
+                        continue;
+                    }
                     let sp = superposition::superpose_selected_id(
                         &active,
                         &given,
@@ -639,25 +659,36 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             }
         }
 
-        // Factor the given clause
+        // Unary inferences.
+        //
+        // Factoring is a simplification rule that shortens clauses regardless
+        // of their SOS membership; it is always applied unconditionally.
+        //
+        // Equality resolution and equality factoring are unary inferences that
+        // are also structurally simplifying, but under a strict SOS restriction
+        // we apply them only to goal-connected clauses to keep the passive set
+        // focused.  If SOS is disabled (sos_depth == u32::MAX), all three are
+        // applied to every given clause.
         new_clauses.extend(factoring::factor_id(
             &given,
             &mut state.term_bank,
             &mut state.id_gen,
         ));
 
-        // Equality resolution and factoring
-        new_clauses.extend(equality::equality_resolve_id(
-            &given,
-            &mut state.term_bank,
-            &mut state.id_gen,
-        ));
-        new_clauses.extend(equality::equality_factor_id(
-            &given,
-            &mut state.term_bank,
-            &ordering,
-            &mut state.id_gen,
-        ));
+        if config.sos_depth == u32::MAX || given.distance < config.sos_depth {
+            // Equality resolution and factoring
+            new_clauses.extend(equality::equality_resolve_id(
+                &given,
+                &mut state.term_bank,
+                &mut state.id_gen,
+            ));
+            new_clauses.extend(equality::equality_factor_id(
+                &given,
+                &mut state.term_bank,
+                &ordering,
+                &mut state.id_gen,
+            ));
+        }
 
         // Backward subsumption: remove processed clauses subsumed by the given
         let mut to_remove_from_processed = Vec::new();
