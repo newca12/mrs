@@ -195,10 +195,20 @@ pub enum ClauseWeightFn {
     Standard,
     /// Depth-weighted: heavier for deeply nested terms.
     FunctionDepth,
+    /// Quadratic depth-weighted: heavier for deeply nested terms with quadratic scaling.
+    FunctionWeightPenalty,
+    /// Exponential depth-weighted: extremely heavy for deeply nested terms with exponential scaling.
+    FunctionWeightPenaltyExp,
     /// Horn preference: non-Horn clauses pay a 3× multiplier.
     HornPenalty,
+    /// Horn progressive multiplier: non-Horn clauses pay a multiplier equal to positive literals.
+    HornHeuristic,
+    /// Horn exponential multiplier: non-Horn clauses pay a 2^(pos_count - 1) multiplier.
+    HornHeuristicExp,
     /// Goal-symbol boost: symbols not in the conjecture closure are 3×.
     ConjSymbolBoost,
+    /// Rarity/Precedence-based symbol weight: rare symbols are cheap, common are expensive.
+    SymbolWeight,
 }
 
 /// Configuration for the search engine.

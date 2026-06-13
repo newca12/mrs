@@ -155,10 +155,15 @@ pub fn clause_weight_fn(
     match weight_fn {
         ClauseWeightFn::Standard => clause_weight_id(clause, bank, config),
         ClauseWeightFn::FunctionDepth => clause_weight_depth(clause, bank, config),
+        ClauseWeightFn::FunctionWeightPenalty => clause_weight_penalty(clause, bank, config),
+        ClauseWeightFn::FunctionWeightPenaltyExp => clause_weight_penalty_exp(clause, bank, config),
         ClauseWeightFn::HornPenalty => clause_weight_horn(clause, bank, config),
+        ClauseWeightFn::HornHeuristic => clause_weight_horn_heuristic(clause, bank, config),
+        ClauseWeightFn::HornHeuristicExp => clause_weight_horn_heuristic_exp(clause, bank, config),
         ClauseWeightFn::ConjSymbolBoost => {
             clause_weight_conj_boost(clause, bank, config, goal_symbols)
         }
+        ClauseWeightFn::SymbolWeight => clause_weight_symbol(clause, bank, config),
     }
 }
 
@@ -290,6 +295,179 @@ fn term_weight_conj_boost(
     weight
 }
 
+// ── Quadratic Function Depth Penalty ────────────────────────────────────────
+
+pub fn clause_weight_penalty(clause: &IdClause, bank: &TermBank, config: &SymbolConfig) -> u32 {
+    clause
+        .literals
+        .iter()
+        .map(|lit| literal_weight_penalty(lit, bank, config))
+        .sum()
+}
+
+fn literal_weight_penalty(lit: &IdLiteral, bank: &TermBank, config: &SymbolConfig) -> u32 {
+    match &lit.atom {
+        IdAtom::Pred(sym, args) => {
+            config.symbol_weight(*sym)
+                + args
+                    .iter()
+                    .map(|&a| term_weight_penalty(a, 1, bank, config))
+                    .sum::<u32>()
+        }
+        IdAtom::Eq(l, r) => {
+            term_weight_penalty(*l, 0, bank, config) + term_weight_penalty(*r, 0, bank, config)
+        }
+    }
+}
+
+fn term_weight_penalty(term: TermId, depth: u32, bank: &TermBank, config: &SymbolConfig) -> u32 {
+    let mut stack: Vec<(TermId, u32)> = vec![(term, depth)];
+    let mut weight: u32 = 0;
+    while let Some((t, d)) = stack.pop() {
+        match bank.get(t) {
+            TermNode::Var(_) => {
+                let factor = (d + 1).saturating_mul(d + 1);
+                weight = weight.saturating_add(config.w0.saturating_mul(factor));
+            }
+            TermNode::App(sym, args) => {
+                let factor = (d + 1).saturating_mul(d + 1);
+                weight = weight.saturating_add(config.symbol_weight(*sym).saturating_mul(factor));
+                for &a in args {
+                    stack.push((a, d + 1));
+                }
+            }
+        }
+    }
+    weight
+}
+
+// ── Exponential Function Depth Penalty ──────────────────────────────────────
+
+pub fn clause_weight_penalty_exp(clause: &IdClause, bank: &TermBank, config: &SymbolConfig) -> u32 {
+    clause
+        .literals
+        .iter()
+        .map(|lit| literal_weight_penalty_exp(lit, bank, config))
+        .sum()
+}
+
+fn literal_weight_penalty_exp(lit: &IdLiteral, bank: &TermBank, config: &SymbolConfig) -> u32 {
+    match &lit.atom {
+        IdAtom::Pred(sym, args) => {
+            config.symbol_weight(*sym)
+                + args
+                    .iter()
+                    .map(|&a| term_weight_penalty_exp(a, 1, bank, config))
+                    .sum::<u32>()
+        }
+        IdAtom::Eq(l, r) => {
+            term_weight_penalty_exp(*l, 0, bank, config) + term_weight_penalty_exp(*r, 0, bank, config)
+        }
+    }
+}
+
+fn term_weight_penalty_exp(term: TermId, depth: u32, bank: &TermBank, config: &SymbolConfig) -> u32 {
+    let mut stack: Vec<(TermId, u32)> = vec![(term, depth)];
+    let mut weight: u32 = 0;
+    while let Some((t, d)) = stack.pop() {
+        match bank.get(t) {
+            TermNode::Var(_) => {
+                let factor = 1u32 << d.min(30);
+                weight = weight.saturating_add(config.w0.saturating_mul(factor));
+            }
+            TermNode::App(sym, args) => {
+                let factor = 1u32 << d.min(30);
+                weight = weight.saturating_add(config.symbol_weight(*sym).saturating_mul(factor));
+                for &a in args {
+                    stack.push((a, d + 1));
+                }
+            }
+        }
+    }
+    weight
+}
+
+// ── Horn Progressive Heuristic ──────────────────────────────────────────────
+
+/// Horn-heuristic variant: same as Standard but clauses with >1 positive literal
+/// pay a progressive `pos_count` multiplier penalty.
+pub fn clause_weight_horn_heuristic(clause: &IdClause, bank: &TermBank, config: &SymbolConfig) -> u32 {
+    let base = clause_weight_id(clause, bank, config);
+    let pos_count = clause.literals.iter().filter(|l| l.positive).count();
+    if pos_count > 1 {
+        base.saturating_mul(pos_count as u32)
+    } else {
+        base
+    }
+}
+
+// ── Horn Exponential Heuristic ──────────────────────────────────────────────
+
+/// Horn-heuristic exponential variant: same as Standard but clauses with >1 positive literal
+/// pay an exponential `2^(pos_count - 1)` multiplier penalty.
+pub fn clause_weight_horn_heuristic_exp(clause: &IdClause, bank: &TermBank, config: &SymbolConfig) -> u32 {
+    let base = clause_weight_id(clause, bank, config);
+    let pos_count = clause.literals.iter().filter(|l| l.positive).count();
+    if pos_count > 1 {
+        let shift = (pos_count - 1).min(30) as u32;
+        base.saturating_mul(1u32 << shift)
+    } else {
+        base
+    }
+}
+
+// ── Rarity Rank Symbol Weight ───────────────────────────────────────────────
+
+pub fn clause_weight_symbol(clause: &IdClause, bank: &TermBank, config: &SymbolConfig) -> u32 {
+    clause
+        .literals
+        .iter()
+        .map(|lit| literal_weight_symbol(lit, bank, config))
+        .sum()
+}
+
+fn literal_weight_symbol(lit: &IdLiteral, bank: &TermBank, config: &SymbolConfig) -> u32 {
+    match &lit.atom {
+        IdAtom::Pred(sym, args) => {
+            let sym_w = get_symbol_weight_rarity(*sym, config);
+            sym_w
+                + args
+                    .iter()
+                    .map(|&a| term_weight_symbol(a, bank, config))
+                    .sum::<u32>()
+        }
+        IdAtom::Eq(l, r) => {
+            term_weight_symbol(*l, bank, config) + term_weight_symbol(*r, bank, config)
+        }
+    }
+}
+
+fn term_weight_symbol(term: TermId, bank: &TermBank, config: &SymbolConfig) -> u32 {
+    let mut stack: Vec<TermId> = vec![term];
+    let mut weight: u32 = 0;
+    while let Some(t) = stack.pop() {
+        match bank.get(t) {
+            TermNode::Var(_) => {
+                weight = weight.saturating_add(config.w0);
+            }
+            TermNode::App(sym, args) => {
+                let sym_w = get_symbol_weight_rarity(*sym, config);
+                weight = weight.saturating_add(sym_w);
+                stack.extend_from_slice(args);
+            }
+        }
+    }
+    weight
+}
+
+fn get_symbol_weight_rarity(sym: mrs_core::SymbolId, config: &SymbolConfig) -> u32 {
+    if config.precedence.is_empty() {
+        2
+    } else {
+        config.symbol_precedence(sym).max(1)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,5 +585,99 @@ mod tests {
         // weight = 4; threshold 3 should trigger, threshold 4 should not
         assert!(clause_weight_exceeds(&c, 3, &config));
         assert!(!clause_weight_exceeds(&c, 4, &config));
+    }
+
+    #[test]
+    fn test_new_weight_heuristics() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let f = syms.intern("f");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+
+        // Clause 1: p(f(a, b)) -> nested term
+        let c1 = make_clause(vec![Literal::pos(Atom::pred(
+            p,
+            vec![Term::app(f, vec![Term::constant(a), Term::constant(b)])],
+        ))]);
+
+        let mut bank = TermBank::new();
+        let id_c1 = bank.clause_from_legacy(&c1);
+        let config = SymbolConfig::default();
+
+        // 1. FunctionDepth:
+        // Pred p has sym_weight(p) = 1.
+        // arg: f(a, b) at depth 1.
+        // f at depth 1 -> sym_weight(f) = 1 * (1 + 1) = 2
+        // a at depth 2 -> sym_weight(a) = 1 * (2 + 1) = 3
+        // b at depth 2 -> sym_weight(b) = 1 * (2 + 1) = 3
+        // sum = 2 + 3 + 3 = 8.
+        // Total Literal weight = 1 + 8 = 9.
+        assert_eq!(clause_weight_depth(&id_c1, &bank, &config), 9);
+
+        // 2. FunctionWeightPenalty (Quadratic):
+        // Pred p: sym_weight(p) = 1.
+        // arg: f(a, b) at depth 1.
+        // f at depth 1 -> sym_weight(f) = 1 * (1 + 1)^2 = 4
+        // a at depth 2 -> sym_weight(a) = 1 * (2 + 1)^2 = 9
+        // b at depth 2 -> sym_weight(b) = 1 * (2 + 1)^2 = 9
+        // sum = 4 + 9 + 9 = 22.
+        // Total = 1 + 22 = 23.
+        assert_eq!(clause_weight_penalty(&id_c1, &bank, &config), 23);
+
+        // 3. FunctionWeightPenaltyExp (Exponential):
+        // Pred p: sym_weight(p) = 1.
+        // arg: f(a, b) at depth 1.
+        // f at depth 1 -> sym_weight(f) = 1 * 2^1 = 2
+        // a at depth 2 -> sym_weight(a) = 1 * 2^2 = 4
+        // b at depth 2 -> sym_weight(b) = 1 * 2^2 = 4
+        // sum = 2 + 4 + 4 = 10.
+        // Total = 1 + 10 = 11.
+        assert_eq!(clause_weight_penalty_exp(&id_c1, &bank, &config), 11);
+
+        // Clause 2: non-Horn clause with 2 positive literals: p(a) | p(b)
+        let c2 = make_clause(vec![
+            Literal::pos(Atom::pred(p, vec![Term::constant(a)])),
+            Literal::pos(Atom::pred(p, vec![Term::constant(b)])),
+        ]);
+        let id_c2 = bank.clause_from_legacy(&c2);
+        // Base weight = 2 (for first p(a)) + 2 (for second p(b)) = 4.
+        // pos_count = 2.
+        // HornPenalty: base * 3 = 12.
+        assert_eq!(clause_weight_horn(&id_c2, &bank, &config), 12);
+        // HornHeuristic: base * pos_count = 8.
+        assert_eq!(clause_weight_horn_heuristic(&id_c2, &bank, &config), 8);
+        // HornHeuristicExp: base * 2^(pos_count - 1) = 4 * 2^1 = 8.
+        assert_eq!(clause_weight_horn_heuristic_exp(&id_c2, &bank, &config), 8);
+
+        // Clause 3: non-Horn clause with 3 positive literals: p(a) | p(b) | p(a)
+        let c3 = make_clause(vec![
+            Literal::pos(Atom::pred(p, vec![Term::constant(a)])),
+            Literal::pos(Atom::pred(p, vec![Term::constant(b)])),
+            Literal::pos(Atom::pred(p, vec![Term::constant(a)])),
+        ]);
+        let id_c3 = bank.clause_from_legacy(&c3);
+        // Base weight = 2 + 2 + 2 = 6.
+        // pos_count = 3.
+        // HornHeuristic: base * 3 = 18.
+        assert_eq!(clause_weight_horn_heuristic(&id_c3, &bank, &config), 18);
+        // HornHeuristicExp: base * 2^(pos_count - 1) = 6 * 4 = 24.
+        assert_eq!(clause_weight_horn_heuristic_exp(&id_c3, &bank, &config), 24);
+
+        // 4. SymbolWeight (rarity rank):
+        // Custom config with precedence:
+        // p is less rare (precedence 5)
+        // a is rarer (precedence 1)
+        // b is rarest (precedence 2)
+        let mut custom_config = SymbolConfig::default();
+        custom_config.precedence = vec![0; 100];
+        custom_config.precedence[p.index() as usize] = 5;
+        custom_config.precedence[a.index() as usize] = 1;
+        custom_config.precedence[b.index() as usize] = 2;
+
+        // p(a) -> rarity of p is 5, rarity of a is 1. Total = 6.
+        let c4 = make_clause(vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))]);
+        let id_c4 = bank.clause_from_legacy(&c4);
+        assert_eq!(clause_weight_symbol(&id_c4, &bank, &custom_config), 6);
     }
 }
