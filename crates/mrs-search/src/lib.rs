@@ -14,13 +14,15 @@
 //! use std::sync::Arc;
 //! use mrs_core::clause::ClauseIdGen;
 //! use mrs_calculus::ordering::SymbolConfig;
+//! use mrs_core::SymbolTable;
 //! use mrs_search::{SearchConfig, SearchResult, SelectionStrategy};
 //! use mrs_search::state::SearchState;
 //! use mrs_search::given_clause::search;
 //!
 //! let id_gen = ClauseIdGen::new();
 //! let config_arc = Arc::new(SymbolConfig::default());
-//! let mut state = SearchState::new(vec![], id_gen, config_arc, true);
+//! let symbols_arc = Arc::new(SymbolTable::new());
+//! let mut state = SearchState::new(vec![], id_gen, config_arc, symbols_arc, true);
 //! let config = SearchConfig::default();
 //! let result = search(&mut state, &config);
 //! assert!(matches!(result, SearchResult::Saturated));
@@ -47,6 +49,110 @@ use mrs_core::clause::ClauseId;
 pub use mrs_calculus::literal_selection::LiteralSelection;
 pub use mrs_calculus::ordering::TermOrdering;
 pub use select::SelectionStrategy;
+
+/// Per-strategy counters for failure diagnosis and throughput analysis.
+///
+/// All counters are for the **single** strategy that ran; `ScheduleReport`
+/// aggregates them across the whole portfolio run.
+#[derive(Clone, Debug, Default)]
+pub struct SearchStats {
+    /// Total given-clause loop iterations (includes skips).
+    pub iterations: u64,
+    /// Clauses added to the processed set.
+    pub processed: u64,
+    /// New clauses enqueued into the unprocessed set.
+    pub generated: u64,
+    /// Clauses rejected by the `max_term_weight` filter.
+    pub weight_discarded: u64,
+    /// Clauses deleted by forward subsumption.
+    pub forward_subsumed: u64,
+    /// Clauses remaining in the passive (unprocessed) queue when search ended.
+    pub passive_size: u64,
+    /// Clauses deleted by backward subsumption/demodulation.
+    pub backward_deleted: u64,
+}
+
+/// Summary for one strategy in the portfolio run.
+#[derive(Clone, Debug)]
+pub struct StrategyReport {
+    /// Zero-based strategy index within the schedule.
+    pub strategy_idx: usize,
+    /// The result of this strategy's search.
+    pub result: SearchResult,
+    /// Counters collected during the search.
+    pub stats: SearchStats,
+    /// Wall-clock time this strategy ran (milliseconds).
+    pub elapsed_ms: u64,
+}
+
+/// Aggregate report returned by [`strategy::run_schedule`] alongside
+/// the winning `SearchResult`.
+///
+/// Contains one entry per strategy that actually ran (strategies that were
+/// never launched because a winner was found first are absent).
+#[derive(Clone, Debug, Default)]
+pub struct ScheduleReport {
+    pub strategies: Vec<StrategyReport>,
+}
+
+impl ScheduleReport {
+    /// Human-readable one-line summary of the failure mode seen across all
+    /// strategies.  Returns `None` when the search succeeded (Refutation).
+    ///
+    /// Used by `main.rs` to emit a `% SZS detail` line on stderr.
+    pub fn failure_reason(&self) -> Option<String> {
+        if self.strategies.is_empty() {
+            return None;
+        }
+        // If any strategy found a refutation, there is no failure.
+        if self
+            .strategies
+            .iter()
+            .any(|s| matches!(s.result, SearchResult::Refutation(..)))
+        {
+            return None;
+        }
+
+        let total_processed: u64 = self.strategies.iter().map(|s| s.stats.processed).sum();
+        let total_generated: u64 = self.strategies.iter().map(|s| s.stats.generated).sum();
+        let total_passive: u64 = self.strategies.iter().map(|s| s.stats.passive_size).sum();
+        let total_wt_disc: u64 = self
+            .strategies
+            .iter()
+            .map(|s| s.stats.weight_discarded)
+            .sum();
+        let total_fwd_sub: u64 = self
+            .strategies
+            .iter()
+            .map(|s| s.stats.forward_subsumed)
+            .sum();
+
+        // Count how many strategies reached each final state.
+        let n_timeout = self
+            .strategies
+            .iter()
+            .filter(|s| matches!(s.result, SearchResult::Timeout))
+            .count();
+        let n_saturated = self
+            .strategies
+            .iter()
+            .filter(|s| matches!(s.result, SearchResult::Saturated))
+            .count();
+
+        Some(format!(
+            "strategies={} timeout={} saturated={} \
+             processed={} generated={} passive={} weight_discarded={} fwd_subsumed={}",
+            self.strategies.len(),
+            n_timeout,
+            n_saturated,
+            total_processed,
+            total_generated,
+            total_passive,
+            total_wt_disc,
+            total_fwd_sub,
+        ))
+    }
+}
 
 /// Result of a proof search.
 #[derive(Clone, Debug)]

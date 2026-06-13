@@ -308,7 +308,7 @@ pub fn run_schedule(
     symbols: &SymbolTable,
     ml: MlOptions,
     workers: Option<usize>,
-) -> SearchResult {
+) -> (SearchResult, crate::ScheduleReport) {
     // 1. Analyze problem for symbol frequencies to configure KBO/LPO and weights.
     let mut sym_counts: HashMap<SymbolId, u32> = HashMap::default();
     for clause in clauses {
@@ -413,7 +413,7 @@ pub fn run_schedule(
     {
         let mut fvo_id_gen = id_gen.clone();
         if let Some(result) = try_fvo_refutation(&clauses_owned, &mut fvo_id_gen, symbols) {
-            return result;
+            return (result, crate::ScheduleReport::default());
         }
     }
 
@@ -434,7 +434,7 @@ pub fn run_schedule(
             symbols_arc.clone(),
             config.clone(),
         ) {
-            return result;
+            return (result, crate::ScheduleReport::default());
         }
     }
 
@@ -457,7 +457,7 @@ pub fn run_schedule(
     // we share a pool of globally discovered unit equalities via an RwLock.
     let stop_flag = Arc::new(AtomicBool::new(false));
     let shared_pool = Arc::new(std::sync::RwLock::new(Vec::new()));
-    let (tx, rx) = mpsc::channel::<(usize, SearchResult)>();
+    let (tx, rx) = mpsc::channel::<(usize, SearchResult, crate::SearchStats, u64)>();
 
     let available_cores = workers.unwrap_or_else(|| {
         std::thread::available_parallelism()
@@ -559,7 +559,11 @@ pub fn run_schedule(
                     state.stop_flag = Some(Arc::clone(&stop));
                     state.shared_pool = Some(Arc::clone(&pool));
 
+                    let strategy_start = std::time::Instant::now();
                     let raw = search(&mut state, &sc);
+                    let elapsed_ms = strategy_start.elapsed().as_millis() as u64;
+                    // Capture passive size after search (unprocessed set is still live).
+                    state.stats.passive_size = state.unprocessed.active_count() as u64;
 
                     if std::env::var("TRACE_SEARCH").is_ok() {
                         eprintln!(
@@ -639,7 +643,7 @@ pub fn run_schedule(
                         stop.store(true, Ordering::Relaxed);
                     }
 
-                    let _ = tx.send((strategy_idx, result));
+                    let _ = tx.send((strategy_idx, result, state.stats.clone(), elapsed_ms));
                 }
             });
         }
@@ -650,7 +654,15 @@ pub fn run_schedule(
         // Collect results: track the best definitive answer seen.
         // Priority: Refutation > Saturated > GaveUp > Timeout
         let mut best: SearchResult = SearchResult::GaveUp;
-        for (_idx, res) in rx.into_iter() {
+        let mut report = crate::ScheduleReport::default();
+
+        for (idx, res, stats, elapsed_ms) in rx.into_iter() {
+            report.strategies.push(crate::StrategyReport {
+                strategy_idx: idx,
+                result: res.clone(),
+                stats,
+                elapsed_ms,
+            });
             match &res {
                 SearchResult::Refutation(..) => {
                     best = res;
@@ -669,7 +681,7 @@ pub fn run_schedule(
                 SearchResult::Timeout => { /* lowest priority — keep existing best */ }
             }
         }
-        best
+        (best, report)
     })
 }
 
@@ -709,7 +721,7 @@ mod tests {
         );
 
         let schedule = StrategySchedule::default_schedule(Duration::from_secs(5), 1);
-        let result = run_schedule(
+        let (result, _) = run_schedule(
             &[c1, c2],
             id_gen,
             &schedule,
@@ -741,7 +753,7 @@ mod tests {
         );
 
         let schedule = StrategySchedule::default_schedule(Duration::from_secs(5), 1);
-        let result = run_schedule(
+        let (result, _) = run_schedule(
             &[c1, c2],
             id_gen,
             &schedule,

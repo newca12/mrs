@@ -239,7 +239,7 @@ impl Atp for MrsAtp {
         let schedule = mrs_search::strategy::named::fast(budget, 1);
 
         // 4. Run schedule in memory
-        let result = mrs_search::strategy::run_schedule(
+        let (result, _report) = mrs_search::strategy::run_schedule(
             &all_clauses,
             id_gen,
             &schedule,

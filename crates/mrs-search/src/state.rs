@@ -74,6 +74,8 @@ pub struct SearchState {
     /// Cached scores for clauses
     #[cfg(feature = "ml-guidance")]
     pub scores: HashMap<ClauseId, f32>,
+    /// Per-strategy performance counters (incremented by `given_clause::search`).
+    pub stats: crate::SearchStats,
 }
 
 impl SearchState {
@@ -157,6 +159,7 @@ impl SearchState {
             ml_model: None,
             #[cfg(feature = "ml-guidance")]
             scores: HashMap::default(),
+            stats: crate::SearchStats::default(),
         }
     }
 

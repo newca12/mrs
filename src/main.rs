@@ -16,8 +16,8 @@ use std::time::Duration;
 
 use mrs_core::Formula;
 use mrs_core::clause::Clause;
-use mrs_search::SearchResult;
 use mrs_search::strategy::{StrategySchedule, run_schedule};
+use mrs_search::{ScheduleReport, SearchResult};
 use mrs_szs::{SzsStatus, szs_output_end, szs_output_start, szs_status_line};
 
 fn main() {
@@ -280,6 +280,7 @@ fn main() {
     let total_budget = Duration::from_secs(time_secs);
     let mut final_result = SearchResult::GaveUp;
     let mut final_status = SzsStatus::GaveUp;
+    let mut final_report = ScheduleReport::default();
 
     // We run the search up to 2 times: once with SInE (if triggered), and once without if it saturated prematurely.
     let mut attempt = 0;
@@ -353,7 +354,7 @@ fn main() {
         };
 
         let search_start = std::time::Instant::now();
-        let result = run_schedule(
+        let (result, schedule_report) = run_schedule(
             &all_clauses,
             id_gen,
             &schedule,
@@ -391,6 +392,7 @@ fn main() {
 
         final_result = result;
         final_status = status;
+        final_report = schedule_report;
 
         // SInE Fallback check
         if attempt == 1
@@ -433,7 +435,7 @@ fn main() {
             println!("{}", szs_output_end("Proof", problem_name));
         }
 
-        print_statistics(status, start.elapsed());
+        print_statistics(status, start.elapsed(), &final_report);
     }
 }
 
@@ -450,7 +452,7 @@ fn peak_memory_mb() -> Option<u64> {
 }
 
 /// Prints a Vampire-style statistics block to stdout.
-fn print_statistics(status: SzsStatus, elapsed: Duration) {
+fn print_statistics(status: SzsStatus, elapsed: Duration, report: &mrs_search::ScheduleReport) {
     let termination_reason = match status {
         SzsStatus::Theorem | SzsStatus::Unsatisfiable => "Refutation",
         SzsStatus::CounterSatisfiable | SzsStatus::Satisfiable => "Saturation",
@@ -466,4 +468,22 @@ fn print_statistics(status: SzsStatus, elapsed: Duration) {
         println!("% Peak memory usage: {} MB", mb);
     }
     println!("% ------------------------------");
+
+    // Emit structured failure detail to stderr so the benchmark harness can
+    // classify unsolved problems without re-parsing stdout.
+    // Format: "% SZS detail <key=value> ..."
+    // Always emitted (even on success) so casc.sh can parse it uniformly.
+    if let Some(detail) = report.failure_reason() {
+        eprintln!("% SZS detail {detail}");
+    } else {
+        // Summarise solved cases too (useful for throughput analysis).
+        let total_processed: u64 = report.strategies.iter().map(|s| s.stats.processed).sum();
+        let total_generated: u64 = report.strategies.iter().map(|s| s.stats.generated).sum();
+        eprintln!(
+            "% SZS detail strategies={} result=Refutation processed={} generated={}",
+            report.strategies.len(),
+            total_processed,
+            total_generated,
+        );
+    }
 }

@@ -484,6 +484,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 p.avatar_is_subset_of(&given)
                     && subsumption::subsumes_id(p, &given, &mut state.term_bank)
             }) {
+                state.stats.forward_subsumed += 1;
                 iteration += 1;
                 continue;
             }
@@ -662,12 +663,14 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         }
 
         for id in to_remove_from_processed {
+            state.stats.backward_deleted += 1;
             state.remove_clause_and_orphans(id, &ordering);
         }
 
         // Add given to processed set (indexed)
         state.register_clause(&given.clone());
         state.processed.insert(given.clone(), &state.term_bank);
+        state.stats.processed += 1;
 
         if is_unit_positive_equality_id(&given)
             && given.avatar.is_empty()
@@ -1050,6 +1053,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         &sym_config,
                     )
                 {
+                    state.stats.weight_discarded += 1;
                     continue;
                 }
 
@@ -1071,10 +1075,12 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 #[cfg(not(feature = "ml-guidance"))]
                 let score = None;
                 state.unprocessed.push(&clause, &state.term_bank, score);
+                state.stats.generated += 1;
             }
         }
 
         iteration += 1;
+        state.stats.iterations += 1;
     }
 
     // If the literal selection is incomplete, return GaveUp rather than Saturated.

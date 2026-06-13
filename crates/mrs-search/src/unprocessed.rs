@@ -127,6 +127,11 @@ impl UnprocessedSet {
         self.active_ids.is_empty()
     }
 
+    /// Returns the number of clauses currently in the unprocessed set.
+    pub fn active_count(&self) -> usize {
+        self.active_ids.len()
+    }
+
     /// Pops the oldest clause from the set, returning its ID.
     pub fn pop_age(&mut self) -> Option<ClauseId> {
         while let Some(id) = self.age_queue.pop_front() {

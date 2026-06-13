@@ -69,6 +69,8 @@ struct Row {
     system: String,
     szs_status: String,
     wall_time_s: f64,
+    /// Raw "% SZS detail ..." key=value string from stderr; empty for non-mrs systems.
+    failure_detail: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -105,6 +107,8 @@ fn load_csv(path: &PathBuf) -> Result<Vec<Row>, String> {
     let col_system = col("system")?;
     let col_szs = col("szs_status")?;
     let col_time = col("wall_time_s")?;
+    // Optional column: present in newer runs (casc.sh with failure census support).
+    let col_detail = headers.iter().position(|h| h == "failure_detail");
 
     let mut rows = Vec::new();
     for (line_no, line) in lines.enumerate() {
@@ -128,6 +132,7 @@ fn load_csv(path: &PathBuf) -> Result<Vec<Row>, String> {
             system: get(col_system),
             szs_status: get(col_szs),
             wall_time_s,
+            failure_detail: col_detail.map(get).unwrap_or_default(),
         });
     }
 
@@ -185,15 +190,212 @@ fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
 }
 
 // ---------------------------------------------------------------------------
+// Failure census
+// ---------------------------------------------------------------------------
+
+/// Parsed values extracted from a "% SZS detail" line.
+#[derive(Default)]
+struct DetailStats {
+    strategies: u64,
+    timeout: u64,
+    saturated: u64,
+    processed: u64,
+    generated: u64,
+    passive: u64,
+    weight_discarded: u64,
+    fwd_subsumed: u64,
+}
+
+fn parse_detail(detail: &str) -> DetailStats {
+    let mut s = DetailStats::default();
+    for kv in detail.split_whitespace() {
+        if let Some((k, v)) = kv.split_once('=') {
+            let n: u64 = v.parse().unwrap_or(0);
+            match k {
+                "strategies" => s.strategies = n,
+                "timeout" => s.timeout = n,
+                "saturated" => s.saturated = n,
+                "processed" => s.processed = n,
+                "generated" => s.generated = n,
+                "passive" => s.passive = n,
+                "weight_discarded" => s.weight_discarded = n,
+                "fwd_subsumed" => s.fwd_subsumed = n,
+                _ => {}
+            }
+        }
+    }
+    s
+}
+
+/// Classify an unsolved row into a failure bucket.
+///
+/// Returns a short tag:
+///   `timeout`         — all strategies hit the time limit (pure time starvation)
+///   `timeout_passive` — timed out with large passive queue (>10k clauses); search active
+///   `saturated`       — search space genuinely exhausted (could be complete refutation)
+///   `gave_up`         — strategy gave up (incomplete literal selection)
+///   `parse_error`     — ms reported Error (parse/lowering/clausification failure)
+///   `no_detail`       — no failure_detail present (non-mrs system or old run)
+fn classify_failure(szs: &str, detail: &str) -> &'static str {
+    if szs == "Error" {
+        return "parse_error";
+    }
+    if detail.is_empty() {
+        return "no_detail";
+    }
+    if szs == "GaveUp" {
+        let s = parse_detail(detail);
+        if s.saturated > 0 {
+            return "saturated";
+        }
+        return "gave_up";
+    }
+    // Timeout
+    let s = parse_detail(detail);
+    if s.passive > 10_000 {
+        "timeout_passive"
+    } else {
+        "timeout"
+    }
+}
+
+fn print_census(rows: &[Row], system: &str) {
+    use std::collections::BTreeMap;
+
+    // Only look at rows for the requested system that were NOT solved.
+    let unsolved: Vec<&Row> = rows
+        .iter()
+        .filter(|r| r.system == system && !is_solved(&r.szs_status))
+        .collect();
+
+    if unsolved.is_empty() {
+        println!("No unsolved problems for system {system}.");
+        return;
+    }
+
+    // Counters per division × bucket.
+    let mut div_bucket: BTreeMap<(String, &'static str), u64> = BTreeMap::new();
+    // Aggregate stats for timeout_passive bucket.
+    let mut passive_total: u64 = 0;
+    let mut processed_total: u64 = 0;
+    let mut generated_total: u64 = 0;
+    let mut wt_disc_total: u64 = 0;
+
+    for row in &unsolved {
+        let bucket = classify_failure(&row.szs_status, &row.failure_detail);
+        *div_bucket
+            .entry((row.division.clone(), bucket))
+            .or_insert(0) += 1;
+
+        if !row.failure_detail.is_empty() {
+            let s = parse_detail(&row.failure_detail);
+            passive_total += s.passive;
+            processed_total += s.processed;
+            generated_total += s.generated;
+            wt_disc_total += s.weight_discarded;
+        }
+    }
+
+    // Collect all buckets seen.
+    let mut all_buckets: Vec<&'static str> = div_bucket.keys().map(|(_, b)| *b).collect();
+    all_buckets.sort();
+    all_buckets.dedup();
+
+    // Print header.
+    println!(
+        "\nFailure Census — system: {system}  ({} unsolved problems)",
+        unsolved.len()
+    );
+    println!("{}", "─".repeat(72));
+
+    // Division × bucket table.
+    let mut divs: Vec<String> = div_bucket.keys().map(|(d, _)| d.clone()).collect();
+    divs.sort();
+    divs.dedup();
+
+    // Build column widths.
+    let bucket_w = all_buckets.iter().map(|b| b.len()).max().unwrap_or(6);
+    let div_w = divs.iter().map(|d| d.len()).max().unwrap_or(3).max(8);
+
+    // Header row.
+    print!("{:div_w$}  {:>8}", "Division", "Total");
+    for b in &all_buckets {
+        print!("  {:>bucket_w$}", b);
+    }
+    println!();
+    println!(
+        "{}",
+        "─".repeat(div_w + 10 + all_buckets.len() * (bucket_w + 2))
+    );
+
+    for div in &divs {
+        let row_total: u64 = all_buckets
+            .iter()
+            .map(|b| *div_bucket.get(&(div.clone(), b)).unwrap_or(&0))
+            .sum();
+        print!("{div:div_w$}  {:>8}", row_total);
+        for b in &all_buckets {
+            let n = *div_bucket.get(&(div.clone(), b)).unwrap_or(&0);
+            print!("  {:>bucket_w$}", n);
+        }
+        println!();
+    }
+
+    // Totals row.
+    let grand_total = unsolved.len() as u64;
+    print!("{:div_w$}  {:>8}", "TOTAL", grand_total);
+    for b in &all_buckets {
+        let n: u64 = div_bucket
+            .iter()
+            .filter(|((_, bk), _)| *bk == *b)
+            .map(|(_, v)| v)
+            .sum();
+        print!("  {:>bucket_w$}", n);
+    }
+    println!();
+    println!(
+        "{}",
+        "─".repeat(div_w + 10 + all_buckets.len() * (bucket_w + 2))
+    );
+
+    // Aggregate stats panel.
+    let n_with_detail = unsolved
+        .iter()
+        .filter(|r| !r.failure_detail.is_empty())
+        .count() as u64;
+    if n_with_detail > 0 {
+        println!("\nAggregate stats across {n_with_detail} rows with failure_detail:");
+        println!("  processed (total)     : {processed_total:>12}");
+        println!("  generated (total)     : {generated_total:>12}");
+        println!(
+            "  passive remaining (Σ) : {passive_total:>12}  ← proxy for search space explosion"
+        );
+        println!(
+            "  weight_discarded (Σ)  : {wt_disc_total:>12}  ← clauses killed by max_term_weight"
+        );
+        if n_with_detail > 0 {
+            println!(
+                "  processed / problem   : {:>12.0}",
+                processed_total as f64 / n_with_detail as f64
+            );
+            println!(
+                "  generated / problem   : {:>12.0}",
+                generated_total as f64 / n_with_detail as f64
+            );
+        }
+    }
+    println!();
+}
+
+// ---------------------------------------------------------------------------
 // Argument parsing
 // ---------------------------------------------------------------------------
 
+#[derive(Default)]
 struct Args {
-    csv: PathBuf,
-    /// Minimum number of systems that must have solved a problem before
-    /// disagreements are reported.  Clamped to at least 2 (you need two
-    /// systems to have a contradiction).
+    csv: Option<PathBuf>,
     min_systems: usize,
+    census: Option<String>, // system name for census mode
 }
 
 fn parse_args() -> Args {
@@ -201,27 +403,32 @@ fn parse_args() -> Args {
     let prog = argv.first().map(String::as_str).unwrap_or("bench_report");
 
     let usage = || {
-        eprintln!("Usage: {prog} <run.csv> [--min-systems N]");
+        eprintln!("Usage: {prog} <run.csv> [--min-systems N] [--census <system>]");
         eprintln!("       {prog} --help");
     };
 
-    let mut csv: Option<PathBuf> = None;
-    let mut min_systems = 2usize;
-    let mut i = 1;
+    let mut args = Args {
+        min_systems: 2,
+        ..Default::default()
+    };
+    let mut i = 1usize;
     while i < argv.len() {
         match argv[i].as_str() {
             "--help" | "-h" => {
-                println!("Usage: {prog} <run.csv> [--min-systems N]");
+                println!("Usage: {prog} <run.csv> [--min-systems N] [--census <system>]");
                 println!();
                 println!("Summarise a CASC benchmark run CSV.");
                 println!();
                 println!("Positional:");
-                println!("  <run.csv>          Path to run.csv produced by bench/casc.sh");
+                println!("  <run.csv>             Path to run.csv produced by bench/casc.sh");
                 println!();
                 println!("Options:");
-                println!("  --min-systems N    Only report disagreements when at least N systems");
-                println!("                     solved the problem (default: 2).");
-                println!("  -h, --help         Show this help message.");
+                println!("  --min-systems N       Only report disagreements when at least N");
+                println!("                        systems solved the problem (default: 2).");
+                println!("  --census <system>     Print a failure-mode census for <system>");
+                println!("                        (requires failure_detail column from newer");
+                println!("                        casc.sh runs).");
+                println!("  -h, --help            Show this help message.");
                 std::process::exit(0);
             }
             "--min-systems" => {
@@ -231,21 +438,30 @@ fn parse_args() -> Args {
                     usage();
                     std::process::exit(1);
                 }
-                min_systems = argv[i].parse().unwrap_or_else(|_| {
+                args.min_systems = argv[i].parse().unwrap_or_else(|_| {
                     eprintln!("error: --min-systems must be a positive integer");
                     std::process::exit(1);
                 });
-                if min_systems < 2 {
-                    min_systems = 2;
+                if args.min_systems < 2 {
+                    args.min_systems = 2;
                 }
             }
+            "--census" => {
+                i += 1;
+                if i >= argv.len() {
+                    eprintln!("error: --census requires a system name");
+                    usage();
+                    std::process::exit(1);
+                }
+                args.census = Some(argv[i].clone());
+            }
             arg if !arg.starts_with('-') => {
-                if csv.is_some() {
+                if args.csv.is_some() {
                     eprintln!("error: unexpected positional argument: {arg}");
                     usage();
                     std::process::exit(1);
                 }
-                csv = Some(PathBuf::from(arg));
+                args.csv = Some(PathBuf::from(arg));
             }
             arg => {
                 eprintln!("error: unknown argument: {arg}");
@@ -255,13 +471,7 @@ fn parse_args() -> Args {
         }
         i += 1;
     }
-
-    let csv = csv.unwrap_or_else(|| {
-        usage();
-        std::process::exit(1);
-    });
-
-    Args { csv, min_systems }
+    args
 }
 
 // ---------------------------------------------------------------------------
@@ -271,12 +481,17 @@ fn parse_args() -> Args {
 fn main() {
     let args = parse_args();
 
-    if !args.csv.exists() {
-        eprintln!("Error: file not found: {}", args.csv.display());
+    let csv = args.csv.unwrap_or_else(|| {
+        eprintln!("Error: no CSV file specified. Run with --help for usage.");
+        std::process::exit(1);
+    });
+
+    if !csv.exists() {
+        eprintln!("Error: file not found: {}", csv.display());
         std::process::exit(1);
     }
 
-    let rows = load_csv(&args.csv).unwrap_or_else(|e| {
+    let rows = load_csv(&csv).unwrap_or_else(|e| {
         eprintln!("Error: {e}");
         std::process::exit(1);
     });
@@ -284,6 +499,12 @@ fn main() {
     if rows.is_empty() {
         eprintln!("CSV is empty.");
         std::process::exit(1);
+    }
+
+    // If --census was requested, print the census and exit.
+    if let Some(system) = &args.census {
+        print_census(&rows, system);
+        std::process::exit(0);
     }
 
     let edition = rows[0].edition.clone();

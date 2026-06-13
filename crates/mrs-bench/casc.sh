@@ -29,7 +29,7 @@
 #   <output>/run.csv    — one row per (problem, system)
 #   <output>/run.log    — harness stderr
 #
-# CSV schema: edition,division,problem,system,szs_status,expected,verdict,wall_time_s
+# CSV schema: edition,division,problem,system,szs_status,expected,verdict,wall_time_s,failure_detail
 #   verdict ∈ {ok, ko, unknown}
 #     ok      — system status agrees with the reference answer
 #     ko      — system status disagrees with the reference answer
@@ -169,7 +169,7 @@ if [[ ! -f "${ANSWERS}" ]]; then
 fi
 
 CSV="${OUTPUT}/run.csv"
-echo "edition,division,problem,system,szs_status,expected,verdict,wall_time_s" > "${CSV}"
+echo "edition,division,problem,system,szs_status,expected,verdict,wall_time_s,failure_detail" > "${CSV}"
 
 JOBS_FILE="${OUTPUT}/.jobs"
 > "${JOBS_FILE}"
@@ -220,7 +220,7 @@ echo "[casc] Total jobs:  ${total_problems}" >&2
 # Arguments: div  problem  prob_path  sys  time_limit
 #
 # Emits one CSV row:
-#   edition,division,problem,system,szs_status,expected,verdict,wall_time_s
+#   edition,division,problem,system,szs_status,expected,verdict,wall_time_s,failure_detail
 #
 # `verdict` compares the system's SZS status against the reference
 # answer for `problem` (from systems/reference/answers.tsv):
@@ -233,14 +233,15 @@ echo "[casc] Total jobs:  ${total_problems}" >&2
 run_one() {
     local div="$1" problem="$2" prob_path="$3" sys="$4" tlimit="$5"
     local invoke="${SCRIPT_DIR}/systems/${sys}/invoke.sh"
-    local tmp
+    local tmp tmp_err
     tmp="$(mktemp)"
+    tmp_err="$(mktemp)"
 
     local start_ms end_ms wall_s szs exit_code
     start_ms=$(date +%s%3N)
     # Give the system tlimit seconds; add 10s grace for it to flush output.
     timeout $(( tlimit + 10 )) "${invoke}" "${prob_path}" "${tlimit}" \
-        > "${tmp}" 2>/dev/null
+        > "${tmp}" 2>"${tmp_err}"
     exit_code=$?
     end_ms=$(date +%s%3N)
 
@@ -252,7 +253,7 @@ run_one() {
         wall_s=$(printf '%.3f' "${tlimit}")
     fi
 
-    # Extract SZS status from output.
+    # Extract SZS status from stdout.
     # Vampire: "% SZS status Theorem for ..."
     # mrs:     "% SZS status Theorem for ..."
     szs=$(grep -m1 '% SZS status' "${tmp}" 2>/dev/null | awk '{print $4}' || true)
@@ -265,7 +266,12 @@ run_one() {
         fi
     fi
 
-    rm -f "${tmp}"
+    # Extract structured failure detail from stderr ("% SZS detail ...").
+    # Stores the key=value portion; empty string if not present.
+    local failure_detail=""
+    failure_detail=$(grep -m1 '% SZS detail' "${tmp_err}" 2>/dev/null | sed 's/^% SZS detail //' || true)
+
+    rm -f "${tmp}" "${tmp_err}"
 
     # Look up reference answer and grade.
     local expected="" verdict="unknown"
@@ -288,9 +294,9 @@ run_one() {
         fi
     fi
 
-    printf '%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
         "${EDITION}" "${div}" "${problem}" "${sys}" \
-        "${szs}" "${expected}" "${verdict}" "${wall_s}"
+        "${szs}" "${expected}" "${verdict}" "${wall_s}" "${failure_detail}"
 }
 
 # Map an SZS status to a coarse provability class so different
