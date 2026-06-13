@@ -260,17 +260,19 @@ impl StrategySchedule {
                     },
                     t11,
                 ),
-                // s12: HornPenalty + AgeWeight(5) + AllNegative + KBO, no AVATAR
-                // FNE problems are mostly Horn; 3x penalty on non-Horn clauses
-                // keeps the proof search Horn-focused. No AVATAR to avoid
-                // spurious SAT-solver overhead on purely Horn problems.
+                // s12: HornHeuristic + AgeWeight(5) + AllNegative + KBO, no AVATAR
+                // FNE problems are mostly Horn; progressive multiplier (pos_count×)
+                // on non-Horn clauses keeps the proof search Horn-focused.
+                // Milder than HornPenalty's fixed 3× — better calibrated for
+                // problems with 2-3 positive literals.  No AVATAR to avoid
+                // SAT-solver overhead on purely Horn problems.
                 (
                     SearchConfig {
                         time_limit: t12,
                         selection: SelectionStrategy::AgeWeight(5),
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::KBO,
-                        weight_fn: crate::ClauseWeightFn::HornPenalty,
+                        weight_fn: crate::ClauseWeightFn::HornHeuristic,
                         max_term_weight: None,
                         use_avatar: false,
                         unit_only_resolution: false,
@@ -278,16 +280,18 @@ impl StrategySchedule {
                     },
                     t12,
                 ),
-                // s13: SOS + GoalDirected(5) + AllNegative + LPO
-                // Combines SOS restriction with LPO ordering and goal-directed
-                // distance-penalised selection. On LPO-friendly equational theories
-                // this can find proofs that SOS+KBO misses.
+                // s13: SOS (inference-level) + FunctionWeightPenalty + AgeWeight(5) + KBO
+                // Combines inference-level SOS (only infer with at least one
+                // goal-connected parent) with quadratic depth weighting to
+                // suppress term-tower growth.  SOS keeps focus near the conjecture;
+                // FunctionWeightPenalty discards deep superposition chains early.
                 (
                     SearchConfig {
                         time_limit: t13,
-                        selection: SelectionStrategy::GoalDirected(5),
+                        selection: SelectionStrategy::AgeWeight(5),
                         literal_selection: LiteralSelection::AllNegative,
-                        ordering: TermOrdering::LPO,
+                        ordering: TermOrdering::KBO,
+                        weight_fn: crate::ClauseWeightFn::FunctionWeightPenalty,
                         sos_depth: 100,
                         ..SearchConfig::default()
                     },
@@ -310,17 +314,19 @@ impl StrategySchedule {
                     },
                     t14,
                 ),
-                // s15: FunctionDepth + AgeWeight(5) + All + LPO, no AVATAR
-                // Depth-weighted terms penalise deep nesting — fights the term-tower
-                // explosion seen in hard equational problems. LPO for equational.
+                // s15: SymbolWeight + AgeWeight(5) + AllNegative + KBO, no AVATAR
+                // Precedence-based cost: rare symbols cost more (higher precedence).
+                // Encourages the prover to prefer clauses with common, low-precedence
+                // symbols — those interact well with demodulation rules already in
+                // the active set.  Complementary to ConjSymbolBoost.
                 // Absorbs rounding remainder (~1% at 30 s).
                 (
                     SearchConfig {
                         time_limit: t15,
                         selection: SelectionStrategy::AgeWeight(5),
-                        literal_selection: LiteralSelection::All,
-                        ordering: TermOrdering::LPO,
-                        weight_fn: crate::ClauseWeightFn::FunctionDepth,
+                        literal_selection: LiteralSelection::AllNegative,
+                        ordering: TermOrdering::KBO,
+                        weight_fn: crate::ClauseWeightFn::SymbolWeight,
                         max_term_weight: None,
                         use_avatar: false,
                         unit_only_resolution: false,
