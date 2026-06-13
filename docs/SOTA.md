@@ -54,12 +54,16 @@ Deciding *which* clause to process next.
 *   **Term Orderings (KBO/LPO)**:
     *   ✅ **Implemented:** LPO and KBO with dynamic rarity-based precedence.
 *   **Strategy Portfolios**:
-    *   ✅ **Implemented:** 11 active strategies run **in parallel** via `std::thread::scope`. Each thread constructs its own `SearchState`; a shared `Arc<AtomicBool>` stop-flag signals siblings the moment a refutation is found.
+    *   ✅ **Implemented:** 15 active strategies run **in parallel** via `std::thread::scope`. Each thread constructs its own `SearchState`; a shared `Arc<AtomicBool>` stop-flag signals siblings the moment a refutation is found.
+*   **Clause Weight Functions**:
+    *   ✅ **Implemented:** Eight `ClauseWeightFn` variants beyond the standard symbol-count baseline: `FunctionDepth`, `FunctionWeightPenalty`, `FunctionWeightPenaltyExp`, `HornPenalty`, `HornHeuristic`, `HornHeuristicExp`, `ConjSymbolBoost`, `SymbolWeight`. Each strategy in the portfolio can use a different weight function.
+*   **Set of Support (SOS)**:
+    *   ✅ **Implemented:** Two complementary SOS mechanisms controlled by `SearchConfig.sos_depth`: selection SOS (only return goal-connected clauses from weight picks) and inference SOS (skip inferences where both parents have `distance >= sos_depth`).
 *   **Machine Learning Guided Selection (ENIGMA / Deepire)**: Using GNNs or XGBoost to evaluate clause usefulness based on past proofs.
     *   *Paper:* [Deepire: Deep Learning for Clause Selection in Vampire (Selsam et al., 2020)](https://arxiv.org/abs/2004.09503)
-    *   ❌ **Not Implemented:** `mrs` relies purely on static Age/Weight ratios and goal-distance.
+    *   ⚠️ **Partial:** `mrs` has an ENIGMA-style Burn MLP implementation behind the `ml-guidance` feature flag. Training data collection is in progress; the model is not yet integrated into the competition portfolio.
 *   **Goal-Directed Equational Reasoning**:
-    *   ✅ **Implemented:** Distance-to-conjecture is tracked in the `Clause` structure. The `GoalDirected` selection strategy uses this to strongly penalize pure-axiom clauses in weight-based selection.
+    *   ✅ **Implemented:** Distance-to-conjecture is tracked in the `Clause` structure and **propagated to derived clauses** (`min(parent.distance) + 1`). The `GoalDirected` selection strategy uses this to strongly penalize pure-axiom clauses in weight-based selection.
 
 ### 5. Advanced Equational Theory
 *   **Associative-Commutative (AC) Unification**:
@@ -67,4 +71,4 @@ Deciding *which* clause to process next.
     *   ✅ **Partially Implemented:** `mrs` detects AC axioms at search startup, eliminates the permutation axiom clauses from the passive set, and uses a heuristic AC-unification (`unify_ac_id`) that flattens associative chains and tries both orderings for commutativity.
     *   ❌ **Missing:** Full AC-Superposition requires AC-compatible term orderings (AC-RPO or AC-KBO). The current standard LPO/KBO cannot soundly orient terms modulo AC, so some necessary search paths may still be pruned incorrectly.
 *   **Clause Sharing**:
-    *   ❌ **Not Implemented:** In a true parallel portfolio (e.g. Vampire), if one thread derives a unit equality it broadcasts it to other threads' demodulation loops. `mrs` strategies are completely siloed — each starts from scratch and cannot benefit from discoveries made by siblings.
+    *   ✅ **Implemented:** When a strategy derives a unit equality it broadcasts it to a shared `Arc<RwLock<Vec<Clause>>>` pool; sibling strategies ingest from the pool at the start of each iteration and add the shared unit equalities to their own demodulation index.

@@ -98,9 +98,16 @@ Named schedules live in `mrs_search::strategy::named` (`crates/mrs-search/src/st
 | `mini` | 3-strategy compact portfolio | 1–5 s budgets |
 | `ml` (alias `ml_feq`), `ml_fne`, `ml_ueq`, `ml_epr` | ML-guided variants | require `ml-guidance` build + `--ml-weights`; degrade to weight-based selection otherwise |
 
-The `casc` portfolio runs strategies 1–9 (KBO/LPO baseline, ~94% of budget) and 10–11 (FEQ-targeted: `All` literal
-selection + paramodulation-friendly settings, ~6% combined).  A 16th diagnostic strategy is always present but gets `Duration::ZERO` in
+The `casc` portfolio runs strategies 1–9 (KBO/LPO baseline, ~88% of budget) and 10–15 (new heuristic strategies, ~12% combined).  A 16th diagnostic strategy is always present but gets `Duration::ZERO` in
 normal runs; use `MRS_SINGLE_STRATEGY=16` to run it alone for the full budget.
+
+Strategies 10–15 use the `ClauseWeightFn` and `sos_depth` fields of `SearchConfig`:
+- **s10**: SOS (selection + inference level, `sos_depth=100`) + AgeWeight(5) + AllNegative + KBO
+- **s11**: `ConjSymbolBoost` + AgeWeight(5) + AllNegative + KBO
+- **s12**: `HornHeuristic` + AgeWeight(5) + AllNegative + KBO (no AVATAR, no weight cap)
+- **s13**: `FunctionWeightPenalty` + SOS + AgeWeight(5) + AllNegative + KBO
+- **s14**: `ConjSymbolBoost` + SmallestFirst + All + KBO (no AVATAR, weight cap 100)
+- **s15**: `SymbolWeight` + AgeWeight(5) + AllNegative + KBO (no AVATAR, no weight cap)
 
 To add a new schedule: implement a constructor in `strategy::named`, then add its name to `ALL` and the `by_name` match. `default_schedule()` must stay synonymous with `casc` so unflagged CASC runs are unaffected.
 

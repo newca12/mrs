@@ -6,8 +6,8 @@
 
 ### Core Architecture
 - **Given-Clause Loop**: Fully implemented Otter-style loop for the superposition calculus.
-- **Parallel Strategy Portfolio**: 11 active strategies run **simultaneously** via `std::thread::scope`. Each thread constructs its own `SearchState` (required because `varisat::Solver` is not `Send`). A shared `Arc<AtomicBool>` stop-flag fires the moment any thread finds a refutation, causing siblings to return on their next time-check. Named schedules: `casc` (default, 11 strategies), `mini` (3 strategies), `fast` (1 strategy).
-- **AVATAR**: Fully integrated using the pure-Rust `varisat` CDCL solver. Clauses are dynamically split into variable-disjoint components, delegating propositional case-splits to the SAT solver. EPR-structured problems are now handled lazily by AVATAR (naive pre-expansion was disabled after causing OOM on large problems).
+- **Parallel Strategy Portfolio**: 15 active strategies run **simultaneously** via `std::thread::scope`, plus a 16th diagnostic strategy (`MRS_SINGLE_STRATEGY=16`) that gets `Duration::ZERO` in normal runs. Each thread constructs its own `SearchState`. A shared `Arc<AtomicBool>` stop-flag fires the moment any thread finds a refutation, causing siblings to return on their next time-check. Named schedules: `casc` (default, 16 strategies), `casc_fne`/`casc_ueq`/`casc_epr` (division-tuned, one strategy per worker), `mini` (3 strategies), `fast` (1 strategy).
+- **AVATAR**: Fully integrated using the CaDiCaL CDCL solver (`Send`-compatible). Clauses are dynamically split into variable-disjoint components, delegating propositional case-splits to the SAT solver. EPR-structured problems are now handled lazily by AVATAR (naive pre-expansion was disabled after causing OOM on large problems).
 
 ### Indexing and Scaling
 - **Priority Queues (Unprocessed Set)**: Dual-queue architecture (`BinaryHeap` for weight, `VecDeque` for age) with lazy tombstone deletion, enabling $O(\log N)$ extraction. Feature vectors cached inside the set for O(1) subsumption lookup.
@@ -26,7 +26,19 @@
 - **SInE (Sumo Inference Engine)**: Pre-filters large axiomatizations from the conjecture over symbol genericity. Automatic fallback: if SInE triggers and the search saturates in under 1 second, `main.rs` restarts without SInE to recover from over-pruning.
 - **Term Orderings**: LPO and KBO with dynamic, rarity-based symbol precedence (rare symbols get higher precedence to eliminate them first).
 - **Literal Selection**: `All`, `AllNegative`, `MaxNegative`, `MaxNegativeOrMaxPositive`.
-- **Goal-Directed UEQ Heuristics**: Distance-to-conjecture is built into `Clause`; the `GoalDirected` selection strategy penalizes pure-axiom clauses in weight selection.
+- **Goal-Directed Heuristics**: Distance-to-conjecture is tracked in `Clause` and propagated to derived clauses (`min(parent.distance) + 1`). The `GoalDirected` selection strategy penalizes pure-axiom clauses in weight selection.
+- **Clause Weight Functions** (`ClauseWeightFn`): Seven weight functions beyond the standard symbol-count baseline:
+  - `FunctionDepth`: linear depth scaling (`w*(d+1)` per symbol at depth d)
+  - `FunctionWeightPenalty`: quadratic depth scaling (`w*(d+1)^2`)
+  - `FunctionWeightPenaltyExp`: exponential depth scaling (`w*2^d`, capped at 2^30)
+  - `HornPenalty`: 3× multiplier on non-Horn clauses
+  - `HornHeuristic`: `pos_count×` progressive multiplier on non-Horn clauses
+  - `HornHeuristicExp`: `2^(pos_count-1)×` exponential multiplier on non-Horn clauses
+  - `ConjSymbolBoost`: symbols not in the negated-conjecture closure cost 3×
+  - `SymbolWeight`: each symbol costs its KBO/LPO precedence rank
+- **Set of Support (SOS)**: `SearchConfig.sos_depth` enables two complementary SOS mechanisms:
+  - *Selection SOS* (`pop_weight_sos`): weight picks only return goal-connected clauses (distance < sos_depth); age picks are unrestricted.
+  - *Inference SOS*: resolution and superposition are skipped when *both* parents have `distance >= sos_depth`. Factoring is unconditional; equality-resolution/factoring are also restricted to goal-connected clauses under SOS.
 - **AC Axiom Elimination + Heuristic AC-Unification**: At search startup, `detect_ac_symbols` identifies commutativity (`f(X,Y)=f(Y,X)`) and associativity (`f(f(X,Y),Z)=f(X,f(Y,Z))`) axioms and removes them from the passive set. `unify_ac_id` in `mrs-unify` flattens associative chains and tries both orderings for commutativity before falling back to standard unification.
 
 ### Performance Optimisations
@@ -42,8 +54,9 @@
 
 ## Remaining Gaps
 
+See `docs/AUDIT.md` for the Phase 1 failure census and root-cause analysis.
 See `TODO_CASC.md` for the prover roadmap and `TODO_PROOVER.md` for the verifier roadmap.
 
-The two highest-ROI items are:
-1. **Clause sharing across parallel strategies**: if one thread derives a unit equality, broadcast it to other threads' demodulation indices.
-2. **AC-equivalence matching in `axiom_leaf.rs`**: leaf-node validation currently fails on `A & B` / `B & A` rewrites produced by real ATPs, scoring 0 points instead of +1 on valid proofs.
+The two highest-ROI items remaining:
+1. **LRS (Limited Resource Strategy)**: the passive queue grows to 100k–300k clauses on hard problems; LRS would discard clauses that provably cannot be processed within the time budget, mirroring Vampire's most effective mechanism.
+2. **AC-equivalence matching in `axiom_leaf.rs`**: leaf-node validation in mrs-proover fails on `A & B` / `B & A` rewrites produced by real ATPs, scoring 0 instead of +1 on valid proofs.
