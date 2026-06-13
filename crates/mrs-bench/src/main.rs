@@ -240,6 +240,10 @@ fn classify_failure(szs: &str, detail: &str) -> &'static str {
     if szs == "Error" {
         return "parse_error";
     }
+    if szs == "Timeout" && detail.is_empty() {
+        // OS timeout fired (invocation killed before mrs could flush stderr).
+        return "timeout";
+    }
     if detail.is_empty() {
         return "no_detail";
     }
@@ -250,7 +254,7 @@ fn classify_failure(szs: &str, detail: &str) -> &'static str {
         }
         return "gave_up";
     }
-    // Timeout
+    // GaveUp or Timeout with detail present.
     let s = parse_detail(detail);
     if s.passive > 10_000 {
         "timeout_passive"
