@@ -1,29 +1,36 @@
 //! greedy_set_cover — Select the most complementary portfolio of strategies.
 //!
 //! Usage:
-//!     greedy_set_cover <run.csv> [portfolio_size_K]
+//!     greedy_set_cover <run.csv> [K] [--division DIVISION]
+//!
+//! Arguments:
+//!     <run.csv>             Path to run.csv produced by casc.sh
+//!     [K]                   Portfolio size to select (default: 8 = CASC core count)
+//!     -d / --division NAME  Only consider rows for this CASC division
+//!                           (e.g. fne, feq, ueq, eps, epu — case-insensitive)
 //!
 //! Input CSV Schema (produced by casc.sh):
 //!     edition,division,problem,system,szs_status,expected,verdict,wall_time_s[,failure_detail]
 //!
 //! The `system` column is used as the strategy identifier.  To analyse
-//! individual mrs strategies rather than whole solvers, run each strategy
-//! as a separate named "system" by setting MRS_SINGLE_STRATEGY=N and
-//! naming the invocation wrapper accordingly.  Then feed the combined
-//! CSV to this tool.
+//! individual mrs strategies (rather than whole solvers), run each strategy
+//! as a separate named "system" via the mrs-strategy bench wrapper and feed
+//! the combined CSV to this tool:
 //!
-//! Example — comparing multi-system portfolios:
-//!     casc.sh --systems mrs,eprover,vampire ...   # produces run.csv
-//!     greedy_set_cover run.csv 3                  # best 3-system portfolio
+//!     # Generate per-strategy benchmark data (see run_strategy_sweep.sh):
+//!     casc.sh --systems mrs-s01,mrs-s02,...,mrs-s15 --divisions fne --time 30 ...
 //!
-//! The algorithm is greedy: at each step it picks the strategy that
-//! maximises the number of *newly* covered problems.  Ties are broken
-//! alphabetically by strategy name for deterministic output.
+//!     # Find the 8 most complementary strategies for FNE:
+//!     greedy_set_cover run.csv 8 --division fne
 //!
-//! Output:
-//!     One line per selected strategy showing how many new problems it
-//!     added, the cumulative covered count, and the running percentage.
-//!     The final block lists the selected portfolio in order.
+//! The algorithm is greedy: at each step it picks the strategy that maximises
+//! the number of *newly* covered problems.  Ties are broken alphabetically by
+//! strategy name for deterministic output.
+//!
+//! Why K=8?  CASC competition hardware has exactly 8 cores.  The optimal
+//! per-division portfolio for CASC is the 8-strategy set identified by this
+//! tool run with K=8 and --division matching the CASC division under study.
+//! See AGENTS.md §"CASC Hardware & --casc Decision Rule" for the full workflow.
 
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -41,77 +48,160 @@ fn is_solved(status: &str) -> bool {
     SOLVED_STATUSES.contains(&status)
 }
 
+fn print_usage(prog: &str) {
+    eprintln!("Usage: {prog} <run.csv> [K] [-d/--division DIVISION]");
+    eprintln!("  K defaults to 8 (CASC core count).");
+    eprintln!("  --division filters to a single CASC division (e.g. fne, feq, ueq, eps, epu).");
+}
+
 fn main() -> io::Result<()> {
     let args: Vec<String> = env::args().collect();
+    let prog = args
+        .first()
+        .map(String::as_str)
+        .unwrap_or("greedy_set_cover");
+
     if args.len() < 2 {
-        eprintln!("Usage: greedy_set_cover <run.csv> [portfolio_size_K]");
+        print_usage(prog);
         std::process::exit(1);
     }
 
-    let csv_path = &args[1];
-    let k: usize = if args.len() >= 3 {
-        args[2].parse().unwrap_or(8)
-    } else {
-        8
-    };
+    let mut csv_path: Option<String> = None;
+    let mut k: usize = 8;
+    let mut filter_division: Option<String> = None;
 
-    let file = File::open(csv_path)?;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-d" | "--division" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("error: --division requires a value");
+                    print_usage(prog);
+                    std::process::exit(1);
+                }
+                filter_division = Some(args[i].to_ascii_lowercase());
+            }
+            "--help" | "-h" => {
+                print_usage(prog);
+                std::process::exit(0);
+            }
+            arg if !arg.starts_with('-') => {
+                if csv_path.is_none() {
+                    csv_path = Some(arg.to_string());
+                } else {
+                    k = arg.parse().unwrap_or_else(|_| {
+                        eprintln!(
+                            "error: portfolio size K must be a positive integer, got {arg:?}"
+                        );
+                        std::process::exit(1);
+                    });
+                }
+            }
+            arg => {
+                eprintln!("error: unknown argument: {arg}");
+                print_usage(prog);
+                std::process::exit(1);
+            }
+        }
+        i += 1;
+    }
+
+    let csv_path = csv_path.unwrap_or_else(|| {
+        print_usage(prog);
+        std::process::exit(1);
+    });
+
+    let file = File::open(&csv_path)?;
     let reader = BufReader::new(file);
 
-    // Map: strategy → Set of solved problems
+    // Map: strategy → set of solved problems (within the selected division if any).
     let mut strategy_solved: HashMap<String, HashSet<String>> = HashMap::new();
-    // Set of all problems solved by at least one strategy
+    // All problems solved by at least one strategy in scope.
     let mut all_solved_problems: HashSet<String> = HashSet::new();
 
     let mut lines = reader.lines();
-    if let Some(header) = lines.next() {
-        let header = header?;
-        let cols: Vec<&str> = header.split(',').collect();
-        let prob_idx = cols.iter().position(|&s| s == "problem");
-        let sys_idx = cols.iter().position(|&s| s == "system");
-        let status_idx = cols.iter().position(|&s| s == "szs_status");
+    let header = match lines.next() {
+        Some(h) => h?,
+        None => {
+            eprintln!("error: CSV file is empty");
+            std::process::exit(1);
+        }
+    };
 
-        if let (Some(p_i), Some(s_i), Some(st_i)) = (prob_idx, sys_idx, status_idx) {
-            for line in lines {
-                let line = line?;
-                if line.trim().is_empty() {
-                    continue;
-                }
-                let parts: Vec<&str> = line.split(',').collect();
-                if parts.len() > p_i && parts.len() > s_i && parts.len() > st_i {
-                    let problem = parts[p_i].trim().to_string();
-                    let strategy = parts[s_i].trim().to_string();
-                    let status = parts[st_i].trim();
+    let cols: Vec<&str> = header.split(',').map(str::trim).collect();
+    let prob_idx = cols.iter().position(|&s| s == "problem");
+    let sys_idx = cols.iter().position(|&s| s == "system");
+    let status_idx = cols.iter().position(|&s| s == "szs_status");
+    let div_idx = cols.iter().position(|&s| s == "division");
 
-                    if is_solved(status) {
-                        strategy_solved
-                            .entry(strategy)
-                            .or_default()
-                            .insert(problem.clone());
-                        all_solved_problems.insert(problem);
-                    }
-                }
-            }
-        } else {
+    let (p_i, s_i, st_i) = match (prob_idx, sys_idx, status_idx) {
+        (Some(p), Some(s), Some(st)) => (p, s, st),
+        _ => {
             eprintln!(
-                "Error: CSV header must contain 'problem', 'system', and 'szs_status' columns."
+                "error: CSV header must contain 'problem', 'system', and 'szs_status' columns."
             );
             std::process::exit(1);
+        }
+    };
+
+    for line in lines {
+        let line = line?;
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = line.split(',').collect();
+        if parts.len() <= p_i || parts.len() <= s_i || parts.len() <= st_i {
+            continue;
+        }
+
+        // Apply division filter if requested.
+        if let Some(ref target) = filter_division {
+            match div_idx {
+                Some(d_i) if parts.len() > d_i => {
+                    if parts[d_i].trim().to_ascii_lowercase() != *target {
+                        continue;
+                    }
+                }
+                _ => {} // no division column — don't filter
+            }
+        }
+
+        let problem = parts[p_i].trim().to_string();
+        let strategy = parts[s_i].trim().to_string();
+        let status = parts[st_i].trim();
+
+        if is_solved(status) {
+            strategy_solved
+                .entry(strategy)
+                .or_default()
+                .insert(problem.clone());
+            all_solved_problems.insert(problem);
         }
     }
 
     if strategy_solved.is_empty() {
-        println!("No solved problems found in the CSV.");
+        if let Some(ref div) = filter_division {
+            println!("No solved problems found in division '{div}'.");
+        } else {
+            println!("No solved problems found in the CSV.");
+        }
         return Ok(());
     }
 
+    // Header line.
+    if let Some(ref div) = filter_division {
+        println!("Division filter : {}", div.to_uppercase());
+    }
     println!(
-        "Total unique solved problems in dataset: {}",
+        "Total unique solved problems in scope: {}",
         all_solved_problems.len()
     );
+    println!("Portfolio size  : {k}");
     println!("------------------------------------------------------------");
 
-    // Greedy Set Cover
+    // ── Greedy Set Cover ─────────────────────────────────────────────────────
     let mut selected_strategies: Vec<String> = Vec::new();
     let mut covered_problems: HashSet<String> = HashSet::new();
 
@@ -119,9 +209,9 @@ fn main() -> io::Result<()> {
         let mut best_strategy: Option<String> = None;
         let mut best_new_solves: usize = 0;
 
-        // Collect and sort by name for deterministic tiebreaking.
+        // Sort alphabetically so ties are broken deterministically.
         let mut candidates: Vec<&String> = strategy_solved.keys().collect();
-        candidates.sort();
+        candidates.sort_unstable();
 
         for strategy in candidates {
             if selected_strategies.contains(strategy) {
@@ -130,8 +220,7 @@ fn main() -> io::Result<()> {
             let new_solves = strategy_solved[strategy]
                 .difference(&covered_problems)
                 .count();
-            // Strictly greater: ties broken by alphabetical order from the
-            // sorted iteration above (first alphabetically wins).
+            // Strictly greater: first alphabetically wins on ties.
             if new_solves > best_new_solves {
                 best_new_solves = new_solves;
                 best_strategy = Some(strategy.clone());
@@ -147,23 +236,27 @@ fn main() -> io::Result<()> {
             let total_solved = covered_problems.len();
             let pct = (total_solved as f64 / all_solved_problems.len() as f64) * 100.0;
             println!(
-                "Step {:02}: Pick {:<15} | Unique solves added: {:<4} | \
-                 Cumulative solved: {:<4} ({:.2}%)",
-                step, strategy, best_new_solves, total_solved, pct
+                "Step {:02}: {:<20} | +{:<4} new  | {:<4} / {} covered  ({:.1}%)",
+                step,
+                strategy,
+                best_new_solves,
+                total_solved,
+                all_solved_problems.len(),
+                pct
             );
         } else {
-            println!("No further strategies can cover any new problems. Stopping.");
+            println!("No further strategies cover new problems. Stopping at step {step}.");
             break;
         }
     }
 
     println!("------------------------------------------------------------");
     println!(
-        "Optimal complementary portfolio of size {}:",
+        "Selected portfolio ({} strategies):",
         selected_strategies.len()
     );
     for (i, s) in selected_strategies.iter().enumerate() {
-        println!("  {}. {}", i + 1, s);
+        println!("  {:2}. {}", i + 1, s);
     }
 
     Ok(())
