@@ -348,7 +348,7 @@ if [[ "${JOBS}" -le 1 ]]; then
 else
     # Parallel execution. Each worker calls run_and_append directly so the
     # progress counter advances in real time (instead of only at the end).
-    if command -v parallel &>/dev/null; then
+    if command -v parallel &>/dev/null && parallel --version 2>/dev/null | grep -q "GNU"; then
         parallel --jobs "${JOBS}" --will-cite \
             'run_and_append {}' :::: "${JOBS_FILE}"
     else
