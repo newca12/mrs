@@ -159,10 +159,10 @@ fn main() -> io::Result<()> {
         // Apply division filter if requested.
         if let Some(ref target) = filter_division {
             match div_idx {
-                Some(d_i) if parts.len() > d_i => {
-                    if parts[d_i].trim().to_ascii_lowercase() != *target {
-                        continue;
-                    }
+                Some(d_i)
+                    if parts.len() > d_i && parts[d_i].trim().to_ascii_lowercase() != *target =>
+                {
+                    continue;
                 }
                 _ => {} // no division column — don't filter
             }

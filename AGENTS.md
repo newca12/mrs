@@ -93,7 +93,7 @@ Named schedules live in `mrs_search::strategy::named` (`crates/mrs-search/src/st
 | Name | Strategies | Use case |
 |------|------------|----------|
 | `casc` (aliases `default`, `casc_feq`) | 16-strategy portfolio (15 active + 1 diagnostic) | CASC competition; default behavior |
-| `casc_fne` / `casc_ueq` / `casc_epr` | one strategy per worker (scales with `--workers`) | division-tuned static portfolios |
+| `casc_fne` / `casc_ueq` / `casc_epr` | one strategy per worker (scales with `--workers`); **not yet data-driven** | division-tuned portfolios; see §"CASC Hardware & --casc Decision Rule" for how to optimise |
 | `fast` | 1 KBO `AgeWeight(5)+AllNegative` | Sub-second ATP queries (e.g. `mrs-proover` backend) |
 | `mini` | 3-strategy compact portfolio | 1–5 s budgets |
 | `ml` (alias `ml_feq`), `ml_fne`, `ml_ueq`, `ml_epr` | ML-guided variants | require `ml-guidance` build + `--ml-weights`; degrade to weight-based selection otherwise |
@@ -157,6 +157,81 @@ The root `Cargo.toml` is both `[workspace]` and `[package]` — valid but unusua
 - **LRS (Limited Resource Strategy):** every 100 given-clause iterations, the prover estimates the remaining iteration budget from `elapsed/iteration` and prunes the passive queue to that size (min 2000). This prevents memory explosion and teardown latency on hard problems.  Set `TRACE_LRS=1` to see per-prune log lines on stderr.
 - **Refutation-based:** conjectures are negated before search. A problem with no `conjecture` role checks satisfiability (outputs `Unsatisfiable`/`Satisfiable`).
 - **TSTP proof output** only on `Refutation`; other statuses produce only the SZS status line.
+
+## CASC Hardware & `--casc` Decision Rule
+
+> **This section is permanent policy.  Do not remove or weaken it.**
+
+**CASC competition hardware is exactly 8 CPU cores.**  Every entry at CASC runs
+with a wall-clock time limit (240 s for FEQ/FNE/UEQ, 120 s for EPS/EPU) on a
+machine with 8 physical cores.  All portfolio design, strategy selection, and
+time-budget arithmetic **must treat 8 as the canonical core count**.
+
+### Goal
+
+Maximize the number of CASC problems solved across all entered divisions
+(FEQ, FNE, UEQ, EPS/EPU).  The competition `invoke.sh` already routes each
+problem to the correct per-division schedule (`casc_feq/fne/ueq/epr`).
+The question is whether those division schedules are optimal for 8 cores.
+
+### Decision rule for implementing `--casc`
+
+A dedicated `--casc` flag (hard-coded 8-strategy per-division portfolio,
+possibly with in-binary division detection) is **only worth implementing if**
+data from the greedy set-cover analysis shows a meaningful gap between the
+current generic schedule and the data-driven optimal portfolio.
+
+| Condition | Action |
+|-----------|--------|
+| `greedy_set_cover --division X run.csv 8` gives same coverage as `--workers 8 --schedule casc_X` | No `--casc` flag needed; update `casc_X` with the greedy-selected strategies |
+| Greedy portfolio covers >5% more problems per division | Replace loop-generated `casc_X` with a fixed 8-strategy hand-crafted portfolio; still no `--casc` flag needed |
+| Greedy portfolio covers materially more problems AND requires division auto-detection inside the binary (not just invoke.sh) | Implement `--casc` flag that auto-detects division from TPTP problem path and selects the matching optimal 8-strategy schedule |
+
+### Workflow: Per-Division Portfolio Optimisation
+
+**Step 1 — Generate per-strategy coverage data (run once per TPTP release):**
+
+```bash
+# Run every mrs strategy solo on one division (30 s per problem, 4 parallel jobs).
+# Requires: cargo build --release
+export TPTP=/path/to/TPTP-v9.x.x
+./crates/mrs-bench/run_strategy_sweep.sh --divisions fne --time 30 --jobs 4 \
+    --output results/sweep-fne-$(date +%Y%m%d)
+```
+
+This produces `run.csv` where each `system` column is `mrs-s01..mrs-s15`.
+
+**Step 2 — Find optimal 8-strategy portfolio per division:**
+
+```bash
+./target/release/greedy_set_cover results/sweep-fne-*/run.csv 8 --division fne
+./target/release/greedy_set_cover results/sweep-fne-*/run.csv 8 --division ueq
+./target/release/greedy_set_cover results/sweep-fne-*/run.csv 8 --division eps
+```
+
+**Step 3 — Baseline comparison:**
+
+```bash
+# Run the current generic casc portfolio on the same problems:
+./crates/mrs-bench/casc.sh --systems mrs --divisions fne --time 30 --jobs 4 \
+    --output results/baseline-fne-$(date +%Y%m%d)
+# Compare solved counts between baseline and greedy-selected portfolio.
+```
+
+**Step 4 — Act on the results:**
+
+- If greedy FNE portfolio = strategies `[s3, s7, s11, s1, s12, s6, s2, s10]` (example),
+  replace the `casc_fne` loop-generated body in `named.rs` with those 8 explicit
+  `SearchConfig` entries.
+- Use the strategy descriptions in `strategy.rs` as reference for what each Sn is.
+- Only add `--casc` to the binary if required (see decision rule above).
+
+### Current status
+
+The `casc_fne`, `casc_ueq`, and `casc_epr` schedules currently generate strategies
+via modular arithmetic (loop over worker index).  They are **not data-driven**.
+Run the workflow above to get data-driven portfolios before the next CASC entry.
+
 
 ## Testing
 
