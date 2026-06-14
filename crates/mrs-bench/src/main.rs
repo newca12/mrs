@@ -203,6 +203,7 @@ struct DetailStats {
     generated: u64,
     passive: u64,
     weight_discarded: u64,
+    lrs_discarded: u64,
     fwd_subsumed: u64,
 }
 
@@ -219,6 +220,7 @@ fn parse_detail(detail: &str) -> DetailStats {
                 "generated" => s.generated = n,
                 "passive" => s.passive = n,
                 "weight_discarded" => s.weight_discarded = n,
+                "lrs_discarded" => s.lrs_discarded = n,
                 "fwd_subsumed" => s.fwd_subsumed = n,
                 _ => {}
             }
@@ -284,6 +286,7 @@ fn print_census(rows: &[Row], system: &str) {
     let mut processed_total: u64 = 0;
     let mut generated_total: u64 = 0;
     let mut wt_disc_total: u64 = 0;
+    let mut lrs_disc_total: u64 = 0;
 
     for row in &unsolved {
         let bucket = classify_failure(&row.szs_status, &row.failure_detail);
@@ -297,6 +300,7 @@ fn print_census(rows: &[Row], system: &str) {
             processed_total += s.processed;
             generated_total += s.generated;
             wt_disc_total += s.weight_discarded;
+            lrs_disc_total += s.lrs_discarded;
         }
     }
 
@@ -377,6 +381,7 @@ fn print_census(rows: &[Row], system: &str) {
         println!(
             "  weight_discarded (Σ)  : {wt_disc_total:>12}  ← clauses killed by max_term_weight"
         );
+        println!("  lrs_discarded (Σ)     : {lrs_disc_total:>12}  ← clauses pruned by LRS");
         if n_with_detail > 0 {
             println!(
                 "  processed / problem   : {:>12.0}",

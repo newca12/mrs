@@ -70,6 +70,8 @@ pub struct SearchStats {
     pub passive_size: u64,
     /// Clauses deleted by backward subsumption/demodulation.
     pub backward_deleted: u64,
+    /// Clauses discarded by the Limited Resource Strategy (LRS) passive pruning.
+    pub lrs_discarded: u64,
 }
 
 /// Summary for one strategy in the portfolio run.
@@ -121,6 +123,7 @@ impl ScheduleReport {
             .iter()
             .map(|s| s.stats.weight_discarded)
             .sum();
+        let total_lrs_disc: u64 = self.strategies.iter().map(|s| s.stats.lrs_discarded).sum();
         let total_fwd_sub: u64 = self
             .strategies
             .iter()
@@ -141,7 +144,7 @@ impl ScheduleReport {
 
         Some(format!(
             "strategies={} timeout={} saturated={} \
-             processed={} generated={} passive={} weight_discarded={} fwd_subsumed={}",
+             processed={} generated={} passive={} weight_discarded={} lrs_discarded={} fwd_subsumed={}",
             self.strategies.len(),
             n_timeout,
             n_saturated,
@@ -149,6 +152,7 @@ impl ScheduleReport {
             total_generated,
             total_passive,
             total_wt_disc,
+            total_lrs_disc,
             total_fwd_sub,
         ))
     }

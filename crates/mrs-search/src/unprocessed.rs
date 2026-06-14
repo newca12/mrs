@@ -261,4 +261,146 @@ impl UnprocessedSet {
     pub fn iter(&self) -> impl Iterator<Item = ClauseId> + '_ {
         self.active_ids.iter().copied()
     }
+
+    /// Prunes the passive set to keep only the `target_size` lightest clauses by weight.
+    /// Returns the number of discarded clauses.
+    pub fn prune(&mut self, target_size: usize) -> usize {
+        if self.active_ids.len() <= target_size {
+            return 0;
+        }
+
+        // 1. Collect all active WeightWrappers from the weight_queue
+        let mut active_wrappers = Vec::with_capacity(self.active_ids.len());
+        let old_queue = std::mem::take(&mut self.weight_queue);
+        for w in old_queue {
+            if self.active_ids.contains(&w.id) {
+                active_wrappers.push(w);
+            }
+        }
+
+        // 2. Sort them by weight ascending (lightest first).
+        // Since WeightWrapper has Ord implemented with reversed cmp, let's sort with actual weight.
+        active_wrappers
+            .sort_unstable_by(|a, b| a.weight.cmp(&b.weight).then_with(|| a.id.cmp(&b.id)));
+
+        if active_wrappers.len() <= target_size {
+            // Restore weight_queue and return
+            self.weight_queue = BinaryHeap::from(active_wrappers);
+            return 0;
+        }
+
+        let (kept, discarded) = active_wrappers.split_at(target_size);
+        let num_discarded = discarded.len();
+
+        // 3. Remove discarded IDs from active_ids and fvs
+        for w in discarded {
+            self.active_ids.remove(&w.id);
+            self.fvs.remove(&w.id);
+        }
+
+        // 4. Filter age_queue in-place
+        self.age_queue.retain(|id| self.active_ids.contains(id));
+
+        // 5. Rebuild weight_queue
+        // Since BinaryHeap is a max-heap but WeightWrapper's Ord is reversed,
+        // we can just construct BinaryHeap from the kept wrappers!
+        self.weight_queue = BinaryHeap::from(kept.to_vec());
+
+        // 6. Rebuild goal_queue
+        let goal_wrappers: Vec<WeightWrapper> = kept
+            .iter()
+            .map(|w| {
+                let goal_weight = if w.distance < 100 {
+                    w.weight.saturating_add(w.distance.saturating_mul(2))
+                } else {
+                    w.weight.saturating_add(1000)
+                };
+                WeightWrapper {
+                    id: w.id,
+                    weight: goal_weight,
+                    distance: w.distance,
+                }
+            })
+            .collect();
+        self.goal_queue = BinaryHeap::from(goal_wrappers);
+
+        // 7. Rebuild ml_queue if ml-guidance is enabled
+        #[cfg(feature = "ml-guidance")]
+        {
+            let old_ml = std::mem::replace(&mut self.ml_queue, BinaryHeap::new());
+            let mut kept_ml = Vec::new();
+            for w in old_ml {
+                if self.active_ids.contains(&w.id) {
+                    kept_ml.push(w);
+                }
+            }
+            self.ml_queue = BinaryHeap::from(kept_ml);
+        }
+
+        num_discarded
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mrs_core::clause::{Clause, ClauseId, ClauseSource};
+    use mrs_core::term_bank::TermBank;
+
+    #[test]
+    fn test_unprocessed_pruning() {
+        let config = Arc::new(SymbolConfig::default());
+        let mut set = UnprocessedSet::new(config);
+        let mut bank = TermBank::new();
+
+        // Let's push 5 clauses with different weights
+        let mut clauses = Vec::new();
+        for i in 0..5 {
+            let legacy = Clause::new(
+                ClauseId(i),
+                vec![],
+                ClauseSource::Input {
+                    name: "test".into(),
+                    role: "axiom".into(),
+                },
+            );
+            let id_clause = bank.clause_from_legacy(&legacy);
+            clauses.push(id_clause);
+        }
+
+        // push clauses with weights:
+        // c0 -> wt 10
+        // c1 -> wt 50
+        // c2 -> wt 5
+        // c3 -> wt 100
+        // c4 -> wt 20
+        set.push(&clauses[0], &bank, 10, None);
+        set.push(&clauses[1], &bank, 50, None);
+        set.push(&clauses[2], &bank, 5, None);
+        set.push(&clauses[3], &bank, 100, None);
+        set.push(&clauses[4], &bank, 20, None);
+
+        assert_eq!(set.active_count(), 5);
+
+        // Pruning to target_size = 3
+        // Sorted weights: c2 (5), c0 (10), c4 (20), c1 (50), c3 (100)
+        // We expect c1 and c3 (heaviest) to be pruned!
+        // So c2, c0, and c4 should be kept.
+        let discarded = set.prune(3);
+        assert_eq!(discarded, 2);
+        assert_eq!(set.active_count(), 3);
+
+        assert!(set.active_ids.contains(&clauses[2].id)); // kept (5)
+        assert!(set.active_ids.contains(&clauses[0].id)); // kept (10)
+        assert!(set.active_ids.contains(&clauses[4].id)); // kept (20)
+
+        assert!(!set.active_ids.contains(&clauses[1].id)); // pruned (50)
+        assert!(!set.active_ids.contains(&clauses[3].id)); // pruned (100)
+
+        // Verify pop_weight retrieves them in order: c2, c0, c4
+        assert_eq!(set.pop_weight(), Some(clauses[2].id));
+        assert_eq!(set.pop_weight(), Some(clauses[0].id));
+        assert_eq!(set.pop_weight(), Some(clauses[4].id));
+        assert_eq!(set.pop_weight(), None);
+    }
 }
