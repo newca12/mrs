@@ -42,6 +42,7 @@
 - **AC Axiom Elimination + Heuristic AC-Unification**: At search startup, `detect_ac_symbols` identifies commutativity (`f(X,Y)=f(Y,X)`) and associativity (`f(f(X,Y),Z)=f(X,f(Y,Z))`) axioms and removes them from the passive set. `unify_ac_id` in `mrs-unify` flattens associative chains and tries both orderings for commutativity before falling back to standard unification.
 
 ### Performance Optimisations
+- **LRS (Limited Resource Strategy)**: every 100 given-clause iterations, the prover estimates the remaining iteration budget from `elapsed/iteration` and prunes the passive queue to that size (min 2000). This prevents memory explosion on hard problems and dramatically reduces teardown latency (previously 300k+ clauses in the passive queue caused 10–15s of cleanup after the time limit).  Set `TRACE_LRS=1` to see per-prune log lines on stderr.
 - **`SmallVec<[TermId; 4]>`** for `TermNode::App` and `IdAtom::Pred`: terms with arity ≤ 4 (>99% of FOL terms) are stored inline, eliminating heap allocation on every term retrieval in the hot inference paths.
 - **`intern_app` accepts `impl Into<SmallVec<[TermId; 4]>>`**: call sites pass `Vec` or `SmallVec` without conversion overhead.
 - Eliminated all redundant `args.clone()` calls in `avatar.rs`, `fvi.rs`, and `literal_selection.rs`.
@@ -57,6 +58,5 @@
 See `docs/AUDIT.md` for the Phase 1 failure census and root-cause analysis.
 See `TODO_CASC.md` for the prover roadmap and `TODO_PROOVER.md` for the verifier roadmap.
 
-The two highest-ROI items remaining:
-1. **LRS (Limited Resource Strategy)**: the passive queue grows to 100k–300k clauses on hard problems; LRS would discard clauses that provably cannot be processed within the time budget, mirroring Vampire's most effective mechanism.
-2. **AC-equivalence matching in `axiom_leaf.rs`**: leaf-node validation in mrs-proover fails on `A & B` / `B & A` rewrites produced by real ATPs, scoring 0 instead of +1 on valid proofs.
+The highest-ROI item remaining:
+1. **AC-equivalence matching in `axiom_leaf.rs`**: leaf-node validation in mrs-proover fails on `A & B` / `B & A` rewrites produced by real ATPs, scoring 0 instead of +1 on valid proofs.

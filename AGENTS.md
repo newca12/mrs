@@ -102,12 +102,15 @@ The `casc` portfolio runs strategies 1–9 (KBO/LPO baseline, ~88% of budget) an
 normal runs; use `MRS_SINGLE_STRATEGY=16` to run it alone for the full budget.
 
 Strategies 10–15 use the `ClauseWeightFn` and `sos_depth` fields of `SearchConfig`:
-- **s10**: SOS (selection + inference level, `sos_depth=100`) + AgeWeight(5) + AllNegative + KBO
-- **s11**: `ConjSymbolBoost` + AgeWeight(5) + AllNegative + KBO
+- **s10**: SOS (selection + inference level, `sos_depth=100`) + AgeWeight(12) + AllNegative + KBO
+- **s11**: `ConjSymbolBoost` + AgeWeight(6) + AllNegative + KBO
 - **s12**: `HornHeuristic` + AgeWeight(5) + AllNegative + KBO (no AVATAR, no weight cap)
 - **s13**: `FunctionWeightPenalty` + SOS + AgeWeight(5) + AllNegative + KBO
 - **s14**: `ConjSymbolBoost` + SmallestFirst + All + KBO (no AVATAR, weight cap 100)
-- **s15**: `SymbolWeight` + AgeWeight(5) + AllNegative + KBO (no AVATAR, no weight cap)
+- **s15**: `SymbolWeight` + AgeWeight(4) + AllNegative + KBO (no AVATAR, no weight cap)
+
+The `AgeWeight(n)` ratio means: every n-th iteration picks by age (FIFO), all others by weight.
+Higher n = more weight-biased; lower n = more age-inclusive (broader exploration).
 
 To add a new schedule: implement a constructor in `strategy::named`, then add its name to `ALL` and the `by_name` match. `default_schedule()` must stay synonymous with `casc` so unflagged CASC runs are unaffected.
 
@@ -151,7 +154,7 @@ The root `Cargo.toml` is both `[workspace]` and `[package]` — valid but unusua
 
 - **Strategy portfolio:** 15 active strategies run **in parallel**, sharing a pool of derived unit equalities. A 16th diagnostic strategy (`MRS_SINGLE_STRATEGY=16`) gets `Duration::ZERO` in normal runs.
 - **Default time budget:** 30 seconds; overridable with `--time <seconds>`.
-- **`max_clauses`:** 50,000 per strategy. Hitting this gives `ResourceOut`, not `Timeout`.
+- **LRS (Limited Resource Strategy):** every 100 given-clause iterations, the prover estimates the remaining iteration budget from `elapsed/iteration` and prunes the passive queue to that size (min 2000). This prevents memory explosion and teardown latency on hard problems.  Set `TRACE_LRS=1` to see per-prune log lines on stderr.
 - **Refutation-based:** conjectures are negated before search. A problem with no `conjecture` role checks satisfiability (outputs `Unsatisfiable`/`Satisfiable`).
 - **TSTP proof output** only on `Refutation`; other statuses produce only the SZS status line.
 

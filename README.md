@@ -86,23 +86,28 @@ The pipeline for each problem:
 
 ### Strategy portfolio
 
-11 strategies run in parallel, each with a fresh search state but sharing a pool of globally discovered unit equalities. Time is distributed from the total budget to bound execution:
+15 active strategies run in parallel, each with a fresh search state but sharing a pool of globally discovered unit equalities. Time is distributed from the total budget to bound execution:
 
-| # | Selection | Literal selection | Ordering | Time share | Notes |
-|---|-----------|-------------------|----------|------------|-------|
-| 1 | AgeWeight(5) | AllNegative | KBO | 14% | balanced exploration |
-| 2 | SmallestFirst | AllNegative | KBO | 10% | no weight limit + no AVATAR (deep chain proofs) |
-| 3 | SmallestFirst | AllNegative | KBO | 10% | pure best-first |
-| 4 | AgeWeight(5) | MaxNegativeOrMaxPositive | KBO | 9% | aggressive selection |
-| 5 | AgeWeight(5) | All | KBO | 9% | unrestricted literal selection |
-| 6 | AgeWeight(5) | All | KBO | 10% | no AVATAR (FNE/definitional CNF proofs) |
-| 7 | AgeWeight(5) | AllNegative | LPO | 14% | LPO balanced exploration |
-| 8 | GoalDirected(10) | AllNegative | LPO | 9% | LPO goal-directed |
-| 9 | SmallestFirst | AllNegative | LPO | 9% | LPO best-first |
-| 10 | SmallestFirst | All | KBO | 4% | max_weight=30 + no AVATAR (FEQ) |
-| 11 | AgeWeight(5) | All | LPO | ~2% | no weight limit + no AVATAR (FEQ) |
+| # | Selection | Weight fn | Literal selection | Ordering | Time share | Notes |
+|---|-----------|-----------|-------------------|----------|------------|-------|
+| 1 | AgeWeight(3) | Standard | AllNegative | KBO | 14% | balanced exploration |
+| 2 | SmallestFirst | Standard | AllNegative | KBO | 10% | no weight limit + no AVATAR (deep chain proofs) |
+| 3 | SmallestFirst | Standard | AllNegative | KBO | 10% | pure best-first |
+| 4 | AgeWeight(8) | Standard | MaxNegativeOrMaxPositive | KBO | 9% | aggressive selection |
+| 5 | AgeWeight(5) | Standard | All | KBO | 9% | unrestricted literal selection |
+| 6 | AgeWeight(10) | Standard | All | KBO | 10% | no AVATAR (FNE/definitional CNF) |
+| 7 | AgeWeight(3) | Standard | AllNegative | LPO | 14% | LPO balanced exploration |
+| 8 | GoalDirected(10) | Standard | AllNegative | LPO | 9% | LPO goal-directed |
+| 9 | SmallestFirst | Standard | AllNegative | LPO | 9% | LPO best-first |
+| 10 | AgeWeight(12) | Standard | AllNegative | KBO | 5% | SOS (sos_depth=100) + KBO |
+| 11 | AgeWeight(6) | ConjSymbolBoost | AllNegative | KBO | 5% | goal-symbol boosted weight |
+| 12 | AgeWeight(5) | HornHeuristic | AllNegative | KBO | 3% | Horn-preferred weight, no AVATAR |
+| 13 | AgeWeight(5) | FunctionWeightPenalty | AllNegative | KBO | 2% | SOS + quadratic depth weight |
+| 14 | SmallestFirst | ConjSymbolBoost | All | KBO | 2% | FEQ: goal-symbol + All selection |
+| 15 | AgeWeight(4) | SymbolWeight | AllNegative | KBO | ~1% | precedence-based symbol weight |
 
 Each strategy runs until its time slice expires or the search space is exhausted.
+LRS (Limited Resource Strategy) periodically prunes the passive queue to stay within the time budget.
 
 ### Workspace layout
 
