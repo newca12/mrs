@@ -116,7 +116,7 @@ impl StrategySchedule {
                 (
                     SearchConfig {
                         time_limit: t1,
-                        selection: SelectionStrategy::AgeWeight(5),
+                        selection: SelectionStrategy::AgeWeight(3),
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::KBO,
                         ..SearchConfig::default()
@@ -155,7 +155,7 @@ impl StrategySchedule {
                 (
                     SearchConfig {
                         time_limit: t4,
-                        selection: SelectionStrategy::AgeWeight(5),
+                        selection: SelectionStrategy::AgeWeight(8),
                         literal_selection: LiteralSelection::MaxNegativeOrMaxPositive,
                         ordering: TermOrdering::KBO,
                         ..SearchConfig::default()
@@ -177,7 +177,7 @@ impl StrategySchedule {
                 (
                     SearchConfig {
                         time_limit: t6,
-                        selection: SelectionStrategy::AgeWeight(5),
+                        selection: SelectionStrategy::AgeWeight(10),
                         literal_selection: LiteralSelection::All,
                         ordering: TermOrdering::KBO,
                         // No weight limit: SYN938+1 has 185 clauses whose proof path
@@ -199,7 +199,7 @@ impl StrategySchedule {
                 (
                     SearchConfig {
                         time_limit: t7,
-                        selection: SelectionStrategy::AgeWeight(5),
+                        selection: SelectionStrategy::AgeWeight(3),
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::LPO,
                         ..SearchConfig::default()
@@ -229,7 +229,7 @@ impl StrategySchedule {
                     t9,
                 ),
                 // ── New heuristic strategies ─────────────────────────────────
-                // s10: SOS-restricted + AgeWeight(5) + AllNegative + KBO
+                // s10: SOS-restricted + AgeWeight(12) + AllNegative + KBO
                 // Set-of-Support: weight picks only return goal-connected clauses
                 // (distance < 100), steering resolution toward the conjecture.
                 // Based on the audit showing E finds proofs with 10-100x fewer
@@ -237,7 +237,7 @@ impl StrategySchedule {
                 (
                     SearchConfig {
                         time_limit: t10,
-                        selection: SelectionStrategy::AgeWeight(5),
+                        selection: SelectionStrategy::AgeWeight(12),
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::KBO,
                         sos_depth: 100,
@@ -245,14 +245,14 @@ impl StrategySchedule {
                     },
                     t10,
                 ),
-                // s11: ConjSymbolBoost + AgeWeight(5) + AllNegative + KBO
+                // s11: ConjSymbolBoost + AgeWeight(6) + AllNegative + KBO
                 // Symbols not appearing in the conjecture closure cost 3x.
                 // Approximates E's 'prefer goal-relevant symbols' weight function,
                 // which is the single most effective heuristic in E's portfolio.
                 (
                     SearchConfig {
                         time_limit: t11,
-                        selection: SelectionStrategy::AgeWeight(5),
+                        selection: SelectionStrategy::AgeWeight(6),
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::KBO,
                         weight_fn: crate::ClauseWeightFn::ConjSymbolBoost,
@@ -314,7 +314,7 @@ impl StrategySchedule {
                     },
                     t14,
                 ),
-                // s15: SymbolWeight + AgeWeight(5) + AllNegative + KBO, no AVATAR
+                // s15: SymbolWeight + AgeWeight(4) + AllNegative + KBO, no AVATAR
                 // Precedence-based cost: rare symbols cost more (higher precedence).
                 // Encourages the prover to prefer clauses with common, low-precedence
                 // symbols — those interact well with demodulation rules already in
@@ -323,7 +323,7 @@ impl StrategySchedule {
                 (
                     SearchConfig {
                         time_limit: t15,
-                        selection: SelectionStrategy::AgeWeight(5),
+                        selection: SelectionStrategy::AgeWeight(4),
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::KBO,
                         weight_fn: crate::ClauseWeightFn::SymbolWeight,
