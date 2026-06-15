@@ -716,6 +716,13 @@ pub fn run_schedule(
                             SearchResult::Refutation(id, tstp)
                         }
                         SearchResult::Saturated if sc.max_term_weight.is_some() => SearchResult::GaveUp,
+                        // SOS is refutationally incomplete: a strategy with sos_depth set
+                        // cannot distinguish "no proof exists" from "proof exists but is
+                        // unreachable under SOS restrictions".  Saturation from an
+                        // SOS-restricted strategy must therefore be GaveUp, not Saturated.
+                        // Without this, the stop flag fires and the entire portfolio is
+                        // killed, producing a false CounterSatisfiable on Theorem problems.
+                        SearchResult::Saturated if sc.sos_depth < u32::MAX => SearchResult::GaveUp,
                         other => other,
                     };
 

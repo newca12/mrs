@@ -682,36 +682,25 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             }
         }
 
-        // Unary inferences.
-        //
-        // Factoring is a simplification rule that shortens clauses regardless
-        // of their SOS membership; it is always applied unconditionally.
-        //
-        // Equality resolution and equality factoring are unary inferences that
-        // are also structurally simplifying, but under a strict SOS restriction
-        // we apply them only to goal-connected clauses to keep the passive set
-        // focused.  If SOS is disabled (sos_depth == u32::MAX), all three are
-        // applied to every given clause.
+        // Unary inferences: Factoring, Equality Resolution, and Equality Factoring
+        // are crucial simplification rules. They are always applied unconditionally,
+        // even under SOS, to preserve the refutational completeness of the calculus.
         new_clauses.extend(factoring::factor_id(
             &given,
             &mut state.term_bank,
             &mut state.id_gen,
         ));
-
-        if config.sos_depth == u32::MAX || given.distance < config.sos_depth {
-            // Equality resolution and factoring
-            new_clauses.extend(equality::equality_resolve_id(
-                &given,
-                &mut state.term_bank,
-                &mut state.id_gen,
-            ));
-            new_clauses.extend(equality::equality_factor_id(
-                &given,
-                &mut state.term_bank,
-                &ordering,
-                &mut state.id_gen,
-            ));
-        }
+        new_clauses.extend(equality::equality_resolve_id(
+            &given,
+            &mut state.term_bank,
+            &mut state.id_gen,
+        ));
+        new_clauses.extend(equality::equality_factor_id(
+            &given,
+            &mut state.term_bank,
+            &ordering,
+            &mut state.id_gen,
+        ));
 
         // Backward subsumption: remove processed clauses subsumed by the given
         let mut to_remove_from_processed = Vec::new();
@@ -1160,6 +1149,15 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
 
         iteration += 1;
         state.stats.iterations += 1;
+    }
+
+    // If LRS discarded any clauses, the passive queue may be empty because
+    // LRS pruned proof-relevant clauses — not because no proof exists.
+    // An empty queue after LRS activity is NOT a genuine saturation;
+    // return GaveUp (incomplete) to prevent the portfolio stop-flag from
+    // firing and producing a false CounterSatisfiable verdict.
+    if state.stats.lrs_discarded > 0 {
+        return SearchResult::GaveUp;
     }
 
     // If the literal selection is incomplete, return GaveUp rather than Saturated.
