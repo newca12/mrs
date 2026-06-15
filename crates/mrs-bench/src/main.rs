@@ -69,6 +69,10 @@ struct Row {
     system: String,
     szs_status: String,
     wall_time_s: f64,
+    /// Reference answer from answers.tsv ("Theorem", "Unsatisfiable", …) or empty.
+    expected: String,
+    /// Verdict compared against the reference: "ok", "ko", or "unknown".
+    verdict: String,
     /// Raw "% SZS detail ..." key=value string from stderr; empty for non-mrs systems.
     failure_detail: String,
 }
@@ -107,8 +111,11 @@ fn load_csv(path: &PathBuf) -> Result<Vec<Row>, String> {
     let col_system = col("system")?;
     let col_szs = col("szs_status")?;
     let col_time = col("wall_time_s")?;
+    // Optional columns: present when casc.sh has access to answers.tsv.
+    let col_expected = headers.iter().position(|h| *h == "expected");
+    let col_verdict = headers.iter().position(|h| *h == "verdict");
     // Optional column: present in newer runs (casc.sh with failure census support).
-    let col_detail = headers.iter().position(|h| h == "failure_detail");
+    let col_detail = headers.iter().position(|h| *h == "failure_detail");
 
     let mut rows = Vec::new();
     for (line_no, line) in lines.enumerate() {
@@ -132,6 +139,8 @@ fn load_csv(path: &PathBuf) -> Result<Vec<Row>, String> {
             system: get(col_system),
             szs_status: get(col_szs),
             wall_time_s,
+            expected: col_expected.map(get).unwrap_or_default(),
+            verdict: col_verdict.map(get).unwrap_or_default(),
             failure_detail: col_detail.map(get).unwrap_or_default(),
         });
     }
@@ -767,6 +776,36 @@ fn main() {
                 "  {:<6}  {:<30}  {sys}={szs}  ({note})  \u{26a0} UNSOUND",
                 div.to_uppercase(),
                 prob
+            );
+        }
+    }
+
+    // ---- Reference violations -----------------------------------------------
+    // A "ko" verdict means the system's SZS status contradicts the known
+    // reference answer from answers.tsv (e.g. CounterSatisfiable when the
+    // expected answer is Theorem).  This is a SOUNDNESS error.  It requires
+    // no second system to detect — the expected column alone is sufficient.
+    //
+    // This is intentionally separate from "DISAGREEMENTS" (which requires at
+    // least two systems) so that single-system runs are still audited.
+    let reference_violations: Vec<&Row> = rows.iter().filter(|r| r.verdict == "ko").collect();
+
+    println!();
+    if reference_violations.is_empty() {
+        println!("REFERENCE VIOLATIONS \u{2014} none detected.");
+    } else {
+        println!(
+            "REFERENCE VIOLATIONS \u{2014} {} SOUNDNESS ERROR(S) vs reference answers:",
+            reference_violations.len()
+        );
+        for r in &reference_violations {
+            println!(
+                "  {:<6}  {:<30}  {}={} but expected {}  \u{26a0} UNSOUND",
+                r.division.to_uppercase(),
+                r.problem,
+                r.system,
+                r.szs_status,
+                r.expected,
             );
         }
     }
