@@ -682,36 +682,25 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             }
         }
 
-        // Unary inferences.
-        //
-        // Factoring is a simplification rule that shortens clauses regardless
-        // of their SOS membership; it is always applied unconditionally.
-        //
-        // Equality resolution and equality factoring are unary inferences that
-        // are also structurally simplifying, but under a strict SOS restriction
-        // we apply them only to goal-connected clauses to keep the passive set
-        // focused.  If SOS is disabled (sos_depth == u32::MAX), all three are
-        // applied to every given clause.
+        // Unary inferences: Factoring, Equality Resolution, and Equality Factoring
+        // are crucial simplification rules. They are always applied unconditionally,
+        // even under SOS, to preserve the refutational completeness of the calculus.
         new_clauses.extend(factoring::factor_id(
             &given,
             &mut state.term_bank,
             &mut state.id_gen,
         ));
-
-        if config.sos_depth == u32::MAX || given.distance < config.sos_depth {
-            // Equality resolution and factoring
-            new_clauses.extend(equality::equality_resolve_id(
-                &given,
-                &mut state.term_bank,
-                &mut state.id_gen,
-            ));
-            new_clauses.extend(equality::equality_factor_id(
-                &given,
-                &mut state.term_bank,
-                &ordering,
-                &mut state.id_gen,
-            ));
-        }
+        new_clauses.extend(equality::equality_resolve_id(
+            &given,
+            &mut state.term_bank,
+            &mut state.id_gen,
+        ));
+        new_clauses.extend(equality::equality_factor_id(
+            &given,
+            &mut state.term_bank,
+            &ordering,
+            &mut state.id_gen,
+        ));
 
         // Backward subsumption: remove processed clauses subsumed by the given
         let mut to_remove_from_processed = Vec::new();
