@@ -723,6 +723,23 @@ pub fn run_schedule(
                         // Without this, the stop flag fires and the entire portfolio is
                         // killed, producing a false CounterSatisfiable on Theorem problems.
                         SearchResult::Saturated if sc.sos_depth < u32::MAX => SearchResult::GaveUp,
+                        // Unit-only resolution is incomplete: a clause set may be
+                        // unsatisfiable yet require non-unit resolvents to find the proof.
+                        SearchResult::Saturated if sc.unit_only_resolution => SearchResult::GaveUp,
+                        // Non-Standard weight functions affect the ORDER in which clauses
+                        // are selected, which in turn changes which clauses are generated
+                        // and which are simplified away.  This interaction between
+                        // ordering and simplification (forward subsumption, condensation)
+                        // can make saturation incomplete even when passive=0: a proof-
+                        // relevant clause may have been forward-subsumed earlier than it
+                        // would have been with Standard ordering.  Treat saturation from
+                        // any non-Standard weight strategy as GaveUp to avoid false
+                        // Satisfiable/CounterSatisfiable verdicts.
+                        SearchResult::Saturated
+                            if sc.weight_fn != crate::ClauseWeightFn::Standard =>
+                        {
+                            SearchResult::GaveUp
+                        }
                         other => other,
                     };
 

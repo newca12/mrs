@@ -566,9 +566,17 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     &state.term_bank,
                 );
                 for partner in partners {
+                    // SOS restriction: skip if both parents are outside the support set.
                     if config.sos_depth < u32::MAX
                         && given.distance >= config.sos_depth
                         && partner.distance >= config.sos_depth
+                    {
+                        continue;
+                    }
+                    // Unit-only restriction: at least one parent must be a unit clause.
+                    if config.unit_only_resolution
+                        && given.literals.len() > 1
+                        && partner.literals.len() > 1
                     {
                         continue;
                     }

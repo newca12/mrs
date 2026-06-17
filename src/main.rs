@@ -15,7 +15,7 @@ use std::time::Instant;
 use std::time::Duration;
 
 use mrs_core::Formula;
-use mrs_core::clause::Clause;
+use mrs_core::clause::{Clause, ClauseSource};
 use mrs_search::strategy::{StrategySchedule, run_schedule};
 use mrs_search::{ScheduleReport, SearchResult};
 use mrs_szs::{SzsStatus, szs_output_end, szs_output_start, szs_status_line};
@@ -293,7 +293,16 @@ fn main() {
             .cnf_clauses
             .clone()
             .into_iter()
-            .map(|c| c.with_distance(100))
+            .map(|c| {
+                // CNF clauses with negated_conjecture role are already the
+                // negated goal: give them distance=0 so SOS/GoalDirected
+                // heuristics treat them as goal-connected.
+                let is_nc = matches!(
+                    &c.source,
+                    ClauseSource::Input { role, .. } if role == "negated_conjecture"
+                );
+                c.with_distance(if is_nc { 0 } else { 100 })
+            })
             .collect();
 
         // Clausify axioms directly
