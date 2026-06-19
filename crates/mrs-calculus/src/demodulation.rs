@@ -387,8 +387,17 @@ pub fn demodulate_id(
     let mut current_lits = clause.literals.clone();
     let mut changed = false;
     let mut used_unit_ids = Vec::new();
+    let mut passes = 0usize;
 
     loop {
+        // Equational problems can generate cyclic rewrite rules (a→b and b→a).
+        // Without a pass limit the rewriter loops indefinitely.  100 passes is
+        // a safe upper bound for any real proof step; exceeding it indicates a
+        // rewrite cycle and we bail out with whatever simplification we have.
+        if passes >= 100 {
+            break;
+        }
+        passes += 1;
         let mut changed_this_pass = false;
         for lit in &mut current_lits {
             if rewrite_literal_id(

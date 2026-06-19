@@ -28,8 +28,25 @@ pub fn subsumes_id(c1: &IdClause, c2: &IdClause, bank: &mut TermBank) -> bool {
     let c1_renamed = rename_clause_id(c1, offset, bank);
 
     let subst = IdSubstitution::new();
-    match_literals_id(&c1_renamed.literals, &c2.literals, &subst, offset, bank)
+    let mut steps = 0usize;
+    match_literals_id(
+        &c1_renamed.literals,
+        &c2.literals,
+        &subst,
+        offset,
+        bank,
+        &mut steps,
+    )
 }
+
+/// Backtracking step limit for subsumption matching.
+///
+/// Subsumption checking is NP-complete in clause width.  For large clauses
+/// (e.g. the 200-literal `HWV`-domain problems), naive backtracking can run
+/// for billions of iterations on a single call, bypassing the wall-clock
+/// time-limit check.  Capping at 5 000 steps makes the check fail-fast
+/// instead, allowing the given-clause loop to continue and respect the limit.
+const SUBSUMPTION_STEP_LIMIT: usize = 5_000;
 
 fn match_literals_id(
     remaining: &[IdLiteral],
@@ -37,9 +54,14 @@ fn match_literals_id(
     current_subst: &IdSubstitution,
     min_bindable: u32,
     bank: &mut TermBank,
+    steps: &mut usize,
 ) -> bool {
     if remaining.is_empty() {
         return true;
+    }
+    *steps += 1;
+    if *steps > SUBSUMPTION_STEP_LIMIT {
+        return false;
     }
 
     let lit = &remaining[0];
@@ -56,7 +78,7 @@ fn match_literals_id(
             current_subst,
             min_bindable,
             bank,
-        ) && match_literals_id(rest, targets, &extended, min_bindable, bank)
+        ) && match_literals_id(rest, targets, &extended, min_bindable, bank, steps)
         {
             return true;
         }
@@ -556,6 +578,11 @@ pub fn condense_id(
     bank: &mut TermBank,
     id_gen: &mut ClauseIdGen,
 ) -> Option<IdClause> {
+    // Condensation is O(N³) in clause width (N² literal pairs × matching cost).
+    // For clauses wider than 50 literals the cost exceeds any benefit; skip it.
+    if clause.literals.len() > 50 {
+        return None;
+    }
     for i in 0..clause.literals.len() {
         for j in 0..clause.literals.len() {
             if i == j {
@@ -627,12 +654,14 @@ pub fn subsumption_resolution_id(
         }
 
         let subst = IdSubstitution::new();
+        let mut steps = 0usize;
         if match_literals_id(
             &active_renamed.literals,
             &modified_target,
             &subst,
             offset,
             bank,
+            &mut steps,
         ) {
             return Some(i);
         }
