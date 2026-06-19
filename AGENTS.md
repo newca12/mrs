@@ -93,7 +93,7 @@ Named schedules live in `mrs_search::strategy::named` (`crates/mrs-search/src/st
 | Name | Strategies | Use case |
 |------|------------|----------|
 | `casc` (aliases `default`, `casc_feq`) | 16-strategy portfolio (15 active + 1 diagnostic) | CASC competition; default behavior |
-| `casc_fne` / `casc_ueq` / `casc_epr` | one strategy per worker (scales with `--workers`); **not yet data-driven** | division-tuned portfolios; see §"CASC Hardware & --casc Decision Rule" for how to optimise |
+| `casc_fne` / `casc_feq` / `casc_ueq` / `casc_epr` / `casc_eps` / `casc_epu` / `casc_icu` | one strategy per worker (scales with `--workers`); data-driven from CASC-30 greedy set-cover | division-tuned portfolios; see §"CASC Hardware & --casc Decision Rule" for how to optimise |
 | `fast` | 1 KBO `AgeWeight(5)+AllNegative` | Sub-second ATP queries (e.g. `mrs-proover` backend) |
 | `mini` | 3-strategy compact portfolio | 1–5 s budgets |
 | `ml` (alias `ml_feq`), `ml_fne`, `ml_ueq`, `ml_epr` | ML-guided variants | require `ml-guidance` build + `--ml-weights`; degrade to weight-based selection otherwise |
@@ -228,9 +228,12 @@ This produces `run.csv` where each `system` column is `mrs-s01..mrs-s15`.
 
 ### Current status
 
-The `casc_fne`, `casc_ueq`, and `casc_epr` schedules currently generate strategies
-via modular arithmetic (loop over worker index).  They are **not data-driven**.
-Run the workflow above to get data-driven portfolios before the next CASC entry.
+The `casc_feq`, `casc_fne`, `casc_ueq`, `casc_epr`, `casc_eps`, `casc_epu`, and
+`casc_icu` schedules are **data-driven** — priority orders were derived from a
+greedy set-cover analysis over CASC-30 benchmark results (30 s per-strategy sweep).
+See `docs/DIVISIONS.md` for the full coverage numbers and `greedy_all.res` for
+the raw output.  Re-run the workflow above after each new TPTP release or
+major portfolio change.
 
 
 ## Testing

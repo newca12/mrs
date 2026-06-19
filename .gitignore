@@ -46,3 +46,4 @@ casc_problem_lists/
 # Stray TPTP problems / archives at repo root
 /*.p
 /*.zip
+greedy_all.res

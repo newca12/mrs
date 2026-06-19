@@ -70,7 +70,7 @@ impl StrategySchedule {
         Self::_all_strategies(total_time, workers)
     }
 
-    fn _all_strategies(total_time: Duration, _workers: usize) -> Self {
+    pub(crate) fn _all_strategies(total_time: Duration, _workers: usize) -> Self {
         let ms = total_time.as_millis() as u64;
         // s1–s9: restored close to original proportions (92% combined for a 30 s budget)
         // s10–s11: small FEQ-targeted bonus budgets (8% combined)

@@ -1,0 +1,123 @@
+# MRS CASC Divisions: Schedules and Structural Mapping
+
+This document describes how the MRS theorem prover maps CASC competition
+divisions to named strategy schedules, and how per-division portfolios are
+selected and tuned.
+
+---
+
+## 1. Division → Schedule Mapping
+
+The benchmark harness (`crates/mrs-bench/systems/mrs/invoke.sh`) detects the
+CASC division from the problem file path and selects the matching schedule:
+
+| CASC Division | Named Schedule | Notes |
+|:---|:---|:---|
+| **FEQ** (FOF with Equality) | `casc_feq` | Full superposition + demodulation |
+| **FNE** (FOF No Equality) | `casc_fne` | Pure resolution/factoring; no paramodulation |
+| **UEQ** (Unit Equality) | `casc_ueq` | Unit clauses only; no AVATAR |
+| **EPU** (EPR Unsatisfiable) | `casc_epu` | s6-first (greedy optimal: s6→s2) |
+| **EPS** (EPR Satisfiable) | `casc_eps` | s2-first (greedy optimal: s2→s6) |
+| **ICU** (Intensional Unit Equality) | `casc_icu` | s12-first |
+| other / fallback | `casc` | Generic 15-strategy CASC portfolio |
+
+---
+
+## 2. Data-Driven Portfolio Construction
+
+Each division schedule is constructed by `build_casc_schedule` in
+`crates/mrs-search/src/strategy/named.rs`.  The function takes:
+- The total time budget and number of workers
+- A **priority order array** listing strategy indices (1-indexed, 1–15) in
+  the order they should be allocated to parallel worker slots
+
+This replaces the previous loop-generated schedules (which varied parameters
+via modular arithmetic) with **data-driven portfolios** derived from greedy
+set-cover analysis over CASC-30 benchmark results.
+
+### How to regenerate (after a new TPTP release or benchmark run):
+
+```bash
+# Step 1: run all 15 strategies solo across all divisions
+export TPTP=/path/to/TPTP-v9.x.x
+./crates/mrs-bench/run_strategy_sweep.sh \
+    --divisions fne,feq,ueq,eps,epu,icu --time 30 --jobs 4 \
+    --output results/sweep-$(date +%Y%m%d)
+
+# Step 2: run the sweep optimizer
+./crates/mrs-bench/run_all_greedy_sweeps.sh results/sweep-*/run.csv \
+    > greedy_all.res
+
+# Step 3: read the 8-core portfolios per division and update named.rs
+```
+
+---
+
+## 3. Current Data-Driven Priority Orders (CASC-30)
+
+Based on a 30 s per-strategy sweep over the CASC-30 problem set:
+
+| Division | 8-core priority order | Unique coverage at 8 cores |
+|:---------|:----------------------|:---------------------------|
+| **FNE** | s11, s12, s8, s4, s10, s2, … | 43/43 (100%) at 6 cores |
+| **FEQ** | s8, s12, s1, s11, s10, s4, s14, s6 | 86/88 (97.7%) at 8 cores |
+| **UEQ** | s11, s4, s2, s14, s8, s6, … | 62/62 (100%) at 6 cores |
+| **EPU** | s6, s2, … | 10/10 (100%) at 2 cores |
+| **EPS** | s2, s6, … | 24/24 (100%) at 2 cores |
+| **ICU** | s12, … | 2/2 (100%) at 1 core |
+
+Beyond the minimum coverage point, extra slots cycle through remaining
+strategies so no core is idle.
+
+---
+
+## 4. The `categorize_tptp` Utility
+
+For custom problem sets, the `categorize_tptp` binary (in `mrs-bench`) splits a
+TPTP installation into per-division problem lists:
+
+```bash
+cargo run --release -p mrs-bench --bin categorize_tptp <TPTP_DIR> ./casc_problem_lists
+```
+
+**Categorization rules** (from `crates/mrs-bench/src/bin/categorize_tptp.rs`):
+
+| Category | Rule |
+|:---------|:-----|
+| EPR | No function symbols of arity ≥ 1 (only constants and variables) |
+| UEQ | Strictly CNF; every clause is a unit equality/inequality literal |
+| FNE | FOF/CNF with no equality literals (and has functions of arity ≥ 1) |
+| FEQ | FOF/CNF with at least one equality literal (and has functions) |
+| Other | TFF, THF, or other typed/higher-order; ignored |
+
+---
+
+## 5. Performance Safety Guards
+
+Three hard limits protect against algorithmic blowups on large-clause problems
+(e.g., the `HWV` Software Verification domain with 200+ literal clauses):
+
+### Subsumption step limit (5 000 steps)
+
+**Location:** `crates/mrs-calculus/src/subsumption.rs` — `subsumes_id`  
+**Problem:** Subsumption checking is NP-complete in clause width.  On 200-literal
+clauses naive backtracking can execute billions of operations on a single call,
+bypassing the wall-clock time limit.  
+**Fix:** The backtracking counter is incremented once per recursive call.  Once
+it exceeds 5 000 the check immediately returns `false` (not subsumed).
+
+### Condensation clause-width guard (> 50 literals → skip)
+
+**Location:** `crates/mrs-calculus/src/subsumption.rs` — `condense_id`  
+**Problem:** Condensation is O(N³) in clause width.  For a 200-literal clause
+this requires ~40 000 expensive unification checks.  
+**Fix:** Condensation is skipped entirely for clauses with more than 50 literals.
+Wide clauses are extremely unlikely to be condensable in practice.
+
+### Demodulation pass limit (100 passes)
+
+**Location:** `crates/mrs-calculus/src/demodulation.rs` — `demodulate_id`  
+**Problem:** Equational problems can generate cyclic rewrite rules (a→b and b→a),
+causing the rewriter to loop indefinitely.  
+**Fix:** Each call to `demodulate_id` is capped at 100 rewriting passes.  If the
+limit is reached, the partially rewritten clause is returned as-is.

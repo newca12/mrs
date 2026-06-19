@@ -31,13 +31,15 @@ DIV_LOWER="${DIVISION,,}"
 # Select the appropriate static schedule
 SCHEDULE="casc_${DIV_LOWER}"
 
-# Map CASC division names to available schedules; EPR-family divisions
-# (EPS = EPR Satisfiable, EPU = EPR Unsatisfiable) both use casc_epr.
+# Map CASC division names to available named schedules.
+# EPS (satisfiable) and EPU (unsatisfiable) now have dedicated data-driven
+# schedules; casc_epr is kept as a generic fallback.
 case "${SCHEDULE}" in
-    casc_feq|casc_fne|casc_ueq) ;;   # already have dedicated schedules
-    casc_epr|casc_eps|casc_epu)       # EPR family → use casc_epr
-        SCHEDULE="casc_epr" ;;
-    *) SCHEDULE="casc" ;;             # fallback for ICU, SLH, etc.
+    casc_feq|casc_fne|casc_ueq|casc_icu) ;;   # already have dedicated schedules
+    casc_eps) ;;                               # EPS: s2-first (greedy optimal)
+    casc_epu) ;;                               # EPU: s6-first (greedy optimal)
+    casc_epr) ;;                               # generic EPR fallback
+    *) SCHEDULE="casc" ;;                      # fallback for other divisions
 esac
 
 exec "${BINARY}" --time "${TIME_LIMIT}" --workers "${MRS_WORKERS:-8}" --schedule "${SCHEDULE}" "${PROBLEM}"
