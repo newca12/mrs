@@ -34,10 +34,10 @@ SCHEDULE="casc_${DIV_LOWER}"
 # Map CASC division names to available schedules; EPR-family divisions
 # (EPS = EPR Satisfiable, EPU = EPR Unsatisfiable) both use casc_epr.
 case "${SCHEDULE}" in
-    casc_feq|casc_fne|casc_ueq) ;;   # already have dedicated schedules
-    casc_epr|casc_eps|casc_epu)       # EPR family → use casc_epr
+    casc_feq|casc_fne|casc_ueq|casc_icu) ;;   # already have dedicated schedules
+    casc_epr|casc_eps|casc_epu)                # EPR family → use casc_epr
         SCHEDULE="casc_epr" ;;
-    *) SCHEDULE="casc" ;;             # fallback for ICU, SLH, etc.
+    *) SCHEDULE="casc" ;;                      # fallback for other divisions
 esac
 
 exec "${BINARY}" --time "${TIME_LIMIT}" --workers "${MRS_WORKERS:-8}" --schedule "${SCHEDULE}" "${PROBLEM}"

@@ -37,19 +37,21 @@ use super::StrategySchedule;
 /// All built-in schedule names, in the order they should be listed in
 /// `--help` output.
 pub const ALL: &[&str] = &[
-    "casc", "casc_feq", "casc_fne", "casc_ueq", "casc_epr", "fast", "mini", "ml", "ml_feq",
+    "casc", "casc_feq", "casc_fne", "casc_ueq", "casc_epr", "casc_icu", "fast", "mini", "ml", "ml_feq",
     "ml_fne", "ml_ueq", "ml_epr",
 ];
 
 /// Look up a schedule by name. Returns `None` if the name is unknown.
 pub fn by_name(name: &str, total_time: Duration, workers: usize) -> Option<StrategySchedule> {
     match name {
-        "casc" | "default" | "casc_feq" => {
+        "casc" | "default" => {
             Some(StrategySchedule::default_schedule(total_time, workers))
         }
+        "casc_feq" => Some(casc_feq(total_time, workers)),
         "casc_fne" => Some(casc_fne(total_time, workers)),
         "casc_ueq" => Some(casc_ueq(total_time, workers)),
         "casc_epr" => Some(casc_epr(total_time, workers)),
+        "casc_icu" => Some(casc_icu(total_time, workers)),
         "fast" => Some(fast(total_time, workers)),
         "mini" => Some(mini(total_time, workers)),
         "ml" | "ml_feq" => Some(ml_feq(total_time, workers)),
@@ -389,108 +391,77 @@ pub fn ml_epr(total_time: Duration, workers: usize) -> StrategySchedule {
     StrategySchedule { strategies }
 }
 
-/// A purely static schedule optimized for FNE (First-Order No Equality).
-/// Drops paramodulation-heavy strategies and weight limits for deep chaining.
-pub fn casc_fne(total_time: Duration, workers: usize) -> StrategySchedule {
+/// A helper function to build a CASC strategy schedule using a mathematically optimized priority sequence.
+fn build_casc_schedule(total_time: Duration, workers: usize, order: &[usize; 15]) -> StrategySchedule {
     let workers = workers.max(1);
     let t_part = Duration::from_millis((total_time.as_millis() / workers as u128) as u64);
     let t_last = total_time.saturating_sub(t_part * (workers as u32 - 1));
 
+    let base_configs: Vec<SearchConfig> = super::StrategySchedule::_all_strategies(Duration::ZERO, 0)
+        .strategies
+        .into_iter()
+        .map(|(c, _)| c)
+        .collect();
+
     let mut strategies = Vec::new();
     for i in 0..workers {
         let t = if i == workers - 1 { t_last } else { t_part };
-        let ratio = 3 + (i % 5) as u32;
-        strategies.push((
-            SearchConfig {
-                time_limit: t,
-                selection: if i % 3 == 0 {
-                    SelectionStrategy::SmallestFirst
-                } else {
-                    SelectionStrategy::AgeWeight(ratio)
-                },
-                literal_selection: if i % 2 == 0 {
-                    LiteralSelection::AllNegative
-                } else {
-                    LiteralSelection::MaxNegativeOrMaxPositive
-                },
-                ordering: if i % 4 < 2 {
-                    TermOrdering::KBO
-                } else {
-                    TermOrdering::LPO
-                },
-                max_term_weight: None,
-                ..SearchConfig::default()
-            },
-            t,
-        ));
+        let idx = order[i % 15] - 1;
+        let mut cfg = base_configs[idx].clone();
+        cfg.time_limit = t;
+        strategies.push((cfg, t));
     }
     StrategySchedule { strategies }
+}
+
+/// A purely static schedule optimized for FNE (First-Order No Equality).
+/// Tunes the portfolio according to CASC-30 priority sweeps.
+pub fn casc_fne(total_time: Duration, workers: usize) -> StrategySchedule {
+    build_casc_schedule(
+        total_time,
+        workers,
+        &[11, 12, 8, 4, 10, 2, 1, 3, 5, 6, 7, 9, 13, 14, 15],
+    )
+}
+
+/// A purely static schedule optimized for FEQ (First-Order with Equality).
+/// Tunes the portfolio according to CASC-30 priority sweeps.
+pub fn casc_feq(total_time: Duration, workers: usize) -> StrategySchedule {
+    build_casc_schedule(
+        total_time,
+        workers,
+        &[8, 12, 1, 11, 10, 4, 14, 6, 13, 15, 2, 3, 5, 7, 9],
+    )
 }
 
 /// A purely static schedule optimized for UEQ (Unit Equality).
-/// Disables AVATAR and forces unit_only_resolution.
+/// Tunes the portfolio according to CASC-30 priority sweeps.
 pub fn casc_ueq(total_time: Duration, workers: usize) -> StrategySchedule {
-    let workers = workers.max(1);
-    let t_part = Duration::from_millis((total_time.as_millis() / workers as u128) as u64);
-    let t_last = total_time.saturating_sub(t_part * (workers as u32 - 1));
-
-    let mut strategies = Vec::new();
-    for i in 0..workers {
-        let t = if i == workers - 1 { t_last } else { t_part };
-        let ratio = 3 + (i % 5) as u32;
-        strategies.push((
-            SearchConfig {
-                time_limit: t,
-                selection: if i % 2 == 0 {
-                    SelectionStrategy::SmallestFirst
-                } else {
-                    SelectionStrategy::AgeWeight(ratio)
-                },
-                literal_selection: LiteralSelection::MaxNegativeOrMaxPositive,
-                ordering: if i % 4 < 2 {
-                    TermOrdering::KBO
-                } else {
-                    TermOrdering::LPO
-                },
-                use_avatar: false,
-                unit_only_resolution: true,
-                ..SearchConfig::default()
-            },
-            t,
-        ));
-    }
-    StrategySchedule { strategies }
+    build_casc_schedule(
+        total_time,
+        workers,
+        &[11, 4, 2, 14, 8, 6, 1, 3, 5, 7, 9, 10, 12, 13, 15],
+    )
 }
 
 /// A purely static schedule optimized for EPR (Effectively Propositional).
-/// Extreme AVATAR SAT-splitting.
+/// Tunes the portfolio according to CASC-30 priority sweeps.
 pub fn casc_epr(total_time: Duration, workers: usize) -> StrategySchedule {
-    let workers = workers.max(1);
-    let t_part = Duration::from_millis((total_time.as_millis() / workers as u128) as u64);
-    let t_last = total_time.saturating_sub(t_part * (workers as u32 - 1));
+    build_casc_schedule(
+        total_time,
+        workers,
+        &[6, 2, 1, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    )
+}
 
-    let mut strategies = Vec::new();
-    for i in 0..workers {
-        let t = if i == workers - 1 { t_last } else { t_part };
-        let ratio = 5 + (i % 5) as u32;
-        strategies.push((
-            SearchConfig {
-                time_limit: t,
-                selection: if i % 3 == 0 {
-                    SelectionStrategy::SmallestFirst
-                } else {
-                    SelectionStrategy::AgeWeight(ratio)
-                },
-                literal_selection: LiteralSelection::AllNegative,
-                ordering: TermOrdering::KBO,
-                use_avatar: true,
-                max_term_weight: None,
-                ..SearchConfig::default()
-            },
-            t,
-        ));
-    }
-    StrategySchedule { strategies }
+/// A purely static schedule optimized for ICU (Intensional Unit Equality).
+/// Tunes the portfolio according to CASC-30 priority sweeps.
+pub fn casc_icu(total_time: Duration, workers: usize) -> StrategySchedule {
+    build_casc_schedule(
+        total_time,
+        workers,
+        &[12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15],
+    )
 }
 
 #[cfg(test)]
@@ -531,21 +502,13 @@ mod tests {
     fn division_schedules_scale_with_workers() {
         let t = Duration::from_secs(8);
         for name in [
-            "casc_fne", "casc_ueq", "casc_epr", "ml_fne", "ml_ueq", "ml_epr",
+            "casc_fne", "casc_feq", "casc_ueq", "casc_epr", "casc_icu", "ml_fne", "ml_ueq", "ml_epr",
         ] {
             let s = by_name(name, t, 8).unwrap();
             assert_eq!(s.strategies.len(), 8, "{name} should have 8 strategies");
             let total: Duration = s.strategies.iter().map(|(_, t)| *t).sum();
             assert_eq!(total, t, "{name} slices must sum to the budget");
         }
-    }
-
-    #[test]
-    fn casc_feq_aliases_default() {
-        let t = Duration::from_secs(30);
-        let s = by_name("casc_feq", t, 1).unwrap();
-        let d = StrategySchedule::default_schedule(t, 1);
-        assert_eq!(s.strategies.len(), d.strategies.len());
     }
 
     #[test]
