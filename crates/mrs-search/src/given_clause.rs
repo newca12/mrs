@@ -464,7 +464,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         new_lits,
                         ClauseSource::Inference {
                             rule: "subsumption_resolution".into(),
-                            parents: vec![p.id, given.id],
+                            parents: vec![given.id, p.id],
                         },
                         given.avatar.clone(),
                     );

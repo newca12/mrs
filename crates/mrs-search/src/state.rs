@@ -316,8 +316,17 @@ impl SearchState {
     /// Registers a new clause in the store and tracks its dependencies.
     pub fn register_clause(&mut self, clause: &IdClause) {
         self.clause_store.insert(clause.id, clause.clone());
-        if let mrs_core::clause::ClauseSource::Inference { parents, .. } = &clause.source {
-            for &parent in parents {
+        if let mrs_core::clause::ClauseSource::Inference { rule, parents } = &clause.source {
+            let is_destructive = rule == "demodulation" || rule == "subsumption_resolution";
+            for (i, &parent) in parents.iter().enumerate() {
+                // For destructive inference rules, the primary target clause is always
+                // at index 0. Subsequent parents are auxiliary rewrites or subsuming clauses.
+                // We only track the primary target for orphan elimination. If an auxiliary
+                // parent is backward-subsumed, we should NOT delete the derived clause,
+                // otherwise we lose completeness.
+                if is_destructive && i > 0 {
+                    continue;
+                }
                 self.children.entry(parent).or_default().push(clause.id);
             }
         }
