@@ -58,5 +58,7 @@
 See `docs/AUDIT.md` for the Phase 1 failure census and root-cause analysis.
 See `TODO_CASC.md` for the prover roadmap and `TODO_PROOVER.md` for the verifier roadmap.
 
-The highest-ROI item remaining:
-1. **AC-equivalence matching in `axiom_leaf.rs`**: leaf-node validation in mrs-proover fails on `A & B` / `B & A` rewrites produced by real ATPs, scoring 0 instead of +1 on valid proofs.
+The highest-ROI items remaining:
+1. **Machine-Learning Guided Clause Selection (CASC)**: Train and integrate a model using `mrs-train` to guide clause selection on FNE/FEQ.
+2. **SIMD-Optimized Feature Vector Index (CASC)**: Vectorize `can_subsume` check for performance.
+3. **Multi-Step Recursive Definition Detection (ProoVer)**: Catch recursive unfolding across the proof DAG.

@@ -55,6 +55,93 @@ REFERENCE VIOLATIONS — none detected.
 Append-only log of CASC benchmark runs (`crates/mrs-bench/casc.sh`), newest first.
 Each entry records the mrs commit and the exact command used.
 
+commit 987f208d5eb7ced5c29a4013c76d21bc2835e6db
+
+mtsdev03
+CASC-30 Results — 2026-06-20 06:03  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+EPS            100        23   12.607
+------------------  --------------------
+TOTAL          100        23   12.607
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+mtsdev02
+CASC-30 Results — 2026-06-20 05:57  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+EPU            100        10    5.885
+------------------  --------------------
+TOTAL          100        10    5.885
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+99 3
+CASC-30 Results — 2026-06-20 06:01  (101 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+ICU            101         2   24.564
+------------------  --------------------
+TOTAL          101         2   24.564
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+99 3
+CASC-30 Results — 2026-06-20 06:00  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        44   22.582
+------------------  --------------------
+TOTAL          100        44   22.582
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+97 MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions feq  --casc-times --jobs 4
+CASC-30 Results — 2026-06-20 05:56  (400 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+FEQ            400        76   31.604
+------------------  --------------------
+TOTAL          400        76   31.604
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
 commit 37b118520f1a04be9bace8a99ffecf066fb3237e
 
 [PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ MRS_WORKERS=1 ./crates/mrs-bench/run_strategy_sweep.sh --divisions fne,feq,ueq,epu,eps,icu --casc-times --jobs 30
