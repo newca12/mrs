@@ -475,7 +475,6 @@ pub fn run_schedule(
     // OOM on large EPR problems (tens of thousands of ground clauses inflate
     // cadical's SAT instance beyond memory limits).  AVATAR handles EPR
     // structure lazily and correctly without pre-expansion.
-    let epr_ground_cache: Option<Vec<Clause>> = None;
 
     // Detect EPR structure even when the full expansion exceeds MAX_INSTANCES.
     // EPR problems (only variables and ground terms, no function symbols of
@@ -483,9 +482,7 @@ pub fn run_schedule(
     // expanding them: AVATAR's SAT instance grows without bound during a
     // resolution search over EPR clauses and can cause cadical to block for
     // minutes with no way to interrupt it.
-    // NOTE: EPR grounding is disabled (epr_ground_cache is always None).
-    //       is_epr is retained for future use (e.g. re-enabling AVATAR guard).
-    let _ = is_epr(&clauses_owned);
+    let is_problem_epr = is_epr(&clauses_owned);
 
     // FVO pre-pass: for clause sets where all predicate arguments are variables
     // (no equality, no function terms), the first-order problem is
@@ -548,7 +545,7 @@ pub fn run_schedule(
     });
     let num_workers = available_cores.min(actual_configs.len());
     let next_strategy = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let has_epr = epr_ground_cache.is_some();
+    let has_epr = is_problem_epr;
 
     #[cfg(not(feature = "ml-guidance"))]
     if ml.weights.is_some() {
@@ -623,6 +620,7 @@ pub fn run_schedule(
 
                     if has_epr {
                         sc.max_term_weight = None;
+                        sc.use_avatar = false;
                     }
 
                     let mut state = SearchState::new_with_ml(
