@@ -16,8 +16,8 @@ CASC division from the problem file path and selects the matching schedule:
 | **FEQ** (FOF with Equality) | `casc_feq` | Full superposition + demodulation |
 | **FNE** (FOF No Equality) | `casc_fne` | Pure resolution/factoring; no paramodulation |
 | **UEQ** (Unit Equality) | `casc_ueq` | Unit clauses only; no AVATAR |
-| **EPU** (EPR Unsatisfiable) | `casc_epu` | s6-first (greedy optimal: s6→s2) |
-| **EPS** (EPR Satisfiable) | `casc_eps` | s2-first (greedy optimal: s2→s6) |
+| **EPU** (EPR Unsatisfiable) | `casc_epu` | s4-first (greedy optimal: s4→s6) |
+| **EPS** (EPR Satisfiable) | `casc_eps` | s1-first (greedy optimal: s1→s2→s5) |
 | **ICU** (Intensional Unit Equality) | `casc_icu` | s12-first |
 | other / fallback | `casc` | Generic 15-strategy CASC portfolio |
 
@@ -62,8 +62,8 @@ Based on a 30 s per-strategy sweep over the CASC-30 problem set:
 | **FNE** | s11, s12, s8, s4, s10, s2, … | 43/43 (100%) at 6 cores |
 | **FEQ** | s8, s12, s1, s11, s10, s4, s14, s6 | 86/88 (97.7%) at 8 cores |
 | **UEQ** | s11, s4, s2, s14, s8, s6, … | 62/62 (100%) at 6 cores |
-| **EPU** | s6, s2, … | 10/10 (100%) at 2 cores |
-| **EPS** | s2, s6, … | 24/24 (100%) at 2 cores |
+| **EPU** | s4, s6, … | 13/13 (100%) at 2 cores |
+| **EPS** | s1, s2, s5, … | 28/28 (100%) at 3 cores |
 | **ICU** | s12, … | 2/2 (100%) at 1 core |
 
 Beyond the minimum coverage point, extra slots cycle through remaining

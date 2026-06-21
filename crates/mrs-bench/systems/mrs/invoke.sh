@@ -36,8 +36,8 @@ SCHEDULE="casc_${DIV_LOWER}"
 # schedules; casc_epr is kept as a generic fallback.
 case "${SCHEDULE}" in
     casc_feq|casc_fne|casc_ueq|casc_icu) ;;   # already have dedicated schedules
-    casc_eps) ;;                               # EPS: s2-first (greedy optimal)
-    casc_epu) ;;                               # EPU: s6-first (greedy optimal)
+    casc_eps) ;;                               # EPS: s1-first (greedy optimal)
+    casc_epu) ;;                               # EPU: s4-first (greedy optimal)
     casc_epr) ;;                               # generic EPR fallback
     *) SCHEDULE="casc" ;;                      # fallback for other divisions
 esac
