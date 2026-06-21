@@ -72,6 +72,58 @@ DISAGREEMENTS — none detected.
 
 POLARITY VIOLATIONS — none detected.
 
+## vs CASC-30 official results
+
+Source: https://tptp.org/CASC/30/WWWFiles/Results.html (CASC-J30, 8-core
+StarExec hardware, competition strategy schedules). Two comparisons follow:
+(a) where mrs's HEAD solved-counts would place among the actual CASC-30
+entrants, and (b) how our local `# Reference` Vampire/E numbers compare to
+the official competition figures.
+
+### (a) Projected mrs placement per division
+
+| Division | mrs solved | Projected rank | Neighbours (official solved) |
+|----------|-----------|----------------|------------------------------|
+| FNE (100) | 44 | ~10th of 15 | cvc5 47 > **mrs 44** > ConnectPP 43 |
+| FEQ (400) | 76 | ~11th of 14 | Prover9 94 > **mrs 76** > ConnectPP 59 |
+| EPU (100) | 13 | 6th of 7 | Drodi-EPR 25 > **mrs 13** > SPASS-SCL 11 |
+| EPS (100) | 21 | last (7th) | field ≥ 53 (SPASS-SCL); **mrs 21** trails |
+| UEQ (300) | 30 | last (10th) | field ≥ 114 (Toma); **mrs 30** trails |
+| ICU (101) | 2 | 8th of 9 | CSE_E 18 > **mrs 2** > ConnectPP 1 |
+
+Reading: mid/lower-pack in the FOF divisions (ahead of several real
+entrants), at or near the bottom in the equality/EPR-saturation divisions
+(EPS, UEQ last; EPU, ICU second-to-last). Consistent with docs/AUDIT.md:
+the gap is search/heuristic quality, most acute on UEQ and EPS saturation.
+
+Official CASC-30 winners per division (for reference):
+FNE Vampire 5.0 = 91; FEQ Vampire 4.9 = 379 (Vampire 5.0 = 364);
+EPU Vampire 5.0 = 96; EPS Vampire 5.0 = 90; UEQ Vampire 5.0 = 263;
+ICU Vampire 4.9 = 70 (Vampire 5.0 = 69).
+
+### (b) Local `# Reference` vs official CASC-30
+
+Our local Vampire/E baselines (run via crates/mrs-bench/systems/{vampire,
+eprover}/invoke.sh) are systematically LOWER than the official figures —
+treat them as a local lower-bound baseline, not the competition numbers.
+
+| Div | Vampire (local) | Vampire 5.0 (CASC) | Δ | eprover (local) | E 3.3.0 (CASC) | Δ |
+|-----|-----------------|--------------------|----|------------------|-----------------|----|
+| FNE | 82 | 91 | −9 | 67 | 76 | −9 |
+| FEQ | 361 | 364 | −3 | 236 | 288 | −52 |
+| EPU | 76 | 96 | −20 | 22 | 29 | −7 |
+| EPS | 86 | 90 | −4 | 63 | 59 | +4 |
+| UEQ | 243 | 263 | −20 | 186 | 222 | −36 |
+| ICU | 53 | 69 | −16 | 24 | 42 | −18 |
+| TOTAL | 901 | 973 | −72 | 598 | 716 | −118 |
+
+Ordering and magnitudes are directionally consistent (Vampire ≫ E in every
+division), but the local harness undershoots by ~7% (Vampire) to ~16% (E).
+Likely causes: (1) our invoke.sh wrappers do not reproduce the exact CASC
+competition strategy/time/core configuration — the largest gaps (FEQ-E −52,
+UEQ-E −36, ICU) are where CASC-mode scheduling matters most; (2) version
+drift (we run Vampire 5.0.1 / E 3.3.3 vs the competition's 5.0 / 3.3.0).
+
 # Benchmark Log
 
 Append-only log of CASC benchmark runs (`crates/mrs-bench/casc.sh`), newest first.
