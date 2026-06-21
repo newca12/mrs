@@ -450,24 +450,24 @@ pub fn casc_ueq(total_time: Duration, workers: usize) -> StrategySchedule {
 }
 
 /// A schedule optimized for EPR Unsatisfiable (EPU).
-/// Greedy order: s6 (+9/10), s2 (+1/10) — 100% coverage at 2 cores.
+/// Greedy order: s4 (+11/13), s6 (+2/13) — 100% coverage at 2 cores.
 /// Tunes the portfolio according to CASC-30 priority sweeps.
 pub fn casc_epu(total_time: Duration, workers: usize) -> StrategySchedule {
     build_casc_schedule(
         total_time,
         workers,
-        &[6, 2, 1, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        &[4, 6, 1, 2, 3, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15],
     )
 }
 
 /// A schedule optimized for EPR Satisfiable (EPS).
-/// Greedy order: s2 (+22/24), s6 (+2/24) — 100% coverage at 2 cores.
+/// Greedy order: s1 (+25/28), s2 (+2/28), s5 (+1/28) — 100% coverage at 3 cores.
 /// Tunes the portfolio according to CASC-30 priority sweeps.
 pub fn casc_eps(total_time: Duration, workers: usize) -> StrategySchedule {
     build_casc_schedule(
         total_time,
         workers,
-        &[2, 6, 1, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        &[1, 2, 5, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
     )
 }
 
