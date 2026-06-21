@@ -50,12 +50,235 @@ POLARITY VIOLATIONS — none detected.
 
 REFERENCE VIOLATIONS — none detected.
 
+# Status
+
+Latest sound full-portfolio results for mrs HEAD (update-eps-epu-portfolios,
+8 workers, CASC times), aggregated from the most recent per-division run
+(FNE/FEQ/ICU @2026-06-20, EPU/EPS/UEQ @2026-06-21):
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        44   22.582
+FEQ            400        76   31.604
+EPU            100        13    8.688
+EPS            100        21   12.115
+UEQ            300        30   30.580
+ICU            101         2   24.564
+------------------  --------------------
+TOTAL         1101       186   25.430
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
 # Benchmark Log
 
 Append-only log of CASC benchmark runs (`crates/mrs-bench/casc.sh`), newest first.
 Each entry records the mrs commit and the exact command used.
 
+commit bb688bd4a272ff6e32f304b6e9c0e537c50cd724 (HEAD -> update-eps-epu-portfolios
+
+ongoing
+[root@mtsdev03 mrs]# INPUT_PROBLEMS_LIST=./casc_problem_lists/ueq.list ./crates/mrs-bench/collect_ml_data.sh /mnt/sdd/TPTP-v9.2.1 ./ml_logs_ueq_bb6 8 480 1
+
+ongoing
+[root@mtsdev02 mrs]# INPUT_PROBLEMS_LIST=./casc_problem_lists/fne.list ./crates/mrs-bench/collect_ml_data.sh /mnt/sdf1/TPTP-v9.2.1 ./ml_logs_fne_bb6 8 480 1
+
+ongoing
+[www@teenf9901 mrs]$ INPUT_PROBLEMS_LIST=./casc_problem_lists/epr.list ./crates/mrs-bench/collect_ml_data.sh /DATA/ai/TPTP-v9.2.1 ./ml_logs_epr_bb6 29 480 1
+
+ongoing
+[PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ INPUT_PROBLEMS_LIST=./casc_problem_lists/feq.list ./crates/mrs-bench/collect_ml_data.sh /DATA/ai/TPTP-v9.2.1 ./ml_logs_feq_bb6 30 480 1
+
+[www@teenf9901 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions epu  --casc-times --jobs 4
+CASC-30 Results — 2026-06-21 12:35  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+EPU            100        13    8.688
+------------------  --------------------
+TOTAL          100        13    8.688
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+
+[PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions eps  --casc-times --jobs 4
+CASC-30 Results — 2026-06-21 12:33  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+EPS            100        21   12.115
+------------------  --------------------
+TOTAL          100        21   12.115
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+commit 5ee3df42684b4219430211c13f5b4ce941341cc6 (HEAD -> fix-orphan-elimination-soundness
+
+[PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ MRS_WORKERS=1 ./crates/mrs-bench/run_strategy_sweep.sh --divisions eps --casc-times --jobs 30
+CASC-30 Results — 2026-06-21 07:44  (100 problems × 15 systems)
+===============================================================
+
+Division  Problems    mrs-s01               mrs-s02               mrs-s03               mrs-s04               mrs-s05               mrs-s06               mrs-s07               mrs-s08               mrs-s09               mrs-s10               mrs-s11               mrs-s12               mrs-s13               mrs-s14               mrs-s15
+                      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)
+------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------
+EPS            100        19    9.451          22   16.550          22   20.798           0    0.000          10    1.276          12    2.099          20   10.909          21   18.083          22   20.288           0    0.000           0    0.000           0    0.000           0    0.000           0    0.000           0    0.000
+------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------
+TOTAL          100        19    9.451          22   16.550          22   20.798           0    0.000          10    1.276          12    2.099          20   10.909          21   18.083          22   20.288           0    0.000           0    0.000           0    0.000           0    0.000           0    0.000           0    0.000
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+[www@teenf9901 mrs]$ MRS_WORKERS=1 ./crates/mrs-bench/run_strategy_sweep.sh --divisions epu --casc-times --jobs 30
+CASC-30 Results — 2026-06-21 07:48  (100 problems × 15 systems)
+===============================================================
+
+Division  Problems    mrs-s01               mrs-s02               mrs-s03               mrs-s04               mrs-s05               mrs-s06               mrs-s07               mrs-s08               mrs-s09               mrs-s10               mrs-s11               mrs-s12               mrs-s13               mrs-s14               mrs-s15
+                      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)
+------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------
+EPU            100         8    1.504           7    2.843           7    2.965          11    8.181           8    3.749           9   14.916           8    1.472           8    4.126           7    2.268           5    0.040           7    1.560           8    0.932           5    0.050           6    0.044           8    0.924
+------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------
+TOTAL          100         8    1.504           7    2.843           7    2.965          11    8.181           8    3.749           9   14.916           8    1.472           8    4.126           7    2.268           5    0.040           7    1.560           8    0.932           5    0.050           6    0.044           8    0.924
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+commit 95afbfdc509559cf66b8f93865dc5169250741b2 
+
+[PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions eps  --casc-times --jobs 4
+CASC-30 Results — 2026-06-20 17:00  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+EPS            100        28   16.490
+------------------  --------------------
+TOTAL          100        28   16.490
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+ongoing
+[www@teenf9901 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions epu  --casc-times --jobs 4
+CASC-30 Results — 2026-06-20 17:13  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+EPU            100        13   14.535
+------------------  --------------------
+TOTAL          100        13   14.535
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — 4 case(s) of wrong SZS polarity:
+  EPU     SYN846-1                        mrs=Satisfiable  (expected one of ["Unsatisfiable"])  ⚠ UNSOUND
+  EPU     SYN861-1                        mrs=Satisfiable  (expected one of ["Unsatisfiable"])  ⚠ UNSOUND
+  EPU     SYN865-1                        mrs=Satisfiable  (expected one of ["Unsatisfiable"])  ⚠ UNSOUND
+  EPU     SYN885-1                        mrs=Satisfiable  (expected one of ["Unsatisfiable"])  ⚠ UNSOUND
+
+REFERENCE VIOLATIONS — 4 SOUNDNESS ERROR(S) vs reference answers:
+  EPU     SYN846-1                        mrs=Satisfiable but expected Unsatisfiable  ⚠ UNSOUND
+  EPU     SYN861-1                        mrs=Satisfiable but expected Unsatisfiable  ⚠ UNSOUND
+  EPU     SYN885-1                        mrs=Satisfiable but expected Unsatisfiable  ⚠ UNSOUND
+  EPU     SYN865-1                        mrs=Satisfiable but expected Unsatisfiable  ⚠ UNSOUND
+
+commit ec7447d8a3eb31b6c480b89e628e53cf63f22f93
+
+[www@teenf9901 mrs]$ MRS_WORKERS=1 ./crates/mrs-bench/run_strategy_sweep.sh --divisions epu --casc-times --jobs 30
+CASC-30 Results — 2026-06-20 16:20  (100 problems × 15 systems)
+===============================================================
+
+Division  Problems    mrs-s01               mrs-s02               mrs-s03               mrs-s04               mrs-s05               mrs-s06               mrs-s07               mrs-s08               mrs-s09               mrs-s10               mrs-s11               mrs-s12               mrs-s13               mrs-s14               mrs-s15
+                      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)
+------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------
+EPU            100        11   16.184           7    2.775           7    2.579           7    2.586           8    2.652           9   15.706          10    5.233           8    4.088           7    2.795           5    0.052           7    1.159           7    0.841           5    0.045           6    0.046           7    0.907
+------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------
+TOTAL          100        11   16.184           7    2.775           7    2.579           7    2.586           8    2.652           9   15.706          10    5.233           8    4.088           7    2.795           5    0.052           7    1.159           7    0.841           5    0.045           6    0.046           7    0.907
+
+DISAGREEMENTS — 1 problem(s) where systems gave contradictory answers:
+  EPU     SYN885-1                        mrs-s01=Satisfiable  mrs-s02=Unsatisfiable  mrs-s03=Unsatisfiable  mrs-s07=Satisfiable  mrs-s08=Satisfiable  mrs-s09=Unsatisfiable  ⚠ SOUNDNESS
+
+POLARITY VIOLATIONS — 8 case(s) of wrong SZS polarity:
+  EPU     SYN846-1                        mrs-s01=Satisfiable  (expected one of ["Unsatisfiable"])  ⚠ UNSOUND
+  EPU     SYN846-1                        mrs-s07=Satisfiable  (expected one of ["Unsatisfiable"])  ⚠ UNSOUND
+  EPU     SYN861-1                        mrs-s01=Satisfiable  (expected one of ["Unsatisfiable"])  ⚠ UNSOUND
+  EPU     SYN861-1                        mrs-s07=Satisfiable  (expected one of ["Unsatisfiable"])  ⚠ UNSOUND
+  EPU     SYN865-1                        mrs-s01=Satisfiable  (expected one of ["Unsatisfiable"])  ⚠ UNSOUND
+  EPU     SYN885-1                        mrs-s01=Satisfiable  (expected one of ["Unsatisfiable"])  ⚠ UNSOUND
+  EPU     SYN885-1                        mrs-s07=Satisfiable  (expected one of ["Unsatisfiable"])  ⚠ UNSOUND
+  EPU     SYN885-1                        mrs-s08=Satisfiable  (expected one of ["Unsatisfiable"])  ⚠ UNSOUND
+
+REFERENCE VIOLATIONS — 8 SOUNDNESS ERROR(S) vs reference answers:
+  EPU     SYN846-1                        mrs-s01=Satisfiable but expected Unsatisfiable  ⚠ UNSOUND
+  EPU     SYN846-1                        mrs-s07=Satisfiable but expected Unsatisfiable  ⚠ UNSOUND
+  EPU     SYN861-1                        mrs-s01=Satisfiable but expected Unsatisfiable  ⚠ UNSOUND
+  EPU     SYN861-1                        mrs-s07=Satisfiable but expected Unsatisfiable  ⚠ UNSOUND
+  EPU     SYN885-1                        mrs-s01=Satisfiable but expected Unsatisfiable  ⚠ UNSOUND
+  EPU     SYN865-1                        mrs-s01=Satisfiable but expected Unsatisfiable  ⚠ UNSOUND
+  EPU     SYN885-1                        mrs-s07=Satisfiable but expected Unsatisfiable  ⚠ UNSOUND
+  EPU     SYN885-1                        mrs-s08=Satisfiable but expected Unsatisfiable  ⚠ UNSOUND
+
+ongoing
+[PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ MRS_WORKERS=1 ./crates/mrs-bench/run_strategy_sweep.sh --divisions eps --casc-times --jobs 30
+CASC-30 Results — 2026-06-20 16:12  (100 problems × 15 systems)
+===============================================================
+
+Division  Problems    mrs-s01               mrs-s02               mrs-s03               mrs-s04               mrs-s05               mrs-s06               mrs-s07               mrs-s08               mrs-s09               mrs-s10               mrs-s11               mrs-s12               mrs-s13               mrs-s14               mrs-s15
+                      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)
+------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------
+EPS            100        25   12.507          22   15.689          21   16.575           0    0.000          16    8.771          14    8.068          24   10.411          21   14.180          21   16.541           0    0.000           0    0.000           0    0.000           0    0.000           0    0.000           0    0.000
+------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------
+TOTAL          100        25   12.507          22   15.689          21   16.575           0    0.000          16    8.771          14    8.068          24   10.411          21   14.180          21   16.541           0    0.000           0    0.000           0    0.000           0    0.000           0    0.000           0    0.000
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
 commit 987f208d5eb7ced5c29a4013c76d21bc2835e6db
+
+[root@mtsdev03 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions ueq  --casc-times --jobs 1
+CASC-30 Results — 2026-06-21 07:55  (300 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+UEQ            300        30   30.580
+------------------  --------------------
+TOTAL          300        30   30.580
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
 
 mtsdev03
 CASC-30 Results — 2026-06-20 06:03  (100 problems × 1 systems)
