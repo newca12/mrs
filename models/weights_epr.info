@@ -1,0 +1,33 @@
+[PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ cargo run --release -p mrs-train --features wgpu -- ml_logs_epr_bb6/data weights_epr  
+TrainingProgress { progress: Some(Progress { items_processed: 3160064, items_total: 3178788 }), global_progress: Progress { items_processed: 1, items_total: 1 }, iteration: Some(1543) }
+TrainingProgress { progress: Some(Progress { items_processed: 3162112, items_total: 3178788 }), global_progress: Progress { items_processed: 1, items_total: 1 }, iteration: Some(1544) }
+TrainingProgress { progress: Some(Progress { items_processed: 3164160, items_total: 3178788 }), global_progress: Progress { items_processed: 1, items_total: 1 }, iteration: Some(1545) }
+TrainingProgress { progress: Some(Progress { items_processed: 3166208, items_total: 3178788 }), global_progress: Progress { items_processed: 1, items_total: 1 }, iteration: Some(1546) }
+TrainingProgress { progress: Some(Progress { items_processed: 3168256, items_total: 3178788 }), global_progress: Progress { items_processed: 1, items_total: 1 }, iteration: Some(1547) }
+TrainingProgress { progress: Some(Progress { items_processed: 3170304, items_total: 3178788 }), global_progress: Progress { items_processed: 1, items_total: 1 }, iteration: Some(1548) }
+TrainingProgress { progress: Some(Progress { items_processed: 3172352, items_total: 3178788 }), global_progress: Progress { items_processed: 1, items_total: 1 }, iteration: Some(1549) }
+TrainingProgress { progress: Some(Progress { items_processed: 3174400, items_total: 3178788 }), global_progress: Progress { items_processed: 1, items_total: 1 }, iteration: Some(1550) }
+TrainingProgress { progress: Some(Progress { items_processed: 3176448, items_total: 3178788 }), global_progress: Progress { items_processed: 1, items_total: 1 }, iteration: Some(1551) }
+TrainingProgress { progress: Some(Progress { items_processed: 3176740, items_total: 3178788 }), global_progress: Progress { items_processed: 1, items_total: 1 }, iteration: Some(1552) }
+TrainingProgress { progress: Some(Progress { items_processed: 3178788, items_total: 3178788 }), global_progress: Progress { items_processed: 1, items_total: 1 }, iteration: Some(1553) }
+======================== Learner Summary ========================
+Model:
+"TrainingClassifier" {
+  model: "ClauseClassifier" {
+    layer1: Linear {d_input: 128, d_output: 64, bias: true, params: 8256}
+    layer2: Linear {d_input: 64, d_output: 32, bias: true, params: 2080}
+    layer3: Linear {d_input: 32, d_output: 16, bias: true, params: 528}
+    output: Linear {d_input: 16, d_output: 1, bias: true, params: 17}
+    params: 10881
+  }
+  params: 10881
+}
+Total Epochs: 1
+
+
+| Split | Metric | Min.     | Epoch    | Max.     | Epoch    |
+|-------|--------|----------|----------|----------|----------|
+| Train | Loss   | 0.076    | 1        | 0.076    | 1        |
+| Valid | Loss   | 0.051    | 1        | 0.051    | 1        |
+
+Saved weights_epr.bin and weights_epr_meta.json

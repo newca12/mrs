@@ -38,7 +38,7 @@ rust-version.workspace = true
 readme = "README.md"
 keywords = ["theorem-prover", "tptp", "superposition", "casc", "logic"]
 categories = ["science", "command-line-utilities"]
-exclude = ["evil-proofs/", "benchmarks/", "docs/", "problems/", "ProoVer_Kimi.md"]
+exclude = ["evil-proofs/", "benchmarks/", "docs/", "problems/", "models/", "ProoVer_Kimi.md"]
 
 [dependencies]
 mrs-core = { workspace = true }

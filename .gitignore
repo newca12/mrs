@@ -36,6 +36,8 @@ perf.data.old
 
 # ML training artifacts and data-collection output
 weights*.bin
+# ...but the committed, released per-division models under models/ are kept
+!models/weights_*.bin
 ml_logs*/
 meta.json
 

@@ -22,12 +22,19 @@ fi
 DIVISION=$(basename $(dirname "$PROBLEM"))
 DIV_LOWER="${DIVISION,,}"
 
-WEIGHTS="${WORKSPACE_ROOT}/weights_${DIV_LOWER}.bin"
-SCHEDULE="ml_${DIV_LOWER}"
+# EPS (EPR Satisfiable) and EPU (EPR Unsatisfiable) share the single EPR-trained
+# model and the ml_epr schedule (no separate eps/epu models were trained).
+case "${DIV_LOWER}" in
+    eps|epu) MODEL_DIV="epr" ;;
+    *)       MODEL_DIV="${DIV_LOWER}" ;;
+esac
+
+WEIGHTS="${WORKSPACE_ROOT}/models/weights_${MODEL_DIV}.bin"
+SCHEDULE="ml_${MODEL_DIV}"
 
 # Fallback to the generic ones if division-specific weights aren't generated yet
 if [[ ! -f "${WEIGHTS}" ]]; then
-    WEIGHTS="${WORKSPACE_ROOT}/weights.bin"
+    WEIGHTS="${WORKSPACE_ROOT}/models/weights.bin"
     SCHEDULE="ml"
 fi
 
