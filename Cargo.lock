@@ -3496,6 +3496,7 @@ version = "0.1.9"
 dependencies = [
  "burn",
  "mrs-core",
+ "rand 0.8.6",
  "walkdir",
  "wincode",
 ]

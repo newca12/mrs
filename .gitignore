@@ -49,3 +49,7 @@ casc_problem_lists/
 /*.p
 /*.zip
 greedy_all.res
+
+# mrs-train checkpoint/log artifacts
+*.artifacts/
+experiment.log

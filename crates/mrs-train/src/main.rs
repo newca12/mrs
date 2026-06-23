@@ -230,8 +230,12 @@ fn train<B: AutodiffBackend>(device: B::Device, samples: &[LabeledSample], cfg: 
         lr_scheduler,
     );
 
-    let supervised = SupervisedTraining::new(".", dataloader_train, dataloader_valid)
-        .metric_train_numeric(LossMetric::new())
+    let supervised = SupervisedTraining::new(
+        format!("{}.artifacts", cfg.out_prefix),
+        dataloader_train,
+        dataloader_valid,
+    )
+    .metric_train_numeric(LossMetric::new())
         .metric_valid_numeric(LossMetric::new())
         .with_checkpointing_strategy(burn::train::checkpoint::KeepLastNCheckpoints::new(2))
         .num_epochs(cfg.epochs)
