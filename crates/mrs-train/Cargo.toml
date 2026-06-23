@@ -10,6 +10,8 @@ rust-version.workspace = true
 default = ["wgpu"]
 cuda = ["burn/tch"]
 wgpu = ["burn/wgpu"]
+# CPU backend — handy for validating the pipeline on machines without a GPU.
+ndarray = ["burn/ndarray"]
 
 [dependencies]
 mrs-core = { workspace = true, features = ["ml"] }
@@ -24,3 +26,4 @@ burn = { version = "0.21.0", default-features = false, features = [
 ] }
 wincode = "0.5.5"
 walkdir = "2.5.0"
+rand = "0.8"
