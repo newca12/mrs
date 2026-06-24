@@ -122,7 +122,11 @@ pub fn mini(total_time: Duration, _workers: usize) -> StrategySchedule {
     }
 }
 
-/// A schedule that relies heavily on ML-guided selection, built on the CASC 11-strategy chassis.
+/// A schedule that uses ML-guided selection as a *light refinement* on the
+/// CASC 11-strategy chassis. Experiment A (2026-06-24): the ML strategies use
+/// `alpha=0.85` so the learned score only nudges (~15%) the proven
+/// weight ordering instead of dominating it — a confident model with low alpha
+/// (0.1–0.5, i.e. 50–90% ML authority) regressed FEQ (81 static → 54 ml).
 pub fn ml_feq(total_time: Duration, _workers: usize) -> StrategySchedule {
     let ms = total_time.as_millis() as u64;
     let t1 = Duration::from_millis(ms * 14 / 100);
@@ -155,7 +159,7 @@ pub fn ml_feq(total_time: Duration, _workers: usize) -> StrategySchedule {
                     time_limit: t1,
                     selection: SelectionStrategy::MlGuided {
                         ratio: 5,
-                        alpha: 0.3,
+                        alpha: 0.85,
                     },
                     literal_selection: LiteralSelection::AllNegative,
                     ordering: TermOrdering::KBO,
@@ -169,7 +173,7 @@ pub fn ml_feq(total_time: Duration, _workers: usize) -> StrategySchedule {
                     time_limit: t2,
                     selection: SelectionStrategy::MlGuided {
                         ratio: 10,
-                        alpha: 0.1,
+                        alpha: 0.85,
                     },
                     literal_selection: LiteralSelection::AllNegative,
                     ordering: TermOrdering::KBO,
@@ -197,7 +201,7 @@ pub fn ml_feq(total_time: Duration, _workers: usize) -> StrategySchedule {
                     time_limit: t4,
                     selection: SelectionStrategy::MlGuided {
                         ratio: 3,
-                        alpha: 0.5,
+                        alpha: 0.85,
                     },
                     literal_selection: LiteralSelection::MaxNegativeOrMaxPositive,
                     ordering: TermOrdering::KBO,
@@ -236,7 +240,7 @@ pub fn ml_feq(total_time: Duration, _workers: usize) -> StrategySchedule {
                     time_limit: t7,
                     selection: SelectionStrategy::MlGuided {
                         ratio: 5,
-                        alpha: 0.3,
+                        alpha: 0.85,
                     },
                     literal_selection: LiteralSelection::AllNegative,
                     ordering: TermOrdering::LPO,
@@ -272,7 +276,7 @@ pub fn ml_feq(total_time: Duration, _workers: usize) -> StrategySchedule {
                     time_limit: t10,
                     selection: SelectionStrategy::MlGuided {
                         ratio: 5,
-                        alpha: 0.1,
+                        alpha: 0.85,
                     },
                     literal_selection: LiteralSelection::All,
                     ordering: TermOrdering::KBO,

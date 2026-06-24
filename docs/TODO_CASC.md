@@ -30,12 +30,35 @@ This document tracks what remains to be built in `mrs` (the prover) to maximise 
 
 ### 5. Machine-Learning Guided Clause Selection (ENIGMA/Deepire)
 **Impact:** FNE, FEQ. Medium (high ceiling, high effort).
+**Status (2026-06-24): infrastructure built and validated, but NOT shipped —
+ML guidance does not yet beat the static portfolios.** See the "ML-guided
+clause selection — investigation" section in `docs/BENCHMARKS.md`.
 
-`mrs` selects clauses by static Age/Weight/GoalDistance ratios. E-prover uses ENIGMA (gradient-boosted decision trees) trained on past proof traces; Vampire uses Deepire (graph neural network). Both double the solve rate on FNE/FEQ compared to their static baselines.
+What works now:
+- End-to-end pipeline: `collect_ml_data.sh` → `.wincode` traces → `mrs-train`
+  (Burn MLP) → `models/weights_<div>.bin` → `--ml-weights` inference.
+- `mrs-train` was broken (1 epoch, valid==train, no imbalance handling →
+  degenerate model); now fixed: epochs + early stopping, stratified split,
+  class rebalancing, AUC/PR metrics. Validation **AUC ~0.5 → 0.84–0.89**.
 
-**Implementation sketch (minimal viable):**
+Open problems (the actual blockers, ordered):
+1. **Objective/integration alignment.** A good offline classifier (AUC 0.84)
+   made FEQ *worse* (81 static → 54 ml). Selection is `0.3·weight +
+   0.7·(1−σ(score))` — ML drives 70% of selection; the proof-membership label
+   is hindsight/survivorship and shifts distribution vs live search.
+   - Experiment A (in progress): raise `ml_feq` `alpha` 0.1–0.5 → 0.85 so ML
+     only lightly refines the proven weight ordering. Re-eval FEQ.
+   - Further ideas: tie-breaker-only blending; calibrate via higher
+     `--neg-per-pos`; iterative/DAGGER-style trace collection from the prover's
+     own runs; better features (clause-graph / parent context).
+2. **Homogeneous `ml_fne`/`ml_ueq`/`ml_epr` schedules** discard portfolio
+   diversity (~8 clones of one ML strategy) and regress regardless of model
+   quality. If/when ML is shown to help on the `ml_feq` diverse chassis,
+   rebuild these to mirror it (diverse `casc`-style chassis + `MlGuided`).
+
+Original implementation sketch (kept for reference):
 - Collect a training set: for each solved problem, label the clauses on the refutation path as "useful" and a random sample of passive clauses as "not useful".
-- Train an XGBoost model on feature vectors (clause weight, literal count, goal distance, symbol frequencies).
+- Train a model on feature vectors (clause weight, literal count, goal distance, symbol frequencies).
 - At selection time, use the model score to reweight the `BinaryHeap` priority.
 - Training data accumulates from `casc.sh` benchmark runs.
 

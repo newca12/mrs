@@ -124,6 +124,67 @@ competition strategy/time/core configuration — the largest gaps (FEQ-E −52,
 UEQ-E −36, ICU) are where CASC-mode scheduling matters most; (2) version
 drift (we run Vampire 5.0.1 / E 3.3.3 vs the competition's 5.0 / 3.3.0).
 
+## ML-guided clause selection — investigation (2026-06-22 … 06-24)
+
+Status: **ML not shipped.** Static `casc_*` portfolios remain the competition
+entry. Summary of the investigation, kept for future work.
+
+### Eval: mrs-ml (ML schedules + weights) vs static baseline, CASC times, 8 workers
+
+| Div | baseline `mrs` | `mrs-ml` (old model) | `mrs-ml` (retrained) | schedule |
+|-----|----------------|----------------------|----------------------|----------|
+| FEQ | 81 | 64 | **54** | `ml_feq` (diverse chassis) |
+| FNE | 43 | 22 | 22 | `ml_fne` (homogeneous) |
+| EPU | 13 | 7 | — | `ml_epr` (homogeneous) |
+| EPS | 21 | 22 | — | `ml_epr` (homogeneous) |
+| UEQ | — | — | — | `ml_ueq` (homogeneous) |
+
+All runs sound (zero polarity/reference violations). ML lost in every
+division that matters.
+
+### Two distinct problems found
+
+1. **Homogeneous `ml_fne`/`ml_ueq`/`ml_epr` schedules** replace the tuned
+   15-strategy `casc_*` portfolio with ~8 near-identical `MlGuided` strategies
+   → they lose portfolio diversity and roughly halve the baseline regardless
+   of model quality (FNE 43→22). Only `ml_feq` is a fair test (diverse chassis
+   + ML layered on).
+
+2. **The training code was broken** (`mrs-train`, fixed in this branch):
+   - Ran **1 epoch** (no `num_epochs` call → burn default of 1).
+   - `valid == train` (no held-out split).
+   - Plain BCE on a **63:1–223:1 imbalanced** dataset (positives = proof
+     clauses, 0.4–1.6% of samples) → a near-degenerate near-constant predictor;
+     the low loss was a majority-class artifact.
+   Fix: `num_epochs` + early stopping, stratified split, class rebalancing
+   (`--neg-per-pos`), and post-training AUC/precision/recall/score-gap metrics.
+   On the same data this lifted validation **AUC from ~0.5 → 0.84–0.89**.
+
+### Key finding: a *good* model still made proving *worse*
+
+With the retrained FEQ model (**AUC 0.84**), `mrs-ml` FEQ = **54** — worse than
+both the static baseline (81) and the degenerate-model run (64). Selection
+priority is `0.3·weight + 0.7·(1−σ(score))` (`unprocessed.rs:115`), i.e. the
+model drives **70%** of clause selection. A flat (degenerate) score barely
+perturbs the proven ordering; a confident model strongly reorders selection
+toward "resembles a final-proof clause" — a hindsight/survivorship label on a
+different distribution than live search — and drags selection away from the
+well-tuned heuristic. **Model quality (AUC) was never the proving bottleneck;
+objective/integration alignment is.**
+
+### Experiment A (2026-06-24): give ML far less authority
+
+Raised the `ml_feq` `MlGuided` strategies from `alpha` 0.1–0.5 to **0.85**
+(ML becomes a ~15% refinement of the weight ordering instead of dominating).
+Re-evaluating FEQ A/B with the retrained `weights_feq` — see Benchmark Log.
+
+### Conclusion / future work (see docs/TODO_CASC.md)
+
+The `mrs-train` bug is fixed and validated (AUC 0.84–0.89), but ML-guided
+selection does not beat the greedy-tuned static portfolios in the time
+available — a research-grade gap (objective alignment, distribution shift,
+iterative trace collection). For the competition: **ship static `casc_*`**.
+
 # Benchmark Log
 
 Append-only log of CASC benchmark runs (`crates/mrs-bench/casc.sh`), newest first.
