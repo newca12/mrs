@@ -236,17 +236,17 @@ fn train<B: AutodiffBackend>(device: B::Device, samples: &[LabeledSample], cfg: 
         dataloader_valid,
     )
     .metric_train_numeric(LossMetric::new())
-        .metric_valid_numeric(LossMetric::new())
-        .with_checkpointing_strategy(burn::train::checkpoint::KeepLastNCheckpoints::new(2))
-        .num_epochs(cfg.epochs)
-        .early_stopping(MetricEarlyStoppingStrategy::new(
-            &LossMetric::<B>::new(),
-            Aggregate::Mean,
-            Direction::Lowest,
-            Split::Valid,
-            StoppingCondition::NoImprovementSince { n_epochs: 5 },
-        ))
-        .summary();
+    .metric_valid_numeric(LossMetric::new())
+    .with_checkpointing_strategy(burn::train::checkpoint::KeepLastNCheckpoints::new(2))
+    .num_epochs(cfg.epochs)
+    .early_stopping(MetricEarlyStoppingStrategy::new(
+        &LossMetric::<B>::new(),
+        Aggregate::Mean,
+        Direction::Lowest,
+        Split::Valid,
+        StoppingCondition::NoImprovementSince { n_epochs: 5 },
+    ))
+    .summary();
 
     let learning_result = supervised.launch(learner_config);
     let model_trained = learning_result.model;
