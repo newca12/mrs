@@ -17,7 +17,7 @@ use std::time::Instant;
 use mrs_calculus::demodulation;
 use mrs_calculus::equality;
 use mrs_calculus::factoring;
-use mrs_calculus::literal_selection::selected_literals_id;
+use mrs_calculus::literal_selection::{restrict_to_maximal_id, selected_literals_id};
 use mrs_calculus::resolution;
 use mrs_calculus::subsumption;
 use mrs_calculus::superposition;
@@ -300,6 +300,9 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
     let mut ordering = config.ordering.clone();
     let sym_config = ordering.symbol_config();
 
+    // Ordered-inference maximal-literal restriction (env override for benchmarking).
+    let ordered_inferences = config.ordered_inferences && std::env::var("MRS_NO_ORDERED").is_err();
+
     let (comm_syms, assoc_syms, to_remove) = detect_ac_symbols(state);
     state.comm_symbols = comm_syms.clone();
     state.assoc_symbols = assoc_syms.clone();
@@ -549,8 +552,16 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             given
         };
 
-        // Compute selected literals for the given clause
-        let given_sel = selected_literals_id(&given, &config.literal_selection, &state.term_bank);
+        // Compute selected literals for the given clause (with the ordered-
+        // inference maximal-literal restriction for all-positive clauses).
+        let given_sel = {
+            let base = selected_literals_id(&given, &config.literal_selection, &state.term_bank);
+            if ordered_inferences {
+                restrict_to_maximal_id(&given, &base, &ordering, &mut state.term_bank)
+            } else {
+                base
+            }
+        };
 
         // Generate inferences
         let mut new_clauses = Vec::new();
@@ -581,11 +592,23 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         continue;
                     }
                     if resolution_partner_ids.insert(partner.id) {
-                        let active_sel = selected_literals_id(
-                            &partner,
-                            &config.literal_selection,
-                            &state.term_bank,
-                        );
+                        let active_sel = {
+                            let base = selected_literals_id(
+                                &partner,
+                                &config.literal_selection,
+                                &state.term_bank,
+                            );
+                            if ordered_inferences {
+                                restrict_to_maximal_id(
+                                    &partner,
+                                    &base,
+                                    &ordering,
+                                    &mut state.term_bank,
+                                )
+                            } else {
+                                base
+                            }
+                        };
                         let resolvents = resolution::resolve_selected_id(
                             &given,
                             &partner,
@@ -627,8 +650,18 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     {
                         continue;
                     }
-                    let active_sel =
-                        selected_literals_id(active, &config.literal_selection, &state.term_bank);
+                    let active_sel = {
+                        let base = selected_literals_id(
+                            active,
+                            &config.literal_selection,
+                            &state.term_bank,
+                        );
+                        if ordered_inferences {
+                            restrict_to_maximal_id(active, &base, &ordering, &mut state.term_bank)
+                        } else {
+                            base
+                        }
+                    };
                     let sp = superposition::superpose_selected_id(
                         &given,
                         active,
@@ -646,8 +679,18 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 }
                 // self-superposition
                 if config.sos_depth == u32::MAX || given.distance < config.sos_depth {
-                    let given_sel_local =
-                        selected_literals_id(&given, &config.literal_selection, &state.term_bank);
+                    let given_sel_local = {
+                        let base = selected_literals_id(
+                            &given,
+                            &config.literal_selection,
+                            &state.term_bank,
+                        );
+                        if ordered_inferences {
+                            restrict_to_maximal_id(&given, &base, &ordering, &mut state.term_bank)
+                        } else {
+                            base
+                        }
+                    };
                     let sp = superposition::superpose_selected_id(
                         &given,
                         &given,

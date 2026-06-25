@@ -201,6 +201,73 @@ fn id_term_weight(term: TermId, bank: &TermBank) -> u32 {
     }
 }
 
+/// Ordered-inference restriction: for a clause that has **no selected negative
+/// literal** and whose literals are **all predicate atoms** (no equality), keep
+/// only the literals whose atom is maximal under the term ordering. This is the
+/// standard maximal-literal restriction of ordered resolution/superposition and
+/// is refutationally complete.
+///
+/// For any other clause shape (has a negative literal → selection already
+/// restricts; or contains an equality literal → handled conservatively) the
+/// input `base_selection` is returned unchanged, so completeness is never at
+/// risk: we only ever *prune* inferences from all-positive predicate clauses
+/// down to their order-maximal literals.
+///
+/// Predicate atoms `p(t1,…,tn)` are compared by interning the synthetic term
+/// `p(t1,…,tn)` and using the term ordering; maximality computed on the
+/// unsubstituted clause is preserved under substitution because the ordering is
+/// stable (`s > t ⇒ sσ > tσ`).
+pub fn restrict_to_maximal_id(
+    clause: &IdClause,
+    base_selection: &[usize],
+    ordering: &crate::ordering::TermOrdering,
+    bank: &mut TermBank,
+) -> Vec<usize> {
+    let n = clause.literals.len();
+    if n <= 1 {
+        return base_selection.to_vec();
+    }
+    // Only applies when there is no negative literal and every literal is a
+    // predicate atom (no equality).
+    if clause
+        .literals
+        .iter()
+        .any(|l| !l.positive || !matches!(l.atom, IdAtom::Pred(_, _)))
+    {
+        return base_selection.to_vec();
+    }
+
+    // Representative atom-term per literal.
+    let atom_terms: Vec<TermId> = clause
+        .literals
+        .iter()
+        .map(|l| match &l.atom {
+            IdAtom::Pred(sym, args) => bank.intern_app(*sym, args.clone()),
+            IdAtom::Eq(_, _) => unreachable!("guarded above"),
+        })
+        .collect();
+
+    // A literal is maximal iff no other literal's atom is strictly greater.
+    let maximal: Vec<usize> = (0..n)
+        .filter(|&i| {
+            !(0..n).any(|j| {
+                j != i
+                    && ordering.compare_id(atom_terms[j], atom_terms[i], bank)
+                        == crate::ordering::TermComparison::Greater
+            })
+        })
+        .collect();
+
+    // Intersect with the base selection; never return empty (fall back to base).
+    let base: std::collections::HashSet<usize> = base_selection.iter().copied().collect();
+    let result: Vec<usize> = maximal.into_iter().filter(|i| base.contains(i)).collect();
+    if result.is_empty() {
+        base_selection.to_vec()
+    } else {
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -208,6 +208,40 @@ Causes 1–4 are addressed.
 
 ---
 
+---
+
+## Update (2026-06-25): the real lever was inference *generation*, not selection
+
+The Phase-2 work that followed this audit (new weight heuristics, greedy
+portfolio tuning, ML-guided **selection**) gave only marginal/negative gains,
+because it all optimised *which clause to pick next* — but the measured
+bottleneck (§3: 50–1200× more clauses generated than E, including on problems
+both solve) is clause **generation/redundancy**, an inference-restriction
+problem. Code inspection confirmed two missing standard restrictions:
+
+1. **`AllNegative` selects *all* negative literals** (`literal_selection.rs`).
+   The standard, refutationally-complete choice selects a *single* negative
+   literal; selecting all multiplies resolvents on FNE. Measured (CASC-30 FNE,
+   `casc_fne`, 8 s/problem, 48-problem sample):
+   all-negative **14** solved → single-negative **18** (**+29%**), newly
+   solving MGT067+1 (E solves it; mrs did not). FEQ regresses slightly (9→8),
+   so this is a *portfolio-diversity* win, not a global default → applied to
+   the FNE-specific `casc_fne` schedule only (FNE has no equality → no FEQ risk).
+
+2. **No maximal-literal restriction for all-positive clauses.** Added the
+   standard ordered-inference restriction (`SearchConfig.ordered_inferences`,
+   default on; `restrict_to_maximal_id`): for all-positive predicate-only
+   clauses only order-maximal literals are eligible. Completeness-preserving;
+   small alone (MGT067+1 −26% generated) but correct and compounding.
+
+**Conclusion:** the original Phase-2 prioritisation (heuristic quality #1,
+inference redundancy #5/deferred) was inverted. Highest-ROI remaining work is
+core-engine inference restriction + simplification, not clause selection.
+Next: (a) add single-negative strategies to the s1–s15 set and re-run the
+greedy sweep so every division can pick them; (b) demodulate newly generated
+clauses at generation time; (c) maximal-side superposition restriction for
+UEQ/FEQ.
+
 ## 6. What is NOT a Problem
 
 - **Raw throughput (iterations/sec):** mrs can process 25k+ clauses in 30s.
