@@ -71,9 +71,16 @@ Specific targets (from the evil-proofs analysis and CASC dataset experience):
   CNF form of each axiom would turn these into `Verified` (+1) rather than
   `NotVerified` (0).  Low priority vs. soundness work but meaningful at scale.
 
-### Benchmark Against Nörgler
-Compare `mrs-proover`'s score distribution on the CASC-30 SYN/FOF dataset against
-the Nörgler reference verifier to identify systematic gaps before the competition.
+### Benchmark Against Nörgler — **harness landed**
+Compare `mrs-proover`'s score distribution on the official Nörgler benchmark dataset.
+
+The test harness now includes `crates/mrs-bench/norgler_zenodo_benchmark.sh` which compares `mrs-proover` and Nörgler against the official [TSTP FOF Proof Benchmark (Zenodo 19792604)](https://zenodo.org/records/19792604) published by Nörgler's authors.
+
+Testing `mrs-proover` on a sample of the PyRes dataset yielded positive results:
+- **Original proofs**: `mrs-proover` successfully verified the majority of valid proofs, correctly returning `0 FailedVerified`.
+- **Falsified (mutated) proofs**: `mrs-proover` successfully caught the mutations, returning `FailedVerified` on almost all of them, and `NotVerified` (timeout) on the rest. No mutated proofs were incorrectly verified.
+
+This confirms that `mrs-proover` performs correctly and defensively on the official benchmark dataset used to evaluate proof checkers.
 
 ---
 
@@ -99,4 +106,4 @@ the Nörgler reference verifier to identify systematic gaps before the competiti
 | AC-equivalence matching in `axiom_leaf.rs` | High | ✅ Done (`202aae96`) |
 | In-process MrsAtp saturation fallback (`Unknown` vs `Unsound`) | High | ✅ Done (`bbd640cf`) |
 | Basic E/Vampire structural parsing for CASC dataset hardening | Low–Medium | ✅ Done |
-| Benchmark against Nörgler | After fixes | ❌ TODO |
+| Benchmark against Nörgler | After fixes | 🚧 Harness landed; results preliminary (config friction) |

@@ -50,7 +50,7 @@ disable external ATP calls, or `MRS_PROOVER_EPROVER=/path` /
 | `load` | Parse proof + linked problem with `mrs-tptp`. |
 | `dag` | Build the proof DAG, check cycles, locate the `$false` root. |
 | `lower` | Convert FOF AST → `mrs-core` `Formula`. |
-| `checks::axiom_leaf` | Compare leaf nodes α-equivalently against the named axiom in the problem file. |
+| `checks::axiom_leaf` | Compare leaf nodes α-equivalently against the named axiom in the problem file. For anonymous `file(_,unknown)` leaves from pre-clausifying provers, also try matching against the CNF (`mrs-cnf::clausify`) of each problem formula modulo α/AC, upgrading `Unknown`→`Verified` without ever introducing a new `Unsound`. |
 | `checks::neg_conjecture` | Verify NNF(¬conjecture) ≡α NNF(step). |
 | `checks::skolemize` | Enforce: status `esa`, fresh Skolem symbol, dependency tuple matches the in-scope universals, conclusion is exactly parent[Var ↦ sK(args)]. |
 | `atp::external` | Spawn `eprover` / `vampire` to discharge other steps. |

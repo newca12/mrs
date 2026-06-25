@@ -194,7 +194,7 @@ fn is_trivially_false(f: &mrs_core::Formula) -> bool {
 }
 
 fn roles_compatible(proof_role: FormulaRole, prob_role: FormulaRole) -> bool {
-    if is_truth_role(proof_role) {
+    if is_truth_role(proof_role) || proof_role == FormulaRole::Plain {
         is_truth_role(prob_role)
     } else {
         proof_role == prob_role

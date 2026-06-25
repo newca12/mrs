@@ -356,11 +356,12 @@ fn check_node_prepare<'p>(
 
     // --- Role / status routing --------------------------------------------
 
-    // Leaf: any premise role brought in from the problem file via a
-    // `file(...)` source. We delegate to `axiom_leaf::check_leaf`, which
-    // handles both the named-axiom and the Vampire-style anonymous
-    // (`file(_, unknown)`) cases.
-    if is_premise_role(node.role)
+    // Leaf: any node brought in from the problem file via a `file(...)`
+    // source, provided its role is one a problem may legitimately declare
+    // as a starting fact (or `plain`, which some provers incorrectly use
+    // for copied input formulas). We delegate to `axiom_leaf::check_leaf`,
+    // which handles both the named-axiom and anonymous cases.
+    if (is_premise_role(node.role) || node.role == FormulaRole::Plain)
         && node
             .formula
             .annotations()
