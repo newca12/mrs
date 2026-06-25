@@ -228,19 +228,29 @@ problem. Code inspection confirmed two missing standard restrictions:
    so this is a *portfolio-diversity* win, not a global default → applied to
    the FNE-specific `casc_fne` schedule only (FNE has no equality → no FEQ risk).
 
-2. **No maximal-literal restriction for all-positive clauses.** Added the
-   standard ordered-inference restriction (`SearchConfig.ordered_inferences`,
-   default on; `restrict_to_maximal_id`): for all-positive predicate-only
-   clauses only order-maximal literals are eligible. Completeness-preserving;
-   small alone (MGT067+1 −26% generated) but correct and compounding.
+2. **Maximal-literal restriction — ATTEMPTED, UNSOUND, REVERTED (default off).**
+   `SearchConfig.ordered_inferences` / `restrict_to_maximal_id` restricted
+   all-positive predicate clauses to "order-maximal" literals, comparing
+   predicate atoms by interning `p(args)` and using KBO. **That is not a sound
+   literal ordering** — it can wrongly exclude a genuinely maximal literal,
+   making resolution refutationally INCOMPLETE. Consequence: strategies
+   saturated prematurely and emitted **false `Satisfiable`** on unsatisfiable
+   EPR problems (EPU SYN861/862/866 — a fatal CASC soundness violation, commit
+   `2e127941`). The transient EPS gain (21→47) was a *false signal*: on
+   satisfiable problems the same incomplete saturation coincidentally matched
+   the reference. Now **off by default** (opt-in via `MRS_ORDERED`); a correct
+   version needs a proper admissible literal/atom ordering (and ordered
+   factoring) before it can be trusted.
 
 **Conclusion:** the original Phase-2 prioritisation (heuristic quality #1,
-inference redundancy #5/deferred) was inverted. Highest-ROI remaining work is
-core-engine inference restriction + simplification, not clause selection.
-Next: (a) add single-negative strategies to the s1–s15 set and re-run the
-greedy sweep so every division can pick them; (b) demodulate newly generated
-clauses at generation time; (c) maximal-side superposition restriction for
-UEQ/FEQ.
+inference redundancy #5/deferred) was inverted — core-engine inference
+restriction is where the ROI is. But it is **completeness-critical**: the only
+validated, sound win so far is single-negative selection on FNE (#1, complete,
+theorems-only). Next: (a) add single-negative strategies to the s1–s15 set and
+re-run the greedy sweep; (b) demodulate newly generated clauses at generation
+time (a *simplification*, cannot break completeness); (c) a **correctly
+implemented** maximal-literal/side restriction with an admissible literal
+ordering — only after it is proven not to emit false `Satisfiable`.
 
 ## 6. What is NOT a Problem
 
