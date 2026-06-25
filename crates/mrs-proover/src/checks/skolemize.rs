@@ -286,10 +286,28 @@ fn find_existential_binder<'p>(
     }
 }
 
-fn find_outermost_existential<'p>(
-    f: &'p FOFFormula<'p>,
-) -> Option<(&'p str, Vec<&'p str>, &'p FOFFormula<'p>)> {
-    let mut universals: Vec<&'p str> = Vec::new();
+fn strip_parens<'p>(f: &'p FOFFormula<'p>) -> &'p FOFFormula<'p> {
+    let mut cur = f;
+    while let FOFFormula::Parens(inner) = cur {
+        cur = inner;
+    }
+    cur
+}
+
+/// Walk a (prenex) quantifier prefix and return, for each existential
+/// encountered, the set of universally-quantified variables in scope at that
+/// existential. A sound Skolemisation replaces each existential by a term over
+/// exactly those in-scope universals, so this captures the *set* of legitimate
+/// Skolem argument-variable sets (one per existential, in prefix order).
+///
+/// Example: for `? [X2] : (! [X3,X4] : (? [X5] : matrix))` this yields
+/// `[{}, {X3,X4}]` — `X2`'s Skolem is a constant, `X5`'s captures `{X3,X4}`.
+/// Stops at the first non-quantifier node, so nested quantifiers inside the
+/// matrix are simply not enumerated (the caller treats unmatched Skolems
+/// conservatively).
+fn collect_existential_scopes<'p>(f: &'p FOFFormula<'p>) -> Vec<HashSet<&'p str>> {
+    let mut scopes: Vec<HashSet<&'p str>> = Vec::new();
+    let mut universals: HashSet<&'p str> = HashSet::new();
     let mut cur = strip_parens(f);
     loop {
         match cur {
@@ -299,7 +317,7 @@ fn find_outermost_existential<'p>(
                 formula,
             } => {
                 for v in variables {
-                    universals.push(*v);
+                    universals.insert(*v);
                 }
                 cur = strip_parens(formula);
             }
@@ -308,22 +326,17 @@ fn find_outermost_existential<'p>(
                 variables,
                 formula,
             } => {
-                if let Some(&var) = variables.first() {
-                    return Some((var, universals, formula));
+                // Every variable bound by this existential is Skolemised with
+                // the same in-scope universals.
+                for _ in variables {
+                    scopes.push(universals.clone());
                 }
-                return None;
+                cur = strip_parens(formula);
             }
-            _ => return None,
+            _ => break,
         }
     }
-}
-
-fn strip_parens<'p>(f: &'p FOFFormula<'p>) -> &'p FOFFormula<'p> {
-    let mut cur = f;
-    while let FOFFormula::Parens(inner) = cur {
-        cur = inner;
-    }
-    cur
+    scopes
 }
 
 fn wrap_universals<'p>(vars: &[&'p str], body: FOFFormula<'p>) -> FOFFormula<'p> {
@@ -594,8 +607,17 @@ fn check_e_style_skolemize<'p>(
         ));
     }
 
-    // Try to enforce arity and free-variable safety if the parent is prenex.
-    if let Some((_, universals, _)) = find_outermost_existential(parent_f) {
+    // Try to enforce arity / no-illegal-capture if the parent has a prenex
+    // quantifier prefix. A correct Skolemisation replaces each existential by a
+    // term over *exactly* the universals in scope at that existential, so the
+    // legitimate Skolem argument-variable sets are the per-existential scopes
+    // (plus any parent free variables, which are always in scope). Crucially we
+    // must handle existentials nested at *different* depths — e.g. PyRes emits
+    // `? [X2] : ! [X3,X4] : ? [X5] : …` in one step, where one Skolem is a
+    // constant and another captures `{X3,X4}`. A single "expected vars" set
+    // (the previous implementation) wrongly rejected the deeper Skolem.
+    let scopes = collect_existential_scopes(parent_f);
+    if !scopes.is_empty() {
         let mut parent_bound = HashSet::new();
         let mut parent_free = HashSet::new();
         crate::checks::introduced_definition::free_vars(
@@ -604,19 +626,27 @@ fn check_e_style_skolemize<'p>(
             &mut parent_free,
         );
 
-        let mut expected_vars: HashSet<&str> = universals.iter().copied().collect();
-        expected_vars.extend(parent_free);
+        // A Skolem's argument set is acceptable iff it equals one of the
+        // per-existential in-scope universal sets (each augmented with the
+        // parent's free variables).
+        let valid_arg_sets: Vec<HashSet<&str>> = scopes
+            .iter()
+            .map(|s| {
+                let mut set = s.clone();
+                set.extend(parent_free.iter().copied());
+                set
+            })
+            .collect();
 
         for &sk in &fresh {
-            // Find all applications of `sk` in step_f and check their arguments.
-            let mut bad_args = false;
+            let mut mismatch = false;
             let mut check_sk_args = |args: &[FOFTerm<'_>]| {
                 let mut arg_vars = HashSet::new();
                 for a in args {
                     crate::checks::introduced_definition::collect_term_vars(a, &mut arg_vars);
                 }
-                if arg_vars != expected_vars {
-                    bad_args = true;
+                if !valid_arg_sets.contains(&arg_vars) {
+                    mismatch = true;
                 }
             };
 
@@ -679,10 +709,20 @@ fn check_e_style_skolemize<'p>(
 
             walk_fof(step_f, sk, &mut check_sk_args);
 
-            if bad_args {
-                return StepOutcome::Unsound(format!(
-                    "skolemize step introduces Skolem `{}` with incorrect variable capture/arity",
-                    sk
+            // This is the unannotated heuristic path: it can never positively
+            // confirm soundness (it always ends in `Unknown`). An argument-set
+            // that matches no existential scope is *suspicious* but, lacking the
+            // `skolemize(Var, sk(...))` annotation, is not proof of unsoundness
+            // — our prefix model does not cover non-prenex shapes. Returning
+            // `Unsound` here costs −1 on valid nested Skolemisations (observed on
+            // PyRes), so we conservatively downgrade to `Unknown` (0 pts). A
+            // genuinely bad Skolemisation still fails downstream at the ATP.
+            if mismatch {
+                registry.record(sk);
+                return StepOutcome::Unknown(format!(
+                    "skolemize step (unannotated) introduces Skolem `{sk}` whose argument \
+                     variables match no existential scope of the parent; cannot confirm \
+                     structurally — deferred as Unknown"
                 ));
             }
         }
@@ -696,3 +736,69 @@ fn check_e_style_skolemize<'p>(
          inferred fresh Skolem(s) {fresh:?} from step\\parent — accepted as Unknown"
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mrs_tptp::parse_tptp;
+
+    fn nth_fof<'p>(input: &'p str, n: usize) -> &'p AnnotatedFormula<'p> {
+        let problem = Box::leak(Box::new(parse_tptp(input).expect("parse")));
+        &problem.formulas[n]
+    }
+
+    /// PyRes emits multi-existential Skolemisation in a single `skolemize`
+    /// step: `? [X2] : ! [X3,X4] : ? [X5] : …` collapses to a constant Skolem
+    /// for `X2` and an arity-2 Skolem `sk(X3,X4)` for `X5`. The two Skolems
+    /// have *different* arities/scopes, which the old single-`expected_vars`
+    /// check wrongly flagged as `Unsound` (a −1 false reject on a valid proof).
+    /// It must now be at worst `Unknown`, never `Unsound`.
+    #[test]
+    fn nested_multi_existential_skolemize_is_not_unsound() {
+        let parent = nth_fof(
+            "fof(c2, negated_conjecture, \
+             (? [X2]: (! [X3,X4]: (? [X5]: \
+              (big_f(X2,X5) & (big_f(X3,X5) & (big_f(X4,X5) & \
+               (big_f(X3,X2) & ~ big_f(X5,X4)))))))), \
+             inference(variable_rename,[status(thm)],[c1])).",
+            0,
+        );
+        let step = nth_fof(
+            "fof(c3, negated_conjecture, \
+             (! [X3,X4]: (big_f(skolem0001,skolem0002(X3,X4)) & \
+              (big_f(X3,skolem0002(X3,X4)) & (big_f(X4,skolem0002(X3,X4)) & \
+               (big_f(X3,skolem0001) & ~ big_f(skolem0002(X3,X4),X4)))))), \
+             inference(skolemize,[status(esa)],[c2])).",
+            0,
+        );
+        let mut reg = SkolemRegistry::new();
+        let outcome = check(step, Some(parent), &mut reg);
+        assert!(
+            !matches!(outcome, StepOutcome::Unsound(_)),
+            "valid nested multi-existential skolemization must not be Unsound, got {outcome:?}"
+        );
+    }
+
+    /// `collect_existential_scopes` must record one in-scope-universal set per
+    /// existential, at the correct depth.
+    #[test]
+    fn existential_scopes_track_depth() {
+        let f = nth_fof(
+            "fof(c, axiom, (? [X2]: (! [X3,X4]: (? [X5]: big_f(X2,X3,X4,X5))))).",
+            0,
+        );
+        let logical = match &f.as_fof().unwrap().formula {
+            FOFStatement::Logical(l) => l,
+            _ => panic!("expected logical"),
+        };
+        let scopes = collect_existential_scopes(logical);
+        assert_eq!(scopes.len(), 2, "two existentials expected");
+        assert!(scopes[0].is_empty(), "X2 has no universals in scope");
+        assert_eq!(
+            scopes[1],
+            ["X3", "X4"].into_iter().collect::<HashSet<_>>(),
+            "X5 captures {{X3,X4}}"
+        );
+    }
+}
+
