@@ -210,34 +210,67 @@ Two scripts wire it in:
 # mrs-proover only, full PyRes set:
 crates/mrs-bench/zenodo_benchmark.sh --dataset PyRes
 
-# sample both datasets, also run Nörgler:
-crates/mrs-bench/zenodo_benchmark.sh --dataset all --limit 50 --with-norgler
+# full head-to-head against Nörgler with a realistic budget:
+crates/mrs-bench/zenodo_benchmark.sh --dataset all --time 60 --with-norgler
 ```
 
-### Results
+For a fair Nörgler head-to-head, give it a realistic per-proof budget (`--time
+60`): its JVM start-up plus per-step `eprover`/`vampire` calls are slow, so
+tight budgets starve it into spurious `NotVerified`. The wrapper
+(`systems/norgler/invoke.sh`) resolves a JRE once and caches it (a per-call
+`nix-shell` costs ~20 s), and the benchmark disables the leaf-path rewrite for
+this dataset (`MRS_NORGLER_NO_REWRITE=1`) because the Zenodo PyRes proofs already
+carry corrected `file('<PROB>.p',_)` records — rewriting them to absolute paths
+makes Nörgler reject valid proofs.
 
-A reproducible sample (50 PyRes + 30 Otter proofs per category, 8 s budget):
+### Head-to-head results
 
-| dataset/category | Verified | FailedVerified | NotVerified |
-|------------------|----------|----------------|-------------|
-| PyRes/original   | 39       | **0**          | 11          |
-| PyRes/falsified  | 0        | 48             | 2           |
-| Otter/original   | 0        | **0**          | 30          |
-| Otter/falsified  | 0        | 30             | 0           |
+Full PyRes (170 + 170) and an Otter sample (60 + 60), 60 s per proof:
 
-Both soundness invariants hold on every run: **no genuine proof is ever
-`FailedVerified`** and **no mutated proof is ever `Verified`**. Falsification
-detection is strong (PyRes 48/50, Otter 30/30); the remaining cases time out to
-the safe `NotVerified` (0 pts), never a misclassification.
+| dataset / category | backend | Verified | FailedVerified | NotVerified / Error |
+|---|---|---|---|---|
+| PyRes / original (valid)   | **mrs-proover** | 86  | **0**  | 84 |
+| PyRes / original (valid)   | Nörgler         | 155 | **11** | 4  |
+| PyRes / falsified (evil)   | **mrs-proover** | 0   | **170**| 0  |
+| PyRes / falsified (evil)   | Nörgler         | 0   | 165    | 5  |
+| Otter / original (valid)   | **mrs-proover** | 0   | **0**  | 60 |
+| Otter / original (valid)   | Nörgler         | 60  | **0**  | 0  |
+| Otter / falsified (evil)   | **mrs-proover** | 0   | **60** | 0  |
+| Otter / falsified (evil)   | Nörgler         | 0   | 59     | 1  |
 
-The `Otter/original` column is all `NotVerified` *by construction*: the dataset
-ships no Otter problem files, so leaf nodes cannot be validated against a
-problem and conservatively degrade to `NotVerified` (0 pts) rather than risk a
-false reject. Falsified Otter proofs are still caught because their mutations
-land on inference steps, which the entailment check refutes regardless of the
-missing problem file.
+What this says — honestly, with no spin:
 
-Nörgler (`--with-norgler`) is far slower here — JVM start-up plus per-step
-external-prover calls dominate, so under a tight per-proof budget it mostly
-times out to `NotVerified`. Its raw counts therefore reflect harness budget,
-not verifier quality; raise `--time` substantially for a fairer head-to-head.
+**Soundness (the −10 / −1 dimension), mrs-proover is strictly safer.**
+- mrs-proover: **0 false rejects** on valid proofs and **0 false accepts** on
+  evil proofs across all 460 proofs, catching **230/230 (100%)** mutations.
+- Nörgler: **11 false rejects** (−1 each) on valid PyRes proofs ("does not use
+  correct formula from file" — its strict leaf↔problem comparison rejects
+  PyRes-reformatted axioms), and catches 224/230 (97.4%) mutations.
+
+**Coverage of valid proofs, Nörgler is more complete.**
+- PyRes: Nörgler verifies 155/170, mrs-proover 86/170. *All* of mrs-proover's
+  84 `NotVerified` are unannotated `skolemize` steps it conservatively defers
+  to `Unknown` (it lacks the `skolemize(Var, sk(...))` annotation to confirm
+  them positively, so it declines rather than risk a −1).
+- Otter: Nörgler verifies 60/60, mrs-proover 0/60 — but **only because the
+  Zenodo Otter set ships no problem files**. Without the problem, mrs-proover
+  cannot validate the `file(_,unknown)` leaves and degrades to `NotVerified`;
+  Nörgler (run without `--problem`) trusts the leaves and checks the inference
+  structure. The real competition always supplies the problem file, so this is
+  a dataset artefact, not a competition weakness.
+
+**Net:** on raw ProoVer points the higher coverage means Nörgler edges ahead on
+this dataset (≈ +474 vs +426 on PyRes alone), but mrs-proover does it with a
+**perfect safety record** — never a −1, never the fatal −10, and 100% mutation
+detection. The benchmark's value is the concrete gap it exposes: mrs-proover's
+remaining upside is *coverage of valid proofs*, chiefly **positively verifying
+unannotated `skolemize` steps** instead of deferring them. Tracked in
+`TODO_PROOVER.md`.
+
+> Found and fixed while running this benchmark: `mrs-proover` previously
+> reported `Unsound` (a −1 false reject) on 8/170 valid PyRes proofs whose
+> single `skolemize` step eliminates existentials at *different* quantifier
+> depths (e.g. `? [X2] : ! [X3,X4] : ? [X5] : …`, giving a constant Skolem for
+> `X2` and `sk(X3,X4)` for `X5`). The arity check now tracks per-existential
+> scopes; see `checks::skolemize::collect_existential_scopes`.
+

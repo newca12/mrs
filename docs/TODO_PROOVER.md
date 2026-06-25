@@ -71,22 +71,44 @@ Specific targets (from the evil-proofs analysis and CASC dataset experience):
   CNF form of each axiom would turn these into `Verified` (+1) rather than
   `NotVerified` (0).  Low priority vs. soundness work but meaningful at scale.
 
-### Benchmark Against Nörgler — **harness landed**
-Evaluate `mrs-proover` on the official proof-checker benchmark and provide an
-optional head-to-head against Nörgler.
-
-The harness uses the [TSTP FOF Proof Benchmark (Zenodo 19792604)](https://zenodo.org/records/19792604)
+### Benchmark Against Nörgler — ✅ **done**
+A full head-to-head against Nörgler on the
+[TSTP FOF Proof Benchmark (Zenodo 19792604)](https://zenodo.org/records/19792604)
 — the dataset the Nörgler authors published to evaluate proof checkers
 (original + automatically falsified PyRes/Otter proofs). Two scripts wire it in:
 `crates/mrs-bench/fetch_zenodo_corpus.sh` (download + normalise) and
-`crates/mrs-bench/zenodo_benchmark.sh` (run mrs-proover, optionally Nörgler via
-`--with-norgler`). See `docs/PROOVER_HARNESS.md` §6 for full numbers.
+`crates/mrs-bench/zenodo_benchmark.sh` (`--with-norgler` for the comparison).
+See `docs/PROOVER_HARNESS.md` §6 for the full table.
 
-On a reproducible sample both soundness invariants hold: **no genuine proof is
-ever `FailedVerified`** and **no mutated proof is ever `Verified`**. Mutation
-detection is strong (PyRes 48/50, Otter 30/30), with the remainder timing out
-safely to `NotVerified`. A fair Nörgler head-to-head still needs a much larger
-per-proof budget (its JVM + per-step prover calls dominate under tight limits).
+Result on full PyRes (170+170) + an Otter sample (60+60), 60 s/proof:
+
+- **Soundness — mrs-proover is strictly safer.** 0 false rejects and 0 false
+  accepts across all 460 proofs, catching **230/230 (100%)** mutations. Nörgler
+  has **11 false rejects** (−1 each) on valid PyRes proofs and misses 6 mutations.
+- **Coverage — Nörgler is more complete.** It verifies 155/170 PyRes (vs 86) and
+  60/60 Otter (vs 0). On raw points its coverage edges ahead (≈ +474 vs +426 on
+  PyRes), but with a worse safety record.
+
+Concrete gaps the benchmark exposed (now the real follow-up work, see below):
+1. mrs-proover defers all unannotated `skolemize` steps to `Unknown` instead of
+   positively verifying them — the single biggest coverage gap on PyRes.
+2. Without a problem file mrs-proover cannot validate `file(_,unknown)` leaves
+   (all Otter originals → `NotVerified`); harmless at the competition, which
+   always supplies the problem.
+
+A real soundness bug was found and fixed during this run: multi-existential
+`skolemize` steps were false-rejected (−1) on 8/170 valid PyRes proofs; the
+arity check now tracks per-existential scopes.
+
+### Positively verify unannotated `skolemize` steps — **more coverage**
+**File:** `crates/mrs-proover/src/checks/skolemize.rs`
+
+The E-style fallback (`check_e_style_skolemize`) only ever returns `Unknown`: it
+infers the fresh Skolem symbols and sanity-checks their arity, but never
+*positively* confirms the step. Reconstructing the Skolemisation (replace each
+existential by `sk(in-scope universals)`) and α/AC-comparing against the
+conclusion would turn ~84/170 PyRes `NotVerified` into `Verified` (+1), closing
+most of the coverage gap vs Nörgler without weakening soundness.
 
 ---
 
@@ -112,4 +134,6 @@ per-proof budget (its JVM + per-step prover calls dominate under tight limits).
 | AC-equivalence matching in `axiom_leaf.rs` | High | ✅ Done (`202aae96`) |
 | In-process MrsAtp saturation fallback (`Unknown` vs `Unsound`) | High | ✅ Done (`bbd640cf`) |
 | Basic E/Vampire structural parsing for CASC dataset hardening | Low–Medium | ✅ Done |
-| Benchmark against Nörgler | After fixes | 🚧 Harness landed; results preliminary (config friction) |
+| Benchmark against Nörgler | After fixes | ✅ Done (full Zenodo 19792604 head-to-head; see §6) |
+| Multi-existential `skolemize` false-reject fixed | High | ✅ Done |
+| Positively verify unannotated `skolemize` steps (coverage) | Medium | ❌ TODO |

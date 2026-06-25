@@ -67,9 +67,24 @@ if [[ ! -x "${PROOVER}" ]]; then
 fi
 
 NORGLER="${SCRIPT_DIR}/systems/norgler/invoke.sh"
-if [[ "${WITH_NORGLER}" -eq 1 && ! -x "${NORGLER}" ]]; then
-    echo "Nörgler wrapper missing at ${NORGLER}; drop --with-norgler or install it." >&2
-    exit 1
+if [[ "${WITH_NORGLER}" -eq 1 ]]; then
+    if [[ ! -x "${NORGLER}" ]]; then
+        echo "Nörgler wrapper missing at ${NORGLER}; drop --with-norgler or install it." >&2
+        exit 1
+    fi
+    # The Zenodo proofs already carry corrected relative `file('<PROB>.p',_)`
+    # records; rewriting them to absolute paths makes Nörgler reject valid
+    # proofs, so disable the wrapper's path rewrite for this dataset.
+    export MRS_NORGLER_NO_REWRITE=1
+    # Resolve a Java runtime ONCE (a per-call `nix-shell` costs ~20 s) and hand
+    # it to every invoke.sh via the environment.
+    if [[ -z "${MRS_NORGLER_JAVA:-}" ]] && ! command -v java >/dev/null 2>&1; then
+        echo "[zenodo] Resolving Java once via nix-shell..." >&2
+        MRS_NORGLER_JAVA="$(nix-shell -p jre --run 'command -v java' 2>/dev/null || true)"
+        export MRS_NORGLER_JAVA
+        [[ -x "${MRS_NORGLER_JAVA}" ]] || { echo "no Java runtime found; set MRS_NORGLER_JAVA" >&2; exit 1; }
+        echo "[zenodo] Java: ${MRS_NORGLER_JAVA}" >&2
+    fi
 fi
 
 TS="$(date +%Y%m%d_%H%M%S)"
@@ -155,15 +170,20 @@ done
 echo "" >&2
 echo "[zenodo] Summary (rows = dataset/category/backend):" >&2
 awk -F, '
-NR>1 { k=$1"/"$2"/"$4; n[k,$5]++; keys[k]=1; t[k]+=$6; c[k]++; }
+NR>1 {
+    k=$1"/"$2"/"$4; keys[k]=1; t[k]+=$6; c[k]++;
+    v=$5;
+    if (v!="Verified" && v!="FailedVerified" && v!="NotVerified") v="Other";
+    n[k,v]++;
+}
 END {
-    printf "  %-34s %-10s %-16s %-12s %-12s\n",
-           "dataset/category/backend","Verified","FailedVerified","NotVerified","mean(s)" > "/dev/stderr"
+    printf "  %-34s %-10s %-16s %-12s %-8s %-10s\n",
+           "dataset/category/backend","Verified","FailedVerified","NotVerified","Other","mean(s)" > "/dev/stderr"
     m = asorti(keys, sk)
     for (i=1; i<=m; i++) {
         k = sk[i]
-        printf "  %-34s %-10d %-16d %-12d %-12.3f\n",
-               k, n[k,"Verified"]+0, n[k,"FailedVerified"]+0, n[k,"NotVerified"]+0, t[k]/c[k] > "/dev/stderr"
+        printf "  %-34s %-10d %-16d %-12d %-8d %-10.3f\n",
+               k, n[k,"Verified"]+0, n[k,"FailedVerified"]+0, n[k,"NotVerified"]+0, n[k,"Other"]+0, t[k]/c[k] > "/dev/stderr"
     }
 }' "${CSV}"
 

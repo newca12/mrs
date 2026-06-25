@@ -11,3 +11,6 @@ systems/*/bin/
 # Generated reference lookup table (run systems/reference/fetch_answers.sh to populate)
 systems/reference/answers.tsv
 
+
+# Cached Java path for the Nörgler wrapper (machine-specific)
+systems/norgler/.java_path
