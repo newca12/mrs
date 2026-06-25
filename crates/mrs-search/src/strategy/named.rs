@@ -448,11 +448,14 @@ fn build_casc_schedule_inner(
 /// equality, so resolution dominates; single-negative literal selection avoids
 /// the all-negative resolution blow-up.
 pub fn casc_fne(total_time: Duration, workers: usize) -> StrategySchedule {
+    // Single-negative literal selection (default on); set MRS_NO_SINGLE_NEG=1 to
+    // disable for A/B benchmarking against the original all-negative casc_fne.
+    let single_negative = std::env::var("MRS_NO_SINGLE_NEG").is_err();
     build_casc_schedule_inner(
         total_time,
         workers,
         &[11, 12, 8, 4, 10, 2, 1, 3, 5, 6, 7, 9, 13, 14, 15],
-        true,
+        single_negative,
     )
 }
 
