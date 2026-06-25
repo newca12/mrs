@@ -265,11 +265,12 @@ pub struct SearchConfig {
     /// in the SOS.  Axiom-only clauses (distance ≥ 100) are still reachable via
     /// the age queue slot of AgeWeight/GoalDirected strategies.
     pub sos_depth: u32,
-    /// Enable the ordered-inference maximal-literal restriction: for all-positive
-    /// predicate-only clauses (no selected negative literal), resolution and
-    /// superposition only fire on order-maximal literals. This is the standard,
-    /// refutationally-complete restriction that keeps the resolution search space
-    /// from exploding on FNE-style problems. `true` by default.
+    /// Enable the ordered-inference maximal-literal restriction. EXPERIMENTAL
+    /// and **off by default**: the current implementation is refutationally
+    /// INCOMPLETE (it caused false `Satisfiable` verdicts on EPR problems,
+    /// e.g. SYN861/862/866), because the predicate-atom ordering it uses is not
+    /// a sound literal ordering. Kept behind the flag for future, correct work.
+    /// Enable for experiments via the `MRS_ORDERED` env var.
     pub ordered_inferences: bool,
 }
 
@@ -285,7 +286,7 @@ impl Default for SearchConfig {
             unit_only_resolution: false,
             weight_fn: ClauseWeightFn::Standard,
             sos_depth: u32::MAX, // disabled
-            ordered_inferences: true,
+            ordered_inferences: false,
         }
     }
 }

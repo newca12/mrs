@@ -300,8 +300,9 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
     let mut ordering = config.ordering.clone();
     let sym_config = ordering.symbol_config();
 
-    // Ordered-inference maximal-literal restriction (env override for benchmarking).
-    let ordered_inferences = config.ordered_inferences && std::env::var("MRS_NO_ORDERED").is_err();
+    // Ordered-inference maximal-literal restriction. EXPERIMENTAL and off by
+    // default (incomplete — caused false Satisfiable on EPR). Opt in via env.
+    let ordered_inferences = config.ordered_inferences || std::env::var("MRS_ORDERED").is_ok();
 
     let (comm_syms, assoc_syms, to_remove) = detect_ac_symbols(state);
     state.comm_symbols = comm_syms.clone();
