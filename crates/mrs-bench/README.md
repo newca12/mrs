@@ -15,6 +15,10 @@ CASC benchmark harness and report tool for `mrs`.
 | `proover.sh` | Per-system harness for `mrs-proover` (CSV of verdicts per proof file) |
 | `fuzz_proover.sh` | Generate proofs with eprover/vampire on a problem tree, then verify each with `mrs-proover`; surfaces unhandled inference rules and recurring failure reasons |
 | `proover_compare.sh` | Run `mrs-proover` over a proof set with each ATP backend in isolation (`--only-mrs` / `--only-eprover` / `--only-vampire`); reports per-backend verdicts and wall times |
+| `build_proover_corpus.sh` / `verify_proover_corpus.sh` | Build (network) and verify (offline) the committed deterministic E/Vampire regression corpus; see `docs/PROOVER_HARNESS.md` |
+| `fetch_zenodo_corpus.sh` | Download + normalise the Zenodo 19792604 proof-checker benchmark (gitignored under `zenodo-corpus/`) |
+| `zenodo_benchmark.sh` | Evaluate `mrs-proover` (optionally Nörgler, `--with-norgler`) on the Zenodo benchmark; checks the original→never-FailedVerified / falsified→never-Verified invariants |
+| `norgler_compare.sh` | Compare `mrs-proover` vs Nörgler on the committed deterministic corpus |
 
 ## Quick start
 

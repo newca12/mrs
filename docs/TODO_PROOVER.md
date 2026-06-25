@@ -72,15 +72,21 @@ Specific targets (from the evil-proofs analysis and CASC dataset experience):
   `NotVerified` (0).  Low priority vs. soundness work but meaningful at scale.
 
 ### Benchmark Against Nörgler — **harness landed**
-Compare `mrs-proover`'s score distribution on the official Nörgler benchmark dataset.
+Evaluate `mrs-proover` on the official proof-checker benchmark and provide an
+optional head-to-head against Nörgler.
 
-The test harness now includes `crates/mrs-bench/norgler_zenodo_benchmark.sh` which compares `mrs-proover` and Nörgler against the official [TSTP FOF Proof Benchmark (Zenodo 19792604)](https://zenodo.org/records/19792604) published by Nörgler's authors.
+The harness uses the [TSTP FOF Proof Benchmark (Zenodo 19792604)](https://zenodo.org/records/19792604)
+— the dataset the Nörgler authors published to evaluate proof checkers
+(original + automatically falsified PyRes/Otter proofs). Two scripts wire it in:
+`crates/mrs-bench/fetch_zenodo_corpus.sh` (download + normalise) and
+`crates/mrs-bench/zenodo_benchmark.sh` (run mrs-proover, optionally Nörgler via
+`--with-norgler`). See `docs/PROOVER_HARNESS.md` §6 for full numbers.
 
-Testing `mrs-proover` on a sample of the PyRes dataset yielded positive results:
-- **Original proofs**: `mrs-proover` successfully verified the majority of valid proofs, correctly returning `0 FailedVerified`.
-- **Falsified (mutated) proofs**: `mrs-proover` successfully caught the mutations, returning `FailedVerified` on almost all of them, and `NotVerified` (timeout) on the rest. No mutated proofs were incorrectly verified.
-
-This confirms that `mrs-proover` performs correctly and defensively on the official benchmark dataset used to evaluate proof checkers.
+On a reproducible sample both soundness invariants hold: **no genuine proof is
+ever `FailedVerified`** and **no mutated proof is ever `Verified`**. Mutation
+detection is strong (PyRes 48/50, Otter 30/30), with the remainder timing out
+safely to `NotVerified`. A fair Nörgler head-to-head still needs a much larger
+per-proof budget (its JVM + per-step prover calls dominate under tight limits).
 
 ---
 

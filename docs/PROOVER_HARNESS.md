@@ -180,23 +180,64 @@ harness was built to eliminate.
 
 ---
 
-## 6. Evaluating against the Zenodo Nörgler Benchmark
+## 6. Evaluating against the Zenodo proof-checker benchmark
 
-To ensure a highly accurate, apples-to-apples comparison on the exact dataset Nörgler was tuned for, we created `norgler_zenodo_benchmark.sh`. It downloads and evaluates both `mrs-proover` and Nörgler against the official [TSTP FOF Proof Benchmark (Zenodo 19792604)](https://zenodo.org/records/19792604) published by Nörgler's authors.
+The [TSTP FOF Proof Benchmark (Zenodo 19792604)](https://zenodo.org/records/19792604)
+is the dataset the Nörgler authors published to *evaluate proof checkers*. It
+pairs, for each of two source provers, genuine proofs with automatically
+mutated ("falsified") copies:
 
-This dataset contains:
-- PyRes: 170 original proofs and 170 mutated ("falsified") proofs with their problem files.
-- Otter: 1806 original and 1782 falsified proofs.
+| Source | original | falsified | problem files |
+|--------|----------|-----------|---------------|
+| PyRes  | 170      | 170       | ✅ yes (`problems/`) |
+| Otter  | 1806     | 1782      | ❌ no |
 
-To run it:
+Two scripts wire it in:
+
+- **`fetch_zenodo_corpus.sh`** — downloads + extracts the archive (~28 MB,
+  git-ignored) and **normalises** it: PyRes proofs reference their problem via
+  `file('<PROB>.p',_)` leaves but ship no `% Proof : …` header, which
+  `mrs-proover` needs to locate the linked problem (see
+  `crates/mrs-proover/src/load.rs`), so the script injects that header
+  idempotently. Otter proofs have no problem files and are left as-is.
+- **`zenodo_benchmark.sh`** — auto-fetches the corpus if absent, then runs
+  `mrs-proover` (and, with `--with-norgler`, Nörgler) over the selected
+  datasets, writing a `run.csv` and checking the two soundness invariants:
+  *original must never be `FailedVerified`* (a false reject is −1) and
+  *falsified must never be `Verified`* (a false accept is −10, fatal).
+
 ```bash
-crates/mrs-bench/norgler_zenodo_benchmark.sh --time 10
+# mrs-proover only, full PyRes set:
+crates/mrs-bench/zenodo_benchmark.sh --dataset PyRes
+
+# sample both datasets, also run Nörgler:
+crates/mrs-bench/zenodo_benchmark.sh --dataset all --limit 50 --with-norgler
 ```
 
-### Initial PyRes Results
-Testing `mrs-proover` on a 100-proof sample from the PyRes dataset confirms its robustness:
-- **Original proofs**: `mrs-proover` verified 56 proofs successfully, correctly rejecting zero (`0 FailedVerified`). The rest correctly fell back to `NotVerified` due to timeout/inability to model.
-- **Falsified (mutated) proofs**: `mrs-proover` successfully caught the mutations, reporting `FailedVerified` on 96 of them (with the remaining 4 timing out as `NotVerified`).
-- **Nörgler**: As observed above, it times out extensively (mostly `NotVerified`) due to the JVM startup overhead in the tight 10s per-proof benchmarking loop. 
+### Results
 
-This confirms that `mrs-proover` performs correctly on the official benchmark dataset used to evaluate proof checkers.
+A reproducible sample (50 PyRes + 30 Otter proofs per category, 8 s budget):
+
+| dataset/category | Verified | FailedVerified | NotVerified |
+|------------------|----------|----------------|-------------|
+| PyRes/original   | 39       | **0**          | 11          |
+| PyRes/falsified  | 0        | 48             | 2           |
+| Otter/original   | 0        | **0**          | 30          |
+| Otter/falsified  | 0        | 30             | 0           |
+
+Both soundness invariants hold on every run: **no genuine proof is ever
+`FailedVerified`** and **no mutated proof is ever `Verified`**. Falsification
+detection is strong (PyRes 48/50, Otter 30/30); the remaining cases time out to
+the safe `NotVerified` (0 pts), never a misclassification.
+
+The `Otter/original` column is all `NotVerified` *by construction*: the dataset
+ships no Otter problem files, so leaf nodes cannot be validated against a
+problem and conservatively degrade to `NotVerified` (0 pts) rather than risk a
+false reject. Falsified Otter proofs are still caught because their mutations
+land on inference steps, which the entailment check refutes regardless of the
+missing problem file.
+
+Nörgler (`--with-norgler`) is far slower here — JVM start-up plus per-step
+external-prover calls dominate, so under a tight per-proof budget it mostly
+times out to `NotVerified`. Its raw counts therefore reflect harness budget,
+not verifier quality; raise `--time` substantially for a fairer head-to-head.
