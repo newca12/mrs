@@ -65,6 +65,16 @@ pub fn check_leaf<'p>(
             {
                 return StepOutcome::Sound;
             }
+
+            // Fallback: try matching against the CNF of the problem formula
+            let mut id_gen = mrs_core::clause::ClauseIdGen::new();
+            let clauses = mrs_cnf::clausify(&prob_f, ctx.symbols, &mut id_gen, "prob", "axiom");
+            for c in clauses {
+                let c_form = clause_to_formula_with_forall(&c);
+                if crate::checks::definition_folding::canon_eq(&proof_f, &c_form) {
+                    return StepOutcome::Sound;
+                }
+            }
         }
 
         // No compatible-role problem formula α/canon-matched the leaf.
@@ -189,4 +199,29 @@ fn roles_compatible(proof_role: FormulaRole, prob_role: FormulaRole) -> bool {
     } else {
         proof_role == prob_role
     }
+}
+
+fn clause_to_formula_with_forall(clause: &mrs_core::clause::Clause) -> mrs_core::Formula {
+    let mut lits = Vec::with_capacity(clause.literals.len());
+    for lit in &clause.literals {
+        let atom = mrs_core::Formula::Atom(lit.atom.clone());
+        if lit.positive {
+            lits.push(atom);
+        } else {
+            lits.push(mrs_core::Formula::Neg(Box::new(atom)));
+        }
+    }
+    let mut body = match lits.len() {
+        0 => mrs_core::Formula::False,
+        1 => lits.into_iter().next().unwrap(),
+        _ => mrs_core::Formula::Or(lits),
+    };
+
+    let mut vars: Vec<_> = clause.free_vars().into_iter().collect();
+    vars.sort_unstable();
+
+    for v in vars.into_iter().rev() {
+        body = mrs_core::Formula::Forall(v, Box::new(body));
+    }
+    body
 }

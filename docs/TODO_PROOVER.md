@@ -98,5 +98,5 @@ the Nörgler reference verifier to identify systematic gaps before the competiti
 | Deterministic offline regression corpus | Medium | ✅ Done (`8f275b16`) |
 | AC-equivalence matching in `axiom_leaf.rs` | High | ✅ Done (`202aae96`) |
 | In-process MrsAtp saturation fallback (`Unknown` vs `Unsound`) | High | ✅ Done (`bbd640cf`) |
-| Basic E/Vampire structural parsing for CASC dataset hardening | Low–Medium | ❌ TODO |
+| Basic E/Vampire structural parsing for CASC dataset hardening | Low–Medium | ✅ Done |
 | Benchmark against Nörgler | After fixes | ❌ TODO |
