@@ -124,9 +124,11 @@ pub fn mini(total_time: Duration, _workers: usize) -> StrategySchedule {
 
 /// A schedule that uses ML-guided selection as a *light refinement* on the
 /// CASC 11-strategy chassis. Experiment A (2026-06-24): the ML strategies use
-/// `alpha=0.85` so the learned score only nudges (~15%) the proven
-/// weight ordering instead of dominating it — a confident model with low alpha
-/// (0.1–0.5, i.e. 50–90% ML authority) regressed FEQ (81 static → 54 ml).
+/// `alpha=0.85` so the learned score only nudges (~15%) the proven weight
+/// ordering instead of dominating it. RESULT: no effect — FEQ stayed at 54
+/// (vs 54 at alpha=0.3, and 81 for the static `casc_feq` portfolio). ML-guided
+/// selection does not beat the tuned static portfolio; this schedule is kept
+/// for the `mrs-ml` research path only and is NOT the competition entry.
 pub fn ml_feq(total_time: Duration, _workers: usize) -> StrategySchedule {
     let ms = total_time.as_millis() as u64;
     let t1 = Duration::from_millis(ms * 14 / 100);

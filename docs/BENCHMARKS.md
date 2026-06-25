@@ -176,14 +176,21 @@ objective/integration alignment is.**
 
 Raised the `ml_feq` `MlGuided` strategies from `alpha` 0.1–0.5 to **0.85**
 (ML becomes a ~15% refinement of the weight ordering instead of dominating).
-Re-evaluating FEQ A/B with the retrained `weights_feq` — see Benchmark Log.
+**Result: no effect — FEQ stayed at 54** (identical to `alpha=0.3`; static
+`casc_feq` = 81). The `mrs-ml` FEQ gap is driven by the schedule composition,
+not the ML blend weight; ML guidance simply does not help here at any alpha.
 
 ### Conclusion / future work (see docs/TODO_CASC.md)
 
 The `mrs-train` bug is fixed and validated (AUC 0.84–0.89), but ML-guided
-selection does not beat the greedy-tuned static portfolios in the time
-available — a research-grade gap (objective alignment, distribution shift,
-iterative trace collection). For the competition: **ship static `casc_*`**.
+selection does not beat the greedy-tuned static portfolios — and tuning the
+blend (`alpha`) does not rescue it. This is a research-grade gap (objective
+alignment, distribution shift, iterative trace collection, richer features).
+
+**Decision: ML is frozen and NOT shipped. The competition entry uses the
+static `casc_*` portfolios via `mrs/invoke.sh` (no harness change).** The
+`mrs-train` fixes, `models/` weights, and `mrs-ml` system are kept as
+validated infrastructure for a future ML iteration.
 
 # Benchmark Log
 

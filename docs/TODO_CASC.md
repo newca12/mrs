@@ -46,9 +46,10 @@ Open problems (the actual blockers, ordered):
    made FEQ *worse* (81 static → 54 ml). Selection is `0.3·weight +
    0.7·(1−σ(score))` — ML drives 70% of selection; the proof-membership label
    is hindsight/survivorship and shifts distribution vs live search.
-   - Experiment A (in progress): raise `ml_feq` `alpha` 0.1–0.5 → 0.85 so ML
-     only lightly refines the proven weight ordering. Re-eval FEQ.
-   - Further ideas: tie-breaker-only blending; calibrate via higher
+   - Experiment A (DONE, negative): raised `ml_feq` `alpha` 0.1–0.5 → 0.85 so
+     ML only lightly refines the proven ordering. **No effect — FEQ stayed at
+     54.** The gap is the schedule composition, not the blend weight.
+   - Further ideas (untried): tie-breaker-only blending; calibrate via higher
      `--neg-per-pos`; iterative/DAGGER-style trace collection from the prover's
      own runs; better features (clause-graph / parent context).
 2. **Homogeneous `ml_fne`/`ml_ueq`/`ml_epr` schedules** discard portfolio
