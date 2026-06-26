@@ -228,29 +228,35 @@ problem. Code inspection confirmed two missing standard restrictions:
    so this is a *portfolio-diversity* win, not a global default → applied to
    the FNE-specific `casc_fne` schedule only (FNE has no equality → no FEQ risk).
 
-2. **Maximal-literal restriction — ATTEMPTED, UNSOUND, REVERTED (default off).**
-   `SearchConfig.ordered_inferences` / `restrict_to_maximal_id` restricted
-   all-positive predicate clauses to "order-maximal" literals, comparing
-   predicate atoms by interning `p(args)` and using KBO. **That is not a sound
-   literal ordering** — it can wrongly exclude a genuinely maximal literal,
-   making resolution refutationally INCOMPLETE. Consequence: strategies
-   saturated prematurely and emitted **false `Satisfiable`** on unsatisfiable
-   EPR problems (EPU SYN861/862/866 — a fatal CASC soundness violation, commit
-   `2e127941`). The transient EPS gain (21→47) was a *false signal*: on
-   satisfiable problems the same incomplete saturation coincidentally matched
-   the reference. Now **off by default** (opt-in via `MRS_ORDERED`); a correct
-   version needs a proper admissible literal/atom ordering (and ordered
-   factoring) before it can be trusted.
+2. **Maximal-literal restriction — initially UNSOUND, now FIXED and on by default.**
+   `SearchConfig.ordered_inferences` / `restrict_to_maximal_id` restricts
+   all-positive predicate clauses to order-maximal literals (predicate atoms
+   compared by interning `p(args)` and using KBO). The first attempt emitted
+   **false `Satisfiable`** on unsatisfiable EPR problems (EPU SYN861/862/866 —
+   a fatal CASC violation, `2e127941`); the "EPS 21→47" then was a *false
+   signal* (incomplete saturation coincidentally matching satisfiable
+   references). Root cause was **two completeness bugs**, both since fixed:
+   - `a2c4e71`: `restrict_to_maximal_id` returned the *intersection* of the
+     KBO-maximal set with `base_selection`, which under `MaxNegativeOrMaxPositive`
+     dropped the genuine maximal literal. Now returns the full maximal set.
+   - `7316d88`: backward subsumption recursively deleted descendant clauses that
+     could not be re-derived under ordered inferences. Now does flat removal of
+     only the subsumed clause.
+   Re-verified **sound across all divisions** — crucially **EPU = 16, 0
+   violations** (the unsatisfiable-division completeness gate; SYN861/866 are now
+   correctly *solved* as Unsatisfiable). **EPS 21→43 is now a real, sound gain.**
+   Guarded by unit + integration regression tests.
 
 **Conclusion:** the original Phase-2 prioritisation (heuristic quality #1,
 inference redundancy #5/deferred) was inverted — core-engine inference
-restriction is where the ROI is. But it is **completeness-critical**: the only
-validated, sound win so far is single-negative selection on FNE (#1, complete,
-theorems-only). Next: (a) add single-negative strategies to the s1–s15 set and
-re-run the greedy sweep; (b) demodulate newly generated clauses at generation
-time (a *simplification*, cannot break completeness); (c) a **correctly
-implemented** maximal-literal/side restriction with an admissible literal
-ordering — only after it is proven not to emit false `Satisfiable`.
+restriction is where the ROI is, and (done correctly, with soundness gates) it
+delivered: EPS +22, plus single-negative selection on FNE (+1 at CASC time,
++29% at short budgets). It is **completeness-critical** — both wins required
+careful fixes verified against EPU soundness. Next: (a) add single-negative
+strategies to the s1–s15 set and re-run the greedy sweep; (b) demodulate newly
+generated clauses at generation time (a *simplification*, cannot break
+completeness); (c) a correct maximal-*side* superposition restriction for
+UEQ/FEQ — each gated on an EPU/EPS soundness sweep before default-on.
 
 ## 6. What is NOT a Problem
 
