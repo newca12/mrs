@@ -227,8 +227,6 @@ pub fn restrict_to_maximal_id(
     if n <= 1 {
         return base_selection.to_vec();
     }
-    // Only applies when there is no negative literal and every literal is a
-    // predicate atom (no equality).
     if clause
         .literals
         .iter()
@@ -237,7 +235,6 @@ pub fn restrict_to_maximal_id(
         return base_selection.to_vec();
     }
 
-    // Representative atom-term per literal.
     let atom_terms: Vec<TermId> = clause
         .literals
         .iter()
@@ -258,13 +255,10 @@ pub fn restrict_to_maximal_id(
         })
         .collect();
 
-    // Intersect with the base selection; never return empty (fall back to base).
-    let base: std::collections::HashSet<usize> = base_selection.iter().copied().collect();
-    let result: Vec<usize> = maximal.into_iter().filter(|i| base.contains(i)).collect();
-    if result.is_empty() {
+    if maximal.is_empty() {
         base_selection.to_vec()
     } else {
-        result
+        maximal
     }
 }
 

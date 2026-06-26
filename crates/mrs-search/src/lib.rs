@@ -286,7 +286,7 @@ impl Default for SearchConfig {
             unit_only_resolution: false,
             weight_fn: ClauseWeightFn::Standard,
             sos_depth: u32::MAX, // disabled
-            ordered_inferences: false,
+            ordered_inferences: true,
         }
     }
 }

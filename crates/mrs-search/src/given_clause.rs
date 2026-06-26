@@ -769,7 +769,10 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
 
         for id in to_remove_from_processed {
             state.stats.backward_deleted += 1;
-            state.remove_clause_and_orphans(id, &ordering);
+            state.processed.remove(id, &state.term_bank);
+            state.unprocessed.remove(id);
+            state.dormant_processed.remove(&id);
+            state.dormant_unprocessed.remove(&id);
         }
 
         // Add given to processed set (indexed)
