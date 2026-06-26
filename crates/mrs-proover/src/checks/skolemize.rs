@@ -13,7 +13,7 @@
 //! `mrs-core` is needed here, since we deal with the original variable names
 //! given in the annotation).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use mrs_tptp::{
     AnnotatedFormula, AtomicWord, FOFAtomicFormula, FOFFormula, FOFStatement, FOFTerm, Quantifier,
@@ -339,6 +339,344 @@ fn collect_existential_scopes<'p>(f: &'p FOFFormula<'p>) -> Vec<HashSet<&'p str>
     scopes
 }
 
+/// Collect every variable bound by a `!`/`?` quantifier anywhere in `f`,
+/// partitioned into universals and existentials. After `variable_rename`
+/// (which every prover applies before Skolemising) these names are globally
+/// unique, so the partition is unambiguous.
+fn collect_quantified_vars<'p>(
+    f: &FOFFormula<'p>,
+    univ: &mut HashSet<&'p str>,
+    exist: &mut HashSet<&'p str>,
+) {
+    match f {
+        FOFFormula::Quantified {
+            quantifier,
+            variables,
+            formula,
+        } => {
+            let target = match quantifier {
+                Quantifier::Forall => &mut *univ,
+                Quantifier::Exists => &mut *exist,
+            };
+            for v in variables {
+                target.insert(*v);
+            }
+            collect_quantified_vars(formula, univ, exist);
+        }
+        FOFFormula::Negation(g) | FOFFormula::Parens(g) => collect_quantified_vars(g, univ, exist),
+        FOFFormula::Binary { left, right, .. } => {
+            collect_quantified_vars(left, univ, exist);
+            collect_quantified_vars(right, univ, exist);
+        }
+        FOFFormula::Atomic(_) | FOFFormula::Equality(..) | FOFFormula::Inequality(..) => {}
+    }
+}
+
+/// Accumulated bindings discovered while matching a parent against its
+/// Skolemised conclusion.
+#[derive(Default)]
+struct SkolemMatch<'p> {
+    /// Parent universal variable → conclusion variable (a consistent renaming).
+    uni_map: HashMap<&'p str, &'p str>,
+    /// Existential variable → universals in scope at it (parent names).
+    exist_scope: HashMap<&'p str, HashSet<&'p str>>,
+    /// Existential variable → the (Skolem) term that replaced it.
+    exist_term: HashMap<&'p str, FOFTerm<'p>>,
+}
+
+fn strip_parens_f<'a, 'p>(f: &'a FOFFormula<'p>) -> &'a FOFFormula<'p> {
+    let mut cur = f;
+    while let FOFFormula::Parens(inner) = cur {
+        cur = inner;
+    }
+    cur
+}
+
+/// Match a parent formula `pat` against its Skolemised conclusion `conc`.
+///
+/// Skolemisation removes every existential (replacing its variable by a Skolem
+/// term over the universals in scope at it) and pulls the universals to the
+/// front — possibly *regrouping* binders that were separated by the eliminated
+/// existentials (e.g. `! X2 ? X3 ! X4 ? X5 . φ` becomes `! [X2,X4] . φ'`). We
+/// therefore strip quantifiers from each side *independently*:
+///   * stripping a parent `!`-binder records its variables as in-scope and
+///     recurses (the conclusion binder is consumed separately);
+///   * stripping a parent `?`-binder records each variable's in-scope universals
+///     and recurses, leaving `conc` untouched (it has no matching binder);
+///   * stripping a conclusion `!`-binder just recurses; a residual conclusion
+///     `?`-binder means the step did not actually Skolemise — reject.
+///
+/// Variable occurrences then bind via [`match_skolem_term`]: universal pattern
+/// variables to conclusion variables (a consistent renaming), existential ones
+/// to their Skolem terms. `univ`/`exist` are the parent's quantified-variable
+/// name sets.
+fn match_skolem_formula<'p>(
+    pat: &FOFFormula<'p>,
+    conc: &FOFFormula<'p>,
+    univ: &HashSet<&str>,
+    exist: &HashSet<&str>,
+    in_scope: &mut Vec<&'p str>,
+    m: &mut SkolemMatch<'p>,
+) -> bool {
+    let pat = strip_parens_f(pat);
+    let conc = strip_parens_f(conc);
+
+    // 1) Strip parent quantifiers first (do not consume `conc`).
+    match pat {
+        FOFFormula::Quantified {
+            quantifier: Quantifier::Forall,
+            variables,
+            formula,
+        } => {
+            for v in variables {
+                in_scope.push(*v);
+            }
+            let r = match_skolem_formula(formula, conc, univ, exist, in_scope, m);
+            for _ in variables {
+                in_scope.pop();
+            }
+            return r;
+        }
+        FOFFormula::Quantified {
+            quantifier: Quantifier::Exists,
+            variables,
+            formula,
+        } => {
+            for v in variables {
+                m.exist_scope.insert(*v, in_scope.iter().copied().collect());
+            }
+            return match_skolem_formula(formula, conc, univ, exist, in_scope, m);
+        }
+        _ => {}
+    }
+
+    // 2) Strip conclusion universal quantifiers (do not consume `pat`); a
+    //    surviving existential means nothing was Skolemised → reject.
+    match conc {
+        FOFFormula::Quantified {
+            quantifier: Quantifier::Forall,
+            formula,
+            ..
+        } => return match_skolem_formula(pat, formula, univ, exist, in_scope, m),
+        FOFFormula::Quantified {
+            quantifier: Quantifier::Exists,
+            ..
+        } => return false,
+        _ => {}
+    }
+
+    // 3) Both sides are now quantifier-free at the top: match structurally.
+    match (pat, conc) {
+        (FOFFormula::Atomic(a), FOFFormula::Atomic(b)) => match_skolem_atomic(a, b, univ, exist, m),
+        (FOFFormula::Negation(a), FOFFormula::Negation(b)) => {
+            match_skolem_formula(a, b, univ, exist, in_scope, m)
+        }
+        (
+            FOFFormula::Binary {
+                left: l1,
+                connective: c1,
+                right: r1,
+            },
+            FOFFormula::Binary {
+                left: l2,
+                connective: c2,
+                right: r2,
+            },
+        ) => {
+            c1 == c2
+                && match_skolem_formula(l1, l2, univ, exist, in_scope, m)
+                && match_skolem_formula(r1, r2, univ, exist, in_scope, m)
+        }
+        (FOFFormula::Equality(a, b), FOFFormula::Equality(c, d))
+        | (FOFFormula::Inequality(a, b), FOFFormula::Inequality(c, d)) => {
+            match_skolem_term(a, c, univ, exist, m) && match_skolem_term(b, d, univ, exist, m)
+        }
+        _ => false,
+    }
+}
+
+fn match_skolem_atomic<'p>(
+    pat: &FOFAtomicFormula<'p>,
+    conc: &FOFAtomicFormula<'p>,
+    univ: &HashSet<&str>,
+    exist: &HashSet<&str>,
+    m: &mut SkolemMatch<'p>,
+) -> bool {
+    use FOFAtomicFormula::*;
+    match (pat, conc) {
+        (True, True) | (False, False) => true,
+        (Plain(w1, a1), Plain(w2, a2)) => {
+            w1 == w2 && match_skolem_term_list(a1, a2, univ, exist, m)
+        }
+        (Defined(w1, a1), Defined(w2, a2)) => {
+            w1 == w2 && match_skolem_term_list(a1, a2, univ, exist, m)
+        }
+        (System(w1, a1), System(w2, a2)) => {
+            w1 == w2 && match_skolem_term_list(a1, a2, univ, exist, m)
+        }
+        _ => false,
+    }
+}
+
+fn match_skolem_term_list<'p>(
+    pat: &[FOFTerm<'p>],
+    conc: &[FOFTerm<'p>],
+    univ: &HashSet<&str>,
+    exist: &HashSet<&str>,
+    m: &mut SkolemMatch<'p>,
+) -> bool {
+    pat.len() == conc.len()
+        && pat
+            .iter()
+            .zip(conc)
+            .all(|(a, b)| match_skolem_term(a, b, univ, exist, m))
+}
+
+fn match_skolem_term<'p>(
+    pat: &FOFTerm<'p>,
+    conc: &FOFTerm<'p>,
+    univ: &HashSet<&str>,
+    exist: &HashSet<&str>,
+    m: &mut SkolemMatch<'p>,
+) -> bool {
+    match pat {
+        // Existential variable: binds to the (Skolem) term that replaced it,
+        // consistently across all occurrences.
+        FOFTerm::Variable(v) if exist.contains(v) => match m.exist_term.get(v) {
+            Some(prev) => term_eq(prev, conc),
+            None => {
+                m.exist_term.insert(v, conc.clone());
+                true
+            }
+        },
+        // Universal variable: must map to a conclusion *variable*, consistently.
+        FOFTerm::Variable(v) if univ.contains(v) => match conc {
+            FOFTerm::Variable(w) => match m.uni_map.get(v) {
+                Some(prev) => prev == w,
+                None => {
+                    m.uni_map.insert(v, w);
+                    true
+                }
+            },
+            _ => false,
+        },
+        // Any other variable (e.g. inner-bound): must be identical.
+        FOFTerm::Variable(v) => matches!(conc, FOFTerm::Variable(w) if w == v),
+        FOFTerm::Function(w, args) => match conc {
+            FOFTerm::Function(w2, a2) => {
+                w == w2 && match_skolem_term_list(args, a2, univ, exist, m)
+            }
+            _ => false,
+        },
+        FOFTerm::DefinedFunction(w, args) => match conc {
+            FOFTerm::DefinedFunction(w2, a2) => {
+                w == w2 && match_skolem_term_list(args, a2, univ, exist, m)
+            }
+            _ => false,
+        },
+        FOFTerm::SystemFunction(w, args) => match conc {
+            FOFTerm::SystemFunction(w2, a2) => {
+                w == w2 && match_skolem_term_list(args, a2, univ, exist, m)
+            }
+            _ => false,
+        },
+        FOFTerm::Number(_) | FOFTerm::DistinctObject(_) => term_eq(pat, conc),
+    }
+}
+
+/// Positively verify an unannotated `skolemize` step: confirm the conclusion is
+/// exactly the parent with every existential (at any depth) replaced by a
+/// distinct fresh Skolem term over precisely the universals in scope at it.
+/// Returns `true` only on a fully-confirmed sound Skolemisation; `false` means
+/// "could not confirm" and the caller falls back to the conservative path.
+fn try_positive_skolemize<'p>(
+    parent_f: &'p FOFFormula<'p>,
+    step_f: &'p FOFFormula<'p>,
+    fresh: &[&str],
+    registry: &SkolemRegistry,
+) -> bool {
+    let mut univ_set: HashSet<&str> = HashSet::new();
+    let mut exist_set: HashSet<&str> = HashSet::new();
+    collect_quantified_vars(parent_f, &mut univ_set, &mut exist_set);
+    if exist_set.is_empty() {
+        return false; // nothing to Skolemise this way
+    }
+    // A name bound both universally and existentially would make the analysis
+    // ambiguous; such proofs are not produced after `variable_rename`.
+    if univ_set.intersection(&exist_set).next().is_some() {
+        return false;
+    }
+
+    let mut m = SkolemMatch::default();
+    let mut in_scope: Vec<&str> = Vec::new();
+    if !match_skolem_formula(
+        parent_f,
+        step_f,
+        &univ_set,
+        &exist_set,
+        &mut in_scope,
+        &mut m,
+    ) {
+        return false;
+    }
+
+    // The universal renaming must be injective.
+    let mut seen_conc: HashSet<&str> = HashSet::new();
+    for w in m.uni_map.values() {
+        if !seen_conc.insert(*w) {
+            return false;
+        }
+    }
+
+    let fresh_set: HashSet<&str> = fresh.iter().copied().collect();
+    let mut used_syms: HashSet<&str> = HashSet::new();
+    for e in &exist_set {
+        // Every existential must have been witnessed and have a recorded scope.
+        let (Some(term), Some(scope)) = (m.exist_term.get(e), m.exist_scope.get(e)) else {
+            return false;
+        };
+        let (sym, args) = match term {
+            FOFTerm::Function(w, args) => (w.as_str(), args),
+            _ => return false, // a Skolem witness must be a function/constant term
+        };
+        if !fresh_set.contains(sym) || registry.seen_symbols.contains(sym) {
+            return false; // symbol not fresh
+        }
+        if !used_syms.insert(sym) {
+            return false; // same Skolem symbol reused for two existentials
+        }
+        // The Skolem arguments must be exactly the (renamed) in-scope universals
+        // — distinct plain variables, no more, no fewer.
+        let mut arg_vars: Vec<&str> = Vec::with_capacity(args.len());
+        for a in args {
+            match a {
+                FOFTerm::Variable(v) => arg_vars.push(v),
+                _ => return false,
+            }
+        }
+        let arg_set: HashSet<&str> = arg_vars.iter().copied().collect();
+        if arg_set.len() != arg_vars.len() {
+            return false; // duplicate argument
+        }
+        let mut expected: HashSet<&str> = HashSet::new();
+        for u in scope {
+            match m.uni_map.get(u) {
+                Some(w) => {
+                    expected.insert(*w);
+                }
+                // An in-scope universal never used in the body has no discovered
+                // name; we cannot confirm dependency precisely, so bail safely.
+                None => return false,
+            }
+        }
+        if arg_set != expected {
+            return false;
+        }
+    }
+
+    true
+}
+
 fn wrap_universals<'p>(vars: &[&'p str], body: FOFFormula<'p>) -> FOFFormula<'p> {
     let mut cur = body;
     for v in vars.iter().rev() {
@@ -607,6 +945,19 @@ fn check_e_style_skolemize<'p>(
         ));
     }
 
+    // Positive verification: reconstruct the Skolemisation structurally and
+    // confirm the conclusion is exactly the parent with each existential
+    // replaced by a distinct fresh Skolem term over its in-scope universals.
+    // On success this is a *confirmed* sound step (`Sound` → contributes to
+    // `Verified`); the proofs the dataset emits without a
+    // `skolemize(Var, sk(...))` annotation (e.g. PyRes) are handled here.
+    if try_positive_skolemize(parent_f, step_f, &fresh, registry) {
+        for s in &fresh {
+            registry.record(s);
+        }
+        return StepOutcome::Sound;
+    }
+
     // Try to enforce arity / no-illegal-capture if the parent has a prenex
     // quantifier prefix. A correct Skolemisation replaces each existential by a
     // term over *exactly* the universals in scope at that existential, so the
@@ -749,12 +1100,10 @@ mod tests {
 
     /// PyRes emits multi-existential Skolemisation in a single `skolemize`
     /// step: `? [X2] : ! [X3,X4] : ? [X5] : …` collapses to a constant Skolem
-    /// for `X2` and an arity-2 Skolem `sk(X3,X4)` for `X5`. The two Skolems
-    /// have *different* arities/scopes, which the old single-`expected_vars`
-    /// check wrongly flagged as `Unsound` (a −1 false reject on a valid proof).
-    /// It must now be at worst `Unknown`, never `Unsound`.
+    /// for `X2` and an arity-2 Skolem `sk(X3,X4)` for `X5`. With positive
+    /// verification this is now confirmed `Sound` (→ `Verified`).
     #[test]
-    fn nested_multi_existential_skolemize_is_not_unsound() {
+    fn nested_multi_existential_skolemize_is_sound() {
         let parent = nth_fof(
             "fof(c2, negated_conjecture, \
              (? [X2]: (! [X3,X4]: (? [X5]: \
@@ -774,8 +1123,88 @@ mod tests {
         let mut reg = SkolemRegistry::new();
         let outcome = check(step, Some(parent), &mut reg);
         assert!(
-            !matches!(outcome, StepOutcome::Unsound(_)),
-            "valid nested multi-existential skolemization must not be Unsound, got {outcome:?}"
+            matches!(outcome, StepOutcome::Sound),
+            "valid nested multi-existential skolemization must be Sound, got {outcome:?}"
+        );
+    }
+
+    /// Skolemisation pulls universals to the front, *regrouping* binders that
+    /// were separated by eliminated existentials:
+    /// `! X2 ? X3 ! X4 ? X5 . φ`  →  `! [X2,X4] . φ[X3:=sk1(X2), X5:=sk2(X2,X4)]`.
+    /// The matcher must strip quantifiers from each side independently.
+    #[test]
+    fn regrouped_universals_skolemize_is_sound() {
+        let parent = nth_fof(
+            "fof(c2, negated_conjecture, \
+             (! [X2]: (? [X3]: (! [X4]: (? [X5]: \
+              (big_f(X2,X3) & (big_f(X4,X5) & big_f(X3,X5))))))), \
+             inference(variable_rename,[status(thm)],[c1])).",
+            0,
+        );
+        let step = nth_fof(
+            "fof(c3, negated_conjecture, \
+             (! [X2,X4]: (big_f(X2,skolem0001(X2)) & \
+              (big_f(X4,skolem0002(X2,X4)) & big_f(skolem0001(X2),skolem0002(X2,X4))))), \
+             inference(skolemize,[status(esa)],[c2])).",
+            0,
+        );
+        let mut reg = SkolemRegistry::new();
+        let outcome = check(step, Some(parent), &mut reg);
+        assert!(
+            matches!(outcome, StepOutcome::Sound),
+            "regrouped-universal skolemization must be Sound, got {outcome:?}"
+        );
+    }
+
+    /// An existential nested *inside the matrix* (not in the leading prefix)
+    /// must still be verified: `? X2 ! X3 ? X5 . (p(X2,X5) & ? X6. q(X3,X6))`.
+    #[test]
+    fn matrix_nested_existential_skolemize_is_sound() {
+        let parent = nth_fof(
+            "fof(c2, negated_conjecture, \
+             (? [X2]: (! [X3]: (? [X5]: \
+              (big_f(X2,X5) & (? [X6]: big_g(X3,X6)))))), \
+             inference(variable_rename,[status(thm)],[c1])).",
+            0,
+        );
+        let step = nth_fof(
+            "fof(c3, negated_conjecture, \
+             (! [X3]: (big_f(skolem0001,skolem0002(X3)) & big_g(X3,skolem0003(X3)))), \
+             inference(skolemize,[status(esa)],[c2])).",
+            0,
+        );
+        let mut reg = SkolemRegistry::new();
+        let outcome = check(step, Some(parent), &mut reg);
+        assert!(
+            matches!(outcome, StepOutcome::Sound),
+            "matrix-nested existential skolemization must be Sound, got {outcome:?}"
+        );
+    }
+
+    /// A Skolem term that *under-captures* its in-scope universals
+    /// (`sk(X2,X4)` shrunk to `sk(X2)`) is an unsound dependency. The positive
+    /// check must NOT confirm it (no false `Sound`/`Verified`); it falls back to
+    /// the conservative `Unknown`/`NotVerified`.
+    #[test]
+    fn under_capturing_skolem_is_not_sound() {
+        let parent = nth_fof(
+            "fof(c2, negated_conjecture, \
+             (! [X2]: (! [X4]: (? [X5]: big_f(X2,X4,X5)))), \
+             inference(variable_rename,[status(thm)],[c1])).",
+            0,
+        );
+        // X5's Skolem should depend on {X2,X4} but here only on {X2}.
+        let step = nth_fof(
+            "fof(c3, negated_conjecture, \
+             (! [X2,X4]: big_f(X2,X4,skolem0001(X2))), \
+             inference(skolemize,[status(esa)],[c2])).",
+            0,
+        );
+        let mut reg = SkolemRegistry::new();
+        let outcome = check(step, Some(parent), &mut reg);
+        assert!(
+            !matches!(outcome, StepOutcome::Sound),
+            "under-capturing skolem must not be confirmed Sound, got {outcome:?}"
         );
     }
 
@@ -801,4 +1230,3 @@ mod tests {
         );
     }
 }
-

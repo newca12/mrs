@@ -229,29 +229,32 @@ Full PyRes (170 + 170) and an Otter sample (60 + 60), 60 s per proof:
 
 | dataset / category | backend | Verified | FailedVerified | NotVerified / Error |
 |---|---|---|---|---|
-| PyRes / original (valid)   | **mrs-proover** | 86  | **0**  | 84 |
-| PyRes / original (valid)   | Nörgler         | 155 | **11** | 4  |
-| PyRes / falsified (evil)   | **mrs-proover** | 0   | **170**| 0  |
-| PyRes / falsified (evil)   | Nörgler         | 0   | 165    | 5  |
-| Otter / original (valid)   | **mrs-proover** | 0   | **0**  | 60 |
-| Otter / original (valid)   | Nörgler         | 60  | **0**  | 0  |
-| Otter / falsified (evil)   | **mrs-proover** | 0   | **60** | 0  |
-| Otter / falsified (evil)   | Nörgler         | 0   | 59     | 1  |
+| PyRes / original (valid)   | **mrs-proover** | **160** | **0**  | 10 |
+| PyRes / original (valid)   | Nörgler         | 155     | **11** | 4  |
+| PyRes / falsified (evil)   | **mrs-proover** | 0       | **170**| 0  |
+| PyRes / falsified (evil)   | Nörgler         | 0       | 165    | 5  |
+| Otter / original (valid)   | **mrs-proover** | 0       | **0**  | 60 |
+| Otter / original (valid)   | Nörgler         | 60      | **0**  | 0  |
+| Otter / falsified (evil)   | **mrs-proover** | 0       | **60** | 0  |
+| Otter / falsified (evil)   | Nörgler         | 0       | 59     | 1  |
 
 What this says — honestly, with no spin:
 
-**Soundness (the −10 / −1 dimension), mrs-proover is strictly safer.**
+**Soundness (the −10 / −1 dimension): mrs-proover is strictly safer.**
 - mrs-proover: **0 false rejects** on valid proofs and **0 false accepts** on
   evil proofs across all 460 proofs, catching **230/230 (100%)** mutations.
 - Nörgler: **11 false rejects** (−1 each) on valid PyRes proofs ("does not use
   correct formula from file" — its strict leaf↔problem comparison rejects
   PyRes-reformatted axioms), and catches 224/230 (97.4%) mutations.
 
-**Coverage of valid proofs, Nörgler is more complete.**
-- PyRes: Nörgler verifies 155/170, mrs-proover 86/170. *All* of mrs-proover's
-  84 `NotVerified` are unannotated `skolemize` steps it conservatively defers
-  to `Unknown` (it lacks the `skolemize(Var, sk(...))` annotation to confirm
-  them positively, so it declines rather than risk a −1).
+**Coverage of valid proofs: now comparable, and mrs-proover leads on PyRes.**
+- PyRes: mrs-proover verifies **160/170**, Nörgler 155/170. The earlier coverage
+  gap was closed by *positively verifying unannotated `skolemize` steps* (see
+  below) — it now reconstructs the Skolemisation and confirms it structurally
+  instead of deferring to `Unknown`. The 10 remaining `NotVerified` are skolemize
+  steps where PyRes additionally **re-associates the conjunction**
+  (`(A∧B)∧(C∧D)` → `A∧(B∧(C∧D))`); the structural matcher is not yet AC-aware, so
+  it safely declines (0 pts) rather than risk a −1. (Tracked in `TODO_PROOVER.md`.)
 - Otter: Nörgler verifies 60/60, mrs-proover 0/60 — but **only because the
   Zenodo Otter set ships no problem files**. Without the problem, mrs-proover
   cannot validate the `file(_,unknown)` leaves and degrades to `NotVerified`;
@@ -259,18 +262,22 @@ What this says — honestly, with no spin:
   structure. The real competition always supplies the problem file, so this is
   a dataset artefact, not a competition weakness.
 
-**Net:** on raw ProoVer points the higher coverage means Nörgler edges ahead on
-this dataset (≈ +474 vs +426 on PyRes alone), but mrs-proover does it with a
-**perfect safety record** — never a −1, never the fatal −10, and 100% mutation
-detection. The benchmark's value is the concrete gap it exposes: mrs-proover's
-remaining upside is *coverage of valid proofs*, chiefly **positively verifying
-unannotated `skolemize` steps** instead of deferring them. Tracked in
-`TODO_PROOVER.md`.
+**Net:** on PyRes — the half of the benchmark with problem files, i.e. the
+competition-realistic half — mrs-proover now **leads on every axis**: more valid
+proofs verified (160 vs 155), zero false rejects (vs 11), and 100% mutation
+detection (170/170 vs 165). On Otter it is held back only by the dataset's
+missing problem files, which the competition supplies.
 
-> Found and fixed while running this benchmark: `mrs-proover` previously
-> reported `Unsound` (a −1 false reject) on 8/170 valid PyRes proofs whose
-> single `skolemize` step eliminates existentials at *different* quantifier
-> depths (e.g. `? [X2] : ! [X3,X4] : ? [X5] : …`, giving a constant Skolem for
-> `X2` and `sk(X3,X4)` for `X5`). The arity check now tracks per-existential
-> scopes; see `checks::skolemize::collect_existential_scopes`.
+> **Two `skolemize` improvements were made while running this benchmark:**
+> 1. A −1 false-reject bug: multi-existential steps eliminating existentials at
+>    *different* quantifier depths (e.g. `? [X2] : ! [X3,X4] : ? [X5] : …`,
+>    giving a constant Skolem for `X2` and `sk(X3,X4)` for `X5`) were wrongly
+>    reported `Unsound`. The arity check now tracks per-existential scopes.
+> 2. Positive verification of unannotated `skolemize` steps
+>    (`checks::skolemize::try_positive_skolemize`): the conclusion is matched
+>    against the parent with every existential (at any depth, across regrouped
+>    universal binders) replaced by a distinct fresh Skolem term over exactly its
+>    in-scope universals — confirmed `Verified` instead of deferred. This raised
+>    PyRes coverage from 86 to 160 with no loss of soundness (falsified proofs
+>    still never `Verified`).
 

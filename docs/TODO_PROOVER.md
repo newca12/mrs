@@ -85,30 +85,39 @@ Result on full PyRes (170+170) + an Otter sample (60+60), 60 s/proof:
 - **Soundness — mrs-proover is strictly safer.** 0 false rejects and 0 false
   accepts across all 460 proofs, catching **230/230 (100%)** mutations. Nörgler
   has **11 false rejects** (−1 each) on valid PyRes proofs and misses 6 mutations.
-- **Coverage — Nörgler is more complete.** It verifies 155/170 PyRes (vs 86) and
-  60/60 Otter (vs 0). On raw points its coverage edges ahead (≈ +474 vs +426 on
-  PyRes), but with a worse safety record.
+- **Coverage — mrs-proover now leads on PyRes.** After adding positive
+  verification of unannotated `skolemize` steps it verifies **160/170 PyRes**
+  (vs Nörgler's 155). On Otter it verifies 0/60 only because the dataset ships
+  no problem files (the competition always supplies them), so it cannot validate
+  the `file(_,unknown)` leaves.
 
-Concrete gaps the benchmark exposed (now the real follow-up work, see below):
-1. mrs-proover defers all unannotated `skolemize` steps to `Unknown` instead of
-   positively verifying them — the single biggest coverage gap on PyRes.
-2. Without a problem file mrs-proover cannot validate `file(_,unknown)` leaves
-   (all Otter originals → `NotVerified`); harmless at the competition, which
-   always supplies the problem.
+On the competition-realistic half (PyRes, which has problem files) mrs-proover
+leads on every axis: coverage (160 vs 155), false rejects (0 vs 11), and mutation
+detection (170/170 vs 165).
 
-A real soundness bug was found and fixed during this run: multi-existential
-`skolemize` steps were false-rejected (−1) on 8/170 valid PyRes proofs; the
-arity check now tracks per-existential scopes.
+Two `skolemize` improvements were made during this run:
+1. **Soundness fix.** Multi-existential steps eliminating existentials at
+   different quantifier depths were false-rejected (−1) on 8/170 valid PyRes
+   proofs; the arity check now tracks per-existential scopes.
+2. **Coverage.** `try_positive_skolemize` reconstructs the Skolemisation and
+   confirms it structurally (existentials at any depth, across regrouped
+   universal binders), raising PyRes coverage from 86 to 160 with no loss of
+   soundness.
 
-### Positively verify unannotated `skolemize` steps — **more coverage**
+### Remaining `skolemize` coverage — **AC-aware matrix matching**
 **File:** `crates/mrs-proover/src/checks/skolemize.rs`
 
-The E-style fallback (`check_e_style_skolemize`) only ever returns `Unknown`: it
-infers the fresh Skolem symbols and sanity-checks their arity, but never
-*positively* confirms the step. Reconstructing the Skolemisation (replace each
-existential by `sk(in-scope universals)`) and α/AC-comparing against the
-conclusion would turn ~84/170 PyRes `NotVerified` into `Verified` (+1), closing
-most of the coverage gap vs Nörgler without weakening soundness.
+The 10/170 PyRes proofs still `NotVerified` are `skolemize` steps where PyRes
+also **re-associates the conjunction** (`(A∧B)∧(C∧D)` → `A∧(B∧(C∧D))`).
+`match_skolem_formula` matches the matrix structurally and is not AC-aware, so it
+safely declines (0 pts, never a −1). Flattening ∧/∨ chains and matching the
+conjuncts as a multiset (with Skolem-term binding) would recover these.
+
+### Without a problem file, validate `file(_,unknown)` leaves structurally
+The Otter half ships no problem files, so every original Otter proof degrades to
+`NotVerified`. Harmless at the competition (which supplies the problem), but
+verifying the inference structure and treating leaves as assumptions (as Nörgler
+does) would close it.
 
 ---
 
@@ -136,4 +145,6 @@ most of the coverage gap vs Nörgler without weakening soundness.
 | Basic E/Vampire structural parsing for CASC dataset hardening | Low–Medium | ✅ Done |
 | Benchmark against Nörgler | After fixes | ✅ Done (full Zenodo 19792604 head-to-head; see §6) |
 | Multi-existential `skolemize` false-reject fixed | High | ✅ Done |
-| Positively verify unannotated `skolemize` steps (coverage) | Medium | ❌ TODO |
+| Positively verify unannotated `skolemize` steps (coverage 86→160 on PyRes) | Medium | ✅ Done |
+| AC-aware matrix matching for re-associated `skolemize` steps | Low | ❌ TODO |
+| Validate `file(_,unknown)` leaves without a problem file (Otter) | Low | ❌ TODO |
