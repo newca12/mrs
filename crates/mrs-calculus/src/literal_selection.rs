@@ -201,17 +201,23 @@ fn id_term_weight(term: TermId, bank: &TermBank) -> u32 {
     }
 }
 
-/// Ordered-inference restriction: for a clause that has **no selected negative
-/// literal** and whose literals are **all predicate atoms** (no equality), keep
-/// only the literals whose atom is maximal under the term ordering. This is the
-/// standard maximal-literal restriction of ordered resolution/superposition and
-/// is refutationally complete.
+/// Ordered-inference restriction: for a clause that has **no negative literal**
+/// and whose literals are **all predicate atoms** (no equality), return the
+/// literals whose atom is maximal under the term ordering. This is the standard
+/// maximal-literal restriction of ordered resolution/superposition and is
+/// refutationally complete.
 ///
 /// For any other clause shape (has a negative literal → selection already
 /// restricts; or contains an equality literal → handled conservatively) the
-/// input `base_selection` is returned unchanged, so completeness is never at
-/// risk: we only ever *prune* inferences from all-positive predicate clauses
-/// down to their order-maximal literals.
+/// input `base_selection` is returned unchanged.
+///
+/// IMPORTANT: this returns the **full** KBO-maximal set, NOT its intersection
+/// with `base_selection`. Intersecting was a soundness bug: under selection
+/// strategies that pick a single max-*weight* positive literal (e.g.
+/// `MaxNegativeOrMaxPositive`), the intersection could drop the genuinely
+/// KBO-maximal literal, leaving inferences unable to fire on it → refutational
+/// incompleteness → premature saturation → false `Satisfiable` on unsatisfiable
+/// EPR problems (SYN861/862/866). Always returning the maximal set fixes this.
 ///
 /// Predicate atoms `p(t1,…,tn)` are compared by interning the synthetic term
 /// `p(t1,…,tn)` and using the term ordering; maximality computed on the
@@ -361,5 +367,96 @@ mod tests {
 
         let selected = selected_literals(&clause, &LiteralSelection::AllNegative);
         assert_eq!(selected, vec![0, 2]);
+    }
+
+    // --- restrict_to_maximal_id (ordered-inference) regression tests ---
+
+    /// Regression for the EPR false-`Satisfiable` bug (SYN861/862/866):
+    /// `restrict_to_maximal_id` must return the FULL KBO-maximal set, never the
+    /// intersection with a restrictive `base_selection`. With clause
+    /// `p(a) | p(f(a))`, the KBO-maximal literal is `p(f(a))` (index 1). Even if
+    /// `base_selection` is the non-maximal `[0]`, the result must be `[1]` —
+    /// otherwise resolution can never fire on the maximal literal and the search
+    /// saturates prematurely (unsound on unsatisfiable problems).
+    #[test]
+    fn restrict_to_maximal_returns_full_maximal_set_not_intersection() {
+        use mrs_core::term_bank::TermBank;
+
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let f = syms.intern("f");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+
+        // p(a) | p(f(a))  — all-positive, predicate-only.
+        let clause = make_clause(
+            &mut id_gen,
+            vec![
+                Literal::pos(Atom::pred(p, vec![Term::constant(a)])),
+                Literal::pos(Atom::pred(p, vec![Term::app(f, vec![Term::constant(a)])])),
+            ],
+        );
+
+        let mut bank = TermBank::new();
+        let id_clause = bank.clause_from_legacy(&clause);
+        let ordering = crate::ordering::TermOrdering::KBO;
+
+        // KBO: p(f(a)) > p(a), so the maximal literal is index 1.
+        // Even with a restrictive (non-maximal) base_selection of [0], the
+        // result must be the maximal set [1] — NOT [0], and not empty.
+        let restricted = restrict_to_maximal_id(&id_clause, &[0], &ordering, &mut bank);
+        assert_eq!(
+            restricted,
+            vec![1],
+            "must return the KBO-maximal literal, not the base_selection"
+        );
+
+        // With base_selection = all literals, same maximal set.
+        let restricted_all = restrict_to_maximal_id(&id_clause, &[0, 1], &ordering, &mut bank);
+        assert_eq!(restricted_all, vec![1]);
+    }
+
+    /// `restrict_to_maximal_id` is a no-op (returns `base_selection` unchanged)
+    /// for clauses that have a negative literal, contain equality, or are units.
+    #[test]
+    fn restrict_to_maximal_is_noop_for_non_all_positive_predicate_clauses() {
+        use mrs_core::term_bank::TermBank;
+
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+        let f = syms.intern("f");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+        let ordering = crate::ordering::TermOrdering::KBO;
+
+        // Has a negative literal → unchanged.
+        let with_neg = make_clause(
+            &mut id_gen,
+            vec![
+                Literal::pos(Atom::pred(p, vec![Term::app(f, vec![Term::constant(a)])])),
+                Literal::neg(Atom::pred(q, vec![Term::constant(a)])),
+            ],
+        );
+        let mut bank = TermBank::new();
+        let id_with_neg = bank.clause_from_legacy(&with_neg);
+        assert_eq!(
+            restrict_to_maximal_id(&id_with_neg, &[0, 1], &ordering, &mut bank),
+            vec![0, 1]
+        );
+
+        // Contains an equality literal → unchanged (conservative).
+        let with_eq = make_clause(
+            &mut id_gen,
+            vec![
+                Literal::pos(Atom::pred(p, vec![Term::app(f, vec![Term::constant(a)])])),
+                Literal::pos(Atom::eq(Term::constant(a), Term::constant(a))),
+            ],
+        );
+        let id_with_eq = bank.clause_from_legacy(&with_eq);
+        assert_eq!(
+            restrict_to_maximal_id(&id_with_eq, &[0, 1], &ordering, &mut bank),
+            vec![0, 1]
+        );
     }
 }

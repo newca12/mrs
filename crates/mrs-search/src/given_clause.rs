@@ -1632,4 +1632,61 @@ mod tests {
         let result = search(&mut state, &config);
         assert!(matches!(result, SearchResult::Refutation(..)));
     }
+
+    /// Regression for the EPR false-`Satisfiable` bug (SYN861/862/866): an
+    /// unsatisfiable, all-positive-containing EPR clause set must REFUTE (not
+    /// saturate) under `ordered_inferences = true`, including with the
+    /// `MaxNegativeOrMaxPositive` selection that exposed the maximal-literal
+    /// intersection bug. A premature `Saturated` here would mean the prover
+    /// could emit a false `Satisfiable` on an unsatisfiable problem.
+    #[test]
+    fn ordered_inferences_refutes_all_positive_epr_unsat() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+
+        // p(a) | q(a) , ~p(a) , ~q(a)  — unsatisfiable.
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![
+                Literal::pos(Atom::pred(p, vec![Term::constant(a)])),
+                Literal::pos(Atom::pred(q, vec![Term::constant(a)])),
+            ],
+            "ax1",
+            "axiom",
+        );
+        let c2 = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::pred(p, vec![Term::constant(a)]))],
+            "ax2",
+            "axiom",
+        );
+        let c3 = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::pred(q, vec![Term::constant(a)]))],
+            "ax3",
+            "axiom",
+        );
+
+        let mut state = crate::state::SearchState::new(
+            vec![c1, c2, c3],
+            id_gen,
+            std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+            std::sync::Arc::new(mrs_core::SymbolTable::new()),
+            true,
+        );
+        let config = SearchConfig {
+            literal_selection: crate::LiteralSelection::MaxNegativeOrMaxPositive,
+            ordered_inferences: true,
+            ..SearchConfig::default()
+        };
+        let result = search(&mut state, &config);
+        assert!(
+            matches!(result, SearchResult::Refutation(..)),
+            "ordered_inferences must not cause premature saturation on \
+             unsatisfiable all-positive EPR clauses (got {result:?})"
+        );
+    }
 }
