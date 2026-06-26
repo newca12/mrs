@@ -35,7 +35,7 @@ pub struct LiteralIndex {
     /// `IdClause`s stored in the index.
     clauses: HashMap<ClauseId, IdClause>,
     /// Feature vectors for stored clauses (used for subsumption filtering).
-    fvs: HashMap<ClauseId, FeatureVector>,
+    fvs: Vec<(ClauseId, FeatureVector)>,
     /// Maps (predicate, polarity) -> STree of clause IDs.
     pred_index: HashMap<LitKey, crate::stree::STreeId<ClauseId>>,
     /// Clause IDs that contain at least one positive equality.
@@ -49,7 +49,7 @@ impl LiteralIndex {
     pub fn new() -> Self {
         LiteralIndex {
             clauses: HashMap::default(),
-            fvs: HashMap::default(),
+            fvs: Vec::new(),
             pred_index: HashMap::default(),
             pos_eq_clauses: HashSet::default(),
             neg_eq_clauses: HashSet::default(),
@@ -60,7 +60,7 @@ impl LiteralIndex {
     pub fn insert(&mut self, clause: IdClause, bank: &TermBank) {
         let id = clause.id;
         self.fvs
-            .insert(id, FeatureVector::from_id_clause(&clause, bank));
+            .push((id, FeatureVector::from_id_clause(&clause, bank)));
 
         for lit in &clause.literals {
             match &lit.atom {
@@ -87,7 +87,9 @@ impl LiteralIndex {
 
     /// Removes a clause from the index by ID. Returns the removed clause if found.
     pub fn remove(&mut self, id: ClauseId, bank: &TermBank) -> Option<IdClause> {
-        self.fvs.remove(&id);
+        if let Some(pos) = self.fvs.iter().position(|(i, _)| *i == id) {
+            self.fvs.swap_remove(pos);
+        }
         if let Some(clause) = self.clauses.remove(&id) {
             for lit in &clause.literals {
                 match &lit.atom {
@@ -157,10 +159,10 @@ impl LiteralIndex {
     /// Returns clauses that could potentially subsume the target (cloned).
     pub fn get_subsumption_candidates(&self, target_fv: &FeatureVector) -> Vec<IdClause> {
         let mut res: Vec<IdClause> = self
-            .clauses
+            .fvs
             .iter()
-            .filter(|(id, _)| self.fvs.get(*id).unwrap().can_subsume(target_fv))
-            .map(|(_, c)| c.clone())
+            .filter(|(_, fv)| fv.can_subsume(target_fv))
+            .filter_map(|(id, _)| self.clauses.get(id).cloned())
             .collect();
         res.sort_unstable_by_key(|c| c.id);
         res
@@ -169,10 +171,10 @@ impl LiteralIndex {
     /// Returns clauses that could potentially BE subsumed by the given clause (cloned).
     pub fn get_subsumed_candidates(&self, subsumer_fv: &FeatureVector) -> Vec<IdClause> {
         let mut res: Vec<IdClause> = self
-            .clauses
+            .fvs
             .iter()
-            .filter(|(id, _)| subsumer_fv.can_subsume(self.fvs.get(*id).unwrap()))
-            .map(|(_, c)| c.clone())
+            .filter(|(_, fv)| subsumer_fv.can_subsume(fv))
+            .filter_map(|(id, _)| self.clauses.get(id).cloned())
             .collect();
         res.sort_unstable_by_key(|c| c.id);
         res
@@ -184,15 +186,10 @@ impl LiteralIndex {
         target_fv: &FeatureVector,
     ) -> Vec<IdClause> {
         let mut res: Vec<IdClause> = self
-            .clauses
+            .fvs
             .iter()
-            .filter(|(id, _)| {
-                self.fvs
-                    .get(*id)
-                    .unwrap()
-                    .can_subsumption_resolve(target_fv)
-            })
-            .map(|(_, c)| c.clone())
+            .filter(|(_, fv)| fv.can_subsumption_resolve(target_fv))
+            .filter_map(|(id, _)| self.clauses.get(id).cloned())
             .collect();
         res.sort_unstable_by_key(|c| c.id);
         res
