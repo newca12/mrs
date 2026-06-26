@@ -131,6 +131,19 @@ impl FeatureVector {
         }
     }
 
+    #[inline(always)]
+    fn sym_counts_le(&self, other: &FeatureVector) -> bool {
+        let mut any_greater = 0;
+        for i in 0..64 {
+            any_greater |= if self.sym_counts[i] > other.sym_counts[i] {
+                1
+            } else {
+                0
+            };
+        }
+        any_greater == 0
+    }
+
     /// Returns true if this feature vector could potentially subsume `other`.
     /// This is a fast necessary (but not sufficient) condition for subsumption.
     ///
@@ -147,16 +160,7 @@ impl FeatureVector {
             return false;
         }
 
-        let mut any_greater = 0;
-        for i in 0..64 {
-            any_greater |= if self.sym_counts[i] > other.sym_counts[i] {
-                1
-            } else {
-                0
-            };
-        }
-
-        any_greater == 0
+        self.sym_counts_le(other)
     }
 
     /// Returns true if this feature vector could potentially subsumption-resolve a target
@@ -174,16 +178,7 @@ impl FeatureVector {
             return false;
         }
 
-        let mut invalid = 0;
-        for i in 0..64 {
-            invalid |= if self.sym_counts[i] > 0 && other.sym_counts[i] == 0 {
-                1
-            } else {
-                0
-            };
-        }
-
-        invalid == 0
+        self.sym_counts_le(other)
     }
 }
 
