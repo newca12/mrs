@@ -348,6 +348,8 @@ fn collect_quantified_vars<'p>(
     f: &FOFFormula<'p>,
     univ: &mut HashSet<&'p str>,
     exist: &mut HashSet<&'p str>,
+    in_scope: &mut Vec<&'p str>,
+    exist_scope: &mut HashMap<&'p str, HashSet<&'p str>>,
 ) {
     match f {
         FOFFormula::Quantified {
@@ -355,19 +357,29 @@ fn collect_quantified_vars<'p>(
             variables,
             formula,
         } => {
-            let target = match quantifier {
-                Quantifier::Forall => &mut *univ,
-                Quantifier::Exists => &mut *exist,
-            };
-            for v in variables {
-                target.insert(*v);
+            let is_forall = *quantifier == Quantifier::Forall;
+            if is_forall {
+                for v in variables {
+                    univ.insert(*v);
+                    in_scope.push(*v);
+                }
+            } else {
+                for v in variables {
+                    exist.insert(*v);
+                    exist_scope.insert(*v, in_scope.iter().copied().collect());
+                }
             }
-            collect_quantified_vars(formula, univ, exist);
+            collect_quantified_vars(formula, univ, exist, in_scope, exist_scope);
+            if is_forall {
+                for _ in variables {
+                    in_scope.pop();
+                }
+            }
         }
-        FOFFormula::Negation(g) | FOFFormula::Parens(g) => collect_quantified_vars(g, univ, exist),
+        FOFFormula::Negation(g) | FOFFormula::Parens(g) => collect_quantified_vars(g, univ, exist, in_scope, exist_scope),
         FOFFormula::Binary { left, right, .. } => {
-            collect_quantified_vars(left, univ, exist);
-            collect_quantified_vars(right, univ, exist);
+            collect_quantified_vars(left, univ, exist, in_scope, exist_scope);
+            collect_quantified_vars(right, univ, exist, in_scope, exist_scope);
         }
         FOFFormula::Atomic(_) | FOFFormula::Equality(..) | FOFFormula::Inequality(..) => {}
     }
@@ -393,15 +405,28 @@ fn strip_parens_f<'a, 'p>(f: &'a FOFFormula<'p>) -> &'a FOFFormula<'p> {
     cur
 }
 
+fn strip_quantifiers_f<'a, 'p>(f: &'a FOFFormula<'p>) -> &'a FOFFormula<'p> {
+    let mut cur = f;
+    loop {
+        cur = strip_parens_f(cur);
+        if let FOFFormula::Quantified { formula, .. } = cur {
+            cur = formula;
+        } else {
+            break;
+        }
+    }
+    cur
+}
+
 fn flatten_associative<'a, 'p>(
     f: &'a FOFFormula<'p>,
     conn: BinaryConnective,
 ) -> Vec<&'a FOFFormula<'p>> {
-    let f = strip_parens_f(f);
+    let f = strip_quantifiers_f(f);
     let mut out = Vec::new();
     let mut stack = vec![f];
     while let Some(current) = stack.pop() {
-        let current = strip_parens_f(current);
+        let current = strip_quantifiers_f(current);
         if let FOFFormula::Binary {
             left,
             connective,
@@ -424,7 +449,6 @@ fn match_multiset<'p>(
     concs: &mut [Option<&FOFFormula<'p>>],
     univ: &HashSet<&str>,
     exist: &HashSet<&str>,
-    in_scope: &mut Vec<&'p str>,
     m: &mut SkolemMatch<'p>,
 ) -> bool {
     if pats.is_empty() {
@@ -440,11 +464,10 @@ fn match_multiset<'p>(
                 current_conc,
                 univ,
                 exist,
-                in_scope,
                 &mut m_tentative,
             ) {
                 concs[i] = None;
-                if match_multiset(&pats[1..], concs, univ, exist, in_scope, &mut m_tentative) {
+                if match_multiset(&pats[1..], concs, univ, exist, &mut m_tentative) {
                     *m = m_tentative;
                     return true;
                 }
@@ -478,61 +501,15 @@ fn match_skolem_formula<'p>(
     conc: &FOFFormula<'p>,
     univ: &HashSet<&str>,
     exist: &HashSet<&str>,
-    in_scope: &mut Vec<&'p str>,
     m: &mut SkolemMatch<'p>,
 ) -> bool {
-    let pat = strip_parens_f(pat);
-    let conc = strip_parens_f(conc);
+    let pat = strip_quantifiers_f(pat);
+    let conc = strip_quantifiers_f(conc);
 
-    // 1) Strip parent quantifiers first (do not consume `conc`).
-    match pat {
-        FOFFormula::Quantified {
-            quantifier: Quantifier::Forall,
-            variables,
-            formula,
-        } => {
-            for v in variables {
-                in_scope.push(*v);
-            }
-            let r = match_skolem_formula(formula, conc, univ, exist, in_scope, m);
-            for _ in variables {
-                in_scope.pop();
-            }
-            return r;
-        }
-        FOFFormula::Quantified {
-            quantifier: Quantifier::Exists,
-            variables,
-            formula,
-        } => {
-            for v in variables {
-                m.exist_scope.insert(*v, in_scope.iter().copied().collect());
-            }
-            return match_skolem_formula(formula, conc, univ, exist, in_scope, m);
-        }
-        _ => {}
-    }
-
-    // 2) Strip conclusion universal quantifiers (do not consume `pat`); a
-    //    surviving existential means nothing was Skolemised → reject.
-    match conc {
-        FOFFormula::Quantified {
-            quantifier: Quantifier::Forall,
-            formula,
-            ..
-        } => return match_skolem_formula(pat, formula, univ, exist, in_scope, m),
-        FOFFormula::Quantified {
-            quantifier: Quantifier::Exists,
-            ..
-        } => return false,
-        _ => {}
-    }
-
-    // 3) Both sides are now quantifier-free at the top: match structurally.
     match (pat, conc) {
         (FOFFormula::Atomic(a), FOFFormula::Atomic(b)) => match_skolem_atomic(a, b, univ, exist, m),
         (FOFFormula::Negation(a), FOFFormula::Negation(b)) => {
-            match_skolem_formula(a, b, univ, exist, in_scope, m)
+            match_skolem_formula(a, b, univ, exist, m)
         }
         (
             FOFFormula::Binary {
@@ -553,14 +530,14 @@ fn match_skolem_formula<'p>(
                     .map(Some)
                     .collect();
                 if pats.len() == concs.len() {
-                    match_multiset(&pats, &mut concs, univ, exist, in_scope, m)
+                    match_multiset(&pats, &mut concs, univ, exist, m)
                 } else {
                     false
                 }
             } else {
                 c1 == c2
-                    && match_skolem_formula(l1, l2, univ, exist, in_scope, m)
-                    && match_skolem_formula(r1, r2, univ, exist, in_scope, m)
+                    && match_skolem_formula(l1, l2, univ, exist, m)
+                    && match_skolem_formula(r1, r2, univ, exist, m)
             }
         }
         (FOFFormula::Equality(a, b), FOFFormula::Equality(c, d))
@@ -673,7 +650,9 @@ fn try_positive_skolemize<'p>(
 ) -> bool {
     let mut univ_set: HashSet<&str> = HashSet::new();
     let mut exist_set: HashSet<&str> = HashSet::new();
-    collect_quantified_vars(parent_f, &mut univ_set, &mut exist_set);
+    let mut m = SkolemMatch::default();
+    let mut in_scope: Vec<&str> = Vec::new();
+    collect_quantified_vars(parent_f, &mut univ_set, &mut exist_set, &mut in_scope, &mut m.exist_scope);
     if exist_set.is_empty() {
         return false; // nothing to Skolemise this way
     }
@@ -683,14 +662,11 @@ fn try_positive_skolemize<'p>(
         return false;
     }
 
-    let mut m = SkolemMatch::default();
-    let mut in_scope: Vec<&str> = Vec::new();
     if !match_skolem_formula(
         parent_f,
         step_f,
         &univ_set,
         &exist_set,
-        &mut in_scope,
         &mut m,
     ) {
         return false;
