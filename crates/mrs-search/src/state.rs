@@ -333,7 +333,7 @@ impl SearchState {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ml-guidance"))]
 mod tests {
     use super::*;
     use mrs_calculus::ordering::SymbolConfig;
@@ -342,7 +342,6 @@ mod tests {
     use std::time::Instant;
 
     #[test]
-    #[cfg(feature = "ml-guidance")]
     fn benchmark_scoring_overhead() {
         let mut symbols = SymbolTable::new();
         let mut bank = mrs_core::term_bank::TermBank::new();
