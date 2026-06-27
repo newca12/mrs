@@ -211,6 +211,111 @@ TODO — strategy sweeps (Step 1 of portfolio re-tuning):
     Dual E5-2407:
     ./crates/mrs-bench/run_strategy_sweep.sh --divisions fne --casc-times --jobs 8
 
+   1     cat run_A.csv > master_run.csv
+   2     tail -n +2 run_B.csv >> master_run.csv
+   3     tail -n +2 run_C.csv >> master_run.csv
+   4     tail -n +2 run_D.csv >> master_run.csv
+
+  Step 3: Generate the Portfolios
+  Now, on Server A, run the greedy solver on the combined master_run.csv:
+
+   1 ./crates/mrs-bench/run_all_greedy_sweeps.sh master_run.csv > final_cacs30_portfolios.txt
+
+
+commit ea1d55f20116a42cbd9c08fba2705bd5d43c00dd
+
+[root@mtsdev04 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions fne  --casc-times --jobs 1
+CASC-30 Results — 2026-06-27 06:02  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        46   11.393
+------------------  --------------------
+TOTAL          100        46   11.393
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+ongoing
+[root@mtsdev01 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions feq  --casc-times --jobs 1
+
+[PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ ./crates/mrs-bench/run_strategy_sweep.sh --divisions feq --casc-times --jobs 30
+CASC-30 Results — 2026-06-27 05:57  (400 problems × 15 systems)
+===============================================================
+
+Division  Problems    mrs-s01               mrs-s02               mrs-s03               mrs-s04               mrs-s05               mrs-s06               mrs-s07               mrs-s08               mrs-s09               mrs-s10               mrs-s11               mrs-s12               mrs-s13               mrs-s14               mrs-s15
+                      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)
+------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------
+FEQ            400        36   34.955          20   33.338          12    5.892          36   29.060          30   23.534          35   54.680          36   29.539          42   13.235          14   10.175          26   38.716          43   23.521          39   27.920          23   28.949          18    9.058          20   31.561
+------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------
+TOTAL          400        36   34.955          20   33.338          12    5.892          36   29.060          30   23.534          35   54.680          36   29.539          42   13.235          14   10.175          26   38.716          43   23.521          39   27.920          23   28.949          18    9.058          20   31.561
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+[www@teenf9901 mrs]$ ./crates/mrs-bench/run_strategy_sweep.sh --divisions ueq --casc-times --jobs 30
+CASC-30 Results — 2026-06-27 05:59  (300 problems × 15 systems)
+===============================================================
+
+Division  Problems    mrs-s01               mrs-s02               mrs-s03               mrs-s04               mrs-s05               mrs-s06               mrs-s07               mrs-s08               mrs-s09               mrs-s10               mrs-s11               mrs-s12               mrs-s13               mrs-s14               mrs-s15
+                      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)
+------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------
+UEQ            300        24   96.185          22   24.903          16   28.385          29   58.328          29   73.553          27   61.796          12   58.285          18   31.525          11   39.744           2   16.878          33   59.938          29   83.641           2    2.576          27   70.105          20   79.526
+------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------
+TOTAL          300        24   96.185          22   24.903          16   28.385          29   58.328          29   73.553          27   61.796          12   58.285          18   31.525          11   39.744           2   16.878          33   59.938          29   83.641           2    2.576          27   70.105          20   79.526
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+ongoing icu
+[root@mtsdev03 mrs]# ./crates/mrs-bench/run_strategy_sweep.sh --divisions epu,icu --casc-times --jobs 7
+CASC-30 Results — 2026-06-27 06:09  (134 problems × 15 systems)
+===============================================================
+
+Division  Problems    mrs-s01               mrs-s02               mrs-s03               mrs-s04               mrs-s05               mrs-s06               mrs-s07               mrs-s08               mrs-s09               mrs-s10               mrs-s11               mrs-s12               mrs-s13               mrs-s14               mrs-s15
+                      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)
+------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------
+EPU            100        14   16.873          13    6.531          13    6.514          14    8.439           8    2.368           9   11.160           8    0.732           8    1.675           7    0.209           5    0.021          14   14.762          14   15.259           5    0.021           6    0.021          14   17.176
+ICU             34         0    0.000           0    0.000           0    0.000           0    0.000           0    0.000           0    0.000           0    0.000           0    0.000           0    0.000           0    0.000           0    0.000           0    0.000           0    0.000           0    0.000           0    0.000
+------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------
+TOTAL          134        14   16.873          13    6.531          13    6.514          14    8.439           8    2.368           9   11.160           8    0.732           8    1.675           7    0.209           5    0.021          14   14.762          14   15.259           5    0.021           6    0.021          14   17.176
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+
+[root@mtsdev02 mrs]# ./crates/mrs-bench/run_strategy_sweep.sh --divisions fne,eps --casc-times --jobs 7
+CASC-30 Results — 2026-06-27 05:59  (200 problems × 15 systems)
+===============================================================
+
+Division  Problems    mrs-s01               mrs-s02               mrs-s03               mrs-s04               mrs-s05               mrs-s06               mrs-s07               mrs-s08               mrs-s09               mrs-s10               mrs-s11               mrs-s12               mrs-s13               mrs-s14               mrs-s15
+                      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)
+------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------
+FNE            100        23   17.333          26    6.327          23    5.575          27   10.913          14   17.153          14   16.073          22    8.875          28   14.815          23   15.043           8    0.248          29    5.322          29   20.279           8    1.838          11    2.553          30   26.385
+EPS            100        37   11.966          38    4.873          37    4.977           0    0.000           9    0.183          10    0.170          32    7.963          27    4.157          32    4.721           0    0.000           0    0.000           0    0.000           0    0.000           0    0.000           0    0.000
+------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------
+TOTAL          200        60   14.023          64    5.463          60    5.206          27   10.913          23   10.513          24    9.447          54    8.335          55    9.583          55    9.037           8    0.248          29    5.322          29   20.279           8    1.838          11    2.553          30   26.385
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
 commit 7316d88474f2e43273c346c17072ddb7d41cf6ab (HEAD -> fix-eps-ordered-inferences
 
 hack@pve:~/mrs$ MRS_WORKERS=4 crates/mrs-bench/casc.sh --systems mrs --divisions ueq  --casc-times --jobs 1
