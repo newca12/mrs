@@ -205,6 +205,7 @@ validated infrastructure for a future ML iteration.
 Append-only log of CASC benchmark runs (`crates/mrs-bench/casc.sh`), newest first.
 Each entry records the mrs commit and the exact command used.
 
+
 TODO — strategy sweeps (Step 1 of portfolio re-tuning):
     Dual 4108 — accurate coverage:
     ./crates/mrs-bench/run_strategy_sweep.sh --divisions fne --casc-times --jobs 16
@@ -221,6 +222,66 @@ TODO — strategy sweeps (Step 1 of portfolio re-tuning):
 
    1 ./crates/mrs-bench/run_all_greedy_sweeps.sh master_run.csv > final_cacs30_portfolios.txt
 
+commit 470191304f1db33f778372e8f1ee92ff11739115
+
+ongoing
+[PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions feq  --casc-times --jobs 4
+
+ongoing
+[www@teenf9901 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions ueq --casc-times --jobs 4
+
+ongoing [root@mtsdev04 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions eps  --casc-times --jobs 1
+
+[PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions eps  --casc-times --jobs 2
+CASC-30 Results — 2026-06-27 11:44  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+EPS            100        37    4.507
+------------------  --------------------
+TOTAL          100        37    4.507
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+[PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions eps  --casc-times --jobs 4
+CASC-30 Results — 2026-06-27 10:36  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+EPS            100        37    7.807
+------------------  --------------------
+TOTAL          100        37    7.807
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+[www@teenf9901 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions fne --casc-times --jobs 4
+CASC-30 Results — 2026-06-27 11:03  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        46   11.246
+------------------  --------------------
+TOTAL          100        46   11.246
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
 
 commit ea1d55f20116a42cbd9c08fba2705bd5d43c00dd
 

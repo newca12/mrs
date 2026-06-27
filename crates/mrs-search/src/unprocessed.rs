@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use mrs_calculus::ordering::SymbolConfig;
 use mrs_core::clause::ClauseId;
-use mrs_core::term_bank::IdClause;
+use mrs_core::term_bank::{IdClause, TermBank};
 
 #[derive(Clone, Debug)]
 struct WeightWrapper {
@@ -84,7 +84,7 @@ impl UnprocessedSet {
     pub fn push(
         &mut self,
         clause: &IdClause,
-        _bank: &mrs_core::term_bank::TermBank,
+        _bank: &TermBank,
         weight: u32,
         ml_score: Option<f32>,
     ) {
