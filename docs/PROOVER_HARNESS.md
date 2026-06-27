@@ -233,7 +233,7 @@ Full PyRes (170 + 170) and an Otter sample (60 + 60), 60 s per proof:
 | PyRes / original (valid)   | Nörgler         | 155     | **11** | 4  |
 | PyRes / falsified (evil)   | **mrs-proover** | 0       | **170**| 0  |
 | PyRes / falsified (evil)   | Nörgler         | 0       | 165    | 5  |
-| Otter / original (valid)   | **mrs-proover** | 0       | **0**  | 60 |
+| Otter / original (valid)   | **mrs-proover** | **60**  | **0**  | 0  |
 | Otter / original (valid)   | Nörgler         | 60      | **0**  | 0  |
 | Otter / falsified (evil)   | **mrs-proover** | 0       | **60** | 0  |
 | Otter / falsified (evil)   | Nörgler         | 0       | 59     | 1  |

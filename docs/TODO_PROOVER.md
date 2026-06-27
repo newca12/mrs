@@ -146,5 +146,5 @@ does) would close it.
 | Benchmark against Nörgler | After fixes | ✅ Done (full Zenodo 19792604 head-to-head; see §6) |
 | Multi-existential `skolemize` false-reject fixed | High | ✅ Done |
 | Positively verify unannotated `skolemize` steps (coverage 86→160 on PyRes) | Medium | ✅ Done |
-| AC-aware matrix matching for re-associated `skolemize` steps | Low | ❌ TODO |
-| Validate `file(_,unknown)` leaves without a problem file (Otter) | Low | ❌ TODO |
+| AC-aware matrix matching for re-associated `skolemize` steps | Low | ✅ Done (`c15c213`) |
+| Validate `file(_,unknown)` leaves without a problem file (Otter) | Low | ✅ Done (`c15c213`) |
