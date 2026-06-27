@@ -70,7 +70,7 @@ fn sync_active_dormant(state: &mut SearchState, ordering: &crate::TermOrdering) 
         .collect();
     state
         .unprocessed
-        .retain(|id, _| !inactive_unproc.contains(&id));
+        .retain(|id| !inactive_unproc.contains(&id));
     for id in inactive_unproc {
         let u = state.clause_store.get(&id).unwrap().clone();
         state.dormant_unprocessed.insert(id, u);
@@ -450,8 +450,8 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         let mut given = given;
 
         // Forward Subsumption Resolution
+        let mut given_fv = FeatureVector::from_id_clause(&given, &state.term_bank);
         loop {
-            let given_fv = FeatureVector::from_id_clause(&given, &state.term_bank);
             let candidates = state
                 .processed
                 .get_subsumption_resolution_candidates(&given_fv);
@@ -473,6 +473,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         given.avatar.clone(),
                     );
                     state.register_clause(&given.clone());
+                    given_fv = FeatureVector::from_id_clause(&given, &state.term_bank);
                     changed = true;
                     break;
                 }
@@ -514,7 +515,6 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         }
 
         // Forward subsumption: skip if given is subsumed by a processed clause
-        let given_fv = FeatureVector::from_id_clause(&given, &state.term_bank);
         {
             let candidates = state.processed.get_subsumption_candidates(&given_fv);
             if candidates.iter().any(|p| {
