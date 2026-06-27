@@ -81,7 +81,7 @@ The pipeline for each problem:
 1. **Parse** — `mrs-tptp` converts TPTP text to a zero-copy AST.
 2. **Lower** — `src/lowering.rs` maps the AST to `mrs-core` types.
 3. **Clausify** — `mrs-cnf` transforms formulas to CNF (NNF → Skolemization → definitional CNF). Conjectures are negated for refutation-based proving.
-4. **Search** — `mrs-search` runs a given-clause loop with a strategy portfolio of 11 configurations tried in parallel; the first refutation found wins.
+4. **Search** — `mrs-search` runs a given-clause loop with a strategy portfolio of 15 active configurations tried in parallel; the first refutation found wins.
 5. **Output** — `mrs-szs` formats the SZS status line; `mrs-proof` extracts and formats the TSTP proof on refutation.
 
 ### Strategy portfolio

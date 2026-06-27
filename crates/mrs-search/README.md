@@ -14,7 +14,7 @@ The Otter-style loop maintains two sets of clauses — *processed* (already used
 
 ## Strategy portfolio
 
-`StrategySchedule::default_schedule(total_time)` runs 9 strategies serially, each with a fresh `SearchState`. Strategies vary clause selection, literal selection, and term ordering. The first refutation found wins.
+`StrategySchedule::default_schedule(total_time)` runs 15 strategies in parallel, division-tuned using greedy set-cover, each with a fresh `SearchState`. Strategies vary clause selection, literal selection, SInE tolerance, and term ordering. The first refutation found wins.
 
 ## Key API
 
@@ -34,6 +34,8 @@ SearchConfig {
     selection: SelectionStrategy, // AgeWeight(n), SmallestFirst, Fifo, …
     literal_selection: LiteralSelection,
     ordering: TermOrdering,
+    sine_tolerance: Option<f64>,
+    sine_depth_limit: Option<usize>,
 }
 ```
 

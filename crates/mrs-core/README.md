@@ -8,11 +8,13 @@ This is the foundational crate depended on by every other `mrs-*` crate. It defi
 
 | Type | Description |
 |------|-------------|
-| `Term` | Variable (`Var(VarId)`) or function application (`App(SymbolId, Vec<Term>)`) |
+| `Term` | Legacy recursive representation (mostly used during parsing) |
 | `Formula` | Quantified FOL formula with connectives (¬, ∧, ∨, →, ↔, ∀, ∃) |
 | `Atom` | Atomic formula: predicate application or equality |
 | `Literal` | Signed atom (`positive: bool`, `atom: Atom`) |
 | `Clause` | Disjunction of literals with a unique `ClauseId` and `ClauseSource` |
+| `TermBank` | High-performance hash-consing arena allocator mapping `TermId` to `TermNode` |
+| `IdClause` | High-performance clause representation composed of `TermId` handles used by the prover |
 | `Substitution` | Variable-to-term mapping used by unification and inference |
 | `SymbolTable` | Bidirectional interning of function/predicate names to `SymbolId` |
 
