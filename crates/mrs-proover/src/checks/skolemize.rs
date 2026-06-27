@@ -16,7 +16,8 @@
 use std::collections::{HashMap, HashSet};
 
 use mrs_tptp::{
-    AnnotatedFormula, AtomicWord, FOFAtomicFormula, FOFFormula, FOFStatement, FOFTerm, Quantifier,
+    AnnotatedFormula, AtomicWord, BinaryConnective, FOFAtomicFormula, FOFFormula, FOFStatement,
+    FOFTerm, Quantifier,
 };
 
 use crate::verdict::StepOutcome;
@@ -374,7 +375,7 @@ fn collect_quantified_vars<'p>(
 
 /// Accumulated bindings discovered while matching a parent against its
 /// Skolemised conclusion.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct SkolemMatch<'p> {
     /// Parent universal variable → conclusion variable (a consistent renaming).
     uni_map: HashMap<&'p str, &'p str>,
@@ -390,6 +391,69 @@ fn strip_parens_f<'a, 'p>(f: &'a FOFFormula<'p>) -> &'a FOFFormula<'p> {
         cur = inner;
     }
     cur
+}
+
+fn flatten_associative<'a, 'p>(
+    f: &'a FOFFormula<'p>,
+    conn: BinaryConnective,
+) -> Vec<&'a FOFFormula<'p>> {
+    let f = strip_parens_f(f);
+    let mut out = Vec::new();
+    let mut stack = vec![f];
+    while let Some(current) = stack.pop() {
+        let current = strip_parens_f(current);
+        if let FOFFormula::Binary {
+            left,
+            connective,
+            right,
+        } = current
+        {
+            if *connective == conn {
+                stack.push(right);
+                stack.push(left);
+                continue;
+            }
+        }
+        out.push(current);
+    }
+    out
+}
+
+fn match_multiset<'p>(
+    pats: &[&FOFFormula<'p>],
+    concs: &mut [Option<&FOFFormula<'p>>],
+    univ: &HashSet<&str>,
+    exist: &HashSet<&str>,
+    in_scope: &mut Vec<&'p str>,
+    m: &mut SkolemMatch<'p>,
+) -> bool {
+    if pats.is_empty() {
+        return true;
+    }
+
+    let current_pat = pats[0];
+    for i in 0..concs.len() {
+        if let Some(current_conc) = concs[i] {
+            let mut m_tentative = m.clone();
+            let mut in_scope_tentative = in_scope.clone();
+            if match_skolem_formula(
+                current_pat,
+                current_conc,
+                univ,
+                exist,
+                &mut in_scope_tentative,
+                &mut m_tentative,
+            ) {
+                concs[i] = None;
+                if match_multiset(&pats[1..], concs, univ, exist, in_scope, &mut m_tentative) {
+                    *m = m_tentative;
+                    return true;
+                }
+                concs[i] = Some(current_conc); // backtrack
+            }
+        }
+    }
+    false
 }
 
 /// Match a parent formula `pat` against its Skolemised conclusion `conc`.
@@ -483,9 +547,22 @@ fn match_skolem_formula<'p>(
                 right: r2,
             },
         ) => {
-            c1 == c2
-                && match_skolem_formula(l1, l2, univ, exist, in_scope, m)
-                && match_skolem_formula(r1, r2, univ, exist, in_scope, m)
+            if c1 == c2 && c1.is_associative() {
+                let pats = flatten_associative(pat, *c1);
+                let mut concs: Vec<Option<&FOFFormula<'p>>> = flatten_associative(conc, *c1)
+                    .into_iter()
+                    .map(Some)
+                    .collect();
+                if pats.len() == concs.len() {
+                    match_multiset(&pats, &mut concs, univ, exist, in_scope, m)
+                } else {
+                    false
+                }
+            } else {
+                c1 == c2
+                    && match_skolem_formula(l1, l2, univ, exist, in_scope, m)
+                    && match_skolem_formula(r1, r2, univ, exist, in_scope, m)
+            }
         }
         (FOFFormula::Equality(a, b), FOFFormula::Equality(c, d))
         | (FOFFormula::Inequality(a, b), FOFFormula::Inequality(c, d)) => {
@@ -1227,6 +1304,31 @@ mod tests {
             scopes[1],
             ["X3", "X4"].into_iter().collect::<HashSet<_>>(),
             "X5 captures {{X3,X4}}"
+        );
+    }
+
+    /// A Skolemisation step where the conjunction is re-associated / re-ordered
+    /// (e.g. `(A & B) & C` became `A & (C & B)`) must be successfully matched and verified as Sound.
+    #[test]
+    fn ac_aware_skolemize_matching_is_sound() {
+        let parent = nth_fof(
+            "fof(c2, negated_conjecture, \
+             (? [X2]: (big_a(X2) & (big_b(X2) & big_c(X2)))), \
+             inference(variable_rename,[status(thm)],[c1])).",
+            0,
+        );
+        // Notice the conjunction matrix is re-associated and re-ordered in c3!
+        let step = nth_fof(
+            "fof(c3, negated_conjecture, \
+             ((big_b(skolem0001) & big_c(skolem0001)) & big_a(skolem0001)), \
+             inference(skolemize,[status(esa)],[c2])).",
+            0,
+        );
+        let mut reg = SkolemRegistry::new();
+        let outcome = check(step, Some(parent), &mut reg);
+        assert!(
+            matches!(outcome, StepOutcome::Sound),
+            "AC-aware re-ordered / re-associated skolemization must be Sound, got {outcome:?}"
         );
     }
 }
