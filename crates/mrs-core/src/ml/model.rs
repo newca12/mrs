@@ -28,3 +28,21 @@ impl<B: Backend> ClauseClassifier<B> {
         self.output.forward(x) // raw logit
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use burn::backend::NdArray;
+
+    #[test]
+    fn test_model_forward_shape() {
+        let device = Default::default();
+        let classifier = ClauseClassifier::<NdArray>::new(&device);
+
+        // Batch size of 2, FEATURE_DIM of 128
+        let x = Tensor::<NdArray, 2>::zeros([2, 128], &device);
+        let out = classifier.forward(x);
+
+        assert_eq!(out.shape().dims(), [2, 1]);
+    }
+}

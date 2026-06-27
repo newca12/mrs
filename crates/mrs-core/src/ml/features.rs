@@ -123,3 +123,46 @@ fn measure_term(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clause::{Clause, ClauseId, ClauseSource, Literal};
+    use crate::formula::Atom;
+    use crate::term::Term;
+
+    #[test]
+    fn test_feature_extraction_basics() {
+        let mut symbols = SymbolTable::new();
+        let mut bank = TermBank::new();
+
+        let human = symbols.intern("human");
+        let socrates = symbols.intern("socrates");
+
+        let arg = Term::App(socrates, vec![]);
+        let lit1 = Literal::neg(Atom::pred(human, vec![arg.clone()]));
+        let lit2 = Literal::pos(Atom::pred(human, vec![arg]));
+
+        let clause = Clause::new(
+            ClauseId(42),
+            vec![lit1, lit2],
+            ClauseSource::Input {
+                name: "test".into(),
+                role: "axiom".into(),
+            },
+        );
+
+        let id_clause = bank.clause_from_legacy(&clause);
+        let f = extract(&id_clause, &bank, &symbols, 10.0);
+
+        // Verify some structural features
+        assert_eq!(f[0], 2.0 / 20.0); // num_lits / 20.0
+        assert_eq!(f[1], 1.0 / 10.0); // pos_lits / 10.0
+        assert_eq!(f[2], 1.0 / 10.0); // neg_lits / 10.0
+        assert_eq!(f[3], 10.0 / 200.0); // weight / 200.0
+
+        // Symbols should have non-zero hashed buckets
+        let sum_hash_buckets: f32 = f[8..128].iter().sum();
+        assert!(sum_hash_buckets > 0.0);
+    }
+}

@@ -403,4 +403,48 @@ mod tests {
         assert_eq!(set.pop_weight(), Some(clauses[4].id));
         assert_eq!(set.pop_weight(), None);
     }
+
+    #[test]
+    #[cfg(feature = "ml-guidance")]
+    fn test_ml_guided_priority_queuing() {
+        use mrs_calculus::ordering::SymbolConfig;
+        use mrs_core::SymbolTable;
+        use mrs_core::clause::{Clause, ClauseSource};
+        use std::sync::Arc;
+
+        let mut bank = TermBank::new();
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+
+        let mut make_id_clause = |id: u64| {
+            let lits = vec![mrs_core::Literal::pos(mrs_core::Atom::pred(p, vec![]))];
+            let clause = Clause::new(
+                ClauseId(id),
+                lits,
+                ClauseSource::Input {
+                    name: "test".into(),
+                    role: "axiom".into(),
+                },
+            );
+            bank.clause_from_legacy(&clause)
+        };
+
+        let c1 = make_id_clause(1);
+        let c2 = make_id_clause(2);
+        let c3 = make_id_clause(3);
+
+        let mut set = UnprocessedSet::new(Arc::new(SymbolConfig::default()));
+
+        // Push three clauses with different ML scores.
+        // Higher score (logit) means more relevant, selected first (lower priority value in heap).
+        set.push(&c1, &bank, 10, Some(-1.5)); // Low score
+        set.push(&c2, &bank, 10, Some(2.0)); // High score (best)
+        set.push(&c3, &bank, 10, Some(0.0)); // Medium score
+
+        // We expect pop_ml() to return c2 first, then c3, then c1.
+        assert_eq!(set.pop_ml(), Some(c2.id));
+        assert_eq!(set.pop_ml(), Some(c3.id));
+        assert_eq!(set.pop_ml(), Some(c1.id));
+        assert_eq!(set.pop_ml(), None);
+    }
 }

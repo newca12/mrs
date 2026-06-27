@@ -332,3 +332,72 @@ impl SearchState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mrs_calculus::ordering::SymbolConfig;
+    use mrs_core::SymbolTable;
+    use mrs_core::clause::{Clause, ClauseSource};
+    use std::time::Instant;
+
+    #[test]
+    #[cfg(feature = "ml-guidance")]
+    fn benchmark_scoring_overhead() {
+        let mut symbols = SymbolTable::new();
+        let mut bank = mrs_core::term_bank::TermBank::new();
+        let p = symbols.intern("p");
+
+        let mut clauses = Vec::new();
+        for id in 1..=2000 {
+            let lits = vec![mrs_core::Literal::pos(mrs_core::Atom::pred(p, vec![]))];
+            let clause = Clause::new(
+                ClauseId(id),
+                lits,
+                ClauseSource::Input {
+                    name: "test".into(),
+                    role: "axiom".into(),
+                },
+            );
+            clauses.push(bank.clause_from_legacy(&clause));
+        }
+
+        let mut state = SearchState::new(
+            vec![],
+            ClauseIdGen::new(),
+            std::sync::Arc::new(SymbolConfig::default()),
+            std::sync::Arc::new(symbols),
+            false,
+        );
+
+        let device = Default::default();
+        let model = Arc::new(mrs_core::ml::model::ClauseClassifier::new(&device));
+        state.ml_model = Some(model);
+
+        // Run warm-up
+        let _ = state.get_ml_score(&clauses[0]);
+
+        let start = Instant::now();
+        for c in &clauses {
+            let _ = state.get_ml_score(c);
+        }
+        let elapsed = start.elapsed();
+        let avg_time = elapsed.as_secs_f64() * 1_000_000.0 / clauses.len() as f64;
+
+        println!(
+            "Average ML scoring latency: {:.4} microseconds/clause",
+            avg_time
+        );
+
+        let limit = if cfg!(debug_assertions) {
+            1500.0
+        } else {
+            100.0
+        };
+        assert!(
+            avg_time < limit,
+            "ML scoring latency overhead ({:.4} µs) is too high!",
+            avg_time
+        );
+    }
+}
