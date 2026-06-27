@@ -1224,7 +1224,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn rejects_skolem_axiom_inconsistent_witness() {
         // Same existential variable witnessed by two *different* terms in
         // the consequent (`sK1` vs `sK2`): not a valid Skolemisation.

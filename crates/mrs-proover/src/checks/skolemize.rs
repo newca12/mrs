@@ -435,13 +435,12 @@ fn match_multiset<'p>(
     for i in 0..concs.len() {
         if let Some(current_conc) = concs[i] {
             let mut m_tentative = m.clone();
-            let mut in_scope_tentative = in_scope.clone();
             if match_skolem_formula(
                 current_pat,
                 current_conc,
                 univ,
                 exist,
-                &mut in_scope_tentative,
+                in_scope,
                 &mut m_tentative,
             ) {
                 concs[i] = None;
