@@ -59,12 +59,12 @@ Based on a 30 s per-strategy sweep over the CASC-30 problem set:
 
 | Division | 8-core priority order | Unique coverage at 8 cores |
 |:---------|:----------------------|:---------------------------|
-| **FNE** | s11, s12, s8, s4, s10, s2, … | 43/43 (100%) at 6 cores |
-| **FEQ** | s8, s12, s1, s11, s10, s4, s14, s6 | 86/88 (97.7%) at 8 cores |
-| **UEQ** | s11, s4, s2, s14, s8, s6, … | 62/62 (100%) at 6 cores |
-| **EPU** | s4, s6, … | 13/13 (100%) at 2 cores |
-| **EPS** | s1, s2, s5, … | 28/28 (100%) at 3 cores |
-| **ICU** | s12, … | 2/2 (100%) at 1 core |
+| **FNE** | s15, s11, s4, s5, s1, s6, s8, s2 | 46 problems solved at 8 cores |
+| **FEQ** | s11, s12, s1, s8, s10, s6, s14, s2 | 88/88 (100%) at 10 cores |
+| **UEQ** | s11, s4, s2, s14, s8, s15, s1, s3 | 62/62 (100%) at 6 cores |
+| **EPU** | s1, s6, s2, s3, s4, s5, s7, s8 | 16/16 (100%) at 2 cores |
+| **EPS** | s2, s1, s3, s4, s5, s6, s7, s8 | 38/38 (100%) at 1 core |
+| **ICU** | s12, s1, s2, s3, s4, s5, s6, s7 | 0 problems solved |
 
 Beyond the minimum coverage point, extra slots cycle through remaining
 strategies so no core is idle.
