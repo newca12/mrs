@@ -92,10 +92,10 @@ the official competition figures.
 
 | Division | mrs solved | Projected rank | Neighbours (official solved) |
 |----------|-----------|----------------|------------------------------|
-| FNE (100) | 44 | ~10th of 15 | cvc5 47 > **mrs 44** > ConnectPP 43 |
-| FEQ (400) | 76 | ~11th of 14 | Prover9 94 > **mrs 76** > ConnectPP 59 |
-| EPU (100) | 13 | 6th of 7 | Drodi-EPR 25 > **mrs 13** > SPASS-SCL 11 |
-| EPS (100) | 21 | last (7th) | field ≥ 53 (SPASS-SCL); **mrs 21** trails |
+| FNE (100) | 46 | ~10th of 15 | cvc5 47 > **mrs 46** > ConnectPP 43 |
+| FEQ (400) | 84 | ~11th of 14 | Prover9 94 > **mrs 84** > ConnectPP 59 |
+| EPU (100) | 16 | 6th of 7 | Drodi-EPR 25 > **mrs 16** > SPASS-SCL 11 |
+| EPS (100) | 40 | last (7th) | field ≥ 53 (SPASS-SCL); **mrs 40** trails |
 | UEQ (300) | 30 | last (10th) | field ≥ 114 (Toma); **mrs 30** trails |
 | ICU (101) | 2 | 8th of 9 | CSE_E 18 > **mrs 2** > ConnectPP 1 |
 
