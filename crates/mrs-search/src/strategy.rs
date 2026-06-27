@@ -640,7 +640,15 @@ pub fn run_schedule(
 
                     let mut thread_clauses = clauses_for_thread.clone();
                     if let Some(tolerance) = sc.sine_tolerance {
-                        thread_clauses = crate::sine::filter_items(&thread_clauses, tolerance, sc.sine_depth_limit);
+                        if thread_clauses.len() > 100 {
+                            let before_len = thread_clauses.len();
+                            thread_clauses = crate::sine::filter_items(&thread_clauses, tolerance, sc.sine_depth_limit);
+                            if thread_clauses.len() == before_len {
+                                sc.sine_tolerance = None;
+                            }
+                        } else {
+                            sc.sine_tolerance = None;
+                        }
                     }
 
                     let mut state = SearchState::new_with_ml(
@@ -744,6 +752,9 @@ pub fn run_schedule(
                         // Unit-only resolution is incomplete: a clause set may be
                         // unsatisfiable yet require non-unit resolvents to find the proof.
                         SearchResult::Saturated if sc.unit_only_resolution => SearchResult::GaveUp,
+                        // SInE filtering drops axioms; saturating on a subset of the problem
+                        // does not imply the full problem is satisfiable.
+                        SearchResult::Saturated if sc.sine_tolerance.is_some() => SearchResult::GaveUp,
                         // Non-Standard weight functions affect the ORDER in which clauses
                         // are selected, which in turn changes which clauses are generated
                         // and which are simplified away.  This interaction between
