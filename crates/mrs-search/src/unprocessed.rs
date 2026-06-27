@@ -81,7 +81,13 @@ impl UnprocessedSet {
     /// `ml_score` is the raw logit from the ML clause classifier; it only
     /// affects the ML priority queue (`ml-guidance` feature). In the default
     /// build the parameter is ignored and costs nothing.
-    pub fn push(&mut self, clause: &IdClause, _bank: &mrs_core::term_bank::TermBank, weight: u32, ml_score: Option<f32>) {
+    pub fn push(
+        &mut self,
+        clause: &IdClause,
+        _bank: &mrs_core::term_bank::TermBank,
+        weight: u32,
+        ml_score: Option<f32>,
+    ) {
         #[cfg(not(feature = "ml-guidance"))]
         let _ = ml_score;
         let id = clause.id;
