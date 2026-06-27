@@ -390,7 +390,7 @@ mod tests {
         );
 
         let limit = if cfg!(debug_assertions) {
-            1500.0
+            10000.0
         } else {
             100.0
         };

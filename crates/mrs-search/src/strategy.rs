@@ -357,6 +357,21 @@ impl StrategySchedule {
             ],
         }
     }
+
+    /// Automatically applies parallel SInE threshold tuning across the portfolio strategies.
+    pub fn apply_sine_threshold_tuning(&mut self) {
+        let sine_configs = [
+            (Some(1.5), Some(3)), // strict SInE
+            (Some(2.0), Some(5)), // standard SInE
+            (Some(3.5), Some(8)), // relaxed SInE
+            (None, None),         // SInE disabled
+        ];
+        for (i, (cfg, _)) in self.strategies.iter_mut().enumerate() {
+            let (sine_tol, sine_depth) = sine_configs[i % sine_configs.len()];
+            cfg.sine_tolerance = sine_tol;
+            cfg.sine_depth_limit = sine_depth;
+        }
+    }
 }
 
 /// Runs a strategy schedule on a set of input clauses.
@@ -623,8 +638,13 @@ pub fn run_schedule(
                         sc.use_avatar = false;
                     }
 
+                    let mut thread_clauses = clauses_for_thread.clone();
+                    if let Some(tolerance) = sc.sine_tolerance {
+                        thread_clauses = crate::sine::filter_items(&thread_clauses, tolerance, sc.sine_depth_limit);
+                    }
+
                     let mut state = SearchState::new_with_ml(
-                        clauses_for_thread.clone(),
+                        thread_clauses,
                         id_gen_thread.clone(),
                         config_thread.clone(),
                         symbols_thread.clone(),

@@ -207,65 +207,9 @@ fn main() {
 
     let has_conjecture = !lowered.conjectures.is_empty();
 
-    // --- SInE Filtering ---
-    // Backup formulas in case SInE over-prunes and we need to retry.
-    let backup_axioms = lowered.axioms.clone();
-    let backup_conjectures = lowered.conjectures.clone();
-    let backup_cnf_clauses = lowered.cnf_clauses.clone();
-    let backup_id_gen = lowered.id_gen.clone();
-
-    // In problems with massive axiomatizations, use SInE to filter.
-    // If there are more than 100 axioms, try filtering.
-    let mut sine_triggered = false;
-    if lowered.axioms.len() + lowered.cnf_clauses.len() > 100 {
-        let tolerance = 2.0;
-        let depth_limit = Some(5);
-
-        let before_axioms = lowered.axioms.len();
-        let before_cnf = lowered.cnf_clauses.len();
-
-        let mut all_items: Vec<sine::SineItemWrapper> = Vec::new();
-        for axiom in lowered.axioms {
-            all_items.push(sine::SineItemWrapper::Formula(axiom));
-        }
-        for conj in lowered.conjectures {
-            all_items.push(sine::SineItemWrapper::Formula(conj));
-        }
-        for clause in lowered.cnf_clauses {
-            all_items.push(sine::SineItemWrapper::Clause(clause));
-        }
-
-        let filtered = sine::filter_items(&all_items, tolerance, depth_limit);
-
-        if filtered.len() < all_items.len() {
-            sine_triggered = true;
-        }
-
-        lowered.axioms = Vec::new();
-        lowered.conjectures = Vec::new();
-        lowered.cnf_clauses = Vec::new();
-
-        for item in filtered {
-            match item {
-                sine::SineItemWrapper::Formula(lf) => {
-                    if lf.role == "conjecture" || lf.role == "negated_conjecture" {
-                        lowered.conjectures.push(lf);
-                    } else {
-                        lowered.axioms.push(lf);
-                    }
-                }
-                sine::SineItemWrapper::Clause(c) => lowered.cnf_clauses.push(c),
-            }
-        }
-
-        info!(
-            "% SInE filtered axioms: {} -> {}, cnf: {} -> {}",
-            before_axioms,
-            lowered.axioms.len(),
-            before_cnf,
-            lowered.cnf_clauses.len()
-        );
-    }
+    // SInE is now performed per portfolio strategy in parallel (with threshold tuning),
+    // so we do not run a single global pre-filter on LoweredFormulas anymore.
+    let total_budget = Duration::from_secs(time_secs);
 
     // Display input summary
     let cnf_count = lowered.cnf_clauses.len();
@@ -277,67 +221,58 @@ fn main() {
         cnf_count
     );
 
-    let total_budget = Duration::from_secs(time_secs);
-    let mut final_result = SearchResult::GaveUp;
-    let mut final_status = SzsStatus::GaveUp;
-    let mut final_report = ScheduleReport::default();
-
-    // We run the search up to 2 times: once with SInE (if triggered), and once without if it saturated prematurely.
-    let mut attempt = 0;
-    while attempt < 2 {
-        attempt += 1;
-
-        // --- Clausification ---
-        let mut id_gen = lowered.id_gen.clone();
-        let mut all_clauses: Vec<Clause> = lowered
-            .cnf_clauses
-            .clone()
-            .into_iter()
-            .map(|c| {
-                // CNF clauses with negated_conjecture role are already the
-                // negated goal: give them distance=0 so SOS/GoalDirected
-                // heuristics treat them as goal-connected.
-                let is_nc = matches!(
-                    &c.source,
-                    ClauseSource::Input { role, .. } if role == "negated_conjecture"
-                );
-                c.with_distance(if is_nc { 0 } else { 100 })
-            })
-            .collect();
-
-        // Clausify axioms directly
-        for f in &lowered.axioms {
-            let clauses = mrs_cnf::clausify(
-                &f.formula,
-                &mut lowered.symbols,
-                &mut id_gen,
-                &f.name,
-                &f.role,
+    // --- Clausification ---
+    let mut id_gen = lowered.id_gen.clone();
+    let mut all_clauses: Vec<Clause> = lowered
+        .cnf_clauses
+        .clone()
+        .into_iter()
+        .map(|c| {
+            // CNF clauses with negated_conjecture role are already the
+            // negated goal: give them distance=0 so SOS/GoalDirected
+            // heuristics treat them as goal-connected.
+            let is_nc = matches!(
+                &c.source,
+                ClauseSource::Input { role, .. } if role == "negated_conjecture"
             );
-            all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(100)));
-        }
+            c.with_distance(if is_nc { 0 } else { 100 })
+        })
+        .collect();
 
-        // Negate conjectures for refutation-based proving:
-        // To prove P, we show that axioms ∧ ¬P is unsatisfiable.
-        for f in &lowered.conjectures {
-            let negated = Formula::neg(f.formula.clone());
-            let clauses = mrs_cnf::clausify(
-                &negated,
-                &mut lowered.symbols,
-                &mut id_gen,
-                &f.name,
-                "negated_conjecture",
-            );
-            all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(0)));
-        }
+    // Clausify axioms directly
+    for f in &lowered.axioms {
+        let clauses = mrs_cnf::clausify(
+            &f.formula,
+            &mut lowered.symbols,
+            &mut id_gen,
+            &f.name,
+            &f.role,
+        );
+        all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(100)));
+    }
 
-        let elapsed = start.elapsed();
-        if elapsed >= total_budget {
-            final_status = SzsStatus::Timeout;
-            final_result = SearchResult::Timeout;
-            break;
-        }
+    // Negate conjectures for refutation-based proving:
+    // To prove P, we show that axioms ∧ ¬P is unsatisfiable.
+    for f in &lowered.conjectures {
+        let negated = Formula::neg(f.formula.clone());
+        let clauses = mrs_cnf::clausify(
+            &negated,
+            &mut lowered.symbols,
+            &mut id_gen,
+            &f.name,
+            "negated_conjecture",
+        );
+        all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(0)));
+    }
 
+    let elapsed = start.elapsed();
+    let (final_result, final_status, final_report) = if elapsed >= total_budget {
+        (
+            SearchResult::Timeout,
+            SzsStatus::Timeout,
+            ScheduleReport::default(),
+        )
+    } else {
         let actual_workers = workers.unwrap_or_else(|| {
             std::thread::available_parallelism()
                 .map(|n| n.get())
@@ -362,7 +297,6 @@ fn main() {
             }
         };
 
-        let search_start = std::time::Instant::now();
         let (result, schedule_report) = run_schedule(
             &all_clauses,
             id_gen,
@@ -375,7 +309,6 @@ fn main() {
             },
             workers,
         );
-        let search_elapsed = search_start.elapsed();
 
         let status = match &result {
             SearchResult::Refutation(..) => {
@@ -386,10 +319,7 @@ fn main() {
                 }
             }
             SearchResult::Saturated => {
-                if sine_triggered {
-                    // If SInE dropped axioms, saturation is incomplete for the full problem.
-                    SzsStatus::GaveUp
-                } else if has_conjecture {
+                if has_conjecture {
                     SzsStatus::CounterSatisfiable
                 } else {
                     SzsStatus::Satisfiable
@@ -399,31 +329,8 @@ fn main() {
             SearchResult::GaveUp => SzsStatus::GaveUp,
         };
 
-        final_result = result;
-        final_status = status;
-        final_report = schedule_report;
-
-        // SInE Fallback check
-        if attempt == 1
-            && sine_triggered
-            && matches!(final_status, SzsStatus::GaveUp)
-            && search_elapsed < Duration::from_secs(1)
-        {
-            info!(
-                "% SInE over-pruning suspected (saturated in {:.3}s). Restarting without SInE.",
-                search_elapsed.as_secs_f64()
-            );
-            sine_triggered = false;
-            lowered.axioms = backup_axioms.clone();
-            lowered.conjectures = backup_conjectures.clone();
-            lowered.cnf_clauses = backup_cnf_clauses.clone();
-            lowered.id_gen = backup_id_gen.clone();
-            continue;
-        }
-
-        // Otherwise, break out of loop
-        break;
-    }
+        (result, status, schedule_report)
+    };
 
     let status = final_status;
     let result = final_result;

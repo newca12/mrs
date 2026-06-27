@@ -37,6 +37,7 @@ pub mod fvo;
 pub mod given_clause;
 pub mod instgen;
 pub mod select;
+pub mod sine;
 pub mod state;
 pub mod strategy;
 pub mod unprocessed;
@@ -272,6 +273,10 @@ pub struct SearchConfig {
     /// a sound literal ordering. Kept behind the flag for future, correct work.
     /// Enable for experiments via the `MRS_ORDERED` env var.
     pub ordered_inferences: bool,
+    /// SInE tolerance level. `None` means SInE is disabled.
+    pub sine_tolerance: Option<f64>,
+    /// SInE depth limit.
+    pub sine_depth_limit: Option<usize>,
 }
 
 impl Default for SearchConfig {
@@ -287,6 +292,8 @@ impl Default for SearchConfig {
             weight_fn: ClauseWeightFn::Standard,
             sos_depth: u32::MAX, // disabled
             ordered_inferences: true,
+            sine_tolerance: None,
+            sine_depth_limit: None,
         }
     }
 }

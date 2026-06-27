@@ -43,7 +43,7 @@ pub const ALL: &[&str] = &[
 
 /// Look up a schedule by name. Returns `None` if the name is unknown.
 pub fn by_name(name: &str, total_time: Duration, workers: usize) -> Option<StrategySchedule> {
-    match name {
+    let mut schedule = match name {
         "casc" | "default" => Some(StrategySchedule::default_schedule(total_time, workers)),
         "casc_feq" => Some(casc_feq(total_time, workers)),
         "casc_fne" => Some(casc_fne(total_time, workers)),
@@ -59,7 +59,11 @@ pub fn by_name(name: &str, total_time: Duration, workers: usize) -> Option<Strat
         "ml_ueq" => Some(ml_ueq(total_time, workers)),
         "ml_epr" => Some(ml_epr(total_time, workers)),
         _ => None,
+    };
+    if let Some(s) = &mut schedule {
+        s.apply_sine_threshold_tuning();
     }
+    schedule
 }
 
 /// One KBO strategy for the full budget. Best for very short budgets where
