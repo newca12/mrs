@@ -59,6 +59,11 @@
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath mlRuntimeLibs;
 
           shellHook = ''
+            # Ensure AVX2 is enabled by default for local development,
+            # appending to RUSTFLAGS so we don't clobber any user-level
+            # global configurations (like custom linkers in ~/.cargo/config.toml)
+            export RUSTFLAGS="''${RUSTFLAGS:-} -C target-cpu=native"
+
             echo "mrs dev shell — $(rustc --version)"
             echo "  default build:  cargo build --release"
             echo "  proover build:  cargo build --release --features proover --bin mrs"
