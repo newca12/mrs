@@ -41,30 +41,34 @@ Comparing the 64-element `u16` frequency arrays in `FeatureVector` (`mrs-index::
 
 ## 2. Multi-Threading: Hardware SMT vs. Algorithmic Strategy Diversity
 
-During parallel portfolio search, `mrs` spawns parallel worker threads to run complementary strategies concurrently. Analyzing the performance requires explicitly decoupling the **hardware effect** of Hyper-Threading (SMT) from the **algorithmic effect** of Strategy Diversity.
+During parallel portfolio search, `mrs` spawns parallel worker threads to run complementary strategies concurrently. Analyzing the performance requires explicitly decoupling the **hardware effect** of Hyper-Threading (SMT) from the **algorithmic effect** of Strategy Diversity and **Time-Slicing Starvation**.
 
 ### 2.1 The Hardware Reality: SMT / AVX2 Contention
 Hyper-threading (SMT) duplicates CPU architectural register states but **does not duplicate physical execution units** (like the AVX2 SIMD engines). When running 8 threads on a 4-core CPU where each thread performs intensive 256-bit AVX2 subsumption loops, two logical threads sharing the same physical core fight for the same vector execution pipeline. This hardware contention inherently slows down the raw throughput of individual threads.
 
-### 2.2 The Algorithmic Reality: Strategy Diversity
-However, `mrs` assigns one distinct heuristic strategy to each worker. Running 8 workers instead of 4 means the prover explores **8 different search spaces concurrently**. On difficult problems, this doubled "strategy diversity" drastically increases the chance that one thread stumbles upon a short proof path early in the search, bypassing the need for raw throughput.
+### 2.2 The Algorithmic Reality: Strategy Diversity and Time-Slicing
+`mrs` assigns one distinct heuristic strategy to each worker. Running 8 workers instead of 4 explores **8 different search spaces concurrently**. However, the `casc` schedules natively divide the wall-clock time limit evenly by the number of active workers. 
+* If you have a 240-second limit and **4 workers**, each strategy receives **60 seconds** of execution time.
+* If you have a 240-second limit and **8 workers**, each strategy receives only **30 seconds** of execution time.
+
+On deep, complex proofs, restricting a winning strategy (like strategy `s2` for the EPS division) to a mere 30-second window causes the prover to tear down the search and give up before it reaches the proof, even if the user explicitly provided a 240-second wall-clock limit.
 
 ### 2.3 The Historical Bottleneck vs. Parallel SInE
-Historically, a sequential SInE pre-filtering phase locked the main thread, forcing all workers to wait. This magnified the SMT hardware penalty and bottlenecked the solver. Removing this sequential lock (via parallel SInE) revealed the true interplay between SMT and Strategy Diversity on our 4-core/8-thread CPU:
+Historically, a sequential SInE pre-filtering phase locked the main thread, forcing all workers to wait. Removing this sequential lock revealed the true interplay between SMT, time-slicing, and Strategy Diversity on our 4-core/8-thread laptop CPU:
 
 *   **Pre-Fix (Sequential SInE):**
     *   4 Workers (4 Cores): 21 FNE problems solved, **0.305s** average solve time.
     *   8 Workers (8 Threads): 23 FNE problems solved, **0.431s** average solve time.
-    *(Diversity solved more problems, but SMT contention + the sequential lock made average solving ~29% slower).*
 
 *   **Current (Parallel SInE):**
     *   4 Workers (4 Cores): 21 FNE problems solved, **0.364s** average solve time.
     *   8 Workers (8 Threads): 23 FNE problems solved, **0.346s** average solve time.
-    *(With the sequential lock removed, the algorithmic advantage of 8 strategies completely outpaces the SMT hardware penalty. 8 workers are now solving more problems AND finishing 5% faster on average).*
 
-### 2.4 Scaling Conclusion
-- **For Local Development (SMT CPUs):** Set workers equal to the number of logical threads (`MRS_WORKERS = logical_threads`). The algorithmic benefit of strategy diversity completely overshadows the hardware execution stalling.
-- **For StarExec (CASC Hardware):** StarExec allocates 8 physical cores with zero SMT oversubscription. Thus, `mrs` running with `MRS_WORKERS=8` will achieve the ultimate peak: **maximum strategy diversity (8 workers) combined with maximum AVX2 speed and zero hyper-threading contention**.
+For fast proofs (like the 2-second timeout FNE benchmarks), 8 workers succeed and are slightly faster because time-slicing hasn't kicked in yet. But for *deep* proofs (240s timeout), defaulting to 8 logical threads causes catastrophic time-slicing starvation.
+
+### 2.4 Scaling Conclusion (Physical Cores Default)
+- **Local Default (Physical Cores):** The `mrs` binary has been updated to use `num_cpus::get_physical()` as the default fallback when `--workers` is omitted. Defaulting to physical cores strictly avoids the SMT AVX2 stalling penalty, and critically, prevents the aggressive time-slice scaling from mathematically starving deep portfolio strategies of their needed search budgets.
+- **For StarExec (CASC Hardware):** StarExec allocates 8 physical cores with zero SMT oversubscription. Thus, `mrs` running with `MRS_WORKERS=8` naturally achieves the ultimate peak: **maximum strategy diversity (8 workers) combined with maximum AVX2 speed and zero hyper-threading contention**.
 
 ---
 

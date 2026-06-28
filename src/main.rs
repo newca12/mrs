@@ -274,9 +274,7 @@ fn main() {
         )
     } else {
         let actual_workers = workers.unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(1)
+            num_cpus::get_physical().max(1)
         });
 
         let search_budget = total_budget - elapsed;

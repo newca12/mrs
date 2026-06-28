@@ -3396,6 +3396,7 @@ dependencies = [
  "mrs-szs",
  "mrs-tptp",
  "mrs-unify",
+ "num_cpus",
 ]
 
 [[package]]
