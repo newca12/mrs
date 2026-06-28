@@ -26,4 +26,4 @@ burn = { version = "0.21.0", default-features = false, features = [
 ] }
 wincode = "0.5.5"
 walkdir = "2.5.0"
-rand = "0.8"
+rand = "0.10"

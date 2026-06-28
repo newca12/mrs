@@ -3457,7 +3457,7 @@ dependencies = [
  "mrs-core",
  "mrs-index",
  "mrs-proof",
- "rand 0.8.6",
+ "rand 0.10.1",
  "rustc-hash 2.1.2",
  "wincode",
 ]
@@ -3481,7 +3481,7 @@ version = "0.1.9"
 dependencies = [
  "burn",
  "mrs-core",
- "rand 0.8.6",
+ "rand 0.10.1",
  "walkdir",
  "wincode",
 ]
