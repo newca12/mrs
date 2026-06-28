@@ -104,3 +104,16 @@ The official CASC competition runs on **StarExec** (8-core Intel Xeon nodes, RHE
    RUSTFLAGS="-C target-cpu=haswell" cargo build --release --features ml-guidance
    ```
    This guarantees that the precompiled binary contains the exact hardware-vectorized AVX2 instructions (like VEX-prefixed `vpxor` and `%ymm` registers), boosting your solved counts across FNE and FEQ to their absolute maximum limits!
+
+---
+
+## 5. Older Hardware: The Sandy Bridge AVX1 Fallback
+
+When compiling and benchmarking on older hardware, such as the **Intel Xeon E5-2407 (Sandy Bridge-EN)**, the correct compilation target is `-C target-cpu=sandybridge`. 
+
+However, it is critical to understand the vectorization limits of this architecture:
+- **AVX1 vs AVX2:** Sandy Bridge was the first architecture to introduce Advanced Vector Extensions (AVX), but it only supported 256-bit **floating-point** operations. 
+- **The Integer Limitation:** 256-bit **integer** operations were not introduced until **AVX2** (Haswell). 
+- **The Impact on `mrs`:** Because the `FeatureVector` subsumption arrays (`[u16; 64]`) rely entirely on integer math, compiling for `sandybridge` means LLVM cannot use 256-bit `vpxor` and `%ymm` registers. Instead, it will safely fall back to using 128-bit **SSE4.1/SSE4.2** instructions (`%xmm` registers). 
+
+While still significantly faster than generic scalar execution, processing the arrays 128 bits at a time will take roughly twice as many CPU cycles as execution on modern Haswell/Comet Lake hardware.
