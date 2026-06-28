@@ -988,6 +988,105 @@ fn has_unrecognised_intro_tag(ann: Option<&Annotations<'_>>) -> bool {
     })
 }
 
+pub fn check_cycles(dag: &crate::dag::Dag<'_>) -> Result<(), String> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut defs: HashMap<&str, HashSet<&str>> = HashMap::new();
+
+    // Collect all introduced definitions and the symbols they define.
+    for node in &dag.nodes {
+        if let Some(ann) = node.formula.annotations()
+            && is_introduced_definition(ann)
+        {
+            let declared = declared_new_symbols(ann);
+            let step_fof = match node.formula.as_fof() {
+                Some(f) => f,
+                None => continue,
+            };
+            let mut body_syms = HashSet::new();
+            if let FOFStatement::Logical(form) = &step_fof.formula {
+                collect_fun_syms(form, &mut body_syms);
+            }
+            // Also collect predicate symbols for the dependency graph
+            collect_pred_syms(&step_fof.formula, &mut body_syms);
+
+            for d in declared {
+                let mut deps = body_syms.clone();
+                deps.remove(d);
+                defs.insert(d, deps);
+            }
+        }
+    }
+
+    // DFS for cycle detection
+    #[derive(PartialEq)]
+    enum Mark {
+        Visiting,
+        Done,
+    }
+    let mut marks: HashMap<&str, Mark> = HashMap::new();
+
+    fn dfs<'a>(
+        v: &'a str,
+        defs: &HashMap<&'a str, HashSet<&'a str>>,
+        marks: &mut HashMap<&'a str, Mark>,
+    ) -> Result<(), String> {
+        match marks.get(v) {
+            Some(Mark::Visiting) => {
+                return Err(format!("cyclic definition detected involving `{}`", v));
+            }
+            Some(Mark::Done) => return Ok(()),
+            None => {}
+        }
+        marks.insert(v, Mark::Visiting);
+        if let Some(deps) = defs.get(v) {
+            for &dep in deps {
+                dfs(dep, defs, marks)?;
+            }
+        }
+        marks.insert(v, Mark::Done);
+        Ok(())
+    }
+
+    for &v in defs.keys() {
+        dfs(v, &defs, &mut marks)?;
+    }
+
+    Ok(())
+}
+
+fn collect_pred_syms<'a>(f: &FOFStatement<'a>, out: &mut HashSet<&'a str>) {
+    if let FOFStatement::Logical(form) = f {
+        collect_pred_syms_formula(form, out);
+    }
+}
+
+fn collect_pred_syms_formula<'a>(f: &FOFFormula<'a>, out: &mut HashSet<&'a str>) {
+    match f {
+        FOFFormula::Atomic(a) => match a {
+            FOFAtomicFormula::Plain(w, _) => {
+                out.insert(w.as_str());
+            }
+            FOFAtomicFormula::Defined(w, _) => {
+                out.insert(w.0);
+            }
+            FOFAtomicFormula::System(w, _) => {
+                out.insert(w.0);
+            }
+            _ => {}
+        },
+        FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => {
+            collect_pred_syms_formula(inner, out)
+        }
+        FOFFormula::Quantified { formula, .. } => collect_pred_syms_formula(formula, out),
+        FOFFormula::Binary { left, right, .. } => {
+            collect_pred_syms_formula(left, out);
+            collect_pred_syms_formula(right, out);
+        }
+        FOFFormula::Equality(_, _) | FOFFormula::Inequality(_, _) => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1265,104 +1364,5 @@ mod tests {
             matches!(check(af, &reg), StepOutcome::Unsound(_)),
             "bare introduced(definition) with non-iff body must be Unsound"
         );
-    }
-}
-
-pub fn check_cycles(dag: &crate::dag::Dag<'_>) -> Result<(), String> {
-    use std::collections::{HashMap, HashSet};
-
-    let mut defs: HashMap<&str, HashSet<&str>> = HashMap::new();
-
-    // Collect all introduced definitions and the symbols they define.
-    for node in &dag.nodes {
-        if let Some(ann) = node.formula.annotations()
-            && is_introduced_definition(ann)
-        {
-            let declared = declared_new_symbols(ann);
-            let step_fof = match node.formula.as_fof() {
-                Some(f) => f,
-                None => continue,
-            };
-            let mut body_syms = HashSet::new();
-            if let FOFStatement::Logical(form) = &step_fof.formula {
-                collect_fun_syms(form, &mut body_syms);
-            }
-            // Also collect predicate symbols for the dependency graph
-            collect_pred_syms(&step_fof.formula, &mut body_syms);
-
-            for d in declared {
-                let mut deps = body_syms.clone();
-                deps.remove(d);
-                defs.insert(d, deps);
-            }
-        }
-    }
-
-    // DFS for cycle detection
-    #[derive(PartialEq)]
-    enum Mark {
-        Visiting,
-        Done,
-    }
-    let mut marks: HashMap<&str, Mark> = HashMap::new();
-
-    fn dfs<'a>(
-        v: &'a str,
-        defs: &HashMap<&'a str, HashSet<&'a str>>,
-        marks: &mut HashMap<&'a str, Mark>,
-    ) -> Result<(), String> {
-        match marks.get(v) {
-            Some(Mark::Visiting) => {
-                return Err(format!("cyclic definition detected involving `{}`", v));
-            }
-            Some(Mark::Done) => return Ok(()),
-            None => {}
-        }
-        marks.insert(v, Mark::Visiting);
-        if let Some(deps) = defs.get(v) {
-            for &dep in deps {
-                dfs(dep, defs, marks)?;
-            }
-        }
-        marks.insert(v, Mark::Done);
-        Ok(())
-    }
-
-    for &v in defs.keys() {
-        dfs(v, &defs, &mut marks)?;
-    }
-
-    Ok(())
-}
-
-fn collect_pred_syms<'a>(f: &FOFStatement<'a>, out: &mut HashSet<&'a str>) {
-    if let FOFStatement::Logical(form) = f {
-        collect_pred_syms_formula(form, out);
-    }
-}
-
-fn collect_pred_syms_formula<'a>(f: &FOFFormula<'a>, out: &mut HashSet<&'a str>) {
-    match f {
-        FOFFormula::Atomic(a) => match a {
-            FOFAtomicFormula::Plain(w, _) => {
-                out.insert(w.as_str());
-            }
-            FOFAtomicFormula::Defined(w, _) => {
-                out.insert(w.0);
-            }
-            FOFAtomicFormula::System(w, _) => {
-                out.insert(w.0);
-            }
-            _ => {}
-        },
-        FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => {
-            collect_pred_syms_formula(inner, out)
-        }
-        FOFFormula::Quantified { formula, .. } => collect_pred_syms_formula(formula, out),
-        FOFFormula::Binary { left, right, .. } => {
-            collect_pred_syms_formula(left, out);
-            collect_pred_syms_formula(right, out);
-        }
-        FOFFormula::Equality(_, _) | FOFFormula::Inequality(_, _) => {}
     }
 }

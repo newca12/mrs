@@ -165,6 +165,203 @@ fn apply_matching_subst(sigma: &Substitution, term: &Term) -> Term {
     sigma.apply_term(term)
 }
 
+use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank, TermId};
+
+pub fn demodulate_id(
+    clause: &IdClause,
+    bank: &mut TermBank,
+    demod_index: &mrs_index::stree::STreeId<(TermId, TermId, ClauseId)>,
+    clause_store: &HashMap<ClauseId, IdClause>,
+    id_gen: &mut ClauseIdGen,
+) -> Option<IdClause> {
+    let mut current_lits = clause.literals.clone();
+    let mut changed = false;
+    let mut used_unit_ids = Vec::new();
+    let mut passes = 0usize;
+
+    loop {
+        // Equational problems can generate cyclic rewrite rules (a→b and b→a).
+        // Without a pass limit the rewriter loops indefinitely.  100 passes is
+        // a safe upper bound for any real proof step; exceeding it indicates a
+        // rewrite cycle and we bail out with whatever simplification we have.
+        if passes >= 100 {
+            break;
+        }
+        passes += 1;
+        let mut changed_this_pass = false;
+        for lit in &mut current_lits {
+            if rewrite_literal_id(
+                lit,
+                &clause.avatar,
+                bank,
+                demod_index,
+                clause_store,
+                &mut used_unit_ids,
+            ) {
+                changed = true;
+                changed_this_pass = true;
+            }
+        }
+        if !changed_this_pass {
+            break;
+        }
+    }
+
+    if changed {
+        let mut parents = vec![clause.id];
+        parents.extend_from_slice(&used_unit_ids);
+
+        let mut unique_parents = Vec::new();
+        let mut seen = HashSet::default();
+        for p in parents {
+            if seen.insert(p) {
+                unique_parents.push(p);
+            }
+        }
+
+        Some(IdClause::new_avatar(
+            id_gen.next(),
+            current_lits,
+            ClauseSource::Inference {
+                rule: "demodulation".into(),
+                parents: unique_parents,
+            },
+            clause.avatar.clone(),
+        ))
+    } else {
+        None
+    }
+}
+
+fn rewrite_literal_id(
+    lit: &mut IdLiteral,
+    target_avatar: &[u32],
+    bank: &mut TermBank,
+    demod_index: &mrs_index::stree::STreeId<(TermId, TermId, ClauseId)>,
+    clause_store: &HashMap<ClauseId, IdClause>,
+    used_unit_ids: &mut Vec<ClauseId>,
+) -> bool {
+    let mut changed = false;
+    let new_atom = match &lit.atom {
+        IdAtom::Pred(p, args) => {
+            let new_args: smallvec::SmallVec<[TermId; 4]> = args
+                .iter()
+                .map(|arg| {
+                    let (new_arg, ch) = rewrite_term_id(
+                        *arg,
+                        target_avatar,
+                        bank,
+                        demod_index,
+                        clause_store,
+                        used_unit_ids,
+                    );
+                    if ch {
+                        changed = true;
+                    }
+                    new_arg
+                })
+                .collect();
+            IdAtom::Pred(*p, new_args)
+        }
+        IdAtom::Eq(l, r) => {
+            let (new_l, ch_l) = rewrite_term_id(
+                *l,
+                target_avatar,
+                bank,
+                demod_index,
+                clause_store,
+                used_unit_ids,
+            );
+            let (new_r, ch_r) = rewrite_term_id(
+                *r,
+                target_avatar,
+                bank,
+                demod_index,
+                clause_store,
+                used_unit_ids,
+            );
+            if ch_l || ch_r {
+                changed = true;
+            }
+            IdAtom::Eq(new_l, new_r)
+        }
+    };
+    if changed {
+        lit.atom = new_atom;
+    }
+    changed
+}
+
+fn rewrite_term_id(
+    term: TermId,
+    target_avatar: &[u32],
+    bank: &mut TermBank,
+    demod_index: &mrs_index::stree::STreeId<(TermId, TermId, ClauseId)>,
+    clause_store: &HashMap<ClauseId, IdClause>,
+    used_unit_ids: &mut Vec<ClauseId>,
+) -> (TermId, bool) {
+    let rules = demod_index.get_generalizations(term, bank);
+    for (from, to, unit_id) in rules {
+        if let Some(rule_clause) = clause_store.get(&unit_id) {
+            let subset = rule_clause.avatar.iter().all(|a| target_avatar.contains(a));
+            if !subset {
+                continue;
+            }
+
+            if let Ok(sigma) = mrs_unify::matching::match_term_id(from, term, bank) {
+                if !used_unit_ids.contains(&unit_id) {
+                    used_unit_ids.push(unit_id);
+                }
+                return (apply_matching_subst_id(&sigma, to, bank), true);
+            }
+        }
+    }
+
+    if let mrs_core::term_bank::TermNode::App(sym, args) = bank.get(term).clone() {
+        let mut changed = false;
+        let mut new_args = Vec::with_capacity(args.len());
+        for arg in args {
+            let (new_arg, ch) = rewrite_term_id(
+                arg,
+                target_avatar,
+                bank,
+                demod_index,
+                clause_store,
+                used_unit_ids,
+            );
+            if ch {
+                changed = true;
+            }
+            new_args.push(new_arg);
+        }
+        if changed {
+            return (bank.intern_app(sym, new_args), true);
+        }
+    }
+
+    (term, false)
+}
+
+fn apply_matching_subst_id(
+    sigma: &mrs_core::term_bank::IdSubstitution,
+    term: TermId,
+    bank: &mut TermBank,
+) -> TermId {
+    match bank.get(term).clone() {
+        mrs_core::term_bank::TermNode::Var(v) => match sigma.get(v) {
+            Some(t) => t,
+            None => term,
+        },
+        mrs_core::term_bank::TermNode::App(f, args) => {
+            let new_args: Vec<TermId> = args
+                .iter()
+                .map(|&a| apply_matching_subst_id(sigma, a, bank))
+                .collect();
+            bank.intern_app(f, new_args)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -372,202 +569,5 @@ mod tests {
 
         let result = demodulate(&target, &demod_index, &clause_store, &mut id_gen);
         assert!(result.is_none());
-    }
-}
-
-use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank, TermId};
-
-pub fn demodulate_id(
-    clause: &IdClause,
-    bank: &mut TermBank,
-    demod_index: &mrs_index::stree::STreeId<(TermId, TermId, ClauseId)>,
-    clause_store: &HashMap<ClauseId, IdClause>,
-    id_gen: &mut ClauseIdGen,
-) -> Option<IdClause> {
-    let mut current_lits = clause.literals.clone();
-    let mut changed = false;
-    let mut used_unit_ids = Vec::new();
-    let mut passes = 0usize;
-
-    loop {
-        // Equational problems can generate cyclic rewrite rules (a→b and b→a).
-        // Without a pass limit the rewriter loops indefinitely.  100 passes is
-        // a safe upper bound for any real proof step; exceeding it indicates a
-        // rewrite cycle and we bail out with whatever simplification we have.
-        if passes >= 100 {
-            break;
-        }
-        passes += 1;
-        let mut changed_this_pass = false;
-        for lit in &mut current_lits {
-            if rewrite_literal_id(
-                lit,
-                &clause.avatar,
-                bank,
-                demod_index,
-                clause_store,
-                &mut used_unit_ids,
-            ) {
-                changed = true;
-                changed_this_pass = true;
-            }
-        }
-        if !changed_this_pass {
-            break;
-        }
-    }
-
-    if changed {
-        let mut parents = vec![clause.id];
-        parents.extend_from_slice(&used_unit_ids);
-
-        let mut unique_parents = Vec::new();
-        let mut seen = HashSet::default();
-        for p in parents {
-            if seen.insert(p) {
-                unique_parents.push(p);
-            }
-        }
-
-        Some(IdClause::new_avatar(
-            id_gen.next(),
-            current_lits,
-            ClauseSource::Inference {
-                rule: "demodulation".into(),
-                parents: unique_parents,
-            },
-            clause.avatar.clone(),
-        ))
-    } else {
-        None
-    }
-}
-
-fn rewrite_literal_id(
-    lit: &mut IdLiteral,
-    target_avatar: &[u32],
-    bank: &mut TermBank,
-    demod_index: &mrs_index::stree::STreeId<(TermId, TermId, ClauseId)>,
-    clause_store: &HashMap<ClauseId, IdClause>,
-    used_unit_ids: &mut Vec<ClauseId>,
-) -> bool {
-    let mut changed = false;
-    let new_atom = match &lit.atom {
-        IdAtom::Pred(p, args) => {
-            let new_args: smallvec::SmallVec<[TermId; 4]> = args
-                .iter()
-                .map(|arg| {
-                    let (new_arg, ch) = rewrite_term_id(
-                        *arg,
-                        target_avatar,
-                        bank,
-                        demod_index,
-                        clause_store,
-                        used_unit_ids,
-                    );
-                    if ch {
-                        changed = true;
-                    }
-                    new_arg
-                })
-                .collect();
-            IdAtom::Pred(*p, new_args)
-        }
-        IdAtom::Eq(l, r) => {
-            let (new_l, ch_l) = rewrite_term_id(
-                *l,
-                target_avatar,
-                bank,
-                demod_index,
-                clause_store,
-                used_unit_ids,
-            );
-            let (new_r, ch_r) = rewrite_term_id(
-                *r,
-                target_avatar,
-                bank,
-                demod_index,
-                clause_store,
-                used_unit_ids,
-            );
-            if ch_l || ch_r {
-                changed = true;
-            }
-            IdAtom::Eq(new_l, new_r)
-        }
-    };
-    if changed {
-        lit.atom = new_atom;
-    }
-    changed
-}
-
-fn rewrite_term_id(
-    term: TermId,
-    target_avatar: &[u32],
-    bank: &mut TermBank,
-    demod_index: &mrs_index::stree::STreeId<(TermId, TermId, ClauseId)>,
-    clause_store: &HashMap<ClauseId, IdClause>,
-    used_unit_ids: &mut Vec<ClauseId>,
-) -> (TermId, bool) {
-    let rules = demod_index.get_generalizations(term, bank);
-    for (from, to, unit_id) in rules {
-        if let Some(rule_clause) = clause_store.get(&unit_id) {
-            let subset = rule_clause.avatar.iter().all(|a| target_avatar.contains(a));
-            if !subset {
-                continue;
-            }
-
-            if let Ok(sigma) = mrs_unify::matching::match_term_id(from, term, bank) {
-                if !used_unit_ids.contains(&unit_id) {
-                    used_unit_ids.push(unit_id);
-                }
-                return (apply_matching_subst_id(&sigma, to, bank), true);
-            }
-        }
-    }
-
-    if let mrs_core::term_bank::TermNode::App(sym, args) = bank.get(term).clone() {
-        let mut changed = false;
-        let mut new_args = Vec::with_capacity(args.len());
-        for arg in args {
-            let (new_arg, ch) = rewrite_term_id(
-                arg,
-                target_avatar,
-                bank,
-                demod_index,
-                clause_store,
-                used_unit_ids,
-            );
-            if ch {
-                changed = true;
-            }
-            new_args.push(new_arg);
-        }
-        if changed {
-            return (bank.intern_app(sym, new_args), true);
-        }
-    }
-
-    (term, false)
-}
-
-fn apply_matching_subst_id(
-    sigma: &mrs_core::term_bank::IdSubstitution,
-    term: TermId,
-    bank: &mut TermBank,
-) -> TermId {
-    match bank.get(term).clone() {
-        mrs_core::term_bank::TermNode::Var(v) => match sigma.get(v) {
-            Some(t) => t,
-            None => term,
-        },
-        mrs_core::term_bank::TermNode::App(f, args) => {
-            let new_args: Vec<TermId> = args
-                .iter()
-                .map(|&a| apply_matching_subst_id(sigma, a, bank))
-                .collect();
-            bank.intern_app(f, new_args)
-        }
     }
 }

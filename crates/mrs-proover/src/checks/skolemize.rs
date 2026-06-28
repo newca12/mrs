@@ -432,13 +432,11 @@ fn flatten_associative<'a, 'p>(
             connective,
             right,
         } = current
-        {
-            if *connective == conn {
+            && *connective == conn {
                 stack.push(right);
                 stack.push(left);
                 continue;
             }
-        }
         out.push(current);
     }
     out

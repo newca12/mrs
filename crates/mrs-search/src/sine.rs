@@ -116,11 +116,10 @@ pub fn filter_items<T: SineItem + Clone>(
         let threshold = min_g * tolerance;
 
         for &s in syms {
-            if let Some(cnt) = sym_counts.get(&s) {
-                if (*cnt as f64) <= threshold {
+            if let Some(cnt) = sym_counts.get(&s)
+                && (*cnt as f64) <= threshold {
                     triggers.entry(s).or_default().push(i);
                 }
-            }
         }
     }
 
