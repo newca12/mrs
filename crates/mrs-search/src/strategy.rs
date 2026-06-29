@@ -473,9 +473,28 @@ pub fn run_schedule(
         w0: 1,
     });
 
+    let mut has_eq = false;
+    for clause in clauses {
+        if has_eq {
+            break;
+        }
+        for lit in &clause.literals {
+            if let mrs_core::formula::Atom::Eq(_, _) = lit.atom {
+                has_eq = true;
+                break;
+            }
+        }
+    }
+    let is_fne = !has_eq;
+    let disable_single_neg = std::env::var("MRS_NO_SINGLE_NEG").is_ok();
+    let apply_max_neg = is_fne && !disable_single_neg;
+
     let mut actual_configs = Vec::new();
     for (search_config, _) in &schedule.strategies {
         let mut actual_config = search_config.clone();
+        if apply_max_neg && matches!(actual_config.literal_selection, LiteralSelection::AllNegative) {
+            actual_config.literal_selection = LiteralSelection::MaxNegative;
+        }
         actual_config.ordering = match search_config.ordering {
             TermOrdering::KBO => TermOrdering::CustomKBO(config.clone()),
             TermOrdering::LPO => TermOrdering::CustomLPO(config.clone()),
