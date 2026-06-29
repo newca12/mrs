@@ -496,7 +496,7 @@ pub fn casc_epu(total_time: Duration, workers: usize) -> StrategySchedule {
 
 /// A schedule optimized for EPR Satisfiable (EPS).
 /// Greedy order: s2 (+38/38) — 100% coverage at 1 core.
-/// Tunes the portfolio according to CASC-30 priority sweeps.
+/// Verified on the AVX2 sweep dataset eps_avx1_run.csv.
 pub fn casc_eps(total_time: Duration, workers: usize) -> StrategySchedule {
     build_casc_schedule(
         total_time,
