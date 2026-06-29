@@ -458,7 +458,7 @@ pub fn casc_fne(total_time: Duration, workers: usize) -> StrategySchedule {
     build_casc_schedule_inner(
         total_time,
         workers,
-        &[15, 11, 4, 5, 1, 6, 8, 2, 3, 7, 9, 10, 12, 13, 14],
+        &[11, 12, 4, 7, 6, 8, 1, 2, 3, 5, 9, 10, 13, 14, 15],
         single_negative,
     )
 }
