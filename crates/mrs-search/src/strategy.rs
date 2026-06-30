@@ -754,6 +754,45 @@ pub fn run_schedule(
                                         }
                                     }
                                 }
+
+                                // Paradigm B: Premise Selector Logging
+                                let conjectures: Vec<_> = state.clause_store.values()
+                                    .filter(|c| matches!(c.source, mrs_core::clause::ClauseSource::Input { .. }) && c.distance == 0)
+                                    .cloned()
+                                    .collect();
+
+                                if !conjectures.is_empty() {
+                                    let ctx = mrs_core::ml::premise_selector::ConjectureContext::new(&conjectures, &state.term_bank, symbols);
+                                    let mut premise_samples = Vec::new();
+
+                                    for axiom in state.clause_store.values() {
+                                        if matches!(axiom.source, mrs_core::clause::ClauseSource::Input { .. }) && axiom.distance != 0 {
+                                            let is_pos = pos_set.contains(&axiom.id);
+                                            let label = if is_pos { 1.0 } else { 0.0 };
+                                            let feats = mrs_core::ml::premise_selector::extract_premise_features(axiom, &ctx, &state.term_bank, symbols);
+                                            premise_samples.push(mrs_core::ml::sample::PremiseSample { label, feats });
+                                        }
+                                    }
+
+                                    let premise_file_stem = format!("{}_{}_premises", problem_name, strategy_idx);
+
+                                    if state.ml_log_csv {
+                                        if let Ok(mut w) = std::fs::File::create(log_path.join(format!("{}.csv", premise_file_stem))) {
+                                            use std::io::Write;
+                                            for s in &premise_samples {
+                                                let feats_str = s.feats.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(",");
+                                                let _ = writeln!(w, "{},{}", s.label, feats_str);
+                                            }
+                                        }
+                                    } else {
+                                        if let Ok(mut w) = std::fs::File::create(log_path.join(format!("{}.wincode", premise_file_stem))) {
+                                            let mut std_write = wincode::io::std_write::WriteAdapter::new(&mut w);
+                                            for s in &premise_samples {
+                                                let _ = wincode::serialize_into(&mut std_write, s);
+                                            }
+                                        }
+                                    }
+                                }
                             }
 
                             let legacy_store: HashMap<_, _> = state

@@ -282,6 +282,39 @@ fn main() {
 
     #[cfg(feature = "ml")]
     {
+        if let Some(log_dir) = &log_ml_data {
+            use mrs_core::ml::schedule_classifier::extract_schedule_features;
+            use mrs_core::term_bank::TermBank;
+            let mut bank = TermBank::new();
+            let mut id_clauses = Vec::with_capacity(all_clauses.len());
+            for c in &all_clauses {
+                id_clauses.push(bank.clause_from_legacy(c));
+            }
+            let feats = extract_schedule_features(&id_clauses, &bank, &lowered.symbols);
+            let sample = mrs_core::ml::sample::ScheduleSample {
+                label_idx: 0, // Mapped during offline training
+                feats,
+            };
+            let log_path = std::path::Path::new(log_dir);
+            std::fs::create_dir_all(log_path).ok();
+            let file_stem = format!("{}_schedule", problem_name);
+            if ml_log_csv {
+                if let Ok(mut w) = std::fs::File::create(log_path.join(format!("{}.csv", file_stem))) {
+                    use std::io::Write;
+                    let feats_str = feats.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(",");
+                    let _ = writeln!(w, "0,{}", feats_str);
+                }
+            } else {
+                if let Ok(mut w) = std::fs::File::create(log_path.join(format!("{}.wincode", file_stem))) {
+                    let mut std_write = wincode::io::std_write::WriteAdapter::new(&mut w);
+                    let _ = wincode::serialize_into(&mut std_write, &sample);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "ml")]
+    {
         if ml_schedule || ml_prune_ratio.is_some() {
             use mrs_core::term_bank::TermBank;
             let mut bank = TermBank::new();
