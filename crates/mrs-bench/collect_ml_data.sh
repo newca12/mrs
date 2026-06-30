@@ -51,7 +51,11 @@ echo "Found $NUM_PROBS problems."
 # Export TPTP environment variable for include directives
 export TPTP="$TPTP_DIR"
 
-echo "Running data collection with $JOBS parallel jobs, $MRS_WORKERS threads per problem (Time limit: ${TIME_LIMIT}s)..."
+if [ "$TIME_LIMIT" = "auto" ] || [ "$TIME_LIMIT" = "casc" ]; then
+    echo "Running data collection with $JOBS parallel jobs, $MRS_WORKERS threads per problem (Time limit: Division-Specific Auto-Scaling)..."
+else
+    echo "Running data collection with $JOBS parallel jobs, $MRS_WORKERS threads per problem (Time limit: ${TIME_LIMIT}s)..."
+fi
 
 export MRS_BIN="$WORKSPACE_ROOT/target/release/mrs"
 export LOG_DIR="$OUT_DIR/data"
@@ -77,8 +81,19 @@ cat "$OUT_DIR/problems.list" | xargs -P "$JOBS" -n 1 -I {} bash -c '
         SCHEDULE="casc"
     fi
     
+    LIMIT="'"$TIME_LIMIT"'"
+    if [[ "$LIMIT" == "auto" || "$LIMIT" == "casc" ]]; then
+        case "$DIVISION" in
+            FEQ) LIMIT=180 ;;
+            FNE) LIMIT=120 ;;
+            UEQ) LIMIT=60 ;;
+            EPU|EPS|EPR) LIMIT=30 ;;
+            *) LIMIT=60 ;;
+        esac
+    fi
+
     # timeout acts as a failsafe; mrs also has its own internal --time limit
-    timeout '"$TIME_LIMIT"'s "$MRS_BIN" --time '"$TIME_LIMIT"' --workers "$WORKERS" --schedule "$SCHEDULE" --log-ml-data "$SPECIFIC_LOG_DIR" "$FILE" >/dev/null 2>&1 || true
+    timeout "${LIMIT}s" "$MRS_BIN" --time "$LIMIT" --workers "$WORKERS" --schedule "$SCHEDULE" --log-ml-data "$SPECIFIC_LOG_DIR" "$FILE" >/dev/null 2>&1 || true
 '
 
 NUM_LOGS=$(find "$LOG_DIR" -type f -name "*.wincode" | wc -l || echo 0)
