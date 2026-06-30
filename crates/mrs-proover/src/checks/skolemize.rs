@@ -376,7 +376,9 @@ fn collect_quantified_vars<'p>(
                 }
             }
         }
-        FOFFormula::Negation(g) | FOFFormula::Parens(g) => collect_quantified_vars(g, univ, exist, in_scope, exist_scope),
+        FOFFormula::Negation(g) | FOFFormula::Parens(g) => {
+            collect_quantified_vars(g, univ, exist, in_scope, exist_scope)
+        }
         FOFFormula::Binary { left, right, .. } => {
             collect_quantified_vars(left, univ, exist, in_scope, exist_scope);
             collect_quantified_vars(right, univ, exist, in_scope, exist_scope);
@@ -432,11 +434,12 @@ fn flatten_associative<'a, 'p>(
             connective,
             right,
         } = current
-            && *connective == conn {
-                stack.push(right);
-                stack.push(left);
-                continue;
-            }
+            && *connective == conn
+        {
+            stack.push(right);
+            stack.push(left);
+            continue;
+        }
         out.push(current);
     }
     out
@@ -457,13 +460,7 @@ fn match_multiset<'p>(
     for i in 0..concs.len() {
         if let Some(current_conc) = concs[i] {
             let mut m_tentative = m.clone();
-            if match_skolem_formula(
-                current_pat,
-                current_conc,
-                univ,
-                exist,
-                &mut m_tentative,
-            ) {
+            if match_skolem_formula(current_pat, current_conc, univ, exist, &mut m_tentative) {
                 concs[i] = None;
                 if match_multiset(&pats[1..], concs, univ, exist, &mut m_tentative) {
                     *m = m_tentative;
@@ -650,7 +647,13 @@ fn try_positive_skolemize<'p>(
     let mut exist_set: HashSet<&str> = HashSet::new();
     let mut m = SkolemMatch::default();
     let mut in_scope: Vec<&str> = Vec::new();
-    collect_quantified_vars(parent_f, &mut univ_set, &mut exist_set, &mut in_scope, &mut m.exist_scope);
+    collect_quantified_vars(
+        parent_f,
+        &mut univ_set,
+        &mut exist_set,
+        &mut in_scope,
+        &mut m.exist_scope,
+    );
     if exist_set.is_empty() {
         return false; // nothing to Skolemise this way
     }
@@ -660,13 +663,7 @@ fn try_positive_skolemize<'p>(
         return false;
     }
 
-    if !match_skolem_formula(
-        parent_f,
-        step_f,
-        &univ_set,
-        &exist_set,
-        &mut m,
-    ) {
+    if !match_skolem_formula(parent_f, step_f, &univ_set, &exist_set, &mut m) {
         return false;
     }
 

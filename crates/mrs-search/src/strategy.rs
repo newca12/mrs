@@ -492,7 +492,12 @@ pub fn run_schedule(
     let mut actual_configs = Vec::new();
     for (search_config, _) in &schedule.strategies {
         let mut actual_config = search_config.clone();
-        if apply_max_neg && matches!(actual_config.literal_selection, LiteralSelection::AllNegative) {
+        if apply_max_neg
+            && matches!(
+                actual_config.literal_selection,
+                LiteralSelection::AllNegative
+            )
+        {
             actual_config.literal_selection = LiteralSelection::MaxNegative;
         }
         actual_config.ordering = match search_config.ordering {

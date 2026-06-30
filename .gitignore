@@ -53,3 +53,4 @@ greedy_all.res
 # mrs-train checkpoint/log artifacts
 *.artifacts/
 experiment.log
+docs/BENCHMARKS.md

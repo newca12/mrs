@@ -932,14 +932,14 @@ mod tests {
                 continue;
             }
             if let Some(fof) = p.as_fof()
-                && let FOFStatement::Logical(f) = &fof.formula {
-                    let mut syms: std::collections::HashSet<&str> =
-                        std::collections::HashSet::new();
-                    crate::checks::introduced_definition::collect_fun_syms(f, &mut syms);
-                    for s in syms {
-                        reg.record(s);
-                    }
+                && let FOFStatement::Logical(f) = &fof.formula
+            {
+                let mut syms: std::collections::HashSet<&str> = std::collections::HashSet::new();
+                crate::checks::introduced_definition::collect_fun_syms(f, &mut syms);
+                for s in syms {
+                    reg.record(s);
                 }
+            }
         }
         try_check(step, &parents, &mut reg)
     }
