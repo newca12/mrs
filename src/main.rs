@@ -30,6 +30,8 @@ fn main() {
     let mut ml_log_csv = false;
     let mut ml_weights: Option<String> = None;
     let mut workers: Option<usize> = None;
+    let mut ml_schedule = false;
+    let mut ml_prune_ratio: Option<f32> = None;
 
     #[cfg(feature = "proover")]
     let mut quiet = false;
@@ -89,6 +91,19 @@ fn main() {
                 if schedule_name.is_none() {
                     schedule_name = Some("ml".to_string());
                 }
+            }
+            "--ml-schedule" => {
+                ml_schedule = true;
+            }
+            "--ml-prune" => {
+                let val = args.next().unwrap_or_else(|| {
+                    eprintln!("Error: --ml-prune requires a ratio float (e.g. 0.6)");
+                    process::exit(1);
+                });
+                ml_prune_ratio = Some(val.parse().unwrap_or_else(|_| {
+                    eprintln!("Error: --ml-prune requires a float, got {:?}", val);
+                    process::exit(1);
+                }));
             }
             // Deprecated alias: --fast is now --schedule fast.
             "--fast" => {
@@ -265,6 +280,80 @@ fn main() {
         all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(0)));
     }
 
+    #[cfg(feature = "ml")]
+    {
+        if ml_schedule || ml_prune_ratio.is_some() {
+            use mrs_core::term_bank::TermBank;
+            let mut bank = TermBank::new();
+            let mut id_clauses = Vec::with_capacity(all_clauses.len());
+            for c in &all_clauses {
+                id_clauses.push(bank.clause_from_legacy(c));
+            }
+
+            if let Some(ratio) = ml_prune_ratio {
+                use burn::backend::ndarray::NdArrayDevice;
+                use mrs_core::ml::premise_selector::PremiseSelector;
+                let device = NdArrayDevice::Cpu;
+                let selector = PremiseSelector::<burn::backend::ndarray::NdArray>::new(device);
+
+                let mut conjectures = Vec::new();
+                let mut axioms = Vec::new();
+                for c in id_clauses {
+                    if c.distance == 0 {
+                        conjectures.push(c);
+                    } else {
+                        axioms.push(c);
+                    }
+                }
+
+                let pruned_axioms =
+                    selector.select_premises(axioms, &conjectures, ratio, &bank, &lowered.symbols);
+
+                info!(
+                    "% ML Premise Selection: kept {} / {} axioms",
+                    pruned_axioms.len(),
+                    all_clauses.len() - conjectures.len()
+                );
+
+                use std::collections::HashSet;
+                let kept_ids: HashSet<_> = pruned_axioms
+                    .iter()
+                    .map(|c| c.id)
+                    .chain(conjectures.iter().map(|c| c.id))
+                    .collect();
+                all_clauses.retain(|c| kept_ids.contains(&c.id));
+
+                // Re-populate id_clauses for ScheduleClassifier
+                id_clauses = Vec::with_capacity(all_clauses.len());
+                for c in &all_clauses {
+                    id_clauses.push(bank.clause_from_legacy(c));
+                }
+            }
+
+            if ml_schedule && schedule_name.is_none() {
+                use burn::backend::ndarray::NdArrayDevice;
+                use mrs_core::ml::schedule_classifier::{
+                    ScheduleClassifier, extract_schedule_features,
+                };
+                let device = NdArrayDevice::Cpu;
+                let classifier = ScheduleClassifier::<burn::backend::ndarray::NdArray>::new(device);
+                let feats = extract_schedule_features(&id_clauses, &bank, &lowered.symbols);
+                let assigned = classifier.classify(feats);
+                schedule_name = Some(assigned.to_string());
+                info!("% ML Schedule Classifier: chose portfolio '{}'", assigned);
+            }
+        }
+    }
+
+    #[cfg(not(feature = "ml"))]
+    {
+        if ml_schedule || ml_prune_ratio.is_some() {
+            eprintln!(
+                "Warning: --ml-schedule or --ml-prune used but prover compiled without 'ml' feature. Flags ignored."
+            );
+        }
+    }
+
     let elapsed = start.elapsed();
     let (final_result, final_status, final_report) = if elapsed >= total_budget {
         (
@@ -273,9 +362,7 @@ fn main() {
             ScheduleReport::default(),
         )
     } else {
-        let actual_workers = workers.unwrap_or_else(|| {
-            num_cpus::get_physical().max(1)
-        });
+        let actual_workers = workers.unwrap_or_else(|| num_cpus::get_physical().max(1));
 
         let search_budget = total_budget - elapsed;
         let schedule = match schedule_name.as_deref() {

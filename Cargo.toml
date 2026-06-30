@@ -50,6 +50,7 @@ mrs-calculus = { workspace = true }
 mrs-search = { workspace = true }
 cadical.workspace = true
 num_cpus = "1.17.0"
+burn = { version = "0.21.0", optional = true, default-features = false }
 
 [features]
 default = []
@@ -60,5 +61,5 @@ default = []
 #   the small ATP queries emitted by `mrs-proover`.
 # All three are no-ops in the default build.
 proover = []
-ml = ["mrs-core/ml", "mrs-search/ml-guidance"]
-ml-guidance = ["mrs-core/ml", "mrs-search/ml-guidance"]
+ml = ["mrs-core/ml", "mrs-search/ml-guidance", "dep:burn", "burn/ndarray"]
+ml-guidance = ["mrs-core/ml", "mrs-search/ml-guidance", "dep:burn", "burn/ndarray"]
