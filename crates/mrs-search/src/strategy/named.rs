@@ -455,7 +455,7 @@ pub fn casc_fne(total_time: Duration, workers: usize) -> StrategySchedule {
     build_casc_schedule_inner(
         total_time,
         workers,
-        &[15, 11, 4, 5, 1, 6, 8, 2, 3, 7, 9, 10, 12, 13, 14],
+        &[11, 4, 12, 1, 6, 8, 2, 3, 5, 7, 9, 10, 13, 14, 15],
         false, // The single-negative override is now handled dynamically in run_schedule
     )
 }
@@ -466,7 +466,7 @@ pub fn casc_feq(total_time: Duration, workers: usize) -> StrategySchedule {
     build_casc_schedule(
         total_time,
         workers,
-        &[11, 12, 1, 8, 10, 6, 14, 2, 13, 15, 3, 4, 5, 7, 9],
+        &[11, 12, 1, 6, 10, 8, 14, 4, 5, 2, 3, 7, 9, 13, 15],
     )
 }
 
@@ -476,7 +476,7 @@ pub fn casc_ueq(total_time: Duration, workers: usize) -> StrategySchedule {
     build_casc_schedule(
         total_time,
         workers,
-        &[11, 4, 2, 14, 8, 15, 1, 3, 5, 6, 7, 9, 10, 12, 13],
+        &[11, 4, 2, 8, 14, 1, 15, 3, 5, 6, 7, 9, 10, 12, 13],
     )
 }
 
@@ -487,7 +487,7 @@ pub fn casc_epu(total_time: Duration, workers: usize) -> StrategySchedule {
     build_casc_schedule(
         total_time,
         workers,
-        &[4, 6, 1, 2, 3, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        &[1, 6, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15],
     )
 }
 
@@ -498,7 +498,7 @@ pub fn casc_eps(total_time: Duration, workers: usize) -> StrategySchedule {
     build_casc_schedule(
         total_time,
         workers,
-        &[1, 2, 5, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        &[2, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
     )
 }
 
