@@ -141,6 +141,10 @@ impl UnprocessedSet {
         self.active_ids.len()
     }
 
+    pub fn contains(&self, id: &mrs_core::clause::ClauseId) -> bool {
+        self.active_ids.contains(id)
+    }
+
     /// Pops the oldest clause from the set, returning its ID.
     pub fn pop_age(&mut self) -> Option<ClauseId> {
         while let Some(id) = self.age_queue.pop_front() {

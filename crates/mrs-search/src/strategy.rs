@@ -714,18 +714,22 @@ pub fn run_schedule(
                         SearchResult::Refutation(id, _) => {
                             #[cfg(feature = "ml-guidance")]
                             if let Some(log_dir) = &state.log_ml_data {
-                                let positive_ids = mrs_proof::extract::extract_proof_ids(id, &state.clause_store);
-                                let pos_set: std::collections::HashSet<_> = positive_ids.iter().copied().collect();
+                                let elapsed = schedule_start.elapsed().as_secs_f64();
+                                if elapsed >= 0.5 && state.stats.processed >= 100 {
+                                    let positive_ids = mrs_proof::extract::extract_proof_ids(id, &state.clause_store);
+                                    let pos_set: std::collections::HashSet<_> = positive_ids.iter().copied().collect();
 
-                                let mut all_samples = Vec::new();
+                                    let mut all_samples = Vec::new();
 
-                                for (&cid, clause) in &state.clause_store {
-                                    let is_pos = pos_set.contains(&cid);
+                                    for (&cid, clause) in &state.clause_store {
+                                        let is_pos = pos_set.contains(&cid);
 
-                                    // Negative subsampling: keep all positives, sample ~10% of negatives
-                                    if !is_pos && rand::random::<f32>() > 0.1 {
-                                        continue;
-                                    }
+                                        // Negative subsampling: keep all positives, sample only from processed set
+                                        if !is_pos {
+                                            if state.unprocessed.contains(&cid) || rand::random::<f32>() > 0.1 {
+                                                continue;
+                                            }
+                                        }
 
                                     let label = if is_pos { 1.0 } else { 0.0 };
                                     let weight = crate::weight::clause_weight_id(clause, &state.term_bank, &state.config) as f32;
@@ -756,39 +760,42 @@ pub fn run_schedule(
                                 }
 
                                 // Paradigm B: Premise Selector Logging
-                                let conjectures: Vec<_> = state.clause_store.values()
-                                    .filter(|c| matches!(c.source, mrs_core::clause::ClauseSource::Input { .. }) && c.distance == 0)
-                                    .cloned()
-                                    .collect();
+                                    let conjectures: Vec<_> = state.clause_store.values()
+                                        .filter(|c| matches!(c.source, mrs_core::clause::ClauseSource::Input { .. }) && c.distance == 0)
+                                        .cloned()
+                                        .collect();
 
-                                if !conjectures.is_empty() {
-                                    let ctx = mrs_core::ml::premise_selector::ConjectureContext::new(&conjectures, &state.term_bank, symbols);
-                                    let mut premise_samples = Vec::new();
+                                    if !conjectures.is_empty() {
+                                        let ctx = mrs_core::ml::premise_selector::ConjectureContext::new(&conjectures, &state.term_bank, symbols);
+                                        let mut premise_samples = Vec::new();
 
-                                    for axiom in state.clause_store.values() {
-                                        if matches!(axiom.source, mrs_core::clause::ClauseSource::Input { .. }) && axiom.distance != 0 {
-                                            let is_pos = pos_set.contains(&axiom.id);
-                                            let label = if is_pos { 1.0 } else { 0.0 };
-                                            let feats = mrs_core::ml::premise_selector::extract_premise_features(axiom, &ctx, &state.term_bank, symbols);
-                                            premise_samples.push(mrs_core::ml::sample::PremiseSample { label, feats });
-                                        }
-                                    }
-
-                                    let premise_file_stem = format!("{}_{}_premises", problem_name, strategy_idx);
-
-                                    if state.ml_log_csv {
-                                        if let Ok(mut w) = std::fs::File::create(log_path.join(format!("{}.csv", premise_file_stem))) {
-                                            use std::io::Write;
-                                            for s in &premise_samples {
-                                                let feats_str = s.feats.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(",");
-                                                let _ = writeln!(w, "{},{}", s.label, feats_str);
+                                        for axiom in state.clause_store.values() {
+                                            if matches!(axiom.source, mrs_core::clause::ClauseSource::Input { .. }) && axiom.distance != 0 {
+                                                let is_pos = pos_set.contains(&axiom.id);
+                                                let label = if is_pos { 1.0 } else { 0.0 };
+                                                let feats = mrs_core::ml::premise_selector::extract_premise_features(axiom, &ctx, &state.term_bank, symbols);
+                                                premise_samples.push(mrs_core::ml::sample::PremiseSample { label, feats });
                                             }
                                         }
-                                    } else {
-                                        if let Ok(mut w) = std::fs::File::create(log_path.join(format!("{}.wincode", premise_file_stem))) {
-                                            let mut std_write = wincode::io::std_write::WriteAdapter::new(&mut w);
-                                            for s in &premise_samples {
-                                                let _ = wincode::serialize_into(&mut std_write, s);
+
+                                        let premise_file_stem = format!("{}_{}_premises", problem_name, strategy_idx);
+                                        let premise_log_path = log_path.join("premise");
+                                        std::fs::create_dir_all(&premise_log_path).ok();
+
+                                        if state.ml_log_csv {
+                                            if let Ok(mut w) = std::fs::File::create(premise_log_path.join(format!("{}.csv", premise_file_stem))) {
+                                                use std::io::Write;
+                                                for s in &premise_samples {
+                                                    let feats_str = s.feats.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(",");
+                                                    let _ = writeln!(w, "{},{}", s.label, feats_str);
+                                                }
+                                            }
+                                        } else {
+                                            if let Ok(mut w) = std::fs::File::create(premise_log_path.join(format!("{}.wincode", premise_file_stem))) {
+                                                let mut std_write = wincode::io::std_write::WriteAdapter::new(&mut w);
+                                                for s in &premise_samples {
+                                                    let _ = wincode::serialize_into(&mut std_write, s);
+                                                }
                                             }
                                         }
                                     }

@@ -35,6 +35,7 @@ cargo build --release --features ml
 if [ -n "${INPUT_PROBLEMS_LIST:-}" ] && [ -f "$INPUT_PROBLEMS_LIST" ]; then
     echo "Using provided problem list: $INPUT_PROBLEMS_LIST"
     cp "$INPUT_PROBLEMS_LIST" "$OUT_DIR/problems.list"
+    export DIVISION_OVERRIDE=$(basename "$INPUT_PROBLEMS_LIST" .list)
 else
     echo "Finding problems in $TPTP_DIR/Problems ..."
     if [ ! -d "$TPTP_DIR/Problems" ]; then
@@ -67,8 +68,12 @@ mkdir -p "$LOG_DIR"
 cat "$OUT_DIR/problems.list" | xargs -P "$JOBS" -n 1 -I {} bash -c '
     FILE="{}"
     PROB_NAME=$(basename "$FILE" .p)
-    # The division is typically the parent directory name, e.g. FEQ
-    DIVISION=$(basename $(dirname "$FILE"))
+    if [ -n "${DIVISION_OVERRIDE:-}" ]; then
+        DIVISION="${DIVISION_OVERRIDE^^}"
+    else
+        # The parent directory name is actually the TPTP domain (e.g. LAT, SYN), not the CASC division
+        DIVISION=$(basename $(dirname "$FILE"))
+    fi
     DIV_LOWER=${DIVISION,,}
     
     export PROBLEM_NAME="$PROB_NAME"

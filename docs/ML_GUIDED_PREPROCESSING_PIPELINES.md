@@ -189,7 +189,7 @@ Standard TPTP releases contain thousands of very small, simple problems. Trainin
 1. **Targeted CASC-Grade Problem Lists (Input Filtering)**:
    Instead of collecting features globally over all of TPTP, data collection is targeted directly at CASC-grade lists of non-trivial problems. The `categorize_tptp` utility splits a TPTP release into division lists (`feq.list`, `fne.list`, etc.), which are fed directly into the collection harness via the `INPUT_PROBLEMS_LIST` environment variable.
 2. **Stratified Difficulty Filtering (Dataset Pruning)**:
-   During dataset loading in `mrs-train`, trivial solutions are discarded. Any sample originating from a problem that was solved in under **0.5 seconds** or required **fewer than 100 processed clauses** is rejected. This forces the neural network to learn structural discriminators specifically on non-trivial search environments.
+   During data logging in `mrs-search`, trivial solutions are discarded. Any problem that was solved in under **0.5 seconds** or required **fewer than 100 processed clauses** is rejected before writing traces. This forces the neural network to learn structural discriminators specifically on non-trivial search environments.
 3. **Hard Negatives Subsampling**:
    In large problems, the generated clause space is massive. Rather than sampling raw, trivially-unresolvable clauses as negatives, negative samples are drawn strictly from the **processed (active) set** (clauses the heuristic selected as promising but which ultimately proved useless). This teaches the network to distinguish between highly convincing "look-alike" clauses and true proof-path clauses.
 
