@@ -59,11 +59,11 @@ Based on a 30 s per-strategy sweep over the CASC-30 problem set:
 
 | Division | 8-core priority order | Unique coverage at 8 cores |
 |:---------|:----------------------|:---------------------------|
-| **FNE** | s15, s11, s4, s5, s1, s6, s8, s2 | 46 problems solved at 8 cores |
-| **FEQ** | s11, s12, s1, s8, s10, s6, s14, s2 | 88/88 (100%) at 10 cores |
-| **UEQ** | s11, s4, s2, s14, s8, s15, s1, s3 | 62/62 (100%) at 6 cores |
-| **EPU** | s1, s6, s2, s3, s4, s5, s7, s8 | 16/16 (100%) at 2 cores |
-| **EPS** | s2, s1, s3, s4, s5, s6, s7, s8 | 38/38 (100%) at 1 core |
+| **FNE** | s11, s4, s12, s1, s6, s8, s2, s3 | 35 problems solved at 6 cores |
+| **FEQ** | s11, s12, s1, s6, s10, s8, s14, s4 | 90 problems solved at 8 cores |
+| **UEQ** | s11, s4, s2, s8, s14, s1, s15, s3 | 68/68 (100%) at 7 cores |
+| **EPU** | s1, s6, s14, s11, s4, s2, s3, s7 | 16/16 (100%) at 2 cores |
+| **EPS** | s2, s3, s1, s8, s11, s12, s9, s14 | 38/38 (100%) at 1 core |
 | **ICU** | s12, s1, s2, s3, s4, s5, s6, s7 | 0 problems solved |
 
 Beyond the minimum coverage point, extra slots cycle through remaining
