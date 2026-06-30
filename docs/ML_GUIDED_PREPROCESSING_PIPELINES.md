@@ -183,6 +183,16 @@ Data collection occurs during a full-portfolio sweep (e.g., CASC-30 problem list
 * **Imbalance Mitigation (Premise Selector)**: Positives are highly sparse. We use Weighted Binary Cross-Entropy Loss to penalize false negatives more heavily:
   $$\text{Loss} = - \left( w_{\text{pos}} \cdot y \log(\sigma(x)) + (1 - y) \log(1 - \sigma(x)) \right)$$
 
+### C. Mitigation of Selection and Overfitting Bias
+Standard TPTP releases contain thousands of very small, simple problems. Training on these introduces a severe **selection bias**, causing the networks to overfit to trivial environments and fail on complex, CASC-grade problems. To neutralize this bias, three mitigation strategies are implemented:
+
+1. **Targeted CASC-Grade Problem Lists (Input Filtering)**:
+   Instead of collecting features globally over all of TPTP, data collection is targeted directly at CASC-grade lists of non-trivial problems. The `categorize_tptp` utility splits a TPTP release into division lists (`feq.list`, `fne.list`, etc.), which are fed directly into the collection harness via the `INPUT_PROBLEMS_LIST` environment variable.
+2. **Stratified Difficulty Filtering (Dataset Pruning)**:
+   During dataset loading in `mrs-train`, trivial solutions are discarded. Any sample originating from a problem that was solved in under **0.5 seconds** or required **fewer than 100 processed clauses** is rejected. This forces the neural network to learn structural discriminators specifically on non-trivial search environments.
+3. **Hard Negatives Subsampling**:
+   In large problems, the generated clause space is massive. Rather than sampling raw, trivially-unresolvable clauses as negatives, negative samples are drawn strictly from the **processed (active) set** (clauses the heuristic selected as promising but which ultimately proved useless). This teaches the network to distinguish between highly convincing "look-alike" clauses and true proof-path clauses.
+
 ---
 
 ## 6. Implementation & Verification Checklist
