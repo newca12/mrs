@@ -31,7 +31,9 @@ fn main() {
     let mut ml_weights: Option<String> = None;
     let mut workers: Option<usize> = None;
     let mut ml_schedule = false;
+    let mut ml_schedule_weights: Option<String> = None;
     let mut ml_prune_ratio: Option<f32> = None;
+    let mut ml_premise_weights: Option<String> = None;
 
     #[cfg(feature = "proover")]
     let mut quiet = false;
@@ -95,6 +97,13 @@ fn main() {
             "--ml-schedule" => {
                 ml_schedule = true;
             }
+            "--ml-schedule-weights" => {
+                let val = args.next().unwrap_or_else(|| {
+                    eprintln!("Error: --ml-schedule-weights requires a file path");
+                    std::process::exit(1);
+                });
+                ml_schedule_weights = Some(val);
+            }
             "--ml-prune" => {
                 let val = args.next().unwrap_or_else(|| {
                     eprintln!("Error: --ml-prune requires a ratio float (e.g. 0.6)");
@@ -104,6 +113,13 @@ fn main() {
                     eprintln!("Error: --ml-prune requires a float, got {:?}", val);
                     process::exit(1);
                 }));
+            }
+            "--ml-premise-weights" => {
+                let val = args.next().unwrap_or_else(|| {
+                    eprintln!("Error: --ml-premise-weights requires a file path");
+                    std::process::exit(1);
+                });
+                ml_premise_weights = Some(val);
             }
             // Deprecated alias: --fast is now --schedule fast.
             "--fast" => {
@@ -327,7 +343,17 @@ fn main() {
                 use burn::backend::ndarray::NdArrayDevice;
                 use mrs_core::ml::premise_selector::PremiseSelector;
                 let device = NdArrayDevice::Cpu;
-                let selector = PremiseSelector::<burn::backend::ndarray::NdArray>::new(device);
+                let selector = if let Some(weights) = &ml_premise_weights {
+                    match PremiseSelector::<burn::backend::ndarray::NdArray>::load_from_file(weights, &device) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("Failed to load premise weights from {}: {}", weights, e);
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    PremiseSelector::<burn::backend::ndarray::NdArray>::new(device.clone())
+                };
 
                 let mut conjectures = Vec::new();
                 let mut axioms = Vec::new();
@@ -369,7 +395,17 @@ fn main() {
                     ScheduleClassifier, extract_schedule_features,
                 };
                 let device = NdArrayDevice::Cpu;
-                let classifier = ScheduleClassifier::<burn::backend::ndarray::NdArray>::new(device);
+                let classifier = if let Some(weights) = &ml_schedule_weights {
+                    match ScheduleClassifier::<burn::backend::ndarray::NdArray>::load_from_file(weights, &device) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            eprintln!("Failed to load schedule weights from {}: {}", weights, e);
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    ScheduleClassifier::<burn::backend::ndarray::NdArray>::new(device.clone())
+                };
                 let feats = extract_schedule_features(&id_clauses, &bank, &lowered.symbols);
                 let assigned = classifier.classify(feats);
                 schedule_name = Some(assigned.to_string());
