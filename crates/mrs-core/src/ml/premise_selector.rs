@@ -227,11 +227,13 @@ fn count_term_symbols(
 }
 
 fn hash_sym(sym: crate::SymbolId, symbols: &SymbolTable, counts: &mut [f32; HASH_BUCKETS]) {
-    let name = symbols.resolve(sym);
-    let mut hasher = rustc_hash::FxHasher::default();
-    name.as_bytes().hash(&mut hasher);
-    let bucket = (hasher.finish() as usize) % HASH_BUCKETS;
-    counts[bucket] += 1.0;
+    if (sym.0 as usize) < symbols.len() {
+        let name = symbols.resolve(sym);
+        let mut hasher = rustc_hash::FxHasher::default();
+        name.as_bytes().hash(&mut hasher);
+        let bucket = (hasher.finish() as usize) % HASH_BUCKETS;
+        counts[bucket] += 1.0;
+    }
 }
 
 #[cfg(feature = "ml")]

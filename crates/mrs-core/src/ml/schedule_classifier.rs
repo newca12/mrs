@@ -131,8 +131,11 @@ pub fn extract_schedule_features(
 
         let mut skolem_count = 0.0;
         for &sym in predicates.iter().chain(functors.iter()) {
-            if symbols.resolve(sym).starts_with("sk_") || symbols.resolve(sym).contains("sK") {
-                skolem_count += 1.0;
+            if (sym.0 as usize) < symbols.len() {
+                let name = symbols.resolve(sym);
+                if name.starts_with("sk_") || name.contains("sK") {
+                    skolem_count += 1.0;
+                }
             }
         }
         f[11] = skolem_count / all_symbols_count;
