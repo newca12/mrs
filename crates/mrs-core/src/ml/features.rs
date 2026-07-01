@@ -43,11 +43,13 @@ pub fn extract(
 
         match &lit.atom {
             IdAtom::Pred(sym, args) => {
-                let name = symbols.resolve(*sym);
-                let mut hasher = rustc_hash::FxHasher::default();
-                name.as_bytes().hash(&mut hasher);
-                let bucket = (hasher.finish() as usize) % HASH_BUCKETS;
-                hash_counts[bucket] += 1.0;
+                if (sym.0 as usize) < symbols.len() {
+                    let name = symbols.resolve(*sym);
+                    let mut hasher = rustc_hash::FxHasher::default();
+                    name.as_bytes().hash(&mut hasher);
+                    let bucket = (hasher.finish() as usize) % HASH_BUCKETS;
+                    hash_counts[bucket] += 1.0;
+                }
                 total_size += 1;
 
                 for &arg in args {
@@ -104,11 +106,13 @@ fn measure_term(
     match bank.get(term) {
         TermNode::Var(_) => (1, 1),
         TermNode::App(sym, args) => {
-            let name = symbols.resolve(*sym);
-            let mut hasher = rustc_hash::FxHasher::default();
-            name.as_bytes().hash(&mut hasher);
-            let bucket = (hasher.finish() as usize) % HASH_BUCKETS;
-            hash_counts[bucket] += 1.0;
+            if (sym.0 as usize) < symbols.len() {
+                let name = symbols.resolve(*sym);
+                let mut hasher = rustc_hash::FxHasher::default();
+                name.as_bytes().hash(&mut hasher);
+                let bucket = (hasher.finish() as usize) % HASH_BUCKETS;
+                hash_counts[bucket] += 1.0;
+            }
 
             let mut max_depth = 0;
             let mut total_size = 1;

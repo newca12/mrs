@@ -197,18 +197,18 @@ Standard TPTP releases contain thousands of very small, simple problems. Trainin
 
 ## 6. Implementation & Verification Checklist
 
-- [ ] **Phase 1: Feature Extraction & Sample Definitions**
+- [x] **Phase 1: Feature Extraction & Sample Definitions**
   - Implement `mrs-core::ml::schedule_classifier` structural extraction.
   - Implement `mrs-core::ml::premise_selector` pairwise extraction.
-- [ ] **Phase 2: Offline Training Integration (`mrs-train`)**
+- [x] **Phase 2: Offline Training Integration (`mrs-train`)**
   - Create dataloaders for pairwise and multiclass datasets.
   - Write PyTorch-equivalent MLP architectures in Burn.
   - Output binary serialization models + `meta.json` validation schema.
-- [ ] **Phase 3: Integration into Native Solving Loop**
+- [x] **Phase 3: Integration into Native Solving Loop**
   - Add `--ml-schedule` and `--ml-prune <ratio>` CLI flags to `mrs::main`.
   - Wire Premise Selector to execute immediately after CNF lowering.
   - Wire Schedule Classifier to assign the optimal portfolio before solver initialization.
-- [ ] **Phase 4: Rigorous Quality Assurance**
+- [x] **Phase 4: Rigorous Quality Assurance**
   - Verify zero impact on standard static portfolios when features are disabled.
   - Unit test that model loads correctly across Libtorch/NdArray backends.
   - Assert that feature dimensions and version checksums in `meta.json` match at runtime.
