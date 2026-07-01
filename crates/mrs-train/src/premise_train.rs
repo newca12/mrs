@@ -113,11 +113,37 @@ fn load_dataset(dir: &str) -> Vec<PremiseSample> {
         .filter_map(|e| e.ok())
     {
         let path = entry.path();
-        if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("wincode") {
-            let mut file = std::fs::File::open(path).expect("Failed to open wincode file");
-            let mut std_read = wincode::io::std_read::ReadAdapter::new(&mut file);
-            while let Ok(sample) = wincode::deserialize_from(&mut std_read) {
-                samples.push(sample);
+        if path.is_file() {
+            let ext = path.extension().and_then(|e| e.to_str());
+            if ext == Some("wincode") {
+                let mut file = std::fs::File::open(path).expect("Failed to open wincode file");
+                let mut std_read = wincode::io::std_read::ReadAdapter::new(&mut file);
+                while let Ok(sample) = wincode::deserialize_from(&mut std_read) {
+                    samples.push(sample);
+                }
+            } else if ext == Some("csv") {
+                if let Ok(content) = std::fs::read_to_string(path) {
+                    for line in content.lines() {
+                        let parts: Vec<&str> = line.split(',').collect();
+                        if parts.len() == PREMISE_FEATURE_DIM + 1 {
+                            if let Ok(label) = parts[0].parse::<f32>() {
+                                let mut feats = [0.0f32; PREMISE_FEATURE_DIM];
+                                let mut ok = true;
+                                for j in 0..PREMISE_FEATURE_DIM {
+                                    if let Ok(val) = parts[j + 1].parse::<f32>() {
+                                        feats[j] = val;
+                                    } else {
+                                        ok = false;
+                                        break;
+                                    }
+                                }
+                                if ok {
+                                    samples.push(PremiseSample { label, feats });
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
