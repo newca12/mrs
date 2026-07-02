@@ -388,6 +388,9 @@ impl SearchState {
             }
         }
 
+        // Fix: Restore strict chronological generation order for age_queue (FIFO)
+        unprocessed_clauses.sort_unstable_by_key(|c| c.id.0);
+
         self.unprocessed = crate::unprocessed::UnprocessedSet::new(self.config.clone());
         for clause in unprocessed_clauses {
             let w = self.compute_weight(&clause);

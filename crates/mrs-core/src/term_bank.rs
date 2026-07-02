@@ -263,46 +263,48 @@ impl TermBank {
     /// Canonicalizes nested associative applications of `sym` into a binary
     /// right-associated tree with sorted leaves.
     pub fn ac_normalize(&mut self, term: TermId, ac_syms: &HashSet<SymbolId>) -> TermId {
-        match self.get(term).clone() {
-            TermNode::Var(_) => term,
-            TermNode::App(sym, args) => {
-                let norm_args: SmallVec<[TermId; 4]> = args
-                    .iter()
-                    .map(|&arg| self.ac_normalize(arg, ac_syms))
-                    .collect();
+        let (sym, args) = match self.get(term) {
+            TermNode::Var(_) => return term,
+            TermNode::App(sym, args) => (*sym, args.clone()),
+        };
 
-                if ac_syms.contains(&sym) {
-                    let mut leaves = Vec::new();
-                    let mut stack = norm_args.into_iter().collect::<Vec<_>>();
-                    stack.reverse();
-                    while let Some(current) = stack.pop() {
-                        match self.get(current).clone() {
-                            TermNode::App(g, child_args) if g == sym => {
-                                for &child in child_args.iter().rev() {
-                                    stack.push(child);
-                                }
-                            }
-                            _ => {
-                                leaves.push(current);
-                            }
+        let norm_args: SmallVec<[TermId; 4]> = args
+            .iter()
+            .map(|&arg| self.ac_normalize(arg, ac_syms))
+            .collect();
+
+        if ac_syms.contains(&sym) {
+            let mut leaves = Vec::new();
+            let mut stack = norm_args.into_iter().collect::<Vec<_>>();
+            stack.reverse();
+            while let Some(current) = stack.pop() {
+                match self.get(current) {
+                    TermNode::App(g, child_args) if *g == sym => {
+                        for &child in child_args.iter().rev() {
+                            stack.push(child);
                         }
                     }
-
-                    leaves.sort_unstable_by_key(|t| t.0);
-
-                    if leaves.is_empty() {
-                        self.intern_app(sym, SmallVec::new())
-                    } else {
-                        let mut rebuilt = *leaves.last().unwrap();
-                        for &leaf in leaves.iter().rev().skip(1) {
-                            rebuilt = self.intern_app(sym, smallvec![leaf, rebuilt]);
-                        }
-                        rebuilt
+                    _ => {
+                        leaves.push(current);
                     }
-                } else {
-                    self.intern_app(sym, norm_args)
                 }
             }
+
+            leaves.sort_unstable_by_key(|t| t.0);
+
+            if leaves.is_empty() {
+                self.intern_app(sym, smallvec![])
+            } else if leaves.len() == 1 {
+                self.intern_app(sym, smallvec![leaves[0]])
+            } else {
+                let mut rebuilt = *leaves.last().unwrap();
+                for &leaf in leaves.iter().rev().skip(1) {
+                    rebuilt = self.intern_app(sym, smallvec![leaf, rebuilt]);
+                }
+                rebuilt
+            }
+        } else {
+            self.intern_app(sym, norm_args)
         }
     }
 
