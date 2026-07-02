@@ -207,12 +207,12 @@ pub fn train_premise<B: AutodiffBackend>(
     };
 
     let dataloader_train = DataLoaderBuilder::new(batcher_train)
-        .batch_size(2048)
+        .batch_size(8192)
         .shuffle(42)
         .num_workers(4)
         .build(std::sync::Arc::new(InMemDataset::new(train_set)));
     let dataloader_valid = DataLoaderBuilder::new(batcher_valid)
-        .batch_size(2048)
+        .batch_size(8192)
         .shuffle(42)
         .num_workers(4)
         .build(std::sync::Arc::new(InMemDataset::new(valid_set)));
@@ -222,7 +222,7 @@ pub fn train_premise<B: AutodiffBackend>(
             model: PremiseModel::<B>::new(&device),
         },
         AdamConfig::new().init(),
-        ConstantLr::new(1e-3),
+        ConstantLr::new(3e-4),
     );
 
     let supervised = SupervisedTraining::new(
@@ -239,7 +239,7 @@ pub fn train_premise<B: AutodiffBackend>(
         Aggregate::Mean,
         Direction::Lowest,
         Split::Valid,
-        StoppingCondition::NoImprovementSince { n_epochs: 5 },
+        StoppingCondition::NoImprovementSince { n_epochs: 15 },
     ))
     .summary();
 

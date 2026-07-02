@@ -250,6 +250,7 @@ use burn::tensor::backend::Backend;
 pub struct PremiseModel<B: Backend> {
     layer1: Linear<B>,
     layer2: Linear<B>,
+    layer3: Linear<B>,
     output: Linear<B>,
 }
 
@@ -257,15 +258,17 @@ pub struct PremiseModel<B: Backend> {
 impl<B: Backend> PremiseModel<B> {
     pub fn new(device: &B::Device) -> Self {
         Self {
-            layer1: LinearConfig::new(PREMISE_FEATURE_DIM, 64).init(device),
-            layer2: LinearConfig::new(64, 32).init(device),
-            output: LinearConfig::new(32, 1).init(device),
+            layer1: LinearConfig::new(PREMISE_FEATURE_DIM, 256).init(device),
+            layer2: LinearConfig::new(256, 128).init(device),
+            layer3: LinearConfig::new(128, 64).init(device),
+            output: LinearConfig::new(64, 1).init(device),
         }
     }
 
     pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
         let x = burn::tensor::activation::gelu(self.layer1.forward(x));
         let x = burn::tensor::activation::gelu(self.layer2.forward(x));
+        let x = burn::tensor::activation::gelu(self.layer3.forward(x));
         self.output.forward(x) // Raw logit for BCEWithLogitsLoss
     }
 }

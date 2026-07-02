@@ -184,6 +184,7 @@ use burn::tensor::backend::Backend;
 pub struct ScheduleModel<B: Backend> {
     layer1: Linear<B>,
     layer2: Linear<B>,
+    layer3: Linear<B>,
     output: Linear<B>,
 }
 
@@ -191,15 +192,17 @@ pub struct ScheduleModel<B: Backend> {
 impl<B: Backend> ScheduleModel<B> {
     pub fn new(device: &B::Device) -> Self {
         Self {
-            layer1: LinearConfig::new(SCHEDULE_FEATURE_DIM, 32).init(device),
-            layer2: LinearConfig::new(32, 16).init(device),
-            output: LinearConfig::new(16, 5).init(device),
+            layer1: LinearConfig::new(SCHEDULE_FEATURE_DIM, 256).init(device),
+            layer2: LinearConfig::new(256, 128).init(device),
+            layer3: LinearConfig::new(128, 64).init(device),
+            output: LinearConfig::new(64, 5).init(device),
         }
     }
 
     pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
         let x = burn::tensor::activation::relu(self.layer1.forward(x));
         let x = burn::tensor::activation::relu(self.layer2.forward(x));
+        let x = burn::tensor::activation::relu(self.layer3.forward(x));
         self.output.forward(x) // Raw logits for Cross-Entropy loss
     }
 }
