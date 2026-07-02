@@ -30,10 +30,19 @@ ARGS=(--time "${TIME_LIMIT}" --workers "${MRS_WORKERS:-8}" --ml-schedule)
 
 if [[ -f "${SCHEDULE_WEIGHTS}" ]]; then
     ARGS+=(--ml-schedule-weights "${SCHEDULE_WEIGHTS}")
+else
+    echo "% SZS status Error (mrs-ml: expected schedule model weights not found at ${SCHEDULE_WEIGHTS})" >&2
+    exit 1
 fi
 
 if [[ -f "${PREMISE_WEIGHTS}" ]]; then
-    ARGS+=(--ml-prune 0.6 --ml-premise-weights "${PREMISE_WEIGHTS}")
+    if [[ "${DIV_LOWER}" == "fne" ]]; then
+        ARGS+=(--ml-prune 0.85 --ml-premise-weights "${PREMISE_WEIGHTS}")
+    else
+        ARGS+=(--ml-prune 0.6 --ml-premise-weights "${PREMISE_WEIGHTS}")
+    fi
+else
+    echo "Warning: No premise selection weights found for ${DIV_LOWER} at ${PREMISE_WEIGHTS}. Skipping axiom pruning." >&2
 fi
 
 exec "${BINARY}" "${ARGS[@]}" "${PROBLEM}"
