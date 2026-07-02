@@ -165,6 +165,7 @@ fn apply_matching_subst(sigma: &Substitution, term: &Term) -> Term {
     sigma.apply_term(term)
 }
 
+use mrs_core::SymbolId;
 use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank, TermId};
 
 pub fn demodulate_id(
@@ -173,6 +174,7 @@ pub fn demodulate_id(
     demod_index: &mrs_index::stree::STreeId<(TermId, TermId, ClauseId)>,
     clause_store: &HashMap<ClauseId, IdClause>,
     id_gen: &mut ClauseIdGen,
+    ac_syms: &HashSet<SymbolId>,
 ) -> Option<IdClause> {
     let mut current_lits = clause.literals.clone();
     let mut changed = false;
@@ -197,6 +199,7 @@ pub fn demodulate_id(
                 demod_index,
                 clause_store,
                 &mut used_unit_ids,
+                ac_syms,
             ) {
                 changed = true;
                 changed_this_pass = true;
@@ -240,6 +243,7 @@ fn rewrite_literal_id(
     demod_index: &mrs_index::stree::STreeId<(TermId, TermId, ClauseId)>,
     clause_store: &HashMap<ClauseId, IdClause>,
     used_unit_ids: &mut Vec<ClauseId>,
+    ac_syms: &HashSet<SymbolId>,
 ) -> bool {
     let mut changed = false;
     let new_atom = match &lit.atom {
@@ -254,6 +258,7 @@ fn rewrite_literal_id(
                         demod_index,
                         clause_store,
                         used_unit_ids,
+                        ac_syms,
                     );
                     if ch {
                         changed = true;
@@ -271,6 +276,7 @@ fn rewrite_literal_id(
                 demod_index,
                 clause_store,
                 used_unit_ids,
+                ac_syms,
             );
             let (new_r, ch_r) = rewrite_term_id(
                 *r,
@@ -279,6 +285,7 @@ fn rewrite_literal_id(
                 demod_index,
                 clause_store,
                 used_unit_ids,
+                ac_syms,
             );
             if ch_l || ch_r {
                 changed = true;
@@ -299,6 +306,7 @@ fn rewrite_term_id(
     demod_index: &mrs_index::stree::STreeId<(TermId, TermId, ClauseId)>,
     clause_store: &HashMap<ClauseId, IdClause>,
     used_unit_ids: &mut Vec<ClauseId>,
+    ac_syms: &HashSet<SymbolId>,
 ) -> (TermId, bool) {
     let rules = demod_index.get_generalizations(term, bank);
     for (from, to, unit_id) in rules {
@@ -312,7 +320,9 @@ fn rewrite_term_id(
                 if !used_unit_ids.contains(&unit_id) {
                     used_unit_ids.push(unit_id);
                 }
-                return (apply_matching_subst_id(&sigma, to, bank), true);
+                let rewritten = apply_matching_subst_id(&sigma, to, bank);
+                let normalized = bank.ac_normalize(rewritten, ac_syms);
+                return (normalized, true);
             }
         }
     }
@@ -328,6 +338,7 @@ fn rewrite_term_id(
                 demod_index,
                 clause_store,
                 used_unit_ids,
+                ac_syms,
             );
             if ch {
                 changed = true;
@@ -335,7 +346,9 @@ fn rewrite_term_id(
             new_args.push(new_arg);
         }
         if changed {
-            return (bank.intern_app(sym, new_args), true);
+            let app_term = bank.intern_app(sym, new_args);
+            let normalized = bank.ac_normalize(app_term, ac_syms);
+            return (normalized, true);
         }
     }
 

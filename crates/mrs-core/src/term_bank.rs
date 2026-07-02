@@ -1,5 +1,5 @@
 use crate::{HashMap, HashSet};
-use smallvec::SmallVec;
+use smallvec::{smallvec, SmallVec};
 
 use crate::clause::{Clause, ClauseId, ClauseSource, Literal};
 use crate::formula::Atom;
@@ -259,6 +259,53 @@ impl TermBank {
         }
     }
 
+    /// Recursively normalizes terms modulo AC-symbols.
+    /// Canonicalizes nested associative applications of `sym` into a binary
+    /// right-associated tree with sorted leaves.
+    pub fn ac_normalize(&mut self, term: TermId, ac_syms: &HashSet<SymbolId>) -> TermId {
+        match self.get(term).clone() {
+            TermNode::Var(_) => term,
+            TermNode::App(sym, args) => {
+                let norm_args: SmallVec<[TermId; 4]> = args
+                    .iter()
+                    .map(|&arg| self.ac_normalize(arg, ac_syms))
+                    .collect();
+
+                if ac_syms.contains(&sym) {
+                    let mut leaves = Vec::new();
+                    let mut stack = norm_args.into_iter().collect::<Vec<_>>();
+                    stack.reverse();
+                    while let Some(current) = stack.pop() {
+                        match self.get(current).clone() {
+                            TermNode::App(g, child_args) if g == sym => {
+                                for &child in child_args.iter().rev() {
+                                    stack.push(child);
+                                }
+                            }
+                            _ => {
+                                leaves.push(current);
+                            }
+                        }
+                    }
+
+                    leaves.sort_unstable_by_key(|t| t.0);
+
+                    if leaves.is_empty() {
+                        self.intern_app(sym, SmallVec::new())
+                    } else {
+                        let mut rebuilt = *leaves.last().unwrap();
+                        for &leaf in leaves.iter().rev().skip(1) {
+                            rebuilt = self.intern_app(sym, smallvec![leaf, rebuilt]);
+                        }
+                        rebuilt
+                    }
+                } else {
+                    self.intern_app(sym, norm_args)
+                }
+            }
+        }
+    }
+
     pub fn non_variable_positions(&self, term: TermId) -> Vec<Vec<usize>> {
         let mut positions = Vec::new();
         let mut current_path = Vec::new();
@@ -510,5 +557,63 @@ mod tests {
 
         // Verify total number of unique nodes: a, v, f(v, a)
         assert_eq!(bank.nodes.len(), 3);
+    }
+
+    #[test]
+    fn test_ac_normalize() {
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("f"); // Treated as AC
+        let g = syms.intern("g"); // Standard function symbol
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let c = syms.intern("c");
+
+        let mut bank = TermBank::new();
+        let a_term = bank.intern_app(a, vec![]);
+        let b_term = bank.intern_app(b, vec![]);
+        let c_term = bank.intern_app(c, vec![]);
+
+        let mut ac_syms = HashSet::default();
+        ac_syms.insert(f);
+
+        // 1. Test binary commutativity: f(b, a) -> f(a, b)
+        let f_b_a = bank.intern_app(f, vec![b_term, a_term]);
+        let norm_f_b_a = bank.ac_normalize(f_b_a, &ac_syms);
+
+        let f_a_b = bank.intern_app(f, vec![a_term, b_term]);
+        let norm_f_a_b = bank.ac_normalize(f_a_b, &ac_syms);
+
+        assert_eq!(norm_f_b_a, norm_f_a_b, "f(b, a) and f(a, b) must normalize to the same term");
+
+        // 2. Test associativity: f(f(a, b), c) -> f(a, f(b, c))
+        let f_a_b_node = bank.intern_app(f, vec![a_term, b_term]);
+        let f_f_a_b_c = bank.intern_app(f, vec![f_a_b_node, c_term]);
+
+        let f_b_c_node = bank.intern_app(f, vec![b_term, c_term]);
+        let f_a_f_b_c = bank.intern_app(f, vec![a_term, f_b_c_node]);
+
+        let norm_f_f_a_b_c = bank.ac_normalize(f_f_a_b_c, &ac_syms);
+        let norm_f_a_f_b_c = bank.ac_normalize(f_a_f_b_c, &ac_syms);
+
+        assert_eq!(norm_f_f_a_b_c, norm_f_a_f_b_c, "f(f(a, b), c) and f(a, f(b, c)) must normalize to the same term");
+
+        // 3. Complex nesting and sorting: f(g(f(c, b)), a) -> f(a, g(f(b, c)))
+        let f_c_b = bank.intern_app(f, vec![c_term, b_term]);
+        let g_f_c_b = bank.intern_app(g, vec![f_c_b]);
+        let term_complex = bank.intern_app(f, vec![g_f_c_b, a_term]);
+
+        let norm_complex = bank.ac_normalize(term_complex, &ac_syms);
+
+        let f_b_c = bank.intern_app(f, vec![b_term, c_term]);
+        let norm_f_b_c = bank.ac_normalize(f_b_c, &ac_syms);
+        let g_f_b_c = bank.intern_app(g, vec![norm_f_b_c]);
+
+        if let TermNode::App(sym_out, args_out) = bank.get(norm_complex) {
+            assert_eq!(*sym_out, f);
+            assert_eq!(args_out[0], a_term);
+            assert_eq!(args_out[1], g_f_b_c);
+        } else {
+            panic!("Expected App node");
+        }
     }
 }

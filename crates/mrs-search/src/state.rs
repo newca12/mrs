@@ -8,7 +8,7 @@ use std::time::Instant;
 use mrs_calculus::ordering::SymbolConfig;
 use mrs_core::SymbolId;
 use mrs_core::clause::{Clause, ClauseId, ClauseIdGen};
-use mrs_core::term_bank::{IdClause, TermBank, TermId};
+use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank, TermId};
 use mrs_index::literal_index::LiteralIndex;
 use mrs_index::stree::STreeId;
 
@@ -329,6 +329,73 @@ impl SearchState {
                 }
                 self.children.entry(parent).or_default().push(clause.id);
             }
+        }
+    }
+
+    /// Normalizes a clause's literals/atoms modulo AC symbols using right-association.
+    /// Canonicalizes equality literals by placing the smaller TermId argument first.
+    pub fn ac_normalize_clause(&mut self, clause: IdClause, ac_syms: &HashSet<SymbolId>) -> IdClause {
+        if ac_syms.is_empty() {
+            return clause;
+        }
+        let mut norm_lits = Vec::with_capacity(clause.literals.len());
+        for lit in clause.literals {
+            let norm_atom = match lit.atom {
+                IdAtom::Pred(sym, args) => {
+                    let norm_args = args
+                        .iter()
+                        .map(|&arg| self.term_bank.ac_normalize(arg, ac_syms))
+                        .collect();
+                    IdAtom::Pred(sym, norm_args)
+                }
+                IdAtom::Eq(l, r) => {
+                    let norm_l = self.term_bank.ac_normalize(l, ac_syms);
+                    let norm_r = self.term_bank.ac_normalize(r, ac_syms);
+                    if norm_l.0 <= norm_r.0 {
+                        IdAtom::Eq(norm_l, norm_r)
+                    } else {
+                        IdAtom::Eq(norm_r, norm_l)
+                    }
+                }
+            };
+            norm_lits.push(IdLiteral {
+                positive: lit.positive,
+                atom: norm_atom,
+            });
+        }
+        IdClause::new_avatar(clause.id, norm_lits, clause.source, clause.avatar)
+    }
+
+    /// Recursively AC-normalizes all active clauses and updates their weights in queues.
+    pub fn ac_normalize_all(&mut self, ac_syms: &HashSet<SymbolId>) {
+        if ac_syms.is_empty() {
+            return;
+        }
+
+        // 1. Normalize all clauses in clause_store
+        let ids: Vec<ClauseId> = self.clause_store.keys().copied().collect();
+        for id in ids {
+            let clause = self.clause_store.remove(&id).unwrap();
+            let norm_clause = self.ac_normalize_clause(clause, ac_syms);
+            self.clause_store.insert(id, norm_clause);
+        }
+
+        // 2. Re-populate unprocessed queue with normalized clauses and updated weights
+        let mut unprocessed_clauses = Vec::new();
+        for id in self.unprocessed.iter() {
+            if let Some(clause) = self.clause_store.get(&id) {
+                unprocessed_clauses.push(clause.clone());
+            }
+        }
+
+        self.unprocessed = crate::unprocessed::UnprocessedSet::new(self.config.clone());
+        for clause in unprocessed_clauses {
+            let w = self.compute_weight(&clause);
+            #[cfg(feature = "ml-guidance")]
+            let score = self.get_ml_score(&clause);
+            #[cfg(not(feature = "ml-guidance"))]
+            let score = None;
+            self.unprocessed.push(&clause, &self.term_bank, w, score);
         }
     }
 }

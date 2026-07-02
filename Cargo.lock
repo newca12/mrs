@@ -3382,6 +3382,7 @@ dependencies = [
  "mrs-tptp",
  "mrs-unify",
  "num_cpus",
+ "wincode",
 ]
 
 [[package]]

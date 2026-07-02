@@ -309,14 +309,16 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
     state.assoc_symbols = assoc_syms.clone();
 
     let ac_syms: HashSet<SymbolId> = comm_syms.intersection(&assoc_syms).copied().collect();
-    if !ac_syms.is_empty()
-        && matches!(
+    if !ac_syms.is_empty() {
+        state.ac_normalize_all(&ac_syms);
+        if matches!(
             ordering,
             crate::TermOrdering::KBO | crate::TermOrdering::CustomKBO(_)
         )
-    {
-        ordering =
-            crate::TermOrdering::CustomACKBO(sym_config.clone(), std::sync::Arc::new(ac_syms));
+        {
+            ordering =
+                crate::TermOrdering::CustomACKBO(sym_config.clone(), std::sync::Arc::new(ac_syms.clone()));
+        }
     }
 
     for id in to_remove {
@@ -535,6 +537,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 &state.demod_index,
                 &state.clause_store,
                 &mut state.id_gen,
+                &ac_syms,
             ) {
                 state.register_clause(&given);
                 simplified
@@ -858,6 +861,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         &temp_demod_index,
                         &state.clause_store,
                         &mut state.id_gen,
+                        &ac_syms,
                     ) {
                         state.register_clause(&proc);
 
@@ -891,6 +895,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                                 &all_units_index,
                                 &state.clause_store,
                                 &mut state.id_gen,
+                                &ac_syms,
                             ) {
                             state.register_clause(&simplified);
                             further
@@ -1109,6 +1114,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     &state.demod_index,
                     &state.clause_store,
                     &mut state.id_gen,
+                    &ac_syms,
                 ) {
                     state.register_clause(&clause);
                     simplified
@@ -1155,6 +1161,9 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 if clause.is_tautology() {
                     continue;
                 }
+
+                // AC Normalization
+                let clause = state.ac_normalize_clause(clause, &ac_syms);
 
                 // Condensation
                 let clause = if let Some(condensed) =
