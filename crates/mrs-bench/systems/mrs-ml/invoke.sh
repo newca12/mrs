@@ -36,7 +36,10 @@ else
 fi
 
 if [[ -f "${PREMISE_WEIGHTS}" ]]; then
-    if [[ "${DIV_LOWER}" == "fne" ]]; then
+    if [[ "${DIV_LOWER}" == "eps" ]]; then
+        # Satisfiable division: NO pruning allowed to preserve soundness of saturation!
+        echo "Satisfiable division (eps): skipping premise selection to preserve soundness of saturation." >&2
+    elif [[ "${DIV_LOWER}" == "fne" ]]; then
         ARGS+=(--ml-prune 0.85 --ml-premise-weights "${PREMISE_WEIGHTS}")
     else
         ARGS+=(--ml-prune 0.6 --ml-premise-weights "${PREMISE_WEIGHTS}")

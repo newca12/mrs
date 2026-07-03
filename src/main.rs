@@ -473,7 +473,9 @@ fn main() {
                 }
             }
             SearchResult::Saturated => {
-                if has_conjecture {
+                if ml_prune_ratio.is_some() {
+                    SzsStatus::GaveUp
+                } else if has_conjecture {
                     SzsStatus::CounterSatisfiable
                 } else {
                     SzsStatus::Satisfiable
