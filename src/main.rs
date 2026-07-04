@@ -30,8 +30,7 @@ fn main() {
     let mut ml_log_csv = false;
     let mut ml_weights: Option<String> = None;
     let mut workers: Option<usize> = None;
-    let mut ml_schedule = false;
-    let mut ml_schedule_weights: Option<String> = None;
+    let mut auto_schedule = false;
     let mut ml_prune_ratio: Option<f32> = None;
     let mut ml_premise_weights: Option<String> = None;
 
@@ -94,15 +93,26 @@ fn main() {
                     schedule_name = Some("ml".to_string());
                 }
             }
+            "--auto-schedule" => {
+                auto_schedule = true;
+            }
+            // Deprecated: the ML schedule classifier is retired (degenerate
+            // majority-class model + label mismatch; see docs/BENCHMARKS.md).
+            // --ml-schedule now maps to the rule-based --auto-schedule.
             "--ml-schedule" => {
-                ml_schedule = true;
+                eprintln!(
+                    "Warning: --ml-schedule is deprecated; using rule-based --auto-schedule instead."
+                );
+                auto_schedule = true;
             }
             "--ml-schedule-weights" => {
-                let val = args.next().unwrap_or_else(|| {
+                let _ = args.next().unwrap_or_else(|| {
                     eprintln!("Error: --ml-schedule-weights requires a file path");
                     std::process::exit(1);
                 });
-                ml_schedule_weights = Some(val);
+                eprintln!(
+                    "Warning: --ml-schedule-weights is deprecated and ignored (schedule selection is rule-based)."
+                );
             }
             "--ml-prune" => {
                 let val = args.next().unwrap_or_else(|| {
@@ -349,7 +359,9 @@ fn main() {
 
     #[cfg(feature = "ml")]
     {
-        if ml_schedule || ml_prune_ratio.is_some() {
+        if let Some(ratio) = ml_prune_ratio {
+            use burn::backend::ndarray::NdArrayDevice;
+            use mrs_core::ml::premise_selector::PremiseSelector;
             use mrs_core::term_bank::TermBank;
             let mut bank = TermBank::new();
             let mut id_clauses = Vec::with_capacity(all_clauses.len());
@@ -357,95 +369,73 @@ fn main() {
                 id_clauses.push(bank.clause_from_legacy(c));
             }
 
-            if let Some(ratio) = ml_prune_ratio {
-                use burn::backend::ndarray::NdArrayDevice;
-                use mrs_core::ml::premise_selector::PremiseSelector;
-                let device = NdArrayDevice::Cpu;
-                let Some(weights) = &ml_premise_weights else {
-                    eprintln!(
-                        "Error: --ml-prune requires --ml-premise-weights; refusing to prune with a randomly initialized model."
-                    );
-                    std::process::exit(1);
-                };
-                let selector =
-                    match PremiseSelector::<burn::backend::ndarray::NdArray>::load_from_file(
-                        weights, &device,
-                    ) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            eprintln!("Failed to load premise weights from {}: {}", weights, e);
-                            std::process::exit(1);
-                        }
-                    };
-
-                let mut conjectures = Vec::new();
-                let mut axioms = Vec::new();
-                for c in &id_clauses {
-                    if c.distance == 0 {
-                        conjectures.push(c.clone());
-                    } else {
-                        axioms.push(c.clone());
-                    }
-                }
-                let axiom_count = axioms.len();
-
-                let pruned_axioms =
-                    selector.select_premises(axioms, &conjectures, ratio, &bank, &lowered.symbols);
-
-                info!(
-                    "% ML Premise Selection: kept {} / {} axioms (applied per worker)",
-                    pruned_axioms.len(),
-                    axiom_count
+            let device = NdArrayDevice::Cpu;
+            let Some(weights) = &ml_premise_weights else {
+                eprintln!(
+                    "Error: --ml-prune requires --ml-premise-weights; refusing to prune with a randomly initialized model."
                 );
+                std::process::exit(1);
+            };
+            let selector = match PremiseSelector::<burn::backend::ndarray::NdArray>::load_from_file(
+                weights, &device,
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Failed to load premise weights from {}: {}", weights, e);
+                    std::process::exit(1);
+                }
+            };
 
-                // Only install a keep-set if pruning actually removes clauses.
-                // It is applied per worker inside run_schedule; the full clause
-                // set is still handed to the scheduler untouched.
-                if pruned_axioms.len() < axiom_count {
-                    use std::collections::HashSet;
-                    let kept_ids: HashSet<_> = pruned_axioms
-                        .iter()
-                        .map(|c| c.id)
-                        .chain(conjectures.iter().map(|c| c.id))
-                        .collect();
-                    premise_keep = Some(std::sync::Arc::new(kept_ids));
+            let mut conjectures = Vec::new();
+            let mut axioms = Vec::new();
+            for c in &id_clauses {
+                if c.distance == 0 {
+                    conjectures.push(c.clone());
+                } else {
+                    axioms.push(c.clone());
                 }
             }
+            let axiom_count = axioms.len();
 
-            if ml_schedule && schedule_name.is_none() {
-                use burn::backend::ndarray::NdArrayDevice;
-                use mrs_core::ml::schedule_classifier::{
-                    ScheduleClassifier, extract_schedule_features,
-                };
-                let device = NdArrayDevice::Cpu;
-                let classifier = if let Some(weights) = &ml_schedule_weights {
-                    match ScheduleClassifier::<burn::backend::ndarray::NdArray>::load_from_file(
-                        weights, &device,
-                    ) {
-                        Ok(c) => c,
-                        Err(e) => {
-                            eprintln!("Failed to load schedule weights from {}: {}", weights, e);
-                            std::process::exit(1);
-                        }
-                    }
-                } else {
-                    ScheduleClassifier::<burn::backend::ndarray::NdArray>::new(device.clone())
-                };
-                let feats = extract_schedule_features(&id_clauses, &bank, &lowered.symbols);
-                let assigned = classifier.classify(feats);
-                schedule_name = Some(assigned.to_string());
-                info!("% ML Schedule Classifier: chose portfolio '{}'", assigned);
+            let pruned_axioms =
+                selector.select_premises(axioms, &conjectures, ratio, &bank, &lowered.symbols);
+
+            info!(
+                "% ML Premise Selection: kept {} / {} axioms (applied per worker)",
+                pruned_axioms.len(),
+                axiom_count
+            );
+
+            // Only install a keep-set if pruning actually removes clauses.
+            // It is applied per worker inside run_schedule; the full clause
+            // set is still handed to the scheduler untouched.
+            if pruned_axioms.len() < axiom_count {
+                use std::collections::HashSet;
+                let kept_ids: HashSet<_> = pruned_axioms
+                    .iter()
+                    .map(|c| c.id)
+                    .chain(conjectures.iter().map(|c| c.id))
+                    .collect();
+                premise_keep = Some(std::sync::Arc::new(kept_ids));
             }
         }
     }
 
     #[cfg(not(feature = "ml"))]
     {
-        if ml_schedule || ml_prune_ratio.is_some() {
+        if ml_prune_ratio.is_some() {
             eprintln!(
-                "Warning: --ml-schedule or --ml-prune used but prover compiled without 'ml' feature. Flags ignored."
+                "Warning: --ml-prune used but prover compiled without 'ml' feature. Flag ignored."
             );
         }
+    }
+
+    // Rule-based schedule auto-detection (replaces the retired ML schedule
+    // classifier). An explicit --schedule always wins. Works in any build.
+    if auto_schedule && schedule_name.is_none() {
+        let assigned = mrs_search::strategy::auto_schedule_name(&all_clauses);
+        schedule_name = Some(assigned.to_string());
+        info!("% Auto schedule: chose portfolio '{}'", assigned);
     }
 
     let elapsed = start.elapsed();

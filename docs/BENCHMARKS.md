@@ -222,9 +222,21 @@ TODO — strategy sweeps (Step 1 of portfolio re-tuning):
 
    1 ./crates/mrs-bench/run_all_greedy_sweeps.sh master_run.csv > final_cacs30_portfolios.txt
 
+commit 5838b353b050eda616bb78722b4c25f201e2d8f5
+
+[todo] 97
+cargo run --release -p mrs-train --features wgpu -- --mode premise --epochs 150 --val-split 0.15 --neg-per-pos 5 ./ml_logs_collection_ac_feq/premise models/weights_premise_feq
+
+
+[ongoing] end max 16h30
+[root@mtsdev04 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions eps  --casc-times --jobs 1
+
+[ongoing] end max 17h30
+[www@teenf9901 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions fne --casc-times --jobs 1
+
 commit 03615fd02ab63cec85643ecd59abf8bb3f792807
 
-[ongoing]
+[ongoing] end max 17h30
 [PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs,mrs-ml --divisions fne  --casc-times --jobs 2
 
 [done]
@@ -249,7 +261,7 @@ REFERENCE VIOLATIONS — none detected.
 [ongoing]
 [root@mtsdev02 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs,mrs-ml --divisions ueq --casc-times --jobs 1
 
-[ongoing]
+[ongoing] end max 17h30
 [root@mtsdev03 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs,mrs-ml --divisions fne  --casc-times --jobs 1
 
 [done]
@@ -310,9 +322,6 @@ index 1ebd1cd..3a47c46 100644
                      SzsStatus::CounterSatisfiable
                  } else {
                      SzsStatus::Satisfiable
-
-[todo]
-[PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions ueq  --casc-times --jobs 2
 
 [done]
 [PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ cargo run --release -p mrs-train --features wgpu -- --mode premise --epochs 150 --val-split 0.15 --neg-per-pos 5 ./ml_logs_collection_fne models/weights_premise_fne
@@ -417,7 +426,7 @@ Saved models/weights_premise_ueq.bin and models/weights_premise_ueq_meta.json
 [done]
 [PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ ./crates/mrs-bench/collect_ml_data.sh /DATA/ai/fr22192/TPTP-v9.2.1 ./ml_logs_collection_ac_ueq 16 auto 1
 
-[ongoing]
+[done]
 [www@teenf9901 mrs]$ ./crates/mrs-bench/collect_ml_data.sh /DATA/ai/TPTP-v9.2.1 ./ml_logs_collection_ac_feq 14 auto 1
 
 [done]

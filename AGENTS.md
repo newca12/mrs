@@ -80,6 +80,7 @@ cargo run --release -- --list-schedules
 | `--time <seconds>` | `30` | Wall-clock time limit |
 | `--workers <N>` | all cores | Max parallel search threads |
 | `--schedule <name>` | `casc` | Strategy schedule; see registry below |
+| `--auto-schedule` | — | Rule-based division detection (EPR/UEQ/FNE/FEQ) picks the matching `casc_*` portfolio; an explicit `--schedule` wins. Replaces the retired ML schedule classifier (`--ml-schedule` is a deprecated alias). |
 | `--list-schedules` | — | Print known schedule names and exit |
 | `--fast` | — | Deprecated alias for `--schedule fast` |
 | `--log-ml-data <dir>` | — | Write labeled clause traces after a refutation; **needs `ml` feature build** to actually log |

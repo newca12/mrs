@@ -408,6 +408,38 @@ pub struct MlOptions {
     pub premise_keep: Option<Arc<std::collections::HashSet<mrs_core::clause::ClauseId>>>,
 }
 
+/// Pick a division portfolio from the syntactic shape of the clause set.
+///
+/// Rule-based replacement for the (frozen) ML schedule classifier: the CASC
+/// division of a problem is deterministically computable from its clauses,
+/// so no learned model is needed. Rules, in priority order:
+///
+/// 1. UEQ (every clause a unit equality literal)      → `casc_ueq`
+/// 2. EPR (no function symbols of arity ≥ 1)          → `casc_epr`
+/// 3. FNE (no equality anywhere)                      → `casc_fne`
+/// 4. otherwise (first-order with equality)           → `casc_feq`
+pub fn auto_schedule_name(clauses: &[Clause]) -> &'static str {
+    // UEQ is checked before EPR so that constants-only unit-equality problems
+    // go to the equational portfolio (EPR portfolios are tuned for
+    // non-equational SAT-style splitting).
+    let all_unit_eq = !clauses.is_empty()
+        && clauses.iter().all(|c| {
+            c.literals.len() == 1 && matches!(c.literals[0].atom, mrs_core::formula::Atom::Eq(_, _))
+        });
+    if all_unit_eq {
+        return "casc_ueq";
+    }
+    if is_epr(clauses) {
+        return "casc_epr";
+    }
+    let has_eq = clauses.iter().any(|c| {
+        c.literals
+            .iter()
+            .any(|l| matches!(l.atom, mrs_core::formula::Atom::Eq(_, _)))
+    });
+    if !has_eq { "casc_fne" } else { "casc_feq" }
+}
+
 pub fn run_schedule(
     clauses: &[Clause],
     id_gen: ClauseIdGen,
@@ -933,6 +965,63 @@ mod tests {
                 role: "axiom".into(),
             },
         )
+    }
+
+    #[test]
+    fn auto_schedule_detects_divisions() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let f = syms.intern("f");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+
+        let fa = Term::app(f, vec![Term::constant(a)]);
+
+        // EPR: predicates over constants/variables only.
+        let epr = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            "epr",
+        );
+        assert_eq!(auto_schedule_name(std::slice::from_ref(&epr)), "casc_epr");
+
+        // UEQ: unit equalities with a real function term (not EPR).
+        let ueq = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::Eq(fa.clone(), Term::constant(a)))],
+            "ueq",
+        );
+        assert_eq!(auto_schedule_name(std::slice::from_ref(&ueq)), "casc_ueq");
+
+        // Constants-only unit equality: UEQ wins over EPR.
+        let ueq_const = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::Eq(Term::constant(a), Term::constant(a)))],
+            "ueq_const",
+        );
+        assert_eq!(
+            auto_schedule_name(std::slice::from_ref(&ueq_const)),
+            "casc_ueq"
+        );
+
+        // FNE: function terms, no equality.
+        let fne = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![fa.clone()]))],
+            "fne",
+        );
+        assert_eq!(auto_schedule_name(std::slice::from_ref(&fne)), "casc_fne");
+
+        // FEQ: mixed predicate + equality, non-unit.
+        let feq = input_clause(
+            &mut id_gen,
+            vec![
+                Literal::pos(Atom::pred(p, vec![fa.clone()])),
+                Literal::neg(Atom::Eq(fa, Term::constant(a))),
+            ],
+            "feq",
+        );
+        assert_eq!(auto_schedule_name(std::slice::from_ref(&feq)), "casc_feq");
     }
 
     #[test]
