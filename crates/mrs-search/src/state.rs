@@ -334,7 +334,11 @@ impl SearchState {
 
     /// Normalizes a clause's literals/atoms modulo AC symbols using right-association.
     /// Canonicalizes equality literals by placing the smaller TermId argument first.
-    pub fn ac_normalize_clause(&mut self, clause: IdClause, ac_syms: &HashSet<SymbolId>) -> IdClause {
+    pub fn ac_normalize_clause(
+        &mut self,
+        clause: IdClause,
+        ac_syms: &HashSet<SymbolId>,
+    ) -> IdClause {
         if ac_syms.is_empty() {
             return clause;
         }

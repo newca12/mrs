@@ -396,6 +396,16 @@ pub struct MlOptions {
     pub log_csv: bool,
     /// Path to trained model weights for ML-guided clause selection.
     pub weights: Option<String>,
+    /// ML premise selection keep-set: clause ids (axioms judged relevant plus
+    /// all conjectures) that pruned workers restrict their input to.
+    ///
+    /// Pruning is applied **per worker**, on a minority of strategies (every
+    /// 4th strategy index): the rest of the portfolio runs on the full clause
+    /// set, so baseline coverage is preserved by construction. A worker that
+    /// actually pruned clauses can never report `Saturated` (demoted to
+    /// `GaveUp`), because saturating a subset says nothing about the full
+    /// problem. `None` disables pruning.
+    pub premise_keep: Option<Arc<std::collections::HashSet<mrs_core::clause::ClauseId>>>,
 }
 
 pub fn run_schedule(
@@ -632,6 +642,7 @@ pub fn run_schedule(
             #[cfg(feature = "ml-guidance")]
             let ml_model_thread = ml_model.clone();
             let log_ml_data_thread = ml.log_dir.clone();
+            let premise_keep_thread = ml.premise_keep.clone();
 
             s.spawn(move || {
                 loop {
@@ -673,6 +684,19 @@ pub fn run_schedule(
                         } else {
                             sc.sine_tolerance = None;
                         }
+                    }
+
+                    // Per-worker ML premise pruning: only a minority of strategies
+                    // (every 4th index) run on the ML-pruned axiom set; the rest
+                    // keep the full problem, so the portfolio can never lose
+                    // problems the unpruned baseline solves.
+                    let mut ml_pruned = false;
+                    if let Some(keep) = &premise_keep_thread
+                        && strategy_idx % 4 == 3
+                    {
+                        let before_len = thread_clauses.len();
+                        thread_clauses.retain(|c| keep.contains(&c.id));
+                        ml_pruned = thread_clauses.len() < before_len;
                     }
 
                     let mut state = SearchState::new_with_ml(
@@ -825,6 +849,9 @@ pub fn run_schedule(
                         // SInE filtering drops axioms; saturating on a subset of the problem
                         // does not imply the full problem is satisfiable.
                         SearchResult::Saturated if sc.sine_tolerance.is_some() => SearchResult::GaveUp,
+                        // Same for ML premise pruning: a worker that actually dropped
+                        // axioms cannot claim Saturated for the full problem.
+                        SearchResult::Saturated if ml_pruned => SearchResult::GaveUp,
                         // Non-Standard weight functions affect the ORDER in which clauses
                         // are selected, which in turn changes which clauses are generated
                         // and which are simplified away.  This interaction between

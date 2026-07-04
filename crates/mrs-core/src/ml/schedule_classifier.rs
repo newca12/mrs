@@ -222,12 +222,18 @@ impl<B: Backend> ScheduleClassifier<B> {
         }
     }
 
-    pub fn load_from_file(path: &str, device: &B::Device) -> Result<Self, burn::record::RecorderError> {
+    pub fn load_from_file(
+        path: &str,
+        device: &B::Device,
+    ) -> Result<Self, burn::record::RecorderError> {
         use burn::record::{BinFileRecorder, Recorder};
         let recorder = BinFileRecorder::<burn::record::HalfPrecisionSettings>::default();
         let record = recorder.load(path.into(), device)?;
         let model = ScheduleModel::new(device).load_record(record);
-        Ok(Self { model, device: device.clone() })
+        Ok(Self {
+            model,
+            device: device.clone(),
+        })
     }
 
     pub fn with_model(model: ScheduleModel<B>, device: B::Device) -> Self {

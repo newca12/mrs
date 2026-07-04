@@ -315,18 +315,36 @@ fn main() {
             std::fs::create_dir_all(log_path).ok();
             let file_stem = format!("{}_schedule", problem_name);
             if ml_log_csv {
-                if let Ok(mut w) = std::fs::File::create(log_path.join(format!("{}.csv", file_stem))) {
+                if let Ok(mut w) =
+                    std::fs::File::create(log_path.join(format!("{}.csv", file_stem)))
+                {
                     use std::io::Write;
-                    let feats_str = feats.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(",");
+                    let feats_str = feats
+                        .iter()
+                        .map(|f| f.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",");
                     let _ = writeln!(w, "0,{}", feats_str);
                 }
             } else {
-                if let Ok(mut w) = std::fs::File::create(log_path.join(format!("{}.wincode", file_stem))) {
+                if let Ok(mut w) =
+                    std::fs::File::create(log_path.join(format!("{}.wincode", file_stem)))
+                {
                     let mut std_write = wincode::io::std_write::WriteAdapter::new(&mut w);
                     let _ = wincode::serialize_into(&mut std_write, &sample);
                 }
             }
         }
+    }
+
+    // ML premise keep-set (clause ids). Applied per worker inside the
+    // scheduler on a minority of strategies; `None` disables pruning.
+    let mut premise_keep: Option<
+        std::sync::Arc<std::collections::HashSet<mrs_core::clause::ClauseId>>,
+    > = None;
+    #[cfg(not(feature = "ml"))]
+    {
+        let _ = &mut premise_keep; // silence unused_mut without the feature
     }
 
     #[cfg(feature = "ml")]
@@ -343,49 +361,54 @@ fn main() {
                 use burn::backend::ndarray::NdArrayDevice;
                 use mrs_core::ml::premise_selector::PremiseSelector;
                 let device = NdArrayDevice::Cpu;
-                let selector = if let Some(weights) = &ml_premise_weights {
-                    match PremiseSelector::<burn::backend::ndarray::NdArray>::load_from_file(weights, &device) {
+                let Some(weights) = &ml_premise_weights else {
+                    eprintln!(
+                        "Error: --ml-prune requires --ml-premise-weights; refusing to prune with a randomly initialized model."
+                    );
+                    std::process::exit(1);
+                };
+                let selector =
+                    match PremiseSelector::<burn::backend::ndarray::NdArray>::load_from_file(
+                        weights, &device,
+                    ) {
                         Ok(s) => s,
                         Err(e) => {
                             eprintln!("Failed to load premise weights from {}: {}", weights, e);
                             std::process::exit(1);
                         }
-                    }
-                } else {
-                    PremiseSelector::<burn::backend::ndarray::NdArray>::new(device.clone())
-                };
+                    };
 
                 let mut conjectures = Vec::new();
                 let mut axioms = Vec::new();
-                for c in id_clauses {
+                for c in &id_clauses {
                     if c.distance == 0 {
-                        conjectures.push(c);
+                        conjectures.push(c.clone());
                     } else {
-                        axioms.push(c);
+                        axioms.push(c.clone());
                     }
                 }
+                let axiom_count = axioms.len();
 
                 let pruned_axioms =
                     selector.select_premises(axioms, &conjectures, ratio, &bank, &lowered.symbols);
 
                 info!(
-                    "% ML Premise Selection: kept {} / {} axioms",
+                    "% ML Premise Selection: kept {} / {} axioms (applied per worker)",
                     pruned_axioms.len(),
-                    all_clauses.len() - conjectures.len()
+                    axiom_count
                 );
 
-                use std::collections::HashSet;
-                let kept_ids: HashSet<_> = pruned_axioms
-                    .iter()
-                    .map(|c| c.id)
-                    .chain(conjectures.iter().map(|c| c.id))
-                    .collect();
-                all_clauses.retain(|c| kept_ids.contains(&c.id));
-
-                // Re-populate id_clauses for ScheduleClassifier
-                id_clauses = Vec::with_capacity(all_clauses.len());
-                for c in &all_clauses {
-                    id_clauses.push(bank.clause_from_legacy(c));
+                // Only install a keep-set if pruning actually removes clauses.
+                // It is applied per worker inside run_schedule; the full clause
+                // set is still handed to the scheduler untouched.
+                if pruned_axioms.len() < axiom_count {
+                    use std::collections::HashSet;
+                    let kept_ids: HashSet<_> = pruned_axioms
+                        .iter()
+                        .map(|c| c.id)
+                        .chain(conjectures.iter().map(|c| c.id))
+                        .collect();
+                    premise_keep = Some(std::sync::Arc::new(kept_ids));
                 }
             }
 
@@ -396,7 +419,9 @@ fn main() {
                 };
                 let device = NdArrayDevice::Cpu;
                 let classifier = if let Some(weights) = &ml_schedule_weights {
-                    match ScheduleClassifier::<burn::backend::ndarray::NdArray>::load_from_file(weights, &device) {
+                    match ScheduleClassifier::<burn::backend::ndarray::NdArray>::load_from_file(
+                        weights, &device,
+                    ) {
                         Ok(c) => c,
                         Err(e) => {
                             eprintln!("Failed to load schedule weights from {}: {}", weights, e);
@@ -460,6 +485,7 @@ fn main() {
                 log_dir: log_ml_data.clone(),
                 log_csv: ml_log_csv,
                 weights: ml_weights.clone(),
+                premise_keep: premise_keep.clone(),
             },
             workers,
         );
@@ -473,9 +499,11 @@ fn main() {
                 }
             }
             SearchResult::Saturated => {
-                if ml_prune_ratio.is_some() {
-                    SzsStatus::GaveUp
-                } else if has_conjecture {
+                // Sound even with --ml-prune: pruning is per-worker and any
+                // worker that actually dropped axioms has its Saturated
+                // demoted to GaveUp inside run_schedule, so a Saturated here
+                // always comes from a complete, unpruned strategy.
+                if has_conjecture {
                     SzsStatus::CounterSatisfiable
                 } else {
                     SzsStatus::Satisfiable
@@ -494,10 +522,14 @@ fn main() {
     #[cfg(feature = "ml")]
     if let Some(log_dir) = &log_ml_data {
         if matches!(status, SzsStatus::Theorem | SzsStatus::Unsatisfiable) {
-            if let Some(winning_strategy) = final_report.strategies.iter().find(|s| matches!(s.result, SearchResult::Refutation(..))) {
+            if let Some(winning_strategy) = final_report
+                .strategies
+                .iter()
+                .find(|s| matches!(s.result, SearchResult::Refutation(..)))
+            {
                 let elapsed = winning_strategy.elapsed_ms as f64 / 1000.0;
                 let processed = winning_strategy.stats.processed;
-                
+
                 if elapsed >= 0.5 && processed >= 100 {
                     use mrs_core::term_bank::TermBank;
                     let mut bank = TermBank::new();
@@ -505,18 +537,24 @@ fn main() {
                     for c in &all_clauses {
                         id_clauses.push(bank.clause_from_legacy(c));
                     }
-                    let feats = mrs_core::ml::schedule_classifier::extract_schedule_features(&id_clauses, &bank, &lowered.symbols);
+                    let feats = mrs_core::ml::schedule_classifier::extract_schedule_features(
+                        &id_clauses,
+                        &bank,
+                        &lowered.symbols,
+                    );
                     let sample = mrs_core::ml::sample::ScheduleSample {
                         label_idx: winning_strategy.strategy_idx as u32,
                         feats,
                     };
-                    
+
                     let log_path = std::path::Path::new(log_dir).join("schedule");
                     std::fs::create_dir_all(&log_path).ok();
                     let file_stem = format!("{}_schedule", problem_name);
-                    
+
                     if !ml_log_csv {
-                        if let Ok(mut w) = std::fs::File::create(log_path.join(format!("{}.wincode", file_stem))) {
+                        if let Ok(mut w) =
+                            std::fs::File::create(log_path.join(format!("{}.wincode", file_stem)))
+                        {
                             let mut std_write = wincode::io::std_write::WriteAdapter::new(&mut w);
                             let _ = wincode::serialize_into(&mut std_write, &sample);
                         }

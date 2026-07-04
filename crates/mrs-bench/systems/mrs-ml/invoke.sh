@@ -23,27 +23,23 @@ fi
 DIVISION=$(basename $(dirname "$PROBLEM"))
 DIV_LOWER="${DIVISION,,}"
 
+# Route to the division portfolio directly from the problem path; the ML
+# schedule classifier is frozen (degenerate majority-class model + label
+# mismatch, see docs/BENCHMARKS.md) and intentionally NOT used here.
+case "${DIV_LOWER}" in
+    fne|feq|ueq|epr|eps|epu|icu) SCHEDULE="casc_${DIV_LOWER}" ;;
+    *)                           SCHEDULE="casc" ;;
+esac
+
+ARGS=(--time "${TIME_LIMIT}" --workers "${MRS_WORKERS:-8}" --schedule "${SCHEDULE}")
+
+# ML premise selection is applied PER WORKER inside the scheduler (a minority
+# of strategies run on the pruned axiom set, the rest on the full problem), so
+# it is sound in every division — including the satisfiable EPS division —
+# and a single aggressive keep-ratio is safe everywhere.
 PREMISE_WEIGHTS="${WORKSPACE_ROOT}/models/weights_premise_${DIV_LOWER}.bin"
-SCHEDULE_WEIGHTS="${WORKSPACE_ROOT}/models/weights_schedule_${DIV_LOWER}.bin"
-
-ARGS=(--time "${TIME_LIMIT}" --workers "${MRS_WORKERS:-8}" --ml-schedule)
-
-if [[ -f "${SCHEDULE_WEIGHTS}" ]]; then
-    ARGS+=(--ml-schedule-weights "${SCHEDULE_WEIGHTS}")
-else
-    echo "% SZS status Error (mrs-ml: expected schedule model weights not found at ${SCHEDULE_WEIGHTS})" >&2
-    exit 1
-fi
-
 if [[ -f "${PREMISE_WEIGHTS}" ]]; then
-    if [[ "${DIV_LOWER}" == "eps" ]]; then
-        # Satisfiable division: NO pruning allowed to preserve soundness of saturation!
-        echo "Satisfiable division (eps): skipping premise selection to preserve soundness of saturation." >&2
-    elif [[ "${DIV_LOWER}" == "fne" ]]; then
-        ARGS+=(--ml-prune 0.85 --ml-premise-weights "${PREMISE_WEIGHTS}")
-    else
-        ARGS+=(--ml-prune 0.6 --ml-premise-weights "${PREMISE_WEIGHTS}")
-    fi
+    ARGS+=(--ml-prune 0.6 --ml-premise-weights "${PREMISE_WEIGHTS}")
 else
     echo "Warning: No premise selection weights found for ${DIV_LOWER} at ${PREMISE_WEIGHTS}. Skipping axiom pruning." >&2
 fi

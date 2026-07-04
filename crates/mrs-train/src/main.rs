@@ -1,7 +1,6 @@
 mod premise_train;
 mod schedule_train;
 
-
 // The rest of ENIGMA (in-loop) trainer is mostly omitted for brevity in this test to save space.
 // We'll focus the CLI on invoking the new tasks.
 

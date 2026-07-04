@@ -314,10 +314,11 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         if matches!(
             ordering,
             crate::TermOrdering::KBO | crate::TermOrdering::CustomKBO(_)
-        )
-        {
-            ordering =
-                crate::TermOrdering::CustomACKBO(sym_config.clone(), std::sync::Arc::new(ac_syms.clone()));
+        ) {
+            ordering = crate::TermOrdering::CustomACKBO(
+                sym_config.clone(),
+                std::sync::Arc::new(ac_syms.clone()),
+            );
         }
     }
 

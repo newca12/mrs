@@ -23,7 +23,7 @@
         # GC-rooted by the flake, so it is immune to the ~/.rustup linker
         # shim breakage that occurs when nixpkgs `rustup` is rebuilt and the
         # old build is garbage-collected.
-        rustToolchain = pkgs.rust-bin.stable."1.96.0".default.override {
+        rustToolchain = pkgs.rust-bin.stable."1.96.1".default.override {
           extensions = [ "rust-src" "rust-analyzer" ];
         };
 

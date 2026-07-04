@@ -1,5 +1,5 @@
 use crate::{HashMap, HashSet};
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 
 use crate::clause::{Clause, ClauseId, ClauseSource, Literal};
 use crate::formula::Atom;
@@ -585,7 +585,10 @@ mod tests {
         let f_a_b = bank.intern_app(f, vec![a_term, b_term]);
         let norm_f_a_b = bank.ac_normalize(f_a_b, &ac_syms);
 
-        assert_eq!(norm_f_b_a, norm_f_a_b, "f(b, a) and f(a, b) must normalize to the same term");
+        assert_eq!(
+            norm_f_b_a, norm_f_a_b,
+            "f(b, a) and f(a, b) must normalize to the same term"
+        );
 
         // 2. Test associativity: f(f(a, b), c) -> f(a, f(b, c))
         let f_a_b_node = bank.intern_app(f, vec![a_term, b_term]);
@@ -597,7 +600,10 @@ mod tests {
         let norm_f_f_a_b_c = bank.ac_normalize(f_f_a_b_c, &ac_syms);
         let norm_f_a_f_b_c = bank.ac_normalize(f_a_f_b_c, &ac_syms);
 
-        assert_eq!(norm_f_f_a_b_c, norm_f_a_f_b_c, "f(f(a, b), c) and f(a, f(b, c)) must normalize to the same term");
+        assert_eq!(
+            norm_f_f_a_b_c, norm_f_a_f_b_c,
+            "f(f(a, b), c) and f(a, f(b, c)) must normalize to the same term"
+        );
 
         // 3. Complex nesting and sorting: f(g(f(c, b)), a) -> f(a, g(f(b, c)))
         let f_c_b = bank.intern_app(f, vec![c_term, b_term]);
