@@ -222,22 +222,192 @@ TODO — strategy sweeps (Step 1 of portfolio re-tuning):
 
    1 ./crates/mrs-bench/run_all_greedy_sweeps.sh master_run.csv > final_cacs30_portfolios.txt
 
+
+commit 55986ce809ead712c328c27d62804d610bef99f2
+
+[ongoing] 32/202/300
+[PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions ueq  --casc-times --jobs 2
+
+[ongoing] 35/201/300
+[www@teenf9901 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions ueq --casc-times --jobs 2
+
+[ongoing]
+hack@pve:~/mrs$ MRS_WORKERS=4 crates/mrs-bench/casc.sh --systems mrs --divisions feq  --casc-times --jobs 1
+
+[ongoing] 96/386/400
+[root@mtsdev03 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions feq --casc-times --jobs 1
+
+[ongoing] 78/372/400
+[root@mtsdev04 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions feq  --casc-times --jobs 1
+
+commit 79f6c0640467983b4146060f8ebab1490a70c85c 
+
+[done]
+[www@teenf9901 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions fne --casc-times --jobs 2
+CASC-30 Results — 2026-07-05 07:17  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs-ml
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        42   23.953
+------------------  --------------------
+TOTAL          100        42   23.953
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+15814 Jul  4 20:14 /DATA/ai/mrs/crates/mrs-bench/results/casc-30/20260704_180751/run.csv
+
+[done] with new epr weigth
+[PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions eps  --casc-times --jobs 2
+CASC-30 Results — 2026-07-05 07:14  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs-ml
+                      Solved  Avg (s)
+------------------  --------------------
+EPS            100        40    6.826
+------------------  --------------------
+TOTAL          100        40    6.826
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+18041 Jul  4 19:41 /DATA/ai/fr22192/mrs/crates/mrs-bench/results/casc-30/20260704_183650/run.csv
+
+[done]
+[PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ cargo run --release -p mrs-train --features wgpu -- --mode premise --epochs 150 --val-split 0.15 --neg-per-pos 5 ./ml_logs_collection_epr models/weights_premise_epr
+TrainingProgress { progress: Some(Progress { items_processed: 142218, items_total: 142218 }), global_progress: Progress { items_processed: 105, items_total: 150 }, iteration: Some(18) }
+======================== Learner Summary ========================
+Model:
+"TrainingPremise" {
+  model: "PremiseModel" {
+    layer1: Linear {d_input: 24, d_output: 256, bias: true, params: 6400}
+    layer2: Linear {d_input: 256, d_output: 128, bias: true, params: 32896}
+    layer3: Linear {d_input: 128, d_output: 64, bias: true, params: 8256}
+    output: Linear {d_input: 64, d_output: 1, bias: true, params: 65}
+    params: 47617
+  }
+  params: 47617
+}
+Total Epochs: 105
+
+
+| Split | Metric | Min.     | Epoch    | Max.     | Epoch    |
+|-------|--------|----------|----------|----------|----------|
+| Train | Loss   | 0.081    | 105      | 0.429    | 1        |
+| Valid | Loss   | 0.083    | 99       | 0.202    | 1        |
+
+Saved models/weights_premise_epr.bin and models/weights_premise_epr_meta.json
+
+[done]
+[PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ cargo run --release -p mrs-train --features wgpu -- --mode premise --epochs 150 --val-split 0.15 --neg-per-pos 5 ./ml_logs_collection_ac_feq/premise models/weights_premise_feq
+======================== Learner Summary ========================
+Model:
+"TrainingPremise" {
+  model: "PremiseModel" {
+    layer1: Linear {d_input: 24, d_output: 256, bias: true, params: 6400}
+    layer2: Linear {d_input: 256, d_output: 128, bias: true, params: 32896}
+    layer3: Linear {d_input: 128, d_output: 64, bias: true, params: 8256}
+    output: Linear {d_input: 64, d_output: 1, bias: true, params: 65}
+    params: 47617
+  }
+  params: 47617
+}
+Total Epochs: 40
+
+
+| Split | Metric | Min.     | Epoch    | Max.     | Epoch    |
+|-------|--------|----------|----------|----------|----------|
+| Train | Loss   | 0.179    | 40       | 0.273    | 1        |
+| Valid | Loss   | 0.181    | 25       | 0.203    | 1        |
+
+Saved models/weights_premise_feq.bin and models/weights_premise_feq_meta.json
+
+
+[done]
+hack@pve:~/mrs$ MRS_WORKERS=4 crates/mrs-bench/casc.sh --systems mrs,mrs-ml --divisions eps  --casc-times --jobs 1
+CASC-30 Results — 2026-07-04 17:55  (100 problems × 2 systems)
+==============================================================
+
+Division  Problems    mrs                   mrs-ml
+                      Solved  Avg (s)      Solved  Avg (s)
+------------------  --------------------  --------------------
+EPS            100        39   10.875          39   10.851
+------------------  --------------------  --------------------
+TOTAL          100        39   10.875          39   10.851
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+35619 Jul  4 19:55 /home/hack/mrs/crates/mrs-bench/results/casc-30/20260704_153408/run.csv
+
 commit 5838b353b050eda616bb78722b4c25f201e2d8f5
 
-[todo] 97
-cargo run --release -p mrs-train --features wgpu -- --mode premise --epochs 150 --val-split 0.15 --neg-per-pos 5 ./ml_logs_collection_ac_feq/premise models/weights_premise_feq
-
-
-[ongoing] end max 16h30
+[done]
 [root@mtsdev04 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions eps  --casc-times --jobs 1
+CASC-30 Results — 2026-07-04 16:01  (100 problems × 1 systems)
+==============================================================
 
-[ongoing] end max 17h30
+Division  Problems    mrs-ml
+                      Solved  Avg (s)
+------------------  --------------------
+EPS            100        40    7.602
+------------------  --------------------
+TOTAL          100        40    7.602
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+17761 Jul  4 15:58 /mnt/sdd1/mrs/crates/mrs-bench/results/casc-30/20260704_134855/run.csv
+
+[done]
 [www@teenf9901 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions fne --casc-times --jobs 1
+CASC-30 Results — 2026-07-04 15:57  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        45   18.708
+------------------  --------------------
+TOTAL          100        45   18.708
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+15417 Jul  4 17:39 /DATA/ai/mrs/crates/mrs-bench/results/casc-30/20260704_134535/run.csv
 
 commit 03615fd02ab63cec85643ecd59abf8bb3f792807
 
-[ongoing] end max 17h30
+[done]
 [PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs,mrs-ml --divisions fne  --casc-times --jobs 2
+CASC-30 Results — 2026-07-04 15:48  (100 problems × 2 systems)
+==============================================================
+
+Division  Problems    mrs                   mrs-ml
+                      Solved  Avg (s)      Solved  Avg (s)
+------------------  --------------------  --------------------
+FNE            100        44   15.438          31   31.626
+------------------  --------------------  --------------------
+TOTAL          100        44   15.438          31   31.626
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
 
 [done]
 [PPROD:fr22192@tlpnf9701:/DATA/ai/fr22192/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs,mrs-ml --divisions epu  --casc-times --jobs 2
@@ -258,11 +428,50 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 32959 Jul  4 11:15 /DATA/ai/fr22192/mrs/crates/mrs-bench/results/casc-30/20260704_091222/run.csv
 
-[ongoing]
+[ongoing] end max monday morning 64/509/600
+[root@mtsdev02 mrs]# cat /mnt/sda1/mrs/crates/mrs-bench/results/casc-30/20260704_090244/run.csv | grep ok |  grep ",mrs-ml," | wc -l
+28
+[root@mtsdev02 mrs]# cat /mnt/sda1/mrs/crates/mrs-bench/results/casc-30/20260704_090244/run.csv | grep ok |  grep ",mrs," | wc -l
+36
 [root@mtsdev02 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs,mrs-ml --divisions ueq --casc-times --jobs 1
 
-[ongoing] end max 17h30
+[done]
 [root@mtsdev03 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs,mrs-ml --divisions fne  --casc-times --jobs 1
+CASC-30 Results — 2026-07-04 16:03  (100 problems × 2 systems)
+==============================================================
+
+Division  Problems    mrs                   mrs-ml
+                      Solved  Avg (s)      Solved  Avg (s)
+------------------  --------------------  --------------------
+FNE            100        43   13.173          30   32.511
+------------------  --------------------  --------------------
+TOTAL          100        43   13.173          30   32.511
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+32558 Jul  4 17:44 /mnt/sdd/mrs/crates/mrs-bench/results/casc-30/20260704_085301/run.csv
+
+[done]
+hack@pve:~/mrs$ MRS_WORKERS=4 crates/mrs-bench/casc.sh --systems mrs,mrs-ml --divisions epu  --casc-times --jobs 1
+CASC-30 Results — 2026-07-04 13:26  (100 problems × 2 systems)
+==============================================================
+
+Division  Problems    mrs                   mrs-ml
+                      Solved  Avg (s)      Solved  Avg (s)
+------------------  --------------------  --------------------
+EPU            100        16   21.573          13   14.646
+------------------  --------------------  --------------------
+TOTAL          100        16   21.573          13   14.646
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+34334 Jul  4 13:24 /home/hack/mrs/crates/mrs-bench/results/casc-30/20260704_091409/run.csv
 
 [done]
 hack@pve:~/mrs$ MRS_WORKERS=4 crates/mrs-bench/casc.sh --systems mrs,mrs-ml --divisions eps  --casc-times --jobs 1
@@ -730,13 +939,13 @@ commit d8f129f4dcfc277ebc750c091e47465b13846345
 
 commit d7e750106462c663e3f95bcb5c28ac251eecdf27 (HEAD -> ac-indexing
 
-[done] 40/300
+[done] 40/300/300
 [PPROD:fr22192@dlpnb5211:/DATA/DISK1/BENCH/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions ueq --casc-times --jobs 2
 
 TODO report
 40164 Jul  2 23:36 /DATA/DISK1/BENCH/mrs/crates/mrs-bench/results/casc-30/20260702_142456/run.csv
 
-[ongoing] 57/196/400
+[done]
 [www@teenf9901 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions feq --casc-times --jobs 2
 
 CASC-30 Results — 2026-07-03 06:30  (400 problems × 1 systems)

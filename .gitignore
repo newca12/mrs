@@ -53,3 +53,6 @@ greedy_all.res
 # mrs-train checkpoint/log artifacts
 *.artifacts/
 experiment.log
+
+# mrs-codex: runtime output database from processing a problem corpus
+/codex.db
