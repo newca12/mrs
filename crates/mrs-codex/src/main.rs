@@ -250,14 +250,9 @@ fn main() {
     let hardware_id = get_or_create_id(&conn, "hardware", "description", &hardware)
         .expect("Failed to get/create hardware ID");
 
-    let completed_problems = fetch_completed_problems(
-        &conn,
-        system_id,
-        parameter_id,
-        hardware_id,
-        args.timeout,
-    )
-    .expect("Failed to fetch completed problems");
+    let completed_problems =
+        fetch_completed_problems(&conn, system_id, parameter_id, hardware_id, args.timeout)
+            .expect("Failed to fetch completed problems");
 
     // We don't need the connection anymore in the main thread
     drop(conn);

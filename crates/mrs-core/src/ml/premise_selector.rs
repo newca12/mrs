@@ -307,16 +307,36 @@ impl<B: Backend> PremiseSelector<B> {
     }
 
     pub fn evaluate_score(&self, features: [f32; PREMISE_FEATURE_DIM]) -> f32 {
-        let tensor =
-            Tensor::<B, 1>::from_data(features, &self.device).reshape([1, PREMISE_FEATURE_DIM]);
-        let logit = self
-            .model
-            .forward(tensor)
-            .into_data()
-            .as_slice::<f32>()
-            .unwrap()[0];
-        // Apply sigmoid to return a relevance score in [0, 1]
-        1.0 / (1.0 + (-logit).exp())
+        self.evaluate_scores_batch(std::slice::from_ref(&features))[0]
+    }
+
+    /// Score many axioms in a single forward pass.
+    ///
+    /// `select_premises` used to call [`Self::evaluate_score`] once per axiom,
+    /// which builds a fresh single-row tensor and runs a full forward pass
+    /// through the network for every axiom individually. On the NdArray (CPU)
+    /// backend, unbatched single-row inference pays a fixed tensor
+    /// allocation/dispatch cost per call that does not amortize — on
+    /// axiom-heavy problems (FEQ/UEQ problems pulling in large `%include`d
+    /// background theories can have thousands of axioms) this turned into a
+    /// real, uniform per-problem tax charged against the search time budget
+    /// (see docs/BENCHMARKS.md). Stacking all feature vectors into one
+    /// `[n, PREMISE_FEATURE_DIM]` tensor and running a single forward pass
+    /// removes that per-axiom overhead entirely.
+    pub fn evaluate_scores_batch(&self, features: &[[f32; PREMISE_FEATURE_DIM]]) -> Vec<f32> {
+        if features.is_empty() {
+            return Vec::new();
+        }
+        let n = features.len();
+        let mut flat = Vec::with_capacity(n * PREMISE_FEATURE_DIM);
+        for f in features {
+            flat.extend_from_slice(f);
+        }
+        let input = Tensor::<B, 1>::from_floats(flat.as_slice(), &self.device)
+            .reshape([n, PREMISE_FEATURE_DIM]);
+        let logits = self.model.forward(input);
+        let probs = burn::tensor::activation::sigmoid(logits);
+        probs.into_data().as_slice::<f32>().unwrap().to_vec()
     }
 
     pub fn select_premises(
@@ -328,13 +348,13 @@ impl<B: Backend> PremiseSelector<B> {
         symbols: &SymbolTable,
     ) -> Vec<IdClause> {
         let ctx = ConjectureContext::new(conjectures, bank, symbols);
-        let mut scored_axioms = Vec::with_capacity(axioms.len());
+        let feats: Vec<[f32; PREMISE_FEATURE_DIM]> = axioms
+            .iter()
+            .map(|axiom| extract_premise_features(axiom, &ctx, bank, symbols))
+            .collect();
+        let scores = self.evaluate_scores_batch(&feats);
 
-        for axiom in axioms {
-            let feats = extract_premise_features(&axiom, &ctx, bank, symbols);
-            let score = self.evaluate_score(feats);
-            scored_axioms.push((axiom, score));
-        }
+        let mut scored_axioms: Vec<(IdClause, f32)> = axioms.into_iter().zip(scores).collect();
 
         scored_axioms.sort_by(|(_, s1), (_, s2)| s2.partial_cmp(s1).unwrap());
 
@@ -361,5 +381,39 @@ mod tests {
         let x = Tensor::<NdArray, 2>::zeros([2, PREMISE_FEATURE_DIM], &device);
         let out = model.forward(x);
         assert_eq!(out.shape().dims(), [2, 1]);
+    }
+
+    #[test]
+    fn batched_scores_match_per_axiom_scores() {
+        let device = burn::backend::ndarray::NdArrayDevice::Cpu;
+        let selector = PremiseSelector::<NdArray>::new(device);
+
+        let mut features = Vec::new();
+        for i in 0..7 {
+            let mut f = [0.0f32; PREMISE_FEATURE_DIM];
+            for (j, slot) in f.iter_mut().enumerate() {
+                *slot = ((i * PREMISE_FEATURE_DIM + j) as f32 * 0.013).sin();
+            }
+            features.push(f);
+        }
+
+        let batched = selector.evaluate_scores_batch(&features);
+        assert_eq!(batched.len(), features.len());
+
+        for (feats, &batched_score) in features.iter().zip(batched.iter()) {
+            let single_score = selector.evaluate_score(*feats);
+            assert!(
+                (single_score - batched_score).abs() < 1e-5,
+                "single={single_score} batched={batched_score}"
+            );
+            assert!((0.0..=1.0).contains(&batched_score));
+        }
+    }
+
+    #[test]
+    fn evaluate_scores_batch_empty_input() {
+        let device = burn::backend::ndarray::NdArrayDevice::Cpu;
+        let selector = PremiseSelector::<NdArray>::new(device);
+        assert!(selector.evaluate_scores_batch(&[]).is_empty());
     }
 }

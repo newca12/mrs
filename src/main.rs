@@ -397,26 +397,50 @@ fn main() {
             }
             let axiom_count = axioms.len();
 
-            let pruned_axioms =
-                selector.select_premises(axioms, &conjectures, ratio, &bank, &lowered.symbols);
+            // Below this size, ML premise selection is not worth its own
+            // overhead: `select_premises` floors the keep count at 10
+            // (mrs_core::ml::premise_selector), so small problems barely get
+            // pruned anyway, while still paying the cost of feature
+            // extraction + a model forward pass. Mirrors the analogous
+            // `len > 100` size guard SInE uses in strategy.rs.
+            const ML_PRUNE_MIN_AXIOMS: usize = 100;
 
-            info!(
-                "% ML Premise Selection: kept {} / {} axioms (applied per worker)",
-                pruned_axioms.len(),
-                axiom_count
-            );
+            if axiom_count < ML_PRUNE_MIN_AXIOMS {
+                info!(
+                    "% ML Premise Selection: skipped ({} axioms < {} minimum)",
+                    axiom_count, ML_PRUNE_MIN_AXIOMS
+                );
+            } else {
+                // Preprocessing time is not subtracted from the search budget
+                // (see `elapsed`/`total_budget` below), so it is measured and
+                // logged here purely as a diagnostic: it should be negligible
+                // now that scoring is batched into a single forward pass
+                // (mrs_core::ml::premise_selector::PremiseSelector::
+                // evaluate_scores_batch) instead of one tensor per axiom.
+                let scoring_start = Instant::now();
+                let pruned_axioms =
+                    selector.select_premises(axioms, &conjectures, ratio, &bank, &lowered.symbols);
+                let scoring_ms = scoring_start.elapsed().as_millis();
 
-            // Only install a keep-set if pruning actually removes clauses.
-            // It is applied per worker inside run_schedule; the full clause
-            // set is still handed to the scheduler untouched.
-            if pruned_axioms.len() < axiom_count {
-                use std::collections::HashSet;
-                let kept_ids: HashSet<_> = pruned_axioms
-                    .iter()
-                    .map(|c| c.id)
-                    .chain(conjectures.iter().map(|c| c.id))
-                    .collect();
-                premise_keep = Some(std::sync::Arc::new(kept_ids));
+                info!(
+                    "% ML Premise Selection: kept {} / {} axioms in {}ms (applied per worker)",
+                    pruned_axioms.len(),
+                    axiom_count,
+                    scoring_ms
+                );
+
+                // Only install a keep-set if pruning actually removes clauses.
+                // It is applied per worker inside run_schedule; the full clause
+                // set is still handed to the scheduler untouched.
+                if pruned_axioms.len() < axiom_count {
+                    use std::collections::HashSet;
+                    let kept_ids: HashSet<_> = pruned_axioms
+                        .iter()
+                        .map(|c| c.id)
+                        .chain(conjectures.iter().map(|c| c.id))
+                        .collect();
+                    premise_keep = Some(std::sync::Arc::new(kept_ids));
+                }
             }
         }
     }
