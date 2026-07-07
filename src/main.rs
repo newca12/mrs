@@ -2,6 +2,9 @@
 //!
 //! An automated theorem prover targeting the CASC competition.
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod include;
 mod lowering;
 mod sine;
