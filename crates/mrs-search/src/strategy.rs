@@ -399,12 +399,13 @@ pub struct MlOptions {
     /// ML premise selection keep-set: clause ids (axioms judged relevant plus
     /// all conjectures) that pruned workers restrict their input to.
     ///
-    /// Pruning is applied **per worker**, on a minority of strategies (every
-    /// 4th strategy index): the rest of the portfolio runs on the full clause
-    /// set, so baseline coverage is preserved by construction. A worker that
-    /// actually pruned clauses can never report `Saturated` (demoted to
-    /// `GaveUp`), because saturating a subset says nothing about the full
-    /// problem. `None` disables pruning.
+    /// Pruning is applied **per worker**, on the last 2 strategy slots of the
+    /// portfolio (`casc_*` schedules are greedy-set-cover ordered by
+    /// decreasing marginal coverage, so the tail slots are the cheapest to
+    /// put at risk); the rest of the portfolio runs on the full clause set
+    /// unpruned. A worker that actually pruned clauses can never report
+    /// `Saturated` (demoted to `GaveUp`), because saturating a subset says
+    /// nothing about the full problem. `None` disables pruning.
     pub premise_keep: Option<Arc<std::collections::HashSet<mrs_core::clause::ClauseId>>>,
 }
 
@@ -438,6 +439,21 @@ pub fn auto_schedule_name(clauses: &[Clause]) -> &'static str {
             .any(|l| matches!(l.atom, mrs_core::formula::Atom::Eq(_, _)))
     });
     if !has_eq { "casc_fne" } else { "casc_feq" }
+}
+
+/// Number of trailing portfolio slots that ML premise pruning is allowed to
+/// substitute a pruned clause view for.
+pub const ML_PRUNE_LAST_SLOTS: usize = 2;
+
+/// Whether `strategy_idx` (0-based) out of `total_strategies` portfolio
+/// entries is one of the last [`ML_PRUNE_LAST_SLOTS`] slots eligible for ML
+/// premise pruning.
+///
+/// `casc_*` portfolios are ordered by decreasing marginal coverage (greedy
+/// set-cover, see AGENTS.md), so pruning the tail slots sacrifices the least
+/// expected coverage if the pruned view doesn't help on a given problem.
+fn is_ml_prune_slot(strategy_idx: usize, total_strategies: usize) -> bool {
+    strategy_idx >= total_strategies.saturating_sub(ML_PRUNE_LAST_SLOTS)
 }
 
 pub fn run_schedule(
@@ -718,13 +734,20 @@ pub fn run_schedule(
                         }
                     }
 
-                    // Per-worker ML premise pruning: only a minority of strategies
-                    // (every 4th index) run on the ML-pruned axiom set; the rest
-                    // keep the full problem, so the portfolio can never lose
-                    // problems the unpruned baseline solves.
+                    // Per-worker ML premise pruning: only the LAST
+                    // ML_PRUNE_LAST_SLOTS strategy slots of the portfolio run
+                    // on the ML-pruned axiom set; the rest run the full
+                    // problem unpruned. See `is_ml_prune_slot` for rationale.
+                    // Note this is a substitution, not a strict addition:
+                    // with a fixed worker count equal to the portfolio size
+                    // (CASC hardware is fixed at 8 cores), these slots do NOT
+                    // also run unpruned elsewhere in the same schedule, so
+                    // this does not guarantee mrs-ml can never solve fewer
+                    // problems than the unpruned baseline — it only bounds
+                    // how much coverage is put at risk.
                     let mut ml_pruned = false;
                     if let Some(keep) = &premise_keep_thread
-                        && strategy_idx % 4 == 3
+                        && is_ml_prune_slot(strategy_idx, actual_configs_ref.len())
                     {
                         let before_len = thread_clauses.len();
                         thread_clauses.retain(|c| keep.contains(&c.id));
@@ -955,6 +978,32 @@ mod tests {
     use super::*;
     use mrs_core::clause::{ClauseIdGen, ClauseSource};
     use mrs_core::{Atom, Literal, SymbolTable, Term};
+
+    #[test]
+    fn ml_prune_slot_picks_last_two_of_eight() {
+        // 8-strategy portfolio (the standard CASC 8-worker case): only
+        // indices 6 and 7 (the last two, 0-based) are prune-eligible.
+        for idx in 0..6 {
+            assert!(
+                !is_ml_prune_slot(idx, 8),
+                "idx {idx} should not be a prune slot in an 8-strategy portfolio"
+            );
+        }
+        assert!(is_ml_prune_slot(6, 8));
+        assert!(is_ml_prune_slot(7, 8));
+    }
+
+    #[test]
+    fn ml_prune_slot_handles_small_portfolios_without_underflow() {
+        // Fewer strategies than ML_PRUNE_LAST_SLOTS must not panic/underflow;
+        // every existing slot ends up eligible instead.
+        assert!(is_ml_prune_slot(0, 1));
+        assert!(is_ml_prune_slot(0, 2));
+        assert!(is_ml_prune_slot(1, 2));
+        // An empty portfolio has no valid strategy_idx to query in practice,
+        // but the arithmetic must still not panic.
+        assert!(is_ml_prune_slot(0, 0));
+    }
 
     fn input_clause(id_gen: &mut ClauseIdGen, lits: Vec<Literal>, name: &str) -> Clause {
         Clause::new(
