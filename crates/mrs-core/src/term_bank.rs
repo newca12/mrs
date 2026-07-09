@@ -59,32 +59,38 @@ impl IdLiteral {
 #[derive(Clone, Debug)]
 pub struct IdClause {
     pub id: ClauseId,
-    pub literals: Vec<IdLiteral>,
+    pub literals: SmallVec<[IdLiteral; 4]>,
     pub source: ClauseSource,
     pub avatar: Vec<u32>,
     pub distance: u32,
 }
 
 impl IdClause {
-    pub fn new(id: ClauseId, literals: Vec<IdLiteral>, source: ClauseSource) -> Self {
+    pub fn new<L>(id: ClauseId, literals: L, source: ClauseSource) -> Self 
+    where
+        L: Into<SmallVec<[IdLiteral; 4]>>
+    {
         Self {
             id,
-            literals,
+            literals: literals.into(),
             source,
             avatar: Vec::new(),
             distance: 1000,
         }
     }
 
-    pub fn new_avatar(
+    pub fn new_avatar<L>(
         id: ClauseId,
-        literals: Vec<IdLiteral>,
+        literals: L,
         source: ClauseSource,
         avatar: Vec<u32>,
-    ) -> Self {
+    ) -> Self 
+    where
+        L: Into<SmallVec<[IdLiteral; 4]>>
+    {
         Self {
             id,
-            literals,
+            literals: literals.into(),
             source,
             avatar,
             distance: 1000,
@@ -398,7 +404,7 @@ impl TermBank {
                 .literals
                 .iter()
                 .map(|l| self.literal_to_legacy(l))
-                .collect(),
+                .collect::<SmallVec<[Literal; 4]>>(),
             clause.source.clone(),
         );
         c.avatar = clause.avatar.clone();
