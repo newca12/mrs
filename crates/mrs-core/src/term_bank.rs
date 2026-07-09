@@ -430,7 +430,7 @@ impl TermBank {
 /// A fast substitution mapping variables to `TermId`s.
 #[derive(Clone, Default, Debug)]
 pub struct IdSubstitution {
-    bindings: Vec<Option<TermId>>,
+    bindings: SmallVec<[Option<TermId>; 8]>,
 }
 
 impl IdSubstitution {
