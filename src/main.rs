@@ -35,6 +35,7 @@ fn main() {
     let mut workers: Option<usize> = None;
     let mut auto_schedule = false;
     let mut ml_prune_ratio: Option<f32> = None;
+    #[cfg(feature = "ml")]
     let mut ml_premise_weights: Option<String> = None;
 
     #[cfg(feature = "proover")]
@@ -132,7 +133,14 @@ fn main() {
                     eprintln!("Error: --ml-premise-weights requires a file path");
                     std::process::exit(1);
                 });
-                ml_premise_weights = Some(val);
+                #[cfg(feature = "ml")]
+                {
+                    ml_premise_weights = Some(val);
+                }
+                #[cfg(not(feature = "ml"))]
+                {
+                    let _ = val;
+                }
             }
             // Deprecated alias: --fast is now --schedule fast.
             "--fast" => {
