@@ -5,6 +5,7 @@ use rayon::prelude::*;
 use regex::Regex;
 use rusqlite::{Connection, Result as SqliteResult, params};
 use std::collections::HashSet;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -12,6 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 use sysinfo::System;
+use tempfile::NamedTempFile;
 use wait_timeout::ChildExt;
 use walkdir::WalkDir;
 
@@ -60,6 +62,7 @@ struct RunResult {
     timeout: u64,
     time_to_solve: Option<f64>,
     status: String,
+    proover_validated: Option<bool>,
 }
 
 fn init_db(conn: &Connection) -> SqliteResult<()> {
@@ -94,6 +97,7 @@ fn init_db(conn: &Connection) -> SqliteResult<()> {
             timeout INTEGER NOT NULL,
             time_to_solve REAL,
             status TEXT NOT NULL,
+            proover_validated BOOLEAN,
             FOREIGN KEY(system_id) REFERENCES systems(id),
             FOREIGN KEY(hardware_id) REFERENCES hardware(id),
             FOREIGN KEY(parameter_id) REFERENCES parameters(id),
@@ -154,6 +158,44 @@ fn extract_szs_status(output: &str) -> Option<String> {
     None
 }
 
+/// Verifies a TSTP proof (given as `stdout` from a prover run) using
+/// `mrs-proover --only-mrs`, restricted to the `mrs` ATP fallback.
+/// Returns `Some(true)` if verified, `Some(false)` if verification failed
+/// or timed out, and `None` if the verifier could not be launched.
+fn verify_proof_with_proover(stdout: &str) -> Option<bool> {
+    // Write stdout (which should contain the TSTP proof) to a temp file.
+    let mut temp_file = NamedTempFile::new().ok()?;
+    temp_file.write_all(stdout.as_bytes()).ok()?;
+
+    // Determine the path to mrs-proover. Assumed to be in the same dir as the current executable.
+    let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("mrs-codex"));
+    let proover_exe = current_exe
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("mrs-proover");
+
+    // Run the verifier forcing it to use only 'mrs' as the ATP fallback.
+    let mut proover_cmd = Command::new(&proover_exe);
+    proover_cmd.arg("--only-mrs");
+    proover_cmd.arg(temp_file.path());
+
+    let mut proover_child = proover_cmd.stdout(Stdio::piped()).spawn().ok()?;
+
+    // We give the verifier at most 10 seconds to verify.
+    match proover_child.wait_timeout(Duration::from_secs(10)) {
+        Ok(Some(_)) => {
+            let p_output = proover_child.wait_with_output().ok()?;
+            let p_stdout = String::from_utf8_lossy(&p_output.stdout);
+            Some(extract_szs_status(&p_stdout).as_deref() == Some("Verified"))
+        }
+        _ => {
+            let _ = proover_child.kill();
+            let _ = proover_child.wait();
+            Some(false)
+        }
+    }
+}
+
 fn parse_cmd_template(template: &str, file: &Path, timeout: u64) -> Vec<String> {
     let file_str = file.to_string_lossy().to_string();
     let timeout_str = timeout.to_string();
@@ -202,8 +244,8 @@ fn writer_thread(db_path: PathBuf, receiver: Receiver<RunResult>) {
     for result in receiver {
         let res = conn.execute(
             "INSERT OR REPLACE INTO results 
-             (problem_name, system_id, hardware_id, parameter_id, timeout, time_to_solve, status)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             (problem_name, system_id, hardware_id, parameter_id, timeout, time_to_solve, status, proover_validated)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 result.problem_name,
                 result.system_id,
@@ -211,7 +253,8 @@ fn writer_thread(db_path: PathBuf, receiver: Receiver<RunResult>) {
                 result.parameter_id,
                 result.timeout,
                 result.time_to_solve,
-                result.status
+                result.status,
+                result.proover_validated
             ],
         );
 
@@ -332,6 +375,7 @@ fn main() {
 
                 let mut status_str = "Error".to_string();
                 let mut time_to_solve = None;
+                let mut proover_validated: Option<bool> = None;
 
                 match command.spawn() {
                     Ok(mut child) => {
@@ -350,7 +394,12 @@ fn main() {
                                     if let Some(szs) = extract_szs_status(&stdout)
                                         .or_else(|| extract_szs_status(&stderr))
                                     {
-                                        status_str = szs;
+                                        status_str = szs.clone();
+
+                                        // If a proof was found, we want to run mrs-proover to verify it
+                                        if szs == "Theorem" || szs == "Unsatisfiable" {
+                                            proover_validated = verify_proof_with_proover(&stdout);
+                                        }
                                     } else {
                                         if status.success() {
                                             status_str = "SuccessNoSZS".to_string();
@@ -387,6 +436,7 @@ fn main() {
                     timeout: args.timeout,
                     time_to_solve,
                     status: status_str.clone(),
+                    proover_validated,
                 };
 
                 sender
@@ -397,9 +447,16 @@ fn main() {
                 let time_disp = time_to_solve
                     .map(|t| format!("{:.2}s", t))
                     .unwrap_or_else(|| "N/A".to_string());
+
+                let val_disp = match proover_validated {
+                    Some(true) => " [Verified]",
+                    Some(false) => " [FAILED Verif]",
+                    None => "",
+                };
+
                 println!(
-                    "[{:>5}/{}] {} ... {} ({})",
-                    current, total_pending, problem_name, status_str, time_disp
+                    "[{:>5}/{}] {} ... {} ({}){}",
+                    current, total_pending, problem_name, status_str, time_disp, val_disp
                 );
             });
     });

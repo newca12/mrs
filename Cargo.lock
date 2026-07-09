@@ -3586,6 +3586,7 @@ dependencies = [
  "rusqlite",
  "shlex 1.3.0",
  "sysinfo 0.39.5",
+ "tempfile",
  "wait-timeout",
  "walkdir",
 ]
