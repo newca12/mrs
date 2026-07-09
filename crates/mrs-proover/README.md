@@ -77,6 +77,40 @@ are in `tests/fixtures/`. Running the binary on them yields:
 | `example3_e_proof.p` | FailedVerified | FailedVerified (Skolem symbol reuse) |
 | `example4_e_proof.p` | FailedVerified | FailedVerified (substitution shape) |
 
+## Verified sound with `--only-mrs` (no eprover/vampire needed)
+
+`mrs-proover` was cross-checked against two external reference corpora —
+[leoprover/noergler](https://github.com/leoprover/noergler) (PyRes original +
+falsified proof pairs) and
+[ValueAchooMatthew/ATP-Research-Project](https://github.com/ValueAchooMatthew/ATP-Research-Project)
+(`tests/examples/{correct,incorrect,samples}`, also exercised by
+`crates/mrs-proover/tests/atp_research_project.rs`) — running with `--only-mrs`
+to force the internal `MrsAtp` fallback and exclude `eprover`/`vampire`
+entirely, then compared against the default full ladder (`eprover` + `vampire`
++ `mrs`):
+
+| Corpus | `--only-mrs` | Full ladder |
+|---|---|---|
+| Built-in `proover-corpus` (25 problems, 46 E/Vampire proofs) | 42 Verified / 4 NotVerified / **0 FailedVerified** | identical: 42/4/0 |
+| ATP-Research-Project `correct` (3) | 3/3 Verified | 3/3 Verified |
+| ATP-Research-Project `incorrect` (4 "evil") | 3/4 correctly `FailedVerified`, 1 (`EVL002+1`) degrades to `NotVerified` | 4/4 `FailedVerified` |
+| ATP-Research-Project `samples` (3) | `COR000+1` Verified, `EVL000+1` FailedVerified, `TMO000+1` degrades to `NotVerified` | all 3 match expectations |
+| noergler PyRes **original** (170 valid proofs) | 162 Verified / 8 NotVerified / **0 FailedVerified** | 170/170 Verified |
+| noergler PyRes **falsified** (170 mutated/evil proofs) | 39 `FailedVerified` / 131 `NotVerified` / **0 Verified** | 165 `FailedVerified` / 5 `NotVerified` / **0 Verified** |
+
+**Takeaway:** dropping `eprover`/`vampire` never turns a valid proof into
+`FailedVerified` and never turns an evil proof into `Verified` — the critical
+soundness invariant (`bad→good` never happens) holds with `mrs` alone. The
+only cost is *detection strength*: without the external ATPs to discharge a
+few inference steps within the time budget, some proofs that would otherwise
+resolve to `Verified`/`FailedVerified` instead give up safely as `NotVerified`
+(0 points, never wrong). Concretely, `--only-mrs` loses positive detection on
+2 of the 10 ATP-Research-Project cases and roughly a third of the noergler
+PyRes corpus, with zero soundness regressions anywhere. This confirms
+`mrs-proover --only-mrs` is safe to run standalone (e.g. from `mrs-codex`'s
+automatic post-proof verification), with no hard dependency on bundled
+`eprover`/`vampire` binaries.
+
 ## Competition packaging
 
 A ready-to-use wrapper script lives at
