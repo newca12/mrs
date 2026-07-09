@@ -5,13 +5,13 @@ use rayon::prelude::*;
 use regex::Regex;
 use rusqlite::{Connection, Result as SqliteResult, params};
 use std::collections::HashSet;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
-use std::io::Write;
 use sysinfo::System;
 use tempfile::NamedTempFile;
 use wait_timeout::ChildExt;
@@ -156,6 +156,44 @@ fn extract_szs_status(output: &str) -> Option<String> {
         return Some(caps.get(1).unwrap().as_str().to_string());
     }
     None
+}
+
+/// Verifies a TSTP proof (given as `stdout` from a prover run) using
+/// `mrs-proover --only-mrs`, restricted to the `mrs` ATP fallback.
+/// Returns `Some(true)` if verified, `Some(false)` if verification failed
+/// or timed out, and `None` if the verifier could not be launched.
+fn verify_proof_with_proover(stdout: &str) -> Option<bool> {
+    // Write stdout (which should contain the TSTP proof) to a temp file.
+    let mut temp_file = NamedTempFile::new().ok()?;
+    temp_file.write_all(stdout.as_bytes()).ok()?;
+
+    // Determine the path to mrs-proover. Assumed to be in the same dir as the current executable.
+    let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("mrs-codex"));
+    let proover_exe = current_exe
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("mrs-proover");
+
+    // Run the verifier forcing it to use only 'mrs' as the ATP fallback.
+    let mut proover_cmd = Command::new(&proover_exe);
+    proover_cmd.arg("--only-mrs");
+    proover_cmd.arg(temp_file.path());
+
+    let mut proover_child = proover_cmd.stdout(Stdio::piped()).spawn().ok()?;
+
+    // We give the verifier at most 10 seconds to verify.
+    match proover_child.wait_timeout(Duration::from_secs(10)) {
+        Ok(Some(_)) => {
+            let p_output = proover_child.wait_with_output().ok()?;
+            let p_stdout = String::from_utf8_lossy(&p_output.stdout);
+            Some(extract_szs_status(&p_stdout).as_deref() == Some("Verified"))
+        }
+        _ => {
+            let _ = proover_child.kill();
+            let _ = proover_child.wait();
+            Some(false)
+        }
+    }
 }
 
 fn parse_cmd_template(template: &str, file: &Path, timeout: u64) -> Vec<String> {
@@ -357,44 +395,10 @@ fn main() {
                                         .or_else(|| extract_szs_status(&stderr))
                                     {
                                         status_str = szs.clone();
-                                        
+
                                         // If a proof was found, we want to run mrs-proover to verify it
                                         if szs == "Theorem" || szs == "Unsatisfiable" {
-                                            // Write stdout (which should contain the TSTP proof) to a temp file
-                                            if let Ok(mut temp_file) = NamedTempFile::new() {
-                                                if temp_file.write_all(stdout.as_bytes()).is_ok() {
-                                                    // Determine the path to mrs-proover. Assuming it is in the same dir as the current executable.
-                                                    let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("mrs-codex"));
-                                                    let proover_exe = current_exe.parent().unwrap_or(Path::new(".")).join("mrs-proover");
-                                                    
-                                                    // Run the verifier forcing it to use only 'mrs' as the ATP fallback
-                                                    let mut proover_cmd = Command::new(&proover_exe);
-                                                    proover_cmd.arg("--only-mrs");
-                                                    proover_cmd.arg(temp_file.path());
-                                                    
-                                                    // We give the verifier at most 10 seconds to verify
-                                                    if let Ok(mut proover_child) = proover_cmd.stdout(Stdio::piped()).spawn() {
-                                                        if let Ok(Some(_)) = proover_child.wait_timeout(Duration::from_secs(10)) {
-                                                            if let Ok(p_output) = proover_child.wait_with_output() {
-                                                                let p_stdout = String::from_utf8_lossy(&p_output.stdout);
-                                                                if let Some(p_szs) = extract_szs_status(&p_stdout) {
-                                                                    if p_szs == "Verified" {
-                                                                        proover_validated = Some(true);
-                                                                    } else {
-                                                                        proover_validated = Some(false);
-                                                                    }
-                                                                } else {
-                                                                    proover_validated = Some(false);
-                                                                }
-                                                            }
-                                                        } else {
-                                                            let _ = proover_child.kill();
-                                                            let _ = proover_child.wait();
-                                                            proover_validated = Some(false);
-                                                        }
-                                                    }
-                                                }
-                                            }
+                                            proover_validated = verify_proof_with_proover(&stdout);
                                         }
                                     } else {
                                         if status.success() {
@@ -443,13 +447,13 @@ fn main() {
                 let time_disp = time_to_solve
                     .map(|t| format!("{:.2}s", t))
                     .unwrap_or_else(|| "N/A".to_string());
-                
+
                 let val_disp = match proover_validated {
                     Some(true) => " [Verified]",
                     Some(false) => " [FAILED Verif]",
-                    None => ""
+                    None => "",
                 };
-                
+
                 println!(
                     "[{:>5}/{}] {} ... {} ({}){}",
                     current, total_pending, problem_name, status_str, time_disp, val_disp
