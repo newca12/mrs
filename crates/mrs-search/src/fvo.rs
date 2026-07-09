@@ -320,8 +320,8 @@ pub fn try_fvo_refutation(
                 let left_id = prop_idx_to_fof_id[left];
                 let right_id = prop_idx_to_fof_id[right];
                 let source = ClauseSource::Inference {
-                    rule: "resolution".to_string(),
-                    parents: vec![left_id, right_id],
+                    rule: "resolution",
+                    parents: vec![left_id, right_id].into(),
                 };
                 let lifted = lift_clause(&prop_clauses[prop_idx], &abs, id_gen, source);
                 prop_idx_to_fof_id.insert(prop_idx, lifted.id);

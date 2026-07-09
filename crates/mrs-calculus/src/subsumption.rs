@@ -509,8 +509,8 @@ pub fn condense(clause: &Clause, id_gen: &mut ClauseIdGen) -> Option<Clause> {
                     id_gen.next(),
                     new_lits,
                     ClauseSource::Inference {
-                        rule: "condensation".into(),
-                        parents: vec![clause.id],
+                        rule: "condensation",
+                        parents: vec![clause.id].into(),
                     },
                     clause.avatar.clone(),
                 );
@@ -609,8 +609,8 @@ pub fn condense_id(
                     id_gen.next(),
                     new_lits,
                     ClauseSource::Inference {
-                        rule: "condensation".into(),
-                        parents: vec![clause.id],
+                        rule: "condensation",
+                        parents: vec![clause.id].into(),
                     },
                     clause.avatar.clone(),
                 );

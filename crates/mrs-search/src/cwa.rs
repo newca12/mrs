@@ -241,8 +241,8 @@ fn make_branch_unit(top_clause: &Clause, k: usize, id_gen: &mut ClauseIdGen) -> 
         id_gen.next(),
         vec![positive_lit],
         ClauseSource::Inference {
-            rule: "split_component".to_string(),
-            parents: vec![top_clause.id],
+            rule: "split_component",
+            parents: vec![top_clause.id].into(),
         },
     )
 }

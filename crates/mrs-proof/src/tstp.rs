@@ -88,8 +88,8 @@ mod tests {
             ClauseId(5),
             vec![Literal::pos(Atom::prop(p))],
             ClauseSource::Inference {
-                rule: "resolution".into(),
-                parents: vec![ClauseId(0), ClauseId(1)],
+                rule: "resolution",
+                parents: vec![ClauseId(0), ClauseId(1)].into(),
             },
         );
 
@@ -106,8 +106,8 @@ mod tests {
             ClauseId(10),
             vec![],
             ClauseSource::Inference {
-                rule: "resolution".into(),
-                parents: vec![ClauseId(3), ClauseId(7)],
+                rule: "resolution",
+                parents: vec![ClauseId(3), ClauseId(7)].into(),
             },
         );
 

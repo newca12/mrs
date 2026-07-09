@@ -83,9 +83,9 @@ pub enum ClauseSource {
     /// Derived by an inference rule from parent clauses.
     Inference {
         /// Name of the inference rule (e.g., "resolution", "factoring").
-        rule: String,
+        rule: &'static str,
         /// IDs of the parent clauses.
-        parents: Vec<ClauseId>,
+        parents: SmallVec<[ClauseId; 2]>,
     },
 }
 

@@ -79,8 +79,8 @@ pub fn preprocess_epr(clauses: &[Clause], id_gen: &mut ClauseIdGen) -> Option<Ve
                     id_gen.next(),
                     new_lits,
                     ClauseSource::Inference {
-                        rule: "instantiation".into(),
-                        parents: vec![clause.id],
+                        rule: "instantiation",
+                        parents: vec![clause.id].into(),
                     },
                 );
                 ground_clauses.push(new_clause);
@@ -307,7 +307,7 @@ mod tests {
                 };
                 // Original non-ground clauses are appended for the clause store;
                 // they may contain variables — skip those.
-                if matches!(&clause.source, ClauseSource::Inference { rule, .. } if rule == "instantiation")
+                if matches!(&clause.source, ClauseSource::Inference { rule, .. } if *rule == "instantiation")
                 {
                     assert!(
                         is_ground,

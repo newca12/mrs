@@ -58,8 +58,8 @@ pub fn demodulate(
             id_gen.next(),
             current_lits,
             ClauseSource::Inference {
-                rule: "demodulation".into(),
-                parents: unique_parents,
+                rule: "demodulation",
+                parents: unique_parents.into(),
             },
             clause.avatar.clone(),
         ))
@@ -226,8 +226,8 @@ pub fn demodulate_id(
             id_gen.next(),
             current_lits,
             ClauseSource::Inference {
-                rule: "demodulation".into(),
-                parents: unique_parents,
+                rule: "demodulation",
+                parents: unique_parents.into(),
             },
             clause.avatar.clone(),
         ))
@@ -441,7 +441,7 @@ mod tests {
         // Verify demodulation source is recorded
         match &simplified.source {
             ClauseSource::Inference { rule, parents } => {
-                assert_eq!(rule, "demodulation");
+                assert_eq!(*rule, "demodulation");
                 assert_eq!(parents[0], target.id);
                 assert_eq!(parents[1], unit.id);
             }
