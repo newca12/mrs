@@ -226,8 +226,8 @@ fn superpose_with_id(
                     id_gen.next(),
                     new_lits,
                     ClauseSource::Inference {
-                        rule: "superposition".into(),
-                        parents: vec![eq_clause.id, target.id],
+                        rule: "superposition",
+                        parents: vec![eq_clause.id, target.id].into(),
                     },
                     new_avatar,
                 ));
@@ -349,8 +349,8 @@ fn superpose_with(
                     id_gen.next(),
                     new_lits,
                     ClauseSource::Inference {
-                        rule: "superposition".into(),
-                        parents: vec![eq_clause.id, target.id],
+                        rule: "superposition",
+                        parents: vec![eq_clause.id, target.id].into(),
                     },
                     new_avatar,
                 ));
@@ -631,7 +631,7 @@ mod tests {
         let results = superpose(&c1, &c2, &ordering, &mut id_gen);
         for clause in &results {
             if let ClauseSource::Inference { rule, parents } = &clause.source {
-                assert_eq!(rule, "superposition");
+                assert_eq!(*rule, "superposition");
                 assert_eq!(parents.len(), 2);
                 assert_eq!(parents[0], c1.id);
                 // Note: parent[1] is the original target id, not the renamed one

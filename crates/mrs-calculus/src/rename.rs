@@ -42,7 +42,7 @@ pub fn rename_clause(clause: &Clause, offset: VarId) -> Clause {
         return clause.clone();
     }
 
-    let new_lits = clause
+    let new_lits: smallvec::SmallVec<[Literal; 4]> = clause
         .literals
         .iter()
         .map(|l| rename_literal(l, offset))
@@ -65,7 +65,7 @@ pub fn rename_clause_id(
         return clause.clone();
     }
 
-    let new_lits = clause
+    let new_lits: smallvec::SmallVec<[mrs_core::term_bank::IdLiteral; 4]> = clause
         .literals
         .iter()
         .map(|l| rename_literal_id(l, offset, bank))

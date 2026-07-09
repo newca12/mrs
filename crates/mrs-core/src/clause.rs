@@ -5,6 +5,7 @@
 //! over all its variables. This is the working format for resolution-based provers.
 
 use crate::HashSet;
+use smallvec::SmallVec;
 
 use crate::formula::Atom;
 use crate::term::VarId;
@@ -82,9 +83,9 @@ pub enum ClauseSource {
     /// Derived by an inference rule from parent clauses.
     Inference {
         /// Name of the inference rule (e.g., "resolution", "factoring").
-        rule: String,
+        rule: &'static str,
         /// IDs of the parent clauses.
-        parents: Vec<ClauseId>,
+        parents: SmallVec<[ClauseId; 2]>,
     },
 }
 
@@ -97,7 +98,7 @@ pub struct Clause {
     /// Unique identifier for this clause.
     pub id: ClauseId,
     /// The literals in this clause (their disjunction).
-    pub literals: Vec<Literal>,
+    pub literals: SmallVec<[Literal; 4]>,
     /// How this clause was derived.
     pub source: ClauseSource,
     /// AVATAR assertions (boolean variables from the SAT solver).
@@ -108,10 +109,13 @@ pub struct Clause {
 
 impl Clause {
     /// Creates a new clause with the given ID, literals, and source, with empty AVATAR assertions.
-    pub fn new(id: ClauseId, literals: Vec<Literal>, source: ClauseSource) -> Self {
+    pub fn new<L>(id: ClauseId, literals: L, source: ClauseSource) -> Self
+    where
+        L: Into<SmallVec<[Literal; 4]>>,
+    {
         Clause {
             id,
-            literals,
+            literals: literals.into(),
             source,
             avatar: Vec::new(),
             distance: 1000,
@@ -119,17 +123,20 @@ impl Clause {
     }
 
     /// Creates a new clause with AVATAR assertions.
-    pub fn new_avatar(
+    pub fn new_avatar<L>(
         id: ClauseId,
-        literals: Vec<Literal>,
+        literals: L,
         source: ClauseSource,
         mut avatar: Vec<u32>,
-    ) -> Self {
+    ) -> Self
+    where
+        L: Into<SmallVec<[Literal; 4]>>,
+    {
         avatar.sort_unstable();
         avatar.dedup();
         Clause {
             id,
-            literals,
+            literals: literals.into(),
             source,
             avatar,
             distance: 1000,

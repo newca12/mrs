@@ -105,7 +105,7 @@ mod tests {
     ) -> mrs_core::term_bank::IdClause {
         let mut syms = SymbolTable::new();
         let p = syms.intern("p");
-        let lits = (0..num_lits)
+        let lits: Vec<Literal> = (0..num_lits)
             .map(|i| Literal::pos(Atom::pred(p, vec![Term::var(i as u32)])))
             .collect();
         let clause = Clause::new(

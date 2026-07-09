@@ -56,8 +56,8 @@ pub fn factor(clause: &Clause, id_gen: &mut ClauseIdGen) -> Vec<Clause> {
                     id_gen.next(),
                     lits,
                     ClauseSource::Inference {
-                        rule: "factoring".into(),
-                        parents: vec![clause.id],
+                        rule: "factoring",
+                        parents: vec![clause.id].into(),
                     },
                     clause.avatar.clone(),
                 ));
@@ -114,8 +114,8 @@ pub fn factor_id(
                     id_gen.next(),
                     lits,
                     ClauseSource::Inference {
-                        rule: "factoring".into(),
-                        parents: vec![clause.id],
+                        rule: "factoring",
+                        parents: vec![clause.id].into(),
                     },
                     clause.avatar.clone(),
                 ));
@@ -228,8 +228,8 @@ mod tests {
         let factors = factor(&c, &mut id_gen);
 
         if let ClauseSource::Inference { rule, parents } = &factors[0].source {
-            assert_eq!(rule, "factoring");
-            assert_eq!(parents, &vec![ClauseId(5)]);
+            assert_eq!(*rule, "factoring");
+            assert_eq!(parents.as_slice(), &[ClauseId(5)]);
         } else {
             panic!("expected Inference source");
         }

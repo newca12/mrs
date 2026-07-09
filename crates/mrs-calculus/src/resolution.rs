@@ -128,8 +128,8 @@ pub fn resolve_selected(
                     id_gen.next(),
                     lits,
                     ClauseSource::Inference {
-                        rule: "resolution".to_string(),
-                        parents: vec![c1.id, c2.id],
+                        rule: "resolution",
+                        parents: vec![c1.id, c2.id].into(),
                     },
                     new_avatar,
                 ));
@@ -201,8 +201,8 @@ pub fn resolve_selected_id(
                     id_gen.next(),
                     lits,
                     ClauseSource::Inference {
-                        rule: "resolution".to_string(),
-                        parents: vec![c1.id, c2.id],
+                        rule: "resolution",
+                        parents: vec![c1.id, c2.id].into(),
                     },
                     new_avatar,
                 ));
@@ -333,8 +333,8 @@ mod tests {
         let resolvents = resolve(&c1, &c2, &mut id_gen);
 
         if let ClauseSource::Inference { rule, parents } = &resolvents[0].source {
-            assert_eq!(rule, "resolution");
-            assert_eq!(parents, &vec![ClauseId(5), ClauseId(7)]);
+            assert_eq!(*rule, "resolution");
+            assert_eq!(parents.as_slice(), &[ClauseId(5), ClauseId(7)]);
         } else {
             panic!("expected Inference source");
         }

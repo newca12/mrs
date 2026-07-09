@@ -105,7 +105,7 @@ mod tests {
             ClauseId(id),
             vec![],
             ClauseSource::Inference {
-                rule: "resolution".into(),
+                rule: "resolution",
                 parents: parents.into_iter().map(ClauseId).collect(),
             },
         )

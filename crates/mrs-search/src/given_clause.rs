@@ -371,8 +371,8 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             for mut c in to_add {
                 c.id = state.id_gen.next();
                 c.source = ClauseSource::Inference {
-                    rule: "shared".into(),
-                    parents: vec![],
+                    rule: "shared",
+                    parents: vec![].into(),
                 };
                 let id_clause = state.term_bank.clause_from_legacy(&c);
                 let fv = FeatureVector::from_id_clause(&id_clause, &state.term_bank);
@@ -470,8 +470,8 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         state.id_gen.next(),
                         new_lits,
                         ClauseSource::Inference {
-                            rule: "subsumption_resolution".into(),
-                            parents: vec![given.id, p.id],
+                            rule: "subsumption_resolution",
+                            parents: vec![given.id, p.id].into(),
                         },
                         given.avatar.clone(),
                     );
@@ -914,8 +914,8 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                                 state.id_gen.next(),
                                 vec![],
                                 ClauseSource::Inference {
-                                    rule: "equality_resolution".into(),
-                                    parents: vec![simplified.id],
+                                    rule: "equality_resolution",
+                                    parents: vec![simplified.id].into(),
                                 },
                                 simplified.avatar.clone(),
                             );
@@ -1141,8 +1141,8 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         state.id_gen.next(),
                         vec![],
                         ClauseSource::Inference {
-                            rule: "equality_resolution".into(),
-                            parents: vec![clause.id],
+                            rule: "equality_resolution",
+                            parents: vec![clause.id].into(),
                         },
                         clause.avatar.clone(),
                     );

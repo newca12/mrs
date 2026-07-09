@@ -47,8 +47,8 @@ pub fn equality_resolve(clause: &Clause, id_gen: &mut ClauseIdGen) -> Vec<Clause
             id_gen.next(),
             new_lits,
             ClauseSource::Inference {
-                rule: "equality_resolution".into(),
-                parents: vec![clause.id],
+                rule: "equality_resolution",
+                parents: vec![clause.id].into(),
             },
             clause.avatar.clone(),
         ));
@@ -132,8 +132,8 @@ pub fn equality_factor(
                     id_gen.next(),
                     new_lits,
                     ClauseSource::Inference {
-                        rule: "equality_factoring".into(),
-                        parents: vec![clause.id],
+                        rule: "equality_factoring",
+                        parents: vec![clause.id].into(),
                     },
                     clause.avatar.clone(),
                 ));
@@ -175,8 +175,8 @@ pub fn equality_resolve_id(
                 id_gen.next(),
                 new_lits,
                 ClauseSource::Inference {
-                    rule: "equality_resolution".into(),
-                    parents: vec![clause.id],
+                    rule: "equality_resolution",
+                    parents: vec![clause.id].into(),
                 },
                 clause.avatar.clone(),
             ));
@@ -248,8 +248,8 @@ pub fn equality_factor_id(
                         id_gen.next(),
                         new_lits,
                         ClauseSource::Inference {
-                            rule: "equality_factoring".into(),
-                            parents: vec![clause.id],
+                            rule: "equality_factoring",
+                            parents: vec![clause.id].into(),
                         },
                         clause.avatar.clone(),
                     ));

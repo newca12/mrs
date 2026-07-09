@@ -317,7 +317,7 @@ impl SearchState {
     pub fn register_clause(&mut self, clause: &IdClause) {
         self.clause_store.insert(clause.id, clause.clone());
         if let mrs_core::clause::ClauseSource::Inference { rule, parents } = &clause.source {
-            let is_destructive = rule == "demodulation" || rule == "subsumption_resolution";
+            let is_destructive = *rule == "demodulation" || *rule == "subsumption_resolution";
             for (i, &parent) in parents.iter().enumerate() {
                 // For destructive inference rules, the primary target clause is always
                 // at index 0. Subsequent parents are auxiliary rewrites or subsuming clauses.
