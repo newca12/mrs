@@ -66,9 +66,9 @@ pub struct IdClause {
 }
 
 impl IdClause {
-    pub fn new<L>(id: ClauseId, literals: L, source: ClauseSource) -> Self 
+    pub fn new<L>(id: ClauseId, literals: L, source: ClauseSource) -> Self
     where
-        L: Into<SmallVec<[IdLiteral; 4]>>
+        L: Into<SmallVec<[IdLiteral; 4]>>,
     {
         Self {
             id,
@@ -79,14 +79,9 @@ impl IdClause {
         }
     }
 
-    pub fn new_avatar<L>(
-        id: ClauseId,
-        literals: L,
-        source: ClauseSource,
-        avatar: Vec<u32>,
-    ) -> Self 
+    pub fn new_avatar<L>(id: ClauseId, literals: L, source: ClauseSource, avatar: Vec<u32>) -> Self
     where
-        L: Into<SmallVec<[IdLiteral; 4]>>
+        L: Into<SmallVec<[IdLiteral; 4]>>,
     {
         Self {
             id,

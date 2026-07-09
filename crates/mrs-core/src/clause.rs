@@ -109,9 +109,9 @@ pub struct Clause {
 
 impl Clause {
     /// Creates a new clause with the given ID, literals, and source, with empty AVATAR assertions.
-    pub fn new<L>(id: ClauseId, literals: L, source: ClauseSource) -> Self 
+    pub fn new<L>(id: ClauseId, literals: L, source: ClauseSource) -> Self
     where
-        L: Into<SmallVec<[Literal; 4]>>
+        L: Into<SmallVec<[Literal; 4]>>,
     {
         Clause {
             id,
@@ -128,9 +128,9 @@ impl Clause {
         literals: L,
         source: ClauseSource,
         mut avatar: Vec<u32>,
-    ) -> Self 
+    ) -> Self
     where
-        L: Into<SmallVec<[Literal; 4]>>
+        L: Into<SmallVec<[Literal; 4]>>,
     {
         avatar.sort_unstable();
         avatar.dedup();
