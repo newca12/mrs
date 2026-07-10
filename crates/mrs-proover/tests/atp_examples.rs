@@ -92,16 +92,17 @@ mod fmb {
         let pa = Formula::atom(Atom::pred(p, vec![Term::constant(a)]));
         let pb = Formula::atom(Atom::pred(p, vec![Term::constant(b)]));
 
+        let cancel = std::sync::atomic::AtomicBool::new(false);
         // p(a) ⊨ p(a): valid.
         assert_eq!(
-            fmb.check_step(&syms, std::slice::from_ref(&pa), &pa, budget),
+            fmb.check_step(&syms, std::slice::from_ref(&pa), &pa, budget, &cancel),
             AtpVerdict::Sound,
             "valid entailment must be Sound",
         );
 
         // p(a) ⊭ p(b): finite counter-model exists.
         assert_eq!(
-            fmb.check_step(&syms, &[pa], &pb, budget),
+            fmb.check_step(&syms, &[pa], &pb, budget, &cancel),
             AtpVerdict::Unsound,
             "non-entailment must be refuted (counter-model)",
         );

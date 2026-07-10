@@ -39,6 +39,7 @@ pub trait Atp: Send + Sync {
         premises: &[Formula],
         conclusion: &Formula,
         budget: Duration,
+        cancel: &std::sync::atomic::AtomicBool,
     ) -> AtpVerdict;
 }
 
@@ -56,6 +57,7 @@ impl Atp for NoopAtp {
         _premises: &[Formula],
         _conclusion: &Formula,
         _budget: Duration,
+        _cancel: &std::sync::atomic::AtomicBool,
     ) -> AtpVerdict {
         AtpVerdict::Unknown
     }

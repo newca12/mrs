@@ -30,6 +30,8 @@ pub struct Settings {
     pub per_step_budget: Duration,
     /// If true, write a per-step report to stderr (`% step <name>: …`).
     pub verbose: bool,
+    /// Number of parallel worker threads to spawn for ATP verification.
+    pub workers: usize,
 }
 
 impl Default for Settings {
@@ -38,6 +40,7 @@ impl Default for Settings {
             total_budget: Duration::from_secs(30),
             per_step_budget: Duration::from_secs(8),
             verbose: false,
+            workers: 8,
         }
     }
 }
@@ -199,10 +202,7 @@ fn run_atp_jobs(
 
     let deadline = started + settings.total_budget;
     let per_step = settings.per_step_budget;
-    let n_workers = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
-        .min(jobs.len());
+    let n_workers = settings.workers.min(jobs.len());
 
     let next = AtomicUsize::new(0);
     let results: Mutex<Vec<(usize, StepOutcome)>> = Mutex::new(Vec::with_capacity(jobs.len()));
@@ -652,7 +652,8 @@ fn finish_atp(
     if budget.is_zero() {
         return StepOutcome::Unknown(format!("ATP budget exhausted (rule={:?})", step.rule));
     }
-    match atp.check_step(symbols, &step.premises, &step.conclusion, budget) {
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    match atp.check_step(symbols, &step.premises, &step.conclusion, budget, &cancel) {
         AtpVerdict::Sound => StepOutcome::Sound,
         AtpVerdict::Unsound if step.esa => StepOutcome::Unknown(format!(
             "esa step: ATP `{}` found a counter-model, but equisatisfiability \
@@ -1007,6 +1008,7 @@ mod esa_guard_tests {
             _: &[Formula],
             _: &Formula,
             _: Duration,
+            _: &std::sync::atomic::AtomicBool,
         ) -> AtpVerdict {
             AtpVerdict::Unsound
         }
