@@ -23,8 +23,10 @@ The binary lands at `target/release/mrs-proover`.
 ## Usage
 
 ```sh
-mrs-proover [--problems-dir DIR] [--no-atp]
+mrs-proover [--problems-dir DIR] [--no-atp] [--no-mrs] [--no-fmb]
             [--eprover PATH] [--vampire PATH]
+            [--only-mrs|--only-eprover|--only-vampire]
+            [--time SECS] [--workers N] [--verbose]
             <proof.p>
 ```
 
@@ -38,10 +40,22 @@ pointing at the matching problem file. The path is resolved relative to the
 proof file's directory; pass `--problems-dir` to look elsewhere.
 
 By default the verifier auto-discovers `eprover` and `vampire` (in
-`crates/mrs-bench/systems/{eprover,vampire}/bin/`) and uses them as an ordered
-ladder for inference steps it cannot decide internally. Use `--no-atp` to
-disable external ATP calls, or `MRS_PROOVER_EPROVER=/path` /
-`MRS_PROOVER_VAMPIRE=/path` to override the discovery.
+`crates/mrs-bench/systems/{eprover,vampire}/bin/`) and uses them, together
+with the in-process `mrs` fallback, as an ATP ladder for inference steps it
+cannot decide internally. Use `--no-atp` to disable external ATP calls
+entirely, `--only-mrs`/`--only-eprover`/`--only-vampire` to restrict the
+ladder to a single backend, or `MRS_PROOVER_EPROVER=/path` /
+`MRS_PROOVER_VAMPIRE=/path` to override binary discovery.
+
+`--workers N` (default `8`, matching the 8-core CASC/ProoVer competition
+hardware) controls how many proof steps are verified concurrently — see
+`Settings::workers` in `src/verify.rs`. Independently, within each step the
+ladder now runs the in-process `mrs` backend first (cheap, no subprocess
+spawn), then races any remaining external backends (`eprover`, `vampire`) in
+parallel rather than trying them one after another: the first `Sound`/
+`Unsound` verdict wins and the losing backend(s) are cancelled (killed) via a
+shared `AtomicBool` flag, so a step that only `eprover` can close no longer
+pays the full `vampire` budget (or vice versa) on top of it.
 
 ## Architecture
 
@@ -54,7 +68,7 @@ disable external ATP calls, or `MRS_PROOVER_EPROVER=/path` /
 | `checks::neg_conjecture` | Verify NNF(¬conjecture) ≡α NNF(step). |
 | `checks::skolemize` | Enforce: status `esa`, fresh Skolem symbol, dependency tuple matches the in-scope universals, conclusion is exactly parent[Var ↦ sK(args)]. |
 | `atp::external` | Spawn `eprover` / `vampire` to discharge other steps. |
-| `atp::ladder` | Try multiple backends in order; first definite verdict wins. |
+| `atp::ladder` | Run `mrs` in-process first, then race remaining external backends (`eprover`, `vampire`) in parallel per step; the first definite verdict wins and cancels the rest. |
 | `verdict` | Aggregate: any `Unsound` → `FailedVerified`; else any `Unknown` → `NotVerified`; else `Verified`. |
 
 The verdict policy is deliberately **conservative**: the competition scoring
