@@ -42,32 +42,79 @@ impl Atp for LadderAtp {
         premises: &[Formula],
         conclusion: &Formula,
         budget: Duration,
+        cancel: &std::sync::atomic::AtomicBool,
     ) -> AtpVerdict {
         if self.backends.is_empty() {
             return AtpVerdict::Unknown;
         }
-        // Each backend gets the *full* per-step budget. We do not pre-divide
-        // it across backends because vampire/eprover need at least a few
-        // hundred ms of real CPU to crack non-trivial steps, and a sub-100ms
-        // share is essentially wasted call-overhead. Instead, we rely on
-        // the wall-clock kill inside `run_atp` to enforce the real budget
-        // and bail to the next backend on Unknown.
-        //
-        // We also enforce a 1-second floor per backend: empirically vampire
-        // resolves most reachable steps within a second, and below that the
-        // hit-rate collapses sharply. The wall-clock kill makes this floor
-        // safe — the verify-loop's `remaining / steps_remaining` math will
-        // self-correct on subsequent steps.
-        //
-        // Worst case for a hard step: total wall time ≈ n_backends × max(1s, budget).
-        let per = std::cmp::max(Duration::from_secs(1), budget);
+
+        // 1. Run MrsAtp sequentially first (fast, in-process, avoids subprocess spawn)
+        let mut remaining_backends = Vec::new();
         for b in &self.backends {
-            match b.check_step(symbols, premises, conclusion, per) {
-                AtpVerdict::Sound => return AtpVerdict::Sound,
-                AtpVerdict::Unsound => return AtpVerdict::Unsound,
-                AtpVerdict::Unknown => continue,
+            if b.name() == "mrs" {
+                match b.check_step(symbols, premises, conclusion, budget, cancel) {
+                    AtpVerdict::Sound => return AtpVerdict::Sound,
+                    AtpVerdict::Unsound => return AtpVerdict::Unsound,
+                    AtpVerdict::Unknown => {}
+                }
+            } else {
+                remaining_backends.push(b);
             }
         }
-        AtpVerdict::Unknown
+
+        if remaining_backends.is_empty() {
+            return AtpVerdict::Unknown;
+        }
+
+        // 2. Run remaining external ATPs in parallel
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cancel_flag = std::sync::atomic::AtomicBool::new(false);
+        let per = std::cmp::max(Duration::from_secs(1), budget);
+
+        let final_verdict = std::thread::scope(|scope| {
+            let num_backends = remaining_backends.len();
+            for b in &remaining_backends {
+                let tx = tx.clone();
+                let cancel_ref = &cancel_flag;
+                scope.spawn(move || {
+                    let res = b.check_step(symbols, premises, conclusion, per, cancel_ref);
+                    if res == AtpVerdict::Sound || res == AtpVerdict::Unsound {
+                        cancel_ref.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    let _ = tx.send(res);
+                });
+            }
+            drop(tx);
+
+            let mut resolved = AtpVerdict::Unknown;
+            let mut received = 0;
+            while received < num_backends {
+                // Propagate parent cancellation:
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    cancel_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+
+                if let Ok(res) = rx.recv() {
+                    received += 1;
+                    match res {
+                        AtpVerdict::Sound => {
+                            cancel_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                            resolved = AtpVerdict::Sound;
+                            break;
+                        }
+                        AtpVerdict::Unsound => {
+                            cancel_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                            resolved = AtpVerdict::Unsound;
+                            break;
+                        }
+                        AtpVerdict::Unknown => {}
+                    }
+                } else {
+                    break;
+                }
+            }
+            resolved
+        });
+        final_verdict
     }
 }

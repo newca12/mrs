@@ -35,7 +35,7 @@ fn usage() -> ExitCode {
         "usage: mrs-proover [--problems-dir DIR] [--no-atp] [--no-mrs] [--no-fmb]\n\
                       [--eprover PATH] [--vampire PATH]\n\
                       [--only-mrs|--only-eprover|--only-vampire]\n\
-                      [--time SECS] [--verbose] <proof.p>"
+                      [--time SECS] [--workers N] [--verbose] <proof.p>"
     );
     ExitCode::from(2)
 }
@@ -51,6 +51,7 @@ fn main() -> ExitCode {
     let mut vampire_override: Option<PathBuf> = None;
     let mut verbose = false;
     let mut total_budget_secs: Option<u64> = None;
+    let mut workers: Option<usize> = None;
     let mut only: Option<&'static str> = None;
     let mut iter = args.into_iter();
     while let Some(a) = iter.next() {
@@ -76,6 +77,10 @@ fn main() -> ExitCode {
             },
             "--time" => match iter.next().and_then(|s| s.parse::<u64>().ok()) {
                 Some(n) => total_budget_secs = Some(n),
+                None => return usage(),
+            },
+            "--workers" => match iter.next().and_then(|s| s.parse::<usize>().ok()) {
+                Some(n) => workers = Some(n),
                 None => return usage(),
             },
             "-v" | "--verbose" => verbose = true,
@@ -125,6 +130,9 @@ fn main() -> ExitCode {
     };
     if let Some(s) = total_budget_secs {
         settings.total_budget = Duration::from_secs(s);
+    }
+    if let Some(w) = workers {
+        settings.workers = w;
     }
 
     if no_atp {

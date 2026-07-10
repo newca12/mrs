@@ -48,6 +48,7 @@ impl Atp for EProverAtp {
         premises: &[Formula],
         conclusion: &Formula,
         budget: Duration,
+        cancel: &std::sync::atomic::AtomicBool,
     ) -> AtpVerdict {
         let problem = build_fof_problem(symbols, premises, conclusion);
         // eprover only accepts integer --cpu-limit, so floor to 1s. The
@@ -61,6 +62,7 @@ impl Atp for EProverAtp {
             &["--auto", "--silent", &cpu_arg, "--tptp3-format"],
             &problem,
             budget,
+            cancel,
         )
     }
 }
@@ -89,6 +91,7 @@ impl Atp for VampireAtp {
         premises: &[Formula],
         conclusion: &Formula,
         budget: Duration,
+        cancel: &std::sync::atomic::AtomicBool,
     ) -> AtpVerdict {
         let problem = build_fof_problem(symbols, premises, conclusion);
         // Vampire accepts fractional --time_limit. Pass the budget as
@@ -102,6 +105,7 @@ impl Atp for VampireAtp {
             &["--time_limit", &secs_arg, "--input_syntax", "tptp"],
             &problem,
             budget,
+            cancel,
         )
     }
 }
@@ -138,6 +142,7 @@ impl Atp for VampireFmbAtp {
         premises: &[Formula],
         conclusion: &Formula,
         budget: Duration,
+        cancel: &std::sync::atomic::AtomicBool,
     ) -> AtpVerdict {
         let problem = build_fof_problem(symbols, premises, conclusion);
         let secs = (budget.as_secs_f64()).max(0.1);
@@ -154,6 +159,7 @@ impl Atp for VampireFmbAtp {
             ],
             &problem,
             budget,
+            cancel,
         )
     }
 }
@@ -209,6 +215,7 @@ impl Atp for MrsAtp {
         premises: &[Formula],
         conclusion: &Formula,
         budget: Duration,
+        _cancel: &std::sync::atomic::AtomicBool,
     ) -> AtpVerdict {
         let mut local_symbols = symbols.clone();
         let mut id_gen = ClauseIdGen::new();
@@ -292,7 +299,16 @@ fn close_universally(f: &Formula) -> Formula {
     cur
 }
 
-fn run_atp(binary: &std::path::Path, args: &[&str], problem: &str, budget: Duration) -> AtpVerdict {
+fn run_atp(
+    binary: &std::path::Path,
+    args: &[&str],
+    problem: &str,
+    budget: Duration,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> AtpVerdict {
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        return AtpVerdict::Unknown;
+    }
     let Ok(mut child) = Command::new(binary)
         .args(args)
         .stdin(Stdio::piped())
@@ -311,7 +327,7 @@ fn run_atp(binary: &std::path::Path, args: &[&str], problem: &str, budget: Durat
         });
     }
     let stdout_bytes = drain_to_bytes(child.stdout.take());
-    let (verdict, stdout) = wait_with_timeout(&mut child, budget, stdout_bytes);
+    let (verdict, stdout) = wait_with_timeout(&mut child, budget, stdout_bytes, cancel);
     maybe_debug_dump(binary, args, problem, &stdout, verdict);
     verdict
 }
@@ -362,6 +378,7 @@ fn wait_with_timeout(
     child: &mut Child,
     budget: Duration,
     stdout_bytes: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    cancel: &std::sync::atomic::AtomicBool,
 ) -> (AtpVerdict, String) {
     let started = Instant::now();
     let deadline = started + budget + Duration::from_millis(200);
@@ -371,7 +388,7 @@ fn wait_with_timeout(
         match child.try_wait() {
             Ok(Some(_)) => break,
             Ok(None) => {
-                if Instant::now() >= deadline {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) || Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
                     break;
