@@ -111,15 +111,41 @@ Representative output (after the fixes in §4):
 [corpus] PASS: no known-valid proof was FailedVerified.
 ```
 
-The 3 remaining `NotVerified` are E proofs of the PEL-style problems where E
-folds Skolemisation into a `thm`-labelled `fof_nnf` step; the lightweight ATP
-cannot close them in-budget. They cost 0 points, and Vampire verifies the same
-problems, so they are acceptable. (A 4th case in this family, where E's
-`skolemize` step eliminates two existentials at once and the parent/step
-conjunction is a differently-shaped CNF, is now positively verified: the
-structural matcher normalises both sides to CNF and matches conjuncts/disjuncts
-as a strictly **bijective** multiset — every parent conjunct must be consumed
-by exactly one step conjunct, never dropped — before confirming `Sound`.)
+The 3 remaining `NotVerified` are E proofs of PEL-style problems (`SYN051+1`,
+`SYN056+1`, `SYN057+1`) where E folds Skolemisation into a `thm`-labelled
+`fof_nnf` step, e.g. `inference(fof_nnf,[status(thm)],[inference(skolemize,
+[status(esa)],[...])])`. This is **not a time-budget issue** — confirmed by
+re-running with `--time 60` (6x the default) with an identical result, and by
+inspecting the reason string: `atp \`ladder\` found a counter-model, but
+equisatisfiability steps are not entailments, so this is not a fault`. The
+outer step is only `esa` (equisatisfiable, not equivalent) because it
+introduces a fresh Skolem constant/function; the FMB counter-model rung
+correctly finds a finite model where the premise holds and the
+under-constrained Skolem witness makes the conclusion fail — that is expected
+and harmless for an `esa` step, so `verify.rs`'s esa guard reports the safe
+`NotVerified` (0 pts) instead of misreading it as a soundness fault. Since
+`node.inference_rule` here is `fof_nnf`, not `skolemize`, these steps are
+deliberately **not** routed into `checks::skolemize::check`'s structural
+verifier — widening that dispatch to catch nested `esa` steps like this one
+was tried and reverted (see the `fix-e-style-skolemize` merge commit) because
+it also hijacked unrelated `esa`-status steps away from their ATP/structural
+fast-paths, regressing this same corpus from 42 to 33 `Verified`. So today
+these 3 cases cost 0 points with `mrs`, real `eprover`, and real `vampire`
+alike (all three are in the default ladder here and none discharges them);
+closing them safely would need a smarter structural match for this specific
+nested-`fof_nnf`-wrapping-`skolemize` shape, not a bigger ATP or more time.
+Crucially, the underlying *theorems* are fine: the corpus also has Vampire's
+own proofs of the identical three problems (`SYN051+1__Vampire`,
+`SYN056+1__Vampire`, `SYN057+1__Vampire`), and `mrs-proover` reports
+`Verified` on all three — Vampire's proof-step shape doesn't fold Skolemize
+into an outer `thm` step, so it hits the fast paths cleanly. The gap is in
+*which proof object* was submitted, not in whether the *problem* is provable
+or in `mrs-proover`'s soundness. (A 4th, related case, where E's `skolemize`
+step eliminates two existentials at once and the parent/step conjunction is a
+differently-shaped CNF, is now positively verified: the structural matcher
+normalises both sides to CNF and matches conjuncts/disjuncts as a strictly
+**bijective** multiset — every parent conjunct must be consumed by exactly one
+step conjunct, never dropped — before confirming `Sound`.)
 
 ### 3.3 `test_tptp_solutions.sh` — live spot-check (network, exploratory)
 
