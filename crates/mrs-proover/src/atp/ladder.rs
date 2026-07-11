@@ -71,7 +71,7 @@ impl Atp for LadderAtp {
         let cancel_flag = std::sync::atomic::AtomicBool::new(false);
         let per = std::cmp::max(Duration::from_secs(1), budget);
 
-        let final_verdict = std::thread::scope(|scope| {
+        std::thread::scope(|scope| {
             let num_backends = remaining_backends.len();
             for b in &remaining_backends {
                 let tx = tx.clone();
@@ -114,7 +114,6 @@ impl Atp for LadderAtp {
                 }
             }
             resolved
-        });
-        final_verdict
+        })
     }
 }

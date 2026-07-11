@@ -105,16 +105,21 @@ committed to the repo.
 Representative output (after the fixes in §4):
 
 ```
-[corpus]   Verified      :  42
-[corpus]   NotVerified   :   4
+[corpus]   Verified      :  43
+[corpus]   NotVerified   :   3
 [corpus]   FailedVerified:   0  (must be 0)
 [corpus] PASS: no known-valid proof was FailedVerified.
 ```
 
-The 4 `NotVerified` are E proofs of the PEL-style problems where E folds
-Skolemisation into a `thm`-labelled `fof_nnf` step; the lightweight ATP cannot
-close them in-budget. They cost 0 points, and Vampire verifies the same
-problems, so they are acceptable.
+The 3 remaining `NotVerified` are E proofs of the PEL-style problems where E
+folds Skolemisation into a `thm`-labelled `fof_nnf` step; the lightweight ATP
+cannot close them in-budget. They cost 0 points, and Vampire verifies the same
+problems, so they are acceptable. (A 4th case in this family, where E's
+`skolemize` step eliminates two existentials at once and the parent/step
+conjunction is a differently-shaped CNF, is now positively verified: the
+structural matcher normalises both sides to CNF and matches conjuncts/disjuncts
+as a strictly **bijective** multiset — every parent conjunct must be consumed
+by exactly one step conjunct, never dropped — before confirming `Sound`.)
 
 ### 3.3 `test_tptp_solutions.sh` — live spot-check (network, exploratory)
 

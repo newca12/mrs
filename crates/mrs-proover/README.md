@@ -105,7 +105,7 @@ entirely, then compared against the default full ladder (`eprover` + `vampire`
 
 | Corpus | `--only-mrs` | Full ladder |
 |---|---|---|
-| Built-in `proover-corpus` (25 problems, 46 E/Vampire proofs) | 42 Verified / 4 NotVerified / **0 FailedVerified** | identical: 42/4/0 |
+| Built-in `proover-corpus` (25 problems, 46 E/Vampire proofs) | 43 Verified / 3 NotVerified / **0 FailedVerified** | identical: 43/3/0 |
 | ATP-Research-Project `correct` (3) | 3/3 Verified | 3/3 Verified |
 | ATP-Research-Project `incorrect` (4 "evil") | 3/4 correctly `FailedVerified`, 1 (`EVL002+1`) degrades to `NotVerified` | 4/4 `FailedVerified` |
 | ATP-Research-Project `samples` (3) | `COR000+1` Verified, `EVL000+1` FailedVerified, `TMO000+1` degrades to `NotVerified` | all 3 match expectations |
