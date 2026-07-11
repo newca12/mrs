@@ -545,46 +545,43 @@ fn main() {
     let result = final_result;
 
     #[cfg(feature = "ml")]
-    if let Some(log_dir) = &log_ml_data {
-        if matches!(status, SzsStatus::Theorem | SzsStatus::Unsatisfiable) {
-            if let Some(winning_strategy) = final_report
-                .strategies
-                .iter()
-                .find(|s| matches!(s.result, SearchResult::Refutation(..)))
+    if let Some(log_dir) = &log_ml_data
+        && matches!(status, SzsStatus::Theorem | SzsStatus::Unsatisfiable)
+        && let Some(winning_strategy) = final_report
+            .strategies
+            .iter()
+            .find(|s| matches!(s.result, SearchResult::Refutation(..)))
+    {
+        let elapsed = winning_strategy.elapsed_ms as f64 / 1000.0;
+        let processed = winning_strategy.stats.processed;
+
+        if elapsed >= 0.5 && processed >= 100 {
+            use mrs_core::term_bank::TermBank;
+            let mut bank = TermBank::new();
+            let mut id_clauses = Vec::with_capacity(all_clauses.len());
+            for c in &all_clauses {
+                id_clauses.push(bank.clause_from_legacy(c));
+            }
+            let feats = mrs_core::ml::schedule_classifier::extract_schedule_features(
+                &id_clauses,
+                &bank,
+                &lowered.symbols,
+            );
+            let sample = mrs_core::ml::sample::ScheduleSample {
+                label_idx: winning_strategy.strategy_idx as u32,
+                feats,
+            };
+
+            let log_path = std::path::Path::new(log_dir).join("schedule");
+            std::fs::create_dir_all(&log_path).ok();
+            let file_stem = format!("{}_schedule", problem_name);
+
+            if !ml_log_csv
+                && let Ok(mut w) =
+                    std::fs::File::create(log_path.join(format!("{}.wincode", file_stem)))
             {
-                let elapsed = winning_strategy.elapsed_ms as f64 / 1000.0;
-                let processed = winning_strategy.stats.processed;
-
-                if elapsed >= 0.5 && processed >= 100 {
-                    use mrs_core::term_bank::TermBank;
-                    let mut bank = TermBank::new();
-                    let mut id_clauses = Vec::with_capacity(all_clauses.len());
-                    for c in &all_clauses {
-                        id_clauses.push(bank.clause_from_legacy(c));
-                    }
-                    let feats = mrs_core::ml::schedule_classifier::extract_schedule_features(
-                        &id_clauses,
-                        &bank,
-                        &lowered.symbols,
-                    );
-                    let sample = mrs_core::ml::sample::ScheduleSample {
-                        label_idx: winning_strategy.strategy_idx as u32,
-                        feats,
-                    };
-
-                    let log_path = std::path::Path::new(log_dir).join("schedule");
-                    std::fs::create_dir_all(&log_path).ok();
-                    let file_stem = format!("{}_schedule", problem_name);
-
-                    if !ml_log_csv {
-                        if let Ok(mut w) =
-                            std::fs::File::create(log_path.join(format!("{}.wincode", file_stem)))
-                        {
-                            let mut std_write = wincode::io::std_write::WriteAdapter::new(&mut w);
-                            let _ = wincode::serialize_into(&mut std_write, &sample);
-                        }
-                    }
-                }
+                let mut std_write = wincode::io::std_write::WriteAdapter::new(&mut w);
+                let _ = wincode::serialize_into(&mut std_write, &sample);
             }
         }
     }

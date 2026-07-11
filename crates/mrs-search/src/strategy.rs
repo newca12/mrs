@@ -804,10 +804,11 @@ pub fn run_schedule(
                                         let is_pos = pos_set.contains(&cid);
 
                                         // Negative subsampling: keep all positives, sample only from processed set
-                                        if !is_pos {
-                                            if state.unprocessed.contains(&cid) || rand::random::<f32>() > 0.1 {
-                                                continue;
-                                            }
+                                        if !is_pos
+                                            && (state.unprocessed.contains(&cid)
+                                                || rand::random::<f32>() > 0.1)
+                                        {
+                                            continue;
                                         }
 
                                     let label = if is_pos { 1.0 } else { 0.0 };

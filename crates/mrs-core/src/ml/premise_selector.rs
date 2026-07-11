@@ -115,10 +115,10 @@ pub fn extract_premise_features(
     let mut dot = 0.0;
     let mut norm_ax = 0.0;
     let mut norm_ctx = 0.0;
-    for i in 0..HASH_BUCKETS {
-        dot += ax_counts[i] * ctx.symbol_counts[i];
-        norm_ax += ax_counts[i] * ax_counts[i];
-        norm_ctx += ctx.symbol_counts[i] * ctx.symbol_counts[i];
+    for (ax_count, ctx_count) in ax_counts.iter().zip(ctx.symbol_counts.iter()) {
+        dot += ax_count * ctx_count;
+        norm_ax += ax_count * ax_count;
+        norm_ctx += ctx_count * ctx_count;
     }
 
     let sim = if norm_ax > 0.0 && norm_ctx > 0.0 {
