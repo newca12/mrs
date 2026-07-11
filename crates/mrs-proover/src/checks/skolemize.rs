@@ -17,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 
 use mrs_tptp::{
     AnnotatedFormula, AtomicWord, BinaryConnective, FOFAtomicFormula, FOFFormula, FOFStatement,
-    FOFTerm, Quantifier, GeneralTerm,
+    FOFTerm, Quantifier,
 };
 
 use crate::verdict::StepOutcome;
@@ -110,16 +110,24 @@ impl Default for SkolemRegistry {
 }
 
 /// Check a single `skolemize` step.
+///
+/// `dag_status` is the DAG-computed status for this node (see
+/// `dag::has_esa_in_term`), which already propagates `[status(esa)]` up
+/// through nested E-prover inference chains like
+/// `inference(fof_nnf,[status(thm)],[inference(skolemize,[status(esa)],[...])])`.
+/// We deliberately reuse that single source of truth rather than
+/// re-deriving it from `step`'s own (possibly outer, non-`esa`) annotation.
 pub fn check<'p>(
     step: &AnnotatedFormula<'p>,
     parent: Option<&AnnotatedFormula<'p>>,
     registry: &mut SkolemRegistry,
+    dag_status: Option<&str>,
 ) -> StepOutcome {
     // 1) status must be 'esa'.
     let Some(ann) = step.annotations() else {
         return StepOutcome::Unsound("skolemize step lacks annotations".into());
     };
-    if ann.status() != Some("esa") && !has_esa_in_term(&ann.source) {
+    if dag_status != Some("esa") {
         return StepOutcome::Unsound("skolemize step must have status `esa`".into());
     }
 
@@ -445,9 +453,18 @@ fn flatten_associative<'a, 'p>(
     out
 }
 
-
-
-fn match_multiset_subset<'p>(
+/// Match every element of `concs` against a *distinct* element of `pats`,
+/// recording bindings in `m`.
+///
+/// This is a **bijective** multiset match: every pattern conjunct/disjunct
+/// must be consumed too (checked by the caller via `pats.iter().all(|p|
+/// p.is_none())` once this returns `true`, since `concs.len() ==
+/// pats.len()` is enforced by every call site below). Do NOT relax this to
+/// a subset match — a skolemize/esa step that structurally drops a parent
+/// conjunct (or disjunct) without any Skolem witness for it is not a valid
+/// Skolemisation and must not be accepted as `Sound` (see the regression
+/// test `skolemize_subset_match_does_not_drop_conjuncts`).
+fn match_multiset<'p>(
     pats: &mut [Option<&FOFFormula<'p>>],
     concs: &[&FOFFormula<'p>],
     univ: &HashSet<&str>,
@@ -463,7 +480,7 @@ fn match_multiset_subset<'p>(
             let mut m_tentative = m.clone();
             if match_skolem_formula(current_pat, current_conc, univ, exist, &mut m_tentative) {
                 pats[i] = None;
-                if match_multiset_subset(pats, &concs[1..], univ, exist, &mut m_tentative) {
+                if match_multiset(pats, &concs[1..], univ, exist, &mut m_tentative) {
                     *m = m_tentative;
                     return true;
                 }
@@ -522,16 +539,14 @@ fn match_skolem_formula<'p>(
             if c1 == c2 && c1.is_associative() {
                 let pats = flatten_associative(pat, *c1);
                 let concs = flatten_associative(conc, *c1);
-                if *c1 == BinaryConnective::And {
-                    let mut pats_opts: Vec<Option<&FOFFormula<'p>>> = pats.iter().copied().map(Some).collect();
-                    match_multiset_subset(&mut pats_opts, &concs, univ, exist, m)
-                } else if *c1 == BinaryConnective::Or {
-                    let mut pats_opts: Vec<Option<&FOFFormula<'p>>> = pats.iter().copied().map(Some).collect();
-                    match_multiset_subset(&mut pats_opts, &concs, univ, exist, m)
-                } else {
-                    let mut pats_opts: Vec<Option<&FOFFormula<'p>>> = pats.iter().copied().map(Some).collect();
-                    pats.len() == concs.len() && match_multiset_subset(&mut pats_opts, &concs, univ, exist, m)
-                }
+                // Bijective multiset match: the flattened parent and step must
+                // have the same number of conjuncts/disjuncts, and every one
+                // of them must be paired off. A skolemize/esa step that drops
+                // (or adds) a conjunct/disjunct relative to its parent is not a
+                // valid Skolemisation, regardless of connective.
+                let mut pats_opts: Vec<Option<&FOFFormula<'p>>> =
+                    pats.iter().copied().map(Some).collect();
+                pats.len() == concs.len() && match_multiset(&mut pats_opts, &concs, univ, exist, m)
             } else {
                 c1 == c2
                     && match_skolem_formula(l1, l2, univ, exist, m)
@@ -545,7 +560,10 @@ fn match_skolem_formula<'p>(
         _ => false,
     };
     if !res && std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
-        eprintln!("[skolem-dbg] match_skolem_formula failed for pat={:?}, conc={:?}", pat, conc);
+        eprintln!(
+            "[skolem-dbg] match_skolem_formula failed for pat={:?}, conc={:?}",
+            pat, conc
+        );
     }
     res
 }
@@ -638,39 +656,22 @@ fn match_skolem_term<'p>(
         FOFTerm::Number(_) | FOFTerm::DistinctObject(_) => term_eq(pat, conc),
     }
 }
-fn has_esa_in_term(t: &GeneralTerm<'_>) -> bool {
-    match t {
-        GeneralTerm::Function(name, args) => {
-            if matches!(
-                name,
-                AtomicWord::Lower("status") | AtomicWord::SingleQuoted("status")
-            ) && let [
-                GeneralTerm::Word(AtomicWord::Lower("esa") | AtomicWord::SingleQuoted("esa")),
-            ] = args.as_slice()
-            {
-                return true;
-            }
-            args.iter().any(has_esa_in_term)
-        }
-        GeneralTerm::List(items) => items.iter().any(has_esa_in_term),
-        GeneralTerm::Word(_)
-        | GeneralTerm::Number(_)
-        | GeneralTerm::DistinctObject(_)
-        | GeneralTerm::Variable(_)
-        | GeneralTerm::ColonPair(..)
-        | GeneralTerm::Formula(_) => false,
-    }
-}
 
-fn fof_to_nnf<'a, 'p>(f: &'a FOFFormula<'p>) -> FOFFormula<'p> {
+fn fof_to_nnf<'p>(f: &FOFFormula<'p>) -> FOFFormula<'p> {
     match f {
         FOFFormula::Atomic(_) | FOFFormula::Equality(..) | FOFFormula::Inequality(..) => f.clone(),
-        FOFFormula::Parens(inner) => fof_to_nnf(&**inner),
-        FOFFormula::Negation(inner) => match strip_parens_f(&**inner) {
-            FOFFormula::Atomic(_) | FOFFormula::Equality(..) | FOFFormula::Inequality(..) => f.clone(),
+        FOFFormula::Parens(inner) => fof_to_nnf(inner),
+        FOFFormula::Negation(inner) => match strip_parens_f(inner) {
+            FOFFormula::Atomic(_) | FOFFormula::Equality(..) | FOFFormula::Inequality(..) => {
+                f.clone()
+            }
             FOFFormula::Parens(x) => fof_to_nnf(&FOFFormula::Negation(x.clone())),
-            FOFFormula::Negation(x) => fof_to_nnf(&**x),
-            FOFFormula::Binary { left, connective, right } => match connective {
+            FOFFormula::Negation(x) => fof_to_nnf(x),
+            FOFFormula::Binary {
+                left,
+                connective,
+                right,
+            } => match connective {
                 BinaryConnective::And => FOFFormula::Binary {
                     left: Box::new(fof_to_nnf(&FOFFormula::Negation(left.clone()))),
                     connective: BinaryConnective::Or,
@@ -682,14 +683,14 @@ fn fof_to_nnf<'a, 'p>(f: &'a FOFFormula<'p>) -> FOFFormula<'p> {
                     right: Box::new(fof_to_nnf(&FOFFormula::Negation(right.clone()))),
                 },
                 BinaryConnective::Impl => FOFFormula::Binary {
-                    left: Box::new(fof_to_nnf(&**left)),
+                    left: Box::new(fof_to_nnf(left)),
                     connective: BinaryConnective::And,
                     right: Box::new(fof_to_nnf(&FOFFormula::Negation(right.clone()))),
                 },
                 BinaryConnective::Iff => {
-                    let left_pos = fof_to_nnf(&**left);
+                    let left_pos = fof_to_nnf(left);
                     let left_neg = fof_to_nnf(&FOFFormula::Negation(left.clone()));
-                    let right_pos = fof_to_nnf(&**right);
+                    let right_pos = fof_to_nnf(right);
                     let right_neg = fof_to_nnf(&FOFFormula::Negation(right.clone()));
                     FOFFormula::Binary {
                         left: Box::new(FOFFormula::Binary {
@@ -707,7 +708,11 @@ fn fof_to_nnf<'a, 'p>(f: &'a FOFFormula<'p>) -> FOFFormula<'p> {
                 }
                 _ => f.clone(),
             },
-            FOFFormula::Quantified { quantifier, variables, formula } => {
+            FOFFormula::Quantified {
+                quantifier,
+                variables,
+                formula,
+            } => {
                 let dual_q = match quantifier {
                     Quantifier::Forall => Quantifier::Exists,
                     Quantifier::Exists => Quantifier::Forall,
@@ -719,16 +724,20 @@ fn fof_to_nnf<'a, 'p>(f: &'a FOFFormula<'p>) -> FOFFormula<'p> {
                 }
             }
         },
-        FOFFormula::Binary { left, connective, right } => match connective {
+        FOFFormula::Binary {
+            left,
+            connective,
+            right,
+        } => match connective {
             BinaryConnective::Impl => FOFFormula::Binary {
                 left: Box::new(fof_to_nnf(&FOFFormula::Negation(left.clone()))),
                 connective: BinaryConnective::Or,
-                right: Box::new(fof_to_nnf(&**right)),
+                right: Box::new(fof_to_nnf(right)),
             },
             BinaryConnective::Iff => {
-                let left_pos = fof_to_nnf(&**left);
+                let left_pos = fof_to_nnf(left);
                 let left_neg = fof_to_nnf(&FOFFormula::Negation(left.clone()));
-                let right_pos = fof_to_nnf(&**right);
+                let right_pos = fof_to_nnf(right);
                 let right_neg = fof_to_nnf(&FOFFormula::Negation(right.clone()));
                 FOFFormula::Binary {
                     left: Box::new(FOFFormula::Binary {
@@ -745,54 +754,78 @@ fn fof_to_nnf<'a, 'p>(f: &'a FOFFormula<'p>) -> FOFFormula<'p> {
                 }
             }
             _ => FOFFormula::Binary {
-                left: Box::new(fof_to_nnf(&**left)),
+                left: Box::new(fof_to_nnf(left)),
                 connective: *connective,
-                right: Box::new(fof_to_nnf(&**right)),
+                right: Box::new(fof_to_nnf(right)),
             },
         },
-        FOFFormula::Quantified { quantifier, variables, formula } => FOFFormula::Quantified {
+        FOFFormula::Quantified {
+            quantifier,
+            variables,
+            formula,
+        } => FOFFormula::Quantified {
             quantifier: *quantifier,
             variables: variables.clone(),
-            formula: Box::new(fof_to_nnf(&**formula)),
+            formula: Box::new(fof_to_nnf(formula)),
         },
     }
 }
 
-fn rename_bound_variables<'a, 'p>(
-    f: &'a FOFFormula<'p>,
+fn rename_bound_variables<'p>(
+    f: &FOFFormula<'p>,
     counter: &mut usize,
     subst: &mut HashMap<&'p str, &'p str>,
 ) -> FOFFormula<'p> {
     match f {
         FOFFormula::Atomic(a) => FOFFormula::Atomic(rename_in_atomic(a, subst)),
-        FOFFormula::Negation(inner) => FOFFormula::Negation(Box::new(rename_bound_variables(&**inner, counter, subst))),
-        FOFFormula::Parens(inner) => FOFFormula::Parens(Box::new(rename_bound_variables(&**inner, counter, subst))),
-        FOFFormula::Equality(l, r) => FOFFormula::Equality(rename_in_term(l, subst), rename_in_term(r, subst)),
-        FOFFormula::Inequality(l, r) => FOFFormula::Inequality(rename_in_term(l, subst), rename_in_term(r, subst)),
-        FOFFormula::Binary { left, connective, right } => FOFFormula::Binary {
-            left: Box::new(rename_bound_variables(&**left, counter, subst)),
+        FOFFormula::Negation(inner) => {
+            FOFFormula::Negation(Box::new(rename_bound_variables(inner, counter, subst)))
+        }
+        FOFFormula::Parens(inner) => {
+            FOFFormula::Parens(Box::new(rename_bound_variables(inner, counter, subst)))
+        }
+        FOFFormula::Equality(l, r) => {
+            FOFFormula::Equality(rename_in_term(l, subst), rename_in_term(r, subst))
+        }
+        FOFFormula::Inequality(l, r) => {
+            FOFFormula::Inequality(rename_in_term(l, subst), rename_in_term(r, subst))
+        }
+        FOFFormula::Binary {
+            left,
+            connective,
+            right,
+        } => FOFFormula::Binary {
+            left: Box::new(rename_bound_variables(left, counter, subst)),
             connective: *connective,
-            right: Box::new(rename_bound_variables(&**right, counter, subst)),
+            right: Box::new(rename_bound_variables(right, counter, subst)),
         },
-        FOFFormula::Quantified { quantifier, variables, formula } => {
+        FOFFormula::Quantified {
+            quantifier,
+            variables,
+            formula,
+        } => {
             let mut new_subst = subst.clone();
             let mut new_vars = Vec::with_capacity(variables.len());
             for &v in variables {
                 *counter += 1;
-                let new_name: &'static str = Box::leak(format!("skv_{}_{}", v, counter).into_boxed_str());
+                let new_name: &'static str =
+                    Box::leak(format!("skv_{}_{}", v, counter).into_boxed_str());
                 new_subst.insert(v, new_name);
                 new_vars.push(new_name);
             }
             FOFFormula::Quantified {
                 quantifier: *quantifier,
                 variables: new_vars,
-                formula: Box::new(rename_bound_variables(&**formula, counter, &mut new_subst)),
+                formula: Box::new(rename_bound_variables(formula, counter, &mut new_subst)),
             }
         }
     }
 }
 
-fn rename_in_atomic<'a, 'p>(a: &'a FOFAtomicFormula<'p>, subst: &HashMap<&'p str, &'p str>) -> FOFAtomicFormula<'p> {
+fn rename_in_atomic<'p>(
+    a: &FOFAtomicFormula<'p>,
+    subst: &HashMap<&'p str, &'p str>,
+) -> FOFAtomicFormula<'p> {
     match a {
         FOFAtomicFormula::Plain(w, args) => FOFAtomicFormula::Plain(
             w.clone(),
@@ -811,7 +844,7 @@ fn rename_in_atomic<'a, 'p>(a: &'a FOFAtomicFormula<'p>, subst: &HashMap<&'p str
     }
 }
 
-fn rename_in_term<'a, 'p>(t: &'a FOFTerm<'p>, subst: &HashMap<&'p str, &'p str>) -> FOFTerm<'p> {
+fn rename_in_term<'p>(t: &FOFTerm<'p>, subst: &HashMap<&'p str, &'p str>) -> FOFTerm<'p> {
     match t {
         FOFTerm::Variable(v) => {
             if let Some(&new_v) = subst.get(v) {
@@ -837,70 +870,94 @@ fn rename_in_term<'a, 'p>(t: &'a FOFTerm<'p>, subst: &HashMap<&'p str, &'p str>)
     }
 }
 
-fn strip_all_quantifiers<'a, 'p>(f: &'a FOFFormula<'p>) -> FOFFormula<'p> {
+fn strip_all_quantifiers<'p>(f: &FOFFormula<'p>) -> FOFFormula<'p> {
     match f {
         FOFFormula::Atomic(_) | FOFFormula::Equality(..) | FOFFormula::Inequality(..) => f.clone(),
-        FOFFormula::Parens(inner) => strip_all_quantifiers(&**inner),
-        FOFFormula::Negation(inner) => FOFFormula::Negation(Box::new(strip_all_quantifiers(&**inner))),
-        FOFFormula::Binary { left, connective, right } => FOFFormula::Binary {
-            left: Box::new(strip_all_quantifiers(&**left)),
+        FOFFormula::Parens(inner) => strip_all_quantifiers(inner),
+        FOFFormula::Negation(inner) => FOFFormula::Negation(Box::new(strip_all_quantifiers(inner))),
+        FOFFormula::Binary {
+            left,
+            connective,
+            right,
+        } => FOFFormula::Binary {
+            left: Box::new(strip_all_quantifiers(left)),
             connective: *connective,
-            right: Box::new(strip_all_quantifiers(&**right)),
+            right: Box::new(strip_all_quantifiers(right)),
         },
-        FOFFormula::Quantified { formula, .. } => strip_all_quantifiers(&**formula),
+        FOFFormula::Quantified { formula, .. } => strip_all_quantifiers(formula),
     }
 }
 
-fn distribute_or_over_and<'a, 'p>(f: &'a FOFFormula<'p>) -> FOFFormula<'p> {
+fn distribute_or_over_and<'p>(f: &FOFFormula<'p>) -> FOFFormula<'p> {
     match f {
-        FOFFormula::Binary { left, connective: BinaryConnective::Or, right } => {
-            let l = distribute_or_over_and(&**left);
-            let r = distribute_or_over_and(&**right);
+        FOFFormula::Binary {
+            left,
+            connective: BinaryConnective::Or,
+            right,
+        } => {
+            let l = distribute_or_over_and(left);
+            let r = distribute_or_over_and(right);
             match (l, r) {
-                (FOFFormula::Binary { left: l1, connective: BinaryConnective::And, right: r1 }, r_val) => {
+                (
                     FOFFormula::Binary {
-                        left: Box::new(distribute_or_over_and(&FOFFormula::Binary {
-                            left: l1,
-                            connective: BinaryConnective::Or,
-                            right: Box::new(r_val.clone()),
-                        })),
+                        left: l1,
                         connective: BinaryConnective::And,
-                        right: Box::new(distribute_or_over_and(&FOFFormula::Binary {
-                            left: r1,
-                            connective: BinaryConnective::Or,
-                            right: Box::new(r_val),
-                        })),
-                    }
-                }
-                (l_val, FOFFormula::Binary { left: l2, connective: BinaryConnective::And, right: r2 }) => {
+                        right: r1,
+                    },
+                    r_val,
+                ) => FOFFormula::Binary {
+                    left: Box::new(distribute_or_over_and(&FOFFormula::Binary {
+                        left: l1,
+                        connective: BinaryConnective::Or,
+                        right: Box::new(r_val.clone()),
+                    })),
+                    connective: BinaryConnective::And,
+                    right: Box::new(distribute_or_over_and(&FOFFormula::Binary {
+                        left: r1,
+                        connective: BinaryConnective::Or,
+                        right: Box::new(r_val),
+                    })),
+                },
+                (
+                    l_val,
                     FOFFormula::Binary {
-                        left: Box::new(distribute_or_over_and(&FOFFormula::Binary {
-                            left: Box::new(l_val.clone()),
-                            connective: BinaryConnective::Or,
-                            right: l2,
-                        })),
+                        left: l2,
                         connective: BinaryConnective::And,
-                        right: Box::new(distribute_or_over_and(&FOFFormula::Binary {
-                            left: Box::new(l_val),
-                            connective: BinaryConnective::Or,
-                            right: r2,
-                        })),
-                    }
-                }
+                        right: r2,
+                    },
+                ) => FOFFormula::Binary {
+                    left: Box::new(distribute_or_over_and(&FOFFormula::Binary {
+                        left: Box::new(l_val.clone()),
+                        connective: BinaryConnective::Or,
+                        right: l2,
+                    })),
+                    connective: BinaryConnective::And,
+                    right: Box::new(distribute_or_over_and(&FOFFormula::Binary {
+                        left: Box::new(l_val),
+                        connective: BinaryConnective::Or,
+                        right: r2,
+                    })),
+                },
                 (l_val, r_val) => FOFFormula::Binary {
                     left: Box::new(l_val),
                     connective: BinaryConnective::Or,
                     right: Box::new(r_val),
-                }
+                },
             }
         }
-        FOFFormula::Binary { left, connective, right } => FOFFormula::Binary {
-            left: Box::new(distribute_or_over_and(&**left)),
+        FOFFormula::Binary {
+            left,
+            connective,
+            right,
+        } => FOFFormula::Binary {
+            left: Box::new(distribute_or_over_and(left)),
             connective: *connective,
-            right: Box::new(distribute_or_over_and(&**right)),
+            right: Box::new(distribute_or_over_and(right)),
         },
-        FOFFormula::Negation(inner) => FOFFormula::Negation(Box::new(distribute_or_over_and(&**inner))),
-        FOFFormula::Parens(inner) => distribute_or_over_and(&**inner),
+        FOFFormula::Negation(inner) => {
+            FOFFormula::Negation(Box::new(distribute_or_over_and(inner)))
+        }
+        FOFFormula::Parens(inner) => distribute_or_over_and(inner),
         _ => f.clone(),
     }
 }
@@ -980,7 +1037,12 @@ fn try_positive_skolemize<'p>(
         // Every existential must have been witnessed and have a recorded scope.
         let (Some(term), Some(scope)) = (m.exist_term.get(e), m.exist_scope.get(e)) else {
             if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
-                eprintln!("[skolem-dbg] existential {} not witnessed or has no scope. term={:?}, scope={:?}", e, m.exist_term.get(e), m.exist_scope.get(e));
+                eprintln!(
+                    "[skolem-dbg] existential {} not witnessed or has no scope. term={:?}, scope={:?}",
+                    e,
+                    m.exist_term.get(e),
+                    m.exist_scope.get(e)
+                );
             }
             return false;
         };
@@ -988,14 +1050,20 @@ fn try_positive_skolemize<'p>(
             FOFTerm::Function(w, args) => (w.as_str(), args),
             _ => {
                 if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
-                    eprintln!("[skolem-dbg] witness for {} is not a function: {:?}", e, term);
+                    eprintln!(
+                        "[skolem-dbg] witness for {} is not a function: {:?}",
+                        e, term
+                    );
                 }
                 return false; // a Skolem witness must be a function/constant term
             }
         };
         if !fresh_set.contains(sym) || registry.seen_symbols.contains(sym) {
             if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
-                eprintln!("[skolem-dbg] witness symbol {} not fresh. fresh_set={:?}, seen={:?}", sym, fresh_set, registry.seen_symbols);
+                eprintln!(
+                    "[skolem-dbg] witness symbol {} not fresh. fresh_set={:?}, seen={:?}",
+                    sym, fresh_set, registry.seen_symbols
+                );
             }
             return false; // symbol not fresh
         }
@@ -1013,7 +1081,10 @@ fn try_positive_skolemize<'p>(
                 FOFTerm::Variable(v) => arg_vars.push(v),
                 _ => {
                     if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
-                        eprintln!("[skolem-dbg] argument in witness is not a variable: {:?}", a);
+                        eprintln!(
+                            "[skolem-dbg] argument in witness is not a variable: {:?}",
+                            a
+                        );
                     }
                     return false;
                 }
@@ -1022,7 +1093,10 @@ fn try_positive_skolemize<'p>(
         let arg_set: HashSet<&str> = arg_vars.iter().copied().collect();
         if arg_set.len() != arg_vars.len() {
             if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
-                eprintln!("[skolem-dbg] duplicate arguments in witness: {:?}", arg_vars);
+                eprintln!(
+                    "[skolem-dbg] duplicate arguments in witness: {:?}",
+                    arg_vars
+                );
             }
             return false; // duplicate argument
         }
@@ -1036,7 +1110,10 @@ fn try_positive_skolemize<'p>(
                 // name; we cannot confirm dependency precisely, so bail safely.
                 None => {
                     if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
-                        eprintln!("[skolem-dbg] in-scope universal {} not found in uni_map: {:?}", u, m.uni_map);
+                        eprintln!(
+                            "[skolem-dbg] in-scope universal {} not found in uni_map: {:?}",
+                            u, m.uni_map
+                        );
                     }
                     return false;
                 }
@@ -1044,7 +1121,10 @@ fn try_positive_skolemize<'p>(
         }
         if arg_set != expected {
             if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
-                eprintln!("[skolem-dbg] argument set mismatch for {}. arg_set={:?}, expected={:?}", e, arg_set, expected);
+                eprintln!(
+                    "[skolem-dbg] argument set mismatch for {}. arg_set={:?}, expected={:?}",
+                    e, arg_set, expected
+                );
             }
             return false;
         }
@@ -1497,7 +1577,7 @@ mod tests {
             0,
         );
         let mut reg = SkolemRegistry::new();
-        let outcome = check(step, Some(parent), &mut reg);
+        let outcome = check(step, Some(parent), &mut reg, Some("esa"));
         assert!(
             matches!(outcome, StepOutcome::Sound),
             "valid nested multi-existential skolemization must be Sound, got {outcome:?}"
@@ -1525,7 +1605,7 @@ mod tests {
             0,
         );
         let mut reg = SkolemRegistry::new();
-        let outcome = check(step, Some(parent), &mut reg);
+        let outcome = check(step, Some(parent), &mut reg, Some("esa"));
         assert!(
             matches!(outcome, StepOutcome::Sound),
             "regrouped-universal skolemization must be Sound, got {outcome:?}"
@@ -1550,7 +1630,7 @@ mod tests {
             0,
         );
         let mut reg = SkolemRegistry::new();
-        let outcome = check(step, Some(parent), &mut reg);
+        let outcome = check(step, Some(parent), &mut reg, Some("esa"));
         assert!(
             matches!(outcome, StepOutcome::Sound),
             "matrix-nested existential skolemization must be Sound, got {outcome:?}"
@@ -1577,7 +1657,7 @@ mod tests {
             0,
         );
         let mut reg = SkolemRegistry::new();
-        let outcome = check(step, Some(parent), &mut reg);
+        let outcome = check(step, Some(parent), &mut reg, Some("esa"));
         assert!(
             !matches!(outcome, StepOutcome::Sound),
             "under-capturing skolem must not be confirmed Sound, got {outcome:?}"
@@ -1624,10 +1704,39 @@ mod tests {
             0,
         );
         let mut reg = SkolemRegistry::new();
-        let outcome = check(step, Some(parent), &mut reg);
+        let outcome = check(step, Some(parent), &mut reg, Some("esa"));
         assert!(
             matches!(outcome, StepOutcome::Sound),
             "AC-aware re-ordered / re-associated skolemization must be Sound, got {outcome:?}"
+        );
+    }
+
+    /// Regression guard: the multiset matcher must be **bijective**, not a
+    /// subset match. A step that Skolemises `X` but silently *drops* the
+    /// unrelated conjunct `big_b(X2)` from the parent is not a valid
+    /// Skolemisation — dropping a conjunct is an unsound step, not merely an
+    /// unconfirmable one, but this positive-verification path can at worst
+    /// return `Unknown` (never confirm it `Sound`).
+    #[test]
+    fn skolemize_subset_match_does_not_drop_conjuncts() {
+        let parent = nth_fof(
+            "fof(c2, negated_conjecture, \
+             (big_a(c0) & (big_b(c0) & (? [X2]: big_r(X2)))), \
+             inference(variable_rename,[status(thm)],[c1])).",
+            0,
+        );
+        // `big_b(c0)` is dropped entirely — this must NOT be confirmed Sound.
+        let step = nth_fof(
+            "fof(c3, negated_conjecture, \
+             (big_a(c0) & big_r(skolem0001)), \
+             inference(skolemize,[status(esa)],[c2])).",
+            0,
+        );
+        let mut reg = SkolemRegistry::new();
+        let outcome = check(step, Some(parent), &mut reg, Some("esa"));
+        assert!(
+            !matches!(outcome, StepOutcome::Sound),
+            "a skolemize step that drops a parent conjunct must never be confirmed Sound, got {outcome:?}"
         );
     }
 }

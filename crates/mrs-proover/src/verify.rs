@@ -408,13 +408,27 @@ fn check_node_prepare<'p>(
         // Otherwise fall through to whatever other handling applies.
     }
 
-    // plain `esa` rule=skolemize, or any step with `esa` status (e.g. nested E-prover steps)
-    if node.inference_rule == Some("skolemize") || node.status == Some("esa") {
+    // plain `esa` rule=skolemize.
+    //
+    // NB: do NOT widen this to `|| node.status == Some("esa")`. Many esa
+    // steps aren't Skolemizations at all (e.g. E's `fof_nnf`, `cn`, `rw`)
+    // and `skolemize::check`'s E-style fallback cannot confirm them, only
+    // return `Unknown` — hijacking them here would deny them the chance to
+    // be positively confirmed `Sound` by the ATP/structural fast-paths
+    // below, regressing verification power with no soundness benefit
+    // (confirmed: this widening dropped the built-in corpus from 42 to 33
+    // `Verified` with zero new `FailedVerified`).
+    if node.inference_rule == Some("skolemize") {
         let parent_fof = node
             .parents
             .first()
             .and_then(|p| dag.by_name.get(p).map(|&i| dag.nodes[i].formula));
-        return Prepared::Resolved(skolemize::check(node.formula, parent_fof, sk_reg));
+        return Prepared::Resolved(skolemize::check(
+            node.formula,
+            parent_fof,
+            sk_reg,
+            node.status,
+        ));
     }
 
     // introduced(definition): predicate-definition introduction, sound as a
