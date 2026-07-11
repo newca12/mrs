@@ -47,6 +47,7 @@ The scoring is highly asymmetric. A single `−10` requires 10 correct `+1` veri
 | `test_tptp_solutions.sh` restricted to E/Vampire allowlist (no format noise) | `8f275b16` |
 | AC-equivalence matching in `axiom_leaf.rs` | `202aae96` |
 | In-process MrsAtp saturation fallback | `bbd640cf` |
+| `match_multiset` bijective (not subset) skolemize matching + CNF normalisation for E's multi-existential/re-shaped conjuncts (42→43 on `proover-corpus`, 0 regressions) | `98c2573` |
 
 ---
 
