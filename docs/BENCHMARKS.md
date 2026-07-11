@@ -1,5 +1,17 @@
 # Reference
 
+> **Note on `[done] KO` markers below:** a `KO` tag on a `casc.sh` run means
+> `TPTP` was accidentally left set in the shell environment for that run.
+> `casc.sh` competitive benchmarks require pre-sliced, `%include`-free
+> problem inputs; with `TPTP` set, any `%include` pulls in the *entire*
+> generic axiom library, inflating small problems into million-clause
+> monsters and starving the LRS passive queue — invalidating the solved
+> counts/timings for that run. `TPTP` being set is correct and expected for
+> `collect_ml_data.sh`/`run_strategy_sweep.sh` calls; a `KO` on one of those
+> means something else (OOM, disk, etc.), not this issue. No baseline or
+> conclusion elsewhere in `docs/` is sourced from a `KO`'d `casc.sh` run —
+> see the audit note in the project history for details.
+
 Vampire 5.0.1 (Release build, commit 6b88ec04c on 2026-06-15 12:45:39 +0200)
 CaDiCaL: cadical-2.1.3
 Linked to Z3 4.14.0.0 3c47fd96cf5645d0c42b2c819d9e9a84380aa721 z3-4.8.4-9178-g3c47fd96c
@@ -55,18 +67,19 @@ REFERENCE VIOLATIONS — none detected.
 Current best-known static-portfolio (`casc_*`, no ML) results for `mrs`
 HEAD, 8 workers, CASC times (`--casc-times`). **These numbers are
 aggregated from separate per-division `crates/mrs-bench/casc.sh` runs
-across several recent commits and machines — not a single clean
+across several recent uncontaminated commits and machines — not a single clean
 full-matrix run.** Exact source per division:
 
 | Division | Problems | mrs solved | Avg (s) | Source commit | Date |
 |----------|---------:|-----------:|--------:|----------------|------|
 | FNE      |      100 |         45 |    22.0 | `927353a`      | 2026-07-06 |
 | FEQ      |      400 |         98 |    25.3 | `55986ce`      | 2026-07-05 |
-| EPU      |      100 |         16 |    11.6 | `edb5d2d`      | 2026-07-07 |
-| EPS      |      100 |         40 |     8.8 | `edb5d2d`      | 2026-07-07 |
-| UEQ      |      300 |         39 |    28.5 | `55986ce`      | 2026-07-05 |
+| EPU      |      100 |         16 |     7.7 | `edb5d2d`      | 2026-07-07 |
+| EPS      |      100 |         43 |     9.6 | `7827a33`      | 2026-07-11 |
+| UEQ      |      300 |         40 |       — | `d7e7501`      | 2026-07-02 |
 | ICU      |      101 |          3 |   186.8 | `927353a`      | 2026-07-06 |
-| **TOTAL**|   **1101** |    **241** |       — | | |
+| **TOTAL**|   **1101** |    **245** |       — | | |
+
 
 FNE and EPS solved-counts fluctuate ±1-3 across repeated runs on
 different machines (observed ranges: FNE 43-45, EPS 39-43) — treat any
@@ -236,7 +249,7 @@ commit 7827a3368586ac06277eac7f5fb295030e8d9e2e (HEAD -> perf/jemalloc-remote-be
 [ongoing]
 [PPROD:user@server11:/DATA/DISK1/BENCH/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions ueq --casc-times --jobs 2
 
-[ongoing]
+[done] OK
 [PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions eps  --casc-times --jobs 2
 CASC-30 Results — 2026-07-11 13:00  (100 problems × 1 systems)
 ==============================================================
@@ -266,8 +279,8 @@ REFERENCE VIOLATIONS — none detected.
 
 commit b81aed47c982581f41b205012ceacab90681aa27
 
-[done]
-[PPROD:user@server97:~]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions eps  --casc-times --jobs 2
+[done] KO
+[PPROD:user@server97:~]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions ueq  --casc-times --jobs 2
 CASC-30 Results — 2026-07-11 09:36  (300 problems × 1 systems)
 ==============================================================
 
@@ -285,7 +298,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 38711 Jul 10 23:02 /DATA/ai/user/mrs/crates/mrs-bench/results/casc-30/20260710_134850/run.csv
 
-[done]
+[done] KO
 [PPROD:user@server97:~]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions epu  --casc-times --jobs 2
 CASC-30 Results — 2026-07-11 09:36  (100 problems × 1 systems)
 ==============================================================
@@ -304,7 +317,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 15213 Jul 10 12:57 /DATA/ai/user/mrs/crates/mrs-bench/results/casc-30/20260710_112814/run.csv
 
-[done]
+[done] KO
 [PPROD:user@server97:~]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions eps  --casc-times --jobs 2
 CASC-30 Results — 2026-07-11 11:25  (100 problems × 1 systems)
 ==============================================================
@@ -323,7 +336,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 17339 Jul 10 10:30 /DATA/ai/user/mrs/crates/mrs-bench/results/casc-30/20260710_092650/run.csv
 
-[done]
+[done] OK
 [www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions icu --casc-times --jobs 2
 CASC-30 Results — 2026-07-10 07:23  (101 problems × 1 systems)
 ==============================================================
@@ -342,7 +355,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 14988 Jul 10 02:16 /DATA/ai/mrs/crates/mrs-bench/results/casc-30/20260709_193541/run.csv
 
-[done]
+[done] OK
 [PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions fne,feq  --casc-times --jobs 2
 CASC-30 Results — 2026-07-10 07:16  (500 problems × 1 systems)
 ==============================================================
@@ -365,7 +378,7 @@ REFERENCE VIOLATIONS — none detected.
 [ongoing]
 [PPROD:user@server11:/DATA/DISK1/BENCH/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions ueq --casc-times --jobs 2
 
-[done]
+[done] OK
 [root@server04 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs,mrs-ml --divisions epu --casc-times --jobs 1
 CASC-30 Results — 2026-07-10 07:25  (100 problems × 2 systems)
 ==============================================================
@@ -383,7 +396,7 @@ POLARITY VIOLATIONS — none detected.
 
 REFERENCE VIOLATIONS — none detected.
 
-[done]
+[done] OK
 [root@server03 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs,mrs-ml --divisions eps  --casc-times --jobs 1
 CASC-30 Results — 2026-07-10 07:29  (100 problems × 2 systems)
 ==============================================================
@@ -423,7 +436,7 @@ REFERENCE VIOLATIONS — none detected.
 minialloc main
 commit 4abc9e8d77facac65d5fa710ace3e02c35cc47be
 
-[done]
+[done] OK
 [www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions feq --casc-times --jobs 2
 CASC-30 Results — 2026-07-09 07:09  (400 problems × 1 systems)
 ==============================================================
@@ -442,7 +455,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 64436 Jul  9 00:39 /DATA/ai/mrs/crates/mrs-bench/results/casc-30/20260708_140214/run.csv
 
-[done]
+[done] OK
 [root@server02 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs,mrs-ml --divisions epu --casc-times --jobs 1
 CASC-30 Results — 2026-07-09 07:14  (100 problems × 2 systems)
 ==============================================================
@@ -461,7 +474,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 29457 Jul  8 16:35 /mnt/sda1/mrs/crates/mrs-bench/results/casc-30/20260708_104124/run.csv
 
-[done] 
+[done] OK 
 [PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions fne,feq  --casc-times --jobs 2
 CASC-30 Results — 2026-07-09 07:16  (500 problems × 1 systems)
 ==============================================================
@@ -484,7 +497,7 @@ REFERENCE VIOLATIONS — none detected.
 
 commit 0541f0ca18af2278a3c52ec8597855518c473258 (HEAD -> perf/mimalloc-allocator,
 
-[done]
+[done] OK
 [www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions eps --casc-times --jobs 1
 CASC-30 Results — 2026-07-08 07:39  (100 problems × 1 systems)
 ==============================================================
@@ -503,14 +516,14 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 17621 Jul  7 21:16 /DATA/ai/mrs/crates/mrs-bench/results/casc-30/20260707_191041/run.csv
 
-[done]
+[done] OK
 [PPROD:user@server11:/DATA/DISK1/BENCH/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions fne,feq --casc-times --jobs 2
 [PPROD:user@server11:/DATA/DISK1/BENCH/mrs]$ cat /DATA/DISK1/BENCH/mrs/crates/mrs-bench/results/casc-30/20260708_095127/run.csv | grep feq | grep ok  | wc -l
 95
 [PPROD:user@server11:/DATA/DISK1/BENCH/mrs]$ cat /DATA/DISK1/BENCH/mrs/crates/mrs-bench/results/casc-30/20260708_095127/run.csv | grep fne | grep ok  | wc -l
 44
 
-[done]
+[done] OK
 [PPROD:user@server11:/DATA/DISK1/BENCH/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions fne,feq --casc-times --jobs 2
 [PPROD:user@server11:/DATA/DISK1/BENCH/mrs]$ cat /DATA/DISK1/BENCH/mrs/crates/mrs-bench/results/casc-30/20260707_185343/run.csv | grep feq | grep ok | wc -l
 104
@@ -518,7 +531,7 @@ REFERENCE VIOLATIONS — none detected.
 45
 75031 Jul  8 07:16 /DATA/DISK1/BENCH/mrs/crates/mrs-bench/results/casc-30/20260707_185343/run.csv
 
-[done]
+[done] OK
 [root@server04 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs,mrs-ml --divisions epu --casc-times --jobs 1
 CASC-30 Results — 2026-07-08 07:37  (100 problems × 2 systems)
 ==============================================================
@@ -537,7 +550,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 29883 Jul  7 23:16 /mnt/sdd1/mrs/crates/mrs-bench/results/casc-30/20260707_172258/run.csv
 
-[done]
+[done] OK
 [www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions eps --casc-times --jobs 2
 CASC-30 Results — 2026-07-07 16:41  (100 problems × 1 systems)
 ==============================================================
@@ -558,7 +571,7 @@ REFERENCE VIOLATIONS — none detected.
 
 commit 38769a7cabb4a04b8c3ba372e0be56012c95d658 (HEAD -> perf/jemalloc-allocator
 
-[done]
+[done] OK
 [root@server01 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs,mrs-ml --divisions epu --casc-times --jobs 1
 CASC-30 Results — 2026-07-08 07:29  (100 problems × 2 systems)
 ==============================================================
@@ -577,7 +590,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 29175 Jul  8 01:01 /mnt/sdf1/mrs/crates/mrs-bench/results/casc-30/20260707_190724/run.csv
 
-[done]
+[done] OK
 [PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions fne,feq  --casc-times --jobs 2
 CASC-30 Results — 2026-07-08 07:42  (500 problems × 1 systems)
 ==============================================================
@@ -597,7 +610,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 78134 Jul  8 07:10 /DATA/ai/user/mrs/crates/mrs-bench/results/casc-30/20260707_184612/run.csv
 
-[done]
+[done] OK
 [root@server02 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs,mrs-ml --divisions epu --casc-times --jobs 1
 CASC-30 Results — 2026-07-08 07:28  (100 problems × 2 systems)
 ==============================================================
@@ -616,7 +629,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 29744 Jul  7 21:54 /mnt/sda1/mrs/crates/mrs-bench/results/casc-30/20260707_160021/run.csv
 
-[done]
+[done] OK
 [www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions eps --casc-times --jobs 2
 CASC-30 Results — 2026-07-07 15:05  (100 problems × 1 systems)
 ==============================================================
@@ -637,11 +650,11 @@ REFERENCE VIOLATIONS — none detected.
 
 commit edb5d2da98e77fe86994698aaaf5058886f6a157
 
-[done]
+[done] OK
 [PPROD:user@server11:/DATA/DISK1/BENCH/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions epu --casc-times --jobs 2
 16
 
-[done]
+[done] KO
 [root@server01 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions eps --casc-times --jobs 1
 CASC-30 Results — 2026-07-07 15:44  (100 problems × 1 systems)
 ==============================================================
@@ -660,7 +673,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected
 17624 Jul  7 16:11 /mnt/sdf1/mrs/crates/mrs-bench/results/casc-30/20260707_140101/run.csv
 
-[done]
+[done] KO
 [root@server01 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions eps --casc-times --jobs 1
 CASC-30 Results — 2026-07-07 11:44  (100 problems × 1 systems)
 ==============================================================
@@ -679,7 +692,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 17193 Jul  7 12:25 /mnt/sdf1/mrs/crates/mrs-bench/results/casc-30/20260707_101429/run.csv
 
-[done]
+[done] OK
 [root@server02 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs,mrs-ml --divisions epu --casc-times --jobs 1
 CASC-30 Results — 2026-07-07 13:50  (100 problems × 2 systems)
 ==============================================================
@@ -698,7 +711,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 29166 Jul  7 15:47 /mnt/sda1/mrs/crates/mrs-bench/results/casc-30/20260707_095047/run.csv
 
-[done]
+[done] OK
 [root@server03 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions icu  --casc-times --jobs 1
 CASC-30 Results — 2026-07-08 07:35  (101 problems × 1 systems)
 ==============================================================
@@ -717,7 +730,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 13737 Jul  7 23:19 /mnt/sdd/mrs/crates/mrs-bench/results/casc-30/20260707_095835/run.csv
 
-[done]
+[done] OK
 [www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions eps --casc-times --jobs 2
 CASC-30 Results — 2026-07-07 09:11  (100 problems × 1 systems)
 ==============================================================
@@ -736,7 +749,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 17758 Jul  7 10:49 /DATA/ai/mrs/crates/mrs-bench/results/casc-30/20260707_094441/run.csv
 
-[done]
+[done] OK
 [PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions ueq  --casc-times --jobs 2
 CASC-30 Results — 2026-07-07 16:35  (300 problems × 1 systems)
 ==============================================================
@@ -755,7 +768,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 41564 Jul  7 18:33 /DATA/ai/user/mrs/crates/mrs-bench/results/casc-30/20260707_092728/run.csv
 
-[done]
+[done] OK
 [PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions feq  --casc-times --jobs 2
 CASC-30 Results — 2026-07-07 06:59  (400 problems × 1 systems)
 ==============================================================
@@ -774,7 +787,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 64612 Jul  7 05:12 /DATA/ai/user/mrs/crates/mrs-bench/results/casc-30/20260706_182806/run.csv
 
-[done]
+[done] OK
 [www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions fne --casc-times --jobs 1
 CASC-30 Results — 2026-07-07 06:54  (100 problems × 1 systems)
 ==============================================================
@@ -812,7 +825,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 62891 Jul  7 16:18 /mnt/sdd1/mrs/crates/mrs-bench/results/casc-30/20260706_183439/run.csv
 
-[done]
+[done] OK
 [root@server03 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions fne  --casc-times --jobs 1
 CASC-30 Results — 2026-07-07 07:01  (100 problems × 1 systems)
 ==============================================================                                                                                                                                          
@@ -832,7 +845,7 @@ REFERENCE VIOLATIONS — none detected.
 
 commit 927353aeacbb365e64b8f837035570e97391de67 (HEAD -> perf/ml-prune-budget-tax
 
-[done]
+[done] OK
 [www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions fne --casc-times --jobs 2
 CASC-30 Results — 2026-07-06 11:42  (100 problems × 1 systems)
 ==============================================================
@@ -851,7 +864,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 15262 Jul  6 13:08 /DATA/ai/mrs/crates/mrs-bench/results/casc-30/20260706_110843/run.csv
 
-[done]
+[done] OK
 [PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions fne  --casc-times --jobs 2
 CASC-30 Results — 2026-07-06 11:44  (100 problems × 1 systems)
 ==============================================================
@@ -870,7 +883,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 15956 Jul  6 13:08 /DATA/ai/user/mrs/crates/mrs-bench/results/casc-30/20260706_110418/run.csv
 
-[done]
+[done] OK
 [root@server02 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions eps --casc-times --jobs 1
 CASC-30 Results — 2026-07-06 11:47  (100 problems × 1 systems)
 ==============================================================
@@ -889,7 +902,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 17324 Jul  6 11:45 /mnt/sda1/mrs/crates/mrs-bench/results/casc-30/20260706_093535/run.csv
 
-[done]
+[done] OK
 [PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions eps  --casc-times --jobs 2
 CASC-30 Results — 2026-07-06 08:20  (100 problems × 1 systems)
 ==============================================================
@@ -908,7 +921,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 17903 Jul  6 10:20 /DATA/ai/user/mrs/crates/mrs-bench/results/casc-30/20260706_091539/run.csv
 
-[done]
+[done] OK
 [www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions eps --casc-times --jobs 2
 CASC-30 Results — 2026-07-06 08:22  (100 problems × 1 systems)
 ==============================================================
@@ -927,7 +940,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 17334 Jul  6 10:21 /DATA/ai/mrs/crates/mrs-bench/results/casc-30/20260706_091652/run.csv
 
-[done]
+[done] OK
 [PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions icu  --casc-times --jobs 2
 CASC-30 Results — 2026-07-06 07:13  (101 problems × 1 systems)
 ==============================================================
@@ -946,7 +959,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 14369 Jul  6 01:35 /DATA/ai/user/mrs/crates/mrs-bench/results/casc-30/20260705_185418/run.csv
 
-[done]
+[done] OK
 [www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions icu --casc-times --jobs 2
 CASC-30 Results — 2026-07-06 07:00  (101 problems × 1 systems)
 ==============================================================
@@ -965,7 +978,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 14687 Jul  6 01:30 /DATA/ai/mrs/crates/mrs-bench/results/casc-30/20260705_184918/run.csv
 
-[done]
+[done] OK
 root@server04 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions feq  --casc-times --jobs 1
 CASC-30 Results — 2026-07-06 14:49  (400 problems × 1 systems)
 ==============================================================
@@ -982,7 +995,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 63995 Jul  6 16:23 /mnt/sdd1/mrs/crates/mrs-bench/results/casc-30/20260705_182901/run.csv
 
-[done]
+[done] OK
 [root@server03 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions ueq  --casc-times --jobs 1
 CASC-30 Results — 2026-07-06 11:50  (300 problems × 1 systems)
 ==============================================================
@@ -1003,7 +1016,7 @@ REFERENCE VIOLATIONS — none detected.
 
 commit 55986ce809ead712c328c27d62804d610bef99f2
 
-[done] caution ueq weight may be missed
+[done] OK caution ueq weight may be missed
 [PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions ueq  --casc-times --jobs 2
 CASC-30 Results — 2026-07-05 16:51  (300 problems × 1 systems)
 ==============================================================
@@ -1022,7 +1035,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 45283 Jul  5 18:45 /DATA/ai/user/mrs/crates/mrs-bench/results/casc-30/20260705_093224/run.csv
 
-[done]
+[done] OK
 [www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions ueq --casc-times --jobs 2
 CASC-30 Results — 2026-07-05 16:45  (300 problems × 1 systems)
 ==============================================================
@@ -1041,7 +1054,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 41302 Jul  5 18:44 /DATA/ai/mrs/crates/mrs-bench/results/casc-30/20260705_093534/run.csv
 
-[done]
+[done] OK
 hack@pve:~/mrs$ MRS_WORKERS=4 crates/mrs-bench/casc.sh --systems mrs --divisions feq  --casc-times --jobs 1
 CASC-30 Results — 2026-07-05 21:36  (400 problems × 1 systems)
 ==============================================================
@@ -1060,7 +1073,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 67576 Jul  5 17:55 /home/hack/mrs/crates/mrs-bench/results/casc-30/20260704_195736/run.csv
 
-[done]
+[done] OK
 [root@server03 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions feq --casc-times --jobs 1
 CASC-30 Results — 2026-07-05 16:30  (400 problems × 1 systems)
 ==============================================================
@@ -1079,7 +1092,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 59404 Jul  5 16:22 /mnt/sdd/mrs/crates/mrs-bench/results/casc-30/20260704_190435/run.csv
 
-[done]
+[done] OK
 [root@server04 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions feq  --casc-times --jobs 1
 CASC-30 Results — 2026-07-05 16:23  (400 problems × 1 systems)
 ==============================================================
@@ -1100,7 +1113,7 @@ REFERENCE VIOLATIONS — none detected.
 
 commit 79f6c0640467983b4146060f8ebab1490a70c85c 
 
-[done]
+[done] OK
 [www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions fne --casc-times --jobs 2
 CASC-30 Results — 2026-07-05 07:17  (100 problems × 1 systems)
 ==============================================================
@@ -1119,7 +1132,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 15814 Jul  4 20:14 /DATA/ai/mrs/crates/mrs-bench/results/casc-30/20260704_180751/run.csv
 
-[done] with new epr weigth
+[done] OK with new epr weigth
 [PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions eps  --casc-times --jobs 2
 CASC-30 Results — 2026-07-05 07:14  (100 problems × 1 systems)
 ==============================================================
@@ -1138,7 +1151,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 18041 Jul  4 19:41 /DATA/ai/user/mrs/crates/mrs-bench/results/casc-30/20260704_183650/run.csv
 
-[done]
+[done] OK
 [PPROD:user@server97:/DATA/ai/user/mrs]$ cargo run --release -p mrs-train --features wgpu -- --mode premise --epochs 150 --val-split 0.15 --neg-per-pos 5 ./ml_logs_collection_epr models/weights_premise_epr
 TrainingProgress { progress: Some(Progress { items_processed: 142218, items_total: 142218 }), global_progress: Progress { items_processed: 105, items_total: 150 }, iteration: Some(18) }
 ======================== Learner Summary ========================
@@ -1163,7 +1176,7 @@ Total Epochs: 105
 
 Saved models/weights_premise_epr.bin and models/weights_premise_epr_meta.json
 
-[done]
+[done] OK
 [PPROD:user@server97:/DATA/ai/user/mrs]$ cargo run --release -p mrs-train --features wgpu -- --mode premise --epochs 150 --val-split 0.15 --neg-per-pos 5 ./ml_logs_collection_ac_feq/premise models/weights_premise_feq
 ======================== Learner Summary ========================
 Model:
@@ -1188,7 +1201,7 @@ Total Epochs: 40
 Saved models/weights_premise_feq.bin and models/weights_premise_feq_meta.json
 
 
-[done]
+[done] OK
 hack@pve:~/mrs$ MRS_WORKERS=4 crates/mrs-bench/casc.sh --systems mrs,mrs-ml --divisions eps  --casc-times --jobs 1
 CASC-30 Results — 2026-07-04 17:55  (100 problems × 2 systems)
 ==============================================================
@@ -1209,7 +1222,7 @@ REFERENCE VIOLATIONS — none detected.
 
 commit 5838b353b050eda616bb78722b4c25f201e2d8f5
 
-[done]
+[done] OK
 [root@server04 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions eps  --casc-times --jobs 1
 CASC-30 Results — 2026-07-04 16:01  (100 problems × 1 systems)
 ==============================================================
@@ -1228,7 +1241,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 17761 Jul  4 15:58 /mnt/sdd1/mrs/crates/mrs-bench/results/casc-30/20260704_134855/run.csv
 
-[done]
+[done] OK
 [www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions fne --casc-times --jobs 1
 CASC-30 Results — 2026-07-04 15:57  (100 problems × 1 systems)
 ==============================================================
@@ -1249,7 +1262,7 @@ REFERENCE VIOLATIONS — none detected.
 
 commit 03615fd02ab63cec85643ecd59abf8bb3f792807
 
-[done]
+[done] OK
 [PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs,mrs-ml --divisions fne  --casc-times --jobs 2
 CASC-30 Results — 2026-07-04 15:48  (100 problems × 2 systems)
 ==============================================================
@@ -1267,7 +1280,7 @@ POLARITY VIOLATIONS — none detected.
 
 REFERENCE VIOLATIONS — none detected.
 
-[done]
+[done] OK
 [PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs,mrs-ml --divisions epu  --casc-times --jobs 2
 CASC-30 Results — 2026-07-04 09:37  (100 problems × 2 systems)
 ==============================================================
@@ -1286,7 +1299,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 32959 Jul  4 11:15 /DATA/ai/user/mrs/crates/mrs-bench/results/casc-30/20260704_091222/run.csv
 
-[done]
+[done] OK
 [root@server02 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs,mrs-ml --divisions ueq --casc-times --jobs 1
 CASC-30 Results — 2026-07-06 07:16  (300 problems × 2 systems)
 ==============================================================
@@ -1305,7 +1318,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 79273 Jul  5 21:31 /mnt/sda1/mrs/crates/mrs-bench/results/casc-30/20260704_090244/run.csv
 
-[done]
+[done] OK
 [root@server03 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs,mrs-ml --divisions fne  --casc-times --jobs 1
 CASC-30 Results — 2026-07-04 16:03  (100 problems × 2 systems)
 ==============================================================
@@ -1324,7 +1337,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 32558 Jul  4 17:44 /mnt/sdd/mrs/crates/mrs-bench/results/casc-30/20260704_085301/run.csv
 
-[done]
+[done] OK
 hack@pve:~/mrs$ MRS_WORKERS=4 crates/mrs-bench/casc.sh --systems mrs,mrs-ml --divisions epu  --casc-times --jobs 1
 CASC-30 Results — 2026-07-04 13:26  (100 problems × 2 systems)
 ==============================================================
@@ -1343,7 +1356,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 34334 Jul  4 13:24 /home/hack/mrs/crates/mrs-bench/results/casc-30/20260704_091409/run.csv
 
-[done]
+[done] OK
 hack@pve:~/mrs$ MRS_WORKERS=4 crates/mrs-bench/casc.sh --systems mrs,mrs-ml --divisions eps  --casc-times --jobs 1
 CASC-30 Results — 2026-07-04 06:33  (100 problems × 2 systems)
 ==============================================================
@@ -1364,7 +1377,7 @@ REFERENCE VIOLATIONS — none detected.
 
 commit commit aa07504a14725d9d4ca64bfca1c649e413dbc268 (HEAD -> ac-indexing, origin/ac-indexing)
 
-[done]
+[done] OK
 [PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions eps  --casc-times --jobs 2
 CASC-30 Results — 2026-07-04 06:39  (100 problems × 1 systems)
 ==============================================================
@@ -1402,7 +1415,7 @@ index 1ebd1cd..3a47c46 100644
                  } else {
                      SzsStatus::Satisfiable
 
-[done]
+[done] OK
 [PPROD:user@server97:/DATA/ai/user/mrs]$ cargo run --release -p mrs-train --features wgpu -- --mode premise --epochs 150 --val-split 0.15 --neg-per-pos 5 ./ml_logs_collection_fne models/weights_premise_fne
 ======================== Learner Summary ========================
 Model:
@@ -1426,7 +1439,7 @@ Total Epochs: 150
 
 Saved models/weights_premise_fne.bin and models/weights_premise_fne_meta.json
 
-[done]
+[done] OK
 [PPROD:user@server97:/DATA/ai/user/mrs]$ cargo run --release -p mrs-train --features wgpu -- --mode schedule --epochs 150 --val-split 0.15 ./ml_logs_collection_fne models/weights_schedule_fne
 ======================== Learner Summary ========================
 Model:
@@ -1452,7 +1465,7 @@ Total Epochs: 27
 
 Saved models/weights_schedule_fne.bin and models/weights_schedule_fne_meta.json
 
-[done]
+[done] OK
 [PPROD:user@server97:/DATA/ai/user/mrs]$ cargo run --release -p mrs-train --features wgpu -- --mode schedule --epochs 150 --val-split 0.15 ./ml_logs_collection_ac_ueq models/weights_schedule_ueq
 ======================== Learner Summary ========================
 Model:
@@ -1478,7 +1491,7 @@ Total Epochs: 32
 
 Saved models/weights_schedule_ueq.bin and models/weights_schedule_ueq_meta.json
 
-[done]
+[done] OK
 PPROD:user@server97:/DATA/ai/user/mrs]$ cargo run --release -p mrs-train --features wgpu -- --mode premise --epochs 150 --val-split 0.15 --neg-per-pos 5 ./ml_logs_collection_ueq models/weights_premise_ueq
 ======================== Learner Summary ========================
 Model:
@@ -1502,13 +1515,13 @@ Total Epochs: 96
 
 Saved models/weights_premise_ueq.bin and models/weights_premise_ueq_meta.json
 
-[done]
+[done] KO
 [PPROD:user@server97:/DATA/ai/user/mrs]$ ./crates/mrs-bench/collect_ml_data.sh /DATA/ai/user/TPTP-v9.2.1 ./ml_logs_collection_ac_ueq 16 auto 1
 
-[done]
+[done] KO
 [www@server99 mrs]$ ./crates/mrs-bench/collect_ml_data.sh /DATA/ai/TPTP-v9.2.1 ./ml_logs_collection_ac_feq 14 auto 1
 
-[done]
+[done] OK
 [PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions eps  --casc-times --jobs 2
 CASC-30 Results — 2026-07-03 13:58  (100 problems × 1 systems)
 ==============================================================
@@ -1527,7 +1540,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 19217 Jul  3 15:52 /DATA/ai/user/mrs/crates/mrs-bench/results/casc-30/20260703_150454/run.csv
 
-[done]
+[done] OK
 [PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions epu  --casc-times --jobs 2
 CASC-30 Results — 2026-07-03 13:02  (100 problems × 1 systems)
 ==============================================================
@@ -1549,7 +1562,7 @@ nobody 18419 Jul  3 14:27 /DATA/ai/user/mrs/crates/mrs-bench/results/casc-30/202
 
 commit d8f129f4dcfc277ebc750c091e47465b13846345 
 
-[done]
+[done] KO
 still issue even with 1 and MiB Mem :  95969.6 total
 [root@server03 mrs]# ./crates/mrs-bench/collect_ml_data.sh /mnt/sdd/TPTP-v9.2.1 ./ml_logs_collection_epr 1 auto 1
 Building prover with 'ml' feature...
@@ -1576,7 +1589,7 @@ bash: line 33: 1887634 Aborted                 timeout "${LIMIT}s" "$MRS_BIN" --
 bash: line 33: 1887773 Aborted                 timeout "${LIMIT}s" "$MRS_BIN" --time "$LIMIT" --workers "$WORKERS" --schedule "$SCHEDULE" --log-ml-data "$SPECIFIC_LOG_DIR" "$FILE" > /dev/null 2>&1
 bash: line 33: 1887786 Aborted                 timeout "${LIMIT}s" "$MRS_BIN" --time "$LIMIT" --workers "$WORKERS" --schedule "$SCHEDULE" --log-ml-data "$SPECIFIC_LOG_DIR" "$FILE" > /dev/null 2>&1
 
-[done]
+[done] OK
 [www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions fne --casc-times --jobs 2
 [www@server99 mrs]$ cargo run -p mrs-bench --bin bench_report -- /DATA/ai/mrs/crates/mrs-bench/results/casc-30/20260703_124524/run.csv
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.00s
@@ -1598,7 +1611,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 8212 Jul  3 15:15 /DATA/ai/mrs/crates/mrs-bench/results/casc-30/20260703_124524/run.csv
 
-[done]
+[done] OK
 [PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions epu  --casc-times --jobs 2
 CASC-30 Results — 2026-07-03 11:11  (100 problems × 1 systems)
 ==============================================================
@@ -1730,7 +1743,7 @@ REFERENCE VIOLATIONS — 57 SOUNDNESS ERROR(S) vs reference answers:
   EPU     SYO594-1                        mrs-ml=Satisfiable but expected Unsatisfiable  ⚠ UNSOUND
   EPU     SYO597-1                        mrs-ml=Satisfiable but expected Unsatisfiable  ⚠ UNSOUND
 
-[done]
+[done] OK
 [PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions eps  --casc-times --jobs 2
 CASC-30 Results — 2026-07-03 10:35  (100 problems × 1 systems)
 ==============================================================
@@ -1809,13 +1822,13 @@ commit d8f129f4dcfc277ebc750c091e47465b13846345
 
 commit d7e750106462c663e3f95bcb5c28ac251eecdf27 (HEAD -> ac-indexing
 
-[done] 40/300/300
+[done] OK 40/300/300
 [PPROD:user@server11:/DATA/DISK1/BENCH/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions ueq --casc-times --jobs 2
 
 TODO report
 40164 Jul  2 23:36 /DATA/DISK1/BENCH/mrs/crates/mrs-bench/results/casc-30/20260702_142456/run.csv
 
-[done]
+[done] OK
 [www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions feq --casc-times --jobs 2
 
 CASC-30 Results — 2026-07-03 06:30  (400 problems × 1 systems)
@@ -1837,7 +1850,7 @@ REFERENCE VIOLATIONS — none detected.
 
 commit 8c6d6460032a9c7d779049b758d07e6584926208
 
-[done]
+[done] OK
 
 [root@server02 mrs]# crates/mrs-bench/casc.sh --systems mrs-ml --divisions fne --casc-times --jobs 8
 CASC-30 Results — 2026-07-02 07:49 (100 problems × 1 systems)
@@ -1858,7 +1871,7 @@ REFERENCE VIOLATIONS — none detected.
 
 15678 Jul  2 09:38 /mnt/sda1/mrs/crates/mrs-bench/results/casc-30/20260702_090213/run.csv
 
-[done]
+[done] OK
 [PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs-ml --divisions ueq  --casc-times --jobs 2
 CASC-30 Results — 2026-07-02 16:26  (300 problems × 1 systems)
 ==============================================================
@@ -1877,7 +1890,7 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected
 22909 Jul  2 17:54 /DATA/ai/user/mrs/crates/mrs-bench/results/casc-30/20260702_081423/run.csv
 
-[done] till END but still OOM
+[done] KO till END but still OOM
 [PPROD:user@server97:/DATA/ai/user/mrs]$ ./crates/mrs-bench/collect_ml_data.sh /DATA/ai/user/TPTP-v9.2.1 ./ml_logs_collection_epr 2 auto 1
 
 
@@ -2000,7 +2013,7 @@ Total Epochs: 20
 
 Saved weights_premise_fne.bin and weights_premise_fne_meta.json
 
-[done]
+[done] OK
 [PPROD:user@server97:/DATA/ai/user/mrs]$ cargo run --release -p mrs-train --features wgpu -- --mode schedule --epochs 25 --val-split 0.15 ./ml_logs_collection_fne weights_schedule_fne
 ======================== Learner Summary ========================
 Model:
@@ -2025,13 +2038,13 @@ Total Epochs: 6
 
 Saved weights_schedule_fne.bin and weights_schedule_fne_meta.json
 
-[done]
+[done] KO
 [PPROD:user@server97:/DATA/ai/user/mrs]$ ./crates/mrs-bench/collect_ml_data.sh /DATA/ai/user/TPTP-v9.2.1 ./ml_logs_collection_ueq 16 auto 1
 
-[done]
+[done] KO
 [PPROD:user@server97:/DATA/ai/user/mrs]$ ./crates/mrs-bench/collect_ml_data.sh /DATA/ai/user/TPTP-v9.2.1 ./ml_logs_collection_fne 16 auto 1
 
-[done]
+[done] OK
 epr with errors
 
 [ongoing]
@@ -2043,7 +2056,7 @@ commit 298c71c43d58c532eefdaf75da40c730dcf26383
 11
 20260630_134541
 
-[done]
+[done] OK
 [PPROD:user@server11:/DATA/DISK1/BENCH/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions epu --casc-times --jobs 2
 
 CASC-30 Results — 2026-06-30 13:26  (100 problems × 1 systems)
