@@ -39,7 +39,7 @@ fn main() {
     }
 
     // Now test the actual file
-    let path = "/mnt/c/Users/fr22192/tmp/TPTP-v9.2.1/Problems/ITP/ITP232_3.p";
+    let path = "/mnt/c/Users/user/tmp/TPTP-v9.2.1/Problems/ITP/ITP232_3.p";
     let content = fs::read_to_string(path).expect("Failed to read file");
 
     match parse_tptp(&content) {

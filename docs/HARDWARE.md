@@ -74,11 +74,11 @@ For fast proofs (like the 2-second timeout FNE benchmarks), 8 workers succeed an
 
 ## 3. Server-Level Drift & Compilation Baselines
 
-Our `docs/BENCHMARKS.md` log reveals critical, silent performance degradation on older remote development nodes (such as the RHEL7 `mtsdev01` server):
+Our `docs/BENCHMARKS.md` log reveals critical, silent performance degradation on older remote development nodes (such as the RHEL7 `server01` server):
 
 ### Server CPU Generation Gaps:
-- **`mtsdev04` (Modern Build Node):** Achieves **12.3s / 47 solved** on FNE with a 2-second timeout.
-- **`mtsdev01` (Legacy RHEL7 Server):** Dropped to **19.4s / 43 solved** on identical commits.
+- **`server04` (Modern Build Node):** Achieves **12.3s / 47 solved** on FNE with a 2-second timeout.
+- **`server01` (Legacy RHEL7 Server):** Dropped to **19.4s / 43 solved** on identical commits.
 
 ### The Systems Explanation:
 1. **Generic De-Vectorization:** Cargo standard release compilations (`cargo build --release`) target a generic `x86_64` baseline (compatible with ancient 2004 AMD64 chips) to remain portable. Without explicit vector targeting, the compiler emulates our SIMD loops using slow, scalar assembly. 

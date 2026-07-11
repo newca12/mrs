@@ -3,7 +3,7 @@ use std::fs;
 
 fn main() {
     let content =
-        fs::read_to_string("/mnt/c/Users/fr22192/tmp/TPTP-v9.2.1/Problems/SWW/SWW972_1.p").unwrap();
+        fs::read_to_string("/mnt/c/Users/user/tmp/TPTP-v9.2.1/Problems/SWW/SWW972_1.p").unwrap();
 
     // Try to parse each line to find where it breaks
     let lines: Vec<&str> = content.lines().collect();

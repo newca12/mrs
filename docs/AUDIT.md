@@ -11,7 +11,7 @@ ordering for Phases 2–4 based on measured data.
 
 All measurements use commit `af5af8fa` (after the branch-split work) on the local
 machine (8 cores, ~16 GB RAM) with TPTP v9.2.1 at
-`/mnt/wsl/CUsersfr22192WSLDatafastdatavhdx/TPTP-v9.2.1`.
+`/mnt/wsl/CUsersuserWSLDatafastdatavhdx/TPTP-v9.2.1`.
 
 Tooling added for this audit:
 - `SearchStats` counters in `mrs-search` (iterations, processed, generated,

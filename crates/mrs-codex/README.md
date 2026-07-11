@@ -23,7 +23,7 @@ For the most accurate execution times, it is highly recommended to use the relea
 cargo build --release -p mrs -p mrs-proover
 
 # 2. Run the codex tool to process the problems directory
-cargo run --release -p mrs-codex -- /home/fr22192/EDLA/git/mrs/problems \
+cargo run --release -p mrs-codex -- /home/user/EDLA/git/mrs/problems \
   --db codex.db \
   --system mrs-0.1.9 \
   --timeout 30 \
