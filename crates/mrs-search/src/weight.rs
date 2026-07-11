@@ -686,8 +686,10 @@ mod tests {
         // p has precedence 5 (common symbol — high precedence → high weight)
         // a has precedence 1 (rare symbol  — low precedence  → low weight)
         // b has precedence 2
-        let mut custom_config = SymbolConfig::default();
-        custom_config.precedence = vec![0; 100];
+        let mut custom_config = SymbolConfig {
+            precedence: vec![0; 100],
+            ..Default::default()
+        };
         custom_config.precedence[p.index() as usize] = 5;
         custom_config.precedence[a.index() as usize] = 1;
         custom_config.precedence[b.index() as usize] = 2;

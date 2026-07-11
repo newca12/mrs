@@ -102,7 +102,7 @@ impl SineItem for Clause {
 #[derive(Clone)]
 pub enum SineItemWrapper {
     Formula(LoweredFormula),
-    Clause(Clause),
+    Clause(Box<Clause>),
 }
 
 impl SineItem for SineItemWrapper {

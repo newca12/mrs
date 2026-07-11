@@ -121,26 +121,26 @@ fn load_dataset(dir: &str) -> Vec<PremiseSample> {
                 while let Ok(sample) = wincode::deserialize_from(&mut std_read) {
                     samples.push(sample);
                 }
-            } else if ext == Some("csv") {
-                if let Ok(content) = std::fs::read_to_string(path) {
-                    for line in content.lines() {
-                        let parts: Vec<&str> = line.split(',').collect();
-                        if parts.len() == PREMISE_FEATURE_DIM + 1 {
-                            if let Ok(label) = parts[0].parse::<f32>() {
-                                let mut feats = [0.0f32; PREMISE_FEATURE_DIM];
-                                let mut ok = true;
-                                for j in 0..PREMISE_FEATURE_DIM {
-                                    if let Ok(val) = parts[j + 1].parse::<f32>() {
-                                        feats[j] = val;
-                                    } else {
-                                        ok = false;
-                                        break;
-                                    }
-                                }
-                                if ok {
-                                    samples.push(PremiseSample { label, feats });
-                                }
+            } else if ext == Some("csv")
+                && let Ok(content) = std::fs::read_to_string(path)
+            {
+                for line in content.lines() {
+                    let parts: Vec<&str> = line.split(',').collect();
+                    if parts.len() == PREMISE_FEATURE_DIM + 1
+                        && let Ok(label) = parts[0].parse::<f32>()
+                    {
+                        let mut feats = [0.0f32; PREMISE_FEATURE_DIM];
+                        let mut ok = true;
+                        for j in 0..PREMISE_FEATURE_DIM {
+                            if let Ok(val) = parts[j + 1].parse::<f32>() {
+                                feats[j] = val;
+                            } else {
+                                ok = false;
+                                break;
                             }
+                        }
+                        if ok {
+                            samples.push(PremiseSample { label, feats });
                         }
                     }
                 }

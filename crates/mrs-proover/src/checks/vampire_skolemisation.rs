@@ -71,13 +71,9 @@ pub fn try_check<'p>(
     let mut axioms: Vec<SkolemAxiom<'p>> = Vec::new();
     for p in parents {
         if is_skolem_intro(p) {
-            if let Some(ax) = parse_skolem_axiom(p) {
-                axioms.push(ax);
-            } else {
-                // A Skolem-axiom parent we cannot parse — abort and
-                // let the ATP try.
-                return None;
-            }
+            // A Skolem-axiom parent we cannot parse — abort and let the ATP try.
+            let ax = parse_skolem_axiom(p)?;
+            axioms.push(ax);
         } else {
             // First non-intro parent is the source.
             if source.is_some() {

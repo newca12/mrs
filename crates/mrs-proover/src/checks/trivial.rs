@@ -335,10 +335,9 @@ mod tests {
 
     fn fof(src: &'static str) -> &'static AnnotatedFormula<'static> {
         let prob = Box::leak(Box::new(parse_tptp(src).expect("parse")));
-        match prob.formulas.first().expect("formula") {
-            f => unsafe {
-                std::mem::transmute::<&AnnotatedFormula<'_>, &'static AnnotatedFormula<'static>>(f)
-            },
+        let f = prob.formulas.first().expect("formula");
+        unsafe {
+            std::mem::transmute::<&AnnotatedFormula<'_>, &'static AnnotatedFormula<'static>>(f)
         }
     }
 
