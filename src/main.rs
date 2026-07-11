@@ -2,8 +2,9 @@
 //!
 //! An automated theorem prover targeting the CASC competition.
 
+#[cfg(not(target_env = "msvc"))]
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 mod include;
 mod lowering;
