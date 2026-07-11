@@ -408,8 +408,8 @@ fn check_node_prepare<'p>(
         // Otherwise fall through to whatever other handling applies.
     }
 
-    // plain `esa` rule=skolemize
-    if node.inference_rule == Some("skolemize") {
+    // plain `esa` rule=skolemize, or any step with `esa` status (e.g. nested E-prover steps)
+    if node.inference_rule == Some("skolemize") || node.status == Some("esa") {
         let parent_fof = node
             .parents
             .first()
