@@ -78,7 +78,7 @@ cargo run --release -- --list-schedules
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--time <seconds>` | `30` | Wall-clock time limit |
-| `--workers <N>` | all cores | Max parallel search threads |
+| `--workers <N>` | physical cores | Max parallel search threads. **Reproducibility note:** with `N>1` (the default), strategies run concurrently and share a pool of derived unit equalities (see "Architecture notes" below), so per-run telemetry (`processed`/`generated`/`lrs_discarded`) and even the pass/fail outcome on borderline problems are not bit-reproducible — sibling-thread timing and CPU contention both feed into the wall-clock-sensitive LRS pruning heuristic. Use `--workers 1` for a fully deterministic, sequential single-strategy run (no clause-pool cross-talk, no contention) when diagnosing or reproducing a specific strategy's behavior. |
 | `--schedule <name>` | `casc` | Strategy schedule; see registry below |
 | `--auto-schedule` | — | Rule-based division detection (EPR/UEQ/FNE/FEQ) picks the matching `casc_*` portfolio; an explicit `--schedule` wins. Replaces the retired ML schedule classifier (`--ml-schedule` is a deprecated alias). |
 | `--list-schedules` | — | Print known schedule names and exit |

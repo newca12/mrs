@@ -635,11 +635,17 @@ pub fn run_schedule(
     let shared_pool = Arc::new(std::sync::RwLock::new(Vec::new()));
     let (tx, rx) = mpsc::channel::<(usize, SearchResult, crate::SearchStats, u64)>();
 
-    let available_cores = workers.unwrap_or_else(|| {
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
-    });
+    // Default to the *physical* core count, matching the default that
+    // `src/main.rs` uses when time-slicing the schedule itself
+    // (`num_cpus::get_physical()`). Previously this fell back to
+    // `std::thread::available_parallelism()` (logical/hyperthreaded core
+    // count), which on any SMT-enabled machine disagreed with the
+    // schedule's own assumed concurrency, causing more strategies to run
+    // concurrently than intended and making wall-clock-sensitive search
+    // heuristics (e.g. LRS pruning) non-reproducible between runs. Callers
+    // that explicitly resolve and pass their own `workers` value (as
+    // `src/main.rs` now does) are unaffected by this fallback.
+    let available_cores = workers.unwrap_or_else(|| num_cpus::get_physical().max(1));
     let num_workers = available_cores.min(actual_configs.len());
     let next_strategy = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let has_epr = is_problem_epr;

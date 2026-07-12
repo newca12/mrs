@@ -501,6 +501,19 @@ fn main() {
             }
         };
 
+        // Pass the *already-resolved* worker count (the same value the
+        // schedule above was time-sliced for) rather than the raw CLI
+        // `Option`. Previously this line passed `workers` (raw, `None`
+        // unless `--workers` was given), while the schedule was built
+        // with `actual_workers` (`num_cpus::get_physical()` by default).
+        // `run_schedule` independently defaults an unset `workers` to
+        // `std::thread::available_parallelism()` (logical/hyperthreaded
+        // core count), so on any hyperthreaded machine the thread pool
+        // silently ran with *more* concurrent strategies than the
+        // schedule assumed — doubling contention and making wall-clock-
+        // sensitive heuristics like LRS pruning wildly non-reproducible
+        // between runs. Passing `Some(actual_workers)` here keeps both
+        // halves in agreement.
         let (result, schedule_report) = run_schedule(
             &all_clauses,
             id_gen,
@@ -512,7 +525,7 @@ fn main() {
                 weights: ml_weights.clone(),
                 premise_keep: premise_keep.clone(),
             },
-            workers,
+            Some(actual_workers),
         );
 
         let status = match &result {

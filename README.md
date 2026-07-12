@@ -51,9 +51,32 @@ mrs [--time <seconds>] [--workers <N>] [--schedule <name>] <file.p>
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--time <n>` | `30` | Wall-clock time limit in seconds |
-| `--workers <N>` | all cores | Maximum number of parallel search threads |
+| `--workers <N>` | physical cores | Maximum number of parallel search threads |
 | `--schedule <name>` | `casc` | Strategy schedule to run. Built-ins: `casc` (the default CASC portfolio; aliases `default`, `casc_feq`), `casc_fne`/`casc_ueq`/`casc_epr` (division-tuned portfolios, one strategy per worker), `fast` (single KBO strategy for short budgets), `mini` (3-strategy compact portfolio), and `ml*` variants for ML-guided selection (require an `ml-guidance` build and `--ml-weights`). |
 | `--list-schedules` | — | Print known schedule names and exit |
+
+### Reproducible single-strategy runs
+
+With `--workers N>1` (the default), every strategy in the schedule runs
+concurrently in its own thread and shares a pool of derived unit
+equalities with the others ("cross-strategy clause sharing" — see
+[Architecture](#architecture)). This is by design: it lets the portfolio
+solve more problems in aggregate than any strategy could alone. A direct
+consequence is that **per-strategy telemetry (`processed`/`generated`/
+`lrs_discarded` in the `% SZS detail` line) is not reproducible run-to-run
+in this mode** — how much material a strategy receives from its siblings,
+and how CPU contention affects timing-sensitive heuristics like LRS
+pruning, both depend on real-time thread scheduling.
+
+To get a fully deterministic, reproducible result for a *single* strategy
+(e.g. when checking "does the top-priority strategy for schedule X solve
+problem Y"), run with `--workers 1`. This executes the schedule strictly
+sequentially with no sibling threads, no clause-pool cross-talk, and no
+CPU contention, so the same command always produces the same result:
+
+```bash
+mrs --workers 1 --schedule casc_eps problem.p
+```
 
 ## TPTP `%include` directives
 

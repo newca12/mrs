@@ -18,6 +18,7 @@ mrs-index = { workspace = true }
 mrs-proof = { workspace = true }
 cadical = { workspace = true }
 rustc-hash = { workspace = true }
+num_cpus = "1.17.0"
 rand = { version = "0.10", optional = true }
 wincode = { version = "0.5.5", optional = true }
 burn = { version = "0.21.0", optional = true, default-features = false }
