@@ -291,6 +291,25 @@ fn detect_ac_symbols(
     (comm, assoc, to_remove)
 }
 
+/// Hard ceiling on the cross-strategy shared unit-equality pool
+/// (`SearchState::shared_pool`).
+///
+/// Without a cap, strategies can re-broadcast semantically-identical unit
+/// equalities to each other indefinitely: each ingested clause is assigned a
+/// *fresh* clause id (`given_clause.rs` ingestion loop), so once it is later
+/// selected as a "given" clause it is eligible to be pushed straight back to
+/// the pool as if it were new — forward-subsumption at ingestion time only
+/// checks against each thread's own `processed` set, not against duplicates
+/// concurrently sitting in *other* threads' unprocessed queues, so this
+/// ping-pong is not reliably caught. On small, equality-heavy problems with a
+/// tiny Herbrand vocabulary (e.g. ground boolean-gate rewriting systems) this
+/// was observed to produce 100k+ pool pushes and LRS-discards within a few
+/// seconds for an otherwise trivial problem, drowning out strategies that
+/// would have solved it near-instantly on their own. Capping the pool bounds
+/// the worst case while still letting the first (and most valuable) wave of
+/// genuinely new derived facts flow between strategies for harder problems.
+const SHARED_POOL_CAP: usize = 4096;
+
 /// Runs the given-clause proof search.
 ///
 /// Returns `SearchResult::Refutation(id)` if the empty clause is derived,
@@ -788,6 +807,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             && given.avatar.is_empty()
             && let Some(pool_lock) = &state.shared_pool
             && let Ok(mut pool) = pool_lock.write()
+            && pool.len() < SHARED_POOL_CAP
         {
             let legacy = state.term_bank.clause_to_legacy(&given);
             pool.push(legacy);
@@ -944,6 +964,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         && clause.avatar.is_empty()
                         && let Some(pool_lock) = &state.shared_pool
                         && let Ok(mut pool) = pool_lock.write()
+                        && pool.len() < SHARED_POOL_CAP
                     {
                         let legacy = state.term_bank.clause_to_legacy(&clause);
                         pool.push(legacy);
