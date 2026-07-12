@@ -244,7 +244,11 @@ problem. Code inspection confirmed two missing standard restrictions:
      only the subsumed clause.
    Re-verified **sound across all divisions** — crucially **EPU = 16, 0
    violations** (the unsatisfiable-division completeness gate; SYN861/866 are now
-   correctly *solved* as Unsatisfiable). **EPS 21→43 is now a real, sound gain.**
+   correctly *solved* as Unsatisfiable). **EPS 21→43 is now a real, sound gain**
+   (soundness-wise, confirmed by 0 polarity/reference violations; note the
+   `43` figure itself is not yet re-verified against the `docs/BENCHMARKS.md`
+   Canary Suite for TPTP-include contamination on the static `mrs` system —
+   see the `†` caveat on that document's Status table).
    Guarded by unit + integration regression tests.
 
 **Conclusion:** the original Phase-2 prioritisation (heuristic quality #1,
