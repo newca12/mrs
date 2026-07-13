@@ -194,6 +194,14 @@ fn main() {
             .unwrap_or("unknown")
     };
 
+    // Record the real invocation path so that proof output's `file(...)`
+    // leaf annotations point at a path GDV-style checkers can actually
+    // re-open (e.g. the StarExec sandbox path at competition time), rather
+    // than a placeholder string. Left unset for stdin input (no real path).
+    if path != "-" {
+        mrs_proof::tstp::set_problem_path(path.clone());
+    }
+
     // Read the input. With the `proover` feature, `-` means stdin.
     let input = if path == "-" {
         #[cfg(feature = "proover")]

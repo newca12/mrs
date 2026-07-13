@@ -61,7 +61,16 @@ pub struct SearchState {
     /// returns `SearchResult::Timeout` at the next time-check iteration.
     pub stop_flag: Option<Arc<AtomicBool>>,
     /// Shared pool of globally discovered unit equalities.
-    pub shared_pool: Option<Arc<std::sync::RwLock<Vec<Clause>>>>,
+    ///
+    /// Each entry is a full, topologically-sorted ancestor chain (input
+    /// clauses first, the shared unit-equality clause last) rather than a
+    /// single bare clause, so that a receiving thread can splice the entire
+    /// justification into its own `clause_store` with remapped IDs. This
+    /// preserves proof reconstructability: a shared clause must never end
+    /// up in the final extracted proof with an empty/unjustified parent
+    /// list (previously stamped `inference(shared, [status(thm)], [])`,
+    /// which fails GDV-style structural leaf/parent checks).
+    pub shared_pool: Option<Arc<std::sync::RwLock<Vec<Vec<Clause>>>>>,
     /// Number of clauses already consumed from the shared pool.
     pub shared_pool_read: usize,
     /// Directory to log ML feature vectors and labels to.

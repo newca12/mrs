@@ -1,0 +1,138 @@
+<HR><!------------------------------------------------------------------------>
+<H2>mrs 0.2.0</H2>
+Olivier Roland<BR>
+Independent, France<BR>
+
+<H3>Architecture</H3>
+
+mrs 0.2.0 is introduced in this section. mrs is an automated theorem prover
+for first-order logic with equality, implementing the superposition calculus
+[BG94] within an Otter-style given-clause loop [Sch02]. The core inference
+rules are ordered binary resolution, factoring, equality resolution, equality
+factoring, and superposition (into both terms and literals), oriented by a
+Knuth-Bendix Ordering (KBO) or Lexicographic Path Ordering (LPO) with
+dynamic, rarity-based symbol precedence.
+<P>
+Clause splitting on non-Horn clauses is delegated to the AVATAR architecture
+[Vor14], backed by the CaDiCaL CDCL SAT solver. EPR-structured problems are
+handled lazily through AVATAR splitting rather than eager ground
+pre-expansion, which previously caused memory exhaustion on large
+Effectively Propositional problems.
+<P>
+Term retrieval for unification and matching uses perfect discrimination
+trees that track variable bindings through traversal [McC92], eliminating
+false-positive candidates at the index level. Subsumption and subsumption
+resolution are accelerated by Feature Vector Indexing [Sch04]. Redundancy
+elimination includes forward/backward demodulation, forward/backward
+subsumption, subsumption resolution, condensation, tautology deletion, and
+global subsumption with orphan elimination (removal of the entire derived
+subtree of a clause that is later found to be subsumed).
+<P>
+mrs runs a portfolio of independent search strategies concurrently on
+separate threads, one per available CPU core, each maintaining its own
+clause set; the first strategy to find a refutation signals the others to
+stop via a shared atomic flag. Strategies additionally share a pool of
+derived unit equalities across threads to accelerate sibling searches
+without duplicating work; each shared entry carries its full justifying
+ancestor chain back to the original problem's axioms, so a clause
+adopted from a sibling thread is spliced into the receiving thread's own
+proof record with a complete, locally self-consistent derivation rather
+than an opaque fact.
+<P>
+mrs is written entirely in Rust and does not depend on or invoke any
+external ATP system; all reasoning is performed in-process.
+
+<H3>Strategies</H3>
+
+For CASC, mrs selects a division-tuned, data-driven portfolio of 8
+strategies (matching the 8-core StarExec hardware) via
+<TT>--auto-schedule</TT>, which classifies the input problem as FNE, FEQ,
+or UEQ using rule-based syntactic checks (presence of equality literals,
+presence of function symbols of arity &ge; 1, unit-equality-only clause
+sets) and dispatches to the matching <TT>casc_*</TT> schedule.
+<P>
+Each per-division priority order was derived empirically: every one of
+mrs's 15 base strategies (varying clause weight function, literal
+selection, term ordering, Set-of-Support depth, and AVATAR on/off) was run
+solo against a large corpus of representative FOF/UEQ problems at the
+official time limit, and a greedy set-cover algorithm selected the
+minimal-redundancy 8-strategy subset that maximizes problems solved when
+run in parallel. This tuning is strictly at the division level (FNE/FEQ/
+UEQ), never at the level of individual problems or their solutions, and
+generalizes to unseen problems of the same syntactic class.
+<P>
+The baseline strategies use age-weight ratios (e.g. every 5th or 6th
+given-clause pick by FIFO age, the rest by weight) to balance breadth and
+depth of search, several distinct clause weight functions (including
+symbol-count, function-depth penalties, Horn-clause penalties, and
+conjecture-symbol boosting), and Set-of-Support restrictions that skip
+inferences between two clauses both far from the negated conjecture.
+
+<H3>Implementation</H3>
+
+mrs is implemented in Rust (edition 2024), organized as a Cargo workspace
+of single-purpose crates: a zero-copy TPTP/TSTP parser built on the
+<TT>winnow</TT> parser-combinator library, a clausification pipeline
+(NNF/Skolemization/definitional CNF), a Robinson unification engine, the
+inference and ordering crate, the discrimination-tree/feature-vector
+indexing crate, the given-clause search loop and strategy scheduler, and a
+proof-extraction/TSTP-output crate. AVATAR splitting uses the
+<TT>cadical</TT> Rust bindings to the CaDiCaL SAT solver. mrs produces a
+TSTP-format refutation proof on success.
+<P>
+mrs is open source (MIT OR Apache-2.0) and available from:
+<PRE>
+    <A HREF="https://github.com/newca12/mrs">https://github.com/newca12/mrs</A></PRE>
+
+<H3>Expected Competition Performance</H3>
+
+mrs is entered in the FOF and UEQ divisions only. In local benchmarking
+against a representative CASC-30-era problem set (not run under official
+competition conditions), mrs solved 45/100 FNE-category, 98/400
+FEQ-category, and roughly 39-40/300 UEQ problems, compared to reference
+local runs of Vampire 5.0.1 (82 FNE, 361 FEQ, 243 UEQ) and E 3.3.3 (67
+FNE, 236 FEQ, 186 UEQ) on the same local harness. mrs is expected to be
+competitive with, but behind, the leading systems in both divisions. mrs
+is not entered in THF or FNT and does not compete in those divisions.
+
+<H3>References</H3>
+<DL>
+<DT> BG94
+<DD> Bachmair L., Ganzinger H. (1994),
+     <STRONG>Rewrite-based Equational Theorem Proving with Selection and Simplification</STRONG>,
+     <EM>Journal of Logic and Computation</EM> 4(3),
+     pp.217-247,
+     Oxford University Press.
+<DT> Sch02
+<DD> Schulz S. (2002),
+     <STRONG>E: A Brainiac Theorem Prover</STRONG>,
+     <EM>AI Communications</EM> 15(2-3),
+     pp.111-126,
+     IOS Press.
+<DT> Vor14
+<DD> Voronkov A. (2014),
+     <STRONG>AVATAR: The Architecture for First-Order Theorem Provers</STRONG>,
+     Biere A., Bloem R.,
+     <EM>Computer Aided Verification (CAV 2014)</EM>
+     (Vienna, Austria),
+     pp.696-710,
+     LNCS 8559,
+     Springer.
+<DT> McC92
+<DD> McCune W. (1992),
+     <STRONG>Experiments with Discrimination-Tree Indexing and Path Indexing for Term Retrieval</STRONG>,
+     <EM>Journal of Automated Reasoning</EM> 9(2),
+     pp.147-167,
+     Springer.
+<DT> Sch04
+<DD> Schulz S. (2004),
+     <STRONG>Simple and Efficient Clause Subsumption with Feature Vector Indexing</STRONG>,
+     Sutcliffe G., Schmidt R., Schulz S.,
+     <EM>Proceedings of the IJCAR 2004 Workshop on Empirically Successful First-Order Reasoning</EM>
+     (Cork, Ireland),
+     pp.34-48,
+     CEUR-WS 192.
+</DL>
+<P>
+
+<HR><!------------------------------------------------------------------------>

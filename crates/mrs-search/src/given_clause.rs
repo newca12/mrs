@@ -10,7 +10,7 @@
 //! - All clauses are processed (saturation)
 //! - A time or clause limit is exceeded
 
-use crate::HashSet;
+use crate::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
@@ -22,14 +22,31 @@ use mrs_calculus::resolution;
 use mrs_calculus::subsumption;
 use mrs_calculus::superposition;
 use mrs_core::SymbolId;
-use mrs_core::clause::ClauseSource;
+use mrs_core::clause::{Clause as LegacyClause, ClauseId, ClauseSource};
 use mrs_core::term_bank::{IdAtom, IdClause, TermId, TermNode};
 use mrs_index::fvi::FeatureVector;
+use mrs_proof::extract::extract_proof_ids;
 
 use crate::select::select;
 use crate::state::SearchState;
 use crate::weight;
 use crate::{SearchConfig, SearchResult};
+
+/// Builds a topologically-ordered ancestor chain for `head_id` (input
+/// clauses first, `head_id` last), converting each clause to its portable
+/// "legacy" representation for the cross-strategy shared pool.
+///
+/// Pushing the full chain (rather than just the head clause) lets a
+/// receiving thread splice the entire justification into its own
+/// `clause_store` with remapped IDs, so a shared clause never ends up in
+/// the final extracted proof with an empty/unjustified parent list.
+fn build_shared_chain(state: &SearchState, head_id: ClauseId) -> Vec<LegacyClause> {
+    let ids = extract_proof_ids(head_id, &state.clause_store);
+    ids.iter()
+        .filter_map(|id| state.clause_store.get(id))
+        .map(|c| state.term_bank.clause_to_legacy(c))
+        .collect()
+}
 
 /// After the SAT model changes, move clauses between active and dormant sets to
 /// reflect the new assignment. Also updates the demodulation index for any
@@ -378,37 +395,67 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
     let mut iteration: u64 = 0;
 
     loop {
-        // Ingest shared clauses
+        // Ingest shared clauses (each entry is a full ancestor chain: input
+        // clauses first, the shared unit-equality clause last).
         if let Some(pool_lock) = &state.shared_pool {
-            let mut to_add = Vec::new();
+            let mut to_add: Vec<Vec<LegacyClause>> = Vec::new();
             if let Ok(pool) = pool_lock.read()
                 && state.shared_pool_read < pool.len()
             {
                 to_add.extend_from_slice(&pool[state.shared_pool_read..]);
                 state.shared_pool_read = pool.len();
             }
-            for mut c in to_add {
-                c.id = state.id_gen.next();
-                c.source = ClauseSource::Inference {
-                    rule: "shared",
-                    parents: vec![].into(),
-                };
-                let id_clause = state.term_bank.clause_from_legacy(&c);
-                let fv = FeatureVector::from_id_clause(&id_clause, &state.term_bank);
-                let candidates = state.processed.get_subsumption_candidates(&fv);
-                if !candidates.iter().any(|p| {
-                    p.avatar_is_subset_of(&id_clause)
-                        && subsumption::subsumes_id(p, &id_clause, &mut state.term_bank)
-                }) {
-                    state.register_clause(&id_clause.clone());
-                    #[cfg(feature = "ml-guidance")]
-                    let score = state.get_ml_score(&id_clause);
-                    #[cfg(not(feature = "ml-guidance"))]
-                    let score = None;
-                    let w = state.compute_weight(&id_clause);
-                    state
-                        .unprocessed
-                        .push(&id_clause, &state.term_bank, w, score);
+            for chain in to_add {
+                // Remap every clause ID in the chain to a fresh local ID,
+                // and rewrite `Inference` parent references accordingly,
+                // so the spliced-in subtree is fully self-consistent
+                // within this thread's own `clause_store` — preserving
+                // real derivation history instead of the old parent-less
+                // `shared` stub, which failed GDV-style structural
+                // "every derived formula has parents" checks.
+                let mut remap: HashMap<ClauseId, ClauseId> = HashMap::default();
+                let mut head: Option<IdClause> = None;
+                for mut c in chain {
+                    let old_id = c.id;
+                    let new_id = state.id_gen.next();
+                    remap.insert(old_id, new_id);
+                    c.id = new_id;
+                    if let ClauseSource::Inference { rule, parents } = &c.source {
+                        let remapped_parents = parents
+                            .iter()
+                            .map(|p| remap.get(p).copied().unwrap_or(*p))
+                            .collect();
+                        c.source = ClauseSource::Inference {
+                            rule,
+                            parents: remapped_parents,
+                        };
+                    }
+                    let id_clause = state.term_bank.clause_from_legacy(&c);
+                    state.register_clause(&id_clause);
+                    head = Some(id_clause);
+                }
+
+                // Only the chain's head (the shared unit equality itself)
+                // is offered to the active search as a new premise;
+                // ancestors are recorded in `clause_store` purely for
+                // provenance/proof extraction and are not re-indexed or
+                // re-selected.
+                if let Some(id_clause) = head {
+                    let fv = FeatureVector::from_id_clause(&id_clause, &state.term_bank);
+                    let candidates = state.processed.get_subsumption_candidates(&fv);
+                    if !candidates.iter().any(|p| {
+                        p.avatar_is_subset_of(&id_clause)
+                            && subsumption::subsumes_id(p, &id_clause, &mut state.term_bank)
+                    }) {
+                        #[cfg(feature = "ml-guidance")]
+                        let score = state.get_ml_score(&id_clause);
+                        #[cfg(not(feature = "ml-guidance"))]
+                        let score = None;
+                        let w = state.compute_weight(&id_clause);
+                        state
+                            .unprocessed
+                            .push(&id_clause, &state.term_bank, w, score);
+                    }
                 }
             }
         }
@@ -809,8 +856,10 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             && let Ok(mut pool) = pool_lock.write()
             && pool.len() < SHARED_POOL_CAP
         {
-            let legacy = state.term_bank.clause_to_legacy(&given);
-            pool.push(legacy);
+            let chain = build_shared_chain(state, given.id);
+            if !chain.is_empty() {
+                pool.push(chain);
+            }
         }
 
         if is_unit_positive_equality_id(&given)
@@ -966,8 +1015,10 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         && let Ok(mut pool) = pool_lock.write()
                         && pool.len() < SHARED_POOL_CAP
                     {
-                        let legacy = state.term_bank.clause_to_legacy(&clause);
-                        pool.push(legacy);
+                        let chain = build_shared_chain(state, clause.id);
+                        if !chain.is_empty() {
+                            pool.push(chain);
+                        }
                     }
 
                     if time_ok

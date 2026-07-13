@@ -1,0 +1,60 @@
+ProoVer 2026 Sample Solutions for mrs-proover 0.2.0
+=====================================================
+
+Samples run against the official examples from
+https://proover-competition.github.io/assets/samples.tgz
+(command: `mrs-proover --time 30 --verbose <proof.s>`).
+
+Sample: COR000+1 (correct proof)
+---------------------------------
+
+% step c [rule=-] -> Some(Sound)
+% step s1 [rule=negated_conjecture] -> Some(Sound)
+% step a1 [rule=-] -> Some(Sound)
+% step f1 [rule=consequence] -> Some(Sound)
+% SZS status Verified
+
+Sample: EVL000+1 (evil proof — deliberately incorrect negated_conjecture step)
+--------------------------------------------------------------------------------
+
+% step c [rule=-] -> Some(Sound)
+% step s1 [rule=negated_conjecture] -> Some(Unsound("negated_conjecture is not the negation of its parent"))
+% step a1 [rule=-] -> Some(Sound)
+% step f1 [rule=consequence] -> Some(Sound)
+% SZS status FailedVerified : step s1: negated_conjecture is not the negation of its parent
+
+Sample: TMO000+1 (large synthetic proof — 185 nested Skolemization steps,
+designed to stress-test verifier resource limits / timeout handling)
+--------------------------------------------------------------------------
+
+% step c [rule=-] -> Some(Sound)
+% step neg_c [rule=negated_conjecture] -> Some(Sound)
+% step neg_inst [rule=instantiate] -> Some(Sound)
+% step a01 [rule=-] -> Some(Sound)
+% step sk0 [rule=skolemize] -> Some(Sound)
+% step sk1 [rule=skolemize] -> Some(Sound)
+...
+% step sk184 [rule=skolemize] -> Some(Sound)
+% step inst [rule=instantiate] -> Some(Sound)
+% step contradiction [rule=consequence] -> Some(Sound)
+% SZS status Verified
+
+(184 individual `skolemize` steps elided above for brevity; each is
+checked internally via the dedicated Skolemization structural check
+described in the system description, so all 184 steps resolve
+immediately without needing an external ATP call — this is why the
+large proof does not exhaust the 30s time budget despite its size.)
+
+Notes for the organizer
+------------------------
+
+No non-obvious features requiring further explanation. `mrs-proover`
+was run with default settings (the full ladder: in-process `mrs`, plus
+bundled `eprover`/`vampire` as available). All three outcomes match the
+expected classification: a correct proof is `Verified`, a proof with a
+deliberately wrong negated-conjecture step is `FailedVerified` with a
+specific, actionable reason, and a large synthetic proof exercising many
+Skolemization steps back-to-back is still `Verified` well within the
+time budget, since Skolemization and negated-conjecture steps are
+checked by dedicated internal structural rules rather than external ATP
+calls (see "Implementation" in the system description).

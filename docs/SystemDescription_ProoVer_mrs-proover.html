@@ -1,0 +1,113 @@
+<HR><!------------------------------------------------------------------------>
+<H2>mrs-proover 0.2.0</H2>
+Olivier Roland<BR>
+Independent, France<BR>
+
+<H3>Overview</H3>
+
+mrs-proover 0.2.0 is introduced in this section. mrs-proover is a proof
+checker for TSTP first-order refutation proofs, built as a companion to the
+<TT>mrs</TT> automated theorem prover [Sut06]. It follows the semantic
+verification paradigm pioneered by GDV: structural properties of the proof
+DAG are checked first (uniqueness of formula names, acyclicity, a single
+<TT>$false</TT> root), followed by leaf verification against the linked
+problem file, followed by per-step verification of each inference.
+<P>
+A small set of inference patterns that are expected to recur in every
+proof — the negated-conjecture step, and Skolemization steps — are
+verified internally using dedicated structural checks rather than external
+provers, since these steps have precisely specified shapes (see the
+ProoVer Rules and Format page). Axiom and conjecture leaves are checked
+for alpha-equivalence against the named formula in the linked problem
+file, either internally or, when internal matching fails, by delegating to
+an external ATP. All other inference steps with status <TT>thm</TT> or
+<TT>cth</TT> are discharged as proof obligations to an ATP ladder.
+<P>
+mrs-proover reports <TT>NotVerified</TT> (rather than guessing) whenever
+neither a positive nor a negative verdict can be established within the
+allotted resources for a given step; because the ProoVer scoring
+penalizes a false <TT>Verified</TT> on a bad proof ten times more heavily
+than a missed detection, the overall verdict policy is deliberately
+conservative: any single step found unsound anywhere in the proof yields
+<TT>FailedVerified</TT> for the whole proof; otherwise any step left
+undecided yields <TT>NotVerified</TT>; only if every step is positively
+confirmed does the proof yield <TT>Verified</TT>.
+
+<H3>Implementation</H3>
+
+mrs-proover is implemented in Rust (edition 2024), reusing the <TT>mrs</TT>
+TPTP/TSTP parser, clausifier, and unification/formula-lowering crates from
+the same workspace. The proof is loaded and its dependency structure is
+represented as a directed acyclic graph over annotated formulae; formulae
+are lowered from the TPTP AST into the shared <TT>mrs-core</TT> term/formula
+representation for alpha-equivalence and structural comparisons.
+<P>
+For inference steps that cannot be settled by the internal structural
+checks, mrs-proover discharges the corresponding proof obligation (parent
+formulae as axioms, inferred formula as conjecture) to an ATP ladder that
+runs, per step, the in-process <TT>mrs</TT> prover first, then races
+any available external backends &mdash; E [Sch02] and Vampire [KV13] &mdash;
+in parallel; the first definite <TT>Sound</TT>/<TT>Unsound</TT> verdict from
+any ladder member wins and the remaining subprocesses for that step are
+cancelled. Steps can be verified concurrently across multiple CPU cores
+(default 8, matching the competition hardware).
+<P>
+mrs-proover has been cross-checked, using only its internal <TT>mrs</TT>
+backend (no external ATPs), against the 7 official ProoVer example proofs,
+against the leoprover/noergler PyRes correctness corpus (170 valid proofs,
+170 corresponding falsified/mutated proofs), and against the
+ATP-Research-Project test corpus of correct and deliberately "evil"
+proofs. Across all of these, running the in-process backend alone never
+produced a false <TT>Verified</TT> on an evil proof and never produced a
+false <TT>FailedVerified</TT> on a valid proof; adding the external E/
+Vampire backends only improves detection rate (fewer proofs left at
+<TT>NotVerified</TT>), never soundness.
+<P>
+mrs-proover is open source (MIT OR Apache-2.0) and available from:
+<PRE>
+    <A HREF="https://github.com/newca12/mrs">https://github.com/newca12/mrs</A></PRE>
+as the <TT>mrs-proover</TT> crate in the same repository as the <TT>mrs</TT>
+ATP system.
+
+<H3>Expected Competition Performance</H3>
+
+mrs-proover is expected to correctly identify almost all well-formed valid
+proofs as <TT>Verified</TT> and almost all deliberately incorrect
+("evil") proofs as <TT>FailedVerified</TT>, given the internal structural
+checks tailored to the exact Skolemization and negated-conjecture formats
+specified by the ProoVer rules, backed by external ATP calls for the
+remaining steps. Given the highly asymmetric scoring (a single false
+<TT>Verified</TT> on an evil proof costs as much as ten correct
+verifications), mrs-proover is tuned to prefer reporting
+<TT>NotVerified</TT> over guessing whenever a step cannot be positively
+confirmed or refuted within the time budget, so a non-trivial fraction of
+harder or unusually-shaped valid proofs may be conservatively scored 0
+rather than +1.
+
+<H3>References</H3>
+<DL>
+<DT> Sut06
+<DD> Sutcliffe G. (2006),
+     <STRONG>Semantic Derivation Verification</STRONG>,
+     <EM>International Journal on Artificial Intelligence Tools</EM> 15(6),
+     pp.1053-1070,
+     World Scientific.
+<DT> Sch02
+<DD> Schulz S. (2002),
+     <STRONG>E: A Brainiac Theorem Prover</STRONG>,
+     <EM>AI Communications</EM> 15(2-3),
+     pp.111-126,
+     IOS Press.
+<DT> KV13
+<DD> Kov&aacute;cs L., Voronkov A. (2013),
+     <STRONG>First-Order Theorem Proving and Vampire</STRONG>,
+     Sharygina N., Veith H.,
+     <EM>Computer Aided Verification (CAV 2013)</EM>
+     (Saint Petersburg, Russia),
+     pp.1-35,
+     LNCS 8044,
+     Springer.
+</DL>
+<P>
+
+<HR><!------------------------------------------------------------------------>

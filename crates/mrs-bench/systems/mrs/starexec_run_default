@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# crates/mrs-bench/systems/mrs/starexec_run_default
+#
+# StarExec solver entry point (as opposed to invoke.sh, which is used by
+# the local benchmark harness and takes an explicit time-limit argument).
+#
+# StarExec calls a solver's `starexec_run_<config>` script with a single
+# argument (the problem file path) and enforces the configured wall-clock
+# / CPU limits itself via SIGALRM/SIGXCPU; it does not pass the limit on
+# the command line. It does, however, export STAREXEC_WALLCLOCK_LIMIT
+# (seconds) into the environment for the running process, which we use
+# (with a conservative fallback and safety margin) so mrs's own internal
+# deadline fires and flushes a clean SZS status line before StarExec's
+# external signal could kill the process mid-search with no output.
+#
+# Division/category detection uses `--auto-schedule` (content-based:
+# presence of equality literals, function symbols, unit-equality-only
+# clause sets) rather than parsing the problem's directory path, because
+# StarExec sometimes executes solvers using absolute flat paths (e.g.
+# /starexec/sandbox/problem_123.p) that carry no division information —
+# see docs/FAQ.md for the full rationale. This also means this script
+# does not need to be told which division it is running.
+set -euo pipefail
+
+PROBLEM="${1:?Usage: starexec_run_default <problem_path>}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BINARY="${SCRIPT_DIR}/mrs"
+if [[ ! -x "${BINARY}" ]]; then
+    echo "% SZS status Error (mrs binary not found next to starexec_run_default)"
+    exit 1
+fi
+
+# %include resolution: prefer an already-set TPTP env var (StarExec sets
+# this for jobs that need it); otherwise fall back to a bundled copy if
+# one was shipped alongside the solver package.
+if [[ -z "${TPTP:-}" && -d "${SCRIPT_DIR}/TPTP" ]]; then
+    export TPTP="${SCRIPT_DIR}/TPTP"
+fi
+
+WALLCLOCK="${STAREXEC_WALLCLOCK_LIMIT:-240}"
+SOFT_TIME=$(( WALLCLOCK > 5 ? WALLCLOCK - 5 : WALLCLOCK ))
+
+exec "${BINARY}" --time "${SOFT_TIME}" --workers "${MRS_WORKERS:-8}" --auto-schedule "${PROBLEM}"

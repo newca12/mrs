@@ -42,4 +42,10 @@ case "${SCHEDULE}" in
     *) SCHEDULE="casc" ;;                      # fallback for other divisions
 esac
 
-exec "${BINARY}" --time "${TIME_LIMIT}" --workers "${MRS_WORKERS:-8}" --schedule "${SCHEDULE}" "${PROBLEM}"
+# Run with an internal deadline slightly below the harness limit so mrs's
+# own time-check fires and prints its SZS status line (Refutation/GaveUp/
+# Timeout) before an external SIGALRM/SIGXCPU could kill it mid-search
+# with no output at all.
+SOFT_TIME=$(( TIME_LIMIT > 2 ? TIME_LIMIT - 2 : TIME_LIMIT ))
+
+exec "${BINARY}" --time "${SOFT_TIME}" --workers "${MRS_WORKERS:-8}" --schedule "${SCHEDULE}" "${PROBLEM}"

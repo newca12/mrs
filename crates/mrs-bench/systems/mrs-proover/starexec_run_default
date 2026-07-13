@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# crates/mrs-bench/systems/mrs-proover/starexec_run_default
+#
+# StarExec solver entry point for mrs-proover (as opposed to invoke.sh,
+# which is used by the local benchmark harness and takes an explicit
+# time-limit argument). See the mrs `starexec_run_default` script for the
+# StarExec calling-convention rationale (single problem-path argument,
+# STAREXEC_WALLCLOCK_LIMIT env var instead of a CLI time-limit arg).
+set -euo pipefail
+
+PROOF="${1:?Usage: starexec_run_default <proof_path>}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BINARY="${SCRIPT_DIR}/mrs-proover"
+if [[ ! -x "${BINARY}" ]]; then
+    echo "% SZS status NotVerified : mrs-proover binary not found next to starexec_run_default"
+    exit 0
+fi
+
+# Bundled ATP backends, if shipped alongside the solver package.
+EPROVER="${SCRIPT_DIR}/eprover/bin/eprover"
+VAMPIRE="${SCRIPT_DIR}/vampire/bin/vampire"
+
+ARGS=()
+PROOF_DIR="$(cd "$(dirname "${PROOF}")" && pwd)"
+ARGS+=(--problems-dir "${PROOF_DIR}")
+
+if [[ -x "${EPROVER}" ]]; then
+    ARGS+=(--eprover "${EPROVER}")
+fi
+if [[ -x "${VAMPIRE}" ]]; then
+    ARGS+=(--vampire "${VAMPIRE}")
+fi
+
+WALLCLOCK="${STAREXEC_WALLCLOCK_LIMIT:-30}"
+SOFT_TIME=$(( WALLCLOCK > 1 ? WALLCLOCK - 1 : WALLCLOCK ))
+
+exec timeout --foreground "${SOFT_TIME}s" "${BINARY}" "${ARGS[@]}" "${PROOF}" \
+    || echo "% SZS status NotVerified : exhausted wall-clock budget"

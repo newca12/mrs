@@ -3532,7 +3532,7 @@ dependencies = [
 
 [[package]]
 name = "mrs"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "burn",
  "cadical",
@@ -3540,6 +3540,7 @@ dependencies = [
  "mrs-calculus",
  "mrs-cnf",
  "mrs-core",
+ "mrs-proof",
  "mrs-search",
  "mrs-szs",
  "mrs-tptp",
@@ -3550,7 +3551,7 @@ dependencies = [
 
 [[package]]
 name = "mrs-bench"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "mrs-core",
  "mrs-tptp",
@@ -3559,7 +3560,7 @@ dependencies = [
 
 [[package]]
 name = "mrs-calculus"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "mrs-core",
  "mrs-index",
@@ -3570,14 +3571,14 @@ dependencies = [
 
 [[package]]
 name = "mrs-cnf"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "mrs-core",
 ]
 
 [[package]]
 name = "mrs-codex"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "clap",
  "crossbeam-channel",
@@ -3593,7 +3594,7 @@ dependencies = [
 
 [[package]]
 name = "mrs-core"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "burn",
  "rustc-hash 2.1.2",
@@ -3603,7 +3604,7 @@ dependencies = [
 
 [[package]]
 name = "mrs-index"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "mrs-core",
  "rustc-hash 2.1.2",
@@ -3611,7 +3612,7 @@ dependencies = [
 
 [[package]]
 name = "mrs-proof"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "mrs-core",
  "mrs-szs",
@@ -3619,7 +3620,7 @@ dependencies = [
 
 [[package]]
 name = "mrs-proover"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "cadical",
  "mrs-cnf",
@@ -3630,7 +3631,7 @@ dependencies = [
 
 [[package]]
 name = "mrs-search"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "burn",
  "cadical",
@@ -3646,11 +3647,11 @@ dependencies = [
 
 [[package]]
 name = "mrs-szs"
-version = "0.1.9"
+version = "0.2.0"
 
 [[package]]
 name = "mrs-tptp"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "pretty_assertions",
  "rayon",
@@ -3659,7 +3660,7 @@ dependencies = [
 
 [[package]]
 name = "mrs-train"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "burn",
  "mrs-core",
@@ -3670,7 +3671,7 @@ dependencies = [
 
 [[package]]
 name = "mrs-unify"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "mrs-core",
 ]
