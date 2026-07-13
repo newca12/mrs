@@ -3,33 +3,37 @@
 use std::fmt;
 
 /// Final verdict for a whole proof.
+///
+/// Uses the current ProoVer/SZS terminology (`VerifiedGood`/`VerifiedBad`/
+/// `Unknown`), not the older `Verified`/`FailedVerified`/`NotVerified` names
+/// used in early ProoVer preparation material.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     /// Every step had positive evidence of soundness.
-    Verified,
+    VerifiedGood,
     /// At least one step has positive evidence of unsoundness.
-    FailedVerified(String),
+    VerifiedBad(String),
     /// We could not establish either; the proof is inconclusive.
-    NotVerified(String),
+    Unknown(String),
 }
 
 impl Verdict {
     /// Render as a `% SZS status …` line (without trailing newline).
     pub fn as_szs_line(&self) -> String {
         match self {
-            Verdict::Verified => "% SZS status Verified".to_string(),
-            Verdict::FailedVerified(reason) => {
+            Verdict::VerifiedGood => "% SZS status VerifiedGood".to_string(),
+            Verdict::VerifiedBad(reason) => {
                 if reason.is_empty() {
-                    "% SZS status FailedVerified".to_string()
+                    "% SZS status VerifiedBad".to_string()
                 } else {
-                    format!("% SZS status FailedVerified : {reason}")
+                    format!("% SZS status VerifiedBad : {reason}")
                 }
             }
-            Verdict::NotVerified(reason) => {
+            Verdict::Unknown(reason) => {
                 if reason.is_empty() {
-                    "% SZS status NotVerified".to_string()
+                    "% SZS status Unknown".to_string()
                 } else {
-                    format!("% SZS status NotVerified : {reason}")
+                    format!("% SZS status Unknown : {reason}")
                 }
             }
         }
@@ -56,9 +60,9 @@ pub enum StepOutcome {
 /// Aggregate per-step outcomes into a final verdict.
 ///
 /// Policy:
-/// - any `Unsound` → `FailedVerified` (first reason wins).
-/// - else any `Unknown` → `NotVerified` (first reason wins).
-/// - else `Verified`.
+/// - any `Unsound` → `VerifiedBad` (first reason wins).
+/// - else any `Unknown` → `Unknown` (first reason wins).
+/// - else `VerifiedGood`.
 pub fn aggregate<'a, I>(outcomes: I) -> Verdict
 where
     I: IntoIterator<Item = (&'a str, StepOutcome)>,
@@ -67,7 +71,7 @@ where
     for (name, oc) in outcomes {
         match oc {
             StepOutcome::Unsound(why) => {
-                return Verdict::FailedVerified(format!("step {name}: {why}"));
+                return Verdict::VerifiedBad(format!("step {name}: {why}"));
             }
             StepOutcome::Unknown(why) => {
                 if first_unknown.is_none() {
@@ -78,8 +82,8 @@ where
         }
     }
     match first_unknown {
-        Some(why) => Verdict::NotVerified(why),
-        None => Verdict::Verified,
+        Some(why) => Verdict::Unknown(why),
+        None => Verdict::VerifiedGood,
     }
 }
 
@@ -90,7 +94,7 @@ mod tests {
     #[test]
     fn aggregate_all_sound() {
         let v = aggregate(vec![("s1", StepOutcome::Sound), ("s2", StepOutcome::Sound)]);
-        assert_eq!(v, Verdict::Verified);
+        assert_eq!(v, Verdict::VerifiedGood);
     }
 
     #[test]
@@ -99,7 +103,7 @@ mod tests {
             ("s1", StepOutcome::Unknown("timeout".into())),
             ("s2", StepOutcome::Unsound("bad".into())),
         ]);
-        assert!(matches!(v, Verdict::FailedVerified(_)));
+        assert!(matches!(v, Verdict::VerifiedBad(_)));
     }
 
     #[test]
@@ -108,6 +112,6 @@ mod tests {
             ("s1", StepOutcome::Sound),
             ("s2", StepOutcome::Unknown("timeout".into())),
         ]);
-        assert!(matches!(v, Verdict::NotVerified(_)));
+        assert!(matches!(v, Verdict::Unknown(_)));
     }
 }

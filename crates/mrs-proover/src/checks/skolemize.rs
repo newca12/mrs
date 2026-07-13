@@ -142,7 +142,7 @@ pub fn check<'p>(
     // Skolem. If we find at least one such fresh symbol AND no symbol in
     // the step clashes with the registry, we accept the step as `Unknown`
     // — not provably sound, but not provably unsound either. This avoids
-    // a false-positive FailedVerified for the many E proofs whose skolemize
+    // a false-positive VerifiedBad for the many E proofs whose skolemize
     // annotations are too sparse.
     let Some(info) = ann.skolemize_info() else {
         return check_e_style_skolemize(step, parent, registry);
@@ -1348,8 +1348,8 @@ fn term_eq(a: &FOFTerm<'_>, b: &FOFTerm<'_>) -> bool {
 /// were already in the registry (problem symbols), record them as fresh
 /// Skolems and return `Unknown` (we cannot prove soundness without the
 /// missing var/term info, but we have no evidence of unsoundness either —
-/// `Unknown` propagates to `NotVerified`, scoring 0 instead of the −1 a
-/// false-positive `FailedVerified` would cost).
+/// `Unknown` propagates to a final `Verdict::Unknown`, scoring 0 instead of the −1 a
+/// false-positive `VerifiedBad` would cost).
 fn check_e_style_skolemize<'p>(
     step: &AnnotatedFormula<'p>,
     parent: Option<&AnnotatedFormula<'p>>,
@@ -1405,7 +1405,7 @@ fn check_e_style_skolemize<'p>(
     // confirm the conclusion is exactly the parent with each existential
     // replaced by a distinct fresh Skolem term over its in-scope universals.
     // On success this is a *confirmed* sound step (`Sound` → contributes to
-    // `Verified`); the proofs the dataset emits without a
+    // `VerifiedGood`); the proofs the dataset emits without a
     // `skolemize(Var, sk(...))` annotation (e.g. PyRes) are handled here.
     if try_positive_skolemize(parent_f, step_f, &fresh, registry) {
         for s in &fresh {
@@ -1557,7 +1557,7 @@ mod tests {
     /// PyRes emits multi-existential Skolemisation in a single `skolemize`
     /// step: `? [X2] : ! [X3,X4] : ? [X5] : …` collapses to a constant Skolem
     /// for `X2` and an arity-2 Skolem `sk(X3,X4)` for `X5`. With positive
-    /// verification this is now confirmed `Sound` (→ `Verified`).
+    /// verification this is now confirmed `Sound` (→ `VerifiedGood`).
     #[test]
     fn nested_multi_existential_skolemize_is_sound() {
         let parent = nth_fof(
@@ -1639,8 +1639,8 @@ mod tests {
 
     /// A Skolem term that *under-captures* its in-scope universals
     /// (`sk(X2,X4)` shrunk to `sk(X2)`) is an unsound dependency. The positive
-    /// check must NOT confirm it (no false `Sound`/`Verified`); it falls back to
-    /// the conservative `Unknown`/`NotVerified`.
+    /// check must NOT confirm it (no false `Sound`/`VerifiedGood`); it falls back to
+    /// the conservative `StepOutcome::Unknown`, aggregating to `Verdict::Unknown`.
     #[test]
     fn under_capturing_skolem_is_not_sound() {
         let parent = nth_fof(

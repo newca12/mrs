@@ -963,7 +963,7 @@ const RECOGNISED_INTRO_TAGS: &[&str] = &[
 /// Used by the fallback in `check()`: an unrecognised tag means the
 /// prover is using a proof-construction technique we don't model, so
 /// we return `Unknown` (rather than `Unsound`) to avoid a false
-/// `FailedVerified` penalty on a valid proof.
+/// `VerifiedBad` penalty on a valid proof.
 fn has_unrecognised_intro_tag(ann: Option<&Annotations<'_>>) -> bool {
     let Some(ann) = ann else { return false };
     let GeneralTerm::Function(AtomicWord::Lower("introduced"), args) = &ann.source else {

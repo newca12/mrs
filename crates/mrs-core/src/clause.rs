@@ -7,6 +7,7 @@
 use crate::HashSet;
 use smallvec::SmallVec;
 
+use crate::Formula;
 use crate::formula::Atom;
 use crate::term::VarId;
 
@@ -105,6 +106,23 @@ pub struct Clause {
     pub avatar: Vec<u32>,
     /// Distance to conjecture (0 for conjectures, +1 for generated, large for axioms).
     pub distance: u32,
+    /// If set, this "clause" is actually a non-clausal, FOF-level proof step
+    /// (e.g. an NNF conversion or Skolemization result) rather than a real
+    /// disjunction of literals. `literals` is unused/empty in that case.
+    ///
+    /// This exists because TSTP derivations of FOF problems commonly need to
+    /// cite intermediate formula-level transformation steps (which may still
+    /// contain quantifiers or nested and/or structure) before the formula
+    /// reaches clausal (CNF) shape — see `mrs-cnf::clausify`'s `fof_nnf_transformation`
+    /// / `skolemisation` steps. Proof formatting (`mrs-proof::tstp`) prints
+    /// these as `fof(...)` annotated formulas instead of `cnf(...)`.
+    ///
+    /// **Never add a `Clause` with `formula: Some(_)` to the live given-clause
+    /// search** (`processed`/`unprocessed`): its `literals` field is empty,
+    /// which is indistinguishable from the empty clause (a refutation) to
+    /// the search loop. These clauses exist only for proof-provenance lookup
+    /// (`clause_store`) at proof-extraction time.
+    pub formula: Option<Formula>,
 }
 
 impl Clause {
@@ -119,6 +137,25 @@ impl Clause {
             source,
             avatar: Vec::new(),
             distance: 1000,
+            formula: None,
+        }
+    }
+
+    /// Creates a non-clausal, FOF-level proof step: a formula that has not
+    /// (yet) reached clausal shape, cited via `source` (`Input` for the
+    /// original leaf formula, `Inference` for a named transformation like
+    /// `fof_nnf_transformation`/`skolemisation`/`negated_conjecture`).
+    ///
+    /// See the [`Clause::formula`] doc comment for the critical caveat about
+    /// never feeding these into the live given-clause search.
+    pub fn new_formula_step(id: ClauseId, formula: Formula, source: ClauseSource) -> Self {
+        Clause {
+            id,
+            literals: SmallVec::new(),
+            source,
+            avatar: Vec::new(),
+            distance: 1000,
+            formula: Some(formula),
         }
     }
 
@@ -140,6 +177,7 @@ impl Clause {
             source,
             avatar,
             distance: 1000,
+            formula: None,
         }
     }
 

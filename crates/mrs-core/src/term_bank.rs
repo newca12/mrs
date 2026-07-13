@@ -1,6 +1,7 @@
 use crate::{HashMap, HashSet};
 use smallvec::{SmallVec, smallvec};
 
+use crate::Formula;
 use crate::clause::{Clause, ClauseId, ClauseSource, Literal};
 use crate::formula::Atom;
 use crate::symbol::SymbolId;
@@ -63,6 +64,17 @@ pub struct IdClause {
     pub source: ClauseSource,
     pub avatar: Vec<u32>,
     pub distance: u32,
+    /// Mirrors [`Clause::formula`]: when set, this is a non-clausal FOF-level
+    /// proof step (not a real search clause). `Formula` is symbol-table-based
+    /// (not `TermId`-interned), so it round-trips through
+    /// `clause_to_legacy`/`clause_from_legacy` unchanged, with no
+    /// interning/uninterning needed.
+    ///
+    /// **Never insert an `IdClause` with `formula: Some(_)` into
+    /// `processed`/`unprocessed`** — only into `clause_store`, for proof
+    /// provenance. Its empty `literals` would otherwise be misread as the
+    /// empty clause (a refutation) by the given-clause loop.
+    pub formula: Option<Formula>,
 }
 
 impl IdClause {
@@ -76,6 +88,7 @@ impl IdClause {
             source,
             avatar: Vec::new(),
             distance: 1000,
+            formula: None,
         }
     }
 
@@ -89,6 +102,7 @@ impl IdClause {
             source,
             avatar,
             distance: 1000,
+            formula: None,
         }
     }
 
@@ -404,6 +418,7 @@ impl TermBank {
         );
         c.avatar = clause.avatar.clone();
         c.distance = clause.distance;
+        c.formula = clause.formula.clone();
         c
     }
 
@@ -418,6 +433,7 @@ impl TermBank {
             source: clause.source.clone(),
             avatar: clause.avatar.clone(),
             distance: clause.distance,
+            formula: clause.formula.clone(),
         }
     }
 }

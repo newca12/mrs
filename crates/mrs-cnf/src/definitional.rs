@@ -124,8 +124,15 @@ impl DefCtx<'_> {
         }
         let sorted_vars: Vec<VarId> = vars.into_iter().collect();
 
-        // Create fresh definition predicate
-        let name = format!("__def_{}_{}__", self.prefix, self.counter);
+        // Create fresh definition predicate.
+        //
+        // TPTP requires predicate/function/constant symbols to start with a
+        // lowercase alphabetic character (see the `lower_word`/`functor`
+        // grammar productions in the TPTP language spec). A leading (or
+        // trailing) underscore, as in the previous `__def_..._..__` scheme,
+        // is not a valid TPTP symbol and produces a syntax error in any
+        // proof that uses one of these definitions.
+        let name = format!("def_{}_{}", self.prefix, self.counter);
         self.counter += 1;
         let sym = self.symbols.intern(&name);
         let args: Vec<Term> = sorted_vars.iter().map(|&v| Term::var(v)).collect();
@@ -291,7 +298,7 @@ mod tests {
             // Check that definition clauses mention the def with variables
             let display = fmt(&result, &syms);
             assert!(
-                display.contains("__def_t_0__"),
+                display.contains("def_t_0"),
                 "Should contain definition name, got: {display}"
             );
         } else {

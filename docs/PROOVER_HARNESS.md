@@ -12,18 +12,18 @@ deterministic corpus works. For the verifier's *scoring* roadmap see
 
 | Outcome | Points |
 |---------|--------|
-| Correctly identify evil proof (`FailedVerified`) | **+2** |
-| Correctly identify good proof (`Verified`) | **+1** |
-| Give up / timeout (`NotVerified`) | 0 |
-| **Falsely reject a good proof (`FailedVerified` on a valid proof)** | **−1** |
+| Correctly identify evil proof (`VerifiedBad`) | **+2** |
+| Correctly identify good proof (`VerifiedGood`) | **+1** |
+| Give up / timeout (`Unknown`) | 0 |
+| **Falsely reject a good proof (`VerifiedBad` on a valid proof)** | **−1** |
 | Falsely verify an evil proof | **−10 (fatal)** |
 
 For the *test harness* the key consequence is the **−1 for a false
-`FailedVerified`**. Verifying a stream of known-valid proofs, the only *wrong*
-outcome is `FailedVerified`; `Verified` is ideal and `NotVerified` is merely a
+`VerifiedBad`**. Verifying a stream of known-valid proofs, the only *wrong*
+outcome is `VerifiedBad`; `VerifiedGood` is ideal and `Unknown` is merely a
 missed `+1`, never a penalty. So the regression invariant is simply:
 
-> **No known-valid proof may ever be reported `FailedVerified`.**
+> **No known-valid proof may ever be reported `VerifiedBad`.**
 
 ---
 
@@ -43,15 +43,15 @@ sample. TPTP stores proofs from systems that emit wildly different formats:
 
 | System family | Output format | mrs-proover result | Correct? |
 |---------------|---------------|--------------------|----------|
-| cvc5, Z3 | Alethe S-expressions (`(step @p4 :rule …)`) | `NotVerified: no FOF/CNF nodes` | ✅ 0 pts |
-| Beagle, iProver(TFF), Leo | TFF/THF with `type` decls | `NotVerified: unsupported dialect` | ✅ 0 pts |
-| leanCoP, nanoCoP, ConnectPP | connection-matrix proofs | `NotVerified` / parse-skip | ✅ 0 pts |
-| Darwin, Paradox, Equinox | finite models (`CounterSatisfiable`/`Assurance`) | empty / `NotVerified` | ✅ 0 pts |
-| Metis | `inference(subst,[],[p:[bind…]])` colon-pairs | (was) `FailedVerified` | ❌ −1 bug |
-| SPASS, Otter | clausified anonymous `file(_,unknown)` leaves | (was) `FailedVerified` | ❌ −1 bug |
-| **E, Vampire** | **standard TSTP FOF refutations** | **`Verified`** | ✅ +1 |
+| cvc5, Z3 | Alethe S-expressions (`(step @p4 :rule …)`) | `Unknown: no FOF/CNF nodes` | ✅ 0 pts |
+| Beagle, iProver(TFF), Leo | TFF/THF with `type` decls | `Unknown: unsupported dialect` | ✅ 0 pts |
+| leanCoP, nanoCoP, ConnectPP | connection-matrix proofs | `Unknown` / parse-skip | ✅ 0 pts |
+| Darwin, Paradox, Equinox | finite models (`CounterSatisfiable`/`Assurance`) | empty / `Unknown` | ✅ 0 pts |
+| Metis | `inference(subst,[],[p:[bind…]])` colon-pairs | (was) `VerifiedBad` | ❌ −1 bug |
+| SPASS, Otter | clausified anonymous `file(_,unknown)` leaves | (was) `VerifiedBad` | ❌ −1 bug |
+| **E, Vampire** | **standard TSTP FOF refutations** | **`VerifiedGood`** | ✅ +1 |
 
-The overwhelming majority of "failures" were actually **correct `NotVerified`
+The overwhelming majority of "failures" were actually **correct `Unknown`
 (0 pts)** on formats `mrs-proover` legitimately cannot verify. Only a handful
 were real `−1` bugs, and they were drowned in format noise that changed every
 run.
@@ -96,22 +96,22 @@ committed to the repo.
 
 - Verifies every committed proof against its committed problem with a fixed
   per-proof budget (default 10 s).
-- Tallies `Verified` / `NotVerified` / `FailedVerified`.
-- **Exit 1 iff any proof is `FailedVerified`** — that is the regression
-  invariant from §1. `NotVerified` is reported but tolerated.
+- Tallies `VerifiedGood` / `Unknown` / `VerifiedBad`.
+- **Exit 1 iff any proof is `VerifiedBad`** — that is the regression
+  invariant from §1. `Unknown` is reported but tolerated.
 - Never touches the network, so its result is **stable across runs and
   machines**. This is what CI / pre-commit should run.
 
 Representative output (after the fixes in §4):
 
 ```
-[corpus]   Verified      :  43
-[corpus]   NotVerified   :   3
-[corpus]   FailedVerified:   0  (must be 0)
-[corpus] PASS: no known-valid proof was FailedVerified.
+[corpus]   VerifiedGood      :  43
+[corpus]   Unknown   :   3
+[corpus]   VerifiedBad:   0  (must be 0)
+[corpus] PASS: no known-valid proof was VerifiedBad.
 ```
 
-The 3 remaining `NotVerified` are E proofs of PEL-style problems (`SYN051+1`,
+The 3 remaining `Unknown` are E proofs of PEL-style problems (`SYN051+1`,
 `SYN056+1`, `SYN057+1`) where E folds Skolemisation into a `thm`-labelled
 `fof_nnf` step, e.g. `inference(fof_nnf,[status(thm)],[inference(skolemize,
 [status(esa)],[...])])`. This is **not a time-budget issue** — confirmed by
@@ -123,13 +123,13 @@ introduces a fresh Skolem constant/function; the FMB counter-model rung
 correctly finds a finite model where the premise holds and the
 under-constrained Skolem witness makes the conclusion fail — that is expected
 and harmless for an `esa` step, so `verify.rs`'s esa guard reports the safe
-`NotVerified` (0 pts) instead of misreading it as a soundness fault. Since
+`Unknown` (0 pts) instead of misreading it as a soundness fault. Since
 `node.inference_rule` here is `fof_nnf`, not `skolemize`, these steps are
 deliberately **not** routed into `checks::skolemize::check`'s structural
 verifier — widening that dispatch to catch nested `esa` steps like this one
 was tried and reverted (see the `fix-e-style-skolemize` merge commit) because
 it also hijacked unrelated `esa`-status steps away from their ATP/structural
-fast-paths, regressing this same corpus from 42 to 33 `Verified`. So today
+fast-paths, regressing this same corpus from 42 to 33 `VerifiedGood`. So today
 these 3 cases cost 0 points with `mrs`, real `eprover`, and real `vampire`
 alike (all three are in the default ladder here and none discharges them);
 closing them safely would need a smarter structural match for this specific
@@ -137,7 +137,7 @@ nested-`fof_nnf`-wrapping-`skolemize` shape, not a bigger ATP or more time.
 Crucially, the underlying *theorems* are fine: the corpus also has Vampire's
 own proofs of the identical three problems (`SYN051+1__Vampire`,
 `SYN056+1__Vampire`, `SYN057+1__Vampire`), and `mrs-proover` reports
-`Verified` on all three — Vampire's proof-step shape doesn't fold Skolemize
+`VerifiedGood` on all three — Vampire's proof-step shape doesn't fold Skolemize
 into an outer `thm` step, so it hits the fast paths cleanly. The gap is in
 *which proof object* was submitted, not in whether the *problem* is provable
 or in `mrs-proover`'s soundness. (A 4th, related case, where E's `skolemize`
@@ -175,14 +175,14 @@ library:
    `file(_,unknown)` leaves that are the NNF/Skolemised/CNF form of an axiom
    (e.g. `~big_p(u)|big_q(u)|big_r(u)` for `big_p(X)=>(big_q(X)|big_r(X))`).
    These are faithful but not structurally α/AC-matchable, so the old code
-   returned `Unsound` → `FailedVerified` (−1). Now the anonymous fallback
+   returned `Unsound` → `VerifiedBad` (−1). Now the anonymous fallback
    returns `Unknown` instead, **except** when the leaf is itself `$false` /
    `~$true` (axiom spoofing), which stays `Unsound`. This does not weaken
    evil-proof detection: the official examples and the `axiom_spoofing` exploit
    use the *named* path, which is unchanged.
 
 Both fixes are safe under the −10/−1/+2 asymmetry: they only ever turn a false
-`FailedVerified` into `Unknown`/`NotVerified` (or a correctly-extracted
+`VerifiedBad` into `Unknown` (or a correctly-extracted
 parent), never the reverse.
 
 ---
@@ -234,8 +234,8 @@ Two scripts wire it in:
 - **`zenodo_benchmark.sh`** — auto-fetches the corpus if absent, then runs
   `mrs-proover` (and, with `--with-norgler`, Nörgler) over the selected
   datasets, writing a `run.csv` and checking the two soundness invariants:
-  *original must never be `FailedVerified`* (a false reject is −1) and
-  *falsified must never be `Verified`* (a false accept is −10, fatal).
+  *original must never be `VerifiedBad`* (a false reject is −1) and
+  *falsified must never be `VerifiedGood`* (a false accept is −10, fatal).
 
 ```bash
 # mrs-proover only, full PyRes set:
@@ -247,7 +247,7 @@ crates/mrs-bench/zenodo_benchmark.sh --dataset all --time 60 --with-norgler
 
 For a fair Nörgler head-to-head, give it a realistic per-proof budget (`--time
 60`): its JVM start-up plus per-step `eprover`/`vampire` calls are slow, so
-tight budgets starve it into spurious `NotVerified`. The wrapper
+tight budgets starve it into spurious `Unknown`. The wrapper
 (`systems/norgler/invoke.sh`) resolves a JRE once and caches it (a per-call
 `nix-shell` costs ~20 s), and the benchmark disables the leaf-path rewrite for
 this dataset (`MRS_NORGLER_NO_REWRITE=1`) because the Zenodo PyRes proofs already
@@ -258,7 +258,7 @@ makes Nörgler reject valid proofs.
 
 Full PyRes (170 + 170) and an Otter sample (60 + 60), 60 s per proof:
 
-| dataset / category | backend | Verified | FailedVerified | NotVerified / Error |
+| dataset / category | backend | VerifiedGood | VerifiedBad | Unknown / Error |
 |---|---|---|---|---|
 | PyRes / original (valid)   | **mrs-proover** | **160** | **0**  | 10 |
 | PyRes / original (valid)   | Nörgler         | 155     | **11** | 4  |
@@ -282,13 +282,13 @@ What this says — honestly, with no spin:
 - PyRes: mrs-proover verifies **160/170**, Nörgler 155/170. The earlier coverage
   gap was closed by *positively verifying unannotated `skolemize` steps* (see
   below) — it now reconstructs the Skolemisation and confirms it structurally
-  instead of deferring to `Unknown`. The 10 remaining `NotVerified` are skolemize
+  instead of deferring to `Unknown`. The 10 remaining `Unknown` are skolemize
   steps where PyRes additionally **re-associates the conjunction**
   (`(A∧B)∧(C∧D)` → `A∧(B∧(C∧D))`); the structural matcher is not yet AC-aware, so
   it safely declines (0 pts) rather than risk a −1. (Tracked in `TODO_PROOVER.md`.)
 - Otter: Nörgler verifies 60/60, mrs-proover 0/60 — but **only because the
   Zenodo Otter set ships no problem files**. Without the problem, mrs-proover
-  cannot validate the `file(_,unknown)` leaves and degrades to `NotVerified`;
+  cannot validate the `file(_,unknown)` leaves and degrades to `Unknown`;
   Nörgler (run without `--problem`) trusts the leaves and checks the inference
   structure. The real competition always supplies the problem file, so this is
   a dataset artefact, not a competition weakness.
@@ -308,7 +308,7 @@ missing problem files, which the competition supplies.
 >    (`checks::skolemize::try_positive_skolemize`): the conclusion is matched
 >    against the parent with every existential (at any depth, across regrouped
 >    universal binders) replaced by a distinct fresh Skolem term over exactly its
->    in-scope universals — confirmed `Verified` instead of deferred. This raised
+>    in-scope universals — confirmed `VerifiedGood` instead of deferred. This raised
 >    PyRes coverage from 86 to 160 with no loss of soundness (falsified proofs
->    still never `Verified`).
+>    still never `VerifiedGood`).
 

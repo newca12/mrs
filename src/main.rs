@@ -299,29 +299,64 @@ fn main() {
         })
         .collect();
 
+    // Non-clausal FOF-level proof steps (NNF conversion, Skolemization, and
+    // the explicit conjecture-negation step) produced alongside `all_clauses`.
+    // These document the FOF-to-CNF translation for the final proof (see
+    // CASC's evaluation criteria: "Translations from one form to another...
+    // must be adequately documented"). They are never added to the live
+    // given-clause search — see `Clause::formula`'s doc comment for why.
+    let mut provenance: Vec<Clause> = Vec::new();
+
     // Clausify axioms directly
     for f in &lowered.axioms {
-        let clauses = mrs_cnf::clausify(
+        let leaf_source = ClauseSource::Input {
+            name: f.name.clone(),
+            role: f.role.clone(),
+        };
+        let (steps, clauses) = mrs_cnf::clausify_with_provenance(
             &f.formula,
             &mut lowered.symbols,
             &mut id_gen,
             &f.name,
-            &f.role,
+            leaf_source,
+            None,
         );
+        provenance.extend(steps);
         all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(100)));
     }
 
     // Negate conjectures for refutation-based proving:
     // To prove P, we show that axioms ∧ ¬P is unsatisfiable.
     for f in &lowered.conjectures {
+        // Explicit leaf citing the original (non-negated) conjecture.
+        let conj_leaf_id = id_gen.next();
+        provenance.push(Clause::new_formula_step(
+            conj_leaf_id,
+            f.formula.clone(),
+            ClauseSource::Input {
+                name: f.name.clone(),
+                role: "conjecture".to_string(),
+            },
+        ));
+
+        // The negation step itself is explicitly cited (status cth, single
+        // parent = the conjecture leaf), per the CASC evaluation criteria:
+        // "Proofs that negate the conjecture must correctly annotate the
+        // step as status(cth) and have a single parent with the role
+        // conjecture."
         let negated = Formula::neg(f.formula.clone());
-        let clauses = mrs_cnf::clausify(
+        let (steps, clauses) = mrs_cnf::clausify_with_provenance(
             &negated,
             &mut lowered.symbols,
             &mut id_gen,
             &f.name,
-            "negated_conjecture",
+            ClauseSource::Inference {
+                rule: "negated_conjecture",
+                parents: vec![conj_leaf_id].into(),
+            },
+            None,
         );
+        provenance.extend(steps);
         all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(0)));
     }
 
@@ -524,6 +559,7 @@ fn main() {
         // halves in agreement.
         let (result, schedule_report) = run_schedule(
             &all_clauses,
+            &provenance,
             id_gen,
             &schedule,
             &lowered.symbols,

@@ -92,7 +92,7 @@ pub fn check_leaf<'p>(
         // NOT α- or AC-equivalent to the named axiom, so our structural
         // comparison legitimately cannot confirm them.
         //
-        // Reporting `Unsound` here costs a false `FailedVerified` (−1) on
+        // Reporting `Unsound` here costs a false `VerifiedBad` (−1) on
         // such valid proofs, which are common. We therefore downgrade to
         // `Unknown` (0 pts) — *except* for the one shape that is positive
         // evidence of tampering: a leaf that is itself contradictory

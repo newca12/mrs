@@ -107,6 +107,7 @@ impl SearchState {
     ) -> Self {
         Self::new_with_ml(
             initial_clauses,
+            Vec::new(),
             id_gen,
             config,
             symbols,
@@ -120,6 +121,7 @@ impl SearchState {
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_ml(
         initial_clauses: Vec<Clause>,
+        provenance: Vec<Clause>,
         id_gen: ClauseIdGen,
         config: Arc<SymbolConfig>,
         symbols: Arc<mrs_core::SymbolTable>,
@@ -196,6 +198,21 @@ impl SearchState {
                 clause_store.insert(id_clause.id, id_clause.clone());
                 unprocessed.push(&id_clause, &term_bank, w, None);
             }
+        }
+
+        // Provenance-only clauses (non-clausal FOF-level proof steps, e.g.
+        // NNF/Skolemization results from `mrs_cnf::clausify_with_provenance`)
+        // are registered in `clause_store` for proof-extraction lookup ONLY.
+        // They must never touch `unprocessed`/`processed`: their `literals`
+        // are empty (real content lives in `formula`), which the given-clause
+        // loop would otherwise misread as the empty clause (a refutation).
+        for clause in provenance {
+            debug_assert!(
+                clause.formula.is_some(),
+                "provenance clauses must have formula: Some(_); real clauses belong in initial_clauses"
+            );
+            let id_clause = term_bank.clause_from_legacy(&clause);
+            clause_store.insert(id_clause.id, id_clause);
         }
 
         Self {

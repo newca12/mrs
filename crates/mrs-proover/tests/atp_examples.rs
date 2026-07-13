@@ -32,7 +32,7 @@ fn run_with_atp(proof: &str) -> Option<Verdict> {
 }
 
 #[test]
-fn good_examples_all_verified_with_atp() {
+fn good_examples_all_verifiedgood_with_atp() {
     let Some(_) = make_ladder() else {
         eprintln!("skipping: no ATP backend found");
         return;
@@ -43,12 +43,12 @@ fn good_examples_all_verified_with_atp() {
         "example3_c_proof.p",
     ] {
         let v = run_with_atp(proof).unwrap();
-        assert_eq!(v, Verdict::Verified, "{proof}: got {v:?}");
+        assert_eq!(v, Verdict::VerifiedGood, "{proof}: got {v:?}");
     }
 }
 
 #[test]
-fn evil_examples_all_failedverified_with_atp() {
+fn evil_examples_all_verifiedbad_with_atp() {
     let Some(_) = make_ladder() else {
         eprintln!("skipping: no ATP backend found");
         return;
@@ -60,10 +60,7 @@ fn evil_examples_all_failedverified_with_atp() {
         "example4_e_proof.p",
     ] {
         let v = run_with_atp(proof).unwrap();
-        assert!(
-            matches!(v, Verdict::FailedVerified(_)),
-            "{proof}: got {v:?}"
-        );
+        assert!(matches!(v, Verdict::VerifiedBad(_)), "{proof}: got {v:?}");
     }
 }
 

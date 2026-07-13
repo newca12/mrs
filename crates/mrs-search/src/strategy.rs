@@ -458,6 +458,7 @@ fn is_ml_prune_slot(strategy_idx: usize, total_strategies: usize) -> bool {
 
 pub fn run_schedule(
     clauses: &[Clause],
+    provenance: &[Clause],
     id_gen: ClauseIdGen,
     schedule: &StrategySchedule,
     symbols: &SymbolTable,
@@ -688,6 +689,7 @@ pub fn run_schedule(
             let tx = tx.clone();
             let next_strategy = Arc::clone(&next_strategy);
             let clauses_for_thread = clauses_owned.clone();
+            let provenance_for_thread = provenance.to_vec();
             let id_gen_thread = id_gen.clone();
             let config_thread = Arc::clone(&config);
             let symbols_thread = symbols_arc.clone();
@@ -762,6 +764,7 @@ pub fn run_schedule(
 
                     let mut state = SearchState::new_with_ml(
                         thread_clauses,
+                        provenance_for_thread.clone(),
                         id_gen_thread.clone(),
                         config_thread.clone(),
                         symbols_thread.clone(),
@@ -1101,6 +1104,7 @@ mod tests {
         let schedule = StrategySchedule::default_schedule(Duration::from_secs(5), 1);
         let (result, _) = run_schedule(
             &[c1, c2],
+            &[],
             id_gen,
             &schedule,
             &syms,
@@ -1133,6 +1137,7 @@ mod tests {
         let schedule = StrategySchedule::default_schedule(Duration::from_secs(5), 1);
         let (result, _) = run_schedule(
             &[c1, c2],
+            &[],
             id_gen,
             &schedule,
             &syms,

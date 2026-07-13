@@ -6,6 +6,9 @@
 //! Input clauses:    `cnf(c0, axiom, p(a), file('/path/to/problem.p', ax1)).`
 //! Inferred clauses: `cnf(c5, plain, p(a), inference(resolution, [status(thm)], [c0, c1])).`
 //! Empty clause:     `cnf(cN, plain, $false, inference(resolution, [status(thm)], [c3, c7])).`
+//! Formula-level (non-clausal) steps use `fof(...)` instead of `cnf(...)`,
+//! e.g. `fof(c1, plain, (nnf_formula), inference(fof_nnf_transformation, [status(thm)], [c0])).`
+//! — see [`Clause::formula`](mrs_core::clause::Clause::formula).
 
 use std::sync::OnceLock;
 
@@ -40,16 +43,44 @@ fn problem_path() -> &'static str {
     PROBLEM_PATH.get().map(String::as_str).unwrap_or("input")
 }
 
+/// The TSTP `status` annotation (`status(thm)`, `status(esa)`, `status(cth)`)
+/// for an `inference(...)` step, derived from the rule name.
+///
+/// - `skolemisation`: `esa` (equisatisfiability, not full entailment — a
+///   Skolemized formula is not logically equivalent to its parent, only
+///   equisatisfiable with it).
+/// - `negated_conjecture`: `cth` (the CASC evaluation criteria require the
+///   step that negates the conjecture to be annotated `status(cth)`, with a
+///   single parent of role `conjecture`).
+/// - everything else (`fof_nnf_transformation`, `cnf_transformation`,
+///   `resolution`, `superposition`, etc.): `thm` (a genuine entailment).
+fn status_for_rule(rule: &str) -> &'static str {
+    match rule {
+        "skolemisation" => "esa",
+        "negated_conjecture" => "cth",
+        _ => "thm",
+    }
+}
+
 /// Formats a sequence of proof steps as TSTP output.
 ///
 /// The proof should be topologically ordered (inputs first, empty clause last).
+///
+/// Clauses with `formula: Some(_)` (see
+/// [`Clause::formula`](mrs_core::clause::Clause::formula)) are non-clausal,
+/// FOF-level proof steps (e.g. NNF conversion or Skolemization results) and
+/// are printed as `fof(...)` annotated formulas instead of `cnf(...)`.
 pub fn format_tstp(proof: &[Clause], symbols: &SymbolTable) -> String {
     let mut lines = Vec::new();
     let problem_path = problem_path();
 
     for clause in proof {
         let id = clause.id.0;
-        let literals = if clause.is_empty() {
+        let is_formula_step = clause.formula.is_some();
+
+        let body = if let Some(formula) = &clause.formula {
+            format!("{}", formula.display(symbols))
+        } else if clause.is_empty() {
             "$false".to_string()
         } else {
             format!("{}", clause.display(symbols))
@@ -62,9 +93,11 @@ pub fn format_tstp(proof: &[Clause], symbols: &SymbolTable) -> String {
             ClauseSource::Inference { rule, parents } => {
                 let parent_names: Vec<String> =
                     parents.iter().map(|p| format!("c{}", p.0)).collect();
+                let status = status_for_rule(rule);
                 format!(
-                    "inference({}, [status(thm)], [{}])",
+                    "inference({}, [status({})], [{}])",
                     rule,
+                    status,
                     parent_names.join(", ")
                 )
             }
@@ -75,9 +108,10 @@ pub fn format_tstp(proof: &[Clause], symbols: &SymbolTable) -> String {
             ClauseSource::Inference { .. } => "plain",
         };
 
+        let wrapper = if is_formula_step { "fof" } else { "cnf" };
         lines.push(format!(
-            "cnf(c{}, {}, {}, {}).",
-            id, role, literals, annotation
+            "{}(c{}, {}, {}, {}).",
+            wrapper, id, role, body, annotation
         ));
     }
 
@@ -161,5 +195,93 @@ mod tests {
         let output = format_tstp(&[c], &syms);
         assert!(output.contains("$false"));
         assert!(output.contains("inference(resolution, [status(thm)], [c3, c7])"));
+    }
+
+    #[test]
+    fn format_formula_step_uses_fof_wrapper() {
+        use mrs_core::Formula;
+
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+
+        let leaf = Clause::new_formula_step(
+            ClauseId(0),
+            Formula::atom(Atom::pred(p, vec![Term::constant(a)])),
+            ClauseSource::Input {
+                name: "ax1".into(),
+                role: "axiom".into(),
+            },
+        );
+        let nnf_step = Clause::new_formula_step(
+            ClauseId(1),
+            Formula::atom(Atom::pred(p, vec![Term::constant(a)])),
+            ClauseSource::Inference {
+                rule: "fof_nnf_transformation",
+                parents: vec![ClauseId(0)].into(),
+            },
+        );
+
+        let output = format_tstp(&[leaf, nnf_step], &syms);
+        assert!(output.contains("fof(c0, axiom, p(a), file('input', ax1))."));
+        assert!(output.contains(
+            "fof(c1, plain, p(a), inference(fof_nnf_transformation, [status(thm)], [c0]))."
+        ));
+        // No cnf(...) wrapper should appear anywhere for these formula steps.
+        assert!(!output.contains("cnf("));
+    }
+
+    #[test]
+    fn status_is_esa_for_skolemisation_and_cth_for_negated_conjecture() {
+        use mrs_core::Formula;
+
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+
+        let skolem_step = Clause::new_formula_step(
+            ClauseId(2),
+            Formula::atom(Atom::prop(p)),
+            ClauseSource::Inference {
+                rule: "skolemisation",
+                parents: vec![ClauseId(1)].into(),
+            },
+        );
+        let neg_conj_step = Clause::new_formula_step(
+            ClauseId(3),
+            Formula::atom(Atom::prop(p)),
+            ClauseSource::Inference {
+                rule: "negated_conjecture",
+                parents: vec![ClauseId(2)].into(),
+            },
+        );
+
+        let output = format_tstp(&[skolem_step, neg_conj_step], &syms);
+        assert!(output.contains("inference(skolemisation, [status(esa)], [c1])"));
+        assert!(output.contains("inference(negated_conjecture, [status(cth)], [c2])"));
+    }
+
+    #[test]
+    fn cnf_transformation_cites_skolemisation_step() {
+        // Regression test for the bug flagged during CASC-J13 review: final
+        // CNF clauses must cite the Skolemization step as parent (so the
+        // FOF-to-CNF translation is documented), not the original axiom
+        // directly.
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+
+        let final_clause = Clause::new(
+            ClauseId(4),
+            vec![Literal::pos(Atom::prop(p))],
+            ClauseSource::Inference {
+                rule: "cnf_transformation",
+                parents: vec![ClauseId(2)].into(),
+            },
+        );
+
+        let output = format_tstp(&[final_clause], &syms);
+        assert!(
+            output
+                .contains("cnf(c4, plain, p, inference(cnf_transformation, [status(thm)], [c2])).")
+        );
     }
 }

@@ -6,7 +6,7 @@
 //! mrs-proover [--problems-dir DIR] [--no-atp] [--verbose] <proof.p>
 //! ```
 //!
-//! Emits one line on stdout: `% SZS status Verified|FailedVerified|NotVerified`.
+//! Emits one line on stdout: `% SZS status VerifiedGood|VerifiedBad|Unknown`.
 //! With `--verbose`, also writes per-step progress to stderr.
 //!
 //! By default, the verifier auto-discovers `eprover` and `vampire` in the
@@ -100,7 +100,7 @@ fn main() -> ExitCode {
     let job = match load(&proof_path, problems_dir.as_deref()) {
         Ok(j) => j,
         Err(LoadError::MissingProofHeader) => {
-            return print_and_exit(Verdict::NotVerified(
+            return print_and_exit(Verdict::Unknown(
                 "proof file has no `% Proof :` header; cannot locate problem file".into(),
             ));
         }
@@ -109,18 +109,18 @@ fn main() -> ExitCode {
         // syntactically well-formed and parsable in TPTP", and the
         // official `example3_e_proof.p` evil example contains a malformed
         // `skolemize(Groom sK0(Marriage))` (missing comma) that should be
-        // flagged as bad. Reporting `FailedVerified` scores +2 instead of
+        // flagged as bad. Reporting `VerifiedBad` scores +2 instead of
         // 0 in that case; the rules' guarantee means we should never
         // wrongly hit this branch on a legitimate good proof.
         Err(LoadError::ParseProof(detail)) => {
-            return print_and_exit(Verdict::FailedVerified(format!(
+            return print_and_exit(Verdict::VerifiedBad(format!(
                 "proof file is not parseable TPTP: {detail}"
             )));
         }
         // ReadProof / ReadProblem / ParseProblem are infrastructure or
         // problem-file issues, not proof faults; stay conservative.
         Err(e) => {
-            return print_and_exit(Verdict::NotVerified(format!("load error: {e}")));
+            return print_and_exit(Verdict::Unknown(format!("load error: {e}")));
         }
     };
 
@@ -165,7 +165,7 @@ fn main() -> ExitCode {
     }
     // Counter-model finder rung (last): only when not in single-backend mode
     // and not explicitly disabled. FMB confirms non-entailments the saturation
-    // provers can only time out on, earning FailedVerified (+2) on bad proofs.
+    // provers can only time out on, earning VerifiedBad (+2) on bad proofs.
     // The esa guard in `delegate_to_atp` still suppresses any FMB refutation of
     // an equisatisfiability step, so this never costs us a good-proof point.
     if only.is_none()

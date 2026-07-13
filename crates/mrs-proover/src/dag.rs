@@ -123,7 +123,7 @@ pub fn build<'p>(proof: &'p mrs_tptp::TPTPProblem<'p>) -> Result<Dag<'p>, DagErr
         if !af.is_fof() && !af.is_cnf() {
             // A TFF/THF *inference* step — we cannot verify it, but it is not
             // positive evidence the proof is wrong: return UnsupportedDialect
-            // so the caller can map this to NotVerified.
+            // so the caller can map this to Unknown.
             return Err(DagError::UnsupportedDialect(af.name().to_string()));
         }
         let name = af.name();
@@ -140,7 +140,7 @@ pub fn build<'p>(proof: &'p mrs_tptp::TPTPProblem<'p>) -> Result<Dag<'p>, DagErr
             // whose outer label is "thm" but whose semantic status is "esa"
             // (because the chain passes through a skolemisation).  Treating
             // such a step as "thm" causes the ATP to correctly refute the
-            // non-entailment and we spuriously report FailedVerified (−1).
+            // non-entailment and we spuriously report VerifiedBad (−1).
             let direct_status = ann.status();
             let status = if direct_status != Some("esa") && has_esa_in_term(&ann.source) {
                 Some("esa")
@@ -174,7 +174,7 @@ pub fn build<'p>(proof: &'p mrs_tptp::TPTPProblem<'p>) -> Result<Dag<'p>, DagErr
     // If the proof contained no FOF/CNF nodes at all (e.g. the proof file was
     // in a non-TSTP format such as Alethe/S-expression used by cvc5, or every
     // step was a type declaration), report EmptyProof so the caller can map
-    // this to NotVerified rather than FailedVerified.
+    // this to Unknown rather than VerifiedBad.
     if nodes.is_empty() {
         return Err(DagError::EmptyProof);
     }

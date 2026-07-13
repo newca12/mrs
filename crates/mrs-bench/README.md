@@ -17,7 +17,7 @@ CASC benchmark harness and report tool for `mrs`.
 | `proover_compare.sh` | Run `mrs-proover` over a proof set with each ATP backend in isolation (`--only-mrs` / `--only-eprover` / `--only-vampire`); reports per-backend verdicts and wall times |
 | `build_proover_corpus.sh` / `verify_proover_corpus.sh` | Build (network) and verify (offline) the committed deterministic E/Vampire regression corpus; see `docs/PROOVER_HARNESS.md` |
 | `fetch_zenodo_corpus.sh` | Download + normalise the Zenodo 19792604 proof-checker benchmark (gitignored under `zenodo-corpus/`) |
-| `zenodo_benchmark.sh` | Evaluate `mrs-proover` (optionally Nörgler, `--with-norgler`) on the Zenodo benchmark; checks the original→never-FailedVerified / falsified→never-Verified invariants |
+| `zenodo_benchmark.sh` | Evaluate `mrs-proover` (optionally Nörgler, `--with-norgler`) on the Zenodo benchmark; checks the original→never-VerifiedBad / falsified→never-VerifiedGood invariants |
 | `norgler_compare.sh` | Compare `mrs-proover` vs Nörgler on the committed deterministic corpus |
 
 ## Quick start
@@ -84,4 +84,4 @@ crates/mrs-bench/fuzz_proover.sh \
 
 When `--problems-dir` is overridden, the default `--pattern` becomes `*+*.p` (TPTP's filename convention for FOF problems). Override with `--pattern '*.p'` for a flat directory of any-dialect problems.
 
-The script writes a `run.csv` plus prints two summary tables at the end: top unhandled inference rules (`NotVerified` rows) and top recurring `FailedVerified` reasons. Both are the highest-leverage signals for prioritising verifier work.
+The script writes a `run.csv` plus prints two summary tables at the end: top unhandled inference rules (`Unknown` rows) and top recurring `VerifiedBad` reasons. Both are the highest-leverage signals for prioritising verifier work.

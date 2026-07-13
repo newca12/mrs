@@ -6,7 +6,7 @@
 //! soundness liability in an adversarial setting (ProoVer 2026 `evil-proofs`):
 //! an attacker controls the rule label, so they can tag a non-equivalence
 //! step `[A] ⊢ B` (where `B` does not follow from `A`) with e.g. `fof_nnf`
-//! and earn a blind pass — a catastrophic `Verified`-on-bad (−10) outcome.
+//! and earn a blind pass — a catastrophic `VerifiedGood`-on-bad (−10) outcome.
 //!
 //! This module replaces *name-trust* with *name-dispatched structural
 //! verification*. Each former trivial rule routes to a verifier that returns

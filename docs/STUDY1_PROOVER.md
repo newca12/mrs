@@ -6,7 +6,7 @@ This document provides a detailed analysis of why `mrs-proover --only-mrs` is le
 
 ## 1. Executive Summary
 
-In the context of automated theorem proving and proof verification (such as the ProoVer competition), "performance" is primarily measured by **verification success rate**—the percentage of valid proofs successfully verified and invalid (falsified/mutated) proofs successfully refuted (marked `FailedVerified`).
+In the context of automated theorem proving and proof verification (such as the ProoVer competition), "performance" is primarily measured by **verification success rate**—the percentage of valid proofs successfully verified and invalid (falsified/mutated) proofs successfully refuted (marked `VerifiedBad`).
 
 Running `mrs-proover` with the `--only-mrs` flag drops its verification power significantly:
 - **Valid proofs (noergler PyRes original):** Verification rate drops from **100% (170/170)** to **95.3% (162/170)**.
@@ -15,7 +15,7 @@ Running `mrs-proover` with the `--only-mrs` flag drops its verification power si
 The main reasons for this performance drop are:
 1. **Restricted Strategy Portfolio:** Standalone `MrsAtp` uses only a single, very simple and fast strategy (`mrs_search::strategy::named::fast`) with a very small budget per step, rather than running a parallel portfolio.
 2. **Younger Proving Engine vs. Mature ATPs:** `mrs` is a newer prover, whereas `eprover` and `vampire` possess decades of advanced heuristics, indexing structures, and preprocessing routines.
-3. **No Finite Model Building (FMB):** The ladder includes `VampireFmbAtp` (Vampire in finite-model-building mode), which actively looks for counter-models for invalid steps. Standalone `mrs` cannot do this, causing invalid steps to time out or saturate instead of being refuted, which degrades `FailedVerified` verdicts to `NotVerified`.
+3. **No Finite Model Building (FMB):** The ladder includes `VampireFmbAtp` (Vampire in finite-model-building mode), which actively looks for counter-models for invalid steps. Standalone `mrs` cannot do this, causing invalid steps to time out or saturate instead of being refuted, which degrades `VerifiedBad` verdicts to `Unknown`.
 
 ---
 
@@ -87,10 +87,10 @@ As implemented in [atp/external.rs](file:///home/fr22192/EDLA/git/mrs/crates/mrs
 - **Younger Codebase:** `mrs` is a newer Rust-based prover. While performant, its internal Given-Clause loop, literal selection, and simplification routines are less mature than those of `eprover` or `vampire`, especially when dealing with complex equational reasoning (equality/paramodulation).
 
 ### 3.3 The Absence of Finite Model Building (FMB)
-Finding that a proof step is invalid (i.e. premises do *not* entail the conclusion) is crucial for identifying mutated/falsified proofs (scoring `FailedVerified` +2 points).
+Finding that a proof step is invalid (i.e. premises do *not* entail the conclusion) is crucial for identifying mutated/falsified proofs (scoring `VerifiedBad` +2 points).
 - Saturation-based theorem provers (like `mrs` and `eprover` or `vampire` in default modes) are designed to find *refutations* (unsatisfiability). If a step is invalid (satisfiable), they will usually run out of time (timeout) or saturate (if the search space is finite).
 - `vampire-fmb` is explicitly configured to search for a **finite model** of `premises ∧ ¬conclusion`. If it finds a finite model, it provides positive proof of non-entailment (`CounterSatisfiable`), which immediately marks the step as `Unsound`.
-- Because `mrs` does not support finite model building, running with `--only-mrs` disables this check. This means almost all invalid steps that could be caught by FMB will instead time out or saturate in `mrs`, resulting in an `Unknown` step verdict. This causes the overall proof status to degrade to `NotVerified` (0 points) instead of `FailedVerified` (+2 points).
+- Because `mrs` does not support finite model building, running with `--only-mrs` disables this check. This means almost all invalid steps that could be caught by FMB will instead time out or saturate in `mrs`, resulting in an `Unknown` step verdict. This causes the overall proof status to degrade to `Unknown` (0 points) instead of `VerifiedBad` (+2 points).
 
 ### 3.4 Why the Full Portfolio of `mrs` is Not Used
 A natural question is: why doesn't `MrsAtp` run the full `casc` or `casc_*` portfolio of `mrs` (which runs multiple strategies in parallel) to boost its standalone capability?
@@ -114,8 +114,8 @@ The `mrs-proover` documentation logs the following results comparing `--only-mrs
 
 | Corpus | `--only-mrs` | Full ladder | Performance Gap |
 |---|---|---|---|
-| **noergler PyRes original** (170 valid proofs) | 162 Verified / 8 NotVerified | 170/170 Verified | **8 valid proofs** failed to verify under `--only-mrs` due to complex steps. |
-| **noergler PyRes falsified** (170 mutated proofs) | 39 FailedVerified / 131 NotVerified | 165 FailedVerified / 5 NotVerified | **126 invalid proofs** went undetected (marked `NotVerified` instead of `FailedVerified`) because FMB/ATP was absent. |
+| **noergler PyRes original** (170 valid proofs) | 162 VerifiedGood / 8 Unknown | 170/170 VerifiedGood | **8 valid proofs** failed to verify under `--only-mrs` due to complex steps. |
+| **noergler PyRes falsified** (170 mutated proofs) | 39 VerifiedBad / 131 Unknown | 165 VerifiedBad / 5 Unknown | **126 invalid proofs** went undetected (marked `Unknown` instead of `VerifiedBad`) because FMB/ATP was absent. |
 
 ## 5. Legality and Usage in the ProoVer Competition
 
@@ -205,7 +205,7 @@ To use CaDiCaL for general FOL step verification, we would need:
 ### 9.1 Is the Current System Ready?
 **Yes.** In its current full configuration (using the full ladder of `mrs` + `eprover` + `vampire` + `vampire-fmb` along with internal CaDiCaL fast-paths), `mrs-proover` is highly competitive and ready for the ProoVer competition.
 
-- **Soundness Invariant:** The system achieves a **100% soundness rate** (0 incorrect `Verified` verdicts on falsified/buggy proofs). This is critical because the competition penalizes `bad→good` errors (marking a buggy proof as Verified) ten times more than `good→bad` errors.
+- **Soundness Invariant:** The system achieves a **100% soundness rate** (0 incorrect `VerifiedGood` verdicts on falsified/buggy proofs). This is critical because the competition penalizes `bad→good` errors (marking a buggy proof as VerifiedGood) ten times more than `good→bad` errors.
 - **Verification Rate:** It correctly verifies **100%** of the valid PyRes proofs and refutes **97.1%** of mutated proofs.
 - **Fast-Paths:** The integration of in-process `mrs` and `CaDiCaL` handles the vast majority of simple and propositional steps in microseconds, preserving almost all of the 30-second budget for the few hard steps that require spawning Eprover or Vampire.
 
@@ -216,7 +216,7 @@ To push the verifier to a perfect score, the following enhancements are recommen
    - Currently, finding counter-models for invalid steps relies on `vampire-fmb`, which has significant startup overhead. 
    - Bundling and integrating **Paradox** (a lightweight MACE-style model finder) on the ladder before `vampire-fmb` would allow the verifier to quickly catch simple mutated steps without wasting time on Vampire's startup latency.
 2. **Analyze the 5 Remaining Falsified Proofs:**
-   - Currently, 5 mutated proofs in the PyRes falsified corpus degrade to `NotVerified` (rather than being successfully refuted as `FailedVerified`).
+   - Currently, 5 mutated proofs in the PyRes falsified corpus degrade to `Unknown` (rather than being successfully refuted as `VerifiedBad`).
    - A useful next step is to run these 5 specific proofs with `MRS_DEBUG_ATP=1` to dump the failed steps, identify why Eprover/Vampire timed out, and see if custom rules or SMT solvers (like Z3/CVC5) can easily resolve them.
 3. **Add Support for Other Prover Dialects:**
    - The current verifier has rules tailored for Vampire (`avatar_*`, `sat_conversion`) and E (`predicate_definition_introduction`). 
@@ -226,14 +226,14 @@ To push the verifier to a perfect score, the following enhancements are recommen
 
 ## 10. Analysis of the Remaining Falsified Proofs (Timeout Root Cause)
 
-To investigate the root cause of the remaining falsified proofs that degrade to `NotVerified`, we ran the Zenodo benchmark suite (`zenodo_benchmark.sh`) locally on the PyRes corpus.
+To investigate the root cause of the remaining falsified proofs that degrade to `Unknown`, we ran the Zenodo benchmark suite (`zenodo_benchmark.sh`) locally on the PyRes corpus.
 
 ### 10.1 Local Benchmark Findings
-Running the verifier on the 170 falsified proofs under a 15-second budget (with a 20-second hard timeout) yielded **168 FailedVerified** and **2 NotVerified** results. The 2 proofs that degraded to `NotVerified` were:
+Running the verifier on the 170 falsified proofs under a 15-second budget (with a 20-second hard timeout) yielded **168 VerifiedBad** and **2 Unknown** results. The 2 proofs that degraded to `Unknown` were:
 1. **`LCL982+1_PyRes---1.5_falsified.proof`** (timed out at `20.010` s)
 2. **`NUM844+2_PyRes---1.5_falsified.proof`** (timed out at `20.011` s)
 
-*Note: The original benchmarks in the README reported 5 NotVerified proofs; the difference of 3 proofs is due to slightly faster CPU hardware and newer local solver versions (E 3.3.3 / Vampire 5.0.1).*
+*Note: The original benchmarks in the README reported 5 Unknown proofs; the difference of 3 proofs is due to slightly faster CPU hardware and newer local solver versions (E 3.3.3 / Vampire 5.0.1).*
 
 ### 10.2 Debug Analysis of the Failed Steps
 Using `MRS_DEBUG_ATP=1` to dump the ATP step queries and results, we ran the verifier on these two proofs. The step outcomes were:
@@ -241,7 +241,7 @@ Using `MRS_DEBUG_ATP=1` to dump the ATP step queries and results, we ran the ver
 - **`LCL982+1_falsified.proof`:** timed out on step `c19` (rule `resolution`).
 - **`NUM844+2_falsified.proof`:** timed out on step `c1094` (rule `resolution`).
 
-Both steps were eventually marked as `Unsound` (yielding `FailedVerified` when the budget was increased to 30 seconds) because **`vampire-fmb` successfully found a finite model (SZS CounterSatisfiable)** in under 0.05 seconds! For example, the FMB result for `NUM844+2` was:
+Both steps were eventually marked as `Unsound` (yielding `VerifiedBad` when the budget was increased to 30 seconds) because **`vampire-fmb` successfully found a finite model (SZS CounterSatisfiable)** in under 0.05 seconds! For example, the FMB result for `NUM844+2` was:
 ```
 % args: --saturation_algorithm fmb --time_limit 8.00 --input_syntax tptp
 % Finite Model Found!
@@ -258,7 +258,7 @@ The reason these proofs time out under tight budgets is due to the **sequential 
 2. Because the mutated steps are logically **unsound (satisfiable)**, the saturation-based entailment provers (`eprover` and `vampire` in default proving mode) cannot find a proof.
 3. As a result, both `eprover` and `vampire` run for their **entire allocated step budget** (capped at 8.0s each) before timing out and returning `Unknown`.
 4. Only after both solvers have timed out (wasting $8.0\text{s} + 8.0\text{s} = 16.0\text{s}$ of CPU time) does the ladder finally call `vampire-fmb`, which finds the counter-model instantly in 0.05 seconds.
-5. This sequential timeout overhead (16 seconds for a single step) exceeds the overall wall-clock budget for the entire proof (15 seconds), causing the wrapper script to kill `mrs-proover` and report `NotVerified`.
+5. This sequential timeout overhead (16 seconds for a single step) exceeds the overall wall-clock budget for the entire proof (15 seconds), causing the wrapper script to kill `mrs-proover` and report `Unknown`.
 
 ```
 [ c1094 Entailment Query ]

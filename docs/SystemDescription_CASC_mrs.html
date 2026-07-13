@@ -80,6 +80,15 @@ proof-extraction/TSTP-output crate. AVATAR splitting uses the
 <TT>cadical</TT> Rust bindings to the CaDiCaL SAT solver. mrs produces a
 TSTP-format refutation proof on success.
 <P>
+The FOF-to-CNF translation is fully documented in the proof output: each
+axiom or (negated) conjecture is cited as a leaf, followed by explicit
+<TT>fof_nnf_transformation</TT> and <TT>skolemisation</TT> (status
+<TT>esa</TT>) steps, and finally a <TT>cnf_transformation</TT> step that
+introduces the flat clauses used by the search — rather than citing the
+original problem file directly from the final clause. Negating the
+conjecture is likewise its own explicit step, annotated status
+<TT>cth</TT> with a single parent of role <TT>conjecture</TT>.
+<P>
 mrs is open source (MIT OR Apache-2.0) and available from:
 <PRE>
     <A HREF="https://github.com/newca12/mrs">https://github.com/newca12/mrs</A></PRE>

@@ -114,7 +114,7 @@ impl Atp for VampireAtp {
 /// model finder. Unlike the saturation provers, FMB actively searches for a
 /// finite model of `premises ∧ ¬conclusion`; finding one is positive proof
 /// that the step is *not* a valid entailment (`CounterSatisfiable` →
-/// `Unsound`), which lets us report `FailedVerified` (+2) on bad proofs that
+/// `Unsound`), which lets us report `VerifiedBad` (+2) on bad proofs that
 /// the entailment provers can only time out on. FMB is sound in both
 /// directions: it returns `Theorem`/`Unsatisfiable` when the step *is* valid
 /// and a counter-model only when one genuinely exists, so it never refutes a
@@ -248,6 +248,7 @@ impl Atp for MrsAtp {
         // 4. Run schedule in memory
         let (result, _report) = mrs_search::strategy::run_schedule(
             &all_clauses,
+            &[],
             id_gen,
             &schedule,
             &local_symbols,
@@ -420,7 +421,7 @@ fn wait_with_timeout(
 
 /// Debug hook: when MRS_DEBUG_ATP is set, dump every problem we send
 /// along with the ATP's verdict and full stdout, so we can root-cause
-/// ATP-refuted (Unsound) FailedVerified verdicts. Files land in
+/// ATP-refuted (Unsound) VerifiedBad verdicts. Files land in
 /// $MRS_DEBUG_ATP_DIR (default /tmp/opencode/atp-debug) with a unique
 /// id per call.
 fn maybe_debug_dump(

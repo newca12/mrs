@@ -9,29 +9,30 @@ use mrs_core::{Formula, Literal};
 /// Extracts clauses from a CNF formula.
 ///
 /// The formula should be in CNF (conjunction of disjunctions of literals).
-/// Each disjunction becomes a [`Clause`].
+/// Each disjunction becomes a [`Clause`], tagged with `source` (cloned for
+/// each resulting clause — typically an `Inference { rule: "cnf_transformation",
+/// parents: [...] }` citing the preceding Skolemization step, or `Input` for
+/// callers that don't track intermediate FOF-level provenance).
 pub fn extract_clauses(
     formula: &Formula,
     id_gen: &mut ClauseIdGen,
-    name: &str,
-    role: &str,
+    source: &ClauseSource,
 ) -> Vec<Clause> {
     let mut clauses = Vec::new();
-    extract_rec(formula, id_gen, name, role, &mut clauses);
+    extract_rec(formula, id_gen, source, &mut clauses);
     clauses
 }
 
 fn extract_rec(
     formula: &Formula,
     id_gen: &mut ClauseIdGen,
-    name: &str,
-    role: &str,
+    source: &ClauseSource,
     clauses: &mut Vec<Clause>,
 ) {
     match formula {
         Formula::And(conjuncts) => {
             for c in conjuncts {
-                extract_rec(c, id_gen, name, role, clauses);
+                extract_rec(c, id_gen, source, clauses);
             }
         }
         Formula::True => {
@@ -42,10 +43,7 @@ fn extract_rec(
             clauses.push(Clause::new_avatar(
                 id_gen.next(),
                 vec![],
-                ClauseSource::Input {
-                    name: name.to_string(),
-                    role: role.to_string(),
-                },
+                source.clone(),
                 Vec::new(),
             ));
         }
@@ -55,10 +53,7 @@ fn extract_rec(
                 clauses.push(Clause::new_avatar(
                     id_gen.next(),
                     literals,
-                    ClauseSource::Input {
-                        name: name.to_string(),
-                        role: role.to_string(),
-                    },
+                    source.clone(),
                     Vec::new(),
                 ));
             }
@@ -141,7 +136,14 @@ mod tests {
             Formula::neg(Formula::atom(Atom::pred(q, vec![Term::var(1)]))),
         ]);
 
-        let clauses = extract_clauses(&f, &mut id_gen, "test", "axiom");
+        let clauses = extract_clauses(
+            &f,
+            &mut id_gen,
+            &ClauseSource::Input {
+                name: "test".to_string(),
+                role: "axiom".to_string(),
+            },
+        );
         assert_eq!(clauses.len(), 1);
         assert_eq!(clauses[0].len(), 2);
         let display = format!("{}", clauses[0].display(&syms));
@@ -168,7 +170,14 @@ mod tests {
             ]),
         ]);
 
-        let clauses = extract_clauses(&f, &mut id_gen, "test", "axiom");
+        let clauses = extract_clauses(
+            &f,
+            &mut id_gen,
+            &ClauseSource::Input {
+                name: "test".to_string(),
+                role: "axiom".to_string(),
+            },
+        );
         assert_eq!(clauses.len(), 2);
     }
 
@@ -179,7 +188,14 @@ mod tests {
         let mut id_gen = ClauseIdGen::new();
 
         let f = Formula::atom(Atom::prop(p));
-        let clauses = extract_clauses(&f, &mut id_gen, "test", "axiom");
+        let clauses = extract_clauses(
+            &f,
+            &mut id_gen,
+            &ClauseSource::Input {
+                name: "test".to_string(),
+                role: "axiom".to_string(),
+            },
+        );
         assert_eq!(clauses.len(), 1);
         assert!(clauses[0].is_unit());
     }

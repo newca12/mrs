@@ -23,15 +23,15 @@ file, either internally or, when internal matching fails, by delegating to
 an external ATP. All other inference steps with status <TT>thm</TT> or
 <TT>cth</TT> are discharged as proof obligations to an ATP ladder.
 <P>
-mrs-proover reports <TT>NotVerified</TT> (rather than guessing) whenever
+mrs-proover reports <TT>Unknown</TT> (rather than guessing) whenever
 neither a positive nor a negative verdict can be established within the
 allotted resources for a given step; because the ProoVer scoring
-penalizes a false <TT>Verified</TT> on a bad proof ten times more heavily
+penalizes a false <TT>VerifiedGood</TT> on a bad proof ten times more heavily
 than a missed detection, the overall verdict policy is deliberately
 conservative: any single step found unsound anywhere in the proof yields
-<TT>FailedVerified</TT> for the whole proof; otherwise any step left
-undecided yields <TT>NotVerified</TT>; only if every step is positively
-confirmed does the proof yield <TT>Verified</TT>.
+<TT>VerifiedBad</TT> for the whole proof; otherwise any step left
+undecided yields <TT>Unknown</TT>; only if every step is positively
+confirmed does the proof yield <TT>VerifiedGood</TT>.
 
 <H3>Implementation</H3>
 
@@ -58,10 +58,10 @@ against the leoprover/noergler PyRes correctness corpus (170 valid proofs,
 170 corresponding falsified/mutated proofs), and against the
 ATP-Research-Project test corpus of correct and deliberately "evil"
 proofs. Across all of these, running the in-process backend alone never
-produced a false <TT>Verified</TT> on an evil proof and never produced a
-false <TT>FailedVerified</TT> on a valid proof; adding the external E/
+produced a false <TT>VerifiedGood</TT> on an evil proof and never produced a
+false <TT>VerifiedBad</TT> on a valid proof; adding the external E/
 Vampire backends only improves detection rate (fewer proofs left at
-<TT>NotVerified</TT>), never soundness.
+<TT>Unknown</TT>), never soundness.
 <P>
 mrs-proover is open source (MIT OR Apache-2.0) and available from:
 <PRE>
@@ -72,14 +72,14 @@ ATP system.
 <H3>Expected Competition Performance</H3>
 
 mrs-proover is expected to correctly identify almost all well-formed valid
-proofs as <TT>Verified</TT> and almost all deliberately incorrect
-("evil") proofs as <TT>FailedVerified</TT>, given the internal structural
+proofs as <TT>VerifiedGood</TT> and almost all deliberately incorrect
+("evil") proofs as <TT>VerifiedBad</TT>, given the internal structural
 checks tailored to the exact Skolemization and negated-conjecture formats
 specified by the ProoVer rules, backed by external ATP calls for the
 remaining steps. Given the highly asymmetric scoring (a single false
-<TT>Verified</TT> on an evil proof costs as much as ten correct
+<TT>VerifiedGood</TT> on an evil proof costs as much as ten correct
 verifications), mrs-proover is tuned to prefer reporting
-<TT>NotVerified</TT> over guessing whenever a step cannot be positively
+<TT>Unknown</TT> over guessing whenever a step cannot be positively
 confirmed or refuted within the time budget, so a non-trivial fraction of
 harder or unusually-shaped valid proofs may be conservatively scored 0
 rather than +1.

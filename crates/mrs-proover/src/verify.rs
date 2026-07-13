@@ -60,29 +60,29 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
         Ok(d) => d,
         // A non-FOF/CNF dialect node (TFF, THF, Alethe, …) means we cannot
         // verify the proof, but it is NOT evidence the proof is wrong.
-        // Map to NotVerified (0 pts) rather than FailedVerified (−1 pts).
+        // Map to Unknown (0 pts) rather than VerifiedBad (−1 pts).
         Err(DagError::UnsupportedDialect(n)) => {
-            return Verdict::NotVerified(format!(
+            return Verdict::Unknown(format!(
                 "structural: node {n} uses an unsupported proof dialect (not FOF/CNF)"
             ));
         }
         // An empty proof (no FOF/CNF nodes at all, e.g. Alethe/S-expression
         // format, or all content was type declarations) is also not verifiable.
         Err(DagError::EmptyProof) => {
-            return Verdict::NotVerified(
+            return Verdict::Unknown(
                 "structural: proof contains no FOF/CNF nodes (unsupported format)".into(),
             );
         }
-        Err(e) => return Verdict::FailedVerified(format!("structural: {e}")),
+        Err(e) => return Verdict::VerifiedBad(format!("structural: {e}")),
     };
 
     if let Err(e) = crate::checks::introduced_definition::check_cycles(&dag) {
-        return Verdict::FailedVerified(format!("structural: {e}"));
+        return Verdict::VerifiedBad(format!("structural: {e}"));
     }
 
     // Defensive: must have a $false root.
     if dag.root.is_none() {
-        return Verdict::FailedVerified("structural: proof does not derive $false".into());
+        return Verdict::VerifiedBad("structural: proof does not derive $false".into());
     }
 
     // 2) Set up shared symbol table and Skolem registry.
@@ -417,7 +417,7 @@ fn check_node_prepare<'p>(
     // be positively confirmed `Sound` by the ATP/structural fast-paths
     // below, regressing verification power with no soundness benefit
     // (confirmed: this widening dropped the built-in corpus from 42 to 33
-    // `Verified` with zero new `FailedVerified`).
+    // `VerifiedGood` with zero new `VerifiedBad`).
     if node.inference_rule == Some("skolemize") {
         let parent_fof = node
             .parents
@@ -510,11 +510,12 @@ fn prepare_atp_step<'p>(dag: &Dag<'p>, idx: usize, symbols: &mut SymbolTable) ->
     // value the premises do not pin down, so the conclusion need not be a
     // logical consequence. A counter-model to the entailment query is
     // therefore *expected* for a sound esa step and is NOT evidence of a
-    // fault. Reporting `Unsound` (→ FailedVerified, −1) on a good esa step
+    // fault. Reporting `Unsound` (→ VerifiedBad, −1) on a good esa step
     // would be a scoring error, and becomes an outright hazard once a
     // counter-model finder is in the ladder. So for esa steps we accept only
     // positive `Sound` confirmations and downgrade every refutation to
-    // `Unknown` (NotVerified, 0). `thm`/`cth`/plain steps are genuine
+    // `StepOutcome::Unknown` (aggregates to a final `Verdict::Unknown`, 0
+    // pts). `thm`/`cth`/plain steps are genuine
     // entailments and keep full refutation power.
     let esa = node.status == Some("esa");
     // Build the conclusion and premise formulas in mrs-core form.
@@ -1051,7 +1052,7 @@ mod esa_guard_tests {
     fn esa_step_downgrades_unsound_to_unknown() {
         // An esa step refuted by the backend must NOT be reported Unsound:
         // equisatisfiability steps are not entailments, so a counter-model is
-        // expected and is not a fault. Scoring: 0 (NotVerified), never −1.
+        // expected and is not a fault. Scoring: 0 (Unknown), never −1.
         let src = "fof(a, axiom, p(a)).\n\
                    fof(s1, plain, q(b), inference(some_rule, [status(esa)], [a])).\n\
                    fof(s2, plain, $false, inference(some_rule, [status(thm)], [s1])).\n";
@@ -1064,7 +1065,7 @@ mod esa_guard_tests {
     #[test]
     fn thm_step_keeps_unsound() {
         // A thm step is a genuine entailment; a refutation IS a fault and must
-        // be reported Unsound (→ FailedVerified, +2 on a bad proof).
+        // be reported Unsound (→ VerifiedBad, +2 on a bad proof).
         let src = "fof(a, axiom, p(a)).\n\
                    fof(s1, plain, q(b), inference(some_rule, [status(thm)], [a])).\n\
                    fof(s2, plain, $false, inference(some_rule, [status(thm)], [s1])).\n";

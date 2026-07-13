@@ -8,9 +8,9 @@ Proof verifier for TPTP/TSTP refutation proofs, targeting the
 Reads a TSTP proof file (FOF, refutation-by-`$false`) together with its linked
 problem file, and prints one of:
 
-- `% SZS status Verified`
-- `% SZS status FailedVerified : <reason>`
-- `% SZS status NotVerified : <reason>`
+- `% SZS status VerifiedGood`
+- `% SZS status VerifiedBad : <reason>`
+- `% SZS status Unknown : <reason>`
 
 ## Build
 
@@ -64,16 +64,16 @@ pays the full `vampire` budget (or vice versa) on top of it.
 | `load` | Parse proof + linked problem with `mrs-tptp`. |
 | `dag` | Build the proof DAG, check cycles, locate the `$false` root. |
 | `lower` | Convert FOF AST → `mrs-core` `Formula`. |
-| `checks::axiom_leaf` | Compare leaf nodes α-equivalently against the named axiom in the problem file. For anonymous `file(_,unknown)` leaves from pre-clausifying provers, also try matching against the CNF (`mrs-cnf::clausify`) of each problem formula modulo α/AC, upgrading `Unknown`→`Verified` without ever introducing a new `Unsound`. |
+| `checks::axiom_leaf` | Compare leaf nodes α-equivalently against the named axiom in the problem file. For anonymous `file(_,unknown)` leaves from pre-clausifying provers, also try matching against the CNF (`mrs-cnf::clausify`) of each problem formula modulo α/AC, upgrading `Unknown`→`VerifiedGood` without ever introducing a new `Unsound`. |
 | `checks::neg_conjecture` | Verify NNF(¬conjecture) ≡α NNF(step). |
 | `checks::skolemize` | Enforce: status `esa`, fresh Skolem symbol, dependency tuple matches the in-scope universals, conclusion is exactly parent[Var ↦ sK(args)]. |
 | `atp::external` | Spawn `eprover` / `vampire` to discharge other steps. |
 | `atp::ladder` | Run `mrs` in-process first, then race remaining external backends (`eprover`, `vampire`) in parallel per step; the first definite verdict wins and cancels the rest. |
-| `verdict` | Aggregate: any `Unsound` → `FailedVerified`; else any `Unknown` → `NotVerified`; else `Verified`. |
+| `verdict` | Aggregate: any `Unsound` → `VerifiedBad`; else any per-step `Unknown` → `Verdict::Unknown`; else `VerifiedGood`. |
 
 The verdict policy is deliberately **conservative**: the competition scoring
 penalises `bad→good` ten times more than `good→bad`, so the verifier only
-emits `Verified` when every step is positively confirmed.
+emits `VerifiedGood` when every step is positively confirmed.
 
 ## Tested against the published examples
 
@@ -83,15 +83,15 @@ are in `tests/fixtures/`. Running the binary on them yields:
 
 | File | Expected | Got |
 |---|---|---|
-| `example1_c_proof.p` | Verified | Verified |
-| `example2_c_proof.p` | Verified | Verified |
-| `example3_c_proof.p` | Verified | Verified |
-| `example1_e_proof.p` | FailedVerified | FailedVerified (wrong `¬∀X.p(X)`) |
-| `example2_e_proof.p` | FailedVerified | FailedVerified (axiom mismatch) |
-| `example3_e_proof.p` | FailedVerified | FailedVerified (Skolem symbol reuse) |
-| `example4_e_proof.p` | FailedVerified | FailedVerified (substitution shape) |
+| `example1_c_proof.p` | VerifiedGood | VerifiedGood |
+| `example2_c_proof.p` | VerifiedGood | VerifiedGood |
+| `example3_c_proof.p` | VerifiedGood | VerifiedGood |
+| `example1_e_proof.p` | VerifiedBad | VerifiedBad (wrong `¬∀X.p(X)`) |
+| `example2_e_proof.p` | VerifiedBad | VerifiedBad (axiom mismatch) |
+| `example3_e_proof.p` | VerifiedBad | VerifiedBad (Skolem symbol reuse) |
+| `example4_e_proof.p` | VerifiedBad | VerifiedBad (substitution shape) |
 
-## Verified sound with `--only-mrs` (no eprover/vampire needed)
+## Confirmed sound with `--only-mrs` (no eprover/vampire needed)
 
 `mrs-proover` was cross-checked against two external reference corpora —
 [leoprover/noergler](https://github.com/leoprover/noergler) (PyRes original +
@@ -105,19 +105,19 @@ entirely, then compared against the default full ladder (`eprover` + `vampire`
 
 | Corpus | `--only-mrs` | Full ladder |
 |---|---|---|
-| Built-in `proover-corpus` (25 problems, 46 E/Vampire proofs) | 43 Verified / 3 NotVerified / **0 FailedVerified** | identical: 43/3/0 |
-| ATP-Research-Project `correct` (3) | 3/3 Verified | 3/3 Verified |
-| ATP-Research-Project `incorrect` (4 "evil") | 3/4 correctly `FailedVerified`, 1 (`EVL002+1`) degrades to `NotVerified` | 4/4 `FailedVerified` |
-| ATP-Research-Project `samples` (3) | `COR000+1` Verified, `EVL000+1` FailedVerified, `TMO000+1` degrades to `NotVerified` | all 3 match expectations |
-| noergler PyRes **original** (170 valid proofs) | 162 Verified / 8 NotVerified / **0 FailedVerified** | 170/170 Verified |
-| noergler PyRes **falsified** (170 mutated/evil proofs) | 39 `FailedVerified` / 131 `NotVerified` / **0 Verified** | 165 `FailedVerified` / 5 `NotVerified` / **0 Verified** |
+| Built-in `proover-corpus` (25 problems, 46 E/Vampire proofs) | 43 VerifiedGood / 3 Unknown / **0 VerifiedBad** | identical: 43/3/0 |
+| ATP-Research-Project `correct` (3) | 3/3 VerifiedGood | 3/3 VerifiedGood |
+| ATP-Research-Project `incorrect` (4 "evil") | 3/4 correctly `VerifiedBad`, 1 (`EVL002+1`) degrades to `Unknown` | 4/4 `VerifiedBad` |
+| ATP-Research-Project `samples` (3) | `COR000+1` VerifiedGood, `EVL000+1` VerifiedBad, `TMO000+1` degrades to `Unknown` | all 3 match expectations |
+| noergler PyRes **original** (170 valid proofs) | 162 VerifiedGood / 8 Unknown / **0 VerifiedBad** | 170/170 VerifiedGood |
+| noergler PyRes **falsified** (170 mutated/evil proofs) | 39 `VerifiedBad` / 131 `Unknown` / **0 VerifiedGood** | 165 `VerifiedBad` / 5 `Unknown` / **0 VerifiedGood** |
 
 **Takeaway:** dropping `eprover`/`vampire` never turns a valid proof into
-`FailedVerified` and never turns an evil proof into `Verified` — the critical
+`VerifiedBad` and never turns an evil proof into `VerifiedGood` — the critical
 soundness invariant (`bad→good` never happens) holds with `mrs` alone. The
 only cost is *detection strength*: without the external ATPs to discharge a
 few inference steps within the time budget, some proofs that would otherwise
-resolve to `Verified`/`FailedVerified` instead give up safely as `NotVerified`
+resolve to `VerifiedGood`/`VerifiedBad` instead give up safely as `Unknown`
 (0 points, never wrong). Concretely, `--only-mrs` loses positive detection on
 2 of the 10 ATP-Research-Project cases and roughly a third of the noergler
 PyRes corpus, with zero soundness regressions anywhere. This confirms

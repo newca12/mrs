@@ -6,9 +6,9 @@ This document tracks what remains to be implemented in `mrs-proover` to maximise
 
 | Outcome | Points |
 |---------|--------|
-| Correctly identify evil proof (`FailedVerified`) | **+2** |
-| Correctly identify good proof (`Verified`) | **+1** |
-| Give up / timeout (`NotVerified`) | 0 |
+| Correctly identify evil proof (`VerifiedBad`) | **+2** |
+| Correctly identify good proof (`VerifiedGood`) | **+1** |
+| Give up / timeout (`Unknown`) | 0 |
 | Falsely reject a good proof | −1 |
 | Falsely verify an evil proof (`Unsound`) | **−10 (fatal)** |
 
@@ -33,7 +33,7 @@ The scoring is highly asymmetric. A single `−10` requires 10 correct `+1` veri
 | `MrsAtp` in-process backend (zero subprocess overhead per step) | `c53c0ad6` |
 | `~$true` recognised as valid `$false` root in DAG | `22ab3d02` |
 | Refutation root: pick topologically last `$false` node (AVATAR multi-`$false`) | `1cbc351d` |
-| TFF type-decls skipped; `EmptyProof`/`UnsupportedDialect` → `NotVerified` | `4ed23bdf` |
+| TFF type-decls skipped; `EmptyProof`/`UnsupportedDialect` → `Unknown` | `4ed23bdf` |
 | `has_esa_in_term`: propagate `[status(esa)]` from nested E-prover inference chains | `4ed23bdf` |
 | `match_formula` permuted quantifier variable lists (Vampire multi-var Skolem) | `4ed23bdf` |
 | Unrecognised `introduced(definition)` intro tags (e.g. `general_splitting_component_introduction`) → `Unknown` | `c621b94b` |
@@ -43,7 +43,7 @@ The scoring is highly asymmetric. A single `−10` requires 10 correct `+1` veri
 | Cyclic/recursive definition chain detection (`check_cycles` DFS over DAG) | `4ed23bdf` |
 | Broader structural coverage: `strict_alpha_equiv` for `split_conjunct` projection | `c53c0ad6` |
 | Batch ATP queries: in-process `mrs_search` replaces per-step subprocess | `c53c0ad6` |
-| Deterministic offline E+Vampire regression corpus (46 proofs, 0 `FailedVerified`) | `8f275b16` |
+| Deterministic offline E+Vampire regression corpus (46 proofs, 0 `VerifiedBad`) | `8f275b16` |
 | `test_tptp_solutions.sh` restricted to E/Vampire allowlist (no format noise) | `8f275b16` |
 | AC-equivalence matching in `axiom_leaf.rs` | `202aae96` |
 | In-process MrsAtp saturation fallback | `bbd640cf` |
@@ -69,8 +69,8 @@ Specific targets (from the evil-proofs analysis and CASC dataset experience):
 
 - Anonymous `file(_,unknown)` leaves from pre-clausifying provers (SPASS, Otter)
   currently return `Unknown`.  An AC-normalising comparison against the Skolemised /
-  CNF form of each axiom would turn these into `Verified` (+1) rather than
-  `NotVerified` (0).  Low priority vs. soundness work but meaningful at scale.
+  CNF form of each axiom would turn these into `VerifiedGood` (+1) rather than
+  `Unknown` (0).  Low priority vs. soundness work but meaningful at scale.
 
 ### Benchmark Against Nörgler — ✅ **done**
 A full head-to-head against Nörgler on the
@@ -108,7 +108,7 @@ Two `skolemize` improvements were made during this run:
 ### Remaining `skolemize` coverage — **AC-aware matrix matching**
 **File:** `crates/mrs-proover/src/checks/skolemize.rs`
 
-The 10/170 PyRes proofs still `NotVerified` are `skolemize` steps where PyRes
+The 10/170 PyRes proofs still `Unknown` are `skolemize` steps where PyRes
 also **re-associates the conjunction** (`(A∧B)∧(C∧D)` → `A∧(B∧(C∧D))`).
 `match_skolem_formula` matches the matrix structurally and is not AC-aware, so it
 safely declines (0 pts, never a −1). Flattening ∧/∨ chains and matching the
@@ -116,7 +116,7 @@ conjuncts as a multiset (with Skolem-term binding) would recover these.
 
 ### Without a problem file, validate `file(_,unknown)` leaves structurally
 The Otter half ships no problem files, so every original Otter proof degrades to
-`NotVerified`. Harmless at the competition (which supplies the problem), but
+`Unknown`. Harmless at the competition (which supplies the problem), but
 verifying the inference structure and treating leaves as assumptions (as Nörgler
 does) would close it.
 
@@ -133,7 +133,7 @@ does) would close it.
 | Cyclic/recursive definition chain detection | High | ✅ Done (`4ed23bdf`) |
 | `split_conjunct` AC-reorder exploit closed | High | ✅ Done (`c53c0ad6`) |
 | In-process ATP backend (zero subprocess overhead) | Medium | ✅ Done (`c53c0ad6`) |
-| TFF/non-TSTP proofs → `NotVerified` not `FailedVerified` | Medium | ✅ Done (`4ed23bdf`) |
+| TFF/non-TSTP proofs → `Unknown` not `VerifiedBad` | Medium | ✅ Done (`4ed23bdf`) |
 | Nested `[status(esa)]` propagation (E combined steps) | Medium | ✅ Done (`4ed23bdf`) |
 | Permuted quantifier variable lists in Skolem axioms | Medium | ✅ Done (`4ed23bdf`) |
 | Unrecognised `introduced(definition)` intro tags | Medium | ✅ Done (`c621b94b`) |
