@@ -3,7 +3,7 @@
 #
 # Generate TSTP proofs from a directory of TPTP problems using an ATP
 # (eprover or vampire), then verify every produced proof with mrs-proover.
-# Aggregates Verified / FailedVerified / NotVerified counts and prints a
+# Aggregates VerifiedGood / VerifiedBad / Unknown counts and prints a
 # frequency table of inference rules mrs-proover could not handle — the
 # primary signal for prioritising verifier work.
 #
@@ -250,7 +250,7 @@ process_one() {
 
     local szs_line; szs_line="$(grep -m1 '% SZS status' <<< "${res}" || true)"
     if [[ -z "${szs_line}" ]]; then
-        verdict="NotVerified"
+        verdict="Unknown"
         detail="no SZS line emitted"
     else
         verdict="$(awk '{print $4}' <<< "${szs_line}")"
@@ -290,21 +290,21 @@ echo "[fuzz] Done. ${TOTAL} problems processed via ${GENERATOR}." >&2
 awk -F, '
     NR>1 { n[$3]++; total++ }
     END {
-        printf "[fuzz]   Verified:               %6d\n", n["Verified"]+0       > "/dev/stderr"
-        printf "[fuzz]   FailedVerified:         %6d\n", n["FailedVerified"]+0 > "/dev/stderr"
-        printf "[fuzz]   NotVerified:            %6d\n", n["NotVerified"]+0    > "/dev/stderr"
+        printf "[fuzz]   VerifiedGood:           %6d\n", n["VerifiedGood"]+0    > "/dev/stderr"
+        printf "[fuzz]   VerifiedBad:            %6d\n", n["VerifiedBad"]+0     > "/dev/stderr"
+        printf "[fuzz]   Unknown:                %6d\n", n["Unknown"]+0        > "/dev/stderr"
         printf "[fuzz]   NoProof (gen gave up):  %6d\n", n["NoProof"]+0        > "/dev/stderr"
         printf "[fuzz]   Total:                  %6d\n", total                 > "/dev/stderr"
     }
 ' "${CSV}"
 
 # Frequency table of unhandled inference rules. The 'detail' column for a
-# NotVerified row often contains `rule=Some("<name>")`; surface the top
+# Unknown row often contains `rule=Some("<name>")`; surface the top
 # offenders so the verifier team knows where to spend effort.
 echo "" >&2
-echo "[fuzz] Top unhandled inference rules (NotVerified rows):" >&2
+echo "[fuzz] Top unhandled inference rules (Unknown rows):" >&2
 awk -F, '
-    NR>1 && $3=="NotVerified" {
+    NR>1 && $3=="Unknown" {
         if (match($0, /rule=Some\("[^"]+"\)/)) {
             # `rule=Some("` is 11 chars; `")` suffix is 2 chars; trim both.
             r=substr($0, RSTART+11, RLENGTH-13)
@@ -320,15 +320,15 @@ awk -F, '
     }
 ' "${CSV}" | sort -k2 -rn | head -30 >&2
 
-# Frequency table of FailedVerified detail patterns. These are proofs the
+# Frequency table of VerifiedBad detail patterns. These are proofs the
 # verifier actively rejected — could be real bugs in the proof, but on a
 # corpus run they're more often verifier-side mismatches (e.g. unknown
 # axiom names from vampire's `file(..., unknown)` annotations). Surface
 # the most common detail prefix to triage them in bulk.
 echo "" >&2
-echo "[fuzz] Top FailedVerified reasons (first 4 words of detail):" >&2
+echo "[fuzz] Top VerifiedBad reasons (first 4 words of detail):" >&2
 awk -F, '
-    NR>1 && $3=="FailedVerified" {
+    NR>1 && $3=="VerifiedBad" {
         # Take the part after "step XYZ: " if present, else the whole detail.
         d=$4
         sub(/^step [^:]*: */, "", d)

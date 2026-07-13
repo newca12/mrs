@@ -15,7 +15,7 @@ WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
 
 BINARY="${WORKSPACE_ROOT}/target/release/mrs-proover"
 if [[ ! -x "${BINARY}" ]]; then
-    echo "% SZS status NotVerified : mrs-proover binary not found; run: cargo build --release -p mrs-proover"
+    echo "% SZS status Unknown : mrs-proover binary not found; run: cargo build --release -p mrs-proover"
     exit 0
 fi
 
@@ -39,7 +39,9 @@ if [[ -x "${VAMPIRE}" ]]; then
 fi
 
 # Run with a wall-clock timeout one second below the harness limit so we
-# always emit something rather than being killed.
-SOFT=$(( TIME_LIMIT > 1 ? TIME_LIMIT - 1 : TIME_LIMIT ))
+# always emit something rather than being killed. Never let this evaluate
+# to 0: GNU `timeout 0s <cmd>` disables the timeout entirely (runs
+# unbounded) rather than killing immediately.
+SOFT=$(( TIME_LIMIT > 1 ? TIME_LIMIT - 1 : 1 ))
 exec timeout --foreground "${SOFT}s" "${BINARY}" "${ARGS[@]}" "${PROOF}" \
-    || echo "% SZS status NotVerified : exhausted wall-clock budget"
+    || echo "% SZS status Unknown : exhausted wall-clock budget"

@@ -124,7 +124,7 @@ run_one() {
 
     line=$(grep -m1 '% SZS status' "${tmp}" 2>/dev/null || true)
     if [[ -z "${line}" ]]; then
-        verdict="NotVerified"
+        verdict="Unknown"
         detail="no SZS line emitted"
     else
         # Parse "% SZS status <verdict> [: <detail>]"

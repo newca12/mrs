@@ -5,7 +5,7 @@
 # behind mrs-proover. Runs each proof file once per backend, with each
 # backend forced to be the sole ATP via --only-<backend>. Reports:
 #
-#   - per-backend Verified / FailedVerified / NotVerified counts,
+#   - per-backend VerifiedGood / VerifiedBad / Unknown counts,
 #   - per-proof verdict + wall time for every backend,
 #   - sum of wall times, mean per proof,
 #   - agreement matrix (where backends disagree).
@@ -117,7 +117,7 @@ run_one() {
 
     line=$(grep -m1 '% SZS status' "${tmp}" 2>/dev/null || true)
     if [[ -z "${line}" ]]; then
-        verdict="NotVerified"
+        verdict="Unknown"
         detail="no SZS line emitted"
     else
         verdict=$(awk '{print $4}' <<< "${line}")
@@ -157,16 +157,16 @@ NR>1 {
 }
 END {
     printf "  %-12s %-12s %-16s %-12s %-14s %-14s\n",
-           "backend","Verified","FailedVerified","NotVerified","tot_time(s)","mean(s)" > "/dev/stderr"
+           "backend","VerifiedGood","VerifiedBad","Unknown","tot_time(s)","mean(s)" > "/dev/stderr"
     for (s in sys) {
         printf "  %-12s %-12d %-16d %-12d %-14.3f %-14.3f\n",
-               s, n[s,"Verified"]+0, n[s,"FailedVerified"]+0, n[s,"NotVerified"]+0,
+               s, n[s,"VerifiedGood"]+0, n[s,"VerifiedBad"]+0, n[s,"Unknown"]+0,
                t[s], t[s]/c[s] > "/dev/stderr"
     }
 }' "${CSV}"
 
 echo "" >&2
-echo "[compare] Per-proof verdicts (V=Verified F=FailedVerified N=NotVerified):" >&2
+echo "[compare] Per-proof verdicts (V=VerifiedGood F=VerifiedBad N=Unknown):" >&2
 awk -F, -v backends="${BACKENDS}" '
 BEGIN {
     n=split(backends, B, ",");

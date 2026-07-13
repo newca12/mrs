@@ -13,7 +13,7 @@ PROOF="${1:?Usage: starexec_run_default <proof_path>}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BINARY="${SCRIPT_DIR}/mrs-proover"
 if [[ ! -x "${BINARY}" ]]; then
-    echo "% SZS status NotVerified : mrs-proover binary not found next to starexec_run_default"
+    echo "% SZS status Unknown : mrs-proover binary not found next to starexec_run_default"
     exit 0
 fi
 
@@ -41,4 +41,4 @@ WALLCLOCK="${STAREXEC_WALLCLOCK_LIMIT:-30}"
 SOFT_TIME=$(( WALLCLOCK > 1 ? WALLCLOCK - 1 : 1 ))
 
 exec timeout --foreground "${SOFT_TIME}s" "${BINARY}" "${ARGS[@]}" "${PROOF}" \
-    || echo "% SZS status NotVerified : exhausted wall-clock budget"
+    || echo "% SZS status Unknown : exhausted wall-clock budget"

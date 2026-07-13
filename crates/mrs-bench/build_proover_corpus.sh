@@ -12,7 +12,7 @@
 # connection-matrix proofs, Darwin/Paradox emit finite models, ...) produce
 # proof formats that mrs-proover legitimately cannot verify. Every run drew a
 # different random sample, so every run "discovered" a different set of
-# NotVerified/FailedVerified results — there was no stable signal and no way to
+# Unknown/VerifiedBad results — there was no stable signal and no way to
 # tell a real regression from format noise.
 #
 # The ProoVer 2026 competition feeds proofs from a NARROW, well-formed

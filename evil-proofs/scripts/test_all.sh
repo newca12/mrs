@@ -33,14 +33,14 @@ for EXPLOIT in "$EXPLOITS_DIR"/*; do
       OUTPUT=$("$VERIFIER" --problems-dir "$PROBLEM_DIR" "$PROOF_FILE" 2>&1)
       set -e
       
-      # Determine if it bypassed (Verified) or got caught (FailedVerified / NotVerified)
-      if echo "$OUTPUT" | grep -q "% SZS status Verified"; then
+      # Determine if it bypassed (VerifiedGood) or got caught (VerifiedBad / Unknown)
+      if echo "$OUTPUT" | grep -q "% SZS status VerifiedGood"; then
         echo -e "\033[0;31m[BYPASSED]\033[0m mrs-proover incorrectly verified this evil proof!"
-      elif echo "$OUTPUT" | grep -q "% SZS status FailedVerified"; then
-        echo -e "\033[0;32m[CAUGHT]\033[0m mrs-proover correctly rejected this evil proof (FailedVerified)."
+      elif echo "$OUTPUT" | grep -q "% SZS status VerifiedBad"; then
+        echo -e "\033[0;32m[CAUGHT]\033[0m mrs-proover correctly rejected this evil proof (VerifiedBad)."
         echo "Reason: $(echo "$OUTPUT" | grep "% SZS status" | sed 's/.*: //')"
-      elif echo "$OUTPUT" | grep -q "% SZS status NotVerified"; then
-        echo -e "\033[0;33m[UNKNOWN]\033[0m mrs-proover could not verify this evil proof (NotVerified)."
+      elif echo "$OUTPUT" | grep -q "% SZS status Unknown"; then
+        echo -e "\033[0;33m[UNKNOWN]\033[0m mrs-proover could not verify this evil proof (Unknown)."
         echo "Reason: $(echo "$OUTPUT" | grep "% SZS status" | sed 's/.*: //')"
       else
         echo -e "\033[0;31m[ERROR]\033[0m Unexpected output from verifier:"

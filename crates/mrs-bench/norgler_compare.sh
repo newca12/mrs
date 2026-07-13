@@ -4,7 +4,7 @@
 #
 # Benchmarks mrs-proover against the Nörgler reference verifier on the offline
 # proover corpus (crates/mrs-bench/proover-corpus). Reports per-backend
-# Verified / FailedVerified / NotVerified counts and wall times into run.csv.
+# VerifiedGood / VerifiedBad / Unknown counts and wall times into run.csv.
 #
 # Requires:
 #   - target/release/mrs-proover            (cargo build --release -p mrs-proover)
@@ -13,7 +13,7 @@
 #
 # CAVEAT: the Nörgler numbers are PRELIMINARY. Nörgler is strict about
 # annotation shapes and rejects several standard E/Vampire rules even with the
-# `--relax-*` flags this harness passes, so its FailedVerified/NotVerified
+# `--relax-*` flags this harness passes, so its VerifiedBad/Unknown
 # counts reflect format/config friction, NOT a definitive quality gap. Do not
 # read the raw totals as an mrs-proover "win". See docs/PROOVER_HARNESS.md.
 
@@ -82,7 +82,7 @@ run_mrs_proover() {
 
     line=$(grep -m1 '% SZS status' "${tmp}" 2>/dev/null || true)
     if [[ -z "${line}" ]]; then
-        verdict="NotVerified"
+        verdict="Unknown"
         detail="no SZS line emitted"
     else
         verdict=$(awk '{print $4}' <<< "${line}")
@@ -115,7 +115,7 @@ run_norgler() {
 
     line=$(grep -m1 '% SZS status' "${tmp}" 2>/dev/null || true)
     if [[ -z "${line}" ]]; then
-        verdict="NotVerified"
+        verdict="Unknown"
         detail="no SZS line emitted (timeout)"
     else
         verdict=$(awk '{print $4}' <<< "${line}")
@@ -159,10 +159,10 @@ NR>1 {
 }
 END {
     printf "  %-12s %-12s %-16s %-12s %-14s %-14s\n",
-           "backend","Verified","FailedVerified","NotVerified","tot_time(s)","mean(s)" > "/dev/stderr"
+           "backend","VerifiedGood","VerifiedBad","Unknown","tot_time(s)","mean(s)" > "/dev/stderr"
     for (s in sys) {
         printf "  %-12s %-12d %-16d %-12d %-14.3f %-14.3f\n",
-               s, n[s,"Verified"]+0, n[s,"FailedVerified"]+0, n[s,"NotVerified"]+0,
+               s, n[s,"VerifiedGood"]+0, n[s,"VerifiedBad"]+0, n[s,"Unknown"]+0,
                t[s], t[s]/c[s] > "/dev/stderr"
     }
 }' "${CSV}"
