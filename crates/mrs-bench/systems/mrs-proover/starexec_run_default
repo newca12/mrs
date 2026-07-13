@@ -33,7 +33,12 @@ if [[ -x "${VAMPIRE}" ]]; then
 fi
 
 WALLCLOCK="${STAREXEC_WALLCLOCK_LIMIT:-30}"
-SOFT_TIME=$(( WALLCLOCK > 1 ? WALLCLOCK - 1 : WALLCLOCK ))
+# Enforce a minimum of 1s. Critically, this must never evaluate to 0: GNU
+# `timeout 0s <cmd>` disables the timeout entirely (runs the command
+# unbounded) rather than killing it immediately, which would silently
+# remove our safety net if STAREXEC_WALLCLOCK_LIMIT were ever 0 or unset
+# to an empty string that parses as 0.
+SOFT_TIME=$(( WALLCLOCK > 1 ? WALLCLOCK - 1 : 1 ))
 
 exec timeout --foreground "${SOFT_TIME}s" "${BINARY}" "${ARGS[@]}" "${PROOF}" \
     || echo "% SZS status NotVerified : exhausted wall-clock budget"
