@@ -1,6 +1,6 @@
 # MRS Hardware & Multi-Threading Benchmark Analysis
 
-This document records the hardware benchmarks, vectorization latency speedups (AVX2), CPU multi-threading scalability findings (SMT/hyper-threading bottlenecks), server-specific glibc drift, and target configurations for the CASC-30 StarExec competition.
+This document records the hardware benchmarks, vectorization latency speedups (AVX2), CPU multi-threading scalability findings (SMT/hyper-threading bottlenecks), server-specific glibc drift, and target configurations for the CASC StarExec competition.
 
 ---
 
@@ -87,23 +87,60 @@ Our `docs/BENCHMARKS.md` log reveals critical, silent performance degradation on
 
 ---
 
-## 4. Official CASC-30/StarExec Hardware Alignment
+## 4. Official CASC-J13/StarExec Hardware Alignment
 
-The official CASC competition runs on **StarExec** (8-core Intel Xeon nodes, RHEL7 operating system).
+The official CASC competition runs on **StarExec Miami**. Per the current
+CASC-J13 `Design.html` page (https://tptp.org/CASC/J13/Design.html), the
+actual specification is:
 
-### StarExec Node Specifications:
-- **Hardware:** Intel Xeon E5-2609 CPU (Haswell baseline, supporting native AVX2 vector instructions).
-- **CASC Configuration:** StarExec allocates **8 physical cores** per solver job, with **no hyper-threading / SMT oversubscription active**. 
-- **Operating System:** RHEL7 (`glibc 2.17`).
+- **Hardware:** Two octa-core Intel(R) Xeon(R) E5-2620 v4 @ 2.10GHz CPUs
+  (Broadwell), without hyperthreading — 16 physical cores per machine, 30
+  machines available (60 CPUs total). One ATP system runs on one CPU
+  (StarExec uses `sched_setaffinity` to pin each run to a single CPU).
+- **Operating System:** Ubuntu 24.04.3 LTS, Linux kernel 6.8.0-71-generic.
+- **Memory:** 256GiB per machine; StarExec uses `setrlimit` to cap each run
+  at 128GiB.
+- **Time limits:** minimum 120s, maximum set by the organizers and
+  announced at the competition (historically up to 240s for FOF/UEQ-class
+  divisions).
+
+This supersedes older internal notes that referenced RHEL7/glibc 2.17 and
+an Intel Xeon E5-2609 (Haswell) as the "official" StarExec spec — those
+were accurate for a previous CASC edition's infrastructure, not the
+current one. StarExec Miami is also the same platform publicly available
+to the TPTP community for testing/tuning outside of the competition itself.
 
 ### How `mrs` fits the StarExec Hardware:
-1. **No SMT Contention:** Because StarExec allocates 8 physical cores with 0 logical oversubscription, `mrs` running with **`MRS_WORKERS=8`** will enjoy **both** benefits: **maximum strategy diversity (8 workers)** and **maximum AVX2 speed with zero hyper-threading stalling**!
-2. **GLIBC Compatibility:** To ensure the binary launches on RHEL7, it must be compiled on a RHEL7 build container or statically linked.
-3. **The Competition Target Compilation:** To ensure maximum SIMD-vectorized performance on StarExec, the final competition ZIP must be built using this explicit CPU target:
+1. **No SMT Contention:** StarExec allocates one physical CPU per run with
+   zero hyperthreading oversubscription, and each CPU here is itself
+   8-core. Running `mrs` with **`MRS_WORKERS=8`** (or `--workers 8`) uses
+   every core of the allocated CPU with maximum strategy diversity and no
+   SMT contention.
+2. **GLIBC Compatibility:** Ubuntu 24.04.3 ships **glibc 2.39**. To avoid
+   any risk of glibc-version mismatch between the build machine and the
+   competition nodes (e.g. a build machine with a newer glibc than 2.39,
+   which would produce a binary that refuses to run on the older
+   competition nodes), either build directly on a matching Ubuntu
+   24.04.x machine, or produce a fully static binary (e.g. via the
+   `x86_64-unknown-linux-musl` target) that carries no glibc dependency
+   at all.
+3. **The Competition Target Compilation:** To get SIMD-vectorized
+   performance (AVX2, BMI1/BMI2, FMA3) without risking an illegal
+   instruction on the actual hardware, build with:
    ```bash
-   RUSTFLAGS="-C target-cpu=haswell" cargo build --release --features ml-guidance
+   RUSTFLAGS="-C target-cpu=haswell" cargo build --release --bin mrs
    ```
-   This guarantees that the precompiled binary contains the exact hardware-vectorized AVX2 instructions (like VEX-prefixed `vpxor` and `%ymm` registers), boosting your solved counts across FNE and FEQ to their absolute maximum limits!
+   `haswell` rather than `native` or `broadwell` is a deliberate choice:
+   Broadwell (the actual competition CPU) is ISA-identical to Haswell —
+   it introduces no new vector/bit-manipulation instructions, only minor
+   scheduling/latency-model differences that LLVM's `broadwell` target
+   would tune for. Targeting `haswell` therefore loses nothing on the
+   real hardware while being a strictly safer, slightly more conservative
+   floor than pinning to the exact chip generation. Do **not** add
+   `--features ml-guidance` for the competition build: the ML-guided
+   clause selection work was not shipped (see `docs/BENCHMARKS.md`'s "ML
+   not shipped" note) — the competition entry uses the static `casc_*`
+   portfolios / `--auto-schedule`, built with default features only.
 
 ---
 
