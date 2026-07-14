@@ -23,7 +23,39 @@ use mrs_core::{Atom, Formula, SymbolTable, Term};
 /// (a conjunction of disjunctions of literals).
 ///
 /// The `prefix` is used to generate unique definition symbol names.
+///
+/// Discards the introduced definitions themselves (just their effect on the
+/// resulting formula) — use [`to_cnf_definitional_with_defs`] to get those
+/// too, needed to correctly document each fresh definition's introduction in
+/// a TSTP proof (see that function's doc comment for why).
 pub fn to_cnf_definitional(formula: &Formula, symbols: &mut SymbolTable, prefix: &str) -> Formula {
+    to_cnf_definitional_with_defs(formula, symbols, prefix).0
+}
+
+/// Like [`to_cnf_definitional`], but also returns the introduced definitions
+/// (each fresh predicate atom together with the conjuncts it names).
+///
+/// A proof that uses one of the resulting clauses needs to justify the
+/// fresh `def_...` predicate's meaning somehow: citing only the pre-CNF
+/// parent formula as `inference(cnf_transformation, [status(thm)], [...])`
+/// does not work, because that parent formula never mentions the fresh
+/// symbol at all, so no ATP can prove the child follows from it alone
+/// (confirmed against a real GDV build: it reports a genuine
+/// `CounterSatisfiable` countermodel, not just a timeout). The fix mirrors
+/// the "introduced(definition)" convention used by E/Vampire (see
+/// `mrs-proover`'s `checks::introduced_definition` module, which already
+/// has to recognize both of their conventions when verifying *other*
+/// systems' proofs): the caller should emit each definition's full
+/// biconditional (`def_atom <=> (conjunct1 & ... & conjunctK)`) as its own
+/// `introduced(definition)` step with no parents (sound by construction,
+/// since the symbol is fresh — a conservative extension), then cite that
+/// step as an *additional* parent for every final clause that actually
+/// mentions the definition's predicate symbol.
+pub fn to_cnf_definitional_with_defs(
+    formula: &Formula,
+    symbols: &mut SymbolTable,
+    prefix: &str,
+) -> (Formula, Vec<(Atom, Vec<Formula>)>) {
     let mut ctx = DefCtx {
         symbols,
         prefix: prefix.to_string(),
@@ -39,10 +71,10 @@ pub fn to_cnf_definitional(formula: &Formula, symbols: &mut SymbolTable, prefix:
 
     // Add definition clauses: for each def → (A1 ∧ ... ∧ Ak),
     // add clauses ¬def ∨ A1, ¬def ∨ A2, ..., ¬def ∨ Ak
-    for (def_atom, conjuncts) in ctx.definitions {
+    for (def_atom, conjuncts) in &ctx.definitions {
         for conj in conjuncts {
             let neg_def = Formula::neg(Formula::atom(def_atom.clone()));
-            let clause = Formula::or(vec![neg_def, conj]);
+            let clause = Formula::or(vec![neg_def, conj.clone()]);
             all_conjuncts.push(clause);
         }
     }
@@ -53,11 +85,13 @@ pub fn to_cnf_definitional(formula: &Formula, symbols: &mut SymbolTable, prefix:
         other => all_conjuncts.push(other),
     }
 
-    if all_conjuncts.len() == 1 {
+    let result = if all_conjuncts.len() == 1 {
         all_conjuncts.into_iter().next().unwrap()
     } else {
         Formula::And(all_conjuncts)
-    }
+    };
+
+    (result, ctx.definitions)
 }
 
 struct DefCtx<'a> {

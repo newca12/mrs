@@ -147,24 +147,103 @@ pub fn clausify_with_provenance(
     // Step 5: Convert to CNF
     // Use definitional CNF if the formula has And-under-Or (blowup risk),
     // otherwise use simple distributive CNF (no extra definition symbols).
-    let cnf_formula = if has_and_under_or(&stripped) {
-        definitional::to_cnf_definitional(&stripped, symbols, name)
+    let (cnf_formula, definitions) = if has_and_under_or(&stripped) {
+        definitional::to_cnf_definitional_with_defs(&stripped, symbols, name)
     } else {
-        cnf::to_cnf(&stripped)
+        (cnf::to_cnf(&stripped), Vec::new())
     };
+
+    // Step 5b: for each fresh definitional predicate Tseitin introduced,
+    // emit its full biconditional as its own `introduced(definition)` step
+    // (no parents, no status — sound by construction, since the symbol is
+    // guaranteed fresh: a conservative extension). See
+    // `to_cnf_definitional_with_defs`'s doc comment for why citing only the
+    // Skolemization step as a clause's parent does not work once that
+    // clause mentions one of these fresh symbols.
+    let mut def_provenance = Vec::with_capacity(definitions.len());
+    let mut def_id_by_symbol: std::collections::HashMap<mrs_core::SymbolId, ClauseId> =
+        std::collections::HashMap::new();
+    for (def_atom, conjuncts) in &definitions {
+        let def_id = id_gen.next();
+        let rhs = if conjuncts.len() == 1 {
+            conjuncts[0].clone()
+        } else {
+            Formula::and(conjuncts.clone())
+        };
+        let biconditional = Formula::iff(Formula::atom(def_atom.clone()), rhs);
+        // The definitional-CNF pass runs after `strip_forall`, so the
+        // biconditional's variables (shared with the enclosing clause) are
+        // free here. FOF requires closed formulas, so re-close with
+        // explicit universal quantifiers before citing it as its own step
+        // (confirmed against a real GDV build: an unquantified variable is
+        // a hard parse error, not just a soundness nit).
+        let mut free_vars: Vec<_> = biconditional.free_vars().into_iter().collect();
+        free_vars.sort_unstable();
+        let closed_biconditional = free_vars
+            .into_iter()
+            .rev()
+            .fold(biconditional, |body, v| Formula::forall(v, body));
+        let def_sym = match def_atom {
+            mrs_core::Atom::Pred(sym, _) => *sym,
+            mrs_core::Atom::Eq(..) => {
+                unreachable!("definitional CNF only introduces fresh predicate symbols")
+            }
+        };
+        def_provenance.push(Clause::new_formula_step(
+            def_id,
+            closed_biconditional,
+            ClauseSource::Introduced { symbol: def_sym },
+        ));
+        def_id_by_symbol.insert(def_sym, def_id);
+    }
 
     // Step 6: Extract clauses, citing the Skolemization step as parent.
     let cnf_source = ClauseSource::Inference {
         rule: "cnf_transformation",
         parents: vec![skolem_id].into(),
     };
-    let clauses = flatten::extract_clauses(&cnf_formula, id_gen, &cnf_source);
+    let mut clauses = flatten::extract_clauses(&cnf_formula, id_gen, &cnf_source);
+
+    // Step 6b: any clause that actually mentions one of the fresh
+    // definitional predicates also needs that definition's introduction
+    // step cited as an additional parent -- otherwise no ATP can prove it
+    // follows from the Skolemization step alone, since that step's formula
+    // never mentions the fresh symbol at all.
+    if !def_id_by_symbol.is_empty() {
+        for clause in &mut clauses {
+            let mut extra_parents: Vec<ClauseId> = Vec::new();
+            for lit in &clause.literals {
+                let sym = match &lit.atom {
+                    mrs_core::Atom::Pred(s, _) => Some(*s),
+                    mrs_core::Atom::Eq(..) => None,
+                };
+                if let Some(sym) = sym
+                    && let Some(&def_id) = def_id_by_symbol.get(&sym)
+                    && !extra_parents.contains(&def_id)
+                {
+                    extra_parents.push(def_id);
+                }
+            }
+            if !extra_parents.is_empty()
+                && let ClauseSource::Inference { parents, .. } = &mut clause.source
+            {
+                for p in extra_parents {
+                    if !parents.contains(&p) {
+                        parents.push(p);
+                    }
+                }
+            }
+        }
+    }
 
     // Step 7: Simplify (only the real clauses; provenance steps are exact
     // transformation records and are not simplified).
     let clauses = simplify::simplify_clauses(clauses);
 
-    (vec![leaf_step, nnf_step, skolem_step], clauses)
+    let mut provenance = vec![leaf_step, nnf_step, skolem_step];
+    provenance.extend(def_provenance);
+
+    (provenance, clauses)
 }
 
 /// Strips all universal quantifiers from a formula, recursing into
@@ -291,5 +370,123 @@ mod provenance_tests {
         let clauses = clausify(&formula, &mut syms, &mut id_gen, "ax1", "axiom");
         assert_eq!(clauses.len(), 1);
         assert!(clauses[0].formula.is_none());
+    }
+
+    #[test]
+    fn definitional_cnf_clauses_cite_the_definition_step_as_extra_parent() {
+        // Regression test for a real GDV failure found reviewing SEU140+2:
+        // definitional (Tseitin) CNF introduces a fresh `def_...` predicate
+        // that does not appear in the cited parent (the pre-CNF Skolemized
+        // formula) -- exactly like Skolemization introduces fresh Skolem
+        // functions absent from ITS parent. GDV correctly refused to accept
+        // these as full `thm` consequences of the Skolemization step alone
+        // (it found a genuine CounterSatisfiable countermodel when asked to
+        // prove the def_-mentioning clause as a THM of a parent that never
+        // mentions def_ at all). The fix: emit the fresh predicate's full
+        // biconditional as its own `introduced(definition)` step (sound by
+        // construction, no parents needed), and have every clause that
+        // actually mentions the fresh predicate cite that step as an
+        // *additional* parent alongside the Skolemization step -- both
+        // together are ordinary `thm` (`cnf_transformation`) consequences.
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+        let r = syms.intern("r");
+
+        // p(X) | (q(X) & r(X)) -- And-under-Or, forces definitional CNF.
+        let formula = Formula::forall(
+            0,
+            Formula::or(vec![
+                Formula::atom(Atom::pred(p, vec![Term::var(0)])),
+                Formula::and(vec![
+                    Formula::atom(Atom::pred(q, vec![Term::var(0)])),
+                    Formula::atom(Atom::pred(r, vec![Term::var(0)])),
+                ]),
+            ]),
+        );
+
+        let mut id_gen = ClauseIdGen::new();
+        let leaf_source = ClauseSource::Input {
+            name: "ax1".to_string(),
+            role: "axiom".to_string(),
+        };
+        let (provenance, clauses) =
+            clausify_with_provenance(&formula, &mut syms, &mut id_gen, "ax1", leaf_source, None);
+
+        // At least one provenance step introduces a definition, with no
+        // parents at all.
+        let def_ids: Vec<ClauseId> = provenance
+            .iter()
+            .filter(|c| matches!(c.source, ClauseSource::Introduced { .. }))
+            .map(|c| c.id)
+            .collect();
+        assert!(
+            !def_ids.is_empty(),
+            "expected at least one ClauseSource::Introduced provenance step"
+        );
+
+        assert!(!clauses.is_empty());
+        let mut saw_def_citing_clause = false;
+        for c in &clauses {
+            match &c.source {
+                ClauseSource::Inference { rule, parents } => {
+                    assert_eq!(*rule, "cnf_transformation");
+                    // Every clause that mentions the fresh def_ predicate
+                    // must cite one of the definition steps as a parent.
+                    let mentions_def_symbol = c.literals.iter().any(|lit| {
+                        matches!(lit.atom, Atom::Pred(sym, _) if syms.resolve(sym).starts_with("def_"))
+                    });
+                    if mentions_def_symbol {
+                        assert!(
+                            parents.iter().any(|p| def_ids.contains(p)),
+                            "clause mentioning a def_ predicate must cite its introduction step"
+                        );
+                        saw_def_citing_clause = true;
+                    }
+                }
+                other => panic!("expected Inference, got {other:?}"),
+            }
+        }
+        assert!(
+            saw_def_citing_clause,
+            "expected at least one clause to mention a def_ predicate"
+        );
+    }
+
+    #[test]
+    fn plain_distributive_cnf_still_cites_cnf_transformation() {
+        // No And-under-Or: plain distributive CNF, no fresh symbols
+        // introduced, so this must keep the ordinary `cnf_transformation`
+        // (status thm) rule name -- only the definitional/Tseitin path
+        // needs the new esa-mapped rule name.
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+
+        let formula = Formula::forall(
+            0,
+            Formula::or(vec![
+                Formula::atom(Atom::pred(p, vec![Term::var(0)])),
+                Formula::atom(Atom::pred(q, vec![Term::var(0)])),
+            ]),
+        );
+
+        let mut id_gen = ClauseIdGen::new();
+        let leaf_source = ClauseSource::Input {
+            name: "ax1".to_string(),
+            role: "axiom".to_string(),
+        };
+        let (_provenance, clauses) =
+            clausify_with_provenance(&formula, &mut syms, &mut id_gen, "ax1", leaf_source, None);
+
+        assert!(!clauses.is_empty());
+        for c in &clauses {
+            match &c.source {
+                ClauseSource::Inference { rule, .. } => {
+                    assert_eq!(*rule, "cnf_transformation");
+                }
+                other => panic!("expected Inference, got {other:?}"),
+            }
+        }
     }
 }

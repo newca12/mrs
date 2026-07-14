@@ -9,6 +9,7 @@ use smallvec::SmallVec;
 
 use crate::Formula;
 use crate::formula::Atom;
+use crate::symbol::SymbolId;
 use crate::term::VarId;
 
 /// Unique identifier for a clause within a proof search.
@@ -87,6 +88,24 @@ pub enum ClauseSource {
         rule: &'static str,
         /// IDs of the parent clauses.
         parents: SmallVec<[ClauseId; 2]>,
+    },
+    /// A definitionally-introduced formula: the full biconditional defining
+    /// a fresh predicate/function symbol (e.g. from Tseitin/definitional
+    /// CNF), with no parents at all. Sound by construction as a
+    /// conservative extension, since the symbol is guaranteed fresh — no
+    /// derivation is needed to justify it, unlike `Inference`. Rendered in
+    /// TSTP output as `introduced(definition, [new_symbols(definition,
+    /// [<symbol>])])` with role `definition`. Both the explicit role and
+    /// the `new_symbols` annotation are required by GDV's
+    /// `IsCorrectlySpecifiedDefinition` check (confirmed against a real
+    /// GDV build: role `plain` with a bare `introduced(definition)`
+    /// annotation, which is what E emits and what `mrs-proover`'s own
+    /// checker accepts, is NOT accepted by GDV — it requires the stricter
+    /// `new_symbols(definition, [...])` info list to identify exactly
+    /// which symbol is being defined).
+    Introduced {
+        /// The fresh symbol this step defines.
+        symbol: SymbolId,
     },
 }
 

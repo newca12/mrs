@@ -54,6 +54,12 @@ fn problem_path() -> &'static str {
 ///   single parent of role `conjecture`).
 /// - everything else (`fof_nnf_transformation`, `cnf_transformation`,
 ///   `resolution`, `superposition`, etc.): `thm` (a genuine entailment).
+///
+/// Definitional (Tseitin) CNF clauses do NOT need a special status here:
+/// each fresh `def_...` predicate gets its own `ClauseSource::Introduced`
+/// step (rendered `introduced(definition)`, no status at all), cited as an
+/// extra parent by every clause that mentions it — so those clauses remain
+/// ordinary `thm` consequences of {skolemization step, definition step(s)}.
 fn status_for_rule(rule: &str) -> &'static str {
     match rule {
         "skolemisation" => "esa",
@@ -101,11 +107,34 @@ pub fn format_tstp(proof: &[Clause], symbols: &SymbolTable) -> String {
                     parent_names.join(", ")
                 )
             }
+            // Sound by construction (conservative extension over a fresh
+            // symbol) — no parents/status needed, but GDV's
+            // `IsCorrectlySpecifiedDefinition` check requires an explicit
+            // `new_symbols(definition, [<symbol>])` info entry naming
+            // exactly which symbol is being defined (confirmed against a
+            // real GDV build).
+            ClauseSource::Introduced { symbol } => format!(
+                "introduced(definition, [new_symbols(definition, [{}])])",
+                symbols.resolve(*symbol)
+            ),
         };
 
         let role = match &clause.source {
             ClauseSource::Input { role, .. } => role.as_str(),
+            // GDV structurally requires a step that negates the conjecture to
+            // have role `negated_conjecture` itself, not the generic `plain`
+            // fallback — it looks for a role=`negated_conjecture` formula to
+            // legitimize a derived formula having a role=`conjecture` parent,
+            // and otherwise reports "illegal relationship with its
+            // (non-)conjecture parent" (confirmed against a real GDV build).
+            ClauseSource::Inference { rule, .. } if *rule == "negated_conjecture" => {
+                "negated_conjecture"
+            }
             ClauseSource::Inference { .. } => "plain",
+            // GDV's `IsCorrectlySpecifiedDefinition` also requires the
+            // role itself to be `definition`, not `plain` (confirmed
+            // against a real GDV build).
+            ClauseSource::Introduced { .. } => "definition",
         };
 
         let wrapper = if is_formula_step { "fof" } else { "cnf" };
@@ -258,6 +287,52 @@ mod tests {
         let output = format_tstp(&[skolem_step, neg_conj_step], &syms);
         assert!(output.contains("inference(skolemisation, [status(esa)], [c1])"));
         assert!(output.contains("inference(negated_conjecture, [status(cth)], [c2])"));
+        // The skolemisation step is a generic derived formula: role `plain`.
+        assert!(output.contains("fof(c2, plain,"));
+        // The negated_conjecture step must have role `negated_conjecture`
+        // itself, not `plain` -- see the doc comment on the role match arm.
+        assert!(output.contains("fof(c3, negated_conjecture,"));
+    }
+
+    #[test]
+    fn negated_conjecture_step_has_role_negated_conjecture_not_plain() {
+        // Regression test for the exact failure GDV reported against the
+        // real SEU140+2 sample sent to the CASC-J13 organizer:
+        //   FAILURE: 'c268' has an illegal relationship with its
+        //   (non-)conjecture parent
+        // Confirmed via a locally-built GDV (github.com/TPTPWorld/GDV) that
+        // this specific role mislabeling (`plain` instead of
+        // `negated_conjecture`) is exactly what GDV flags; fixed here.
+        use mrs_core::Formula;
+
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+
+        let conjecture_leaf = Clause::new_formula_step(
+            ClauseId(0),
+            Formula::atom(Atom::prop(p)),
+            ClauseSource::Input {
+                name: "conj1".into(),
+                role: "conjecture".into(),
+            },
+        );
+        let negated_conjecture_step = Clause::new_formula_step(
+            ClauseId(1),
+            Formula::neg(Formula::atom(Atom::prop(p))),
+            ClauseSource::Inference {
+                rule: "negated_conjecture",
+                parents: vec![ClauseId(0)].into(),
+            },
+        );
+
+        let output = format_tstp(&[conjecture_leaf, negated_conjecture_step], &syms);
+        assert!(
+            output.contains("fof(c1, negated_conjecture,"),
+            "negated_conjecture step must have its own role set to \
+             `negated_conjecture`, not `plain` -- GDV requires this to \
+             accept its relationship to the conjecture-role parent, got: {output}"
+        );
+        assert!(!output.contains("fof(c1, plain,"));
     }
 
     #[test]
@@ -283,5 +358,38 @@ mod tests {
             output
                 .contains("cnf(c4, plain, p, inference(cnf_transformation, [status(thm)], [c2])).")
         );
+    }
+
+    #[test]
+    fn introduced_definition_step_has_no_status_and_no_parents() {
+        // Regression test for a real GDV failure found reviewing SEU140+2:
+        // clauses using a fresh `def_...` predicate (from definitional/
+        // Tseitin CNF) cannot be justified as a `thm`/`esa` of a parent
+        // that never mentions that symbol at all -- GDV reports a genuine
+        // CounterSatisfiable countermodel, not just a timeout, if you try.
+        // The fix is `ClauseSource::Introduced`: assert the fresh
+        // predicate's full biconditional with no parents at all (sound by
+        // construction, since the symbol is fresh). Role `definition` and
+        // an explicit `new_symbols(definition, [<symbol>])` info entry are
+        // both required by GDV's `IsCorrectlySpecifiedDefinition` check
+        // (confirmed against a real GDV build -- E's own bare
+        // `introduced(definition)`/role `plain` convention, which
+        // `mrs-proover`'s own checker accepts, is NOT accepted by GDV).
+        use mrs_core::Formula;
+
+        let mut syms = SymbolTable::new();
+        let def = syms.intern("def_ax1_0");
+        let q = syms.intern("q");
+
+        let def_step = Clause::new_formula_step(
+            ClauseId(5),
+            Formula::iff(Formula::atom(Atom::prop(def)), Formula::atom(Atom::prop(q))),
+            ClauseSource::Introduced { symbol: def },
+        );
+
+        let output = format_tstp(&[def_step], &syms);
+        assert!(output.contains(
+            "fof(c5, definition, (def_ax1_0 <=> q), introduced(definition, [new_symbols(definition, [def_ax1_0])]))."
+        ));
     }
 }
