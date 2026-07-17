@@ -93,14 +93,27 @@ fn detect_top_disjunction(clauses: &[Clause]) -> Option<TopDisjunction> {
             continue;
         }
         // All literals must be Pred with distinct predicate symbols.
-        // (Variable sharing across literals is allowed: each branch's body
-        // refutation is universally quantified over the unit's variables, so
-        // sharing imposes no constraint on independence.)
+        // Literals must also be pairwise variable-disjoint to ensure soundness
+        // when split into independent universally-quantified branches.
         let mut preds: Vec<SymbolId> = Vec::with_capacity(clause.literals.len());
         let mut seen_preds: HashSet<SymbolId> = HashSet::default();
+        let mut seen_vars: HashSet<mrs_core::term::VarId> = HashSet::default();
         let mut ok = true;
         let mut why_rejected = "";
         for lit in &clause.literals {
+            let mut lit_vars = HashSet::default();
+            lit.collect_vars(&mut lit_vars);
+            for v in lit_vars {
+                if !seen_vars.insert(v) {
+                    ok = false;
+                    why_rejected = "shared variable across literals";
+                    break;
+                }
+            }
+            if !ok {
+                break;
+            }
+
             match &lit.atom {
                 Atom::Pred(sym, _) => {
                     if !seen_preds.insert(*sym) {
@@ -490,10 +503,10 @@ mod tests {
     }
 
     #[test]
-    fn cwa_accepts_top_with_shared_variables() {
-        // 5 distinct predicates but literals share variables — now allowed.
-        // Each branch's body refutation is universally quantified over the
-        // unit's variables, so sharing imposes no constraint on independence.
+    fn cwa_rejects_top_with_shared_variables() {
+        // 5 distinct predicates but literals share variables — REJECTED.
+        // Independent componentwise refutation is fundamentally unsound if the
+        // branches share variables (∀x(P(x) ∨ Q(x)) ≠ ∀x P(x) ∨ ∀x Q(x)).
         let mut syms = SymbolTable::new();
         let mut id_gen = ClauseIdGen::new();
         let preds: Vec<SymbolId> = (0..5).map(|i| syms.intern(&format!("p{}", i))).collect();
@@ -506,7 +519,6 @@ mod tests {
             "top",
         );
         let detected = detect_top_disjunction(&[top]);
-        assert!(detected.is_some());
-        assert_eq!(detected.unwrap().branch_predicates.len(), 5);
+        assert!(detected.is_none());
     }
 }
