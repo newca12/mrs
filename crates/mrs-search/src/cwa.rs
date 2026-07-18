@@ -37,7 +37,7 @@ use std::time::Duration;
 use mrs_calculus::ordering::SymbolConfig;
 use mrs_core::SymbolId;
 use mrs_core::SymbolTable;
-use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource, Literal};
+use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource};
 use mrs_core::formula::Atom;
 use mrs_proof::extract::extract_proof;
 use mrs_proof::tstp::format_tstp;
@@ -80,8 +80,10 @@ fn clause_predicate_symbols(clause: &Clause) -> HashSet<SymbolId> {
 
 /// Looks for a single clause `T` in the input that matches the pattern:
 /// - has ≥ `MIN_BRANCHES` literals,
-/// - every literal is a positive `Pred(p_k, args_k)` (negative is also allowed
-///   since negation polarity is irrelevant to the branch structure),
+/// - every literal is a `Pred(p_k, args_k)` atom, positive or negative (the
+///   polarity is preserved verbatim into the branch's unit clause by
+///   `make_branch_unit` — see its doc comment for why flipping it would be
+///   unsound),
 /// - all predicate symbols `p_k` are distinct,
 /// - literals are pairwise variable-disjoint.
 ///
@@ -244,15 +246,20 @@ fn extract_branch_clauses(top: &TopDisjunction, clauses: &[Clause]) -> Vec<Vec<u
     result
 }
 
-/// Builds the unit clause `def_k(X̄)` from the k-th literal of the top clause.
-/// The literal is forced positive (the original may be positive or negative —
-/// in definitional CNF on a top-level conjunction it is positive).
+/// Builds the unit clause `def_k(X̄)` (or `~def_k(X̄)`) from the k-th literal
+/// of the top clause, **preserving its original polarity**.
+///
+/// Forcing the literal positive here is unsound: if `T = ... ∨ ~def_k(X̄) ∨
+/// ...`, a model satisfying `T` via this disjunct has `def_k(X̄)` *false*, so
+/// the branch must attempt to refute `{~def_k(X̄)} ∪ Dₖ`, not `{def_k(X̄)} ∪
+/// Dₖ`. Silently flipping the sign here would search for (and potentially
+/// "refute") an entirely different, unrelated branch, which is exactly the
+/// class of bug that produced the false `Theorem` verdict on `PRO013+3.p`.
 fn make_branch_unit(top_clause: &Clause, k: usize, id_gen: &mut ClauseIdGen) -> Clause {
-    let lit = &top_clause.literals[k];
-    let positive_lit = Literal::pos(lit.atom.clone());
+    let branch_lit = top_clause.literals[k].clone();
     Clause::new(
         id_gen.next(),
-        vec![positive_lit],
+        vec![branch_lit],
         ClauseSource::Inference {
             rule: "split_component",
             parents: vec![top_clause.id].into(),
@@ -383,7 +390,7 @@ pub fn try_componentwise_refute(
 mod tests {
     use super::*;
     use mrs_core::SymbolTable;
-    use mrs_core::clause::ClauseIdGen;
+    use mrs_core::clause::{ClauseIdGen, Literal};
     use mrs_core::term::Term;
 
     fn make_clause(id_gen: &mut ClauseIdGen, lits: Vec<Literal>, name: &str) -> Clause {
@@ -457,6 +464,36 @@ mod tests {
             matches!(result, Some(SearchResult::Refutation(..))),
             "expected Refutation, got {:?}",
             result
+        );
+    }
+
+    /// Regression test for the PRO013+3.p unsoundness: `make_branch_unit`
+    /// must preserve the original literal's polarity instead of forcing it
+    /// positive. A negative disjunct `~def_k(X)` must produce a *negative*
+    /// branch unit clause, not `def_k(X)`.
+    #[test]
+    fn make_branch_unit_preserves_polarity() {
+        let mut syms = SymbolTable::new();
+        let mut id_gen = ClauseIdGen::new();
+        let d = syms.intern("def_0");
+
+        let top_lits = vec![
+            Literal::neg(Atom::pred(d, vec![Term::var(0)])),
+            Literal::pos(Atom::pred(syms.intern("def_1"), vec![Term::var(1)])),
+        ];
+        let top = make_clause(&mut id_gen, top_lits, "top");
+
+        let branch = make_branch_unit(&top, 0, &mut id_gen);
+        assert_eq!(branch.literals.len(), 1);
+        assert!(
+            !branch.literals[0].positive,
+            "expected branch unit for a negative top-clause literal to stay negative"
+        );
+
+        let branch_pos = make_branch_unit(&top, 1, &mut id_gen);
+        assert!(
+            branch_pos.literals[0].positive,
+            "expected branch unit for a positive top-clause literal to stay positive"
         );
     }
 
