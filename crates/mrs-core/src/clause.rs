@@ -141,7 +141,7 @@ pub struct Clause {
     /// which is indistinguishable from the empty clause (a refutation) to
     /// the search loop. These clauses exist only for proof-provenance lookup
     /// (`clause_store`) at proof-extraction time.
-    pub formula: Option<Formula>,
+    pub formula: Option<Box<Formula>>,
 }
 
 impl Clause {
@@ -174,7 +174,7 @@ impl Clause {
             source,
             avatar: Vec::new(),
             distance: 1000,
-            formula: Some(formula),
+            formula: Some(Box::new(formula)),
         }
     }
 

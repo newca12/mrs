@@ -74,7 +74,7 @@ pub struct IdClause {
     /// `processed`/`unprocessed`** — only into `clause_store`, for proof
     /// provenance. Its empty `literals` would otherwise be misread as the
     /// empty clause (a refutation) by the given-clause loop.
-    pub formula: Option<Formula>,
+    pub formula: Option<Box<Formula>>,
 }
 
 impl IdClause {
