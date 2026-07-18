@@ -62,6 +62,31 @@ incomplete citation) `VerifiedBad` from an external checker's ATP ladder.
 - Fixing this is **not required** for the FOF/UEQ CASC-J13 entry itself, only
   for full proof-validity checking (ProoVer-style) of AVATAR-heavy proofs.
 
+### Follow-up: audit `fvo.rs` with the same rigor as the CWA polarity fix
+
+The CWA polarity bug (`PRO013+3.p`) survived because it was a narrow, rare
+code path with a hand-written `**Soundness**` comment and thin (synthetic-
+only) test coverage — the bug was never actually triggered by anything in
+our audit corpus, only found via manual code review. Confirmed 2026-07-18
+that `fvo.rs` (FNE-Variable-Only propositional-skeleton refutation) is the
+only other module in `mrs-search`/`mrs-calculus` with the same risk shape
+(hand-written soundness justification, narrow trigger conditions). A quick
+structural read of `lift_clause`'s variable-freshness handling found no
+concrete issue, but it hasn't had the same adversarial review CWA got
+(hunting specifically for polarity/variable-sharing/lifting-correctness
+edge cases). Do this before the next soundness-sensitive release.
+
+### Follow-up: coverage tracking for narrow soundness-critical code paths
+
+`TRACE_CWA_POLARITY=1` (added 2026-07-18, `crates/mrs-search/src/cwa.rs`)
+lets you check whether a sweep actually exercises CWA's polarity-sensitive
+path at all, rather than silently passing without ever having exercised it.
+Consider generalizing this into an actual coverage-tracking script (grep
+`TRACE_CWA`/`TRACE_CWA_POLARITY`/`TRACE_AVATAR`-style logs across a sweep
+and report which narrow, soundness-sensitive code paths fired zero times)
+so a *silent* coverage gap becomes a *visible* audit signal, instead of
+only being found by manual code review after the fact.
+
 ---
 
 ## CASC Division Priority Map

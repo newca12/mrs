@@ -154,6 +154,17 @@ fn detect_top_disjunction(clauses: &[Clause]) -> Option<TopDisjunction> {
                 candidate.branch_predicates.len()
             );
         }
+        if std::env::var("TRACE_CWA_POLARITY").is_ok() {
+            let polarities: Vec<&str> = clause
+                .literals
+                .iter()
+                .map(|lit| if lit.positive { "+" } else { "-" })
+                .collect();
+            eprintln!(
+                "[CWA-POLARITY] candidate clause {} branch polarities: {:?}",
+                clause.id.0, polarities
+            );
+        }
         match &best {
             None => best = Some(candidate),
             Some(b) if candidate.branch_predicates.len() > b.branch_predicates.len() => {
@@ -494,6 +505,97 @@ mod tests {
         assert!(
             branch_pos.literals[0].positive,
             "expected branch unit for a positive top-clause literal to stay positive"
+        );
+    }
+
+    /// End-to-end regression test for the PRO013+3.p unsoundness, going
+    /// through the *real* detect_top_disjunction -> try_componentwise_refute
+    /// path (unlike `make_branch_unit_preserves_polarity` above, which only
+    /// exercises `make_branch_unit` in isolation). One of the top clause's
+    /// branch literals is negative (`~def_0(X0)`), mirroring real mixed-
+    /// polarity CWA candidates found in TPTP's SEU domain (e.g. SEU409+3.p,
+    /// SEU419+3.p, SEU421+3.p, SEU425+3.p, SEU441+3.p, SEU444+3.p,
+    /// SEU438+3.p all produce a candidate with branch polarities
+    /// `[-, +, -, +, +, +]`, confirmed via `TRACE_CWA_POLARITY=1` against
+    /// the real TPTP-v9.2.1 library) -- this is not just a theoretical
+    /// pattern.
+    ///
+    /// For the negative branch, `make_branch_unit` must emit `~def_0(Y)` as
+    /// the branch unit (not `def_0(Y)`), so the definition clauses proving
+    /// that branch's contradiction are flipped relative to the positive
+    /// branches: `def_0(Y) | p_0` and `def_0(Y) | ~p_0` (resolving the
+    /// negative unit against each still derives `p_0` and `~p_0`).
+    #[test]
+    fn cwa_solves_definitional_cnf_with_mixed_polarity_branches() {
+        let mut syms = SymbolTable::new();
+        let mut id_gen = ClauseIdGen::new();
+        let mut clauses: Vec<Clause> = Vec::new();
+        let mut top_lits: Vec<Literal> = Vec::new();
+
+        for k in 0..5u32 {
+            let dname = format!("def_{}", k);
+            let pname = format!("p_{}", k);
+            let d = syms.intern(&dname);
+            let p = syms.intern(&pname);
+
+            if k == 0 {
+                // Negative branch: top literal ~def_0(X0). The branch unit
+                // will be ~def_0(Y); definition clauses must be positive
+                // def_0 disjuncts so resolving the negative unit against
+                // them still derives the p_0 / ~p_0 contradiction.
+                top_lits.push(Literal::neg(Atom::pred(d, vec![Term::var(k)])));
+                clauses.push(make_clause(
+                    &mut id_gen,
+                    vec![
+                        Literal::pos(Atom::pred(d, vec![Term::var(100 + k)])),
+                        Literal::pos(Atom::prop(p)),
+                    ],
+                    &format!("d_{}_pos", k),
+                ));
+                clauses.push(make_clause(
+                    &mut id_gen,
+                    vec![
+                        Literal::pos(Atom::pred(d, vec![Term::var(200 + k)])),
+                        Literal::neg(Atom::prop(p)),
+                    ],
+                    &format!("d_{}_neg", k),
+                ));
+            } else {
+                // Positive branches, same shape as cwa_solves_small_definitional_cnf.
+                top_lits.push(Literal::pos(Atom::pred(d, vec![Term::var(k)])));
+                clauses.push(make_clause(
+                    &mut id_gen,
+                    vec![
+                        Literal::neg(Atom::pred(d, vec![Term::var(100 + k)])),
+                        Literal::pos(Atom::prop(p)),
+                    ],
+                    &format!("d_{}_pos", k),
+                ));
+                clauses.push(make_clause(
+                    &mut id_gen,
+                    vec![
+                        Literal::neg(Atom::pred(d, vec![Term::var(200 + k)])),
+                        Literal::neg(Atom::prop(p)),
+                    ],
+                    &format!("d_{}_neg", k),
+                ));
+            }
+        }
+
+        let top = make_clause(&mut id_gen, top_lits, "top");
+        clauses.push(top);
+
+        let result = try_componentwise_refute(
+            &clauses,
+            &mut id_gen,
+            std::sync::Arc::new(syms.clone()),
+            make_sym_config(),
+        );
+        assert!(
+            matches!(result, Some(SearchResult::Refutation(..))),
+            "expected Refutation (mixed-polarity branches must all still \
+             refute correctly), got {:?}",
+            result
         );
     }
 
