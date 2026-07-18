@@ -168,37 +168,93 @@ impl Substitution {
         }
     }
 
+    /// Returns true if any of the target terms in this substitution contains the variable `v`.
+    pub fn captures_var(&self, v: VarId) -> bool {
+        for term in self.bindings.values() {
+            if term.contains_var(v) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn max_var_id(&self, formula: &Formula) -> VarId {
+        let mut max_val = 0;
+        for (&v, term) in &self.bindings {
+            max_val = max_val.max(v);
+            let mut term_vars = crate::HashSet::default();
+            term.collect_vars(&mut term_vars);
+            for &tv in &term_vars {
+                max_val = max_val.max(tv);
+            }
+        }
+        let mut formula_vars = crate::HashSet::default();
+        collect_all_vars(formula, &mut formula_vars);
+        for &fv in &formula_vars {
+            max_val = max_val.max(fv);
+        }
+        max_val
+    }
+
     /// Applies this substitution to a formula.
     pub fn apply_formula(&self, formula: &Formula) -> Formula {
+        let mut next_var = self.max_var_id(formula) + 1;
+        self.apply_formula_rec(formula, &mut next_var)
+    }
+
+    fn apply_formula_rec(&self, formula: &Formula, next_var: &mut VarId) -> Formula {
         match formula {
             Formula::Atom(a) => Formula::Atom(self.apply_atom(a)),
-            Formula::Neg(f) => Formula::Neg(Box::new(self.apply_formula(f))),
-            Formula::And(fs) => Formula::And(fs.iter().map(|f| self.apply_formula(f)).collect()),
-            Formula::Or(fs) => Formula::Or(fs.iter().map(|f| self.apply_formula(f)).collect()),
+            Formula::Neg(f) => Formula::Neg(Box::new(self.apply_formula_rec(f, next_var))),
+            Formula::And(fs) => Formula::And(
+                fs.iter()
+                    .map(|f| self.apply_formula_rec(f, next_var))
+                    .collect(),
+            ),
+            Formula::Or(fs) => Formula::Or(
+                fs.iter()
+                    .map(|f| self.apply_formula_rec(f, next_var))
+                    .collect(),
+            ),
             Formula::Implies(a, b) => Formula::Implies(
-                Box::new(self.apply_formula(a)),
-                Box::new(self.apply_formula(b)),
+                Box::new(self.apply_formula_rec(a, next_var)),
+                Box::new(self.apply_formula_rec(b, next_var)),
             ),
             Formula::Iff(a, b) => Formula::Iff(
-                Box::new(self.apply_formula(a)),
-                Box::new(self.apply_formula(b)),
+                Box::new(self.apply_formula_rec(a, next_var)),
+                Box::new(self.apply_formula_rec(b, next_var)),
             ),
             Formula::Forall(v, body) => {
-                // If the bound variable is in the substitution, skip it.
-                // (Proper capture-avoidance would require alpha-renaming,
-                // but for clausification we always use globally unique vars.)
                 if self.bindings.contains_key(v) {
                     // Shadowed: don't substitute inside
                     Formula::Forall(*v, body.clone())
+                } else if self.captures_var(*v) {
+                    // Avoid variable capture: alpha-rename bound variable v to a fresh one
+                    let v_fresh = *next_var;
+                    *next_var += 1;
+                    let renamed_body = rename_var(body, *v, v_fresh);
+                    Formula::Forall(
+                        v_fresh,
+                        Box::new(self.apply_formula_rec(&renamed_body, next_var)),
+                    )
                 } else {
-                    Formula::Forall(*v, Box::new(self.apply_formula(body)))
+                    Formula::Forall(*v, Box::new(self.apply_formula_rec(body, next_var)))
                 }
             }
             Formula::Exists(v, body) => {
                 if self.bindings.contains_key(v) {
                     Formula::Exists(*v, body.clone())
+                } else if self.captures_var(*v) {
+                    // Avoid variable capture: alpha-rename bound variable v to a fresh one
+                    let v_fresh = *next_var;
+                    *next_var += 1;
+                    let renamed_body = rename_var(body, *v, v_fresh);
+                    Formula::Exists(
+                        v_fresh,
+                        Box::new(self.apply_formula_rec(&renamed_body, next_var)),
+                    )
                 } else {
-                    Formula::Exists(*v, Box::new(self.apply_formula(body)))
+                    Formula::Exists(*v, Box::new(self.apply_formula_rec(body, next_var)))
                 }
             }
             Formula::True => Formula::True,
@@ -225,6 +281,88 @@ impl Substitution {
         }
 
         result
+    }
+}
+
+fn collect_all_vars(formula: &Formula, vars: &mut crate::HashSet<VarId>) {
+    match formula {
+        Formula::Atom(a) => {
+            a.collect_vars(vars);
+        }
+        Formula::Neg(f) => collect_all_vars(f, vars),
+        Formula::And(fs) | Formula::Or(fs) => {
+            for f in fs {
+                collect_all_vars(f, vars);
+            }
+        }
+        Formula::Implies(a, b) | Formula::Iff(a, b) => {
+            collect_all_vars(a, vars);
+            collect_all_vars(b, vars);
+        }
+        Formula::Forall(v, body) | Formula::Exists(v, body) => {
+            vars.insert(*v);
+            collect_all_vars(body, vars);
+        }
+        Formula::True | Formula::False => {}
+    }
+}
+
+fn rename_var(formula: &Formula, old: VarId, new: VarId) -> Formula {
+    match formula {
+        Formula::Atom(a) => Formula::Atom(rename_atom(a, old, new)),
+        Formula::Neg(f) => Formula::Neg(Box::new(rename_var(f, old, new))),
+        Formula::And(fs) => Formula::And(fs.iter().map(|f| rename_var(f, old, new)).collect()),
+        Formula::Or(fs) => Formula::Or(fs.iter().map(|f| rename_var(f, old, new)).collect()),
+        Formula::Implies(a, b) => Formula::Implies(
+            Box::new(rename_var(a, old, new)),
+            Box::new(rename_var(b, old, new)),
+        ),
+        Formula::Iff(a, b) => Formula::Iff(
+            Box::new(rename_var(a, old, new)),
+            Box::new(rename_var(b, old, new)),
+        ),
+        Formula::Forall(v, body) => {
+            if *v == old {
+                Formula::Forall(*v, body.clone())
+            } else {
+                Formula::Forall(*v, Box::new(rename_var(body, old, new)))
+            }
+        }
+        Formula::Exists(v, body) => {
+            if *v == old {
+                Formula::Exists(*v, body.clone())
+            } else {
+                Formula::Exists(*v, Box::new(rename_var(body, old, new)))
+            }
+        }
+        Formula::True => Formula::True,
+        Formula::False => Formula::False,
+    }
+}
+
+fn rename_atom(atom: &Atom, old: VarId, new: VarId) -> Atom {
+    match atom {
+        Atom::Pred(p, args) => {
+            let new_args = args.iter().map(|arg| rename_term(arg, old, new)).collect();
+            Atom::Pred(*p, new_args)
+        }
+        Atom::Eq(l, r) => Atom::Eq(rename_term(l, old, new), rename_term(r, old, new)),
+    }
+}
+
+fn rename_term(term: &Term, old: VarId, new: VarId) -> Term {
+    match term {
+        Term::Var(v) => {
+            if *v == old {
+                Term::Var(new)
+            } else {
+                Term::Var(*v)
+            }
+        }
+        Term::App(f, args) => {
+            let new_args = args.iter().map(|arg| rename_term(arg, old, new)).collect();
+            Term::App(*f, new_args)
+        }
     }
 }
 
@@ -282,5 +420,33 @@ mod tests {
         let input = Term::app(f, vec![Term::var(0)]);
         let expected = Term::app(f, vec![Term::constant(a)]);
         assert_eq!(composed.apply_term(&input), expected);
+    }
+
+    #[test]
+    fn capture_avoidance_renaming() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+        let f = syms.intern("f");
+
+        // We want to apply {Y -> f(X)} to: ∃X. (p(Y) ∧ q(X))
+        // Bound variable of Exists is X (VarId 0).
+        // Replacement term f(X) contains X (VarId 0) as a free variable.
+        // Therefore, we must alpha-rename X inside the quantifier to a fresh one (e.g. VarId 2).
+        // Result should be: ∃Z. (p(f(X)) ∧ q(Z)) where Z is VarId 2.
+        let sub = Substitution::singleton(1, Term::app(f, vec![Term::var(0)])); // {1 -> f(0)}
+
+        let body = Formula::and(vec![
+            Formula::atom(Atom::pred(p, vec![Term::var(1)])), // p(1)
+            Formula::atom(Atom::pred(q, vec![Term::var(0)])), // q(0)
+        ]);
+        let formula = Formula::exists(0, body); // ∃0. (p(1) ∧ q(0))
+
+        let result = sub.apply_formula(&formula);
+
+        // Verify that the bound variable was renamed to 2 (since max of 0, 1 and term 0 is 1, so fresh is 2)
+        use crate::display::DisplayWithSymbols;
+        let formatted = format!("{}", result.display(&syms));
+        assert_eq!(formatted, "?[X2]: ((p(f(X0)) & q(X2)))");
     }
 }
