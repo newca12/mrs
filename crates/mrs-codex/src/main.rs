@@ -186,7 +186,21 @@ fn verify_proof_with_proover(stdout: &str) -> Option<bool> {
         Ok(Some(_)) => {
             let p_output = proover_child.wait_with_output().ok()?;
             let p_stdout = String::from_utf8_lossy(&p_output.stdout);
-            Some(extract_szs_status(&p_stdout).as_deref() == Some("Verified"))
+            // mrs-proover emits `VerifiedGood` / `VerifiedBad` / `Unknown`
+            // (never the bare word `Verified`). Comparing against the exact
+            // status word here previously made this check always false,
+            // silently flagging every Theorem/Unsatisfiable result as
+            // `[FAILED Verif]` regardless of the real verdict.
+            match extract_szs_status(&p_stdout).as_deref() {
+                Some("VerifiedGood") => Some(true),
+                Some("VerifiedBad") => Some(false),
+                // `Unknown` (or anything else, e.g. a load error) means
+                // mrs-proover could not decide -- not a confirmed bug, but
+                // not a confirmed-sound proof either. Report as "not
+                // verified" (None) rather than a false failure so callers
+                // can distinguish "proven unsound" from "inconclusive".
+                _ => None,
+            }
         }
         _ => {
             let _ = proover_child.kill();
