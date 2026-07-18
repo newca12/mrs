@@ -160,11 +160,64 @@ pub fn clausify_with_provenance(
     // `to_cnf_definitional_with_defs`'s doc comment for why citing only the
     // Skolemization step as a clause's parent does not work once that
     // clause mentions one of these fresh symbols.
-    let mut def_provenance = Vec::with_capacity(definitions.len());
+    //
+    // Pass 1: allocate every definition's ClauseId up front (before building
+    // any biconditional formula) so that Pass 2 below can resolve *nested*
+    // definitions -- e.g. a doubly-nested And-under-Or names the inner
+    // conjunction `def_i` and the outer one `def_j`, where `def_j`'s own
+    // biconditional body mentions `def_i`. Bottom-up naming means `def_i`
+    // always appears earlier in `definitions` than `def_j`, but resolving
+    // that in one combined pass would make the fix fragile against any
+    // future change to that ordering, so the two passes are kept separate
+    // and order-independent here.
     let mut def_id_by_symbol: std::collections::HashMap<mrs_core::SymbolId, ClauseId> =
         std::collections::HashMap::new();
+    for (def_atom, _) in &definitions {
+        let def_sym = match def_atom {
+            mrs_core::Atom::Pred(sym, _) => *sym,
+            mrs_core::Atom::Eq(..) => {
+                unreachable!("definitional CNF only introduces fresh predicate symbols")
+            }
+        };
+        def_id_by_symbol.insert(def_sym, id_gen.next());
+    }
+
+    // Pass 2: build each definition's biconditional and, critically, record
+    // which *other* definition symbols (if any) its own body mentions --
+    // this is the nested-Tseytin dependency graph that Step 6b needs to
+    // transitively cite. Without this, a clause that only directly mentions
+    // the outermost nested definition (e.g. `def_j`) would cite only
+    // `def_j`'s introduction step, omitting `def_i`'s -- leaving the printed
+    // proof referencing `def_i` without ever justifying it, which is exactly
+    // the bug that produced a false `VerifiedBad` from mrs-proover's ATP
+    // ladder on SWC351+1.p (nested `def_ax5_0`/`def_ax5_1`): the search
+    // itself is unaffected (both definitions' real clauses are always part
+    // of `cnf_formula` regardless), but the *citation* was incomplete.
+    let mut def_provenance = Vec::with_capacity(definitions.len());
+    let mut def_deps: std::collections::HashMap<mrs_core::SymbolId, Vec<mrs_core::SymbolId>> =
+        std::collections::HashMap::new();
     for (def_atom, conjuncts) in &definitions {
-        let def_id = id_gen.next();
+        let def_sym = match def_atom {
+            mrs_core::Atom::Pred(sym, _) => *sym,
+            mrs_core::Atom::Eq(..) => {
+                unreachable!("definitional CNF only introduces fresh predicate symbols")
+            }
+        };
+        let def_id = def_id_by_symbol[&def_sym];
+
+        let mut referenced: std::collections::HashSet<mrs_core::SymbolId> =
+            std::collections::HashSet::new();
+        for conj in conjuncts {
+            collect_pred_symbols(conj, &mut referenced);
+        }
+        let deps: Vec<mrs_core::SymbolId> = referenced
+            .into_iter()
+            .filter(|s| *s != def_sym && def_id_by_symbol.contains_key(s))
+            .collect();
+        if !deps.is_empty() {
+            def_deps.insert(def_sym, deps);
+        }
+
         let rhs = if conjuncts.len() == 1 {
             conjuncts[0].clone()
         } else {
@@ -183,18 +236,11 @@ pub fn clausify_with_provenance(
             .into_iter()
             .rev()
             .fold(biconditional, |body, v| Formula::forall(v, body));
-        let def_sym = match def_atom {
-            mrs_core::Atom::Pred(sym, _) => *sym,
-            mrs_core::Atom::Eq(..) => {
-                unreachable!("definitional CNF only introduces fresh predicate symbols")
-            }
-        };
         def_provenance.push(Clause::new_formula_step(
             def_id,
             closed_biconditional,
             ClauseSource::Introduced { symbol: def_sym },
         ));
-        def_id_by_symbol.insert(def_sym, def_id);
     }
 
     // Step 6: Extract clauses, citing the Skolemization step as parent.
@@ -208,22 +254,40 @@ pub fn clausify_with_provenance(
     // definitional predicates also needs that definition's introduction
     // step cited as an additional parent -- otherwise no ATP can prove it
     // follows from the Skolemization step alone, since that step's formula
-    // never mentions the fresh symbol at all.
+    // never mentions the fresh symbol at all. If that definition's own body
+    // in turn mentions *another* fresh definitional predicate (nested
+    // Tseytin naming), transitively cite that one's introduction step too,
+    // and so on -- a clause's proof must be self-contained, not just
+    // reference the immediately-visible definition.
     if !def_id_by_symbol.is_empty() {
         for clause in &mut clauses {
             let mut extra_parents: Vec<ClauseId> = Vec::new();
+            let mut seen_syms: std::collections::HashSet<mrs_core::SymbolId> =
+                std::collections::HashSet::new();
+            let mut frontier: Vec<mrs_core::SymbolId> = Vec::new();
+
             for lit in &clause.literals {
-                let sym = match &lit.atom {
-                    mrs_core::Atom::Pred(s, _) => Some(*s),
-                    mrs_core::Atom::Eq(..) => None,
-                };
-                if let Some(sym) = sym
-                    && let Some(&def_id) = def_id_by_symbol.get(&sym)
+                if let mrs_core::Atom::Pred(sym, _) = &lit.atom
+                    && def_id_by_symbol.contains_key(sym)
+                {
+                    frontier.push(*sym);
+                }
+            }
+
+            while let Some(sym) = frontier.pop() {
+                if !seen_syms.insert(sym) {
+                    continue;
+                }
+                if let Some(&def_id) = def_id_by_symbol.get(&sym)
                     && !extra_parents.contains(&def_id)
                 {
                     extra_parents.push(def_id);
                 }
+                if let Some(deps) = def_deps.get(&sym) {
+                    frontier.extend(deps.iter().copied());
+                }
             }
+
             if !extra_parents.is_empty()
                 && let ClauseSource::Inference { parents, .. } = &mut clause.source
             {
@@ -244,6 +308,34 @@ pub fn clausify_with_provenance(
     provenance.extend(def_provenance);
 
     (provenance, clauses)
+}
+
+/// Collects every predicate symbol (from `Atom::Pred`) appearing anywhere in
+/// `formula`. Used to detect nested Tseytin definitions: when one
+/// definition's own conjuncts mention another definition's fresh predicate
+/// symbol, that dependency must be transitively cited wherever the outer
+/// definition is used (see Step 6b in [`clausify_with_provenance`]).
+fn collect_pred_symbols(
+    formula: &Formula,
+    out: &mut std::collections::HashSet<mrs_core::SymbolId>,
+) {
+    match formula {
+        Formula::Atom(mrs_core::Atom::Pred(sym, _)) => {
+            out.insert(*sym);
+        }
+        Formula::Atom(mrs_core::Atom::Eq(..)) | Formula::True | Formula::False => {}
+        Formula::Neg(inner) => collect_pred_symbols(inner, out),
+        Formula::And(cs) | Formula::Or(cs) => {
+            for c in cs {
+                collect_pred_symbols(c, out);
+            }
+        }
+        Formula::Implies(a, b) | Formula::Iff(a, b) => {
+            collect_pred_symbols(a, out);
+            collect_pred_symbols(b, out);
+        }
+        Formula::Forall(_, body) | Formula::Exists(_, body) => collect_pred_symbols(body, out),
+    }
 }
 
 /// Strips all universal quantifiers from a formula, recursing into
@@ -450,6 +542,139 @@ mod provenance_tests {
         assert!(
             saw_def_citing_clause,
             "expected at least one clause to mention a def_ predicate"
+        );
+    }
+
+    #[test]
+    fn nested_definitional_cnf_transitively_cites_inner_definition() {
+        // Regression test for the SWC351+1.p mrs-proover false-VerifiedBad
+        // finding: *doubly*-nested And-under-Or forces two definitions,
+        // where the outer one's own biconditional body mentions the inner
+        // one's fresh predicate (exactly the def_ax5_1 / def_ax5_0 shape
+        // from SWC351+1.p's axiom `ax5`). A clause that only mentions the
+        // outer definition must still transitively cite the inner
+        // definition's introduction step -- otherwise the printed proof
+        // references an unjustified symbol and no ATP can confirm the step
+        // follows from its cited parents alone (confirmed: mrs-proover's
+        // ATP ladder correctly reported VerifiedBad on the un-fixed proof).
+        //
+        // Formula: p(X) | ( (~q(X) | (r(X) & s(X))) & (q(X) | t(X)) )
+        //   - inner And `r(X) & s(X)` is under the inner Or `~q(X) | ...`
+        //     -> named def_0(X), giving inner Or = `~q(X) | def_0(X)`.
+        //   - outer And `(~q(X)|def_0(X)) & (q(X)|t(X))` is under the
+        //     outermost Or `p(X) | ...` -> named def_1(X), whose own
+        //     conjuncts include `~q(X) | def_0(X)` (mentions def_0!).
+        //   - final renamed formula: `p(X) | def_1(X)`.
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+        let r = syms.intern("r");
+        let s = syms.intern("s");
+        let t = syms.intern("t");
+
+        let formula = Formula::forall(
+            0,
+            Formula::or(vec![
+                Formula::atom(Atom::pred(p, vec![Term::var(0)])),
+                Formula::and(vec![
+                    Formula::or(vec![
+                        Formula::neg(Formula::atom(Atom::pred(q, vec![Term::var(0)]))),
+                        Formula::and(vec![
+                            Formula::atom(Atom::pred(r, vec![Term::var(0)])),
+                            Formula::atom(Atom::pred(s, vec![Term::var(0)])),
+                        ]),
+                    ]),
+                    Formula::or(vec![
+                        Formula::atom(Atom::pred(q, vec![Term::var(0)])),
+                        Formula::atom(Atom::pred(t, vec![Term::var(0)])),
+                    ]),
+                ]),
+            ]),
+        );
+
+        let mut id_gen = ClauseIdGen::new();
+        let leaf_source = ClauseSource::Input {
+            name: "ax5".to_string(),
+            role: "axiom".to_string(),
+        };
+        let (provenance, clauses) =
+            clausify_with_provenance(&formula, &mut syms, &mut id_gen, "ax5", leaf_source, None);
+
+        let def_ids: Vec<ClauseId> = provenance
+            .iter()
+            .filter(|c| matches!(c.source, ClauseSource::Introduced { .. }))
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(
+            def_ids.len(),
+            2,
+            "expected exactly two nested definitions (def_0 and def_1)"
+        );
+
+        // Find the definition step whose own formula body mentions the
+        // *other* definition's symbol -- that's the outer one (def_1).
+        let mut outer_def_id = None;
+        let mut outer_def_sym = None;
+        let mut inner_def_id = None;
+        for step in provenance
+            .iter()
+            .filter(|c| matches!(c.source, ClauseSource::Introduced { .. }))
+        {
+            let ClauseSource::Introduced { symbol } = &step.source else {
+                unreachable!()
+            };
+            let body = step.formula.as_ref().expect("formula step");
+            let mut mentioned = std::collections::HashSet::new();
+            collect_pred_symbols(body, &mut mentioned);
+            // A definition's own biconditional always mentions its own
+            // symbol (LHS of the <=>); if it mentions a *second* def_
+            // symbol too, that's the nested dependency.
+            let other_def_syms: Vec<_> = mentioned
+                .iter()
+                .filter(|sym| syms.resolve(**sym).starts_with("def_"))
+                .collect();
+            if other_def_syms.len() > 1 {
+                outer_def_id = Some(step.id);
+                outer_def_sym = Some(*symbol);
+            } else {
+                inner_def_id = Some(step.id);
+            }
+        }
+        let outer_def_id = outer_def_id.expect("expected an outer (nested) definition step");
+        let outer_def_sym = outer_def_sym.expect("expected the outer definition's symbol");
+        let inner_def_id = inner_def_id.expect("expected an inner definition step");
+
+        // The final clause `p(X) | def_1(X)` only directly mentions the
+        // *outer* definition symbol, but must still transitively cite the
+        // *inner* one's introduction step too.
+        let mut found_outer_clause = false;
+        for c in &clauses {
+            let mentions_outer = c
+                .literals
+                .iter()
+                .any(|lit| matches!(lit.atom, Atom::Pred(sym, _) if sym == outer_def_sym));
+            if !mentions_outer {
+                continue;
+            }
+            if let ClauseSource::Inference { parents, .. } = &c.source
+                && parents.contains(&outer_def_id)
+            {
+                found_outer_clause = true;
+                assert!(
+                    parents.contains(&inner_def_id),
+                    "clause citing the outer definition ({:?}) must transitively \
+                     cite the inner definition ({:?}) too, since the outer \
+                     definition's own body mentions the inner one; got parents {:?}",
+                    outer_def_id,
+                    inner_def_id,
+                    parents
+                );
+            }
+        }
+        assert!(
+            found_outer_clause,
+            "expected at least one final clause to cite the outer definition's \
+             introduction step directly"
         );
     }
 
