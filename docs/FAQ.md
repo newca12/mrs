@@ -77,19 +77,30 @@ Without the advanced first-order calculi of provers like MRS, Z3 will instantly 
 
 ## 5. Other CASC Divisions & MRS's Scope
 
-### Q: What are the other CASC-30 divisions, and why does MRS focus strictly on FOF, EPR, and UEQ?
+### Q: What are the other CASC-30 divisions, and why does MRS focus strictly on FOF and UEQ?
 
 At the official CASC-30 competition, **Vampire 5.0** made history by winning **all 8 official divisions** in a complete clean sweep. These divisions, their logic definitions, and how MRS relates to them are outlined below:
+
+> **CASC-J13 note (2026-07-18):** following the `PRO013+3.p` soundness
+> incident (see `docs/BENCHMARKS.md` and the CWA/subst fixes in
+> `crates/mrs-search/src/cwa.rs` / `crates/mrs-core/src/subst.rs`), entry is
+> **withdrawn for this competition from EPR (EPU/EPS) and ICU**, narrowing the
+> submission to **FNE + FEQ + UEQ only** so that verification effort
+> (`run_soundness_audit.sh` + the `mrs-proover`/`mrs-codex` independent-proof
+> audit) concentrates on the divisions actually entered. This is a
+> per-competition entry decision, not a permanent architectural limitation —
+> the EPR/ICU code paths remain in the tree and can be re-entered once
+> re-audited.
 
 | Division | Domain | Winning System | MRS Compatibility & Scope |
 | :--- | :--- | :---: | :--- |
 | **FOF** | First-Order Formulas (Classical) | **Vampire 5.0** | **🟢 PRIMARY FOCUS (FNE & FEQ)**. The core of first-order ATP. MRS competes here, split into **FNE** (No Equality) and **FEQ** (With Equality). |
-| **EPR** | Effectively Propositional | **Vampire 5.0** | **🟢 PRIMARY FOCUS (EPU & EPS)**. Bernays-Schönfinkel class (no functions of arity $\ge 1$). MRS competes here via **EPU** (Unsatisfiable) and **EPS** (Satisfiable) with CaDiCaL SAT-splitting. |
+| **EPR** | Effectively Propositional | **Vampire 5.0** | **⏸ WITHDRAWN FOR CASC-J13** (EPU/EPS). Bernays-Schönfinkel class (no functions of arity $\ge 1$); CaDiCaL SAT-splitting support remains in the tree, but this entry is not submitting EPU/EPS this round — see note above. |
 | **UEQ** | Unit Equality CNF | **Vampire 5.0** | **🟢 PRIMARY FOCUS (UEQ)**. Pure equational logic. Our new sound **AC-indexing loop** targets this division directly, boosting solves from 31 to 40. |
 | **THF** | Typed Higher-order Form | **Vampire 5.0** | **❌ OUT OF SCOPE**. Requires higher-order logic (lambda-calculus, type theory, currying). MRS is strictly a classical *First-Order* solver. |
 | **TFA** | Typed First-order with Arithmetic | **Vampire 5.0** | **❌ OUT OF SCOPE**. Requires SMT-style arithmetic solvers to handle real, integer, and rational constraints. MRS does not support numeric theories. |
 | **FNT** | First-order Non-theorems | **Vampire 5.0** | **❌ OUT OF SCOPE**. Strictly tests disproving formulas by finding counter-models (often requiring finite model generators like Mace4 or Paradox). |
 | **SLH** | Sledgehammer (Isabelle) | **Vampire 5.0** | **❌ OUT OF SCOPE**. Obligation proofs translated from interactive HOL proof assistants (Isabelle). Requires highly specialized translation parsing. |
-| **ICU** | Intuitionistic First-order logic | **Vampire 5.0** | **⚠️ EXPERIMENTAL (ICU)**. Focuses on constructive (intuitionistic) first-order logic. We have an experimental ICU harness, but historically solve $\le 2$ problems due to constructive proof complexity. |
+| **ICU** | Intuitionistic First-order logic | **Vampire 5.0** | **⏸ WITHDRAWN FOR CASC-J13**. Experimental harness historically solves $\le 2$ problems; withdrawn this round along with EPR — see note above. |
 
-By specializing strictly in FOF, EPR, and UEQ, MRS avoids the architectural bloat of SMT/Higher-order engines, allowing us to build the highest possible throughput and search space density in pure classical first-order reasoning.
+By specializing strictly in FOF and UEQ for CASC-J13, MRS avoids the architectural bloat of SMT/Higher-order engines, allowing us to build the highest possible throughput and search space density in pure classical first-order reasoning.
