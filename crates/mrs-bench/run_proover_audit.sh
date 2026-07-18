@@ -21,6 +21,19 @@
 #   db-file    SQLite database written by mrs-codex. Defaults to
 #              proover_audit.db in the current directory.
 #
+# Env vars:
+#   MRS_AUDIT_TIMEOUT  Per-problem time limit in seconds. Default 30.
+#   MRS_WORKERS        Worker threads per `mrs` invocation. Default 8
+#                       (matches CASC hardware).
+#   MRS_CODEX_JOBS      Parallel problems run at once by mrs-codex. Default
+#                       max(1, detected-cores / MRS_WORKERS), so
+#                       jobs * MRS_WORKERS never oversubscribes the machine.
+#                       Override if you want something else, e.g.
+#                       MRS_WORKERS=1 MRS_CODEX_JOBS=$(nproc) for maximum
+#                       throughput via fully deterministic single-strategy
+#                       runs (see AGENTS.md's --workers 1 note) instead of
+#                       fewer, competition-faithful 8-worker runs.
+#
 # Requires: $TPTP set (or one of the default paths below), and
 #   cargo build --release -p mrs -p mrs-proover -p mrs-codex
 # (this script will attempt that build automatically if binaries are missing).
@@ -37,6 +50,15 @@
 # e.g. by re-running the full ATP ladder directly:
 #   ./target/release/mrs-proover <proof.p>            # eprover+vampire+mrs
 # instead of the `--only-mrs` fast path mrs-codex uses internally.
+#
+# Concurrency note: without an explicit --jobs, mrs-codex would default to
+# one parallel problem per CPU core while each of those problems' `mrs`
+# invocation *also* spawns MRS_WORKERS threads internally -- N cores x 8
+# workers/job = 8N threads on an N-core box. That's severe oversubscription
+# that both wastes wall-clock time and (per AGENTS.md's architecture notes
+# on wall-clock-sensitive LRS pruning) can produce spurious timeouts/GaveUps
+# that mask exactly the proof issues this audit exists to catch. See the
+# MRS_CODEX_JOBS env var above for how this script avoids that.
 
 set -euo pipefail
 
@@ -46,6 +68,7 @@ WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 LIST_FILE="${1:-${SCRIPT_DIR}/fof_non_theorems.list}"
 DB_FILE="${2:-${WORKSPACE_ROOT}/proover_audit.db}"
 TIMEOUT_SECS="${MRS_AUDIT_TIMEOUT:-30}"
+WORKERS_PER_JOB="${MRS_WORKERS:-8}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -89,6 +112,22 @@ if [[ ! -x "${MRS_BIN}" || ! -x "${PROOVER_BIN}" ]]; then
     (cd "${WORKSPACE_ROOT}" && cargo build --release -p mrs -p mrs-proover -p mrs-codex)
 fi
 
+# Detect available cores, portably. Falls back to 1 (i.e. --jobs 1) if
+# neither `nproc` nor `getconf` is available, which is always safe (just
+# slower), never oversubscribed.
+CORES="$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
+
+# Size --jobs so that jobs * workers-per-job never exceeds the core count.
+# MRS_CODEX_JOBS overrides this entirely if set.
+if [[ -n "${MRS_CODEX_JOBS:-}" ]]; then
+    CODEX_JOBS="${MRS_CODEX_JOBS}"
+else
+    CODEX_JOBS=$(( CORES / WORKERS_PER_JOB ))
+    if (( CODEX_JOBS < 1 )); then
+        CODEX_JOBS=1
+    fi
+fi
+
 STAGE_DIR="$(mktemp -d)"
 trap 'rm -rf "${STAGE_DIR}"' EXIT
 
@@ -121,7 +160,9 @@ echo -e "${CYAN}=== Running mrs-codex (mrs + automatic mrs-proover --only-mrs ve
 echo -e "TPTP Library  : ${YELLOW}${TPTP_DIR}${NC}"
 echo -e "Database      : ${YELLOW}${DB_FILE}${NC}"
 echo -e "Time Limit    : ${YELLOW}${TIMEOUT_SECS}s${NC} per problem"
-echo -e "Workers/job   : ${YELLOW}${MRS_WORKERS:-8}${NC}"
+echo -e "Workers/job   : ${YELLOW}${WORKERS_PER_JOB}${NC}"
+echo -e "Cores detected: ${YELLOW}${CORES}${NC}"
+echo -e "Parallel jobs : ${YELLOW}${CODEX_JOBS}${NC} (jobs x workers = $(( CODEX_JOBS * WORKERS_PER_JOB )), avoiding oversubscription of ${CORES} core(s))"
 echo "--------------------------------------------------------"
 
 LOG_FILE="$(mktemp)"
@@ -129,7 +170,8 @@ LOG_FILE="$(mktemp)"
     --db "${DB_FILE}" \
     --system "mrs-0.2.0-proover-audit" \
     --timeout "${TIMEOUT_SECS}" \
-    --cmd "${MRS_BIN} --schedule casc --workers ${MRS_WORKERS:-8} --time {timeout} {file}" \
+    --jobs "${CODEX_JOBS}" \
+    --cmd "${MRS_BIN} --schedule casc --workers ${WORKERS_PER_JOB} --time {timeout} {file}" \
     | tee "${LOG_FILE}"
 
 echo "--------------------------------------------------------"
