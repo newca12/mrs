@@ -43,5 +43,15 @@ fi
 # to 0: GNU `timeout 0s <cmd>` disables the timeout entirely (runs
 # unbounded) rather than killing immediately.
 SOFT=$(( TIME_LIMIT > 1 ? TIME_LIMIT - 1 : 1 ))
+
+# Raise the stack limit for the parsing/DAG-building phase (load() and
+# dag::build() both run on the main thread, before the parallel ATP-ladder
+# verification pass spawns worker threads -- see docs/STATUS.md). Both use
+# mrs-tptp's recursive-descent parser, which crates/mrs-tptp/doc/technical.md
+# documents as a stack-overflow risk on deeply nested formulas. Best-effort:
+# some sandboxes cap the hard limit and refuse to raise the soft limit
+# further, which prints a warning but does not abort under `set -e`.
+ulimit -s unlimited 2>/dev/null || true
+
 exec timeout --foreground "${SOFT}s" "${BINARY}" "${ARGS[@]}" "${PROOF}" \
     || echo "% SZS status Unknown : exhausted wall-clock budget"

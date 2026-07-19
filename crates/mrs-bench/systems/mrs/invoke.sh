@@ -48,4 +48,13 @@ esac
 # with no output at all.
 SOFT_TIME=$(( TIME_LIMIT > 2 ? TIME_LIMIT - 2 : TIME_LIMIT ))
 
+# Raise the stack limit for the parsing/clausification phase (mrs_tptp's
+# recursive-descent parser and mrs_cnf's NNF/Skolemization/CNF pipeline both
+# run on the main thread, before run_schedule spawns worker threads -- see
+# docs/STATUS.md). crates/mrs-tptp/doc/technical.md documents deeply nested
+# formulas as a stack-overflow risk. Best-effort: some sandboxes cap the
+# hard limit and refuse to raise the soft limit further, which prints a
+# warning but does not abort under `set -e`.
+ulimit -s unlimited 2>/dev/null || true
+
 exec "${BINARY}" --time "${SOFT_TIME}" --workers "${MRS_WORKERS:-8}" --schedule "${SCHEDULE}" "${PROBLEM}"
