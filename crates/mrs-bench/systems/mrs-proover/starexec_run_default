@@ -49,5 +49,22 @@ SOFT_TIME=$(( WALLCLOCK > 1 ? WALLCLOCK - 1 : 1 ))
 # further, which prints a warning but does not abort under `set -e`.
 ulimit -s unlimited 2>/dev/null || true
 
+# `ulimit -s` above only covers the main thread. The parallel ATP-ladder
+# verification pass (std::thread::scope in verify.rs, default 8 workers)
+# spawns worker threads with Rust's own runtime default of 2 MiB
+# (DEFAULT_MIN_STACK_SIZE, smaller than the typical 8 MiB main-thread
+# default) unless RUST_MIN_STACK is set in the environment before the
+# process starts. Those threads run genuinely recursive code from
+# mrs-unify/mrs-core/mrs-index on every step (including the MrsAtp
+# in-process fallback, which runs a full given-clause search) -- a stack
+# overflow there triggers Rust's abort() handler, killing the whole
+# process with zero output, which is worse than a clean timeout. 64 MiB
+# matches the precedent already set by crates/mrs-tptp/examples/
+# parse_folder.rs's stack_size(64 * 1024 * 1024) and gives on the order of
+# 300,000 levels of recursion headroom -- comfortably more than any real
+# TPTP problem's term nesting depth, at negligible cost (thread stacks are
+# lazily-committed virtual memory, not counted against RSS until used).
+export RUST_MIN_STACK=67108864
+
 exec timeout --foreground "${SOFT_TIME}s" "${BINARY}" "${ARGS[@]}" "${PROOF}" \
     || echo "% SZS status Unknown : exhausted wall-clock budget"
