@@ -231,6 +231,12 @@ fn run_atp_jobs(
                         job.is_skolemisation,
                     );
                     let oc = finish_atp(atp, symbols, &job.step, budget);
+                    if settings.verbose {
+                        eprintln!(
+                            "% step slot {} [rule={:?}] -> {:?}",
+                            job.slot, job.step.rule, oc
+                        );
+                    }
                     results.lock().expect("results mutex").push((job.slot, oc));
                 }
             });
