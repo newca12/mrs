@@ -2,11 +2,48 @@
 
 Quick-start context for AI agents working in this repo.
 
-## What this is
+## 1. NixOS WSL Development Environment (SOTA)
+The host environment is **NixOS running inside Windows Subsystem for Linux (WSL)**.
+- Traditional FHS assumptions do NOT apply. Files and libraries are versioned under `/nix/store/` instead of `/lib` or `/usr/include`.
+- This project uses **Nix Flakes** (`flake.nix`) and **direnv** (`.envrc`) to declare its development dependencies (including Rust compiler stable 1.97.0, cargo, clippy, rustfmt, rust-analyzer, pkg-config, git, and cargo-nextest).
+
+### Execution Rule (Critical)
+Because your native agent `bash` or terminal execution tool starts in a raw shell that does not automatically load `direnv`, **you must wrap any compilation, testing, or development command in the Nix environment.**
+
+- **DO NOT RUN:** `cargo check` or `cargo test --workspace` directly.
+- **DO RUN:** Nest your commands inside `nix develop` or `direnv exec`:
+  ```bash
+  # Option A (Preferred):
+  nix develop -c cargo check
+  
+  # Option B:
+  direnv exec . cargo check
+  ```
+
+---
+
+## 2. Commit and Verification Policy (Strictly Enforced)
+To maintain the highest repository standards, any AI agent working in this workspace must adhere to the following rules:
+
+1. **Pre-Commit Verification**: Every single code change and commit must be completely clean and fully validated. Before creating any commit, you must run and pass the following Nix-wrapped commands with zero errors or warnings:
+   - **Check**: `nix develop -c cargo check`
+   - **Lints**: `nix develop -c cargo clippy --all -- -D warnings`
+   - **Format**: `nix develop -c cargo fmt --all --check`
+   - **Tests**: `nix develop -c cargo test --workspace`
+
+2. **Git Commits**: You are permitted to create Git commits autonomously to checkpoint stable stages of development. Ensure the commit messages conform to the repository's convention (e.g., `feat: ...`, `fix: ...`, `refactor: ...`).
+
+3. **No Pushing**: You are **strictly forbidden from pushing** commits to the remote tracking branch or any remote repositories. Never run `git push`.
+
+4. **Permission Model**: OpenCode permissions are set to `"allow"` inside `~/.config/opencode/opencode.json` to streamline the agent flow. You do not need to ask for permission before running wrapped bash commands.
+
+---
+
+## 3. What this is
 
 `mrs` is an automated theorem prover in Rust targeting the CASC competition. It reads **TPTP** problem files and outputs **SZS/TSTP**-formatted results. It employs a **parallel strategy portfolio scheduler** running a **superposition calculus** within a **given-clause loop**, augmented by **AVATAR** (using CaDiCaL) for advanced clause splitting and **cross-strategy clause sharing**.
 
-## mrs-tptp
+## 4. mrs-tptp
 
 Zero-copy TPTP parser built with [winnow](https://crates.io/crates/winnow). Lives at `crates/mrs-tptp/`; crate name `mrs-tptp`. The AST borrows `&str` slices directly from the input — no per-token allocation. Single library crate, edition 2024.
 
@@ -33,47 +70,49 @@ Zero-copy TPTP parser built with [winnow](https://crates.io/crates/winnow). Live
 **Testing:**
 
 ```bash
-cargo test -p mrs-tptp                    # unit + integration tests
-cargo test -p mrs-tptp parser_tests       # integration tests only
-cargo test -p mrs-tptp -- --nocapture     # see stdout
+nix develop -c cargo test -p mrs-tptp                    # unit + integration tests
+nix develop -c cargo test -p mrs-tptp parser_tests       # integration tests only
+nix develop -c cargo test -p mrs-tptp -- --nocapture     # see stdout
 
-cargo run -p mrs-tptp --example parse_file
-cargo run --release -p mrs-tptp --example parse_folder -- /path/to/TPTP --timeout 5000 --threads 4
+nix develop -c cargo run -p mrs-tptp --example parse_file
+nix develop -c cargo run --release -p mrs-tptp --example parse_folder -- /path/to/TPTP --timeout 5000 --threads 4
 ```
 
 Integration tests live in `crates/mrs-tptp/tests/`: `parser_tests.rs`, `non_classical_tests.rs`, `syn000_tests.rs`, plus `tests/resources/` fixtures.
 
-## Toolchain
+## 5. Toolchain
 
 - Rust edition **2024**, resolver **3** — requires stable ≥ 1.85.
-- Check version: `rustup show`. Update if needed: `rustup update stable`.
+- Check version: `nix develop -c rustup show`. Update if needed: `nix develop -c rustup update stable`.
 
-## Developer commands
+## 6. Developer commands
 
 ```bash
-cargo build                          # debug build
-cargo build --release                # release (use for benchmarking)
-cargo check                          # fast type-check, no output
-cargo clippy --all                   # lint (always run before committing)
-cargo fmt --all                      # format (always run before committing)
-cargo fmt --all --check              # CI-style format check
+nix develop -c cargo build                          # debug build
+nix develop -c cargo build --release                # release (use for benchmarking)
+nix develop -c cargo check                          # fast type-check, no output
+nix develop -c cargo clippy --all                   # lint (always run before committing)
+nix develop -c cargo fmt --all                      # format (always run before committing)
+nix develop -c cargo fmt --all --check              # CI-style format check
 
-cargo test --workspace               # all tests (use --workspace; bare cargo test only runs root crate)
-cargo test -p mrs-search             # single crate
-cargo test -p mrs-calculus resolution  # single test (substring match)
-cargo test -p mrs-search -- --nocapture  # show stdout
+nix develop -c cargo test --workspace               # all tests
+nix develop -c cargo test -p mrs-search             # single crate
+nix develop -c cargo test -p mrs-calculus resolution  # single test (substring match)
+nix develop -c cargo test -p mrs-search -- --nocapture  # show stdout
 
 # Run the binary on a TPTP problem file
-cargo run -- problems/socrates.p
-cargo run --release -- problems/pel1.p
+nix develop -c cargo run -- problems/socrates.p
+nix develop -c cargo run --release -- problems/pel1.p
 # Expected output: lines starting with "% SZS status ..."
 
 # Pick a non-default strategy schedule
-cargo run --release -- --schedule fast problems/socrates.p
-cargo run --release -- --list-schedules
+nix develop -c cargo run --release -- --schedule fast problems/socrates.p
+nix develop -c cargo run --release -- --list-schedules
 ```
 
-## CLI flags
+---
+
+## 7. CLI flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -115,17 +154,21 @@ Higher n = more weight-biased; lower n = more age-inclusive (broader exploration
 
 To add a new schedule: implement a constructor in `strategy::named`, then add its name to `ALL` and the `by_name` match. `default_schedule()` must stay synonymous with `casc` so unflagged CASC runs are unaffected.
 
-## Root crate features
+---
+
+## 8. Root crate features
 
 | Feature | Off-by-default | Effect |
 |---------|----------------|--------|
-| `proover` | yes | Enables `--quiet` and stdin (`-`); used by `mrs-proover`'s in-process `MrsAtp` backend. Build with `cargo build --release --features proover --bin mrs`. |
+| `proover` | yes | Enables `--quiet` and stdin (`-`); used by `mrs-proover`'s in-process `MrsAtp` backend. Build with `nix develop -c cargo build --release --features proover --bin mrs`. |
 | `ml` | yes | Enables ML trace logging (`--log-ml-data`); pulls `mrs-core/ml` + `mrs-search/ml-guidance` (Burn, wincode). Used by `crates/mrs-bench/collect_ml_data.sh`. |
 | `ml-guidance` | yes | Same flags as `ml`; enables in-process inference with `--ml-weights`. |
 
 `--schedule`, `--list-schedules`, `--workers`, and `--fast` are **unconditional** — they work in any build. The `--log-ml-data`/`--ml-weights` flags parse in any build but are no-ops (with a warning for `--ml-weights`) without the `ml`/`ml-guidance` features.
 
-## Workspace layout
+---
+
+## 9. Workspace layout
 
 ```
 mrs/                  ← workspace root AND the binary crate (src/main.rs)
@@ -151,27 +194,31 @@ mrs/                  ← workspace root AND the binary crate (src/main.rs)
 
 The root `Cargo.toml` is both `[workspace]` and `[package]` — valid but unusual.
 
-## Architecture notes
+---
+
+## 10. Architecture notes
 
 - **Strategy portfolio:** 15 active strategies run **in parallel**, sharing a pool of derived unit equalities. A 16th diagnostic strategy (`MRS_SINGLE_STRATEGY=16`) gets `Duration::ZERO` in normal runs.
 - **Default time budget:** 30 seconds; overridable with `--time <seconds>`.
-- **LRS (Limited Resource Strategy):** every 100 given-clause iterations, the prover estimates the remaining iteration budget from `elapsed/iteration` and prunes the passive queue to that size (min 2000). This prevents memory explosion and teardown latency on hard problems.  Set `TRACE_LRS=1` to see per-prune log lines on stderr.
+- **LRS (Limited Resource Strategy):** every 100 given-clause iterations, the prover estimates the remaining iteration budget from `elapsed/iteration` and prunes the passive queue to that size (min 2000). This prevents memory explosion and teardown latency on hard problems. Set `TRACE_LRS=1` to see per-prune log lines on stderr.
 - **Refutation-based:** conjectures are negated before search. A problem with no `conjecture` role checks satisfiability (outputs `Unsatisfiable`/`Satisfiable`).
 - **TSTP proof output** only on `Refutation`; other statuses produce only the SZS status line.
 
-## CASC Hardware & `--casc` Decision Rule
+---
 
-> **This section is permanent policy.  Do not remove or weaken it.**
+## 11. CASC Hardware & `--casc` Decision Rule
 
-**CASC competition hardware is exactly 8 CPU cores.**  Every entry at CASC runs
+> **This section is permanent policy. Do not remove or weaken it.**
+
+**CASC competition hardware is exactly 8 CPU cores.** Every entry at CASC runs
 with a wall-clock time limit (240 s for FEQ/FNE/UEQ, 120 s for EPS/EPU) on a
-machine with 8 physical cores.  All portfolio design, strategy selection, and
+machine with 8 physical cores. All portfolio design, strategy selection, and
 time-budget arithmetic **must treat 8 as the canonical core count**.
 
 ### Goal
 
 Maximize the number of CASC problems solved across all entered divisions
-(FEQ, FNE, UEQ, EPS/EPU).  The competition `invoke.sh` already routes each
+(FEQ, FNE, UEQ, EPS/EPU). The competition `invoke.sh` already routes each
 problem to the correct per-division schedule (`casc_feq/fne/ueq/epr`).
 The question is whether those division schedules are optimal for 8 cores.
 
@@ -194,7 +241,7 @@ current generic schedule and the data-driven optimal portfolio.
 
 ```bash
 # Run every mrs strategy solo on one division (30 s per problem, 4 parallel jobs).
-# Requires: cargo build --release
+# Requires: nix develop -c cargo build --release
 export TPTP=/path/to/TPTP-v9.x.x
 ./crates/mrs-bench/run_strategy_sweep.sh --divisions fne --time 30 --jobs 4 \
     --output results/sweep-fne-$(date +%Y%m%d)
@@ -205,9 +252,9 @@ This produces `run.csv` where each `system` column is `mrs-s01..mrs-s15`.
 **Step 2 — Find optimal 8-strategy portfolio per division:**
 
 ```bash
-./target/release/greedy_set_cover results/sweep-fne-*/run.csv 8 --division fne
-./target/release/greedy_set_cover results/sweep-fne-*/run.csv 8 --division ueq
-./target/release/greedy_set_cover results/sweep-fne-*/run.csv 8 --division eps
+nix develop -c cargo run --release --bin greedy_set_cover -- results/sweep-fne-*/run.csv 8 --division fne
+nix develop -c cargo run --release --bin greedy_set_cover -- results/sweep-fne-*/run.csv 8 --division ueq
+nix develop -c cargo run --release --bin greedy_set_cover -- results/sweep-fne-*/run.csv 8 --division eps
 ```
 
 **Step 3 — Baseline comparison:**
@@ -233,17 +280,20 @@ The `casc_feq`, `casc_fne`, `casc_ueq`, `casc_epr`, `casc_eps`, `casc_epu`, and
 `casc_icu` schedules are **data-driven** — priority orders were derived from a
 greedy set-cover analysis over CASC-30 benchmark results (30 s per-strategy sweep).
 See `docs/DIVISIONS.md` for the full coverage numbers and `greedy_all.res` for
-the raw output.  Re-run the workflow above after each new TPTP release or
+the raw output. Re-run the workflow above after each new TPTP release or
 major portfolio change.
 
+---
 
-## Testing
+## 12. Testing
 
 - Most tests are `#[cfg(test)]` inline modules — no separate test directories, no fixtures.
 - Exception: `mrs-tptp` has integration tests under `crates/mrs-tptp/tests/` with fixture files in `tests/resources/`.
 - Some `mrs-search` and `mrs-calculus` tests run the full given-clause loop with real `Duration::from_secs(5)` timeouts.
-- `problems/` is for manual binary runs only, not `cargo test`.
+- `problems/` is for manual binary runs only, not `nix develop -c cargo test`.
 
-## Runtime env var
+---
+
+## 13. Runtime env var
 
 `TPTP=/path/to/TPTP` — only needed at runtime when problems use `%include` pointing to the standard TPTP library. The benchmark harness (`crates/mrs-bench/systems/mrs/invoke.sh`) sets this automatically to `crates/mrs-bench/problems/casc-30`, so it is not required for normal benchmark runs. Only set it manually when running the binary directly on problems that use `%include`.
