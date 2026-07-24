@@ -393,7 +393,10 @@ impl SearchState {
                 atom: norm_atom,
             });
         }
-        IdClause::new_avatar(clause.id, norm_lits, clause.source, clause.avatar)
+        let mut norm_clause =
+            IdClause::new_avatar(clause.id, norm_lits, clause.source, clause.avatar);
+        norm_clause.formula = clause.formula;
+        norm_clause
     }
 
     /// Recursively AC-normalizes all active clauses and updates their weights in queues.

@@ -94,7 +94,7 @@ pub fn format_tstp(proof: &[Clause], symbols: &SymbolTable) -> String {
 
         let annotation = match &clause.source {
             ClauseSource::Input { name, role: _ } => {
-                format!("file('{}', {})", problem_path, name)
+                format!("file('{}', '{}')", problem_path, name)
             }
             ClauseSource::Inference { rule, parents } => {
                 let parent_names: Vec<String> =
@@ -177,14 +177,14 @@ mod tests {
 
         // Before set_problem_path is ever called, the placeholder is "input".
         let output = format_tstp(&[make_clause()], &syms);
-        assert!(output.contains("cnf(c0, axiom, p(a), file('input', ax1))."));
+        assert!(output.contains("cnf(c0, axiom, p(a), file('input', 'ax1'))."));
 
         // After set_problem_path, the real path is used instead.
         set_problem_path("/starexec/sandbox/problems/SEU140+2.p");
         let output = format_tstp(&[make_clause()], &syms);
         assert!(
             output.contains(
-                "cnf(c0, axiom, p(a), file('/starexec/sandbox/problems/SEU140+2.p', ax1))."
+                "cnf(c0, axiom, p(a), file('/starexec/sandbox/problems/SEU140+2.p', 'ax1'))."
             )
         );
     }
@@ -252,7 +252,7 @@ mod tests {
         );
 
         let output = format_tstp(&[leaf, nnf_step], &syms);
-        assert!(output.contains("fof(c0, axiom, p(a), file('input', ax1))."));
+        assert!(output.contains("fof(c0, axiom, p(a), file('input', 'ax1'))."));
         assert!(output.contains(
             "fof(c1, plain, p(a), inference(fof_nnf_transformation, [status(thm)], [c0]))."
         ));
