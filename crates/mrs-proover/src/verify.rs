@@ -38,7 +38,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             total_budget: Duration::from_secs(30),
-            per_step_budget: Duration::from_secs(8),
+            per_step_budget: Duration::from_secs(3),
             verbose: false,
             workers: 8,
         }

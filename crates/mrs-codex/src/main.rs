@@ -184,8 +184,8 @@ fn verify_proof_with_proover(stdout: &str) -> Option<bool> {
 
     let mut proover_child = proover_cmd.stdout(Stdio::piped()).spawn().ok()?;
 
-    // We give the verifier at most 30 seconds to verify.
-    match proover_child.wait_timeout(Duration::from_secs(30)) {
+    // We give the verifier at most 60 seconds to verify.
+    match proover_child.wait_timeout(Duration::from_secs(60)) {
         Ok(Some(_)) => {
             let p_output = proover_child.wait_with_output().ok()?;
             let p_stdout = String::from_utf8_lossy(&p_output.stdout);

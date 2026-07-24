@@ -182,11 +182,9 @@ mod tests {
         // After set_problem_path, the real path is used instead.
         set_problem_path("/starexec/sandbox/problems/SEU140+2.p");
         let output = format_tstp(&[make_clause()], &syms);
-        assert!(
-            output.contains(
-                "cnf(c0, axiom, p(a), file('/starexec/sandbox/problems/SEU140+2.p', 'ax1'))."
-            )
-        );
+        assert!(output.contains(
+            "cnf(c0, axiom, p(a), file('/starexec/sandbox/problems/SEU140+2.p', 'ax1'))."
+        ));
     }
 
     #[test]
