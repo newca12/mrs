@@ -296,6 +296,7 @@ fn make_branch_unit(top_clause: &Clause, k: usize, id_gen: &mut ClauseIdGen) -> 
 /// per-branch proofs with explanatory comments — it is informational only.
 pub fn try_componentwise_refute(
     clauses: &[Clause],
+    provenance: &[Clause],
     id_gen: &mut ClauseIdGen,
     symbols: std::sync::Arc<SymbolTable>,
     sym_config: Arc<SymbolConfig>,
@@ -333,12 +334,16 @@ pub fn try_componentwise_refute(
         let unit = make_branch_unit(top_clause, k, id_gen);
         branch_clauses.push(unit);
 
-        let mut state = SearchState::new(
+        let mut state = SearchState::new_with_ml(
             branch_clauses,
+            provenance.to_vec(),
             id_gen.clone(),
             sym_config.clone(),
             symbols.clone(),
             false,
+            None,
+            false,
+            crate::ClauseWeightFn::Standard,
         );
         let result = search(&mut state, &sub_config);
 
@@ -467,6 +472,7 @@ mod tests {
 
         let result = try_componentwise_refute(
             &clauses,
+            &[],
             &mut id_gen,
             std::sync::Arc::new(syms.clone()),
             make_sym_config(),
@@ -587,6 +593,7 @@ mod tests {
 
         let result = try_componentwise_refute(
             &clauses,
+            &[],
             &mut id_gen,
             std::sync::Arc::new(syms.clone()),
             make_sym_config(),
@@ -610,6 +617,7 @@ mod tests {
         ];
         let result = try_componentwise_refute(
             &clauses,
+            &[],
             &mut id_gen,
             std::sync::Arc::new(syms.clone()),
             make_sym_config(),

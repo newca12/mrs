@@ -607,6 +607,7 @@ pub fn run_schedule(
         let mut cwa_id_gen = id_gen.clone();
         if let Some(result) = try_componentwise_refute(
             &clauses_owned,
+            provenance,
             &mut cwa_id_gen,
             symbols_arc.clone(),
             config.clone(),
