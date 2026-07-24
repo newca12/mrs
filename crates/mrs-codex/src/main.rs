@@ -175,14 +175,17 @@ fn verify_proof_with_proover(stdout: &str) -> Option<bool> {
         .join("mrs-proover");
 
     // Run the verifier forcing it to use only 'mrs' as the ATP fallback.
+    // Limit to 1 worker thread to prevent thread explosion under parallel codex jobs.
     let mut proover_cmd = Command::new(&proover_exe);
     proover_cmd.arg("--only-mrs");
+    proover_cmd.arg("--workers");
+    proover_cmd.arg("1");
     proover_cmd.arg(temp_file.path());
 
     let mut proover_child = proover_cmd.stdout(Stdio::piped()).spawn().ok()?;
 
-    // We give the verifier at most 10 seconds to verify.
-    match proover_child.wait_timeout(Duration::from_secs(10)) {
+    // We give the verifier at most 30 seconds to verify.
+    match proover_child.wait_timeout(Duration::from_secs(30)) {
         Ok(Some(_)) => {
             let p_output = proover_child.wait_with_output().ok()?;
             let p_stdout = String::from_utf8_lossy(&p_output.stdout);
