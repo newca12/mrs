@@ -176,10 +176,13 @@ fn verify_proof_with_proover(stdout: &str) -> Option<bool> {
 
     // Run the verifier forcing it to use only 'mrs' as the ATP fallback.
     // Limit to 1 worker thread to prevent thread explosion under parallel codex jobs.
+    // Restrict total verification budget to 10 seconds.
     let mut proover_cmd = Command::new(&proover_exe);
     proover_cmd.arg("--only-mrs");
     proover_cmd.arg("--workers");
     proover_cmd.arg("1");
+    proover_cmd.arg("--time");
+    proover_cmd.arg("10");
     proover_cmd.arg(temp_file.path());
 
     let mut proover_child = proover_cmd.stdout(Stdio::piped()).spawn().ok()?;
