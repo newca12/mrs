@@ -37,7 +37,7 @@ use std::time::Duration;
 use mrs_calculus::ordering::SymbolConfig;
 use mrs_core::SymbolId;
 use mrs_core::SymbolTable;
-use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource};
+use mrs_core::clause::{Clause, ClauseId, ClauseIdGen, ClauseSource};
 use mrs_core::formula::Atom;
 use mrs_proof::extract::extract_proof;
 use mrs_proof::tstp::format_tstp;
@@ -325,7 +325,7 @@ pub fn try_componentwise_refute(
         ..SearchConfig::default()
     };
 
-    let mut proof_parts: Vec<String> = Vec::with_capacity(n);
+    let mut combined_proof: HashMap<ClauseId, Clause> = HashMap::default();
 
     #[allow(clippy::needless_range_loop)]
     for k in 0..n {
@@ -370,20 +370,16 @@ pub fn try_componentwise_refute(
         match result {
             SearchResult::Refutation(empty_id, _) => {
                 // Convert IdClause store → legacy Clause store for proof extraction
-                let legacy_store: HashMap<_, _> = state
+                let mut legacy_store: HashMap<_, _> = state
                     .clause_store
                     .iter()
                     .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
                     .collect();
+                legacy_store.insert(top_clause.id, top_clause.clone());
                 let proof = extract_proof(empty_id, &legacy_store);
-                let tstp = format_tstp(&proof, &symbols);
-                proof_parts.push(format!(
-                    "% --- componentwise branch {}/{}: predicate {:?} ---\n{}",
-                    k + 1,
-                    n,
-                    top.branch_predicates[k],
-                    tstp
-                ));
+                for clause in proof {
+                    combined_proof.insert(clause.id, clause);
+                }
             }
             // Any non-refutation outcome aborts CWA: if a single branch
             // doesn't refute within its budget we cannot conclude UNSAT.
@@ -391,11 +387,11 @@ pub fn try_componentwise_refute(
         }
     }
 
-    let combined = proof_parts.join("\n");
-    // Reuse the top clause's id as the "empty clause" id for the overall
-    // refutation: this is just a placeholder for SearchResult::Refutation;
-    // the actual chain of evidence is in the TSTP string.
-    Some(SearchResult::Refutation(top_clause.id, combined))
+    let mut final_proof: Vec<Clause> = combined_proof.into_values().collect();
+    final_proof.sort_unstable_by_key(|c| c.id.0);
+
+    let tstp = format_tstp(&final_proof, &symbols);
+    Some(SearchResult::Refutation(top_clause.id, tstp))
 }
 
 // ---------------------------------------------------------------------------

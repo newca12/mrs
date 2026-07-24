@@ -589,7 +589,7 @@ pub fn run_schedule(
     // given-clause loop times out.
     {
         let mut fvo_id_gen = id_gen.clone();
-        if let Some(result) = try_fvo_refutation(&clauses_owned, &mut fvo_id_gen, symbols) {
+        if let Some(result) = try_fvo_refutation(&clauses_owned, provenance, &mut fvo_id_gen, symbols) {
             return (result, crate::ScheduleReport::default());
         }
     }

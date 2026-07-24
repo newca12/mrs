@@ -257,6 +257,7 @@ fn lift_clause(
 /// strategy schedule.
 pub fn try_fvo_refutation(
     clauses: &[Clause],
+    provenance: &[Clause],
     id_gen: &mut ClauseIdGen,
     symbols: &SymbolTable,
 ) -> Option<SearchResult> {
@@ -306,7 +307,10 @@ pub fn try_fvo_refutation(
 
     // Build the lifted FOF proof.
     let mut prop_idx_to_fof_id: HashMap<usize, ClauseId> = HashMap::default();
-    let mut fof_proof: Vec<Clause> = Vec::with_capacity(order.len());
+    let mut fof_proof: Vec<Clause> = Vec::with_capacity(provenance.len() + order.len());
+
+    // Prepend provenance steps so the proof is fully self-contained back to the conjecture!
+    fof_proof.extend(provenance.iter().cloned());
 
     for &prop_idx in &order {
         match &prop_sources[prop_idx] {
@@ -442,7 +446,7 @@ mod tests {
         );
 
         assert!(is_fvo_problem(&[c1.clone(), c2.clone(), c3.clone()]));
-        let result = try_fvo_refutation(&[c1, c2, c3], &mut id_gen, &syms);
+        let result = try_fvo_refutation(&[c1, c2, c3], &[], &mut id_gen, &syms);
         assert!(
             matches!(result, Some(SearchResult::Refutation(..))),
             "expected Refutation, got {:?}",
@@ -461,7 +465,7 @@ mod tests {
             vec![Literal::pos(Atom::pred(p, vec![Term::var(0)]))],
             "c1",
         );
-        let result = try_fvo_refutation(&[c1], &mut id_gen, &syms);
+        let result = try_fvo_refutation(&[c1], &[], &mut id_gen, &syms);
         assert!(result.is_none(), "expected None for SAT problem");
     }
 
@@ -477,7 +481,7 @@ mod tests {
             vec![Literal::pos(Atom::eq(Term::constant(a), Term::constant(b)))],
             "c1",
         );
-        let result = try_fvo_refutation(&[c1], &mut id_gen, &syms);
+        let result = try_fvo_refutation(&[c1], &[], &mut id_gen, &syms);
         assert!(result.is_none(), "expected None for non-FVO problem");
     }
 
@@ -509,7 +513,7 @@ mod tests {
         );
 
         if let Some(SearchResult::Refutation(_, tstp)) =
-            try_fvo_refutation(&[c1, c2, c3], &mut id_gen, &syms)
+            try_fvo_refutation(&[c1, c2, c3], &[], &mut id_gen, &syms)
         {
             assert!(
                 tstp.contains("resolution"),
