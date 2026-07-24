@@ -27,7 +27,7 @@ struct Args {
     #[arg(long, default_value = "codex.db")]
     db: PathBuf,
 
-    /// Name of the prover system (e.g., mrs-0.2.0)
+    /// Name of the prover system (e.g., mrs-0.2.1)
     #[arg(long)]
     system: String,
 

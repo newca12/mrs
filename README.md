@@ -1,5 +1,7 @@
 # mrs — Mechanical Reasoning System
 
+> ⚠️ **CRITICAL WARNING**: Version 0.2.0 contains critical bugs (including Skolem symbol compliance issues and proof verification gaps under AVATAR) that are fully resolved in **v0.2.1**. Please use **v0.2.1** for any stable deployments or evaluations.
+
 [![Crates.io](https://img.shields.io/crates/v/mrs.svg)](https://crates.io/crates/mrs)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 

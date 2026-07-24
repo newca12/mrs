@@ -1,4 +1,4 @@
-CASC-J13 Sample Solutions for mrs 0.2.0
+CASC-J13 Sample Solutions for mrs 0.2.1
 ========================================
 
 FOF sample: SEU140+2
@@ -36,7 +36,7 @@ cnf(c261347, plain, ~in(sk_t3_xboole_0_0(sk_t63_xboole_1_0, sk_t63_xboole_1_2), 
 cnf(c261559, plain, $false, inference(subsumption_resolution, [status(thm)], [c261347, c84107])).
 % SZS output end Proof for SEU140+2
 % ------------------------------
-% Version: mrs 0.2.0
+% Version: mrs 0.2.1
 % Termination reason: Refutation
 % Time elapsed: 12.622 s
 % Peak memory usage: 2571 MB
@@ -70,7 +70,7 @@ cnf(c3365, plain, a != a, inference(demodulation, [status(thm)], [c0, c2966])).
 cnf(c3366, plain, $false, inference(equality_resolution, [status(thm)], [c3365])).
 % SZS output end Proof for BOO001-1
 % ------------------------------
-% Version: mrs 0.2.0
+% Version: mrs 0.2.1
 % Termination reason: Refutation
 % Time elapsed: 0.155 s
 % Peak memory usage: 1611 MB

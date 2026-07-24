@@ -84,7 +84,7 @@ Without the advanced first-order calculi of provers like MRS, Z3 will instantly 
 > **CASC-J13's actual official divisions are only `THF`, `FOF`, `FNT`, `UEQ`,
 > and `ProoVer`** — confirmed directly on the
 > [CASC-J13 Entrants page](https://tptp.org/CASC/J13/Entrants.html), which
-> has no EPR, TFA, SLH, or ICU division at all this year. **`mrs 0.2.0`'s
+> has no EPR, TFA, SLH, or ICU division at all this year. **`mrs 0.2.1`'s
 > actual CASC-J13 registration has always been `FOF UEQ`** (entered
 > 27/06/26, before the `PRO013+3.p` incident) — there is no EPR/ICU entry to
 > withdraw from for this competition; it was never entered there. The `EPR`

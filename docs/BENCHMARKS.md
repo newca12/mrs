@@ -1,5 +1,7 @@
 # Reference
 
+> ⚠️ **CRITICAL WARNING**: Version 0.2.0 contains critical bugs (including Skolem symbol compliance issues and proof verification gaps under AVATAR) that are fully resolved in **v0.2.1**. Please use **v0.2.1** for any stable deployments or evaluations.
+
 ## CASC Division Canary Suite Methodology (Include-Drift Detection)
 
 Competitive benchmarks require clean, pre-sliced problem inputs. If the parent environment exports a global `TPTP` variable pointing to the un-sliced `TPTP-v9.2.1` library, or if the problem path allows the prover's path-resolution logic to walk up and find a global `Axioms/` folder (such as inside `/DATA/ai/`), any `%include` pulls in the *entire* generic axiom library. This include-drift inflates small problems into million-clause monsters and starves the LRS passive queue, invalidating the solved counts/timings for that run.
@@ -274,11 +276,201 @@ TODO — strategy sweeps (Step 1 of portfolio re-tuning):
 
    1 ./crates/mrs-bench/run_all_greedy_sweeps.sh master_run.csv > final_cacs30_portfolios.txt
 
+
+commit 0d97740e45978429f53b0b0193425a2dc97915e4
+
+[done]
+[www@teenf9901 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions eps --casc-times --jobs 2
+CASC-30 Results — 2026-07-19 11:23  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+EPS            100        43   10.323
+------------------  --------------------
+TOTAL          100        43   10.323
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+17314 Jul 19 12:19 /DATA/ai/mrs/crates/mrs-bench/results/casc-30/20260719_111722/run.csv
+
+[done]
+[PPROD:user@server11:/DATA/DISK1/BENCH/mrs]$ ./crates/mrs-bench/run_soundness_audit.sh > exhaustive_fof_non_theorems_stack_ok.out
+all ok
+
+commit bbde30d4560d01e3ea0ab0915c81d103b824d169 (HEAD -> main, origin/main, origin/HEAD)
+
+[observation] will require RUST_MIN_STACK
+[PPROD:fr22192@dlpnb5211:/DATA/DISK1/BENCH/mrs]$ ./crates/mrs-bench/systems/mrs/starexec_run_default $TPTP/Problems/PLA/PLA045+1.p
+% Problem: PLA045+1 (2 axioms, 0 conjectures, 0 cnf clauses)
+% Auto schedule: chose portfolio 'casc_feq'
+
+thread '<unknown>' (4180976) has overflowed its stack
+fatal runtime error: stack overflow, aborting
+Aborted (core dumped)
+
+[done]
+[root@server04 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions fne --casc-times --jobs 1
+CASC-30 Results — 2026-07-19 12:06  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        36   16.938
+------------------  --------------------
+TOTAL          100        36   16.938
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+16116 Jul 19 14:05 /mnt/sdd1/mrs/crates/mrs-bench/results/casc-30/20260719_094122/run.csv
+
+[done]
+[www@user99 mrs]$ ./crates/mrs-bench/run_soundness_audit.sh > run_soundness_audit_stack.out
+all ok
+
+commit 3062810aa720ac3bc1c09c80700c8038125e5d55
+
+[observation]
+[www@server99 mrs]$ ulimit -s
+8192
+[www@server99 mrs]$ ulimit -s unlimited
+[www@server99 mrs]$ ulimit -s
+unlimited
+[www@server99 mrs]$ ./crates/mrs-bench/systems/mrs/starexec_run_default /DATA/ai/TPTP-v9.2.1/Problems/HWV/HWV055+1.p
+% Problem: HWV055+1 (2 axioms, 0 conjectures, 0 cnf clauses)
+
+[done]
+hack@pve:~/mrs$  LIST_FILE=exhaustive_fof_non_theorems.list ./crates/mrs-bench/run_soundness_audit.sh > exhaustive_fof_non_theorems_30s.out
+all ok
+
+commit 9f56c074ae5f37f5a43e0d941f84e07930465c43 
+
+[done]
+[root@server04 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions fne --casc-times --jobs 1
+CASC-30 Results — 2026-07-19 07:37  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        38   24.350
+------------------  --------------------
+TOTAL          100        38   24.350
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+15949 Jul 19 03:26 /mnt/sdd1/mrs/crates/mrs-bench/results/casc-30/20260718_230515/run.csv
+
+[done]
+[PPROD:user@server11:/DATA/DISK1/BENCH/mrs]$ ./crates/mrs-bench/run_soundness_audit.sh > exhaustive_fof_non_theorems.out
+all ok
+
+[done]
+[PPROD:user@server11:/DATA/DISK1/BENCH/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions ueq --casc-times --jobs 2
+ueq 87 ok
+50802 Jul 19 06:34 /DATA/DISK1/BENCH/mrs/crates/mrs-bench/results/casc-30/20260718_225719/run.csv
+
+[done]
+[www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions feq --casc-times --jobs 2
+CASC-30 Results — 2026-07-19 06:34  (400 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+FEQ            400        88   20.753
+------------------  --------------------
+TOTAL          400        88   20.753
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+66677 Jul 19 07:10 /DATA/ai/mrs/crates/mrs-bench/results/casc-30/20260718_202731/run.csv
+
+[PPROD:user@server97:/DATA/ai/user/mrs]$ TMPDIR=/DATA/ai/user/mrs/tmp MRS_AUDIT_TIMEOUT=240 crates/mrs-bench/run_proover_audit.sh  <(cd "$TPTP" && grep -rlE "SPC *: *(FOF_|CNF_[A-Z0-9_]*UEQ)" Problems/ | xargs grep -L "SPC.*EPR") /DATA/ai/user/mrs/full_audit_filter.db
+
+commit e100bbd68952a664f59a226cbe8d8cc17aa582ef 
+
+[PPROD:user@server11:/DATA/DISK1/BENCH/mrs]$  ./crates/mrs-bench/run_soundness_audit.sh > check_soundness
+
+[done]
+[PPROD:user@server11:/DATA/DISK1/BENCH/mrs]$  ./crates/mrs-bench/run_soundness_audit.sh > check_soundness
+
+[done]
+[root@server04 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions fne --casc-times --jobs 1
+CASC-30 Results — 2026-07-18 21:00  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        36   17.541
+------------------  --------------------
+TOTAL          100        36   17.541
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+15838 Jul 18 20:14 /mnt/sdd1/mrs/crates/mrs-bench/results/casc-30/20260718_155020/run.csv
+
+[done]
+[root@server03 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions feq --casc-times --jobs 1
+CASC-30 Results — 2026-07-19 11:27  (400 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+FEQ            400        88   20.235
+------------------  --------------------
+TOTAL          400        88   20.235
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+66068 Jul 19 13:20 /mnt/sdd/mrs/crates/mrs-bench/results/casc-30/20260718_155407/run.csv
+
+[done]
+[root@server02 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions ueq --casc-times --jobs 1
+CASC-30 Results — 2026-07-19 07:42  (300 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+UEQ            300        82   38.525
+------------------  --------------------
+TOTAL          300        82   38.525
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+50098 Jul 19 07:25 /mnt/sda1/mrs/crates/mrs-bench/results/casc-30/20260718_155056/run.csv
+
 commit 3e95f1a11a446d3d53265831339e4fefbf49d39a (HEAD -> fix/fof-formula-memory-bloat
 
 [ongoing]
-[PPROD:fr22192@dlpnb5211:/DATA/DISK1/BENCH/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions eps,fne,epu,ueq,icu,feq --casc-times --jobs 1
-eps 43 fne 43 epu 16 ueq partial 47/111
+[PPROD:user@server11:/DATA/DISK1/BENCH/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions eps,fne,epu,ueq,icu,feq --casc-times --jobs 1
+eps 43 fne 43 epu 16 ueq partial 82/245
 20260717_183541/run.csv
 
 [done]
@@ -300,8 +492,24 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 16827 Jul 18 03:32 /mnt/sda1/mrs/crates/mrs-bench/results/casc-30/20260717_141614/run.csv
 
-[ongoing]
+[done]
 [root@server03 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions feq --casc-times --jobs 1
+CASC-30 Results — 2026-07-18 13:31  (400 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+FEQ            400        88   18.430
+------------------  --------------------
+TOTAL          400        88   18.430
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+66198 Jul 18 11:41 /mnt/sdd/mrs/crates/mrs-bench/results/casc-30/20260717_141651/run.csv
 
 [done]
 [root@server04 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions ueq --casc-times --jobs 1
@@ -386,8 +594,29 @@ commit 21774f2302c5a2afd9fac9384bc7c7c9b2f2971e version used for the competition
 eps 43 fne 40 epu 16 ueq 86 icu 1 feq partial 66
 147466 Jul 17 18:24 /DATA/DISK1/BENCH/mrs/crates/mrs-bench/results/casc-30/20260716_175345/run.csv
 
-[ongoing]
+[879/1101]
 [PPROD:user@server97:/DATA/ai/fr22192/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions eps,fne,epu,ueq,icu,feq --casc-times --jobs 1
+CASC-30 Results — 2026-07-18 14:03  (879 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+EPS            100        43    9.613
+FNE            100        40   26.448
+EPU            100        16    6.691
+UEQ            300        88   40.856
+ICU            101         2   43.282
+FEQ            178        55   20.876
+------------------  --------------------
+TOTAL          879       244   26.264
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+15:59 /DATA/ai/fr22192/mrs/crates/mrs-bench/results/casc-30/20260716_174200/run.csv
 
 [done]
 [PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions eps,fne,epu,ueq,icu,feq --casc-times --jobs 2

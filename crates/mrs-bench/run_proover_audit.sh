@@ -168,7 +168,7 @@ echo "--------------------------------------------------------"
 LOG_FILE="$(mktemp)"
 "${WORKSPACE_ROOT}/target/release/mrs-codex" "${STAGE_DIR}" \
     --db "${DB_FILE}" \
-    --system "mrs-0.2.0-proover-audit" \
+    --system "mrs-0.2.1-proover-audit" \
     --timeout "${TIMEOUT_SECS}" \
     --jobs "${CODEX_JOBS}" \
     --cmd "${MRS_BIN} --schedule casc --workers ${WORKERS_PER_JOB} --time {timeout} {file}" \

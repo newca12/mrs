@@ -3532,7 +3532,7 @@ dependencies = [
 
 [[package]]
 name = "mrs"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "burn",
  "cadical",
@@ -3551,7 +3551,7 @@ dependencies = [
 
 [[package]]
 name = "mrs-bench"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "mrs-core",
  "mrs-tptp",
@@ -3560,7 +3560,7 @@ dependencies = [
 
 [[package]]
 name = "mrs-calculus"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "mrs-core",
  "mrs-index",
@@ -3571,14 +3571,14 @@ dependencies = [
 
 [[package]]
 name = "mrs-cnf"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "mrs-core",
 ]
 
 [[package]]
 name = "mrs-codex"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "clap",
  "crossbeam-channel",
@@ -3594,7 +3594,7 @@ dependencies = [
 
 [[package]]
 name = "mrs-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "burn",
  "rustc-hash 2.1.2",
@@ -3604,7 +3604,7 @@ dependencies = [
 
 [[package]]
 name = "mrs-index"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "mrs-core",
  "rustc-hash 2.1.2",
@@ -3612,7 +3612,7 @@ dependencies = [
 
 [[package]]
 name = "mrs-proof"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "mrs-core",
  "mrs-szs",
@@ -3620,7 +3620,7 @@ dependencies = [
 
 [[package]]
 name = "mrs-proover"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "cadical",
  "mrs-cnf",
@@ -3631,7 +3631,7 @@ dependencies = [
 
 [[package]]
 name = "mrs-search"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "burn",
  "cadical",
@@ -3647,11 +3647,11 @@ dependencies = [
 
 [[package]]
 name = "mrs-szs"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "mrs-tptp"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pretty_assertions",
  "rayon",
@@ -3660,7 +3660,7 @@ dependencies = [
 
 [[package]]
 name = "mrs-train"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "burn",
  "mrs-core",
@@ -3671,7 +3671,7 @@ dependencies = [
 
 [[package]]
 name = "mrs-unify"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "mrs-core",
 ]
