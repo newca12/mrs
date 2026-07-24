@@ -43,7 +43,18 @@ struct SkolemCtx<'a> {
 impl SkolemCtx<'_> {
     /// Generates a fresh Skolem function symbol.
     fn fresh_skolem(&mut self) -> mrs_core::SymbolId {
-        let name = format!("sk_{}_{}", self.prefix, self.counter);
+        let sanitized_prefix: String = self
+            .prefix
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let name = format!("sk_{}_{}", sanitized_prefix, self.counter);
         self.counter += 1;
         self.symbols.intern(&name)
     }
@@ -191,5 +202,19 @@ mod tests {
         let sk_ax1 = syms.intern("sk_ax1_0");
         let sk_ax2 = syms.intern("sk_ax2_0");
         assert_ne!(sk_ax1, sk_ax2);
+    }
+
+    #[test]
+    fn skolem_prefix_sanitization() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+
+        // Prefix containing non-alphanumeric/non-underscore characters
+        let complex_prefix = "def(cond(conseq(105), 0), 1)";
+        let f = Formula::exists(0, Formula::atom(Atom::pred(p, vec![Term::var(0)])));
+        let result = skolemize(&f, &mut syms, complex_prefix);
+
+        // Parentheses and commas must be mapped to underscores, ensuring 100% TPTP compliance
+        assert_eq!(fmt(&result, &syms), "p(sk_def_cond_conseq_105___0___1__0)");
     }
 }
