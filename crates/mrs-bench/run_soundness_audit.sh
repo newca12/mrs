@@ -7,7 +7,7 @@
 
 set -euo pipefail
 
-LIST_FILE="fof_non_theorems.list"
+LIST_FILE="${LIST_FILE:-fof_non_theorems.list}"
 MRS_BIN="./target/release/mrs"
 TIMEOUT_SECS=5
 
