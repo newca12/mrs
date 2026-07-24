@@ -73,6 +73,9 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
                 "structural: proof contains no FOF/CNF nodes (unsupported format)".into(),
             );
         }
+        Err(DagError::NoFalseRoot) => {
+            return Verdict::Unknown("structural: proof does not derive $false".into());
+        }
         Err(e) => return Verdict::VerifiedBad(format!("structural: {e}")),
     };
 
@@ -82,7 +85,7 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
 
     // Defensive: must have a $false root.
     if dag.root.is_none() {
-        return Verdict::VerifiedBad("structural: proof does not derive $false".into());
+        return Verdict::Unknown("structural: proof does not derive $false".into());
     }
 
     // 2) Set up shared symbol table and Skolem registry.
