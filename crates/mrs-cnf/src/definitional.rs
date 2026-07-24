@@ -166,7 +166,18 @@ impl DefCtx<'_> {
         // trailing) underscore, as in the previous `__def_..._..__` scheme,
         // is not a valid TPTP symbol and produces a syntax error in any
         // proof that uses one of these definitions.
-        let name = format!("def_{}_{}", self.prefix, self.counter);
+        let sanitized_prefix: String = self
+            .prefix
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let name = format!("def_{}_{}", sanitized_prefix, self.counter);
         self.counter += 1;
         let sym = self.symbols.intern(&name);
         let args: Vec<Term> = sorted_vars.iter().map(|&v| Term::var(v)).collect();
@@ -369,5 +380,27 @@ mod tests {
         } else {
             panic!("Expected And, got: {}", fmt(&result, &syms));
         }
+    }
+
+    #[test]
+    fn definition_prefix_sanitization() {
+        let mut syms = SymbolTable::new();
+
+        // Complex prefix containing parentheses, commas, etc.
+        let complex_prefix = "def(cond(conseq(axiom(3)), 17), 1)";
+
+        let f = Formula::or(vec![
+            atom(&mut syms, "a"),
+            Formula::and(vec![atom(&mut syms, "b"), atom(&mut syms, "c")]),
+        ]);
+
+        let result = to_cnf_definitional(&f, &mut syms, complex_prefix);
+        let display = fmt(&result, &syms);
+
+        // Name of the introduced definition must be fully sanitized for TPTP compliance
+        assert!(
+            display.contains("def_def_cond_conseq_axiom_3____17___1__0"),
+            "Should contain sanitized definition name, got: {display}"
+        );
     }
 }
