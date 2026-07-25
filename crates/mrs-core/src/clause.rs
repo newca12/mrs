@@ -292,24 +292,33 @@ impl Clause {
     }
 }
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 /// A counter for generating unique clause IDs.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ClauseIdGen {
-    next: u64,
+    next: Arc<AtomicU64>,
+}
+
+impl Default for ClauseIdGen {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ClauseIdGen {
     /// Creates a new generator starting at 0.
     pub fn new() -> Self {
-        Self { next: 0 }
+        Self {
+            next: Arc::new(AtomicU64::new(0)),
+        }
     }
 
     /// Returns the next unique clause ID.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> ClauseId {
-        let id = ClauseId(self.next);
-        self.next += 1;
-        id
+        ClauseId(self.next.fetch_add(1, Ordering::Relaxed))
     }
 }
 

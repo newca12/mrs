@@ -77,10 +77,13 @@ fn status_for_rule(rule: &str) -> &'static str {
 /// FOF-level proof steps (e.g. NNF conversion or Skolemization results) and
 /// are printed as `fof(...)` annotated formulas instead of `cnf(...)`.
 pub fn format_tstp(proof: &[Clause], symbols: &SymbolTable) -> String {
+    let mut proof_sorted = proof.to_vec();
+    proof_sorted.sort_unstable_by_key(|c| c.id.0);
+
     let mut lines = Vec::new();
     let problem_path = problem_path();
 
-    for clause in proof {
+    for clause in &proof_sorted {
         let id = clause.id.0;
         let is_formula_step = clause.formula.is_some();
 

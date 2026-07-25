@@ -44,12 +44,26 @@ impl<T: DisplayWithSymbols> fmt::Display for Formatted<'_, T> {
     }
 }
 
+fn fmt_identifier(name: &str) -> String {
+    if name.starts_with('\'') && name.ends_with('\'') {
+        return name.to_string();
+    }
+    let mut chars = name.chars();
+    if let Some(first) = chars.next()
+        && first.is_ascii_lowercase()
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return name.to_string();
+    }
+    format!("'{}'", name)
+}
+
 impl DisplayWithSymbols for Term {
     fn fmt_with_symbols(&self, f: &mut fmt::Formatter<'_>, symbols: &SymbolTable) -> fmt::Result {
         match self {
             Term::Var(v) => write!(f, "X{v}"),
             Term::App(sym, args) => {
-                write!(f, "{}", symbols.resolve(*sym))?;
+                write!(f, "{}", fmt_identifier(symbols.resolve(*sym)))?;
                 if !args.is_empty() {
                     write!(f, "(")?;
                     for (i, arg) in args.iter().enumerate() {
@@ -70,7 +84,7 @@ impl DisplayWithSymbols for Atom {
     fn fmt_with_symbols(&self, f: &mut fmt::Formatter<'_>, symbols: &SymbolTable) -> fmt::Result {
         match self {
             Atom::Pred(sym, args) => {
-                write!(f, "{}", symbols.resolve(*sym))?;
+                write!(f, "{}", fmt_identifier(symbols.resolve(*sym)))?;
                 if !args.is_empty() {
                     write!(f, "(")?;
                     for (i, arg) in args.iter().enumerate() {
