@@ -656,6 +656,12 @@ fn prepare_atp_step<'p>(dag: &Dag<'p>, idx: usize, symbols: &mut SymbolTable) ->
         return Prepared::Resolved(StepOutcome::Sound);
     }
 
+    if formula_max_depth(&conclusion) > 5 {
+        return Prepared::Resolved(StepOutcome::Unknown(
+            "deep term step ignored under fast budget".into(),
+        ));
+    }
+
     // No fast-path applied: defer the genuine entailment query to Pass 2.
     Prepared::NeedsAtp(AtpStep {
         premises,
@@ -663,6 +669,23 @@ fn prepare_atp_step<'p>(dag: &Dag<'p>, idx: usize, symbols: &mut SymbolTable) ->
         esa,
         rule: node.inference_rule.map(str::to_owned),
     })
+}
+
+fn formula_max_depth(f: &Formula) -> usize {
+    use mrs_core::formula::Atom;
+    match f {
+        Formula::Atom(a) => match a {
+            Atom::Pred(_, args) => args.iter().map(|t| t.depth()).max().unwrap_or(0),
+            Atom::Eq(l, r) => l.depth().max(r.depth()),
+        },
+        Formula::Neg(inner) => formula_max_depth(inner),
+        Formula::And(cs) | Formula::Or(cs) => cs.iter().map(formula_max_depth).max().unwrap_or(0),
+        Formula::Implies(a, b) | Formula::Iff(a, b) => {
+            formula_max_depth(a).max(formula_max_depth(b))
+        }
+        Formula::Forall(_, body) | Formula::Exists(_, body) => formula_max_depth(body),
+        Formula::True | Formula::False => 0,
+    }
 }
 
 /// Run one prepared ATP query and map the verdict to a `StepOutcome`,
