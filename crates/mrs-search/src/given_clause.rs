@@ -41,7 +41,8 @@ use crate::{SearchConfig, SearchResult};
 /// `clause_store` with remapped IDs, so a shared clause never ends up in
 /// the final extracted proof with an empty/unjustified parent list.
 fn build_shared_chain(state: &SearchState, head_id: ClauseId) -> Vec<LegacyClause> {
-    let ids = extract_proof_ids(head_id, &state.clause_store);
+    let mut ids = extract_proof_ids(head_id, &state.clause_store);
+    ids.sort_unstable_by_key(|id| id.0);
     ids.iter()
         .filter_map(|id| state.clause_store.get(id))
         .map(|c| state.term_bank.clause_to_legacy(c))
