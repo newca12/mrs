@@ -54,12 +54,12 @@ flowchart TD
 ```
 
 1. **Eliminating the 14 False Rejections (+28 Points Swing)**:
-   - **Multi-Step Definition Unfolding**: Extend [`crates/mrs-proover/src/checks/definition_folding.rs`](file:///home/fr22192/EDLA/git/mrs/crates/mrs-proover/src/checks/definition_folding.rs) to trace multi-hop DAG chains for definition unfolding so complex definitions aren't rejected as `VerifiedBad`.
+   - **Multi-Step Definition Unfolding**: Extend [`crates/mrs-proover/src/checks/definition_folding.rs`](file:///home/user/EDLA/git/mrs/crates/mrs-proover/src/checks/definition_folding.rs) to trace multi-hop DAG chains for definition unfolding so complex definitions aren't rejected as `VerifiedBad`.
    - **AC-Aware Skolemization Conjunction Matcher**: Extend `checks::skolemize` to handle re-associated conjunctions (`(A∧B)∧(C∧D)` → `A∧(B∧(C∧D))`).
-   - **Safe Fallback Guardrail**: In [`crates/mrs-proover/src/verifier.rs`](file:///home/fr22192/EDLA/git/mrs/crates/mrs-proover/src/verifier.rs), whenever a step annotation cannot be positively verified, output `Unknown` (0 pts) instead of `VerifiedBad` (-1 pt).
+   - **Safe Fallback Guardrail**: In [`crates/mrs-proover/src/verifier.rs`](file:///home/user/EDLA/git/mrs/crates/mrs-proover/src/verifier.rs), whenever a step annotation cannot be positively verified, output `Unknown` (0 pts) instead of `VerifiedBad` (-1 pt).
 
 2. **Converting 6 `Unknown` Cases to `VerifiedGood` (+6 Points)**:
-   - **In-Process Micro-ATP (`MrsAtp`)**: Leverage [`crates/mrs-proover/src/mrs_atp.rs`](file:///home/fr22192/EDLA/git/mrs/crates/mrs-proover/src/mrs_atp.rs) with a 20 ms micro-budget per step to verify structural steps without external process execution timeouts.
+   - **In-Process Micro-ATP (`MrsAtp`)**: Leverage [`crates/mrs-proover/src/mrs_atp.rs`](file:///home/user/EDLA/git/mrs/crates/mrs-proover/src/mrs_atp.rs) with a 20 ms micro-budget per step to verify structural steps without external process execution timeouts.
 
 ---
 
@@ -97,19 +97,19 @@ cd ..
 On branch `feat/proover-max-score`, `mrs-proover` achieved **147 points** out of 150 points across the 100-problem CASC-J13 PRV suite (**+33 points ahead of 1st place GAPT 2.20**):
 
 1. **Quantifiers under Negation in Skolemization**:
-   - Extended `find_existential_binder` in [`crates/mrs-proover/src/checks/skolemize.rs`](file:///home/fr22192/EDLA/git/mrs/crates/mrs-proover/src/checks/skolemize.rs) with polarity tracking under negation (`~ ! [X] : P(X)`), enabling verification of negated universal Skolemization steps (`PRV019+1.p`, `PRV020+1.p`).
+   - Extended `find_existential_binder` in [`crates/mrs-proover/src/checks/skolemize.rs`](file:///home/user/EDLA/git/mrs/crates/mrs-proover/src/checks/skolemize.rs) with polarity tracking under negation (`~ ! [X] : P(X)`), enabling verification of negated universal Skolemization steps (`PRV019+1.p`, `PRV020+1.p`).
 
 2. **Filtered Problem Symbol Seeding**:
-   - Restricted initial symbol seeding in [`crates/mrs-proover/src/verify.rs`](file:///home/fr22192/EDLA/git/mrs/crates/mrs-proover/src/verify.rs) strictly to `FormulaRole::Axiom` and `FormulaRole::Conjecture`, preventing proof step symbols from being prematurely marked as "seen".
+   - Restricted initial symbol seeding in [`crates/mrs-proover/src/verify.rs`](file:///home/user/EDLA/git/mrs/crates/mrs-proover/src/verify.rs) strictly to `FormulaRole::Axiom` and `FormulaRole::Conjecture`, preventing proof step symbols from being prematurely marked as "seen".
 
 3. **Content-Based Axiom Leaf Provenance Matching**:
-   - Modified [`crates/mrs-proover/src/checks/axiom_leaf.rs`](file:///home/fr22192/EDLA/git/mrs/crates/mrs-proover/src/checks/axiom_leaf.rs): when named leaf axiom lookup fails (e.g. proof leaf tag `'ax2'` vs problem tag `'a1'`), the verifier scans all problem axioms by formula content using `alpha_equiv` and `canon_eq` (verifying `PRV045+1.p`).
+   - Modified [`crates/mrs-proover/src/checks/axiom_leaf.rs`](file:///home/user/EDLA/git/mrs/crates/mrs-proover/src/checks/axiom_leaf.rs): when named leaf axiom lookup fails (e.g. proof leaf tag `'ax2'` vs problem tag `'a1'`), the verifier scans all problem axioms by formula content using `alpha_equiv` and `canon_eq` (verifying `PRV045+1.p`).
 
 4. **Variable-Capture Avoidance in Skolemization**:
-   - Modified `subst_var_in_formula` in [`crates/mrs-proover/src/checks/skolemize.rs`](file:///home/fr22192/EDLA/git/mrs/crates/mrs-proover/src/checks/skolemize.rs) to automatically alpha-rename inner bound quantifiers when replacing an existential variable with a Skolem term containing variables (e.g. `sK0(X)` inside `! [X] : t(X, Y)`).
+   - Modified `subst_var_in_formula` in [`crates/mrs-proover/src/checks/skolemize.rs`](file:///home/user/EDLA/git/mrs/crates/mrs-proover/src/checks/skolemize.rs) to automatically alpha-rename inner bound quantifiers when replacing an existential variable with a Skolem term containing variables (e.g. `sK0(X)` inside `! [X] : t(X, Y)`).
 
 5. **Non-Equisatisfiable `status(esa)` Spoofing Rejection**:
-   - Restricted ATP counter-model `Unknown` downgrades in [`crates/mrs-proover/src/verify.rs`](file:///home/fr22192/EDLA/git/mrs/crates/mrs-proover/src/verify.rs) strictly to recognized equisatisfiable inference rules (`skolemize`, `skolemisation`, `variable_rename`, `introduced_definition`). Non-Skolem deduction rules (`trivial`, `consequence`, `resolution`) tagged with `[status(esa)]` that fail entailment return `StepOutcome::Unsound` (**+2 pts** on `PRV097+1.p`).
+   - Restricted ATP counter-model `Unknown` downgrades in [`crates/mrs-proover/src/verify.rs`](file:///home/user/EDLA/git/mrs/crates/mrs-proover/src/verify.rs) strictly to recognized equisatisfiable inference rules (`skolemize`, `skolemisation`, `variable_rename`, `introduced_definition`). Non-Skolem deduction rules (`trivial`, `consequence`, `resolution`) tagged with `[status(esa)]` that fail entailment return `StepOutcome::Unsound` (**+2 pts** on `PRV097+1.p`).
 
 ---
 

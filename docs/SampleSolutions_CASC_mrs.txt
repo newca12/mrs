@@ -7,11 +7,11 @@ FOF sample: SEU140+2
 % Problem: SEU140+2 (55 axioms, 1 conjectures, 0 cnf clauses)
 % SZS status Theorem for SEU140+2
 % SZS output start Proof for SEU140+2
-fof(c47, axiom, ![X0]: (![X1]: ((subset(X0, X1) <=> ![X2]: ((in(X2, X0) => in(X2, X1)))))), file('/home/fr22192/pve/TPTP-v9.2.1/Problems/SEU/SEU140+2.p', d3_tarski)).
-fof(c285, conjecture, ![X0]: (![X1]: (![X2]: (((subset(X0, X1) & disjoint(X1, X2)) => disjoint(X0, X2))))), file('/home/fr22192/pve/TPTP-v9.2.1/Problems/SEU/SEU140+2.p', t63_xboole_1)).
+fof(c47, axiom, ![X0]: (![X1]: ((subset(X0, X1) <=> ![X2]: ((in(X2, X0) => in(X2, X1)))))), file('/home/user/pve/TPTP-v9.2.1/Problems/SEU/SEU140+2.p', d3_tarski)).
+fof(c285, conjecture, ![X0]: (![X1]: (![X2]: (((subset(X0, X1) & disjoint(X1, X2)) => disjoint(X0, X2))))), file('/home/user/pve/TPTP-v9.2.1/Problems/SEU/SEU140+2.p', t63_xboole_1)).
 fof(c48, plain, ![X0]: (![X1]: (((~(subset(X0, X1)) | ![X2]: ((~(in(X2, X0)) | in(X2, X1)))) & (subset(X0, X1) | ?[X2]: ((in(X2, X0) & ~(in(X2, X1)))))))), inference(fof_nnf_transformation, [status(thm)], [c47])).
 fof(c286, negated_conjecture, ~(![X0]: (![X1]: (![X2]: (((subset(X0, X1) & disjoint(X1, X2)) => disjoint(X0, X2)))))), inference(negated_conjecture, [status(cth)], [c285])).
-fof(c228, lemma, ![X0]: (![X1]: ((~((~(disjoint(X0, X1)) & ![X2]: (~((in(X2, X0) & in(X2, X1)))))) & ~((?[X3]: ((in(X3, X0) & in(X3, X1))) & disjoint(X0, X1)))))), file('/home/fr22192/pve/TPTP-v9.2.1/Problems/SEU/SEU140+2.p', t3_xboole_0)).
+fof(c228, lemma, ![X0]: (![X1]: ((~((~(disjoint(X0, X1)) & ![X2]: (~((in(X2, X0) & in(X2, X1)))))) & ~((?[X3]: ((in(X3, X0) & in(X3, X1))) & disjoint(X0, X1)))))), file('/home/user/pve/TPTP-v9.2.1/Problems/SEU/SEU140+2.p', t3_xboole_0)).
 fof(c49, plain, (![X0]: (![X1]: ((~(subset(X0, X1)) | ![X2]: ((~(in(X2, X0)) | in(X2, X1)))))) & ![X0]: (![X1]: ((subset(X0, X1) | (in(sk_d3_tarski_0(X0, X1), X0) & ~(in(sk_d3_tarski_0(X0, X1), X1))))))), inference(skolemisation, [status(esa)], [c48])).
 fof(c287, plain, ?[X0]: (?[X1]: (?[X2]: (((subset(X0, X1) & disjoint(X1, X2)) & ~(disjoint(X0, X2)))))), inference(fof_nnf_transformation, [status(thm)], [c286])).
 fof(c229, plain, ![X0]: (![X1]: (((disjoint(X0, X1) | ?[X2]: ((in(X2, X0) & in(X2, X1)))) & (![X3]: ((~(in(X3, X0)) | ~(in(X3, X1)))) | ~(disjoint(X0, X1)))))), inference(fof_nnf_transformation, [status(thm)], [c228])).
@@ -51,21 +51,21 @@ UEQ sample: BOO001-1
 % Problem: BOO001-1 (0 axioms, 0 conjectures, 6 cnf clauses)
 % SZS status Unsatisfiable for BOO001-1
 % SZS output start Proof for BOO001-1
-cnf(c2881, axiom, multiply(X0, X0, X1) = X0, file('/home/fr22192/pve/TPTP-v9.2.1/Problems/BOO/BOO001-1.p', ternary_multiply_2)).
-cnf(c2882, axiom, multiply(multiply(X0, X1, X2), X3, multiply(X0, X1, X4)) = multiply(X0, X1, multiply(X2, X3, X4)), file('/home/fr22192/pve/TPTP-v9.2.1/Problems/BOO/BOO001-1.p', associativity)).
+cnf(c2881, axiom, multiply(X0, X0, X1) = X0, file('/home/user/pve/TPTP-v9.2.1/Problems/BOO/BOO001-1.p', ternary_multiply_2)).
+cnf(c2882, axiom, multiply(multiply(X0, X1, X2), X3, multiply(X0, X1, X4)) = multiply(X0, X1, multiply(X2, X3, X4)), file('/home/user/pve/TPTP-v9.2.1/Problems/BOO/BOO001-1.p', associativity)).
 cnf(c2883, plain, multiply(X0, X1, multiply(X2, multiply(X0, X1, X2), X4)) = multiply(X0, X1, X2), inference(superposition, [status(thm)], [c2882, c2881])).
-cnf(c2884, axiom, multiply(X0, X1, inverse(X1)) = X0, file('/home/fr22192/pve/TPTP-v9.2.1/Problems/BOO/BOO001-1.p', right_inverse)).
+cnf(c2884, axiom, multiply(X0, X1, inverse(X1)) = X0, file('/home/user/pve/TPTP-v9.2.1/Problems/BOO/BOO001-1.p', right_inverse)).
 cnf(c2885, plain, multiply(X2, X3, multiply(inverse(X3), X2, X6)) = multiply(X2, X3, inverse(X3)), inference(superposition, [status(thm)], [c2884, c2883])).
-cnf(c2886, axiom, multiply(multiply(X0, X1, X2), X3, multiply(X0, X1, X4)) = multiply(X0, X1, multiply(X2, X3, X4)), file('/home/fr22192/pve/TPTP-v9.2.1/Problems/BOO/BOO001-1.p', associativity)).
-cnf(c2, axiom, multiply(X0, X1, X1) = X1, file('/home/fr22192/pve/TPTP-v9.2.1/Problems/BOO/BOO001-1.p', ternary_multiply_1)).
+cnf(c2886, axiom, multiply(multiply(X0, X1, X2), X3, multiply(X0, X1, X4)) = multiply(X0, X1, multiply(X2, X3, X4)), file('/home/user/pve/TPTP-v9.2.1/Problems/BOO/BOO001-1.p', associativity)).
+cnf(c2, axiom, multiply(X0, X1, X1) = X1, file('/home/user/pve/TPTP-v9.2.1/Problems/BOO/BOO001-1.p', ternary_multiply_1)).
 cnf(c2887, plain, multiply(X2, X3, multiply(inverse(X3), X2, X6)) = X2, inference(demodulation, [status(thm)], [c2885, c2884])).
 cnf(c2888, plain, multiply(X4, X5, multiply(X2, X4, X6)) = multiply(X2, X4, multiply(X4, X5, X6)), inference(superposition, [status(thm)], [c2, c2886])).
 cnf(c2889, plain, multiply(inverse(X10), X9, multiply(X9, X10, X13)) = X9, inference(superposition, [status(thm)], [c2888, c2887])).
-cnf(c2890, axiom, multiply(X0, X1, X1) = X1, file('/home/fr22192/pve/TPTP-v9.2.1/Problems/BOO/BOO001-1.p', ternary_multiply_1)).
-cnf(c5, axiom, multiply(X0, X1, inverse(X1)) = X0, file('/home/fr22192/pve/TPTP-v9.2.1/Problems/BOO/BOO001-1.p', right_inverse)).
+cnf(c2890, axiom, multiply(X0, X1, X1) = X1, file('/home/user/pve/TPTP-v9.2.1/Problems/BOO/BOO001-1.p', ternary_multiply_1)).
+cnf(c5, axiom, multiply(X0, X1, inverse(X1)) = X0, file('/home/user/pve/TPTP-v9.2.1/Problems/BOO/BOO001-1.p', right_inverse)).
 cnf(c2891, plain, multiply(inverse(X15), X11, X15) = X11, inference(superposition, [status(thm)], [c2890, c2889])).
 cnf(c2966, plain, X17 = inverse(inverse(X17)), inference(superposition, [status(thm)], [c2891, c5])).
-cnf(c0, negated_conjecture, inverse(inverse(a)) != a, file('/home/fr22192/pve/TPTP-v9.2.1/Problems/BOO/BOO001-1.p', prove_inverse_is_self_cancelling)).
+cnf(c0, negated_conjecture, inverse(inverse(a)) != a, file('/home/user/pve/TPTP-v9.2.1/Problems/BOO/BOO001-1.p', prove_inverse_is_self_cancelling)).
 cnf(c3365, plain, a != a, inference(demodulation, [status(thm)], [c0, c2966])).
 cnf(c3366, plain, $false, inference(equality_resolution, [status(thm)], [c3365])).
 % SZS output end Proof for BOO001-1

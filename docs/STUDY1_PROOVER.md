@@ -24,7 +24,7 @@ The main reasons for this performance drop are:
 ### 2.1 The ATP Ladder Architecture
 By default, `mrs-proover` constructs an ordered **ladder** of backends to verify proof steps that cannot be verified by cheap internal fast-paths (such as structural or propositional SAT fast-paths). 
 
-This is configured in [mrs-proover.rs](file:///home/fr22192/EDLA/git/mrs/crates/mrs-proover/src/bin/mrs-proover.rs#L135-L168):
+This is configured in [mrs-proover.rs](file:///home/user/EDLA/git/mrs/crates/mrs-proover/src/bin/mrs-proover.rs#L135-L168):
 ```rust
     // Build ladder: in-process mrs first (cheapest), then eprover, then vampire.
     let mut ladder = LadderAtp::new();
@@ -63,7 +63,7 @@ With `--only-mrs`, **only `MrsAtp`** is placed on the ladder, and `eprover`, `va
 ## 3. Key Reasons for the Performance Gap
 
 ### 3.1 Restricted Strategy vs. Full Portfolio
-As implemented in [atp/external.rs](file:///home/fr22192/EDLA/git/mrs/crates/mrs-proover/src/atp/external.rs#L238-L245):
+As implemented in [atp/external.rs](file:///home/user/EDLA/git/mrs/crates/mrs-proover/src/atp/external.rs#L238-L245):
 ```rust
         // 3. Setup fast schedule
         let schedule = mrs_search::strategy::named::fast(budget, 1);
@@ -149,7 +149,7 @@ The default ladder ordering is `MrsAtp` -> `EProverAtp` -> `VampireAtp` -> `Vamp
 - **Optimization:** By trying Eprover first, we dispatch simple-to-medium steps quickly. For the remaining difficult steps where Eprover fails or times out, we fall back to Vampire, utilizing its heavier and more powerful saturation algorithms.
 
 ### 6.3 Budget Management and the Fast Fall-Through
-As described in [ladder.rs](file:///home/fr22192/EDLA/git/mrs/crates/mrs-proover/src/atp/ladder.rs):
+As described in [ladder.rs](file:///home/user/EDLA/git/mrs/crates/mrs-proover/src/atp/ladder.rs):
 - Each backend is given the full per-step budget (with a 1-second floor) sequentially.
 - If we put Vampire first:
   1. For simple steps, we would pay the higher startup overhead of Vampire.
@@ -180,7 +180,7 @@ While Eprover and Vampire are the gold standard for general first-order logic (F
 ### 8.1 Is CaDiCaL Already Used in `mrs-proover`?
 **Yes, absolutely.** `mrs-proover` already integrates and uses the CaDiCaL SAT solver in-process.
 
-In [propositional_sat.rs](file:///home/fr22192/EDLA/git/mrs/crates/mrs-proover/src/checks/propositional_sat.rs), the verifier imports the CaDiCaL solver directly via `use cadical::Solver;`.
+In [propositional_sat.rs](file:///home/user/EDLA/git/mrs/crates/mrs-proover/src/checks/propositional_sat.rs), the verifier imports the CaDiCaL solver directly via `use cadical::Solver;`.
 
 ### 8.2 How is CaDiCaL Utilized?
 CaDiCaL is used for two critical fast-paths before delegating to the FOL ATP ladder:

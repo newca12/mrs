@@ -305,7 +305,7 @@ all ok
 commit bbde30d4560d01e3ea0ab0915c81d103b824d169 (HEAD -> main, origin/main, origin/HEAD)
 
 [observation] will require RUST_MIN_STACK
-[PPROD:fr22192@dlpnb5211:/DATA/DISK1/BENCH/mrs]$ ./crates/mrs-bench/systems/mrs/starexec_run_default $TPTP/Problems/PLA/PLA045+1.p
+[PPROD:user@dlpnb5211:/DATA/DISK1/BENCH/mrs]$ ./crates/mrs-bench/systems/mrs/starexec_run_default $TPTP/Problems/PLA/PLA045+1.p
 % Problem: PLA045+1 (2 axioms, 0 conjectures, 0 cnf clauses)
 % Auto schedule: chose portfolio 'casc_feq'
 
@@ -595,7 +595,7 @@ eps 43 fne 40 epu 16 ueq 86 icu 1 feq partial 66
 147466 Jul 17 18:24 /DATA/DISK1/BENCH/mrs/crates/mrs-bench/results/casc-30/20260716_175345/run.csv
 
 [879/1101]
-[PPROD:user@server97:/DATA/ai/fr22192/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions eps,fne,epu,ueq,icu,feq --casc-times --jobs 1
+[PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions eps,fne,epu,ueq,icu,feq --casc-times --jobs 1
 CASC-30 Results — 2026-07-18 14:03  (879 problems × 1 systems)
 ==============================================================
 
@@ -616,7 +616,7 @@ DISAGREEMENTS — none detected.
 POLARITY VIOLATIONS — none detected.
 
 REFERENCE VIOLATIONS — none detected.
-15:59 /DATA/ai/fr22192/mrs/crates/mrs-bench/results/casc-30/20260716_174200/run.csv
+15:59 /DATA/ai/user/mrs/crates/mrs-bench/results/casc-30/20260716_174200/run.csv
 
 [done]
 [PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions eps,fne,epu,ueq,icu,feq --casc-times --jobs 2
@@ -725,7 +725,7 @@ DISAGREEMENTS — none detected.
 POLARITY VIOLATIONS — none detected.
 
 REFERENCE VIOLATIONS — none detected.
-17188 Jul 13 09:34 /DATA/ai/fr22192/mrs/crates/mrs-bench/results/casc-30/20260713_083231/run.csv
+17188 Jul 13 09:34 /DATA/ai/user/mrs/crates/mrs-bench/results/casc-30/20260713_083231/run.csv
 
 commit 05fe51faadfd5d5f2f540f3c7c9ac5c58194abea (HEAD -> fix/cross-strategy-pool-flooding
 
