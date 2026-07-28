@@ -101,7 +101,9 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
     // Skolems (e.g. `skolemize`) record their new symbol explicitly.
     if let Some(problem) = job.problem.as_ref() {
         for af in &problem.problem().formulas {
-            if let mrs_tptp::AnnotatedFormula::FOF(f) = af {
+            if let mrs_tptp::AnnotatedFormula::FOF(f) = af
+                && matches!(f.role, FormulaRole::Axiom | FormulaRole::Conjecture)
+            {
                 sk_reg.record_from_statement(&f.formula);
             }
         }

@@ -235,7 +235,9 @@ pub fn check<'p>(
         _ => return StepOutcome::Unsound("skolemize step is a sequent".into()),
     };
 
-    if formula_eq(step_f, &expected) {
+    let direct_expected = remove_quantifier_and_subst(parent_f, info.var, &sk_term);
+
+    if formula_eq(step_f, &expected) || formula_eq(step_f, &direct_expected) {
         // Register the new Skolem symbol so the next step sees it as taken.
         registry.record(info.skolem_symbol);
         StepOutcome::Sound
@@ -1543,6 +1545,54 @@ fn check_e_style_skolemize<'p>(
         "skolemize step missing `skolemize(Var, sk(...))` annotation; \
          inferred fresh Skolem(s) {fresh:?} from step\\parent — accepted as Unknown"
     ))
+}
+
+fn remove_quantifier_and_subst<'p>(
+    f: &'p FOFFormula<'p>,
+    var: &str,
+    sk_term: &FOFTerm<'p>,
+) -> FOFFormula<'p> {
+    match f {
+        FOFFormula::Parens(inner) => {
+            FOFFormula::Parens(Box::new(remove_quantifier_and_subst(inner, var, sk_term)))
+        }
+        FOFFormula::Negation(inner) => {
+            FOFFormula::Negation(Box::new(remove_quantifier_and_subst(inner, var, sk_term)))
+        }
+        FOFFormula::Quantified {
+            quantifier,
+            variables,
+            formula,
+        } => {
+            if variables.len() == 1 && variables[0] == var {
+                subst_var_in_formula(formula, var, sk_term)
+            } else if variables.contains(&var) {
+                let new_vars: Vec<&'p str> =
+                    variables.iter().copied().filter(|v| *v != var).collect();
+                FOFFormula::Quantified {
+                    quantifier: *quantifier,
+                    variables: new_vars,
+                    formula: Box::new(subst_var_in_formula(formula, var, sk_term)),
+                }
+            } else {
+                FOFFormula::Quantified {
+                    quantifier: *quantifier,
+                    variables: variables.clone(),
+                    formula: Box::new(remove_quantifier_and_subst(formula, var, sk_term)),
+                }
+            }
+        }
+        FOFFormula::Binary {
+            left,
+            connective,
+            right,
+        } => FOFFormula::Binary {
+            left: Box::new(remove_quantifier_and_subst(left, var, sk_term)),
+            connective: *connective,
+            right: Box::new(remove_quantifier_and_subst(right, var, sk_term)),
+        },
+        _ => subst_var_in_formula(f, var, sk_term),
+    }
 }
 
 #[cfg(test)]
