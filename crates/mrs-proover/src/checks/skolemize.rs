@@ -163,15 +163,7 @@ pub fn check<'p>(
         ));
     }
 
-    // 4) fresh-symbol check.
-    if registry.seen_symbols.contains(info.skolem_symbol) {
-        return StepOutcome::Unsound(format!(
-            "Skolem symbol `{}` is not fresh (reused or clashes with an existing symbol)",
-            info.skolem_symbol
-        ));
-    }
-
-    // 5) Need the parent formula.
+    // 4) Need the parent formula.
     let Some(parent) = parent else {
         return StepOutcome::Unsound("skolemize step has no parent".into());
     };
@@ -183,6 +175,14 @@ pub fn check<'p>(
         FOFStatement::Logical(f) => f,
         _ => return StepOutcome::Unsound("skolemize parent is a sequent".into()),
     };
+
+    // 5) fresh-symbol check.
+    if registry.seen_symbols.contains(info.skolem_symbol) {
+        return StepOutcome::Unsound(format!(
+            "Skolem symbol `{}` is not fresh (reused or clashes with an existing symbol)",
+            info.skolem_symbol
+        ));
+    }
 
     // 6) Walk through ∀ binders; the next thing we expect is ?Var or a path
     // that contains ?Var as the next existential under some universal prefix.
@@ -260,35 +260,36 @@ fn find_existential_binder<'p>(
 ) -> Option<(Vec<&'p str>, &'p FOFFormula<'p>)> {
     let mut universals: Vec<&'p str> = Vec::new();
     let mut cur = strip_parens(f);
+    let mut polarity = true;
     loop {
         match cur {
-            FOFFormula::Quantified {
-                quantifier: Quantifier::Forall,
-                variables,
-                formula,
-            } => {
-                for v in variables {
-                    universals.push(*v);
-                }
-                cur = strip_parens(formula);
+            FOFFormula::Negation(inner) => {
+                polarity = !polarity;
+                cur = strip_parens(inner);
             }
             FOFFormula::Quantified {
-                quantifier: Quantifier::Exists,
+                quantifier,
                 variables,
                 formula,
             } => {
-                // The existential we're after must be the first variable in
-                // *some* leading existential binder. Per the example proofs,
-                // each existential is its own binder with one variable.
-                if variables.first().copied() == Some(var) {
-                    // If there are more vars in the same `?[A,B]:` block, we
-                    // can't cleanly Skolemize just `A`. Refuse.
-                    if variables.len() != 1 {
-                        return None;
+                let is_forall = matches!(
+                    (quantifier, polarity),
+                    (Quantifier::Forall, true) | (Quantifier::Exists, false)
+                );
+                if is_forall {
+                    for v in variables {
+                        universals.push(*v);
                     }
-                    return Some((universals, formula));
+                    cur = strip_parens(formula);
+                } else {
+                    if variables.first().copied() == Some(var) {
+                        if variables.len() != 1 {
+                            return None;
+                        }
+                        return Some((universals, formula));
+                    }
+                    return None;
                 }
-                return None;
             }
             _ => return None,
         }
