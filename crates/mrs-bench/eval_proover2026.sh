@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd /home/fr22192/EDLA/git/mrs
+# Resolve workspace root dynamically relative to this script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR/../.."
 
 echo "Building mrs-proover release..."
 cargo build --release -p mrs-proover >/dev/null 2>&1
