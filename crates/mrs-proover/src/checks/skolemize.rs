@@ -245,7 +245,7 @@ pub fn check<'p>(
         collect_all_universals(step_f, &mut step_univs);
         let mut parent_univs = Vec::new();
         collect_all_universals(parent_f, &mut parent_univs);
-        
+
         let mut map = HashMap::new();
         for (su, pu) in step_univs.iter().zip(parent_univs.iter()) {
             map.insert(*su, *pu);
@@ -311,19 +311,17 @@ fn find_existential_binder<'p>(
                     cur = strip_parens(formula);
                 } else {
                     if variables.contains(&var) {
-                        let remaining: Vec<&'p str> = variables
-                            .iter()
-                            .copied()
-                            .filter(|&v| v != var)
-                            .collect();
+                        let remaining: Vec<&'p str> =
+                            variables.iter().copied().filter(|&v| v != var).collect();
                         if remaining.is_empty() {
                             return Some((universals, formula));
                         } else {
-                            let wrapped: &'p FOFFormula<'p> = Box::leak(Box::new(FOFFormula::Quantified {
-                                quantifier: Quantifier::Exists,
-                                variables: remaining,
-                                formula: formula.clone(),
-                            }));
+                            let wrapped: &'p FOFFormula<'p> =
+                                Box::leak(Box::new(FOFFormula::Quantified {
+                                    quantifier: Quantifier::Exists,
+                                    variables: remaining,
+                                    formula: formula.clone(),
+                                }));
                             return Some((universals, wrapped));
                         }
                     } else {
@@ -1211,9 +1209,7 @@ fn find_skolem_term<'p>(f: &'p FOFFormula<'p>, sym: &str) -> Option<FOFTerm<'p>>
             }
             _ => None,
         },
-        FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => {
-            find_skolem_term(inner, sym)
-        }
+        FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => find_skolem_term(inner, sym),
         FOFFormula::Binary { left, right, .. } => {
             find_skolem_term(left, sym).or_else(|| find_skolem_term(right, sym))
         }
@@ -1854,7 +1850,12 @@ fn collect_exists(f: &Formula, vars: &mut Vec<VarId>) -> Formula {
     }
 }
 
-fn term_equiv(a: &Term, b: &Term, env: &HashMap<VarId, VarId>, rev_env: &HashMap<VarId, VarId>) -> bool {
+fn term_equiv(
+    a: &Term,
+    b: &Term,
+    env: &HashMap<VarId, VarId>,
+    rev_env: &HashMap<VarId, VarId>,
+) -> bool {
     match (a, b) {
         (Term::Var(v1), Term::Var(v2)) => match env.get(v1) {
             Some(&mapped_v) => mapped_v == *v2,
@@ -1863,7 +1864,10 @@ fn term_equiv(a: &Term, b: &Term, env: &HashMap<VarId, VarId>, rev_env: &HashMap
         (Term::App(s1, args1), Term::App(s2, args2)) => {
             s1 == s2
                 && args1.len() == args2.len()
-                && args1.iter().zip(args2.iter()).all(|(x, y)| term_equiv(x, y, env, rev_env))
+                && args1
+                    .iter()
+                    .zip(args2.iter())
+                    .all(|(x, y)| term_equiv(x, y, env, rev_env))
         }
         _ => false,
     }
@@ -1892,6 +1896,7 @@ fn atom_equiv(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn match_binders(
     idx: usize,
     vars_a: &[VarId],
@@ -1901,7 +1906,6 @@ fn match_binders(
     body_b: &Formula,
     env: &mut HashMap<VarId, VarId>,
     rev_env: &mut HashMap<VarId, VarId>,
-    is_forall: bool,
 ) -> bool {
     if idx == vars_a.len() {
         return equiv_modulo_perms(body_a, body_b, env, rev_env);
@@ -1913,7 +1917,16 @@ fn match_binders(
             used_b[i] = true;
             env.insert(va, vb);
             rev_env.insert(vb, va);
-            if match_binders(idx + 1, vars_a, vars_b, used_b, body_a, body_b, env, rev_env, is_forall) {
+            if match_binders(
+                idx + 1,
+                vars_a,
+                vars_b,
+                used_b,
+                body_a,
+                body_b,
+                env,
+                rev_env,
+            ) {
                 return true;
             }
             env.remove(&va);
@@ -1971,7 +1984,16 @@ fn equiv_modulo_perms(
                 return false;
             }
             let mut used_b = vec![false; vars_b.len()];
-            match_binders(0, &vars_a, &vars_b, &mut used_b, &body_a, &body_b, env, rev_env, true)
+            match_binders(
+                0,
+                &vars_a,
+                &vars_b,
+                &mut used_b,
+                &body_a,
+                &body_b,
+                env,
+                rev_env,
+            )
         }
         (Formula::Exists(..), Formula::Exists(..)) => {
             let mut vars_a = Vec::new();
@@ -1982,7 +2004,16 @@ fn equiv_modulo_perms(
                 return false;
             }
             let mut used_b = vec![false; vars_b.len()];
-            match_binders(0, &vars_a, &vars_b, &mut used_b, &body_a, &body_b, env, rev_env, false)
+            match_binders(
+                0,
+                &vars_a,
+                &vars_b,
+                &mut used_b,
+                &body_a,
+                &body_b,
+                env,
+                rev_env,
+            )
         }
         _ => false,
     }
@@ -1995,7 +2026,7 @@ fn alpha_eq_fof<'p>(a: &'p FOFFormula<'p>, b: &'p FOFFormula<'p>) -> bool {
     let a_core = crate::lower::lower_fof_formula(&mut ctx, a);
     ctx.reset_vars();
     let b_core = crate::lower::lower_fof_formula(&mut ctx, b);
-    
+
     let mut env = HashMap::new();
     let mut rev_env = HashMap::new();
     equiv_modulo_perms(&a_core, &b_core, &mut env, &mut rev_env)
