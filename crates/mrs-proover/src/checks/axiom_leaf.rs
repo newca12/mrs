@@ -133,9 +133,22 @@ pub fn check_leaf<'p>(
         }
     }
     if target_af.is_none() {
-        return StepOutcome::Unknown(format!(
-            "leaf references axiom '{expected_name}' not present in problem file \
-             (the prover may have renamed or inlined the original axiom)"
+        for af in &problem.formulas {
+            let role = af.role();
+            if !roles_compatible(node.role(), role) {
+                continue;
+            }
+            ctx.reset_vars();
+            let prob_f = lower_annotated_formula(&mut ctx, af);
+            if alpha_equiv(&proof_f, &prob_f)
+                || crate::checks::definition_folding::canon_eq(&proof_f, &prob_f)
+            {
+                return StepOutcome::Sound;
+            }
+        }
+
+        return StepOutcome::Unsound(format!(
+            "leaf references non-existent axiom '{expected_name}' whose formula is not present in problem file"
         ));
     }
 

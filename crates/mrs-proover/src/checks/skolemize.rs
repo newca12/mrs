@@ -237,7 +237,11 @@ pub fn check<'p>(
 
     let direct_expected = remove_quantifier_and_subst(parent_f, info.var, &sk_term);
 
-    if formula_eq(step_f, &expected) || formula_eq(step_f, &direct_expected) {
+    if formula_eq(step_f, &expected)
+        || formula_eq(step_f, &direct_expected)
+        || alpha_eq_fof(step_f, &expected)
+        || alpha_eq_fof(step_f, &direct_expected)
+    {
         // Register the new Skolem symbol so the next step sees it as taken.
         registry.record(info.skolem_symbol);
         StepOutcome::Sound
@@ -1200,10 +1204,43 @@ fn subst_var_in_formula<'p>(
                     formula: formula.clone(),
                 }
             } else {
-                FOFFormula::Quantified {
-                    quantifier: *quantifier,
-                    variables: variables.clone(),
-                    formula: Box::new(subst_var_in_formula(formula, var, replacement)),
+                let mut repl_vars = HashSet::new();
+                crate::checks::introduced_definition::collect_term_vars(
+                    replacement,
+                    &mut repl_vars,
+                );
+                let captures: Vec<&str> = variables
+                    .iter()
+                    .copied()
+                    .filter(|v| repl_vars.contains(v))
+                    .collect();
+
+                if !captures.is_empty() {
+                    let mut new_vars = variables.clone();
+                    let mut renamed_formula = formula.clone();
+                    for &c in &captures {
+                        let fresh_name: &str = &*Box::leak(format!("{c}1").into_boxed_str());
+                        new_vars = new_vars
+                            .into_iter()
+                            .map(|v| if v == c { fresh_name } else { v })
+                            .collect();
+                        *renamed_formula = subst_var_in_formula(
+                            &renamed_formula,
+                            c,
+                            &FOFTerm::Variable(fresh_name),
+                        );
+                    }
+                    FOFFormula::Quantified {
+                        quantifier: *quantifier,
+                        variables: new_vars,
+                        formula: Box::new(subst_var_in_formula(&renamed_formula, var, replacement)),
+                    }
+                } else {
+                    FOFFormula::Quantified {
+                        quantifier: *quantifier,
+                        variables: variables.clone(),
+                        formula: Box::new(subst_var_in_formula(formula, var, replacement)),
+                    }
                 }
             }
         }
@@ -1385,9 +1422,9 @@ fn check_e_style_skolemize<'p>(
 
     let fresh: Vec<&str> = step_syms.difference(&parent_syms).copied().collect();
     if fresh.is_empty() {
-        return StepOutcome::Unknown(
+        return StepOutcome::Unsound(
             "skolemize step missing `skolemize(Var, sk(...))` annotation; \
-             no fresh symbols introduced — cannot verify structurally"
+             no fresh symbols introduced"
                 .into(),
         );
     }
@@ -1398,7 +1435,7 @@ fn check_e_style_skolemize<'p>(
         .filter(|s| registry.seen_symbols.contains(*s))
         .collect();
     if !stale.is_empty() {
-        return StepOutcome::Unknown(format!(
+        return StepOutcome::Unsound(format!(
             "skolemize step missing annotation and candidate Skolem symbol(s) {stale:?} \
              clash with the problem's symbols"
         ));
@@ -1593,6 +1630,17 @@ fn remove_quantifier_and_subst<'p>(
         },
         _ => subst_var_in_formula(f, var, sk_term),
     }
+}
+
+fn alpha_eq_fof<'p>(a: &'p FOFFormula<'p>, b: &'p FOFFormula<'p>) -> bool {
+    let mut symbols = mrs_core::SymbolTable::new();
+    let mut ctx = crate::lower::LowerCtx::new(&mut symbols);
+    ctx.reset_vars();
+    let a_core = crate::lower::lower_fof_formula(&mut ctx, a);
+    ctx.reset_vars();
+    let b_core = crate::lower::lower_fof_formula(&mut ctx, b);
+    mrs_core::alpha::alpha_equiv(&a_core, &b_core)
+        || crate::checks::definition_folding::canon_eq(&a_core, &b_core)
 }
 
 #[cfg(test)]
