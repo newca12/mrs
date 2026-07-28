@@ -200,31 +200,32 @@ pub fn check<'p>(
         }
     };
 
-    // 7) Compare args (ordered) to universals (ordered).
-    if info.args.len() != universals.len() {
+    // 7) Compare args to universals (allowing extra free parameters/constants in the Skolem term arguments,
+    // and ignoring any universals in scope that do not actually occur in the existential's scope).
+    let mut scope_vars = HashSet::new();
+    collect_formula_vars(body_after_existential, &mut scope_vars);
+    let active_universals: Vec<&str> = universals
+        .iter()
+        .copied()
+        .filter(|u| scope_vars.contains(u))
+        .collect();
+
+    if info.args.len() < active_universals.len() {
         return StepOutcome::Unsound(format!(
-            "skolemize: Skolem term `{}` has {} args but {} universal variable(s) are in scope",
+            "skolemize: Skolem term `{}` has only {} args but {} active universal variable(s) are in scope",
             info.skolem_symbol,
             info.args.len(),
-            universals.len()
+            active_universals.len()
         ));
     }
-    for (i, (a, u)) in info.args.iter().zip(universals.iter()).enumerate() {
-        if a != u {
+    for (i, u) in active_universals.iter().enumerate() {
+        if !info.args.contains(u) {
             return StepOutcome::Unsound(format!(
-                "skolemize: arg {} of `{}` is `{}` but expected universal `{}`",
-                i, info.skolem_symbol, a, u
+                "skolemize: expected active universal `{}` (arg {}) to be in Skolem term `{}` arguments {:?}",
+                u, i, info.skolem_symbol, info.args
             ));
         }
     }
-
-    // 8) Build the expected post-Skolemization formula and compare to the
-    // step's formula (syntactic equality after substitution, modulo
-    // structural equality of the AST — no α-renaming yet because the proof
-    // tool kept the variable names).
-    let sk_term = build_skolem_term(info.skolem_symbol, &info.args);
-    let expected_body = subst_var_in_formula(body_after_existential, info.var, &sk_term);
-    let expected = wrap_universals(&universals, expected_body);
 
     let step_fof = match step.as_fof() {
         Some(f) => f,
@@ -234,6 +235,27 @@ pub fn check<'p>(
         FOFStatement::Logical(f) => f,
         _ => return StepOutcome::Unsound("skolemize step is a sequent".into()),
     };
+
+    // 8) Build the expected post-Skolemization formula and compare to the
+    // step's formula (syntactic equality after substitution, modulo
+    // structural equality of the AST — no α-renaming yet because the proof
+    // tool kept the variable names).
+    let sk_term = if let Some(t) = find_skolem_term(step_f, info.skolem_symbol) {
+        let mut step_univs = Vec::new();
+        collect_all_universals(step_f, &mut step_univs);
+        let mut parent_univs = Vec::new();
+        collect_all_universals(parent_f, &mut parent_univs);
+        
+        let mut map = HashMap::new();
+        for (su, pu) in step_univs.iter().zip(parent_univs.iter()) {
+            map.insert(*su, *pu);
+        }
+        rename_vars_in_term(&t, &map)
+    } else {
+        build_skolem_term(info.skolem_symbol, &info.args)
+    };
+    let expected_body = subst_var_in_formula(body_after_existential, info.var, &sk_term);
+    let expected = wrap_universals(&universals, expected_body);
 
     let direct_expected = remove_quantifier_and_subst(parent_f, info.var, &sk_term);
 
@@ -288,13 +310,26 @@ fn find_existential_binder<'p>(
                     }
                     cur = strip_parens(formula);
                 } else {
-                    if variables.first().copied() == Some(var) {
-                        if variables.len() != 1 {
-                            return None;
+                    if variables.contains(&var) {
+                        let remaining: Vec<&'p str> = variables
+                            .iter()
+                            .copied()
+                            .filter(|&v| v != var)
+                            .collect();
+                        if remaining.is_empty() {
+                            return Some((universals, formula));
+                        } else {
+                            let wrapped: &'p FOFFormula<'p> = Box::leak(Box::new(FOFFormula::Quantified {
+                                quantifier: Quantifier::Exists,
+                                variables: remaining,
+                                formula: formula.clone(),
+                            }));
+                            return Some((universals, wrapped));
                         }
-                        return Some((universals, formula));
+                    } else {
+                        // Skip this existential quantifier and continue looking for `var`
+                        cur = strip_parens(formula);
                     }
-                    return None;
                 }
             }
             _ => return None,
@@ -1161,6 +1196,171 @@ fn build_skolem_term<'p>(sym: &'p str, args: &[&'p str]) -> FOFTerm<'p> {
     }
 }
 
+fn find_skolem_term<'p>(f: &'p FOFFormula<'p>, sym: &str) -> Option<FOFTerm<'p>> {
+    match f {
+        FOFFormula::Atomic(a) => match a {
+            FOFAtomicFormula::Plain(_, args)
+            | FOFAtomicFormula::Defined(_, args)
+            | FOFAtomicFormula::System(_, args) => {
+                for arg in args {
+                    if let Some(t) = find_skolem_term_in_term(arg, sym) {
+                        return Some(t);
+                    }
+                }
+                None
+            }
+            _ => None,
+        },
+        FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => {
+            find_skolem_term(inner, sym)
+        }
+        FOFFormula::Binary { left, right, .. } => {
+            find_skolem_term(left, sym).or_else(|| find_skolem_term(right, sym))
+        }
+        FOFFormula::Quantified { formula, .. } => find_skolem_term(formula, sym),
+        FOFFormula::Equality(l, r) | FOFFormula::Inequality(l, r) => {
+            find_skolem_term_in_term(l, sym).or_else(|| find_skolem_term_in_term(r, sym))
+        }
+    }
+}
+
+fn find_skolem_term_in_term<'p>(t: &'p FOFTerm<'p>, sym: &str) -> Option<FOFTerm<'p>> {
+    match t {
+        FOFTerm::Function(w, args) => {
+            if w.as_str() == sym {
+                return Some(t.clone());
+            }
+            for a in args {
+                if let Some(res) = find_skolem_term_in_term(a, sym) {
+                    return Some(res);
+                }
+            }
+            None
+        }
+        FOFTerm::DefinedFunction(w, args) => {
+            if w.0 == sym {
+                return Some(t.clone());
+            }
+            for a in args {
+                if let Some(res) = find_skolem_term_in_term(a, sym) {
+                    return Some(res);
+                }
+            }
+            None
+        }
+        FOFTerm::SystemFunction(w, args) => {
+            if w.0 == sym {
+                return Some(t.clone());
+            }
+            for a in args {
+                if let Some(res) = find_skolem_term_in_term(a, sym) {
+                    return Some(res);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn collect_all_universals<'p>(f: &'p FOFFormula<'p>, vars: &mut Vec<&'p str>) {
+    let mut cur = strip_parens(f);
+    let mut polarity = true;
+    loop {
+        match cur {
+            FOFFormula::Negation(inner) => {
+                polarity = !polarity;
+                cur = strip_parens(inner);
+            }
+            FOFFormula::Quantified {
+                quantifier,
+                variables,
+                formula,
+            } => {
+                let is_forall = matches!(
+                    (quantifier, polarity),
+                    (Quantifier::Forall, true) | (Quantifier::Exists, false)
+                );
+                if is_forall {
+                    for v in variables {
+                        vars.push(*v);
+                    }
+                }
+                cur = strip_parens(formula);
+            }
+            _ => break,
+        }
+    }
+}
+
+fn collect_formula_vars<'p>(f: &'p FOFFormula<'p>, vars: &mut HashSet<&'p str>) {
+    match f {
+        FOFFormula::Atomic(a) => match a {
+            FOFAtomicFormula::Plain(_, args)
+            | FOFAtomicFormula::Defined(_, args)
+            | FOFAtomicFormula::System(_, args) => {
+                for arg in args {
+                    collect_term_vars_f(arg, vars);
+                }
+            }
+            _ => {}
+        },
+        FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => {
+            collect_formula_vars(inner, vars);
+        }
+        FOFFormula::Binary { left, right, .. } => {
+            collect_formula_vars(left, vars);
+            collect_formula_vars(right, vars);
+        }
+        FOFFormula::Quantified { formula, .. } => collect_formula_vars(formula, vars),
+        FOFFormula::Equality(l, r) | FOFFormula::Inequality(l, r) => {
+            collect_term_vars_f(l, vars);
+            collect_term_vars_f(r, vars);
+        }
+    }
+}
+
+fn collect_term_vars_f<'p>(t: &'p FOFTerm<'p>, vars: &mut HashSet<&'p str>) {
+    match t {
+        FOFTerm::Variable(v) => {
+            vars.insert(*v);
+        }
+        FOFTerm::Function(_, args)
+        | FOFTerm::DefinedFunction(_, args)
+        | FOFTerm::SystemFunction(_, args) => {
+            for a in args {
+                collect_term_vars_f(a, vars);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rename_vars_in_term<'p>(t: &FOFTerm<'p>, map: &HashMap<&str, &'p str>) -> FOFTerm<'p> {
+    match t {
+        FOFTerm::Variable(v) => {
+            if let Some(&new_v) = map.get(v) {
+                FOFTerm::Variable(new_v)
+            } else {
+                FOFTerm::Variable(v)
+            }
+        }
+        FOFTerm::Function(w, args) => FOFTerm::Function(
+            w.clone(),
+            args.iter().map(|a| rename_vars_in_term(a, map)).collect(),
+        ),
+        FOFTerm::DefinedFunction(w, args) => FOFTerm::DefinedFunction(
+            w.clone(),
+            args.iter().map(|a| rename_vars_in_term(a, map)).collect(),
+        ),
+        FOFTerm::SystemFunction(w, args) => FOFTerm::SystemFunction(
+            w.clone(),
+            args.iter().map(|a| rename_vars_in_term(a, map)).collect(),
+        ),
+        _ => t.clone(),
+    }
+}
+
 fn subst_var_in_formula<'p>(
     f: &FOFFormula<'p>,
     var: &str,
@@ -1632,6 +1832,162 @@ fn remove_quantifier_and_subst<'p>(
     }
 }
 
+use mrs_core::{Atom, Formula, Term, VarId};
+
+fn collect_forall(f: &Formula, vars: &mut Vec<VarId>) -> Formula {
+    match f {
+        Formula::Forall(v, body) => {
+            vars.push(*v);
+            collect_forall(body, vars)
+        }
+        _ => f.clone(),
+    }
+}
+
+fn collect_exists(f: &Formula, vars: &mut Vec<VarId>) -> Formula {
+    match f {
+        Formula::Exists(v, body) => {
+            vars.push(*v);
+            collect_exists(body, vars)
+        }
+        _ => f.clone(),
+    }
+}
+
+fn term_equiv(a: &Term, b: &Term, env: &HashMap<VarId, VarId>, rev_env: &HashMap<VarId, VarId>) -> bool {
+    match (a, b) {
+        (Term::Var(v1), Term::Var(v2)) => match env.get(v1) {
+            Some(&mapped_v) => mapped_v == *v2,
+            None => *v1 == *v2 && !rev_env.contains_key(v2),
+        },
+        (Term::App(s1, args1), Term::App(s2, args2)) => {
+            s1 == s2
+                && args1.len() == args2.len()
+                && args1.iter().zip(args2.iter()).all(|(x, y)| term_equiv(x, y, env, rev_env))
+        }
+        _ => false,
+    }
+}
+
+fn atom_equiv(
+    a: &Atom,
+    b: &Atom,
+    env: &HashMap<VarId, VarId>,
+    rev_env: &HashMap<VarId, VarId>,
+) -> bool {
+    match (a, b) {
+        (Atom::Pred(s1, args1), Atom::Pred(s2, args2)) => {
+            s1 == s2
+                && args1.len() == args2.len()
+                && args1
+                    .iter()
+                    .zip(args2.iter())
+                    .all(|(x, y)| term_equiv(x, y, env, rev_env))
+        }
+        (Atom::Eq(l1, r1), Atom::Eq(l2, r2)) => {
+            (term_equiv(l1, l2, env, rev_env) && term_equiv(r1, r2, env, rev_env))
+                || (term_equiv(l1, r2, env, rev_env) && term_equiv(r1, l2, env, rev_env))
+        }
+        _ => false,
+    }
+}
+
+fn match_binders(
+    idx: usize,
+    vars_a: &[VarId],
+    vars_b: &[VarId],
+    used_b: &mut [bool],
+    body_a: &Formula,
+    body_b: &Formula,
+    env: &mut HashMap<VarId, VarId>,
+    rev_env: &mut HashMap<VarId, VarId>,
+    is_forall: bool,
+) -> bool {
+    if idx == vars_a.len() {
+        return equiv_modulo_perms(body_a, body_b, env, rev_env);
+    }
+    let va = vars_a[idx];
+    for i in 0..vars_b.len() {
+        if !used_b[i] {
+            let vb = vars_b[i];
+            used_b[i] = true;
+            env.insert(va, vb);
+            rev_env.insert(vb, va);
+            if match_binders(idx + 1, vars_a, vars_b, used_b, body_a, body_b, env, rev_env, is_forall) {
+                return true;
+            }
+            env.remove(&va);
+            rev_env.remove(&vb);
+            used_b[i] = false;
+        }
+    }
+    false
+}
+
+fn equiv_modulo_perms(
+    a: &Formula,
+    b: &Formula,
+    env: &mut HashMap<VarId, VarId>,
+    rev_env: &mut HashMap<VarId, VarId>,
+) -> bool {
+    match (a, b) {
+        (Formula::True, Formula::True) | (Formula::False, Formula::False) => true,
+        (Formula::Atom(x), Formula::Atom(y)) => atom_equiv(x, y, env, rev_env),
+        (Formula::Neg(x), Formula::Neg(y)) => equiv_modulo_perms(x, y, env, rev_env),
+        (Formula::And(xs), Formula::And(ys)) | (Formula::Or(xs), Formula::Or(ys)) => {
+            if xs.len() != ys.len() {
+                return false;
+            }
+            let mut used = vec![false; ys.len()];
+            for x in xs {
+                let mut matched = false;
+                for (j, y) in ys.iter().enumerate() {
+                    if !used[j] && equiv_modulo_perms(x, y, env, rev_env) {
+                        used[j] = true;
+                        matched = true;
+                        break;
+                    }
+                }
+                if !matched {
+                    return false;
+                }
+            }
+            true
+        }
+        (Formula::Iff(a1, b1), Formula::Iff(a2, b2)) => {
+            (equiv_modulo_perms(a1, a2, env, rev_env) && equiv_modulo_perms(b1, b2, env, rev_env))
+                || (equiv_modulo_perms(a1, b2, env, rev_env)
+                    && equiv_modulo_perms(b1, a2, env, rev_env))
+        }
+        (Formula::Implies(a1, b1), Formula::Implies(a2, b2)) => {
+            equiv_modulo_perms(a1, a2, env, rev_env) && equiv_modulo_perms(b1, b2, env, rev_env)
+        }
+        (Formula::Forall(..), Formula::Forall(..)) => {
+            let mut vars_a = Vec::new();
+            let body_a = collect_forall(a, &mut vars_a);
+            let mut vars_b = Vec::new();
+            let body_b = collect_forall(b, &mut vars_b);
+            if vars_a.len() != vars_b.len() {
+                return false;
+            }
+            let mut used_b = vec![false; vars_b.len()];
+            match_binders(0, &vars_a, &vars_b, &mut used_b, &body_a, &body_b, env, rev_env, true)
+        }
+        (Formula::Exists(..), Formula::Exists(..)) => {
+            let mut vars_a = Vec::new();
+            let body_a = collect_exists(a, &mut vars_a);
+            let mut vars_b = Vec::new();
+            let body_b = collect_exists(b, &mut vars_b);
+            if vars_a.len() != vars_b.len() {
+                return false;
+            }
+            let mut used_b = vec![false; vars_b.len()];
+            match_binders(0, &vars_a, &vars_b, &mut used_b, &body_a, &body_b, env, rev_env, false)
+        }
+        _ => false,
+    }
+}
+
 fn alpha_eq_fof<'p>(a: &'p FOFFormula<'p>, b: &'p FOFFormula<'p>) -> bool {
     let mut symbols = mrs_core::SymbolTable::new();
     let mut ctx = crate::lower::LowerCtx::new(&mut symbols);
@@ -1639,7 +1995,10 @@ fn alpha_eq_fof<'p>(a: &'p FOFFormula<'p>, b: &'p FOFFormula<'p>) -> bool {
     let a_core = crate::lower::lower_fof_formula(&mut ctx, a);
     ctx.reset_vars();
     let b_core = crate::lower::lower_fof_formula(&mut ctx, b);
-    mrs_core::alpha::alpha_equiv(&a_core, &b_core)
+    
+    let mut env = HashMap::new();
+    let mut rev_env = HashMap::new();
+    equiv_modulo_perms(&a_core, &b_core, &mut env, &mut rev_env)
         || crate::checks::definition_folding::canon_eq(&a_core, &b_core)
 }
 
