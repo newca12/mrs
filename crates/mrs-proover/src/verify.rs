@@ -704,11 +704,25 @@ fn finish_atp(
     let cancel = std::sync::atomic::AtomicBool::new(false);
     match atp.check_step(symbols, &step.premises, &step.conclusion, budget, &cancel) {
         AtpVerdict::Sound => StepOutcome::Sound,
-        AtpVerdict::Unsound if step.esa => StepOutcome::Unknown(format!(
-            "esa step: ATP `{}` found a counter-model, but equisatisfiability \
-             steps are not entailments, so this is not a fault",
-            atp.name()
-        )),
+        AtpVerdict::Unsound if step.esa => {
+            let is_known_esa_rule = matches!(
+                step.rule.as_deref(),
+                Some("skolemize" | "skolemisation" | "variable_rename" | "introduced_definition")
+            );
+            if is_known_esa_rule {
+                StepOutcome::Unknown(format!(
+                    "esa step: ATP `{}` found a counter-model, but equisatisfiability \
+                     steps are not entailments, so this is not a fault",
+                    atp.name()
+                ))
+            } else {
+                StepOutcome::Unsound(format!(
+                    "ATP `{}` refuted entailment on non-equisatisfiable rule ({:?}) carrying status(esa)",
+                    atp.name(),
+                    step.rule
+                ))
+            }
+        },
         AtpVerdict::Unsound => StepOutcome::Unsound(format!(
             "ATP `{}` refuted entailment by premises",
             atp.name()
@@ -1088,7 +1102,7 @@ mod esa_guard_tests {
         // equisatisfiability steps are not entailments, so a counter-model is
         // expected and is not a fault. Scoring: 0 (Unknown), never −1.
         let src = "fof(a, axiom, p(a)).\n\
-                   fof(s1, plain, q(b), inference(some_rule, [status(esa)], [a])).\n\
+                   fof(s1, plain, q(b), inference(skolemize, [status(esa)], [a])).\n\
                    fof(s2, plain, $false, inference(some_rule, [status(thm)], [s1])).\n";
         assert!(
             matches!(outcome_for(src, "s1"), StepOutcome::Unknown(_)),
