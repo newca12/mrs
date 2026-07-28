@@ -722,7 +722,7 @@ fn finish_atp(
                     step.rule
                 ))
             }
-        },
+        }
         AtpVerdict::Unsound => StepOutcome::Unsound(format!(
             "ATP `{}` refuted entailment by premises",
             atp.name()
