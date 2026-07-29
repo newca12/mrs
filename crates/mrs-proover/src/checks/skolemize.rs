@@ -1039,6 +1039,33 @@ fn contains_too_many_iffs_fof(f: &FOFFormula) -> bool {
     count_iffs(f) > 15
 }
 
+fn has_and_under_or_fof(f: &FOFFormula) -> bool {
+    fn contains_and(f: &FOFFormula) -> bool {
+        match f {
+            FOFFormula::Binary { left, connective, right } => {
+                *connective == BinaryConnective::And || contains_and(left) || contains_and(right)
+            }
+            FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => contains_and(inner),
+            FOFFormula::Quantified { formula, .. } => contains_and(formula),
+            _ => false,
+        }
+    }
+    fn has_and_under_or_rec(f: &FOFFormula) -> bool {
+        match f {
+            FOFFormula::Binary { left, connective: BinaryConnective::Or, right } => {
+                contains_and(left) || contains_and(right)
+            }
+            FOFFormula::Binary { left, connective: _, right } => {
+                has_and_under_or_rec(left) || has_and_under_or_rec(right)
+            }
+            FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => has_and_under_or_rec(inner),
+            FOFFormula::Quantified { formula, .. } => has_and_under_or_rec(formula),
+            _ => false,
+        }
+    }
+    has_and_under_or_rec(f)
+}
+
 /// Positively verify an unannotated `skolemize` step: confirm the conclusion is
 /// exactly the parent with every existential (at any depth) replaced by a
 /// distinct fresh Skolem term over precisely the universals in scope at it.
@@ -1051,6 +1078,9 @@ pub(crate) fn try_positive_skolemize<'p>(
     registry: &SkolemRegistry,
 ) -> bool {
     if contains_too_many_iffs_fof(parent_f) || contains_too_many_iffs_fof(step_f) {
+        return false;
+    }
+    if has_and_under_or_fof(parent_f) || has_and_under_or_fof(step_f) {
         return false;
     }
     let mut counter = 0;
