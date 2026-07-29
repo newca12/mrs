@@ -97,10 +97,10 @@ fn nnf(formula: &Formula, negated: bool, cache: &mut HashMap<(Formula, bool), Fo
         Formula::Iff(a, b) => {
             // φ ↔ ψ ≡ (φ → ψ) ∧ (ψ → φ) ≡ (¬φ ∨ ψ) ∧ (φ ∨ ¬ψ)
             if negated {
-                // ¬(φ ↔ ψ) ≡ (φ ∧ ¬ψ) ∨ (¬φ ∧ ψ)
-                Formula::or(vec![
-                    Formula::and(vec![nnf(a, false, cache), nnf(b, true, cache)]),
-                    Formula::and(vec![nnf(a, true, cache), nnf(b, false, cache)]),
+                // ¬(φ ↔ ψ) ≡ (φ ∨ ψ) ∧ (¬φ ∨ ¬ψ)
+                Formula::and(vec![
+                    Formula::or(vec![nnf(a, false, cache), nnf(b, false, cache)]),
+                    Formula::or(vec![nnf(a, true, cache), nnf(b, true, cache)]),
                 ])
             } else {
                 Formula::and(vec![

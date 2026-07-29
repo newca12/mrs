@@ -735,14 +735,14 @@ fn fof_to_nnf<'p>(f: &FOFFormula<'p>) -> FOFFormula<'p> {
                     FOFFormula::Binary {
                         left: Box::new(FOFFormula::Binary {
                             left: Box::new(left_pos),
-                            connective: BinaryConnective::And,
-                            right: Box::new(right_neg),
+                            connective: BinaryConnective::Or,
+                            right: Box::new(right_pos),
                         }),
-                        connective: BinaryConnective::Or,
+                        connective: BinaryConnective::And,
                         right: Box::new(FOFFormula::Binary {
                             left: Box::new(left_neg),
-                            connective: BinaryConnective::And,
-                            right: Box::new(right_pos),
+                            connective: BinaryConnective::Or,
+                            right: Box::new(right_neg),
                         }),
                     }
                 }
@@ -1022,7 +1022,7 @@ fn contains_too_many_iffs_fof(f: &FOFFormula) -> bool {
 /// distinct fresh Skolem term over precisely the universals in scope at it.
 /// Returns `true` only on a fully-confirmed sound Skolemisation; `false` means
 /// "could not confirm" and the caller falls back to the conservative path.
-fn try_positive_skolemize<'p>(
+pub(crate) fn try_positive_skolemize<'p>(
     parent_f: &'p FOFFormula<'p>,
     step_f: &'p FOFFormula<'p>,
     fresh: &[&str],
