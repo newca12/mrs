@@ -1066,6 +1066,42 @@ fn has_and_under_or_fof(f: &FOFFormula) -> bool {
     has_and_under_or_rec(f)
 }
 
+fn formula_nodes_count_fof(f: &FOFFormula) -> usize {
+    match f {
+        FOFFormula::Binary { left, right, .. } => 1 + formula_nodes_count_fof(left) + formula_nodes_count_fof(right),
+        FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => 1 + formula_nodes_count_fof(inner),
+        FOFFormula::Quantified { formula, .. } => 1 + formula_nodes_count_fof(formula),
+        FOFFormula::Equality(l, r) | FOFFormula::Inequality(l, r) => 1 + term_nodes_count_fof(l) + term_nodes_count_fof(r),
+        FOFFormula::Atomic(a) => match a {
+            FOFAtomicFormula::Plain(_, args)
+            | FOFAtomicFormula::Defined(_, args)
+            | FOFAtomicFormula::System(_, args) => {
+                let mut sum = 1;
+                for arg in args {
+                    sum += term_nodes_count_fof(arg);
+                }
+                sum
+            }
+            _ => 1,
+        },
+    }
+}
+
+fn term_nodes_count_fof(t: &FOFTerm) -> usize {
+    match t {
+        FOFTerm::Function(_, args)
+        | FOFTerm::DefinedFunction(_, args)
+        | FOFTerm::SystemFunction(_, args) => {
+            let mut sum = 1;
+            for a in args {
+                sum += term_nodes_count_fof(a);
+            }
+            sum
+        }
+        _ => 1,
+    }
+}
+
 /// Positively verify an unannotated `skolemize` step: confirm the conclusion is
 /// exactly the parent with every existential (at any depth) replaced by a
 /// distinct fresh Skolem term over precisely the universals in scope at it.
@@ -1080,7 +1116,7 @@ pub(crate) fn try_positive_skolemize<'p>(
     if contains_too_many_iffs_fof(parent_f) || contains_too_many_iffs_fof(step_f) {
         return false;
     }
-    if has_and_under_or_fof(parent_f) || has_and_under_or_fof(step_f) {
+    if has_and_under_or_fof(parent_f) && (formula_nodes_count_fof(parent_f) > 80 || formula_nodes_count_fof(step_f) > 80) {
         return false;
     }
     let mut counter = 0;
