@@ -48,6 +48,12 @@ pub fn check<'p>(
     ctx.reset_vars();
     let conj_f = lower_annotated_formula(&mut ctx, parent);
 
+    // Fast path: if the step is structurally the exact negation of the parent conjecture,
+    // we can confirm it is Sound instantly without any NNF conversion!
+    if alpha_equiv(&Formula::Neg(Box::new(conj_f.clone())), &step_f) {
+        return StepOutcome::Sound;
+    }
+
     if contains_too_many_iffs(&step_f) || contains_too_many_iffs(&conj_f) {
         return StepOutcome::Unknown("conjecture or negated_conjecture is too complex to verify structurally".into());
     }
