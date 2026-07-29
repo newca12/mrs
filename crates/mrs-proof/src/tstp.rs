@@ -83,6 +83,9 @@ pub fn format_tstp(proof: &[Clause], symbols: &SymbolTable) -> String {
     let mut lines = Vec::new();
     let problem_path = problem_path();
 
+    // Prepend the standard % Proof : <path> header at the very top
+    lines.push(format!("% Proof : {}", problem_path));
+
     for clause in &proof_sorted {
         let id = clause.id.0;
         let is_formula_step = clause.formula.is_some();
