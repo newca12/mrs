@@ -117,9 +117,26 @@ pub fn try_check<'p>(
     None
 }
 
+fn contains_too_many_iffs(f: &Formula) -> bool {
+    fn count_iffs(f: &Formula) -> usize {
+        match f {
+            Formula::Iff(a, b) => 1 + count_iffs(a) + count_iffs(b),
+            Formula::Neg(inner) => count_iffs(inner),
+            Formula::And(cs) | Formula::Or(cs) => cs.iter().map(count_iffs).sum(),
+            Formula::Implies(a, b) => count_iffs(a) + count_iffs(b),
+            Formula::Forall(_, body) | Formula::Exists(_, body) => count_iffs(body),
+            _ => 0,
+        }
+    }
+    count_iffs(f) > 15
+}
+
 /// Sound (partial) logical-equivalence test: `a ≡ b` confirmed via
 /// `canon(nnf(a)) =α= canon(nnf(b))`.
 fn equiv(a: &Formula, b: &Formula) -> bool {
+    if contains_too_many_iffs(a) || contains_too_many_iffs(b) {
+        return false;
+    }
     let ca = canon(&to_nnf(a));
     let cb = canon(&to_nnf(b));
     alpha_equiv(&ca, &cb)
@@ -128,6 +145,9 @@ fn equiv(a: &Formula, b: &Formula) -> bool {
 /// `(∀x.(A ∧ B)) ⊨ ∀x.A`: confirm the conclusion is α-equivalent to the
 /// universal closure of one top-level conjunct of the parent's NNF.
 fn projects_conjunct(parent: &Formula, concl: &Formula) -> bool {
+    if contains_too_many_iffs(parent) || contains_too_many_iffs(concl) {
+        return false;
+    }
     let parent_nnf = to_nnf(parent);
     // Peel a shared universal prefix.
     let mut binders: Vec<VarId> = Vec::new();

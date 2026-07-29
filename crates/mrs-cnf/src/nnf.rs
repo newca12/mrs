@@ -17,18 +17,26 @@
 
 use mrs_core::Formula;
 
+use std::collections::HashMap;
+
 /// Converts a formula to Negation Normal Form.
 ///
 /// After this transformation:
 /// - No `Implies` or `Iff` nodes remain
 /// - `Neg` appears only directly around `Atom` nodes
 pub fn to_nnf(formula: &Formula) -> Formula {
-    nnf(formula, false)
+    let mut cache = HashMap::new();
+    nnf(formula, false, &mut cache)
 }
 
 /// Core NNF conversion. `negated` tracks whether we're under an odd number of negations.
-fn nnf(formula: &Formula, negated: bool) -> Formula {
-    match formula {
+fn nnf(formula: &Formula, negated: bool, cache: &mut HashMap<(Formula, bool), Formula>) -> Formula {
+    let key = (formula.clone(), negated);
+    if let Some(res) = cache.get(&key) {
+        return res.clone();
+    }
+
+    let res = match formula {
         Formula::Atom(a) => {
             if negated {
                 Formula::neg(Formula::Atom(a.clone()))
@@ -55,24 +63,24 @@ fn nnf(formula: &Formula, negated: bool) -> Formula {
 
         Formula::Neg(inner) => {
             // Double negation: flip the polarity
-            nnf(inner, !negated)
+            nnf(inner, !negated, cache)
         }
 
         Formula::And(conjuncts) => {
             if negated {
                 // ¬(φ₁ ∧ ... ∧ φₙ) → ¬φ₁ ∨ ... ∨ ¬φₙ  (De Morgan)
-                Formula::or(conjuncts.iter().map(|c| nnf(c, true)).collect())
+                Formula::or(conjuncts.iter().map(|c| nnf(c, true, cache)).collect())
             } else {
-                Formula::and(conjuncts.iter().map(|c| nnf(c, false)).collect())
+                Formula::and(conjuncts.iter().map(|c| nnf(c, false, cache)).collect())
             }
         }
 
         Formula::Or(disjuncts) => {
             if negated {
                 // ¬(φ₁ ∨ ... ∨ φₙ) → ¬φ₁ ∧ ... ∧ ¬φₙ  (De Morgan)
-                Formula::and(disjuncts.iter().map(|d| nnf(d, true)).collect())
+                Formula::and(disjuncts.iter().map(|d| nnf(d, true, cache)).collect())
             } else {
-                Formula::or(disjuncts.iter().map(|d| nnf(d, false)).collect())
+                Formula::or(disjuncts.iter().map(|d| nnf(d, false, cache)).collect())
             }
         }
 
@@ -80,9 +88,9 @@ fn nnf(formula: &Formula, negated: bool) -> Formula {
             // φ → ψ ≡ ¬φ ∨ ψ
             if negated {
                 // ¬(φ → ψ) ≡ φ ∧ ¬ψ
-                Formula::and(vec![nnf(a, false), nnf(b, true)])
+                Formula::and(vec![nnf(a, false, cache), nnf(b, true, cache)])
             } else {
-                Formula::or(vec![nnf(a, true), nnf(b, false)])
+                Formula::or(vec![nnf(a, true, cache), nnf(b, false, cache)])
             }
         }
 
@@ -91,13 +99,13 @@ fn nnf(formula: &Formula, negated: bool) -> Formula {
             if negated {
                 // ¬(φ ↔ ψ) ≡ (φ ∧ ¬ψ) ∨ (¬φ ∧ ψ)
                 Formula::or(vec![
-                    Formula::and(vec![nnf(a, false), nnf(b, true)]),
-                    Formula::and(vec![nnf(a, true), nnf(b, false)]),
+                    Formula::and(vec![nnf(a, false, cache), nnf(b, true, cache)]),
+                    Formula::and(vec![nnf(a, true, cache), nnf(b, false, cache)]),
                 ])
             } else {
                 Formula::and(vec![
-                    Formula::or(vec![nnf(a, true), nnf(b, false)]),
-                    Formula::or(vec![nnf(a, false), nnf(b, true)]),
+                    Formula::or(vec![nnf(a, true, cache), nnf(b, false, cache)]),
+                    Formula::or(vec![nnf(a, false, cache), nnf(b, true, cache)]),
                 ])
             }
         }
@@ -105,21 +113,24 @@ fn nnf(formula: &Formula, negated: bool) -> Formula {
         Formula::Forall(v, body) => {
             if negated {
                 // ¬∀x.φ ≡ ∃x.¬φ
-                Formula::exists(*v, nnf(body, true))
+                Formula::exists(*v, nnf(body, true, cache))
             } else {
-                Formula::forall(*v, nnf(body, false))
+                Formula::forall(*v, nnf(body, false, cache))
             }
         }
 
         Formula::Exists(v, body) => {
             if negated {
                 // ¬∃x.φ ≡ ∀x.¬φ
-                Formula::forall(*v, nnf(body, true))
+                Formula::forall(*v, nnf(body, true, cache))
             } else {
-                Formula::exists(*v, nnf(body, false))
+                Formula::exists(*v, nnf(body, false, cache))
             }
         }
-    }
+    };
+
+    cache.insert(key, res.clone());
+    res
 }
 
 #[cfg(test)]

@@ -12,6 +12,20 @@ use mrs_tptp::{AnnotatedFormula, FormulaRole};
 use crate::lower::{LowerCtx, lower_annotated_formula};
 use crate::verdict::StepOutcome;
 
+fn contains_too_many_iffs(f: &Formula) -> bool {
+    fn count_iffs(f: &Formula) -> usize {
+        match f {
+            Formula::Iff(a, b) => 1 + count_iffs(a) + count_iffs(b),
+            Formula::Neg(inner) => count_iffs(inner),
+            Formula::And(cs) | Formula::Or(cs) => cs.iter().map(count_iffs).sum(),
+            Formula::Implies(a, b) => count_iffs(a) + count_iffs(b),
+            Formula::Forall(_, body) | Formula::Exists(_, body) => count_iffs(body),
+            _ => 0,
+        }
+    }
+    count_iffs(f) > 15
+}
+
 /// Check a single `negated_conjecture` step against its `conjecture` parent.
 pub fn check<'p>(
     step: &AnnotatedFormula<'p>,
@@ -33,6 +47,10 @@ pub fn check<'p>(
     let step_f = lower_annotated_formula(&mut ctx, step);
     ctx.reset_vars();
     let conj_f = lower_annotated_formula(&mut ctx, parent);
+
+    if contains_too_many_iffs(&step_f) || contains_too_many_iffs(&conj_f) {
+        return StepOutcome::Unknown("conjecture or negated_conjecture is too complex to verify structurally".into());
+    }
 
     let expected = to_nnf(&Formula::neg(conj_f));
     let actual = to_nnf(&step_f);

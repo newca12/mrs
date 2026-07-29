@@ -80,7 +80,7 @@ impl Atom {
 /// // ∀X. p(X)
 /// let f = Formula::forall(0, Formula::atom(Atom::pred(p, vec![Term::var(0)])));
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub enum Formula {
     /// An atomic formula.
     Atom(Atom),

@@ -1002,6 +1002,21 @@ fn distribute_or_over_and<'p>(f: &FOFFormula<'p>) -> FOFFormula<'p> {
     }
 }
 
+fn contains_too_many_iffs_fof(f: &FOFFormula) -> bool {
+    fn count_iffs(f: &FOFFormula) -> usize {
+        match f {
+            FOFFormula::Binary { left, connective, right } => {
+                let current = if *connective == BinaryConnective::Iff { 1 } else { 0 };
+                current + count_iffs(left) + count_iffs(right)
+            }
+            FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => count_iffs(inner),
+            FOFFormula::Quantified { formula, .. } => count_iffs(formula),
+            _ => 0,
+        }
+    }
+    count_iffs(f) > 15
+}
+
 /// Positively verify an unannotated `skolemize` step: confirm the conclusion is
 /// exactly the parent with every existential (at any depth) replaced by a
 /// distinct fresh Skolem term over precisely the universals in scope at it.
@@ -1013,6 +1028,9 @@ fn try_positive_skolemize<'p>(
     fresh: &[&str],
     registry: &SkolemRegistry,
 ) -> bool {
+    if contains_too_many_iffs_fof(parent_f) || contains_too_many_iffs_fof(step_f) {
+        return false;
+    }
     let mut counter = 0;
     let mut subst = HashMap::new();
     let parent_nnf = fof_to_nnf(parent_f);
