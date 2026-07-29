@@ -109,8 +109,14 @@ pub fn try_check<'p>(
     ctx.reset_vars();
     let concl_f = lower_annotated_formula(&mut ctx, node.formula);
 
-    if EQUIV_RULES.contains(&rule) && equiv(&parent_f, &concl_f) {
-        return Some(StepOutcome::Sound);
+    if EQUIV_RULES.contains(&rule) {
+        if rule == "cnf_transformation" {
+            if equiv(&parent_f, &concl_f) || projects_disjunct(&parent_f, &concl_f) {
+                return Some(StepOutcome::Sound);
+            }
+        } else if equiv(&parent_f, &concl_f) {
+            return Some(StepOutcome::Sound);
+        }
     }
     if PROJECTION_RULES.contains(&rule) && projects_conjunct(&parent_f, &concl_f) {
         return Some(StepOutcome::Sound);
@@ -169,6 +175,36 @@ fn projects_conjunct(parent: &Formula, concl: &Formula) -> bool {
             wrapped = Formula::forall(v, wrapped);
         }
         if strict_alpha_equiv(&wrapped, &concl_nnf) {
+            return true;
+        }
+    }
+    false
+}
+
+fn projects_disjunct(parent: &Formula, concl: &Formula) -> bool {
+    if contains_too_many_iffs(parent) || contains_too_many_iffs(concl) {
+        return false;
+    }
+    let parent_nnf = to_nnf(parent);
+    let mut body = &parent_nnf;
+    while let Formula::Forall(_, inner) | Formula::Exists(_, inner) = body {
+        body = inner;
+    }
+    let disjuncts: Vec<&Formula> = match body {
+        Formula::Or(cs) => cs.iter().collect(),
+        _ => return false,
+    };
+    let concl_nnf = to_nnf(concl);
+    let mut concl_body = &concl_nnf;
+    while let Formula::Forall(_, inner) | Formula::Exists(_, inner) = concl_body {
+        concl_body = inner;
+    }
+    for d in disjuncts {
+        let mut d_body = d;
+        while let Formula::Forall(_, inner) | Formula::Exists(_, inner) = d_body {
+            d_body = inner;
+        }
+        if strict_alpha_equiv(d_body, concl_body) {
             return true;
         }
     }

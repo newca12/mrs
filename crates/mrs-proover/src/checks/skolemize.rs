@@ -719,6 +719,80 @@ fn match_skolem_term<'p>(
     }
 }
 
+fn miniscope<'p>(f: &FOFFormula<'p>) -> FOFFormula<'p> {
+    if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+        eprintln!("[skolem-dbg] miniscope called with f={:?}", f);
+    }
+    match f {
+        FOFFormula::Atomic(_) | FOFFormula::Equality(..) | FOFFormula::Inequality(..) => f.clone(),
+        FOFFormula::Parens(inner) => miniscope(inner),
+        FOFFormula::Negation(inner) => FOFFormula::Negation(Box::new(miniscope(inner))),
+        FOFFormula::Binary { left, connective, right } => FOFFormula::Binary {
+            left: Box::new(miniscope(left)),
+            connective: *connective,
+            right: Box::new(miniscope(right)),
+        },
+        FOFFormula::Quantified { quantifier, variables, formula } => {
+            let inner = miniscope(formula);
+            let mut current = inner;
+            for v in variables.iter().rev() {
+                if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                    eprintln!("[skolem-dbg] miniscope matching quantifier={:?}, var={}, current={:?}", quantifier, v, current);
+                }
+                current = match (*quantifier, &current) {
+                    (Quantifier::Exists, FOFFormula::Binary { left, connective: BinaryConnective::Or, right }) => {
+                        if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                            eprintln!("[skolem-dbg] miniscope Exists MATCHED!");
+                        }
+                        FOFFormula::Binary {
+                            left: Box::new(FOFFormula::Quantified {
+                                quantifier: Quantifier::Exists,
+                                variables: vec![*v],
+                                formula: left.clone(),
+                            }),
+                            connective: BinaryConnective::Or,
+                            right: Box::new(FOFFormula::Quantified {
+                                quantifier: Quantifier::Exists,
+                                variables: vec![*v],
+                                formula: right.clone(),
+                            }),
+                        }
+                    }
+                    (Quantifier::Forall, FOFFormula::Binary { left, connective: BinaryConnective::And, right }) => {
+                        if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                            eprintln!("[skolem-dbg] miniscope Forall MATCHED!");
+                        }
+                        FOFFormula::Binary {
+                            left: Box::new(FOFFormula::Quantified {
+                                quantifier: Quantifier::Forall,
+                                variables: vec![*v],
+                                formula: left.clone(),
+                            }),
+                            connective: BinaryConnective::And,
+                            right: Box::new(FOFFormula::Quantified {
+                                quantifier: Quantifier::Forall,
+                                variables: vec![*v],
+                                formula: right.clone(),
+                            }),
+                        }
+                    }
+                    _ => {
+                        if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                            eprintln!("[skolem-dbg] miniscope FALLBACK!");
+                        }
+                        FOFFormula::Quantified {
+                            quantifier: *quantifier,
+                            variables: vec![*v],
+                            formula: Box::new(current),
+                        }
+                    }
+                };
+            }
+            current
+        }
+    }
+}
+
 fn fof_to_nnf<'p>(f: &FOFFormula<'p>) -> FOFFormula<'p> {
     match f {
         FOFFormula::Atomic(_) | FOFFormula::Equality(..) | FOFFormula::Inequality(..) => f.clone(),
@@ -1121,12 +1195,15 @@ pub(crate) fn try_positive_skolemize<'p>(
     }
     let mut counter = 0;
     let mut subst = HashMap::new();
-    let parent_nnf = fof_to_nnf(parent_f);
+    let parent_nnf = miniscope(&fof_to_nnf(parent_f));
+    if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+        eprintln!("[skolem-dbg] parent_nnf AFTER miniscope = {:?}", parent_nnf);
+    }
     let parent_renamed = rename_bound_variables(&parent_nnf, &mut counter, &mut subst);
     let parent_stripped = strip_all_quantifiers(&parent_renamed);
     let parent_cnf = distribute_or_over_and(&parent_stripped);
 
-    let step_nnf = fof_to_nnf(step_f);
+    let step_nnf = miniscope(&fof_to_nnf(step_f));
     let step_stripped = strip_all_quantifiers(&step_nnf);
     let step_cnf = distribute_or_over_and(&step_stripped);
 

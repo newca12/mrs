@@ -707,7 +707,7 @@ fn prepare_atp_step<'p>(dag: &Dag<'p>, idx: usize, symbols: &mut SymbolTable) ->
         return Prepared::Resolved(StepOutcome::Sound);
     }
 
-    if formula_max_depth(&conclusion) > 5 {
+    if formula_max_depth(&conclusion) > 25 {
         return Prepared::Resolved(StepOutcome::Unknown(
             "deep term step ignored under fast budget".into(),
         ));

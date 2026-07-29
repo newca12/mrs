@@ -161,41 +161,330 @@ fn collect_pred_atoms(f: &Formula, atoms: &mut HashSet<Atom>) {
     }
 }
 
-pub fn try_propositional_abstraction(premises: &[Formula], conclusion: &Formula) -> bool {
-    for p in premises {
-        if !is_quantifier_free(p) {
-            return false;
+fn match_term(pat: &Term, tgt: &Term, subst: &mut HashMap<mrs_core::VarId, Term>) -> bool {
+    match (pat, tgt) {
+        (Term::Var(id), _) => {
+            if let Some(existing) = subst.get(id) {
+                existing == tgt
+            } else {
+                subst.insert(*id, tgt.clone());
+                true
+            }
+        }
+        (Term::App(f1, args1), Term::App(f2, args2)) => {
+            f1 == f2 && args1.len() == args2.len() && args1.iter().zip(args2.iter()).all(|(a1, a2)| match_term(a1, a2, subst))
+        }
+        _ => false,
+    }
+}
+
+fn apply_subst_term(t: &Term, subst: &HashMap<mrs_core::VarId, Term>) -> Term {
+    match t {
+        Term::Var(id) => subst.get(id).cloned().unwrap_or_else(|| Term::Var(*id)),
+        Term::App(f, args) => Term::App(*f, args.iter().map(|arg| apply_subst_term(arg, subst)).collect()),
+    }
+}
+
+fn apply_subst_formula(f: &Formula, subst: &HashMap<mrs_core::VarId, Term>) -> Formula {
+    match f {
+        Formula::Atom(a) => match a {
+            Atom::Pred(p, args) => Formula::Atom(Atom::Pred(*p, args.iter().map(|arg| apply_subst_term(arg, subst)).collect())),
+            Atom::Eq(l, r) => Formula::Atom(Atom::Eq(apply_subst_term(l, subst), apply_subst_term(r, subst))),
+        }
+        Formula::Neg(inner) => Formula::Neg(Box::new(apply_subst_formula(inner, subst))),
+        Formula::And(cs) => Formula::And(cs.iter().map(|c| apply_subst_formula(c, subst)).collect()),
+        Formula::Or(cs) => Formula::Or(cs.iter().map(|c| apply_subst_formula(c, subst)).collect()),
+        Formula::Implies(a, b) => Formula::Implies(Box::new(apply_subst_formula(a, subst)), Box::new(apply_subst_formula(b, subst))),
+        Formula::Iff(a, b) => Formula::Iff(Box::new(apply_subst_formula(a, subst)), Box::new(apply_subst_formula(b, subst))),
+        _ => f.clone(),
+    }
+}
+
+fn collect_vars_in_term(t: &Term, vars: &mut HashSet<mrs_core::VarId>) {
+    match t {
+        Term::Var(id) => { vars.insert(*id); }
+        Term::App(_, args) => {
+            for arg in args {
+                collect_vars_in_term(arg, vars);
+            }
         }
     }
-    if !is_quantifier_free(conclusion) {
+}
+
+fn collect_vars_in_formula(f: &Formula, vars: &mut HashSet<mrs_core::VarId>) {
+    match f {
+        Formula::Atom(a) => match a {
+            Atom::Pred(_, args) => {
+                for arg in args {
+                    collect_vars_in_term(arg, vars);
+                }
+            }
+            Atom::Eq(l, r) => {
+                collect_vars_in_term(l, vars);
+                collect_vars_in_term(r, vars);
+            }
+        }
+        Formula::Neg(inner) => collect_vars_in_formula(inner, vars),
+        Formula::And(cs) | Formula::Or(cs) => {
+            for c in cs {
+                collect_vars_in_formula(c, vars);
+            }
+        }
+        Formula::Implies(a, b) | Formula::Iff(a, b) => {
+            collect_vars_in_formula(a, vars);
+            collect_vars_in_formula(b, vars);
+        }
+        _ => {}
+    }
+}
+
+fn collect_all_subterms_term(t: &Term, subterms: &mut HashSet<Term>) {
+    subterms.insert(t.clone());
+    if let Term::App(_, args) = t {
+        for arg in args {
+            collect_all_subterms_term(arg, subterms);
+        }
+    }
+}
+
+fn collect_all_subterms_formula(f: &Formula, subterms: &mut HashSet<Term>) {
+    match f {
+        Formula::Atom(a) => match a {
+            Atom::Pred(_, args) => {
+                for arg in args {
+                    collect_all_subterms_term(arg, subterms);
+                }
+            }
+            Atom::Eq(l, r) => {
+                collect_all_subterms_term(l, subterms);
+                collect_all_subterms_term(r, subterms);
+            }
+        }
+        Formula::Neg(inner) => collect_all_subterms_formula(inner, subterms),
+        Formula::And(cs) | Formula::Or(cs) => {
+            for c in cs {
+                collect_all_subterms_formula(c, subterms);
+            }
+        }
+        Formula::Implies(a, b) | Formula::Iff(a, b) => {
+            collect_all_subterms_formula(a, subterms);
+            collect_all_subterms_formula(b, subterms);
+        }
+        _ => {}
+    }
+}
+
+fn strip_leading_forall(f: &Formula) -> (Formula, HashSet<mrs_core::VarId>) {
+    let mut body = f;
+    let mut vars = HashSet::new();
+    while let Formula::Forall(v, inner) = body {
+        vars.insert(*v);
+        body = inner;
+    }
+    (body.clone(), vars)
+}
+
+fn term_size(t: &Term) -> usize {
+    match t {
+        Term::Var(_) => 1,
+        Term::App(_, args) => 1 + args.iter().map(term_size).sum::<usize>(),
+    }
+}
+
+fn rewrite_term(t: &Term, rules: &[(Term, Term)]) -> Term {
+    let mut current = match t {
+        Term::Var(_) => t.clone(),
+        Term::App(f, args) => Term::App(*f, args.iter().map(|arg| rewrite_term(arg, rules)).collect()),
+    };
+    
+    let mut changed = true;
+    let mut limit = 0;
+    while changed && limit < 30 {
+        changed = false;
+        for (lhs, rhs) in rules {
+            let mut subst = HashMap::new();
+            if match_term(lhs, &current, &mut subst) {
+                current = apply_subst_term(rhs, &subst);
+                changed = true;
+                break;
+            }
+        }
+        limit += 1;
+    }
+    current
+}
+
+pub fn try_propositional_abstraction(premises: &[Formula], conclusion: &Formula) -> bool {
+    if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+        eprintln!("[prop-sat-dbg] try_propositional_abstraction entered, premises len = {}, concl = {:?}", premises.len(), conclusion);
+    }
+
+    let mut stripped_premises = Vec::new();
+    for p in premises {
+        let (body, mut p_vars) = strip_leading_forall(p);
+        if is_quantifier_free(&body) {
+            collect_vars_in_formula(&body, &mut p_vars);
+            stripped_premises.push((body, p_vars));
+        } else {
+            if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                eprintln!("[prop-sat-dbg] ignoring non-quantifier-free premise: {:?}", p);
+            }
+        }
+    }
+
+    let (concl_body, mut concl_vars) = strip_leading_forall(conclusion);
+    if !is_quantifier_free(&concl_body) {
+        if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+            eprintln!("[prop-sat-dbg] concl body not quantifier free: {:?}", concl_body);
+        }
         return false;
+    }
+    collect_vars_in_formula(&concl_body, &mut concl_vars);
+
+    // Heuristic instantiation (E-matching) of universal premises against subterms in the step
+    let mut all_targets = HashSet::new();
+    collect_all_subterms_formula(&concl_body, &mut all_targets);
+    for (body, p_vars) in &stripped_premises {
+        if p_vars.is_empty() {
+            collect_all_subterms_formula(body, &mut all_targets);
+        }
+    }
+
+    if all_targets.len() > 100 {
+        if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+            eprintln!("[prop-sat-dbg] too many target subterms ({}), aborting to prevent OOM", all_targets.len());
+        }
+        return false;
+    }
+
+    let mut default_const = None;
+    for t in &all_targets {
+        if let Term::App(_, args) = t {
+            if args.is_empty() {
+                default_const = Some(t.clone());
+                break;
+            }
+        }
+    }
+
+    let mut instantiated_premises = HashSet::new();
+    for (body, p_vars) in &stripped_premises {
+        if p_vars.is_empty() {
+            instantiated_premises.insert(body.clone());
+        } else {
+            let mut p_pats = HashSet::new();
+            collect_all_subterms_formula(body, &mut p_pats);
+            let mut generated = false;
+            for pat in &p_pats {
+                if let Term::App(_, args) = pat {
+                    if !args.is_empty() {
+                        for tgt in &all_targets {
+                            let mut subst = HashMap::new();
+                            if match_term(pat, tgt, &mut subst) {
+                                let mut complete = true;
+                                for v in p_vars {
+                                    if !subst.contains_key(v) {
+                                        if let Some(dc) = &default_const {
+                                            subst.insert(*v, dc.clone());
+                                        } else {
+                                            complete = false;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if complete {
+                                    instantiated_premises.insert(apply_subst_formula(body, &subst));
+                                    if instantiated_premises.len() > 200 {
+                                        if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                                            eprintln!("[prop-sat-dbg] too many instantiated premises, aborting to prevent OOM");
+                                        }
+                                        return false;
+                                    }
+                                    generated = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !generated {
+                instantiated_premises.insert(body.clone());
+            }
+        }
+    }
+
+    // Fast-path: try to prove the conclusion purely by term rewriting (extremely fast, avoids SAT & CC transitivity blowups)
+    let mut rewrite_rules = Vec::new();
+    for p in &instantiated_premises {
+        if let Formula::Atom(Atom::Eq(l, r)) = p {
+            if term_size(l) >= term_size(r) {
+                rewrite_rules.push((l.clone(), r.clone()));
+            } else {
+                rewrite_rules.push((r.clone(), l.clone()));
+            }
+        }
+    }
+    if let Formula::Atom(Atom::Eq(l_concl, r_concl)) = &concl_body {
+        if rewrite_term(l_concl, &rewrite_rules) == rewrite_term(r_concl, &rewrite_rules) {
+            if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                eprintln!("[prop-sat-dbg] verified purely by term rewriting!");
+            }
+            return true;
+        }
     }
 
     let mut enc = Encoder::default();
     let mut solver = Solver::new();
-    for p in premises {
+    for p in &instantiated_premises {
         let lit = enc.encode(p, &mut solver);
         solver.add_clause([lit]);
     }
-    let neg_concl = enc.encode(conclusion, &mut solver);
+    let neg_concl = enc.encode(&concl_body, &mut solver);
     solver.add_clause([-neg_concl]);
 
     // Collect all subterms and predicate atoms for Congruence Closure via SAT
     let mut terms = HashSet::new();
-    for p in premises {
+    for p in &instantiated_premises {
         collect_terms(p, &mut terms);
     }
-    collect_terms(conclusion, &mut terms);
+    collect_terms(&concl_body, &mut terms);
 
-    // Limit to safe sizes to avoid O(N^3) transitivity clause blowup
-    if terms.len() <= 30 {
+    if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+        eprintln!("[prop-sat-dbg] terms count = {}, list = {:?}", terms.len(), terms);
+    }
+
+    // Limit to safe sizes to avoid O(N^3) transitivity clause blowup (using 60 as safe threshold)
+    if terms.len() <= 60 {
         let mut pred_atoms = HashSet::new();
-        for p in premises {
+        for p in &instantiated_premises {
             collect_pred_atoms(p, &mut pred_atoms);
         }
-        collect_pred_atoms(conclusion, &mut pred_atoms);
+        collect_pred_atoms(&concl_body, &mut pred_atoms);
 
         let terms_vec: Vec<Term> = terms.into_iter().collect();
+
+        // 0. Term Rewriting based equalities from premises (handles demodulation intermediate steps)
+        let mut rewrite_rules = Vec::new();
+        for p in &instantiated_premises {
+            if let Formula::Atom(Atom::Eq(l, r)) = p {
+                if term_size(l) >= term_size(r) {
+                    rewrite_rules.push((l.clone(), r.clone()));
+                } else {
+                    rewrite_rules.push((r.clone(), l.clone()));
+                }
+            }
+        }
+        for i in 0..terms_vec.len() {
+            for j in (i + 1)..terms_vec.len() {
+                let t1 = &terms_vec[i];
+                let t2 = &terms_vec[j];
+                if rewrite_term(t1, &rewrite_rules) == rewrite_term(t2, &rewrite_rules) {
+                    let eq = Formula::Atom(Atom::Eq(t1.clone(), t2.clone()));
+                    let lit = enc.encode(&eq, &mut solver);
+                    solver.add_clause([lit]);
+                }
+            }
+        }
 
         // 1. Reflexivity: t = t
         for t in &terms_vec {
@@ -293,7 +582,11 @@ pub fn try_propositional_abstraction(premises: &[Formula], conclusion: &Formula)
     }
 
     // UNSAT ⇒ truly entailed (sound). SAT ⇒ abstraction too coarse, defer.
-    matches!(solver.solve(), Some(false))
+    let sol = solver.solve();
+    if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+        eprintln!("[prop-sat-dbg] solver solve outcome = {:?}", sol);
+    }
+    matches!(sol, Some(false))
 }
 
 /// Walks `f` returning `true` iff it contains no quantifier. Unlike
