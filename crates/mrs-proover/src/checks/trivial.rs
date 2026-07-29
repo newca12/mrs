@@ -59,6 +59,7 @@ const EQUIV_RULES: &[&str] = &[
     "evaluation",
     "remove_duplicate_literals",
     "fof_nnf",
+    "fof_nnf_transformation",
     "distribute",
     "variable_rename",
     "duplicate_literal_removal",
