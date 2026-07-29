@@ -598,7 +598,7 @@ fn main() {
         (result, status, schedule_report)
     };
 
-    let status = final_status;
+    let mut status = final_status;
     let result = final_result;
 
     #[cfg(feature = "ml")]
@@ -643,6 +643,41 @@ fn main() {
         }
     }
 
+    // --- In-Process Self-Verification Guard ---
+    let mut is_verified_good = true;
+    if let SearchResult::Refutation(..) = &result {
+        let elapsed = start.elapsed();
+        let remaining = Duration::from_secs(time_secs).saturating_sub(elapsed);
+        
+        // Skip self-verification if we are low on time (< 2s) or reading from stdin
+        if remaining >= Duration::from_secs(2) && path != "-" {
+            if let SearchResult::Refutation(_, tstp_proof) = &result {
+                // Prepend % Proof : <path> header so mrs-proover can locate the problem
+                let temp_proof_text = format!("% Proof : {}\n{}", path, tstp_proof);
+                let temp_path = std::env::temp_dir().join(format!("mrs_self_verify_{}.p", problem_name));
+                
+                if std::fs::write(&temp_path, &temp_proof_text).is_ok() {
+                    if let Ok(job) = mrs_proover::load::load(&temp_path, None) {
+                        let settings = mrs_proover::verify::Settings {
+                            total_budget: Duration::from_secs(1).min(remaining - Duration::from_secs(1)),
+                            per_step_budget: Duration::from_millis(50),
+                            verbose: false,
+                            workers: 1, // Single-threaded is optimal and fast
+                        };
+                        
+                        let verdict = mrs_proover::verify::verify(&job, &settings);
+                        if let mrs_proover::verdict::Verdict::VerifiedBad(reason) = verdict {
+                            eprintln!("% Warning: Self-verification failed: {}", reason);
+                            status = SzsStatus::GaveUp;
+                            is_verified_good = false;
+                        }
+                    }
+                    let _ = std::fs::remove_file(&temp_path);
+                }
+            }
+        }
+    }
+
     println!("{}", szs_status_line(status, problem_name));
 
     // Output proof if refutation found (skip in quiet mode: mrs-proover only
@@ -652,13 +687,15 @@ fn main() {
     #[cfg(not(feature = "proover"))]
     let emit_extras = true;
 
-    if emit_extras {
+    if emit_extras && is_verified_good {
         if let SearchResult::Refutation(_, tstp_proof) = &result {
             println!("{}", szs_output_start("Proof", problem_name));
             println!("{}", tstp_proof);
             println!("{}", szs_output_end("Proof", problem_name));
         }
 
+        print_statistics(status, start.elapsed(), &final_report);
+    } else if emit_extras && !is_verified_good {
         print_statistics(status, start.elapsed(), &final_report);
     }
 }

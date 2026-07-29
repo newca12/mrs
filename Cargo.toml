@@ -19,6 +19,7 @@ mrs-calculus = { path = "crates/mrs-calculus", version = "0.2.2" }
 mrs-index = { path = "crates/mrs-index", version = "0.2.2" }
 mrs-proof = { path = "crates/mrs-proof", version = "0.2.2" }
 mrs-search = { path = "crates/mrs-search", version = "0.2.2" }
+mrs-proover = { path = "crates/mrs-proover", version = "0.2.2" }
 winnow = { version = "1.0.3", features = ["simd"] }
 cadical = "0.1.16"
 rustc-hash = "2.1"
@@ -50,6 +51,7 @@ mrs-cnf = { workspace = true }
 mrs-calculus = { workspace = true }
 mrs-search = { workspace = true }
 mrs-proof = { workspace = true }
+mrs-proover = { workspace = true }
 cadical.workspace = true
 wincode = { workspace = true, optional = true }
 num_cpus = "1.17.0"
