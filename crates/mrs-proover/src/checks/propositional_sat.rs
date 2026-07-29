@@ -26,10 +26,10 @@
 //! larger `rat` steps contain disjunctions of 30+ literals and would
 //! otherwise blow up combinatorially through iff/implies.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use cadical::Solver;
-use mrs_core::{Atom, Formula};
+use mrs_core::{Atom, Formula, Term};
 
 /// Outcome of the propositional fast-path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +99,68 @@ pub fn try_propositional(premises: &[Formula], conclusion: &Formula) -> Option<P
 /// argumented predicates — e.g. Vampire's `avatar_component_clause`
 /// (`spl <=> body` ⊢ `¬body ∨ spl`), where `body` is an arbitrary atom and
 /// the FOL ATP ladder may stall or choke on exotic operator symbols.
+fn collect_terms(f: &Formula, terms: &mut HashSet<Term>) {
+    match f {
+        Formula::Atom(a) => match a {
+            Atom::Pred(_, args) => {
+                for arg in args {
+                    collect_terms_in_term(arg, terms);
+                }
+            }
+            Atom::Eq(l, r) => {
+                collect_terms_in_term(l, terms);
+                collect_terms_in_term(r, terms);
+            }
+        }
+        Formula::Neg(inner) => collect_terms(inner, terms),
+        Formula::And(cs) | Formula::Or(cs) => {
+            for c in cs {
+                collect_terms(c, terms);
+            }
+        }
+        Formula::Implies(a, b) | Formula::Iff(a, b) => {
+            collect_terms(a, terms);
+            collect_terms(b, terms);
+        }
+        _ => {}
+    }
+}
+
+fn collect_terms_in_term(t: &Term, terms: &mut HashSet<Term>) {
+    if terms.insert(t.clone()) {
+        match t {
+            Term::App(_, args) => {
+                for arg in args {
+                    collect_terms_in_term(arg, terms);
+                }
+            }
+            Term::Var(_) => {}
+        }
+    }
+}
+
+fn collect_pred_atoms(f: &Formula, atoms: &mut HashSet<Atom>) {
+    match f {
+        Formula::Atom(a) => match a {
+            Atom::Pred(..) => {
+                atoms.insert(a.clone());
+            }
+            _ => {}
+        }
+        Formula::Neg(inner) => collect_pred_atoms(inner, atoms),
+        Formula::And(cs) | Formula::Or(cs) => {
+            for c in cs {
+                collect_pred_atoms(c, atoms);
+            }
+        }
+        Formula::Implies(a, b) | Formula::Iff(a, b) => {
+            collect_pred_atoms(a, atoms);
+            collect_pred_atoms(b, atoms);
+        }
+        _ => {}
+    }
+}
+
 pub fn try_propositional_abstraction(premises: &[Formula], conclusion: &Formula) -> bool {
     for p in premises {
         if !is_quantifier_free(p) {
@@ -117,6 +179,118 @@ pub fn try_propositional_abstraction(premises: &[Formula], conclusion: &Formula)
     }
     let neg_concl = enc.encode(conclusion, &mut solver);
     solver.add_clause([-neg_concl]);
+
+    // Collect all subterms and predicate atoms for Congruence Closure via SAT
+    let mut terms = HashSet::new();
+    for p in premises {
+        collect_terms(p, &mut terms);
+    }
+    collect_terms(conclusion, &mut terms);
+
+    // Limit to safe sizes to avoid O(N^3) transitivity clause blowup
+    if terms.len() <= 30 {
+        let mut pred_atoms = HashSet::new();
+        for p in premises {
+            collect_pred_atoms(p, &mut pred_atoms);
+        }
+        collect_pred_atoms(conclusion, &mut pred_atoms);
+
+        let terms_vec: Vec<Term> = terms.into_iter().collect();
+
+        // 1. Reflexivity: t = t
+        for t in &terms_vec {
+            let eq = Formula::Atom(Atom::Eq(t.clone(), t.clone()));
+            let lit = enc.encode(&eq, &mut solver);
+            solver.add_clause([lit]);
+        }
+
+        // 2. Symmetry: t1 = t2 => t2 = t1
+        for i in 0..terms_vec.len() {
+            for j in (i + 1)..terms_vec.len() {
+                let t1 = &terms_vec[i];
+                let t2 = &terms_vec[j];
+                let eq1 = Formula::Atom(Atom::Eq(t1.clone(), t2.clone()));
+                let eq2 = Formula::Atom(Atom::Eq(t2.clone(), t1.clone()));
+                let lit1 = enc.encode(&eq1, &mut solver);
+                let lit2 = enc.encode(&eq2, &mut solver);
+                solver.add_clause([-lit1, lit2]);
+            }
+        }
+
+        // 3. Transitivity: t1 = t2 ∧ t2 = t3 => t1 = t3
+        for i in 0..terms_vec.len() {
+            for j in 0..terms_vec.len() {
+                if i == j { continue; }
+                for k in 0..terms_vec.len() {
+                    if i == k || j == k { continue; }
+                    let t1 = &terms_vec[i];
+                    let t2 = &terms_vec[j];
+                    let t3 = &terms_vec[k];
+                    let eq12 = Formula::Atom(Atom::Eq(t1.clone(), t2.clone()));
+                    let eq23 = Formula::Atom(Atom::Eq(t2.clone(), t3.clone()));
+                    let eq13 = Formula::Atom(Atom::Eq(t1.clone(), t3.clone()));
+                    let lit12 = enc.encode(&eq12, &mut solver);
+                    let lit23 = enc.encode(&eq23, &mut solver);
+                    let lit13 = enc.encode(&eq13, &mut solver);
+                    solver.add_clause([-lit12, -lit23, lit13]);
+                }
+            }
+        }
+
+        // 4. Function Congruence: t1 = u1 ∧ ... ∧ tn = un => f(t1, ..., tn) = f(u1, ..., un)
+        for i in 0..terms_vec.len() {
+            for j in (i + 1)..terms_vec.len() {
+                let t1 = &terms_vec[i];
+                let t2 = &terms_vec[j];
+                if let (Term::App(f1, args1), Term::App(f2, args2)) = (t1, t2) {
+                    if f1 == f2 && args1.len() == args2.len() && !args1.is_empty() {
+                        let mut clause = Vec::with_capacity(args1.len() + 1);
+                        for (a1, a2) in args1.iter().zip(args2.iter()) {
+                            let eq = Formula::Atom(Atom::Eq(a1.clone(), a2.clone()));
+                            let lit = enc.encode(&eq, &mut solver);
+                            clause.push(-lit);
+                        }
+                        let eq_concl = Formula::Atom(Atom::Eq(t1.clone(), t2.clone()));
+                        let lit_concl = enc.encode(&eq_concl, &mut solver);
+                        clause.push(lit_concl);
+                        solver.add_clause(clause);
+                    }
+                }
+            }
+        }
+
+        // 5. Predicate Congruence: t1 = u1 ∧ ... ∧ tn = un => (p(t1, ..., tn) <=> p(u1, ..., un))
+        let pred_atoms_vec: Vec<Atom> = pred_atoms.into_iter().collect();
+        for i in 0..pred_atoms_vec.len() {
+            for j in (i + 1)..pred_atoms_vec.len() {
+                let a1 = &pred_atoms_vec[i];
+                let a2 = &pred_atoms_vec[j];
+                if let (Atom::Pred(p1, args1), Atom::Pred(p2, args2)) = (a1, a2) {
+                    if p1 == p2 && args1.len() == args2.len() && !args1.is_empty() {
+                        let mut base_lits = Vec::with_capacity(args1.len());
+                        for (arg1, arg2) in args1.iter().zip(args2.iter()) {
+                            let eq = Formula::Atom(Atom::Eq(arg1.clone(), arg2.clone()));
+                            let lit = enc.encode(&eq, &mut solver);
+                            base_lits.push(-lit);
+                        }
+                        
+                        let lit1 = enc.encode(&Formula::Atom(a1.clone()), &mut solver);
+                        let lit2 = enc.encode(&Formula::Atom(a2.clone()), &mut solver);
+                        
+                        let mut clause1 = base_lits.clone();
+                        clause1.push(-lit1);
+                        clause1.push(lit2);
+                        solver.add_clause(clause1);
+                        
+                        let mut clause2 = base_lits;
+                        clause2.push(-lit2);
+                        clause2.push(lit1);
+                        solver.add_clause(clause2);
+                    }
+                }
+            }
+        }
+    }
 
     // UNSAT ⇒ truly entailed (sound). SAT ⇒ abstraction too coarse, defer.
     matches!(solver.solve(), Some(false))
@@ -446,11 +620,9 @@ mod tests {
     }
 
     #[test]
-    fn abstraction_defers_on_equality_transitivity() {
-        // SOUNDNESS-CRITICAL: a=b, b=c ⊨ a=c is a real FOL entailment, but it
-        // relies on equality transitivity, which abstraction cannot see (the
-        // three equalities are distinct opaque booleans). It must return
-        // `false` (defer to ATP), NOT falsely claim soundness.
+    fn abstraction_proves_equality_transitivity() {
+        // a=b, b=c ⊨ a=c is verified successfully by Congruence Closure via SAT
+        // (the transitivity axioms are instantiated and solved by CaDiCaL).
         let mut s = SymbolTable::new();
         let a = Term::constant(s.intern("a"));
         let b = Term::constant(s.intern("b"));
@@ -458,7 +630,7 @@ mod tests {
         let ab = Formula::Atom(Atom::Eq(a.clone(), b.clone()));
         let bc = Formula::Atom(Atom::Eq(b, c.clone()));
         let ac = Formula::Atom(Atom::Eq(a, c));
-        assert!(!try_propositional_abstraction(&[ab, bc], &ac));
+        assert!(try_propositional_abstraction(&[ab, bc], &ac));
     }
 
     #[test]
