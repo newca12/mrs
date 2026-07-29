@@ -633,6 +633,17 @@ fn prepare_atp_step<'p>(dag: &Dag<'p>, idx: usize, symbols: &mut SymbolTable) ->
             premise_is_def.push(is_def);
         }
     }
+
+    // Append any negated_conjecture formulas as global assumptions of the proof (safe and sound)
+    for other_node in &dag.nodes {
+        if other_node.role == FormulaRole::NegatedConjecture && other_node.name != node.name {
+            ctx.reset_vars();
+            let neg_conj_f = lower_annotated_formula(&mut ctx, other_node.formula);
+            premises.push(neg_conj_f);
+            premise_is_def.push(false);
+        }
+    }
+
     ctx.reset_vars();
     let conclusion = lower_annotated_formula(&mut ctx, node.formula);
 
