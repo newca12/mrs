@@ -387,6 +387,42 @@ fn check_node_prepare<'p>(
         ));
     }
 
+    // Generic equisatisfiability fast-path for inlined E-prover steps carrying status(esa).
+    if node.status == Some("esa") && node.parents.len() == 1 {
+        let parent_idx = *dag.by_name.get(&node.parents[0]).unwrap();
+        let parent_node = &dag.nodes[parent_idx];
+
+        if let (Some(parent_fof), Some(step_fof)) = (parent_node.formula.as_fof(), node.formula.as_fof()) {
+            let parent_fof_logical = match &parent_fof.formula {
+                mrs_tptp::FOFStatement::Logical(f) => Some(f),
+                _ => None,
+            };
+            let step_fof_logical = match &step_fof.formula {
+                mrs_tptp::FOFStatement::Logical(f) => Some(f),
+                _ => None,
+            };
+            if let (Some(pf), Some(sf)) = (parent_fof_logical, step_fof_logical) {
+                // Collect fresh symbols
+                let mut step_syms = HashSet::new();
+                let mut parent_syms = HashSet::new();
+                crate::checks::introduced_definition::collect_fun_syms(sf, &mut step_syms);
+                crate::checks::introduced_definition::collect_fun_syms(pf, &mut parent_syms);
+                let fresh: Vec<&str> = step_syms.difference(&parent_syms).copied().collect();
+
+                // Verify structurally
+                if crate::checks::skolemize::try_positive_skolemize(pf, sf, &fresh, sk_reg) {
+                    let mut sym_tab_sk = SymbolTable::new();
+                    let mut ctx_sk = crate::lower::LowerCtx::new(&mut sym_tab_sk);
+                    let parent_core = crate::lower::lower_fof_formula(&mut ctx_sk, pf);
+                    for s in &fresh {
+                        sk_reg.record_skolem(s, parent_core.clone());
+                    }
+                    return Prepared::Resolved(StepOutcome::Sound);
+                }
+            }
+        }
+    }
+
     // A conjecture MUST come from the problem file. If it lacks a file source,
     // it's an adversarial fake conjecture.
     if node.role == FormulaRole::Conjecture {
@@ -489,39 +525,6 @@ fn check_node_prepare<'p>(
 
     // Other plain/thm/cth steps → prepare an ATP query for Pass 2.
     //
-    // Generic equisatisfiability fast-path for inlined E-prover steps carrying status(esa).
-    if node.status == Some("esa") && node.parents.len() == 1 {
-        let parent_idx = *dag.by_name.get(&node.parents[0]).unwrap();
-        let parent_node = &dag.nodes[parent_idx];
-
-        if let (Some(parent_fof), Some(step_fof)) = (parent_node.formula.as_fof(), node.formula.as_fof()) {
-            let parent_fof_logical = match &parent_fof.formula {
-                mrs_tptp::FOFStatement::Logical(f) => Some(f),
-                _ => None,
-            };
-            let step_fof_logical = match &step_fof.formula {
-                mrs_tptp::FOFStatement::Logical(f) => Some(f),
-                _ => None,
-            };
-            if let (Some(pf), Some(sf)) = (parent_fof_logical, step_fof_logical) {
-                // Collect fresh symbols
-                let mut step_syms = HashSet::new();
-                let mut parent_syms = HashSet::new();
-                crate::checks::introduced_definition::collect_fun_syms(sf, &mut step_syms);
-                crate::checks::introduced_definition::collect_fun_syms(pf, &mut parent_syms);
-                let fresh: Vec<&str> = step_syms.difference(&parent_syms).copied().collect();
-
-                // Verify structurally
-                if crate::checks::skolemize::try_positive_skolemize(pf, sf, &fresh, sk_reg) {
-                    for s in &fresh {
-                        sk_reg.record(s);
-                    }
-                    return Prepared::Resolved(StepOutcome::Sound);
-                }
-            }
-        }
-    }
-
     prepare_atp_step(dag, idx, symbols)
 }
 
