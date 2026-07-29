@@ -26,18 +26,29 @@ use crate::verdict::StepOutcome;
 /// maintains one of these across the whole proof to enforce freshness.
 pub struct SkolemRegistry {
     pub seen_symbols: HashSet<String>,
+    pub problem_symbols: HashSet<String>,
+    pub introduced_skolems: HashMap<String, Formula>,
 }
 
 impl SkolemRegistry {
     pub fn new() -> Self {
         Self {
             seen_symbols: HashSet::new(),
+            problem_symbols: HashSet::new(),
+            introduced_skolems: HashMap::new(),
         }
     }
 
     /// Record any symbol (function or predicate) that already exists.
     pub fn record(&mut self, sym: &str) {
         self.seen_symbols.insert(sym.to_string());
+        self.problem_symbols.insert(sym.to_string());
+    }
+
+    /// Record a newly introduced Skolem symbol along with its parent formula.
+    pub fn record_skolem(&mut self, sym: &str, parent: Formula) {
+        self.seen_symbols.insert(sym.to_string());
+        self.introduced_skolems.insert(sym.to_string(), parent);
     }
 
     /// Record every symbol occurring in a FOF statement.
@@ -176,12 +187,23 @@ pub fn check<'p>(
         _ => return StepOutcome::Unsound("skolemize parent is a sequent".into()),
     };
 
-    // 5) fresh-symbol check.
-    if registry.seen_symbols.contains(info.skolem_symbol) {
+    // 5) fresh-symbol check (allowing duplicates if Skolemising the exact same parent formula).
+    if registry.problem_symbols.contains(info.skolem_symbol) {
         return StepOutcome::Unsound(format!(
-            "Skolem symbol `{}` is not fresh (reused or clashes with an existing symbol)",
+            "Skolem symbol `{}` clashes with problem symbols",
             info.skolem_symbol
         ));
+    }
+    let mut sym_tab_parent = SymbolTable::new();
+    let mut ctx_parent = crate::lower::LowerCtx::new(&mut sym_tab_parent);
+    let parent_core = crate::lower::lower_fof_formula(&mut ctx_parent, parent_f);
+    if let Some(prev_parent) = registry.introduced_skolems.get(info.skolem_symbol) {
+        if parent_core != *prev_parent && !mrs_core::alpha::alpha_equiv(&parent_core, prev_parent) {
+            return StepOutcome::Unsound(format!(
+                "Skolem symbol `{}` is reused for a different parent formula",
+                info.skolem_symbol
+            ));
+        }
     }
 
     // 6) Walk through ∀ binders; the next thing we expect is ?Var or a path
@@ -265,7 +287,7 @@ pub fn check<'p>(
         || alpha_eq_fof(step_f, &direct_expected)
     {
         // Register the new Skolem symbol so the next step sees it as taken.
-        registry.record(info.skolem_symbol);
+        registry.record_skolem(info.skolem_symbol, parent_core);
         StepOutcome::Sound
     } else {
         StepOutcome::Unsound(format!(
@@ -1116,11 +1138,24 @@ pub(crate) fn try_positive_skolemize<'p>(
                 return false; // a Skolem witness must be a function/constant term
             }
         };
-        if !fresh_set.contains(sym) || registry.seen_symbols.contains(sym) {
+        let is_ok = fresh_set.contains(sym) && !registry.problem_symbols.contains(sym);
+        let is_duplicate = if is_ok {
+            if let Some(prev_parent) = registry.introduced_skolems.get(sym) {
+                let mut sym_tab_p = SymbolTable::new();
+                let mut ctx_p = crate::lower::LowerCtx::new(&mut sym_tab_p);
+                let parent_core = crate::lower::lower_fof_formula(&mut ctx_p, parent_f);
+                parent_core == *prev_parent || mrs_core::alpha::alpha_equiv(&parent_core, prev_parent)
+            } else {
+                true
+            }
+        } else {
+            false
+        };
+        if !is_ok || !is_duplicate {
             if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
                 eprintln!(
-                    "[skolem-dbg] witness symbol {} not fresh. fresh_set={:?}, seen={:?}",
-                    sym, fresh_set, registry.seen_symbols
+                    "[skolem-dbg] witness symbol {} not fresh. fresh_set={:?}, seen={:?}, is_ok={}, is_duplicate={}",
+                    sym, fresh_set, registry.seen_symbols, is_ok, is_duplicate
                 );
             }
             return false; // symbol not fresh
@@ -1662,8 +1697,11 @@ fn check_e_style_skolemize<'p>(
     // `VerifiedGood`); the proofs the dataset emits without a
     // `skolemize(Var, sk(...))` annotation (e.g. PyRes) are handled here.
     if try_positive_skolemize(parent_f, step_f, &fresh, registry) {
+        let mut sym_tab_sk = SymbolTable::new();
+        let mut ctx_sk = crate::lower::LowerCtx::new(&mut sym_tab_sk);
+        let parent_core = crate::lower::lower_fof_formula(&mut ctx_sk, parent_f);
         for s in &fresh {
-            registry.record(s);
+            registry.record_skolem(s, parent_core.clone());
         }
         return StepOutcome::Sound;
     }
@@ -1779,7 +1817,10 @@ fn check_e_style_skolemize<'p>(
             // PyRes), so we conservatively downgrade to `Unknown` (0 pts). A
             // genuinely bad Skolemisation still fails downstream at the ATP.
             if mismatch {
-                registry.record(sk);
+                let mut sym_tab_sk = SymbolTable::new();
+                let mut ctx_sk = crate::lower::LowerCtx::new(&mut sym_tab_sk);
+                let parent_core = crate::lower::lower_fof_formula(&mut ctx_sk, parent_f);
+                registry.record_skolem(sk, parent_core);
                 return StepOutcome::Unknown(format!(
                     "skolemize step (unannotated) introduces Skolem `{sk}` whose argument \
                      variables match no existential scope of the parent; cannot confirm \
@@ -1789,8 +1830,11 @@ fn check_e_style_skolemize<'p>(
         }
     }
 
+    let mut sym_tab_sk = SymbolTable::new();
+    let mut ctx_sk = crate::lower::LowerCtx::new(&mut sym_tab_sk);
+    let parent_core = crate::lower::lower_fof_formula(&mut ctx_sk, parent_f);
     for s in &fresh {
-        registry.record(s);
+        registry.record_skolem(s, parent_core.clone());
     }
     StepOutcome::Unknown(format!(
         "skolemize step missing `skolemize(Var, sk(...))` annotation; \
@@ -1846,7 +1890,7 @@ fn remove_quantifier_and_subst<'p>(
     }
 }
 
-use mrs_core::{Atom, Formula, Term, VarId};
+use mrs_core::{Atom, Formula, SymbolTable, Term, VarId};
 
 fn collect_forall(f: &Formula, vars: &mut Vec<VarId>) -> Formula {
     match f {

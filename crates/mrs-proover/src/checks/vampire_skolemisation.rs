@@ -251,7 +251,7 @@ pub fn try_check<'p>(
         // records them, but doing so here is idempotent and protects
         // against any topo-ordering surprise).
         for s in &declared_skolems {
-            registry.record(s);
+            registry.record_skolem(s, mrs_core::Formula::False);
         }
         Some(StepOutcome::Sound)
     } else {
