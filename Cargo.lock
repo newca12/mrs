@@ -3541,6 +3541,7 @@ dependencies = [
  "mrs-cnf",
  "mrs-core",
  "mrs-proof",
+ "mrs-proover",
  "mrs-search",
  "mrs-szs",
  "mrs-tptp",
