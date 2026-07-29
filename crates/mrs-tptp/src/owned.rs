@@ -115,6 +115,11 @@ impl OwnedTPTPProblem {
     pub fn source(&self) -> &str {
         &self._source
     }
+
+    /// Appends formulas from another problem.
+    pub fn append_formulas(&mut self, other: &[crate::ast::AnnotatedFormula<'static>]) {
+        self.problem.formulas.extend(other.iter().cloned());
+    }
 }
 
 impl std::ops::Deref for OwnedTPTPProblem {
