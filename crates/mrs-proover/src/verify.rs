@@ -707,7 +707,7 @@ fn finish_atp(
         AtpVerdict::Unsound if step.esa => {
             let is_known_esa_rule = matches!(
                 step.rule.as_deref(),
-                Some("skolemize" | "skolemisation" | "variable_rename" | "introduced_definition")
+                Some("skolemize" | "skolemisation" | "variable_rename" | "introduced_definition" | "fof_nnf" | "distribute")
             );
             if is_known_esa_rule {
                 StepOutcome::Unknown(format!(
