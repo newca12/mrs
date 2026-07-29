@@ -242,8 +242,32 @@ impl Atp for MrsAtp {
         );
         all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(0)));
 
-        // 3. Setup fast schedule
-        let schedule = mrs_search::strategy::named::fast(budget, 1);
+        // 3. Setup robust schedule trying both KBO and LPO to handle any equality orientation differences
+        let half_budget = budget / 2;
+        let schedule = mrs_search::strategy::StrategySchedule {
+            strategies: vec![
+                (
+                    mrs_search::SearchConfig {
+                        time_limit: half_budget,
+                        selection: mrs_search::SelectionStrategy::AgeWeight(5),
+                        literal_selection: mrs_search::LiteralSelection::AllNegative,
+                        ordering: mrs_search::TermOrdering::KBO,
+                        ..mrs_search::SearchConfig::default()
+                    },
+                    half_budget,
+                ),
+                (
+                    mrs_search::SearchConfig {
+                        time_limit: half_budget,
+                        selection: mrs_search::SelectionStrategy::AgeWeight(5),
+                        literal_selection: mrs_search::LiteralSelection::AllNegative,
+                        ordering: mrs_search::TermOrdering::LPO,
+                        ..mrs_search::SearchConfig::default()
+                    },
+                    half_budget,
+                ),
+            ],
+        };
 
         // 4. Run schedule in memory
         let (result, _report) = mrs_search::strategy::run_schedule(
