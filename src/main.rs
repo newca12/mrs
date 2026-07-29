@@ -656,8 +656,9 @@ fn main() {
                 let temp_proof_text = format!("% Proof : {}\n{}", path, tstp_proof);
                 let temp_path = std::env::temp_dir().join(format!("mrs_self_verify_{}.p", problem_name));
                 
+                let tptp_root = std::env::var("TPTP").ok().map(std::path::PathBuf::from);
                 if std::fs::write(&temp_path, &temp_proof_text).is_ok() {
-                    if let Ok(job) = mrs_proover::load::load(&temp_path, None) {
+                    if let Ok(job) = mrs_proover::load::load(&temp_path, tptp_root.as_deref()) {
                         let settings = mrs_proover::verify::Settings {
                             total_budget: Duration::from_secs(1).min(remaining - Duration::from_secs(1)),
                             per_step_budget: Duration::from_millis(50),
