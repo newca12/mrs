@@ -571,17 +571,28 @@ fn is_ground_term_core(t: &mrs_core::Term) -> bool {
 fn shift_vars_term(t: &mrs_core::Term, shift: u32) -> mrs_core::Term {
     match t {
         mrs_core::Term::Var(id) => mrs_core::Term::Var(id + shift),
-        mrs_core::Term::App(f, args) => mrs_core::Term::App(*f, args.iter().map(|arg| shift_vars_term(arg, shift)).collect()),
+        mrs_core::Term::App(f, args) => mrs_core::Term::App(
+            *f,
+            args.iter().map(|arg| shift_vars_term(arg, shift)).collect(),
+        ),
     }
 }
 
 fn shift_vars_formula(f: &mrs_core::Formula, shift: u32) -> mrs_core::Formula {
     match f {
         mrs_core::Formula::Atom(a) => match a {
-            mrs_core::Atom::Pred(p, args) => mrs_core::Formula::Atom(mrs_core::Atom::Pred(*p, args.iter().map(|arg| shift_vars_term(arg, shift)).collect())),
-            mrs_core::Atom::Eq(l, r) => mrs_core::Formula::Atom(mrs_core::Atom::Eq(shift_vars_term(l, shift), shift_vars_term(r, shift))),
+            mrs_core::Atom::Pred(p, args) => mrs_core::Formula::Atom(mrs_core::Atom::Pred(
+                *p,
+                args.iter().map(|arg| shift_vars_term(arg, shift)).collect(),
+            )),
+            mrs_core::Atom::Eq(l, r) => mrs_core::Formula::Atom(mrs_core::Atom::Eq(
+                shift_vars_term(l, shift),
+                shift_vars_term(r, shift),
+            )),
+        },
+        mrs_core::Formula::Neg(inner) => {
+            mrs_core::Formula::Neg(Box::new(shift_vars_formula(inner, shift)))
         }
-        mrs_core::Formula::Neg(inner) => mrs_core::Formula::Neg(Box::new(shift_vars_formula(inner, shift))),
         _ => f.clone(),
     }
 }
@@ -612,12 +623,20 @@ fn unify_terms(
             }
         }
         (mrs_core::Term::App(f1, args1), mrs_core::Term::App(f2, args2)) => {
-            f1 == f2 && args1.len() == args2.len() && args1.iter().zip(args2.iter()).all(|(a1, a2)| unify_terms(a1, a2, subst))
+            f1 == f2
+                && args1.len() == args2.len()
+                && args1
+                    .iter()
+                    .zip(args2.iter())
+                    .all(|(a1, a2)| unify_terms(a1, a2, subst))
         }
     }
 }
 
-fn resolve_term(t: &mrs_core::Term, subst: &std::collections::HashMap<mrs_core::VarId, mrs_core::Term>) -> mrs_core::Term {
+fn resolve_term(
+    t: &mrs_core::Term,
+    subst: &std::collections::HashMap<mrs_core::VarId, mrs_core::Term>,
+) -> mrs_core::Term {
     match t {
         mrs_core::Term::Var(id) => {
             if let Some(existing) = subst.get(id) {
@@ -649,7 +668,10 @@ fn occurs_check(
     }
 }
 
-fn apply_subst_term_full(t: &mrs_core::Term, subst: &std::collections::HashMap<mrs_core::VarId, mrs_core::Term>) -> mrs_core::Term {
+fn apply_subst_term_full(
+    t: &mrs_core::Term,
+    subst: &std::collections::HashMap<mrs_core::VarId, mrs_core::Term>,
+) -> mrs_core::Term {
     match t {
         mrs_core::Term::Var(id) => {
             if let Some(existing) = subst.get(id) {
@@ -658,7 +680,12 @@ fn apply_subst_term_full(t: &mrs_core::Term, subst: &std::collections::HashMap<m
                 t.clone()
             }
         }
-        mrs_core::Term::App(f, args) => mrs_core::Term::App(*f, args.iter().map(|arg| apply_subst_term_full(arg, subst)).collect()),
+        mrs_core::Term::App(f, args) => mrs_core::Term::App(
+            *f,
+            args.iter()
+                .map(|arg| apply_subst_term_full(arg, subst))
+                .collect(),
+        ),
     }
 }
 
@@ -666,7 +693,10 @@ fn collect_superposition_rewrites(
     t: &mrs_core::Term,
     l1: &mrs_core::Term,
     r1: &mrs_core::Term,
-    rewrites: &mut Vec<(mrs_core::Term, std::collections::HashMap<mrs_core::VarId, mrs_core::Term>)>,
+    rewrites: &mut Vec<(
+        mrs_core::Term,
+        std::collections::HashMap<mrs_core::VarId, mrs_core::Term>,
+    )>,
 ) {
     if !t.is_var() {
         let mut subst = std::collections::HashMap::new();
@@ -689,9 +719,16 @@ fn collect_superposition_rewrites(
     }
 }
 
-fn try_superposition_step(p1: &mrs_core::Formula, p2: &mrs_core::Formula, concl: &mrs_core::Formula) -> bool {
+fn try_superposition_step(
+    p1: &mrs_core::Formula,
+    p2: &mrs_core::Formula,
+    concl: &mrs_core::Formula,
+) -> bool {
     if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
-        eprintln!("[prop-sat-dbg] try_superposition_step called! p1 = {:?}", p1);
+        eprintln!(
+            "[prop-sat-dbg] try_superposition_step called! p1 = {:?}",
+            p1
+        );
     }
     let p1_shifted = shift_vars_formula(p1, 1000);
     let (l1, r1) = match extract_eq_sides(&p1_shifted) {
@@ -723,7 +760,10 @@ fn try_superposition_step(p1: &mrs_core::Formula, p2: &mrs_core::Formula, concl:
                 return true;
             }
             if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
-                eprintln!("[prop-sat-dbg] try_superposition_step: expected_l = {:?}", expected_l);
+                eprintln!(
+                    "[prop-sat-dbg] try_superposition_step: expected_l = {:?}",
+                    expected_l
+                );
                 eprintln!("[prop-sat-dbg] try_superposition_step: lc = {:?}", lc);
             }
         }
@@ -748,10 +788,10 @@ fn extract_eq_sides(f: &mrs_core::Formula) -> Option<(mrs_core::Term, mrs_core::
     while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = body {
         body = inner;
     }
-    if let mrs_core::Formula::Or(cs) = body {
-        if cs.len() == 1 {
-            body = &cs[0];
-        }
+    if let mrs_core::Formula::Or(cs) = body
+        && cs.len() == 1
+    {
+        body = &cs[0];
     }
     match body {
         mrs_core::Formula::Atom(mrs_core::Atom::Eq(l, r)) => Some((l.clone(), r.clone())),
@@ -760,7 +800,11 @@ fn extract_eq_sides(f: &mrs_core::Formula) -> Option<(mrs_core::Term, mrs_core::
 }
 
 fn alpha_equiv_terms(t1: &mrs_core::Term, t2: &mrs_core::Term) -> bool {
-    fn helper(t1: &mrs_core::Term, t2: &mrs_core::Term, map: &mut std::collections::HashMap<mrs_core::VarId, mrs_core::VarId>) -> bool {
+    fn helper(
+        t1: &mrs_core::Term,
+        t2: &mrs_core::Term,
+        map: &mut std::collections::HashMap<mrs_core::VarId, mrs_core::VarId>,
+    ) -> bool {
         match (t1, t2) {
             (mrs_core::Term::Var(id1), mrs_core::Term::Var(id2)) => {
                 if let Some(&existing) = map.get(id1) {
@@ -771,7 +815,12 @@ fn alpha_equiv_terms(t1: &mrs_core::Term, t2: &mrs_core::Term) -> bool {
                 }
             }
             (mrs_core::Term::App(f1, args1), mrs_core::Term::App(f2, args2)) => {
-                f1 == f2 && args1.len() == args2.len() && args1.iter().zip(args2.iter()).all(|(a1, a2)| helper(a1, a2, map))
+                f1 == f2
+                    && args1.len() == args2.len()
+                    && args1
+                        .iter()
+                        .zip(args2.iter())
+                        .all(|(a1, a2)| helper(a1, a2, map))
             }
             _ => false,
         }
@@ -992,7 +1041,11 @@ fn prepare_atp_step<'p>(
     // Fast-path: try to verify superposition structurally
     if node.inference_rule == Some("superposition") && !premises.is_empty() {
         let p1 = &premises[0];
-        let p2 = if premises.len() >= 2 { &premises[1] } else { &premises[0] };
+        let p2 = if premises.len() >= 2 {
+            &premises[1]
+        } else {
+            &premises[0]
+        };
         if try_superposition_step(p1, p2, &conclusion) {
             return Prepared::Resolved(StepOutcome::Sound);
         }

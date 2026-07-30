@@ -97,6 +97,8 @@ fn main() -> ExitCode {
         return usage();
     };
 
+    let problems_dir = problems_dir.or_else(|| std::env::var("TPTP").ok().map(PathBuf::from));
+
     let job = match load(&proof_path, problems_dir.as_deref()) {
         Ok(j) => j,
         Err(LoadError::MissingProofHeader) => {

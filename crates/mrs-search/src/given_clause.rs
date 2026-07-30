@@ -337,6 +337,9 @@ fn extract_and_format_proof(
     empty_id: mrs_core::clause::ClauseId,
     state: &crate::state::SearchState,
 ) -> String {
+    if state.symbols.is_empty() {
+        return String::new();
+    }
     if std::env::var("TRACE_SEARCH").is_ok() {
         if let Some(ic) = state.clause_store.get(&empty_id) {
             eprintln!(
@@ -409,7 +412,11 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             final_proof.push(final_false_clause);
             final_proof.sort_unstable_by_key(|c| c.id.0);
 
-            let tstp_proof = mrs_proof::tstp::format_tstp(&final_proof, &state.symbols);
+            let tstp_proof = if state.symbols.is_empty() {
+                String::new()
+            } else {
+                mrs_proof::tstp::format_tstp(&final_proof, &state.symbols)
+            };
             SearchResult::Refutation(final_id, tstp_proof)
         }
         _ => res,

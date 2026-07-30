@@ -1292,14 +1292,24 @@ pub(crate) fn try_positive_skolemize<'p>(
         return false;
     }
 
-    // The universal renaming must be injective.
-    let mut seen_conc: HashSet<&str> = HashSet::new();
-    for w in m.uni_map.values() {
-        if !seen_conc.insert(*w) {
-            if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
-                eprintln!("[skolem-dbg] universal renaming not injective for {}", w);
+    // The universal renaming must be injective *within each clause*.
+    let mut parent_clauses = Vec::new();
+    collect_clause_vars(&parent_cnf, &mut parent_clauses);
+    for clause in parent_clauses {
+        let mut seen_conc: HashSet<&str> = HashSet::new();
+        for &v in &clause {
+            if univ_set.contains(v)
+                && let Some(&w) = m.uni_map.get(v)
+                && !seen_conc.insert(w)
+            {
+                if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                    eprintln!(
+                        "[skolem-dbg] universal renaming not injective within clause for {} -> {}",
+                        v, w
+                    );
+                }
+                return false;
             }
-            return false;
         }
     }
 
@@ -1417,6 +1427,71 @@ pub(crate) fn try_positive_skolemize<'p>(
     }
 
     true
+}
+
+fn collect_clause_vars<'a>(f: &FOFFormula<'a>, clauses: &mut Vec<HashSet<&'a str>>) {
+    match f {
+        FOFFormula::Binary {
+            left,
+            connective: BinaryConnective::And,
+            right,
+        } => {
+            collect_clause_vars(left, clauses);
+            collect_clause_vars(right, clauses);
+        }
+        _ => {
+            let mut vars = HashSet::new();
+            collect_vars_in_formula(f, &mut vars);
+            clauses.push(vars);
+        }
+    }
+}
+
+fn collect_vars_in_formula<'a>(f: &FOFFormula<'a>, vars: &mut HashSet<&'a str>) {
+    match f {
+        FOFFormula::Atomic(a) => collect_vars_in_atomic(a, vars),
+        FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => {
+            collect_vars_in_formula(inner, vars)
+        }
+        FOFFormula::Binary { left, right, .. } => {
+            collect_vars_in_formula(left, vars);
+            collect_vars_in_formula(right, vars);
+        }
+        FOFFormula::Equality(l, r) | FOFFormula::Inequality(l, r) => {
+            collect_vars_in_term(l, vars);
+            collect_vars_in_term(r, vars);
+        }
+        _ => {}
+    }
+}
+
+fn collect_vars_in_term<'a>(t: &FOFTerm<'a>, vars: &mut HashSet<&'a str>) {
+    match t {
+        FOFTerm::Variable(v) => {
+            vars.insert(*v);
+        }
+        FOFTerm::Function(_, args)
+        | FOFTerm::DefinedFunction(_, args)
+        | FOFTerm::SystemFunction(_, args) => {
+            for arg in args {
+                collect_vars_in_term(arg, vars);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_vars_in_atomic<'a>(a: &FOFAtomicFormula<'a>, vars: &mut HashSet<&'a str>) {
+    match a {
+        FOFAtomicFormula::Plain(_, args)
+        | FOFAtomicFormula::Defined(_, args)
+        | FOFAtomicFormula::System(_, args) => {
+            for arg in args {
+                collect_vars_in_term(arg, vars);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn wrap_universals<'p>(vars: &[&'p str], body: FOFFormula<'p>) -> FOFFormula<'p> {
