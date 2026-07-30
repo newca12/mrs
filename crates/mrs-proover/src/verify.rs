@@ -195,6 +195,7 @@ struct AtpJob {
 struct AtpStep {
     premises: Vec<Formula>,
     conclusion: Formula,
+    parents_len: usize,
     /// `esa` (equisatisfiability) steps: a counter-model is expected and must
     /// never be reported as `Unsound`.
     esa: bool,
@@ -1027,46 +1028,6 @@ fn prepare_atp_step<'p>(
         return Prepared::Resolved(outcome);
     }
 
-    // Propositional fast-path: when every premise and the conclusion are
-    // built from 0-ary predicates only (the `spl0_N` avatar splits and
-    // similar), the entailment check is a finite SAT problem solvable in
-    // microseconds. Vampire's `rat`, `avatar_*`, and `sat_conversion`
-    // rules all produce pure propositional steps, and FOL ATPs
-    // (eprover/vampire/mrs) routinely time out on the larger ones.
-    // Returning `None` here costs only a quick is_propositional walk and
-    // falls through to the unchanged ATP ladder.
-    if let Some(outcome) = crate::checks::propositional_sat::try_propositional(
-        &premises[0..node.parents.len()],
-        &conclusion,
-    ) {
-        return Prepared::Resolved(match outcome {
-            crate::checks::propositional_sat::PropOutcome::Sound => StepOutcome::Sound,
-            crate::checks::propositional_sat::PropOutcome::Unsound if esa => StepOutcome::Unknown(
-                "esa step: propositional refutation is not evidence of a faulty \
-                 equisatisfiability step"
-                    .into(),
-            ),
-            crate::checks::propositional_sat::PropOutcome::Unsound => StepOutcome::Unsound(
-                "propositional SAT solver refuted entailment by premises".into(),
-            ),
-        });
-    }
-
-    // Propositional-abstraction fast-path: treat every argumented atom (and
-    // equalities) as an opaque boolean and ask the SAT solver whether the
-    // step is *propositionally* valid. Sound over-approximation — an UNSAT
-    // abstraction means the step holds in every FOL model, so we accept it.
-    // A satisfiable abstraction proves nothing and falls through to the ATP
-    // ladder; this path never reports unsoundness. This decides Vampire's
-    // `avatar_component_clause` (`spl <=> body` ⊢ `¬body ∨ spl`) and similar
-    // CNF-of-iff extractions that the FOL ATPs stall on.
-    if crate::checks::propositional_sat::try_propositional_abstraction(
-        &premises[0..node.parents.len()],
-        &conclusion,
-    ) {
-        return Prepared::Resolved(StepOutcome::Sound);
-    }
-
     // Fast-path: try to verify superposition structurally
     if node.inference_rule == Some("superposition") && !premises.is_empty() {
         let p1 = &premises[0];
@@ -1090,6 +1051,7 @@ fn prepare_atp_step<'p>(
     Prepared::NeedsAtp(AtpStep {
         premises,
         conclusion,
+        parents_len: node.parents.len(),
         esa,
         rule: node.inference_rule.map(str::to_owned),
     })
@@ -1123,6 +1085,34 @@ fn finish_atp(
     if budget.is_zero() {
         return StepOutcome::Unknown(format!("ATP budget exhausted (rule={:?})", step.rule));
     }
+
+    // Parallelized propositional & propositional abstraction fast-paths on worker threads!
+    if let Some(outcome) = crate::checks::propositional_sat::try_propositional(
+        &step.premises[0..step.parents_len],
+        &step.conclusion,
+    ) {
+        return match outcome {
+            crate::checks::propositional_sat::PropOutcome::Sound => StepOutcome::Sound,
+            crate::checks::propositional_sat::PropOutcome::Unsound if step.esa => {
+                StepOutcome::Unknown(
+                    "esa step: propositional refutation is not evidence of a faulty \
+                 equisatisfiability step"
+                        .into(),
+                )
+            }
+            crate::checks::propositional_sat::PropOutcome::Unsound => StepOutcome::Unsound(
+                "propositional SAT solver refuted entailment by premises".into(),
+            ),
+        };
+    }
+
+    if crate::checks::propositional_sat::try_propositional_abstraction(
+        &step.premises[0..step.parents_len],
+        &step.conclusion,
+    ) {
+        return StepOutcome::Sound;
+    }
+
     let cancel = std::sync::atomic::AtomicBool::new(false);
     match atp.check_step(symbols, &step.premises, &step.conclusion, budget, &cancel) {
         AtpVerdict::Sound => StepOutcome::Sound,
