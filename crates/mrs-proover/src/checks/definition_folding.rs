@@ -25,7 +25,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 
 use mrs_core::alpha::alpha_equiv;
-use mrs_core::{Atom, Formula, SymbolId, Term, VarId};
+use mrs_core::{Atom, Formula, SymbolId, SymbolTable, Term, VarId};
 
 /// Maximum nodes in any single input formula (premise or conclusion).
 /// Anything larger short-circuits to `None`. A typical Vampire-emitted
@@ -229,7 +229,7 @@ pub fn try_check(
     // (De Bruijn binders + sorted ∧/∨ children + sorted `=` sides) and
     // compare for equality.
     if alpha_equiv(&source_unfolded, &conclusion_unfolded)
-        || canon_eq(&source_unfolded, &conclusion_unfolded)
+        || canon_eq(&source_unfolded, &conclusion_unfolded, None)
         || projects_conj_or_disj(&source_unfolded, &conclusion_unfolded)
     {
         Some(crate::verdict::StepOutcome::Sound)
@@ -268,29 +268,46 @@ enum CForm {
 }
 
 /// True iff `a` and `b` have the same canonical form.
-pub(crate) fn canon_eq(a: &Formula, b: &Formula) -> bool {
-    canon_form(a, &mut Vec::new()) == canon_form(b, &mut Vec::new())
+pub(crate) fn canon_eq(a: &Formula, b: &Formula, symbols: Option<&SymbolTable>) -> bool {
+    canon_form(a, &mut Vec::new(), symbols) == canon_form(b, &mut Vec::new(), symbols)
 }
 
 /// `scope` is the stack of bound variables (innermost last); a `Var(v)`
 /// resolves to `Bound(index)` using the nearest enclosing binder of `v`,
 /// else `Free(v)`.
-fn canon_term(t: &Term, scope: &[VarId]) -> CTerm {
+fn canon_term(t: &Term, scope: &[VarId], symbols: Option<&SymbolTable>) -> CTerm {
     match t {
         Term::Var(v) => match scope.iter().rposition(|s| s == v) {
             Some(pos) => CTerm::Bound((scope.len() - 1 - pos) as u32),
             None => CTerm::Free(*v),
         },
-        Term::App(f, args) => CTerm::App(*f, args.iter().map(|a| canon_term(a, scope)).collect()),
+        Term::App(f, args) => {
+            let mut c_args: Vec<CTerm> =
+                args.iter().map(|a| canon_term(a, scope, symbols)).collect();
+            if let Some(symbols) = symbols {
+                let name = symbols.resolve(*f);
+                if name == "greatest_lower_bound"
+                    || name == "least_upper_bound"
+                    || name == "meet"
+                    || name == "join"
+                {
+                    c_args.sort();
+                }
+            }
+            CTerm::App(*f, c_args)
+        }
     }
 }
 
-fn canon_atom(a: &Atom, scope: &[VarId]) -> CForm {
+fn canon_atom(a: &Atom, scope: &[VarId], symbols: Option<&SymbolTable>) -> CForm {
     match a {
-        Atom::Pred(p, args) => CForm::Pred(*p, args.iter().map(|t| canon_term(t, scope)).collect()),
+        Atom::Pred(p, args) => CForm::Pred(
+            *p,
+            args.iter().map(|t| canon_term(t, scope, symbols)).collect(),
+        ),
         Atom::Eq(l, r) => {
-            let mut cl = canon_term(l, scope);
-            let mut cr = canon_term(r, scope);
+            let mut cl = canon_term(l, scope, symbols);
+            let mut cr = canon_term(r, scope, symbols);
             if cr < cl {
                 std::mem::swap(&mut cl, &mut cr);
             }
@@ -300,11 +317,16 @@ fn canon_atom(a: &Atom, scope: &[VarId]) -> CForm {
 }
 
 /// Flatten nested ∧ (or ∨) of the same kind into one sorted child list.
-fn flatten_canon(f: &Formula, scope: &mut Vec<VarId>, is_and: bool) -> Vec<CForm> {
+fn flatten_canon(
+    f: &Formula,
+    scope: &mut Vec<VarId>,
+    is_and: bool,
+    symbols: Option<&SymbolTable>,
+) -> Vec<CForm> {
     let mut out = Vec::new();
     let kids: &[Formula] = match (is_and, f) {
         (true, Formula::And(xs)) | (false, Formula::Or(xs)) => xs,
-        _ => return vec![canon_form(f, scope)],
+        _ => return vec![canon_form(f, scope, symbols)],
     };
     for k in kids {
         let same = matches!(
@@ -312,30 +334,30 @@ fn flatten_canon(f: &Formula, scope: &mut Vec<VarId>, is_and: bool) -> Vec<CForm
             (true, Formula::And(_)) | (false, Formula::Or(_))
         );
         if same {
-            out.extend(flatten_canon(k, scope, is_and));
+            out.extend(flatten_canon(k, scope, is_and, symbols));
         } else {
-            out.push(canon_form(k, scope));
+            out.push(canon_form(k, scope, symbols));
         }
     }
     out.sort();
     out
 }
 
-fn canon_form(f: &Formula, scope: &mut Vec<VarId>) -> CForm {
+fn canon_form(f: &Formula, scope: &mut Vec<VarId>, symbols: Option<&SymbolTable>) -> CForm {
     match f {
         Formula::True => CForm::True,
         Formula::False => CForm::False,
-        Formula::Atom(a) => canon_atom(a, scope),
-        Formula::Neg(x) => CForm::Neg(Box::new(canon_form(x, scope))),
-        Formula::And(_) => CForm::And(flatten_canon(f, scope, true)),
-        Formula::Or(_) => CForm::Or(flatten_canon(f, scope, false)),
+        Formula::Atom(a) => canon_atom(a, scope, symbols),
+        Formula::Neg(x) => CForm::Neg(Box::new(canon_form(x, scope, symbols))),
+        Formula::And(_) => CForm::And(flatten_canon(f, scope, true, symbols)),
+        Formula::Or(_) => CForm::Or(flatten_canon(f, scope, false, symbols)),
         Formula::Implies(a, b) => CForm::Implies(
-            Box::new(canon_form(a, scope)),
-            Box::new(canon_form(b, scope)),
+            Box::new(canon_form(a, scope, symbols)),
+            Box::new(canon_form(b, scope, symbols)),
         ),
         Formula::Iff(a, b) => {
-            let mut ca = canon_form(a, scope);
-            let mut cb = canon_form(b, scope);
+            let mut ca = canon_form(a, scope, symbols);
+            let mut cb = canon_form(b, scope, symbols);
             // Iff is commutative; sort for canonicity.
             if cb < ca {
                 std::mem::swap(&mut ca, &mut cb);
@@ -344,13 +366,13 @@ fn canon_form(f: &Formula, scope: &mut Vec<VarId>) -> CForm {
         }
         Formula::Forall(v, x) => {
             scope.push(*v);
-            let c = canon_form(x, scope);
+            let c = canon_form(x, scope, symbols);
             scope.pop();
             CForm::Forall(Box::new(c))
         }
         Formula::Exists(v, x) => {
             scope.push(*v);
-            let c = canon_form(x, scope);
+            let c = canon_form(x, scope, symbols);
             scope.pop();
             CForm::Exists(Box::new(c))
         }

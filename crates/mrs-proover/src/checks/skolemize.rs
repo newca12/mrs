@@ -2360,7 +2360,7 @@ fn alpha_eq_fof<'p>(a: &'p FOFFormula<'p>, b: &'p FOFFormula<'p>) -> bool {
     let mut env = HashMap::new();
     let mut rev_env = HashMap::new();
     equiv_modulo_perms(&a_core, &b_core, &mut env, &mut rev_env)
-        || crate::checks::definition_folding::canon_eq(&a_core, &b_core)
+        || crate::checks::definition_folding::canon_eq(&a_core, &b_core, Some(ctx.symbols))
 }
 
 #[cfg(test)]
