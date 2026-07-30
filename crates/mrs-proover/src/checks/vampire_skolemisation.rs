@@ -362,10 +362,44 @@ fn parse_skolem_axiom<'p>(node: &'p AnnotatedFormula<'p>) -> Option<SkolemAxiom<
 ///
 /// We walk the formula looking for a subformula `∃V_1..V_m. φ'` such
 /// that there is a substitution σ on the axiom's universals making
+fn can_apply_axiom(f: &FOFFormula<'_>, axiom: &SkolemAxiom<'_>) -> bool {
+    if let FOFFormula::Quantified {
+        quantifier: Quantifier::Exists,
+        variables,
+        formula,
+    } = strip_parens(f)
+        && variables.len() == axiom.existentials.len()
+    {
+        let body = strip_parens(formula);
+        if match_with_universal_subst(
+            &axiom.antecedent,
+            body,
+            &axiom.universals,
+            &axiom.existentials,
+            variables,
+        )
+        .is_some()
+        {
+            return true;
+        }
+    }
+    match f {
+        FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => can_apply_axiom(inner, axiom),
+        FOFFormula::Binary { left, right, .. } => {
+            can_apply_axiom(left, axiom) || can_apply_axiom(right, axiom)
+        }
+        FOFFormula::Quantified { formula, .. } => can_apply_axiom(formula, axiom),
+        _ => false,
+    }
+}
+
 /// φ'(V) α-equivalent (modulo existential variable renaming) to
 /// `axiom.antecedent(σ(U), V)`. When found, replace the subformula with
 /// `axiom.consequent(σ(U))[V := skolem_term]`.
 fn apply_axiom<'p>(f: &'p FOFFormula<'p>, axiom: &'p SkolemAxiom<'p>) -> Option<FOFFormula<'p>> {
+    if !can_apply_axiom(f, axiom) {
+        return None;
+    }
     let mut found = false;
     let result = apply_axiom_walk(f, axiom, &mut found);
     if found { Some(result) } else { None }
