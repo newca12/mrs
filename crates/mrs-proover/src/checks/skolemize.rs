@@ -1233,6 +1233,9 @@ pub(crate) fn try_positive_skolemize<'p>(
     fresh: &[&str],
     registry: &SkolemRegistry,
 ) -> bool {
+    if formula_nodes_count_fof(parent_f) > 200 || formula_nodes_count_fof(step_f) > 200 {
+        return false;
+    }
     if contains_too_many_iffs_fof(parent_f) || contains_too_many_iffs_fof(step_f) {
         return false;
     }

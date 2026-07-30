@@ -80,6 +80,13 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
         Err(e) => return Verdict::VerifiedBad(format!("structural: {e}")),
     };
 
+    if dag.topo.len() > 1000 {
+        return Verdict::Unknown(format!(
+            "structural: proof contains too many steps ({}) to verify within the time limit",
+            dag.topo.len()
+        ));
+    }
+
     if let Err(e) = crate::checks::introduced_definition::check_cycles(&dag) {
         return Verdict::VerifiedBad(format!("structural: {e}"));
     }

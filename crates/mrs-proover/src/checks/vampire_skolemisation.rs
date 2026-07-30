@@ -53,6 +53,15 @@ pub fn try_check<'p>(
     parents: &[&'p AnnotatedFormula<'p>],
     registry: &mut SkolemRegistry,
 ) -> Option<StepOutcome> {
+    let step_fof = step.as_fof()?;
+    let step_f = match &step_fof.formula {
+        mrs_tptp::FOFStatement::Logical(f) => f,
+        _ => return None,
+    };
+    if formula_size(step_f) > 200 {
+        return None;
+    }
+
     let ann = step.annotations()?;
     if ann.status() != Some("esa") {
         return None;
@@ -232,12 +241,6 @@ pub fn try_check<'p>(
         }
     }
     let current: &FOFFormula<'p> = arena.last().unwrap();
-
-    let step_fof = step.as_fof()?;
-    let step_f = match &step_fof.formula {
-        FOFStatement::Logical(f) => f,
-        _ => return None,
-    };
 
     if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
         eprintln!("[skolem-dbg] all axioms applied; comparing");

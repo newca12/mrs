@@ -416,21 +416,10 @@ fn main() {
                                     {
                                         status_str = szs.clone();
 
-                                         // If a proof was found, we want to run mrs-proover to verify it
-                                         if szs == "Theorem" || szs == "Unsatisfiable" {
-                                             proover_validated = verify_proof_with_proover(&stdout);
-                                             if proover_validated == Some(false) {
-                                                 let dump_path = format!(
-                                                     "/tmp/failed_verification_proof_{}.p",
-                                                     problem_name.replace("/", "_")
-                                                 );
-                                                 let _ = std::fs::write(&dump_path, stdout.as_bytes());
-                                                 eprintln!(
-                                                     "[CODEX-DBG] Verification failed! Saved proof to {}",
-                                                     dump_path
-                                                 );
-                                             }
-                                         }
+                                        // If a proof was found, we want to run mrs-proover to verify it
+                                        if szs == "Theorem" || szs == "Unsatisfiable" {
+                                            proover_validated = verify_proof_with_proover(&stdout);
+                                        }
                                     } else {
                                         if status.success() {
                                             status_str = "SuccessNoSZS".to_string();
