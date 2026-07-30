@@ -111,7 +111,7 @@ fn collect_terms(f: &Formula, terms: &mut HashSet<Term>) {
                 collect_terms_in_term(l, terms);
                 collect_terms_in_term(r, terms);
             }
-        }
+        },
         Formula::Neg(inner) => collect_terms(inner, terms),
         Formula::And(cs) | Formula::Or(cs) => {
             for c in cs {
@@ -141,11 +141,10 @@ fn collect_terms_in_term(t: &Term, terms: &mut HashSet<Term>) {
 
 fn collect_pred_atoms(f: &Formula, atoms: &mut HashSet<Atom>) {
     match f {
-        Formula::Atom(a) => match a {
-            Atom::Pred(..) => {
+        Formula::Atom(a) => {
+            if let Atom::Pred(..) = a {
                 atoms.insert(a.clone());
             }
-            _ => {}
         }
         Formula::Neg(inner) => collect_pred_atoms(inner, atoms),
         Formula::And(cs) | Formula::Or(cs) => {
@@ -172,7 +171,12 @@ fn match_term(pat: &Term, tgt: &Term, subst: &mut HashMap<mrs_core::VarId, Term>
             }
         }
         (Term::App(f1, args1), Term::App(f2, args2)) => {
-            f1 == f2 && args1.len() == args2.len() && args1.iter().zip(args2.iter()).all(|(a1, a2)| match_term(a1, a2, subst))
+            f1 == f2
+                && args1.len() == args2.len()
+                && args1
+                    .iter()
+                    .zip(args2.iter())
+                    .all(|(a1, a2)| match_term(a1, a2, subst))
         }
         _ => false,
     }
@@ -180,29 +184,52 @@ fn match_term(pat: &Term, tgt: &Term, subst: &mut HashMap<mrs_core::VarId, Term>
 
 fn apply_subst_term(t: &Term, subst: &HashMap<mrs_core::VarId, Term>) -> Term {
     match t {
-        Term::Var(id) => subst.get(id).cloned().unwrap_or_else(|| Term::Var(*id)),
-        Term::App(f, args) => Term::App(*f, args.iter().map(|arg| apply_subst_term(arg, subst)).collect()),
+        Term::Var(id) => subst.get(id).cloned().unwrap_or(Term::Var(*id)),
+        Term::App(f, args) => Term::App(
+            *f,
+            args.iter()
+                .map(|arg| apply_subst_term(arg, subst))
+                .collect(),
+        ),
     }
 }
 
 fn apply_subst_formula(f: &Formula, subst: &HashMap<mrs_core::VarId, Term>) -> Formula {
     match f {
         Formula::Atom(a) => match a {
-            Atom::Pred(p, args) => Formula::Atom(Atom::Pred(*p, args.iter().map(|arg| apply_subst_term(arg, subst)).collect())),
-            Atom::Eq(l, r) => Formula::Atom(Atom::Eq(apply_subst_term(l, subst), apply_subst_term(r, subst))),
-        }
+            Atom::Pred(p, args) => Formula::Atom(Atom::Pred(
+                *p,
+                args.iter()
+                    .map(|arg| apply_subst_term(arg, subst))
+                    .collect(),
+            )),
+            Atom::Eq(l, r) => Formula::Atom(Atom::Eq(
+                apply_subst_term(l, subst),
+                apply_subst_term(r, subst),
+            )),
+        },
         Formula::Neg(inner) => Formula::Neg(Box::new(apply_subst_formula(inner, subst))),
-        Formula::And(cs) => Formula::And(cs.iter().map(|c| apply_subst_formula(c, subst)).collect()),
+        Formula::And(cs) => {
+            Formula::And(cs.iter().map(|c| apply_subst_formula(c, subst)).collect())
+        }
         Formula::Or(cs) => Formula::Or(cs.iter().map(|c| apply_subst_formula(c, subst)).collect()),
-        Formula::Implies(a, b) => Formula::Implies(Box::new(apply_subst_formula(a, subst)), Box::new(apply_subst_formula(b, subst))),
-        Formula::Iff(a, b) => Formula::Iff(Box::new(apply_subst_formula(a, subst)), Box::new(apply_subst_formula(b, subst))),
+        Formula::Implies(a, b) => Formula::Implies(
+            Box::new(apply_subst_formula(a, subst)),
+            Box::new(apply_subst_formula(b, subst)),
+        ),
+        Formula::Iff(a, b) => Formula::Iff(
+            Box::new(apply_subst_formula(a, subst)),
+            Box::new(apply_subst_formula(b, subst)),
+        ),
         _ => f.clone(),
     }
 }
 
 fn collect_vars_in_term(t: &Term, vars: &mut HashSet<mrs_core::VarId>) {
     match t {
-        Term::Var(id) => { vars.insert(*id); }
+        Term::Var(id) => {
+            vars.insert(*id);
+        }
         Term::App(_, args) => {
             for arg in args {
                 collect_vars_in_term(arg, vars);
@@ -223,7 +250,7 @@ fn collect_vars_in_formula(f: &Formula, vars: &mut HashSet<mrs_core::VarId>) {
                 collect_vars_in_term(l, vars);
                 collect_vars_in_term(r, vars);
             }
-        }
+        },
         Formula::Neg(inner) => collect_vars_in_formula(inner, vars),
         Formula::And(cs) | Formula::Or(cs) => {
             for c in cs {
@@ -259,7 +286,7 @@ fn collect_all_subterms_formula(f: &Formula, subterms: &mut HashSet<Term>) {
                 collect_all_subterms_term(l, subterms);
                 collect_all_subterms_term(r, subterms);
             }
-        }
+        },
         Formula::Neg(inner) => collect_all_subterms_formula(inner, subterms),
         Formula::And(cs) | Formula::Or(cs) => {
             for c in cs {
@@ -294,9 +321,12 @@ fn term_size(t: &Term) -> usize {
 fn rewrite_term(t: &Term, rules: &[(Term, Term)]) -> Term {
     let mut current = match t {
         Term::Var(_) => t.clone(),
-        Term::App(f, args) => Term::App(*f, args.iter().map(|arg| rewrite_term(arg, rules)).collect()),
+        Term::App(f, args) => Term::App(
+            *f,
+            args.iter().map(|arg| rewrite_term(arg, rules)).collect(),
+        ),
     };
-    
+
     let mut changed = true;
     let mut limit = 0;
     while changed && limit < 30 {
@@ -314,9 +344,43 @@ fn rewrite_term(t: &Term, rules: &[(Term, Term)]) -> Term {
     current
 }
 
+fn has_equality(f: &Formula) -> bool {
+    match f {
+        Formula::Atom(a) => matches!(a, Atom::Eq(..)),
+        Formula::Neg(inner) => has_equality(inner),
+        Formula::And(cs) | Formula::Or(cs) => cs.iter().any(has_equality),
+        Formula::Implies(a, b) | Formula::Iff(a, b) => has_equality(a) || has_equality(b),
+        _ => false,
+    }
+}
+
+fn collect_cc_terms(f: &Formula, terms: &mut HashSet<Term>) {
+    match f {
+        Formula::Atom(Atom::Eq(l, r)) => {
+            collect_all_subterms_term(l, terms);
+            collect_all_subterms_term(r, terms);
+        }
+        Formula::Neg(inner) => collect_cc_terms(inner, terms),
+        Formula::And(cs) | Formula::Or(cs) => {
+            for c in cs {
+                collect_cc_terms(c, terms);
+            }
+        }
+        Formula::Implies(a, b) | Formula::Iff(a, b) => {
+            collect_cc_terms(a, terms);
+            collect_cc_terms(b, terms);
+        }
+        _ => {}
+    }
+}
+
 pub fn try_propositional_abstraction(premises: &[Formula], conclusion: &Formula) -> bool {
     if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
-        eprintln!("[prop-sat-dbg] try_propositional_abstraction entered, premises len = {}, concl = {:?}", premises.len(), conclusion);
+        eprintln!(
+            "[prop-sat-dbg] try_propositional_abstraction entered, premises len = {}, concl = {:?}",
+            premises.len(),
+            conclusion
+        );
     }
 
     let mut stripped_premises = Vec::new();
@@ -327,7 +391,10 @@ pub fn try_propositional_abstraction(premises: &[Formula], conclusion: &Formula)
             stripped_premises.push((body, p_vars));
         } else {
             if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
-                eprintln!("[prop-sat-dbg] ignoring non-quantifier-free premise: {:?}", p);
+                eprintln!(
+                    "[prop-sat-dbg] ignoring non-quantifier-free premise: {:?}",
+                    p
+                );
             }
         }
     }
@@ -335,7 +402,10 @@ pub fn try_propositional_abstraction(premises: &[Formula], conclusion: &Formula)
     let (concl_body, mut concl_vars) = strip_leading_forall(conclusion);
     if !is_quantifier_free(&concl_body) {
         if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
-            eprintln!("[prop-sat-dbg] concl body not quantifier free: {:?}", concl_body);
+            eprintln!(
+                "[prop-sat-dbg] concl body not quantifier free: {:?}",
+                concl_body
+            );
         }
         return false;
     }
@@ -344,26 +414,24 @@ pub fn try_propositional_abstraction(premises: &[Formula], conclusion: &Formula)
     // Heuristic instantiation (E-matching) of universal premises against subterms in the step
     let mut all_targets = HashSet::new();
     collect_all_subterms_formula(&concl_body, &mut all_targets);
-    for (body, p_vars) in &stripped_premises {
-        if p_vars.is_empty() {
-            collect_all_subterms_formula(body, &mut all_targets);
-        }
-    }
 
-    if all_targets.len() > 100 {
+    if all_targets.len() > 200 {
         if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
-            eprintln!("[prop-sat-dbg] too many target subterms ({}), aborting to prevent OOM", all_targets.len());
+            eprintln!(
+                "[prop-sat-dbg] too many target subterms ({}), aborting to prevent OOM",
+                all_targets.len()
+            );
         }
         return false;
     }
 
     let mut default_const = None;
     for t in &all_targets {
-        if let Term::App(_, args) = t {
-            if args.is_empty() {
-                default_const = Some(t.clone());
-                break;
-            }
+        if let Term::App(_, args) = t
+            && args.is_empty()
+        {
+            default_const = Some(t.clone());
+            break;
         }
     }
 
@@ -376,32 +444,34 @@ pub fn try_propositional_abstraction(premises: &[Formula], conclusion: &Formula)
             collect_all_subterms_formula(body, &mut p_pats);
             let mut generated = false;
             for pat in &p_pats {
-                if let Term::App(_, args) = pat {
-                    if !args.is_empty() {
-                        for tgt in &all_targets {
-                            let mut subst = HashMap::new();
-                            if match_term(pat, tgt, &mut subst) {
-                                let mut complete = true;
-                                for v in p_vars {
-                                    if !subst.contains_key(v) {
-                                        if let Some(dc) = &default_const {
-                                            subst.insert(*v, dc.clone());
-                                        } else {
-                                            complete = false;
-                                            break;
-                                        }
+                if let Term::App(_, args) = pat
+                    && !args.is_empty()
+                {
+                    for tgt in &all_targets {
+                        let mut subst = HashMap::new();
+                        if match_term(pat, tgt, &mut subst) {
+                            let mut complete = true;
+                            for v in p_vars {
+                                if !subst.contains_key(v) {
+                                    if let Some(dc) = &default_const {
+                                        subst.insert(*v, dc.clone());
+                                    } else {
+                                        complete = false;
+                                        break;
                                     }
                                 }
-                                if complete {
-                                    instantiated_premises.insert(apply_subst_formula(body, &subst));
-                                    if instantiated_premises.len() > 200 {
-                                        if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
-                                            eprintln!("[prop-sat-dbg] too many instantiated premises, aborting to prevent OOM");
-                                        }
-                                        return false;
+                            }
+                            if complete {
+                                instantiated_premises.insert(apply_subst_formula(body, &subst));
+                                if instantiated_premises.len() > 500 {
+                                    if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                                        eprintln!(
+                                            "[prop-sat-dbg] too many instantiated premises, aborting to prevent OOM"
+                                        );
                                     }
-                                    generated = true;
+                                    return false;
                                 }
+                                generated = true;
                             }
                         }
                     }
@@ -424,13 +494,13 @@ pub fn try_propositional_abstraction(premises: &[Formula], conclusion: &Formula)
             }
         }
     }
-    if let Formula::Atom(Atom::Eq(l_concl, r_concl)) = &concl_body {
-        if rewrite_term(l_concl, &rewrite_rules) == rewrite_term(r_concl, &rewrite_rules) {
-            if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
-                eprintln!("[prop-sat-dbg] verified purely by term rewriting!");
-            }
-            return true;
+    if let Formula::Atom(Atom::Eq(l_concl, r_concl)) = &concl_body
+        && rewrite_term(l_concl, &rewrite_rules) == rewrite_term(r_concl, &rewrite_rules)
+    {
+        if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+            eprintln!("[prop-sat-dbg] verified purely by term rewriting!");
         }
+        return true;
     }
 
     let mut enc = Encoder::default();
@@ -450,89 +520,125 @@ pub fn try_propositional_abstraction(premises: &[Formula], conclusion: &Formula)
     collect_terms(&concl_body, &mut terms);
 
     if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
-        eprintln!("[prop-sat-dbg] terms count = {}, list = {:?}", terms.len(), terms);
+        eprintln!(
+            "[prop-sat-dbg] terms count = {}, list = {:?}",
+            terms.len(),
+            terms
+        );
     }
 
-    // Limit to safe sizes to avoid O(N^3) transitivity clause blowup (using 60 as safe threshold)
-    if terms.len() <= 60 {
+    let mut need_cc = has_equality(&concl_body);
+    for p in &instantiated_premises {
+        if has_equality(p) {
+            need_cc = true;
+            break;
+        }
+    }
+
+    let mut cc_terms = HashSet::new();
+    if need_cc {
+        for p in &instantiated_premises {
+            collect_cc_terms(p, &mut cc_terms);
+        }
+        collect_cc_terms(&concl_body, &mut cc_terms);
+    }
+
+    if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+        eprintln!(
+            "[prop-sat-dbg] need_cc = {}, cc_terms count = {}",
+            need_cc,
+            cc_terms.len()
+        );
+    }
+
+    // Limit to safe sizes to avoid O(N^3) transitivity clause blowup if we actually need Congruence Closure
+    if !need_cc || cc_terms.len() <= 60 {
         let mut pred_atoms = HashSet::new();
         for p in &instantiated_premises {
             collect_pred_atoms(p, &mut pred_atoms);
         }
         collect_pred_atoms(&concl_body, &mut pred_atoms);
 
-        let terms_vec: Vec<Term> = terms.into_iter().collect();
+        if need_cc {
+            let terms_vec: Vec<Term> = cc_terms.into_iter().collect();
 
-        // 0. Term Rewriting based equalities from premises (handles demodulation intermediate steps)
-        let mut rewrite_rules = Vec::new();
-        for p in &instantiated_premises {
-            if let Formula::Atom(Atom::Eq(l, r)) = p {
-                if term_size(l) >= term_size(r) {
-                    rewrite_rules.push((l.clone(), r.clone()));
-                } else {
-                    rewrite_rules.push((r.clone(), l.clone()));
+            // 0. Term Rewriting based equalities from premises (handles demodulation intermediate steps)
+            let mut rewrite_rules = Vec::new();
+            for p in &instantiated_premises {
+                if let Formula::Atom(Atom::Eq(l, r)) = p {
+                    if term_size(l) >= term_size(r) {
+                        rewrite_rules.push((l.clone(), r.clone()));
+                    } else {
+                        rewrite_rules.push((r.clone(), l.clone()));
+                    }
                 }
             }
-        }
-        for i in 0..terms_vec.len() {
-            for j in (i + 1)..terms_vec.len() {
-                let t1 = &terms_vec[i];
-                let t2 = &terms_vec[j];
-                if rewrite_term(t1, &rewrite_rules) == rewrite_term(t2, &rewrite_rules) {
-                    let eq = Formula::Atom(Atom::Eq(t1.clone(), t2.clone()));
-                    let lit = enc.encode(&eq, &mut solver);
-                    solver.add_clause([lit]);
-                }
-            }
-        }
-
-        // 1. Reflexivity: t = t
-        for t in &terms_vec {
-            let eq = Formula::Atom(Atom::Eq(t.clone(), t.clone()));
-            let lit = enc.encode(&eq, &mut solver);
-            solver.add_clause([lit]);
-        }
-
-        // 2. Symmetry: t1 = t2 => t2 = t1
-        for i in 0..terms_vec.len() {
-            for j in (i + 1)..terms_vec.len() {
-                let t1 = &terms_vec[i];
-                let t2 = &terms_vec[j];
-                let eq1 = Formula::Atom(Atom::Eq(t1.clone(), t2.clone()));
-                let eq2 = Formula::Atom(Atom::Eq(t2.clone(), t1.clone()));
-                let lit1 = enc.encode(&eq1, &mut solver);
-                let lit2 = enc.encode(&eq2, &mut solver);
-                solver.add_clause([-lit1, lit2]);
-            }
-        }
-
-        // 3. Transitivity: t1 = t2 ∧ t2 = t3 => t1 = t3
-        for i in 0..terms_vec.len() {
-            for j in 0..terms_vec.len() {
-                if i == j { continue; }
-                for k in 0..terms_vec.len() {
-                    if i == k || j == k { continue; }
+            for i in 0..terms_vec.len() {
+                for j in (i + 1)..terms_vec.len() {
                     let t1 = &terms_vec[i];
                     let t2 = &terms_vec[j];
-                    let t3 = &terms_vec[k];
-                    let eq12 = Formula::Atom(Atom::Eq(t1.clone(), t2.clone()));
-                    let eq23 = Formula::Atom(Atom::Eq(t2.clone(), t3.clone()));
-                    let eq13 = Formula::Atom(Atom::Eq(t1.clone(), t3.clone()));
-                    let lit12 = enc.encode(&eq12, &mut solver);
-                    let lit23 = enc.encode(&eq23, &mut solver);
-                    let lit13 = enc.encode(&eq13, &mut solver);
-                    solver.add_clause([-lit12, -lit23, lit13]);
+                    if rewrite_term(t1, &rewrite_rules) == rewrite_term(t2, &rewrite_rules) {
+                        let eq = Formula::Atom(Atom::Eq(t1.clone(), t2.clone()));
+                        let lit = enc.encode(&eq, &mut solver);
+                        solver.add_clause([lit]);
+                    }
                 }
             }
-        }
 
-        // 4. Function Congruence: t1 = u1 ∧ ... ∧ tn = un => f(t1, ..., tn) = f(u1, ..., un)
-        for i in 0..terms_vec.len() {
-            for j in (i + 1)..terms_vec.len() {
-                let t1 = &terms_vec[i];
-                let t2 = &terms_vec[j];
-                if let (Term::App(f1, args1), Term::App(f2, args2)) = (t1, t2) {
-                    if f1 == f2 && args1.len() == args2.len() && !args1.is_empty() {
+            // 1. Reflexivity: t = t
+            for t in &terms_vec {
+                let eq = Formula::Atom(Atom::Eq(t.clone(), t.clone()));
+                let lit = enc.encode(&eq, &mut solver);
+                solver.add_clause([lit]);
+            }
+
+            // 2. Symmetry: t1 = t2 => t2 = t1
+            for i in 0..terms_vec.len() {
+                for j in (i + 1)..terms_vec.len() {
+                    let t1 = &terms_vec[i];
+                    let t2 = &terms_vec[j];
+                    let eq1 = Formula::Atom(Atom::Eq(t1.clone(), t2.clone()));
+                    let eq2 = Formula::Atom(Atom::Eq(t2.clone(), t1.clone()));
+                    let lit1 = enc.encode(&eq1, &mut solver);
+                    let lit2 = enc.encode(&eq2, &mut solver);
+                    solver.add_clause([-lit1, lit2]);
+                }
+            }
+
+            // 3. Transitivity: t1 = t2 ∧ t2 = t3 => t1 = t3
+            for i in 0..terms_vec.len() {
+                for j in 0..terms_vec.len() {
+                    if i == j {
+                        continue;
+                    }
+                    for k in 0..terms_vec.len() {
+                        if i == k || j == k {
+                            continue;
+                        }
+                        let t1 = &terms_vec[i];
+                        let t2 = &terms_vec[j];
+                        let t3 = &terms_vec[k];
+                        let eq12 = Formula::Atom(Atom::Eq(t1.clone(), t2.clone()));
+                        let eq23 = Formula::Atom(Atom::Eq(t2.clone(), t3.clone()));
+                        let eq13 = Formula::Atom(Atom::Eq(t1.clone(), t3.clone()));
+                        let lit12 = enc.encode(&eq12, &mut solver);
+                        let lit23 = enc.encode(&eq23, &mut solver);
+                        let lit13 = enc.encode(&eq13, &mut solver);
+                        solver.add_clause([-lit12, -lit23, lit13]);
+                    }
+                }
+            }
+
+            // 4. Function Congruence: t1 = u1 ∧ ... ∧ tn = un => f(t1, ..., tn) = f(u1, ..., un)
+            for i in 0..terms_vec.len() {
+                for j in (i + 1)..terms_vec.len() {
+                    let t1 = &terms_vec[i];
+                    let t2 = &terms_vec[j];
+                    if let (Term::App(f1, args1), Term::App(f2, args2)) = (t1, t2)
+                        && f1 == f2
+                        && args1.len() == args2.len()
+                        && !args1.is_empty()
+                    {
                         let mut clause = Vec::with_capacity(args1.len() + 1);
                         for (a1, a2) in args1.iter().zip(args2.iter()) {
                             let eq = Formula::Atom(Atom::Eq(a1.clone(), a2.clone()));
@@ -546,31 +652,33 @@ pub fn try_propositional_abstraction(premises: &[Formula], conclusion: &Formula)
                     }
                 }
             }
-        }
 
-        // 5. Predicate Congruence: t1 = u1 ∧ ... ∧ tn = un => (p(t1, ..., tn) <=> p(u1, ..., un))
-        let pred_atoms_vec: Vec<Atom> = pred_atoms.into_iter().collect();
-        for i in 0..pred_atoms_vec.len() {
-            for j in (i + 1)..pred_atoms_vec.len() {
-                let a1 = &pred_atoms_vec[i];
-                let a2 = &pred_atoms_vec[j];
-                if let (Atom::Pred(p1, args1), Atom::Pred(p2, args2)) = (a1, a2) {
-                    if p1 == p2 && args1.len() == args2.len() && !args1.is_empty() {
+            // 5. Predicate Congruence: t1 = u1 ∧ ... ∧ tn = un => (p(t1, ..., tn) <=> p(u1, ..., un))
+            let pred_atoms_vec: Vec<Atom> = pred_atoms.into_iter().collect();
+            for i in 0..pred_atoms_vec.len() {
+                for j in (i + 1)..pred_atoms_vec.len() {
+                    let a1 = &pred_atoms_vec[i];
+                    let a2 = &pred_atoms_vec[j];
+                    if let (Atom::Pred(p1, args1), Atom::Pred(p2, args2)) = (a1, a2)
+                        && p1 == p2
+                        && args1.len() == args2.len()
+                        && !args1.is_empty()
+                    {
                         let mut base_lits = Vec::with_capacity(args1.len());
                         for (arg1, arg2) in args1.iter().zip(args2.iter()) {
                             let eq = Formula::Atom(Atom::Eq(arg1.clone(), arg2.clone()));
                             let lit = enc.encode(&eq, &mut solver);
                             base_lits.push(-lit);
                         }
-                        
+
                         let lit1 = enc.encode(&Formula::Atom(a1.clone()), &mut solver);
                         let lit2 = enc.encode(&Formula::Atom(a2.clone()), &mut solver);
-                        
+
                         let mut clause1 = base_lits.clone();
                         clause1.push(-lit1);
                         clause1.push(lit2);
                         solver.add_clause(clause1);
-                        
+
                         let mut clause2 = base_lits;
                         clause2.push(-lit2);
                         clause2.push(lit1);

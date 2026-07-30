@@ -648,33 +648,36 @@ fn main() {
     if let SearchResult::Refutation(..) = &result {
         let elapsed = start.elapsed();
         let remaining = Duration::from_secs(time_secs).saturating_sub(elapsed);
-        
+
         // Skip self-verification if we are low on time (< 2s) or reading from stdin
-        if remaining >= Duration::from_secs(2) && path != "-" {
-            if let SearchResult::Refutation(_, tstp_proof) = &result {
-                // Prepend % Proof : <path> header so mrs-proover can locate the problem
-                let temp_proof_text = format!("% Proof : {}\n{}", path, tstp_proof);
-                let temp_path = std::env::temp_dir().join(format!("mrs_self_verify_{}.p", problem_name));
-                
-                let tptp_root = std::env::var("TPTP").ok().map(std::path::PathBuf::from);
-                if std::fs::write(&temp_path, &temp_proof_text).is_ok() {
-                    if let Ok(job) = mrs_proover::load::load(&temp_path, tptp_root.as_deref()) {
-                        let settings = mrs_proover::verify::Settings {
-                            total_budget: Duration::from_secs(1).min(remaining - Duration::from_secs(1)),
-                            per_step_budget: Duration::from_millis(50),
-                            verbose: false,
-                            workers: 1, // Single-threaded is optimal and fast
-                        };
-                        
-                        let verdict = mrs_proover::verify::verify(&job, &settings);
-                        if let mrs_proover::verdict::Verdict::VerifiedBad(reason) = verdict {
-                            eprintln!("% Warning: Self-verification failed: {}", reason);
-                            status = SzsStatus::GaveUp;
-                            is_verified_good = false;
-                        }
+        if remaining >= Duration::from_secs(2)
+            && path != "-"
+            && let SearchResult::Refutation(_, tstp_proof) = &result
+        {
+            // Prepend % Proof : <path> header so mrs-proover can locate the problem
+            let temp_proof_text = format!("% Proof : {}\n{}", path, tstp_proof);
+            let temp_path =
+                std::env::temp_dir().join(format!("mrs_self_verify_{}.p", problem_name));
+
+            let tptp_root = std::env::var("TPTP").ok().map(std::path::PathBuf::from);
+            if std::fs::write(&temp_path, &temp_proof_text).is_ok() {
+                if let Ok(job) = mrs_proover::load::load(&temp_path, tptp_root.as_deref()) {
+                    let settings = mrs_proover::verify::Settings {
+                        total_budget: Duration::from_secs(1)
+                            .min(remaining - Duration::from_secs(1)),
+                        per_step_budget: Duration::from_millis(350),
+                        verbose: false,
+                        workers: 1, // Single-threaded is optimal and fast
+                    };
+
+                    let verdict = mrs_proover::verify::verify(&job, &settings);
+                    if let mrs_proover::verdict::Verdict::VerifiedBad(reason) = verdict {
+                        eprintln!("% Warning: Self-verification failed: {}", reason);
+                        status = SzsStatus::GaveUp;
+                        is_verified_good = false;
                     }
-                    let _ = std::fs::remove_file(&temp_path);
                 }
+                let _ = std::fs::remove_file(&temp_path);
             }
         }
     }

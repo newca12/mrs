@@ -55,7 +55,9 @@ pub fn check<'p>(
     }
 
     if contains_too_many_iffs(&step_f) || contains_too_many_iffs(&conj_f) {
-        return StepOutcome::Unknown("conjecture or negated_conjecture is too complex to verify structurally".into());
+        return StepOutcome::Unknown(
+            "conjecture or negated_conjecture is too complex to verify structurally".into(),
+        );
     }
 
     let expected = to_nnf(&Formula::neg(conj_f));

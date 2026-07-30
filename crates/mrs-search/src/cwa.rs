@@ -326,6 +326,7 @@ pub fn try_componentwise_refute(
     };
 
     let mut combined_proof: HashMap<ClauseId, Clause> = HashMap::default();
+    let mut branch_empty_ids = Vec::new();
 
     #[allow(clippy::needless_range_loop)]
     for k in 0..n {
@@ -369,6 +370,10 @@ pub fn try_componentwise_refute(
 
         match result {
             SearchResult::Refutation(empty_id, _) => {
+                if std::env::var("TRACE_CWA").is_ok() {
+                    eprintln!("[TRACE] CWA branch empty_id = {}", empty_id.0);
+                }
+                branch_empty_ids.push(empty_id);
                 // Convert IdClause store → legacy Clause store for proof extraction
                 let mut legacy_store: HashMap<_, _> = state
                     .clause_store
@@ -388,10 +393,23 @@ pub fn try_componentwise_refute(
     }
 
     let mut final_proof: Vec<Clause> = combined_proof.into_values().collect();
+
+    // Add the final unified/roll-up $false clause (avatar_sat_refutation)
+    let final_id = ClauseId(999_999_999);
+    let final_false_clause = Clause::new(
+        final_id,
+        vec![], // empty literal set represents $false
+        ClauseSource::Inference {
+            rule: "avatar_sat_refutation",
+            parents: branch_empty_ids.into(),
+        },
+    );
+    final_proof.push(final_false_clause);
+
     final_proof.sort_unstable_by_key(|c| c.id.0);
 
     let tstp = format_tstp(&final_proof, &symbols);
-    Some(SearchResult::Refutation(top_clause.id, tstp))
+    Some(SearchResult::Refutation(final_id, tstp))
 }
 
 // ---------------------------------------------------------------------------

@@ -73,15 +73,22 @@ pub fn load(proof_path: &Path, problems_root: Option<&Path>) -> Result<LoadedJob
 
     let mut problem_includes = Vec::new();
     let (problem_path, problem) = if let Some(rel) = header {
-        let candidate = resolve_problem_path_with_base(proof_path, problems_root, Path::new("."), rel);
+        let candidate =
+            resolve_problem_path_with_base(proof_path, problems_root, Path::new("."), rel);
         match candidate {
             Some(path) => {
                 let parsed = parse_tptp_file(&path)
                     .map_err(|e| LoadError::ParseProblem(e.to_string(), path.clone()))?;
-                
+
                 let base_dir = path.parent().unwrap_or(Path::new("."));
-                resolve_includes_recursive(proof_path, problems_root, &parsed.problem().includes, base_dir, &mut problem_includes)?;
-                
+                resolve_includes_recursive(
+                    proof_path,
+                    problems_root,
+                    &parsed.problem().includes,
+                    base_dir,
+                    &mut problem_includes,
+                )?;
+
                 (Some(path), Some(parsed))
             }
             None => (None, None),
@@ -123,13 +130,22 @@ fn resolve_includes_recursive(
         if let Some(path) = candidate {
             let parsed = parse_tptp_file(&path)
                 .map_err(|e| LoadError::ParseProblem(e.to_string(), path.clone()))?;
-            
+
             let inc_dir = path.parent().unwrap_or(Path::new("."));
-            resolve_includes_recursive(proof_path, problems_root, &parsed.problem().includes, inc_dir, problem_includes)?;
-            
+            resolve_includes_recursive(
+                proof_path,
+                problems_root,
+                &parsed.problem().includes,
+                inc_dir,
+                problem_includes,
+            )?;
+
             problem_includes.push(parsed);
         } else {
-            return Err(LoadError::ReadProblem("included file not found".into(), PathBuf::from(rel)));
+            return Err(LoadError::ReadProblem(
+                "included file not found".into(),
+                PathBuf::from(rel),
+            ));
         }
     }
     Ok(())

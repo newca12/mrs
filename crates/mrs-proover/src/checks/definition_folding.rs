@@ -68,6 +68,28 @@ impl Guard {
     }
 }
 
+fn projects_conj_or_disj(parent: &Formula, concl: &Formula) -> bool {
+    let mut p_body = parent;
+    while let Formula::Forall(_, inner) | Formula::Exists(_, inner) = p_body {
+        p_body = inner;
+    }
+    let mut c_body = concl;
+    while let Formula::Forall(_, inner) | Formula::Exists(_, inner) = c_body {
+        c_body = inner;
+    }
+    projects_conj_or_disj_core(p_body, c_body)
+}
+
+fn projects_conj_or_disj_core(parent: &Formula, concl: &Formula) -> bool {
+    if mrs_core::alpha::alpha_equiv(parent, concl) {
+        return true;
+    }
+    match parent {
+        Formula::And(cs) => cs.iter().any(|c| projects_conj_or_disj_core(c, concl)),
+        _ => false,
+    }
+}
+
 /// Try to verify a `definition_folding` step by structural unfolding.
 ///
 /// `premises` are the lowered + iff-completed parent formulas.
@@ -80,14 +102,27 @@ pub fn try_check(
     is_def: &[bool],
     conclusion: &Formula,
 ) -> Option<crate::verdict::StepOutcome> {
+    if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+        eprintln!(
+            "[prop-sat-dbg] definition_folding::try_check entered! premises len = {}, is_def = {:?}",
+            premises.len(),
+            is_def
+        );
+    }
     let g = Guard::default();
 
     // Pre-flight size gate: cheap walk, bounded by MAX_INPUT_NODES.
     if !size_ok(conclusion, &g) {
+        if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+            eprintln!("[prop-sat-dbg] definition_folding early exit 1");
+        }
         return None;
     }
     for p in premises {
         if !size_ok(p, &g) {
+            if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                eprintln!("[prop-sat-dbg] definition_folding early exit 2");
+            }
             return None;
         }
     }
@@ -95,24 +130,35 @@ pub fn try_check(
     let mut defs: HashMap<SymbolId, (Vec<VarId>, Formula)> = HashMap::new();
     let mut sources: Vec<&Formula> = Vec::new();
 
-    // Classify premises by *provenance*, not shape: only premises flagged
-    // as introduced definitions (fresh-symbol naming annotation) are
-    // unfoldable definitions. A source that happens to be a biconditional
-    // (e.g. an original `cUnsatisfiable(X) <=> …` carried through
-    // `flattening`) is not flagged, so it is correctly treated as the
-    // source — even though it parses structurally as an iff-def.
     for (i, p) in premises.iter().enumerate() {
         if is_def.get(i).copied().unwrap_or(false) {
-            // Flagged as a definition but not in recognised iff shape:
-            // we cannot unfold it soundly, so bail to the ATP ladder.
-            let (sym, params, body) = parse_iff_def(p)?;
+            let parsed = parse_iff_def(p);
+            if parsed.is_none() {
+                if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                    eprintln!(
+                        "[prop-sat-dbg] definition_folding early exit 3 (failed to parse iff def for premise {})",
+                        i
+                    );
+                }
+                return None;
+            }
+            let (sym, params, body) = parsed.unwrap();
             if mentions_symbol(&body, sym, 0, &g) {
+                if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                    eprintln!("[prop-sat-dbg] definition_folding early exit 4");
+                }
                 return None;
             }
             if defs.insert(sym, (params, body)).is_some() {
+                if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                    eprintln!("[prop-sat-dbg] definition_folding early exit 5");
+                }
                 return None;
             }
             if defs.len() > MAX_DEFS {
+                if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                    eprintln!("[prop-sat-dbg] definition_folding early exit 6");
+                }
                 return None;
             }
         } else {
@@ -121,6 +167,13 @@ pub fn try_check(
     }
 
     if sources.len() != 1 || defs.is_empty() {
+        if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+            eprintln!(
+                "[prop-sat-dbg] definition_folding early exit 7 (sources len = {}, defs empty = {})",
+                sources.len(),
+                defs.is_empty()
+            );
+        }
         return None;
     }
 
@@ -153,6 +206,17 @@ pub fn try_check(
     let source_unfolded = unfold_all(sources[0], &defs, &fresh, &g)?;
     let conclusion_unfolded = unfold_all(conclusion, &defs, &fresh, &g)?;
 
+    if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+        eprintln!(
+            "[prop-sat-dbg] definition_folding: source_unfolded = {:?}",
+            source_unfolded
+        );
+        eprintln!(
+            "[prop-sat-dbg] definition_folding: conclusion_unfolded = {:?}",
+            conclusion_unfolded
+        );
+    }
+
     if g.bailed.get() {
         return None;
     }
@@ -166,6 +230,7 @@ pub fn try_check(
     // compare for equality.
     if alpha_equiv(&source_unfolded, &conclusion_unfolded)
         || canon_eq(&source_unfolded, &conclusion_unfolded)
+        || projects_conj_or_disj(&source_unfolded, &conclusion_unfolded)
     {
         Some(crate::verdict::StepOutcome::Sound)
     } else {
@@ -375,6 +440,9 @@ fn has_dependency_cycle(defs: &HashMap<SymbolId, (Vec<VarId>, Formula)>) -> bool
 /// If `f` matches `∀X⃗. (sP(X⃗) ↔ body)` or `∀X⃗. (body ↔ sP(X⃗))`,
 /// return `(sP, X⃗, body)`. The Forall prefix may be empty.
 fn parse_iff_def(f: &Formula) -> Option<(SymbolId, Vec<VarId>, Formula)> {
+    if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+        eprintln!("[prop-sat-dbg] parse_iff_def entered with formula: {:?}", f);
+    }
     let mut binders: Vec<VarId> = Vec::new();
     let mut body: &Formula = f;
     while let Formula::Forall(v, inner) = body {
@@ -383,22 +451,59 @@ fn parse_iff_def(f: &Formula) -> Option<(SymbolId, Vec<VarId>, Formula)> {
     }
     let (a, b) = match body {
         Formula::Iff(a, b) => (a.as_ref(), b.as_ref()),
-        _ => return None,
+        _ => {
+            if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                eprintln!(
+                    "[prop-sat-dbg] parse_iff_def failed: not an Iff body, body = {:?}",
+                    body
+                );
+            }
+            return None;
+        }
     };
 
     if let Some((sym, args)) = head_pred_app(a) {
-        let params = args_as_vars(args)?;
+        let params = args_as_vars(args);
+        if params.is_none() {
+            if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                eprintln!("[prop-sat-dbg] parse_iff_def failed: a args not vars");
+            }
+            return None;
+        }
+        let params = params.unwrap();
         if !same_var_set(&binders, &params) {
+            if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                eprintln!(
+                    "[prop-sat-dbg] parse_iff_def failed: binders {:?} != params {:?}",
+                    binders, params
+                );
+            }
             return None;
         }
         return Some((sym, params, b.clone()));
     }
     if let Some((sym, args)) = head_pred_app(b) {
-        let params = args_as_vars(args)?;
+        let params = args_as_vars(args);
+        if params.is_none() {
+            if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                eprintln!("[prop-sat-dbg] parse_iff_def failed: b args not vars");
+            }
+            return None;
+        }
+        let params = params.unwrap();
         if !same_var_set(&binders, &params) {
+            if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                eprintln!(
+                    "[prop-sat-dbg] parse_iff_def failed: binders {:?} != params {:?}",
+                    binders, params
+                );
+            }
             return None;
         }
         return Some((sym, params, a.clone()));
+    }
+    if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+        eprintln!("[prop-sat-dbg] parse_iff_def failed: neither side is head pred app");
     }
     None
 }

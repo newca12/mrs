@@ -802,7 +802,7 @@ pub fn run_schedule(
                     }
 
                     let result = match raw {
-                        SearchResult::Refutation(id, _) => {
+                        SearchResult::Refutation(id, tstp_proof) => {
                             #[cfg(feature = "ml-guidance")]
                             if let Some(log_dir) = &state.log_ml_data {
                                 let elapsed = schedule_start.elapsed().as_secs_f64();
@@ -894,13 +894,17 @@ pub fn run_schedule(
                                 }
                             }
 
-                            let legacy_store: HashMap<_, _> = state
-                                .clause_store
-                                .iter()
-                                .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
-                                .collect();
-                            let proof = extract_proof(id, &legacy_store);
-                            let tstp = format_tstp(&proof, symbols);
+                            let tstp = if tstp_proof.is_empty() {
+                                let legacy_store: HashMap<_, _> = state
+                                    .clause_store
+                                    .iter()
+                                    .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
+                                    .collect();
+                                let proof = extract_proof(id, &legacy_store);
+                                format_tstp(&proof, symbols)
+                            } else {
+                                tstp_proof
+                            };
                             SearchResult::Refutation(id, tstp)
                         }
                         SearchResult::Saturated if sc.max_term_weight.is_some() => SearchResult::GaveUp,

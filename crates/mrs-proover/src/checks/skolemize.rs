@@ -197,13 +197,14 @@ pub fn check<'p>(
     let mut sym_tab_parent = SymbolTable::new();
     let mut ctx_parent = crate::lower::LowerCtx::new(&mut sym_tab_parent);
     let parent_core = crate::lower::lower_fof_formula(&mut ctx_parent, parent_f);
-    if let Some(prev_parent) = registry.introduced_skolems.get(info.skolem_symbol) {
-        if parent_core != *prev_parent && !mrs_core::alpha::alpha_equiv(&parent_core, prev_parent) {
-            return StepOutcome::Unsound(format!(
-                "Skolem symbol `{}` is reused for a different parent formula",
-                info.skolem_symbol
-            ));
-        }
+    if let Some(prev_parent) = registry.introduced_skolems.get(info.skolem_symbol)
+        && parent_core != *prev_parent
+        && !mrs_core::alpha::alpha_equiv(&parent_core, prev_parent)
+    {
+        return StepOutcome::Unsound(format!(
+            "Skolem symbol `{}` is reused for a different parent formula",
+            info.skolem_symbol
+        ));
     }
 
     // 6) Walk through ∀ binders; the next thing we expect is ?Var or a path
@@ -727,20 +728,38 @@ fn miniscope<'p>(f: &FOFFormula<'p>) -> FOFFormula<'p> {
         FOFFormula::Atomic(_) | FOFFormula::Equality(..) | FOFFormula::Inequality(..) => f.clone(),
         FOFFormula::Parens(inner) => miniscope(inner),
         FOFFormula::Negation(inner) => FOFFormula::Negation(Box::new(miniscope(inner))),
-        FOFFormula::Binary { left, connective, right } => FOFFormula::Binary {
+        FOFFormula::Binary {
+            left,
+            connective,
+            right,
+        } => FOFFormula::Binary {
             left: Box::new(miniscope(left)),
             connective: *connective,
             right: Box::new(miniscope(right)),
         },
-        FOFFormula::Quantified { quantifier, variables, formula } => {
+        FOFFormula::Quantified {
+            quantifier,
+            variables,
+            formula,
+        } => {
             let inner = miniscope(formula);
             let mut current = inner;
             for v in variables.iter().rev() {
                 if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
-                    eprintln!("[skolem-dbg] miniscope matching quantifier={:?}, var={}, current={:?}", quantifier, v, current);
+                    eprintln!(
+                        "[skolem-dbg] miniscope matching quantifier={:?}, var={}, current={:?}",
+                        quantifier, v, current
+                    );
                 }
                 current = match (*quantifier, &current) {
-                    (Quantifier::Exists, FOFFormula::Binary { left, connective: BinaryConnective::Or, right }) => {
+                    (
+                        Quantifier::Exists,
+                        FOFFormula::Binary {
+                            left,
+                            connective: BinaryConnective::Or,
+                            right,
+                        },
+                    ) => {
                         if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
                             eprintln!("[skolem-dbg] miniscope Exists MATCHED!");
                         }
@@ -758,7 +777,14 @@ fn miniscope<'p>(f: &FOFFormula<'p>) -> FOFFormula<'p> {
                             }),
                         }
                     }
-                    (Quantifier::Forall, FOFFormula::Binary { left, connective: BinaryConnective::And, right }) => {
+                    (
+                        Quantifier::Forall,
+                        FOFFormula::Binary {
+                            left,
+                            connective: BinaryConnective::And,
+                            right,
+                        },
+                    ) => {
                         if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
                             eprintln!("[skolem-dbg] miniscope Forall MATCHED!");
                         }
@@ -1101,8 +1127,16 @@ fn distribute_or_over_and<'p>(f: &FOFFormula<'p>) -> FOFFormula<'p> {
 fn contains_too_many_iffs_fof(f: &FOFFormula) -> bool {
     fn count_iffs(f: &FOFFormula) -> usize {
         match f {
-            FOFFormula::Binary { left, connective, right } => {
-                let current = if *connective == BinaryConnective::Iff { 1 } else { 0 };
+            FOFFormula::Binary {
+                left,
+                connective,
+                right,
+            } => {
+                let current = if *connective == BinaryConnective::Iff {
+                    1
+                } else {
+                    0
+                };
                 current + count_iffs(left) + count_iffs(right)
             }
             FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => count_iffs(inner),
@@ -1116,9 +1150,11 @@ fn contains_too_many_iffs_fof(f: &FOFFormula) -> bool {
 fn has_and_under_or_fof(f: &FOFFormula) -> bool {
     fn contains_and(f: &FOFFormula) -> bool {
         match f {
-            FOFFormula::Binary { left, connective, right } => {
-                *connective == BinaryConnective::And || contains_and(left) || contains_and(right)
-            }
+            FOFFormula::Binary {
+                left,
+                connective,
+                right,
+            } => *connective == BinaryConnective::And || contains_and(left) || contains_and(right),
             FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => contains_and(inner),
             FOFFormula::Quantified { formula, .. } => contains_and(formula),
             _ => false,
@@ -1126,12 +1162,16 @@ fn has_and_under_or_fof(f: &FOFFormula) -> bool {
     }
     fn has_and_under_or_rec(f: &FOFFormula) -> bool {
         match f {
-            FOFFormula::Binary { left, connective: BinaryConnective::Or, right } => {
-                contains_and(left) || contains_and(right)
-            }
-            FOFFormula::Binary { left, connective: _, right } => {
-                has_and_under_or_rec(left) || has_and_under_or_rec(right)
-            }
+            FOFFormula::Binary {
+                left,
+                connective: BinaryConnective::Or,
+                right,
+            } => contains_and(left) || contains_and(right),
+            FOFFormula::Binary {
+                left,
+                connective: _,
+                right,
+            } => has_and_under_or_rec(left) || has_and_under_or_rec(right),
             FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => has_and_under_or_rec(inner),
             FOFFormula::Quantified { formula, .. } => has_and_under_or_rec(formula),
             _ => false,
@@ -1142,10 +1182,16 @@ fn has_and_under_or_fof(f: &FOFFormula) -> bool {
 
 fn formula_nodes_count_fof(f: &FOFFormula) -> usize {
     match f {
-        FOFFormula::Binary { left, right, .. } => 1 + formula_nodes_count_fof(left) + formula_nodes_count_fof(right),
-        FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => 1 + formula_nodes_count_fof(inner),
+        FOFFormula::Binary { left, right, .. } => {
+            1 + formula_nodes_count_fof(left) + formula_nodes_count_fof(right)
+        }
+        FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => {
+            1 + formula_nodes_count_fof(inner)
+        }
         FOFFormula::Quantified { formula, .. } => 1 + formula_nodes_count_fof(formula),
-        FOFFormula::Equality(l, r) | FOFFormula::Inequality(l, r) => 1 + term_nodes_count_fof(l) + term_nodes_count_fof(r),
+        FOFFormula::Equality(l, r) | FOFFormula::Inequality(l, r) => {
+            1 + term_nodes_count_fof(l) + term_nodes_count_fof(r)
+        }
         FOFFormula::Atomic(a) => match a {
             FOFAtomicFormula::Plain(_, args)
             | FOFAtomicFormula::Defined(_, args)
@@ -1190,16 +1236,19 @@ pub(crate) fn try_positive_skolemize<'p>(
     if contains_too_many_iffs_fof(parent_f) || contains_too_many_iffs_fof(step_f) {
         return false;
     }
-    if has_and_under_or_fof(parent_f) && (formula_nodes_count_fof(parent_f) > 80 || formula_nodes_count_fof(step_f) > 80) {
+    if has_and_under_or_fof(parent_f)
+        && (formula_nodes_count_fof(parent_f) > 150 || formula_nodes_count_fof(step_f) > 150)
+    {
         return false;
     }
-    let mut counter = 0;
-    let mut subst = HashMap::new();
+    let mut parent_counter = 0;
+    let mut parent_subst = HashMap::new();
     let parent_nnf = miniscope(&fof_to_nnf(parent_f));
     if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
         eprintln!("[skolem-dbg] parent_nnf AFTER miniscope = {:?}", parent_nnf);
     }
-    let parent_renamed = rename_bound_variables(&parent_nnf, &mut counter, &mut subst);
+    let parent_renamed =
+        rename_bound_variables(&parent_nnf, &mut parent_counter, &mut parent_subst);
     let parent_stripped = strip_all_quantifiers(&parent_renamed);
     let parent_cnf = distribute_or_over_and(&parent_stripped);
 
@@ -1287,7 +1336,8 @@ pub(crate) fn try_positive_skolemize<'p>(
                 let mut sym_tab_p = SymbolTable::new();
                 let mut ctx_p = crate::lower::LowerCtx::new(&mut sym_tab_p);
                 let parent_core = crate::lower::lower_fof_formula(&mut ctx_p, parent_f);
-                parent_core == *prev_parent || mrs_core::alpha::alpha_equiv(&parent_core, prev_parent)
+                parent_core == *prev_parent
+                    || mrs_core::alpha::alpha_equiv(&parent_core, prev_parent)
             } else {
                 true
             }

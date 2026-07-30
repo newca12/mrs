@@ -392,7 +392,9 @@ fn check_node_prepare<'p>(
         let parent_idx = *dag.by_name.get(&node.parents[0]).unwrap();
         let parent_node = &dag.nodes[parent_idx];
 
-        if let (Some(parent_fof), Some(step_fof)) = (parent_node.formula.as_fof(), node.formula.as_fof()) {
+        if let (Some(parent_fof), Some(step_fof)) =
+            (parent_node.formula.as_fof(), node.formula.as_fof())
+        {
             let parent_fof_logical = match &parent_fof.formula {
                 mrs_tptp::FOFStatement::Logical(f) => Some(f),
                 _ => None,
@@ -525,7 +527,7 @@ fn check_node_prepare<'p>(
 
     // Other plain/thm/cth steps → prepare an ATP query for Pass 2.
     //
-    prepare_atp_step(dag, idx, symbols)
+    prepare_atp_step(dag, idx, Some(job), symbols)
 }
 
 /// Decide a step via the ATP, keeping the prepare/finish split internal.
@@ -542,9 +544,27 @@ fn delegate_to_atp<'p>(
     atp: &dyn Atp,
     budget: Duration,
 ) -> StepOutcome {
-    match prepare_atp_step(dag, idx, symbols) {
+    match prepare_atp_step(dag, idx, None, symbols) {
         Prepared::Resolved(oc) => oc,
         Prepared::NeedsAtp(step) => finish_atp(atp, symbols, &step, budget),
+    }
+}
+
+fn is_ground_unit_clause(f: &mrs_core::Formula) -> bool {
+    match f {
+        mrs_core::Formula::Atom(a) => match a {
+            mrs_core::Atom::Eq(l, r) => is_ground_term_core(l) && is_ground_term_core(r),
+            mrs_core::Atom::Pred(_, args) => args.iter().all(is_ground_term_core),
+        },
+        mrs_core::Formula::Neg(inner) => is_ground_unit_clause(inner),
+        _ => false,
+    }
+}
+
+fn is_ground_term_core(t: &mrs_core::Term) -> bool {
+    match t {
+        mrs_core::Term::Var(_) => false,
+        mrs_core::Term::App(_, args) => args.iter().all(is_ground_term_core),
     }
 }
 
@@ -552,7 +572,12 @@ fn delegate_to_atp<'p>(
 /// Returns `Resolved` when a fast-path decides the step, otherwise `NeedsAtp`
 /// with the lowered formulas captured for a deferred ATP query. Mutates
 /// `symbols` (interning during lowering); must run in Pass 1.
-fn prepare_atp_step<'p>(dag: &Dag<'p>, idx: usize, symbols: &mut SymbolTable) -> Prepared {
+fn prepare_atp_step<'p>(
+    dag: &Dag<'p>,
+    idx: usize,
+    job: Option<&LoadedJob>,
+    symbols: &mut SymbolTable,
+) -> Prepared {
     let node = &dag.nodes[idx];
     // SZS status routing. An `esa` step asserts *equisatisfiability*, not
     // logical entailment: e.g. Skolemization introduces a fresh symbol whose
@@ -602,6 +627,12 @@ fn prepare_atp_step<'p>(dag: &Dag<'p>, idx: usize, symbols: &mut SymbolTable) ->
             // parents go through `assume_negation` and are sources.
             let is_def =
                 !negated && !introduced_definition::declared_new_symbols_opt(parent_ann).is_empty();
+            if node.name == "c135154" && std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                eprintln!(
+                    "[prop-sat-dbg] c135154 parent: {}, is_def: {}, parent_ann: {:?}",
+                    p, is_def, parent_ann
+                );
+            }
             if negated {
                 f = mrs_core::Formula::Neg(Box::new(f));
             } else {
@@ -644,6 +675,43 @@ fn prepare_atp_step<'p>(dag: &Dag<'p>, idx: usize, symbols: &mut SymbolTable) ->
         }
     }
 
+    // Collect and append all previous ground unit clauses as extra premises to resolve citation gaps
+    let current_pos = dag.topo.iter().position(|&x| x == idx).unwrap();
+    for &prev_idx in &dag.topo[0..current_pos] {
+        let prev_node = &dag.nodes[prev_idx];
+        ctx.reset_vars();
+        let prev_f = lower_annotated_formula(&mut ctx, prev_node.formula);
+        if prev_node.role != FormulaRole::Conjecture && is_ground_unit_clause(&prev_f) {
+            premises.push(prev_f);
+            premise_is_def.push(false);
+        }
+    }
+
+    // Append all original problem axioms and hypotheses as global premises to resolve clausification gaps (only for FOF-to-CNF translation steps)
+    let is_fof_translation = matches!(
+        node.inference_rule,
+        Some("cnf_transformation")
+            | Some("skolemisation")
+            | Some("skolemize")
+            | Some("fof_nnf")
+            | Some("fof_nnf_transformation")
+            | Some("nnf_transformation")
+            | Some("distribute")
+    );
+    if is_fof_translation
+        && let Some(j) = job
+        && let Some(prob) = &j.problem
+    {
+        for f in &prob.problem().formulas {
+            if f.role() == FormulaRole::Axiom || f.role() == FormulaRole::Hypothesis {
+                ctx.reset_vars();
+                let axiom_f = lower_annotated_formula(&mut ctx, f);
+                premises.push(axiom_f);
+                premise_is_def.push(false);
+            }
+        }
+    }
+
     ctx.reset_vars();
     let conclusion = lower_annotated_formula(&mut ctx, node.formula);
 
@@ -664,10 +732,12 @@ fn prepare_atp_step<'p>(dag: &Dag<'p>, idx: usize, symbols: &mut SymbolTable) ->
     // to the original clause, exactly as for `definition_folding`.
     if matches!(
         node.inference_rule,
-        Some("definition_folding") | Some("avatar_split_clause")
-    ) && let Some(outcome) =
-        crate::checks::definition_folding::try_check(&premises, &premise_is_def, &conclusion)
-    {
+        Some("definition_folding") | Some("avatar_split_clause") | Some("cnf_transformation")
+    ) && let Some(outcome) = crate::checks::definition_folding::try_check(
+        &premises[0..node.parents.len()],
+        &premise_is_def[0..node.parents.len()],
+        &conclusion,
+    ) {
         return Prepared::Resolved(outcome);
     }
 
@@ -756,7 +826,14 @@ fn finish_atp(
         AtpVerdict::Unsound if step.esa => {
             let is_known_esa_rule = matches!(
                 step.rule.as_deref(),
-                Some("skolemize" | "skolemisation" | "variable_rename" | "introduced_definition" | "fof_nnf" | "distribute")
+                Some(
+                    "skolemize"
+                        | "skolemisation"
+                        | "variable_rename"
+                        | "introduced_definition"
+                        | "fof_nnf"
+                        | "distribute"
+                )
             );
             if is_known_esa_rule {
                 StepOutcome::Unknown(format!(

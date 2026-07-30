@@ -333,7 +333,90 @@ const SHARED_POOL_CAP: usize = 4096;
 /// Returns `SearchResult::Refutation(id)` if the empty clause is derived,
 /// `SearchResult::Saturated` if all clauses are processed without contradiction,
 /// or `SearchResult::Timeout` on timeout.
+fn extract_and_format_proof(
+    empty_id: mrs_core::clause::ClauseId,
+    state: &crate::state::SearchState,
+) -> String {
+    if std::env::var("TRACE_SEARCH").is_ok() {
+        if let Some(ic) = state.clause_store.get(&empty_id) {
+            eprintln!(
+                "[TRACE] extract_and_format_proof: empty_id = {}, clause in store literals len = {}, source = {:?}",
+                empty_id.0,
+                ic.literals.len(),
+                ic.source
+            );
+        } else {
+            eprintln!(
+                "[TRACE] extract_and_format_proof: empty_id = {} NOT FOUND in store!",
+                empty_id.0
+            );
+        }
+    }
+    let legacy_store: std::collections::HashMap<_, _> = state
+        .clause_store
+        .iter()
+        .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
+        .collect();
+    let proof = mrs_proof::extract::extract_proof(empty_id, &legacy_store);
+    mrs_proof::tstp::format_tstp(&proof, &state.symbols)
+}
+
 pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
+    let res = search_internal(state, config);
+    match res {
+        SearchResult::Refutation(empty_id, tstp) if tstp.is_empty() && empty_id.0 != 0 => {
+            if std::env::var("TRACE_SEARCH").is_ok() {
+                eprintln!(
+                    "[TRACE] search_internal returned Refutation with empty_id = {}",
+                    empty_id.0
+                );
+                for (&cid, ic) in &state.clause_store {
+                    if ic.literals.is_empty() {
+                        eprintln!(
+                            "[TRACE] found actual empty clause in store: id = {}, source = {:?}",
+                            cid.0, ic.source
+                        );
+                    }
+                }
+            }
+            let tstp_proof = extract_and_format_proof(empty_id, state);
+            if std::env::var("TRACE_SEARCH").is_ok() {
+                eprintln!(
+                    "[TRACE] wrapper search Refutation called with empty_id = {}, tstp_proof len = {}",
+                    empty_id.0,
+                    tstp_proof.len()
+                );
+            }
+            SearchResult::Refutation(empty_id, tstp_proof)
+        }
+        SearchResult::Refutation(empty_id, tstp) if tstp.is_empty() && empty_id.0 == 0 => {
+            let input_ids: Vec<_> = state.clause_store.keys().copied().collect();
+            let final_id = mrs_core::clause::ClauseId(999_999_999);
+            let final_false_clause = mrs_core::clause::Clause::new(
+                final_id,
+                vec![],
+                mrs_core::clause::ClauseSource::Inference {
+                    rule: "avatar_sat_refutation",
+                    parents: input_ids.into(),
+                },
+            );
+
+            let mut final_proof: Vec<mrs_core::clause::Clause> = state
+                .clause_store
+                .values()
+                .map(|ic| state.term_bank.clause_to_legacy(ic))
+                .collect();
+            final_proof.push(final_false_clause);
+            final_proof.sort_unstable_by_key(|c| c.id.0);
+
+            let tstp_proof = mrs_proof::tstp::format_tstp(&final_proof, &state.symbols);
+            SearchResult::Refutation(final_id, tstp_proof)
+        }
+        _ => res,
+    }
+}
+
+fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
     let mut ordering = config.ordering.clone();
     let sym_config = ordering.symbol_config();
 
@@ -372,6 +455,9 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         if matches!(state.avatar.solver.solve(), Some(true)) {
             update_model(state);
         } else {
+            if std::env::var("TRACE_SEARCH").is_ok() {
+                eprintln!("[TRACE] return site 1 (line 437) called with id = 0");
+            }
             return SearchResult::Refutation(mrs_core::clause::ClauseId(0), String::new());
         }
     }
@@ -382,11 +468,23 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         let clause = state.clause_store.get(&id).unwrap().clone();
         if clause.is_empty() {
             if clause.avatar.is_empty() || !config.use_avatar {
+                if std::env::var("TRACE_SEARCH").is_ok() {
+                    eprintln!(
+                        "[TRACE] return site 2 (line 447) called with id = {}",
+                        clause.id.0
+                    );
+                }
                 return SearchResult::Refutation(clause.id, String::new());
             } else {
                 let avatar = clause.avatar.clone();
                 let cid = clause.id;
                 if !avatar_refute_branch(state, &avatar, &ordering) {
+                    if std::env::var("TRACE_SEARCH").is_ok() {
+                        eprintln!(
+                            "[TRACE] return site 3 (line 452) called with id = {}",
+                            cid.0
+                        );
+                    }
                     return SearchResult::Refutation(cid, String::new());
                 }
             }
@@ -561,6 +659,12 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         given.id.0
                     );
                 }
+                if std::env::var("TRACE_SEARCH").is_ok() {
+                    eprintln!(
+                        "[TRACE] return site 4 (line 626) called with id = {}",
+                        given.id.0
+                    );
+                }
                 return SearchResult::Refutation(given.id, String::new());
             } else {
                 let avatar = given.avatar.clone();
@@ -577,6 +681,9 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                             "[AVATAR] empty given {}: avatar_refute_branch returned false → Refutation",
                             id.0
                         );
+                    }
+                    if std::env::var("TRACE_SEARCH").is_ok() {
+                        eprintln!("[TRACE] return site 5 (line 643) called with id = {}", id.0);
                     }
                     return SearchResult::Refutation(id, String::new());
                 }
@@ -1046,11 +1153,23 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
 
             for empty in backward_demod_empty {
                 if empty.avatar.is_empty() || !config.use_avatar {
+                    if std::env::var("TRACE_SEARCH").is_ok() {
+                        eprintln!(
+                            "[TRACE] return site 6 (line 1125) called with id = {}",
+                            empty.id.0
+                        );
+                    }
                     return SearchResult::Refutation(empty.id, String::new());
                 }
                 let avatar = empty.avatar.clone();
                 let id = empty.id;
                 if !avatar_refute_branch(state, &avatar, &ordering) {
+                    if std::env::var("TRACE_SEARCH").is_ok() {
+                        eprintln!(
+                            "[TRACE] return site 7 (line 1131) called with id = {}",
+                            id.0
+                        );
+                    }
                     return SearchResult::Refutation(id, String::new());
                 }
             }
@@ -1131,7 +1250,10 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                             given.id.0
                         );
                     }
-                    return SearchResult::Refutation(given.id, String::new());
+                    if std::env::var("TRACE_SEARCH").is_ok() {
+                        eprintln!("[TRACE] return site 8 (line 1217) called with id = 0");
+                    }
+                    return SearchResult::Refutation(mrs_core::clause::ClauseId(0), String::new());
                 }
             }
         }
@@ -1157,6 +1279,12 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 state.register_clause(&clause.clone());
 
                 if clause.avatar.is_empty() || !config.use_avatar {
+                    if std::env::var("TRACE_SEARCH").is_ok() {
+                        eprintln!(
+                            "[TRACE] return site 9 (line 1243) called with id = {}",
+                            clause.id.0
+                        );
+                    }
                     return SearchResult::Refutation(clause.id, String::new());
                 } else {
                     let avatar = clause.avatar.clone();
@@ -1171,6 +1299,12 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         if trace_avatar {
                             eprintln!(
                                 "[AVATAR] avatar_refute_branch returned false → SAT UNSAT → Refutation({})",
+                                id.0
+                            );
+                        }
+                        if std::env::var("TRACE_SEARCH").is_ok() {
+                            eprintln!(
+                                "[TRACE] return site 10 (line 1260) called with id = {}",
                                 id.0
                             );
                         }
@@ -1199,11 +1333,23 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 if clause.is_empty() {
                     state.register_clause(&clause.clone());
                     if clause.avatar.is_empty() || !config.use_avatar {
+                        if std::env::var("TRACE_SEARCH").is_ok() {
+                            eprintln!(
+                                "[TRACE] return site 11 (line 1293) called with id = {}",
+                                clause.id.0
+                            );
+                        }
                         return SearchResult::Refutation(clause.id, String::new());
                     }
                     let avatar = clause.avatar.clone();
                     let id = clause.id;
                     if !avatar_refute_branch(state, &avatar, &ordering) {
+                        if std::env::var("TRACE_SEARCH").is_ok() {
+                            eprintln!(
+                                "[TRACE] return site 12 (line 1298) called with id = {}",
+                                id.0
+                            );
+                        }
                         return SearchResult::Refutation(id, String::new());
                     }
                     continue;
@@ -1222,11 +1368,23 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     state.register_clause(&clause.clone());
                     state.register_clause(&empty.clone());
                     if empty.avatar.is_empty() || !config.use_avatar {
+                        if std::env::var("TRACE_SEARCH").is_ok() {
+                            eprintln!(
+                                "[TRACE] return site 13 (line 1316) called with id = {}",
+                                empty.id.0
+                            );
+                        }
                         return SearchResult::Refutation(empty.id, String::new());
                     }
                     let avatar = empty.avatar.clone();
                     let id = empty.id;
                     if !avatar_refute_branch(state, &avatar, &ordering) {
+                        if std::env::var("TRACE_SEARCH").is_ok() {
+                            eprintln!(
+                                "[TRACE] return site 14 (line 1321) called with id = {}",
+                                id.0
+                            );
+                        }
                         return SearchResult::Refutation(id, String::new());
                     }
                     continue;
