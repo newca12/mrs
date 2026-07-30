@@ -568,6 +568,218 @@ fn is_ground_term_core(t: &mrs_core::Term) -> bool {
     }
 }
 
+fn shift_vars_term(t: &mrs_core::Term, shift: u32) -> mrs_core::Term {
+    match t {
+        mrs_core::Term::Var(id) => mrs_core::Term::Var(id + shift),
+        mrs_core::Term::App(f, args) => mrs_core::Term::App(*f, args.iter().map(|arg| shift_vars_term(arg, shift)).collect()),
+    }
+}
+
+fn shift_vars_formula(f: &mrs_core::Formula, shift: u32) -> mrs_core::Formula {
+    match f {
+        mrs_core::Formula::Atom(a) => match a {
+            mrs_core::Atom::Pred(p, args) => mrs_core::Formula::Atom(mrs_core::Atom::Pred(*p, args.iter().map(|arg| shift_vars_term(arg, shift)).collect())),
+            mrs_core::Atom::Eq(l, r) => mrs_core::Formula::Atom(mrs_core::Atom::Eq(shift_vars_term(l, shift), shift_vars_term(r, shift))),
+        }
+        mrs_core::Formula::Neg(inner) => mrs_core::Formula::Neg(Box::new(shift_vars_formula(inner, shift))),
+        _ => f.clone(),
+    }
+}
+
+fn unify_terms(
+    t1: &mrs_core::Term,
+    t2: &mrs_core::Term,
+    subst: &mut std::collections::HashMap<mrs_core::VarId, mrs_core::Term>,
+) -> bool {
+    let t1 = resolve_term(t1, subst);
+    let t2 = resolve_term(t2, subst);
+    match (&t1, &t2) {
+        (mrs_core::Term::Var(id1), mrs_core::Term::Var(id2)) if id1 == id2 => true,
+        (mrs_core::Term::Var(id1), _) => {
+            if occurs_check(*id1, &t2, subst) {
+                false
+            } else {
+                subst.insert(*id1, t2.clone());
+                true
+            }
+        }
+        (_, mrs_core::Term::Var(id2)) => {
+            if occurs_check(*id2, &t1, subst) {
+                false
+            } else {
+                subst.insert(*id2, t1.clone());
+                true
+            }
+        }
+        (mrs_core::Term::App(f1, args1), mrs_core::Term::App(f2, args2)) => {
+            f1 == f2 && args1.len() == args2.len() && args1.iter().zip(args2.iter()).all(|(a1, a2)| unify_terms(a1, a2, subst))
+        }
+    }
+}
+
+fn resolve_term(t: &mrs_core::Term, subst: &std::collections::HashMap<mrs_core::VarId, mrs_core::Term>) -> mrs_core::Term {
+    match t {
+        mrs_core::Term::Var(id) => {
+            if let Some(existing) = subst.get(id) {
+                resolve_term(existing, subst)
+            } else {
+                t.clone()
+            }
+        }
+        _ => t.clone(),
+    }
+}
+
+fn occurs_check(
+    id: mrs_core::VarId,
+    t: &mrs_core::Term,
+    subst: &std::collections::HashMap<mrs_core::VarId, mrs_core::Term>,
+) -> bool {
+    match t {
+        mrs_core::Term::Var(id2) => {
+            if id == *id2 {
+                true
+            } else if let Some(existing) = subst.get(id2) {
+                occurs_check(id, existing, subst)
+            } else {
+                false
+            }
+        }
+        mrs_core::Term::App(_, args) => args.iter().any(|arg| occurs_check(id, arg, subst)),
+    }
+}
+
+fn apply_subst_term_full(t: &mrs_core::Term, subst: &std::collections::HashMap<mrs_core::VarId, mrs_core::Term>) -> mrs_core::Term {
+    match t {
+        mrs_core::Term::Var(id) => {
+            if let Some(existing) = subst.get(id) {
+                apply_subst_term_full(existing, subst)
+            } else {
+                t.clone()
+            }
+        }
+        mrs_core::Term::App(f, args) => mrs_core::Term::App(*f, args.iter().map(|arg| apply_subst_term_full(arg, subst)).collect()),
+    }
+}
+
+fn collect_superposition_rewrites(
+    t: &mrs_core::Term,
+    l1: &mrs_core::Term,
+    r1: &mrs_core::Term,
+    rewrites: &mut Vec<(mrs_core::Term, std::collections::HashMap<mrs_core::VarId, mrs_core::Term>)>,
+) {
+    if !t.is_var() {
+        let mut subst = std::collections::HashMap::new();
+        if unify_terms(l1, t, &mut subst) {
+            let rewritten = apply_subst_term_full(r1, &subst);
+            rewrites.push((rewritten, subst));
+        }
+    }
+    if let mrs_core::Term::App(f, args) = t {
+        for i in 0..args.len() {
+            let mut sub_rewrites = Vec::new();
+            collect_superposition_rewrites(&args[i], l1, r1, &mut sub_rewrites);
+            for (sub_rewritten, subst) in sub_rewrites {
+                let mut new_args = args.clone();
+                new_args[i] = sub_rewritten;
+                let rewritten_root = mrs_core::Term::App(*f, new_args);
+                rewrites.push((rewritten_root, subst));
+            }
+        }
+    }
+}
+
+fn try_superposition_step(p1: &mrs_core::Formula, p2: &mrs_core::Formula, concl: &mrs_core::Formula) -> bool {
+    if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+        eprintln!("[prop-sat-dbg] try_superposition_step called! p1 = {:?}", p1);
+    }
+    let p1_shifted = shift_vars_formula(p1, 1000);
+    let (l1, r1) = match extract_eq_sides(&p1_shifted) {
+        Some(res) => res,
+        None => return false,
+    };
+    let (l2, r2) = match extract_eq_sides(p2) {
+        Some(res) => res,
+        None => return false,
+    };
+    let (lc, rc) = match extract_eq_sides(concl) {
+        Some(res) => res,
+        None => return false,
+    };
+    if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+        eprintln!("[prop-sat-dbg] try_superposition_step: l1 = {:?}", l1);
+    }
+    let rules = vec![(l1.clone(), r1.clone()), (r1, l1)];
+    for (lhs1, rhs1) in rules {
+        let mut rewrites = Vec::new();
+        collect_superposition_rewrites(&l2, &lhs1, &rhs1, &mut rewrites);
+        for (l2_rewritten, subst) in rewrites {
+            let expected_l = apply_subst_term_full(&l2_rewritten, &subst);
+            let expected_r = apply_subst_term_full(&r2, &subst);
+            if alpha_equiv_terms(&expected_l, &lc) && alpha_equiv_terms(&expected_r, &rc) {
+                return true;
+            }
+            if alpha_equiv_terms(&expected_l, &rc) && alpha_equiv_terms(&expected_r, &lc) {
+                return true;
+            }
+            if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                eprintln!("[prop-sat-dbg] try_superposition_step: expected_l = {:?}", expected_l);
+                eprintln!("[prop-sat-dbg] try_superposition_step: lc = {:?}", lc);
+            }
+        }
+        let mut rewrites_r = Vec::new();
+        collect_superposition_rewrites(&r2, &lhs1, &rhs1, &mut rewrites_r);
+        for (r2_rewritten, subst) in rewrites_r {
+            let expected_l = apply_subst_term_full(&l2, &subst);
+            let expected_r = apply_subst_term_full(&r2_rewritten, &subst);
+            if alpha_equiv_terms(&expected_l, &lc) && alpha_equiv_terms(&expected_r, &rc) {
+                return true;
+            }
+            if alpha_equiv_terms(&expected_l, &rc) && alpha_equiv_terms(&expected_r, &lc) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn extract_eq_sides(f: &mrs_core::Formula) -> Option<(mrs_core::Term, mrs_core::Term)> {
+    let mut body = f;
+    while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = body {
+        body = inner;
+    }
+    if let mrs_core::Formula::Or(cs) = body {
+        if cs.len() == 1 {
+            body = &cs[0];
+        }
+    }
+    match body {
+        mrs_core::Formula::Atom(mrs_core::Atom::Eq(l, r)) => Some((l.clone(), r.clone())),
+        _ => None,
+    }
+}
+
+fn alpha_equiv_terms(t1: &mrs_core::Term, t2: &mrs_core::Term) -> bool {
+    fn helper(t1: &mrs_core::Term, t2: &mrs_core::Term, map: &mut std::collections::HashMap<mrs_core::VarId, mrs_core::VarId>) -> bool {
+        match (t1, t2) {
+            (mrs_core::Term::Var(id1), mrs_core::Term::Var(id2)) => {
+                if let Some(&existing) = map.get(id1) {
+                    existing == *id2
+                } else {
+                    map.insert(*id1, *id2);
+                    true
+                }
+            }
+            (mrs_core::Term::App(f1, args1), mrs_core::Term::App(f2, args2)) => {
+                f1 == f2 && args1.len() == args2.len() && args1.iter().zip(args2.iter()).all(|(a1, a2)| helper(a1, a2, map))
+            }
+            _ => false,
+        }
+    }
+    let mut map = std::collections::HashMap::new();
+    helper(t1, t2, &mut map)
+}
+
 /// Lower a step's premises and conclusion and run the structural fast-paths.
 /// Returns `Resolved` when a fast-path decides the step, otherwise `NeedsAtp`
 /// with the lowered formulas captured for a deferred ATP query. Mutates
@@ -775,6 +987,15 @@ fn prepare_atp_step<'p>(
     // CNF-of-iff extractions that the FOL ATPs stall on.
     if crate::checks::propositional_sat::try_propositional_abstraction(&premises, &conclusion) {
         return Prepared::Resolved(StepOutcome::Sound);
+    }
+
+    // Fast-path: try to verify superposition structurally
+    if node.inference_rule == Some("superposition") && !premises.is_empty() {
+        let p1 = &premises[0];
+        let p2 = if premises.len() >= 2 { &premises[1] } else { &premises[0] };
+        if try_superposition_step(p1, p2, &conclusion) {
+            return Prepared::Resolved(StepOutcome::Sound);
+        }
     }
 
     if formula_max_depth(&conclusion) > 25 {
