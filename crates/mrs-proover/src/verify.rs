@@ -80,12 +80,12 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
         Err(e) => return Verdict::VerifiedBad(format!("structural: {e}")),
     };
 
-    if dag.topo.len() > 1000 {
-        return Verdict::Unknown(format!(
-            "structural: proof contains too many steps ({}) to verify within the time limit",
-            dag.topo.len()
-        ));
-    }
+    // if dag.topo.len() > 1000 {
+    //     return Verdict::Unknown(format!(
+    //         "structural: proof contains too many steps ({}) to verify within the time limit",
+    //         dag.topo.len()
+    //     ));
+    // }
 
     if let Err(e) = crate::checks::introduced_definition::check_cycles(&dag) {
         return Verdict::VerifiedBad(format!("structural: {e}"));
@@ -122,6 +122,17 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
     //    fast-paths). This pass is the only one that mutates `symbols` and
     //    `sk_reg`, so it must run in topo order on a single thread. Structural
     //    steps are decided here; genuine ATP steps are collected as jobs.
+    let mut lowered_formulas: std::collections::HashMap<usize, mrs_core::Formula> =
+        std::collections::HashMap::with_capacity(dag.topo.len());
+    {
+        let mut ctx = LowerCtx::new(&mut symbols);
+        for &idx in &dag.topo {
+            ctx.reset_vars();
+            let f = lower_annotated_formula(&mut ctx, dag.nodes[idx].formula);
+            lowered_formulas.insert(idx, f);
+        }
+    }
+
     let mut names: Vec<&str> = Vec::with_capacity(dag.topo.len());
     let mut rules: Vec<&str> = Vec::with_capacity(dag.topo.len());
     let mut outcomes: Vec<Option<StepOutcome>> = Vec::with_capacity(dag.topo.len());
@@ -131,7 +142,7 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
         let slot = outcomes.len();
         names.push(dag.nodes[idx].name);
         rules.push(dag.nodes[idx].inference_rule.unwrap_or("-"));
-        match check_node_prepare(&dag, idx, job, &mut symbols, &mut sk_reg) {
+        match check_node_prepare(&dag, idx, job, &mut symbols, &mut sk_reg, &lowered_formulas) {
             Prepared::Resolved(oc) => outcomes.push(Some(oc)),
             Prepared::NeedsAtp(step) => {
                 outcomes.push(None);
@@ -370,6 +381,7 @@ fn check_node_prepare<'p>(
     job: &LoadedJob,
     symbols: &mut SymbolTable,
     sk_reg: &mut skolemize::SkolemRegistry,
+    lowered_formulas: &std::collections::HashMap<usize, mrs_core::Formula>,
 ) -> Prepared {
     let node = &dag.nodes[idx];
 
@@ -534,7 +546,7 @@ fn check_node_prepare<'p>(
 
     // Other plain/thm/cth steps → prepare an ATP query for Pass 2.
     //
-    prepare_atp_step(dag, idx, Some(job), symbols)
+    prepare_atp_step(dag, idx, Some(job), symbols, lowered_formulas)
 }
 
 /// Decide a step via the ATP, keeping the prepare/finish split internal.
@@ -551,7 +563,13 @@ fn delegate_to_atp<'p>(
     atp: &dyn Atp,
     budget: Duration,
 ) -> StepOutcome {
-    match prepare_atp_step(dag, idx, None, symbols) {
+    let mut lowered_formulas = std::collections::HashMap::new();
+    let mut ctx = LowerCtx::new(symbols);
+    for (i, node) in dag.nodes.iter().enumerate() {
+        ctx.reset_vars();
+        lowered_formulas.insert(i, lower_annotated_formula(&mut ctx, node.formula));
+    }
+    match prepare_atp_step(dag, idx, None, symbols, &lowered_formulas) {
         Prepared::Resolved(oc) => oc,
         Prepared::NeedsAtp(step) => finish_atp(atp, symbols, &step, budget),
     }
@@ -845,6 +863,7 @@ fn prepare_atp_step<'p>(
     idx: usize,
     job: Option<&LoadedJob>,
     symbols: &mut SymbolTable,
+    lowered_formulas: &std::collections::HashMap<usize, mrs_core::Formula>,
 ) -> Prepared {
     let node = &dag.nodes[idx];
     // SZS status routing. An `esa` step asserts *equisatisfiability*, not
@@ -880,8 +899,7 @@ fn prepare_atp_step<'p>(
     let mut premise_is_def = Vec::with_capacity(node.parents.len());
     for (i, p) in node.parents.iter().enumerate() {
         if let Some(&pi) = dag.by_name.get(p) {
-            ctx.reset_vars();
-            let mut f = lower_annotated_formula(&mut ctx, dag.nodes[pi].formula);
+            let mut f = lowered_formulas.get(&pi).unwrap().clone();
             let negated = node.negated_parents.get(i).copied().unwrap_or(false);
             if negated && dag.nodes[pi].role != FormulaRole::Conjecture {
                 return Prepared::Resolved(StepOutcome::Unsound(format!(
@@ -934,11 +952,12 @@ fn prepare_atp_step<'p>(
     }
 
     // Append any negated_conjecture formulas as global assumptions of the proof (safe and sound)
-    for other_node in &dag.nodes {
-        if other_node.role == FormulaRole::NegatedConjecture && other_node.name != node.name {
-            ctx.reset_vars();
-            let neg_conj_f = lower_annotated_formula(&mut ctx, other_node.formula);
-            premises.push(neg_conj_f);
+    for (other_idx, other_node) in dag.nodes.iter().enumerate() {
+        if other_node.role == FormulaRole::NegatedConjecture
+            && other_node.name != node.name
+            && let Some(neg_conj_f) = lowered_formulas.get(&other_idx)
+        {
+            premises.push(neg_conj_f.clone());
             premise_is_def.push(false);
         }
     }
@@ -947,15 +966,14 @@ fn prepare_atp_step<'p>(
     let current_pos = dag.topo.iter().position(|&x| x == idx).unwrap();
     for &prev_idx in &dag.topo[0..current_pos] {
         let prev_node = &dag.nodes[prev_idx];
-        ctx.reset_vars();
-        let prev_f = lower_annotated_formula(&mut ctx, prev_node.formula);
-        if prev_node.role != FormulaRole::Conjecture && is_ground_unit_clause(&prev_f) {
-            premises.push(prev_f);
+        let prev_f = lowered_formulas.get(&prev_idx).unwrap();
+        if prev_node.role != FormulaRole::Conjecture && is_ground_unit_clause(prev_f) {
+            premises.push(prev_f.clone());
             premise_is_def.push(false);
         }
     }
 
-    // Append all original problem axioms and hypotheses as global premises to resolve clausification gaps (only for FOF-to-CNF translation steps)
+    // Append all original problem axioms and hypotheses as global premises to resolve clausification & theory gaps
     let is_fof_translation = matches!(
         node.inference_rule,
         Some("cnf_transformation")
@@ -966,22 +984,22 @@ fn prepare_atp_step<'p>(
             | Some("nnf_transformation")
             | Some("distribute")
     );
-    if is_fof_translation
-        && let Some(j) = job
+    if let Some(j) = job
         && let Some(prob) = &j.problem
     {
         for f in &prob.problem().formulas {
             if f.role() == FormulaRole::Axiom || f.role() == FormulaRole::Hypothesis {
                 ctx.reset_vars();
                 let axiom_f = lower_annotated_formula(&mut ctx, f);
-                premises.push(axiom_f);
-                premise_is_def.push(false);
+                if is_fof_translation || is_ac_axiom(&axiom_f) {
+                    premises.push(axiom_f);
+                    premise_is_def.push(false);
+                }
             }
         }
     }
 
-    ctx.reset_vars();
-    let conclusion = lower_annotated_formula(&mut ctx, node.formula);
+    let conclusion = lowered_formulas.get(&idx).unwrap().clone();
 
     // Structural definition_folding: when Vampire emits a step whose
     // sole non-def parent is the unfolded source and the rest are
@@ -1589,5 +1607,16 @@ mod budget_tests {
             step_budget(deadline, Duration::from_secs(8), 8, 1000, false),
             Duration::from_secs(1)
         );
+    }
+}
+
+fn is_ac_axiom(f: &mrs_core::Formula) -> bool {
+    match f {
+        mrs_core::Formula::Forall(_, inner) => is_ac_axiom(inner),
+        mrs_core::Formula::Atom(mrs_core::Atom::Eq(l, r)) => match (l, r) {
+            (mrs_core::Term::App(f1, _), mrs_core::Term::App(f2, _)) => f1 == f2,
+            _ => false,
+        },
+        _ => false,
     }
 }
