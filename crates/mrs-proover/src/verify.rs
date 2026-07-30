@@ -41,7 +41,7 @@ impl Default for Settings {
             total_budget: Duration::from_secs(30),
             per_step_budget: Duration::from_secs(3),
             verbose: false,
-            workers: 8,
+            workers: num_cpus::get_physical().max(1),
         }
     }
 }

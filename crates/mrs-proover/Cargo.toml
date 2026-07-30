@@ -20,3 +20,4 @@ mrs-core = { workspace = true, features = ["proover"] }
 mrs-cnf = { workspace = true }
 mrs-search = { workspace = true }
 cadical = { workspace = true }
+num_cpus = "1.17.0"

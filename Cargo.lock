@@ -3628,6 +3628,7 @@ dependencies = [
  "mrs-core",
  "mrs-search",
  "mrs-tptp",
+ "num_cpus",
 ]
 
 [[package]]
