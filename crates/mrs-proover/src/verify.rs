@@ -1010,9 +1010,10 @@ fn prepare_atp_step<'p>(
     // (eprover/vampire/mrs) routinely time out on the larger ones.
     // Returning `None` here costs only a quick is_propositional walk and
     // falls through to the unchanged ATP ladder.
-    if let Some(outcome) =
-        crate::checks::propositional_sat::try_propositional(&premises, &conclusion)
-    {
+    if let Some(outcome) = crate::checks::propositional_sat::try_propositional(
+        &premises[0..node.parents.len()],
+        &conclusion,
+    ) {
         return Prepared::Resolved(match outcome {
             crate::checks::propositional_sat::PropOutcome::Sound => StepOutcome::Sound,
             crate::checks::propositional_sat::PropOutcome::Unsound if esa => StepOutcome::Unknown(
@@ -1034,7 +1035,10 @@ fn prepare_atp_step<'p>(
     // ladder; this path never reports unsoundness. This decides Vampire's
     // `avatar_component_clause` (`spl <=> body` ⊢ `¬body ∨ spl`) and similar
     // CNF-of-iff extractions that the FOL ATPs stall on.
-    if crate::checks::propositional_sat::try_propositional_abstraction(&premises, &conclusion) {
+    if crate::checks::propositional_sat::try_propositional_abstraction(
+        &premises[0..node.parents.len()],
+        &conclusion,
+    ) {
         return Prepared::Resolved(StepOutcome::Sound);
     }
 
