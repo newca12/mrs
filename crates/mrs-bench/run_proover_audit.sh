@@ -176,16 +176,16 @@ LOG_FILE="$(mktemp)"
 
 echo "--------------------------------------------------------"
 
-failed=$(grep -c "\[FAILED Verif\]" "${LOG_FILE}" || true)
-unknown=$(grep -E "\.p \.\.\. (Theorem|Unsatisfiable)" "${LOG_FILE}" | grep -vc "\[Verified\]\|\[FAILED Verif\]" || true)
+failed=$(grep -c "VerifiedBad" "${LOG_FILE}" || true)
+unknown=$(grep -E "\.p \.\.\. (Theorem|Unsatisfiable)" "${LOG_FILE}" | grep -c "Unknown" || true)
 
 echo -e "${CYAN}Audit Finished!${NC}"
-echo -e "  * Confirmed unsound (FAILED Verif) : ${RED}${failed}${NC}"
-echo -e "  * Unverified Theorem/Unsatisfiable  : ${YELLOW}${unknown}${NC} (mrs-proover returned Unknown; inspect by hand)"
+echo -e "  * Confirmed unsound (VerifiedBad) : ${RED}${failed}${NC}"
+echo -e "  * Unverified Theorem/Unsatisfiable  : ${YELLOW}${unknown}${NC} (Verifier returned Unknown; inspect by hand)"
 
 if (( failed > 0 )); then
-    echo -e "${RED}SOUNDNESS BUG CONFIRMED by mrs-proover -- do NOT submit.${NC}"
-    grep "\[FAILED Verif\]" "${LOG_FILE}"
+    echo -e "${RED}SOUNDNESS BUG CONFIRMED by verifier -- do NOT submit.${NC}"
+    grep "VerifiedBad" "${LOG_FILE}"
     rm -f "${LOG_FILE}"
     exit 2
 fi

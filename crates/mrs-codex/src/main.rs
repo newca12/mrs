@@ -62,7 +62,9 @@ struct RunResult {
     timeout: u64,
     time_to_solve: Option<f64>,
     status: String,
-    proover_validated: Option<bool>,
+    proover_validated: Option<String>,
+    starexec_validated: Option<String>,
+    time_to_verify: Option<f64>,
 }
 
 fn init_db(conn: &Connection) -> SqliteResult<()> {
@@ -97,7 +99,9 @@ fn init_db(conn: &Connection) -> SqliteResult<()> {
             timeout INTEGER NOT NULL,
             time_to_solve REAL,
             status TEXT NOT NULL,
-            proover_validated BOOLEAN,
+            proover_validated TEXT,
+            starexec_validated TEXT,
+            time_to_verify REAL,
             FOREIGN KEY(system_id) REFERENCES systems(id),
             FOREIGN KEY(hardware_id) REFERENCES hardware(id),
             FOREIGN KEY(parameter_id) REFERENCES parameters(id),
@@ -105,6 +109,9 @@ fn init_db(conn: &Connection) -> SqliteResult<()> {
         )",
         [],
     )?;
+    // Schema migrations for already-existing databases
+    let _ = conn.execute("ALTER TABLE results ADD COLUMN starexec_validated TEXT", []);
+    let _ = conn.execute("ALTER TABLE results ADD COLUMN time_to_verify REAL", []);
     Ok(())
 }
 
@@ -160,60 +167,99 @@ fn extract_szs_status(output: &str) -> Option<String> {
 
 /// Verifies a TSTP proof (given as `stdout` from a prover run) using
 /// `mrs-proover --only-mrs`, restricted to the `mrs` ATP fallback.
-/// Returns `Some(true)` if verified, `Some(false)` if verification failed
-/// or timed out, and `None` if the verifier could not be launched.
-fn verify_proof_with_proover(stdout: &str) -> Option<bool> {
-    // Write stdout (which should contain the TSTP proof) to a temp file.
-    let mut temp_file = NamedTempFile::new().ok()?;
-    temp_file.write_all(stdout.as_bytes()).ok()?;
+/// Returns "VerifiedGood", "VerifiedBad", or "Unknown".
+fn verify_proof_with_proover(stdout: &str) -> String {
+    let run = || -> Option<String> {
+        // Write stdout (which should contain the TSTP proof) to a temp file.
+        let mut temp_file = NamedTempFile::new().ok()?;
+        temp_file.write_all(stdout.as_bytes()).ok()?;
 
-    // Determine the path to mrs-proover. Assumed to be in the same dir as the current executable.
-    let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("mrs-codex"));
-    let proover_exe = current_exe
-        .parent()
-        .unwrap_or(Path::new("."))
-        .join("mrs-proover");
+        // Determine the path to mrs-proover. Assumed to be in the same dir as the current executable.
+        let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("mrs-codex"));
+        let proover_exe = current_exe
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("mrs-proover");
 
-    // Run the verifier forcing it to use only 'mrs' as the ATP fallback.
-    // Limit to 1 worker thread to prevent thread explosion under parallel codex jobs.
-    // Restrict total verification budget to 10 seconds.
-    let mut proover_cmd = Command::new(&proover_exe);
-    proover_cmd.arg("--only-mrs");
-    proover_cmd.arg("--workers");
-    proover_cmd.arg("1");
-    proover_cmd.arg("--time");
-    proover_cmd.arg("10");
-    proover_cmd.arg(temp_file.path());
+        // Run the verifier forcing it to use only 'mrs' as the ATP fallback.
+        // Limit to 1 worker thread to prevent thread explosion under parallel codex jobs.
+        // Restrict total verification budget to 10 seconds.
+        let mut proover_cmd = Command::new(&proover_exe);
+        proover_cmd.arg("--only-mrs");
+        proover_cmd.arg("--workers");
+        proover_cmd.arg("1");
+        proover_cmd.arg("--time");
+        proover_cmd.arg("10");
+        proover_cmd.arg(temp_file.path());
 
-    let mut proover_child = proover_cmd.stdout(Stdio::piped()).spawn().ok()?;
+        let mut proover_child = proover_cmd.stdout(Stdio::piped()).spawn().ok()?;
 
-    // We give the verifier at most 60 seconds to verify.
-    match proover_child.wait_timeout(Duration::from_secs(60)) {
-        Ok(Some(_)) => {
-            let p_output = proover_child.wait_with_output().ok()?;
-            let p_stdout = String::from_utf8_lossy(&p_output.stdout);
-            // mrs-proover emits `VerifiedGood` / `VerifiedBad` / `Unknown`
-            // (never the bare word `Verified`). Comparing against the exact
-            // status word here previously made this check always false,
-            // silently flagging every Theorem/Unsatisfiable result as
-            // `[FAILED Verif]` regardless of the real verdict.
-            match extract_szs_status(&p_stdout).as_deref() {
-                Some("VerifiedGood") => Some(true),
-                Some("VerifiedBad") => Some(false),
-                // `Unknown` (or anything else, e.g. a load error) means
-                // mrs-proover could not decide -- not a confirmed bug, but
-                // not a confirmed-sound proof either. Report as "not
-                // verified" (None) rather than a false failure so callers
-                // can distinguish "proven unsound" from "inconclusive".
-                _ => None,
+        // We give the verifier at most 60 seconds to verify.
+        match proover_child.wait_timeout(Duration::from_secs(60)) {
+            Ok(Some(_)) => {
+                let p_output = proover_child.wait_with_output().ok()?;
+                let p_stdout = String::from_utf8_lossy(&p_output.stdout);
+                match extract_szs_status(&p_stdout).as_deref() {
+                    Some("VerifiedGood") => Some("VerifiedGood".to_string()),
+                    Some("VerifiedBad") => Some("VerifiedBad".to_string()),
+                    _ => Some("Unknown".to_string()),
+                }
+            }
+            _ => {
+                let _ = proover_child.kill();
+                let _ = proover_child.wait();
+                Some("Unknown".to_string())
             }
         }
-        _ => {
-            let _ = proover_child.kill();
-            let _ = proover_child.wait();
-            Some(false)
+    };
+    run().unwrap_or_else(|| "Unknown".to_string())
+}
+
+/// Verifies a TSTP proof using the StarExec entrypoint script.
+/// Returns the parsed status ("VerifiedGood", "VerifiedBad", "Unknown") and the duration.
+fn verify_proof_with_starexec(stdout: &str) -> (String, f64) {
+    let run = || -> Option<(String, f64)> {
+        let mut temp_file = NamedTempFile::new().ok()?;
+        temp_file.write_all(stdout.as_bytes()).ok()?;
+
+        let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("mrs-codex"));
+        let workspace_root = current_exe
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+            .unwrap_or(Path::new("."));
+        let starexec_script =
+            workspace_root.join("crates/mrs-bench/systems/mrs-proover/starexec_run_default");
+
+        let mut cmd = Command::new(&starexec_script);
+        cmd.env("STAREXEC_WALLCLOCK_LIMIT", "300");
+        cmd.env("PROOVER_WORKERS", "1");
+        cmd.arg(temp_file.path());
+
+        let start_time = Instant::now();
+        let mut child = cmd.stdout(Stdio::piped()).spawn().ok()?;
+
+        match child.wait_timeout(Duration::from_secs(310)) {
+            Ok(Some(_)) => {
+                let duration = start_time.elapsed().as_secs_f64();
+                let p_output = child.wait_with_output().ok()?;
+                let p_stdout = String::from_utf8_lossy(&p_output.stdout);
+                let status = match extract_szs_status(&p_stdout).as_deref() {
+                    Some("VerifiedGood") => "VerifiedGood".to_string(),
+                    Some("VerifiedBad") => "VerifiedBad".to_string(),
+                    _ => "Unknown".to_string(),
+                };
+                Some((status, duration))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let duration = start_time.elapsed().as_secs_f64();
+                Some(("Unknown".to_string(), duration))
+            }
         }
-    }
+    };
+    run().unwrap_or_else(|| ("Unknown".to_string(), 0.0))
 }
 
 fn parse_cmd_template(template: &str, file: &Path, timeout: u64) -> Vec<String> {
@@ -264,8 +310,8 @@ fn writer_thread(db_path: PathBuf, receiver: Receiver<RunResult>) {
     for result in receiver {
         let res = conn.execute(
             "INSERT OR REPLACE INTO results 
-             (problem_name, system_id, hardware_id, parameter_id, timeout, time_to_solve, status, proover_validated)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (problem_name, system_id, hardware_id, parameter_id, timeout, time_to_solve, status, proover_validated, starexec_validated, time_to_verify)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 result.problem_name,
                 result.system_id,
@@ -274,7 +320,9 @@ fn writer_thread(db_path: PathBuf, receiver: Receiver<RunResult>) {
                 result.timeout,
                 result.time_to_solve,
                 result.status,
-                result.proover_validated
+                result.proover_validated,
+                result.starexec_validated,
+                result.time_to_verify
             ],
         );
 
@@ -395,7 +443,9 @@ fn main() {
 
                 let mut status_str = "Error".to_string();
                 let mut time_to_solve = None;
-                let mut proover_validated: Option<bool> = None;
+                let mut proover_validated: Option<String> = None;
+                let mut starexec_validated: Option<String> = None;
+                let mut time_to_verify: Option<f64> = None;
 
                 match command.spawn() {
                     Ok(mut child) => {
@@ -418,7 +468,12 @@ fn main() {
 
                                         // If a proof was found, we want to run mrs-proover to verify it
                                         if szs == "Theorem" || szs == "Unsatisfiable" {
-                                            proover_validated = verify_proof_with_proover(&stdout);
+                                            proover_validated =
+                                                Some(verify_proof_with_proover(&stdout));
+                                            let (st_val, st_time) =
+                                                verify_proof_with_starexec(&stdout);
+                                            starexec_validated = Some(st_val);
+                                            time_to_verify = Some(st_time);
                                         }
                                     } else {
                                         if status.success() {
@@ -438,6 +493,7 @@ fn main() {
                                 time_to_solve = Some(args.timeout as f64);
                             }
                             Err(e) => {
+                                // Error waiting for process
                                 eprintln!("Error waiting for process: {}", e);
                             }
                         }
@@ -456,7 +512,9 @@ fn main() {
                     timeout: args.timeout,
                     time_to_solve,
                     status: status_str.clone(),
-                    proover_validated,
+                    proover_validated: proover_validated.clone(),
+                    starexec_validated: starexec_validated.clone(),
+                    time_to_verify,
                 };
 
                 sender
@@ -468,10 +526,14 @@ fn main() {
                     .map(|t| format!("{:.2}s", t))
                     .unwrap_or_else(|| "N/A".to_string());
 
-                let val_disp = match proover_validated {
-                    Some(true) => " [Verified]",
-                    Some(false) => " [FAILED Verif]",
-                    None => "",
+                let val_disp = match (&proover_validated, &starexec_validated) {
+                    (Some(pv), Some(sv)) => format!(
+                        " [Proover: {}, StarExec: {} (verify: {:.2}s)]",
+                        pv,
+                        sv,
+                        time_to_verify.unwrap_or(0.0)
+                    ),
+                    _ => "".to_string(),
                 };
 
                 println!(
