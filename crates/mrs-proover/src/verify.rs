@@ -855,6 +855,81 @@ fn alpha_equiv_terms(t1: &mrs_core::Term, t2: &mrs_core::Term) -> bool {
     helper(t1, t2, &mut map)
 }
 
+fn try_verify_avatar_step(
+    rule: &str,
+    premises: &[mrs_core::Formula],
+    conclusion: &mrs_core::Formula,
+) -> Option<StepOutcome> {
+    if rule == "avatar_component_clause" && premises.len() == 1 {
+        let parent = &premises[0];
+        let mut spl_var = None;
+        if let mrs_core::Formula::Or(cs) = conclusion {
+            for c in cs {
+                if let mrs_core::Formula::Neg(inner) = c
+                    && let mrs_core::Formula::Atom(mrs_core::Atom::Pred(p, args)) = &**inner
+                    && args.is_empty()
+                {
+                    spl_var = Some(*p);
+                    break;
+                }
+            }
+        } else if let mrs_core::Formula::Neg(inner) = conclusion
+            && let mrs_core::Formula::Atom(mrs_core::Atom::Pred(p, args)) = &**inner
+            && args.is_empty()
+        {
+            spl_var = Some(*p);
+        }
+
+        if let Some(p_id) = spl_var {
+            let mut found = false;
+            if let mrs_core::Formula::Or(pcs) = parent {
+                for pc in pcs {
+                    if let mrs_core::Formula::Atom(mrs_core::Atom::Pred(pp, pargs)) = pc
+                        && *pp == p_id
+                        && pargs.is_empty()
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+            } else if let mrs_core::Formula::Atom(mrs_core::Atom::Pred(pp, pargs)) = parent
+                && *pp == p_id
+                && pargs.is_empty()
+            {
+                found = true;
+            }
+            if found {
+                return Some(StepOutcome::Sound);
+            }
+        }
+    } else if rule == "avatar_split_clause" {
+        let mut ok = true;
+        if let mrs_core::Formula::Or(cs) = conclusion {
+            for c in cs {
+                if let mrs_core::Formula::Atom(mrs_core::Atom::Pred(_, args)) = c {
+                    if !args.is_empty() {
+                        ok = false;
+                        break;
+                    }
+                } else {
+                    ok = false;
+                    break;
+                }
+            }
+        } else if let mrs_core::Formula::Atom(mrs_core::Atom::Pred(_, args)) = conclusion {
+            if !args.is_empty() {
+                ok = false;
+            }
+        } else {
+            ok = false;
+        }
+        if ok {
+            return Some(StepOutcome::Sound);
+        }
+    }
+    None
+}
+
 /// Lower a step's premises and conclusion and run the structural fast-paths.
 /// Returns `Resolved` when a fast-path decides the step, otherwise `NeedsAtp`
 /// with the lowered formulas captured for a deferred ATP query. Mutates
@@ -1001,6 +1076,13 @@ fn prepare_atp_step<'p>(
     }
 
     let conclusion = lowered_formulas.get(&idx).unwrap().clone();
+
+    if let Some(rule) = node.inference_rule
+        && let Some(outcome) =
+            try_verify_avatar_step(rule, &premises[0..node.parents.len()], &conclusion)
+    {
+        return Prepared::Resolved(outcome);
+    }
 
     // Structural definition_folding: when Vampire emits a step whose
     // sole non-def parent is the unfolded source and the rest are

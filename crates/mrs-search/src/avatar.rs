@@ -177,6 +177,9 @@ impl AvatarContext {
             return None;
         }
 
+        // Insert the unsplit parent clause itself so it can be resolved during proof extraction
+        clause_store.insert(clause.id, clause.clone());
+
         let n = clause.literals.len();
         let mut parent = (0..n).collect::<Vec<_>>();
 
