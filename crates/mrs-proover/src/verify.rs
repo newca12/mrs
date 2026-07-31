@@ -865,6 +865,20 @@ fn alpha_equiv_terms(t1: &mrs_core::Term, t2: &mrs_core::Term) -> bool {
     helper(t1, t2, &mut map)
 }
 
+fn is_split_literal(f: &mrs_core::Formula) -> bool {
+    match f {
+        mrs_core::Formula::Atom(mrs_core::Atom::Pred(_, args)) => args.is_empty(),
+        mrs_core::Formula::Neg(inner) => {
+            if let mrs_core::Formula::Atom(mrs_core::Atom::Pred(_, args)) = &**inner {
+                args.is_empty()
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
 fn try_verify_avatar_step(
     rule: &str,
     premises: &[mrs_core::Formula],
@@ -882,65 +896,57 @@ fn try_verify_avatar_step(
         {
             parent = inner;
         }
-        let mut spl_var = None;
+
+        // 1. Collect all positive split variable IDs in the parent clause
+        let mut parent_pos_spls = std::collections::HashSet::new();
+        if let mrs_core::Formula::Or(pcs) = parent {
+            for pc in pcs {
+                if let mrs_core::Formula::Atom(mrs_core::Atom::Pred(pp, pargs)) = pc
+                    && pargs.is_empty()
+                {
+                    parent_pos_spls.insert(*pp);
+                }
+            }
+        } else if let mrs_core::Formula::Atom(mrs_core::Atom::Pred(pp, pargs)) = parent
+            && pargs.is_empty()
+        {
+            parent_pos_spls.insert(*pp);
+        }
+
+        // 2. Check if the conclusion has any negated split variable that is positive in the parent
+        let mut found = false;
         if let mrs_core::Formula::Or(cs) = conclusion {
             for c in cs {
                 if let mrs_core::Formula::Neg(inner) = c
                     && let mrs_core::Formula::Atom(mrs_core::Atom::Pred(p, args)) = &**inner
                     && args.is_empty()
+                    && parent_pos_spls.contains(p)
                 {
-                    spl_var = Some(*p);
+                    found = true;
                     break;
                 }
             }
         } else if let mrs_core::Formula::Neg(inner) = conclusion
             && let mrs_core::Formula::Atom(mrs_core::Atom::Pred(p, args)) = &**inner
             && args.is_empty()
+            && parent_pos_spls.contains(p)
         {
-            spl_var = Some(*p);
+            found = true;
         }
 
-        if let Some(p_id) = spl_var {
-            let mut found = false;
-            if let mrs_core::Formula::Or(pcs) = parent {
-                for pc in pcs {
-                    if let mrs_core::Formula::Atom(mrs_core::Atom::Pred(pp, pargs)) = pc
-                        && *pp == p_id
-                        && pargs.is_empty()
-                    {
-                        found = true;
-                        break;
-                    }
-                }
-            } else if let mrs_core::Formula::Atom(mrs_core::Atom::Pred(pp, pargs)) = parent
-                && *pp == p_id
-                && pargs.is_empty()
-            {
-                found = true;
-            }
-            if found {
-                return Some(StepOutcome::Sound);
-            }
+        if found {
+            return Some(StepOutcome::Sound);
         }
     } else if rule == "avatar_split_clause" {
         let mut ok = true;
         if let mrs_core::Formula::Or(cs) = conclusion {
             for c in cs {
-                if let mrs_core::Formula::Atom(mrs_core::Atom::Pred(_, args)) = c {
-                    if !args.is_empty() {
-                        ok = false;
-                        break;
-                    }
-                } else {
+                if !is_split_literal(c) {
                     ok = false;
                     break;
                 }
             }
-        } else if let mrs_core::Formula::Atom(mrs_core::Atom::Pred(_, args)) = conclusion {
-            if !args.is_empty() {
-                ok = false;
-            }
-        } else {
+        } else if !is_split_literal(conclusion) {
             ok = false;
         }
         if ok {

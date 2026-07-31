@@ -351,8 +351,9 @@ fn run_atp(
             let _ = stdin.write_all(&buf);
         });
     }
-    let stdout_bytes = drain_to_bytes(child.stdout.take());
-    let (verdict, stdout) = wait_with_timeout(&mut child, budget, stdout_bytes, cancel);
+    let (drain_handle, stdout_bytes) = drain_to_bytes(child.stdout.take());
+    let (verdict, stdout) =
+        wait_with_timeout(&mut child, budget, drain_handle, stdout_bytes, cancel);
     maybe_debug_dump(binary, args, problem, &stdout, verdict);
     verdict
 }
@@ -366,11 +367,14 @@ fn run_atp(
 /// SZS line buffered when the child exits, with no extra wait.
 fn drain_to_bytes(
     mut stdout: Option<std::process::ChildStdout>,
-) -> std::sync::Arc<std::sync::Mutex<Vec<u8>>> {
+) -> (
+    Option<thread::JoinHandle<()>>,
+    std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+) {
     let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::with_capacity(4096)));
-    if let Some(s) = stdout.take() {
+    let handle = if let Some(s) = stdout.take() {
         let buf_clone = buf.clone();
-        thread::spawn(move || {
+        let h = thread::spawn(move || {
             let mut local = Vec::with_capacity(4096);
             let mut reader = s;
             let _ = reader.read_to_end(&mut local);
@@ -378,8 +382,11 @@ fn drain_to_bytes(
                 guard.extend_from_slice(&local);
             }
         });
-    }
-    buf
+        Some(h)
+    } else {
+        None
+    };
+    (handle, buf)
 }
 
 /// Wait for `child` to exit, or kill it once `budget` elapses.
@@ -402,6 +409,7 @@ fn drain_to_bytes(
 fn wait_with_timeout(
     child: &mut Child,
     budget: Duration,
+    drain_handle: Option<thread::JoinHandle<()>>,
     stdout_bytes: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> (AtpVerdict, String) {
@@ -433,7 +441,9 @@ fn wait_with_timeout(
     }
     // Give the stdout drain thread a brief moment to flush after the
     // child exits, then read whatever we've accumulated.
-    thread::sleep(Duration::from_millis(2));
+    if let Some(h) = drain_handle {
+        let _ = h.join();
+    }
     let bytes = match stdout_bytes.lock() {
         Ok(g) => g.clone(),
         Err(_) => Vec::new(),
