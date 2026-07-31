@@ -523,6 +523,16 @@ fn check_node_prepare<'p>(
         if let Some(outcome) = vampire_skolemisation::try_check(node.formula, &parents, sk_reg) {
             return Prepared::Resolved(outcome);
         }
+        if parents.len() == 1 {
+            let mut ctx = LowerCtx::new(symbols);
+            ctx.reset_vars();
+            let parent_f = lower_annotated_formula(&mut ctx, parents[0]);
+            ctx.reset_vars();
+            let concl_f = lowered_formulas.get(&idx).unwrap();
+            if trivial::equiv(&parent_f, concl_f) {
+                return Prepared::Resolved(StepOutcome::Sound);
+            }
+        }
         // Fall through to ATP if the structural check could not apply.
     }
 
@@ -860,8 +870,18 @@ fn try_verify_avatar_step(
     premises: &[mrs_core::Formula],
     conclusion: &mrs_core::Formula,
 ) -> Option<StepOutcome> {
+    let mut conclusion = conclusion;
+    while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = conclusion
+    {
+        conclusion = inner;
+    }
+
     if rule == "avatar_component_clause" && premises.len() == 1 {
-        let parent = &premises[0];
+        let mut parent = &premises[0];
+        while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = parent
+        {
+            parent = inner;
+        }
         let mut spl_var = None;
         if let mrs_core::Formula::Or(cs) = conclusion {
             for c in cs {
@@ -1052,13 +1072,7 @@ fn prepare_atp_step<'p>(
     // Append all original problem axioms and hypotheses as global premises to resolve clausification & theory gaps
     let is_fof_translation = matches!(
         node.inference_rule,
-        Some("cnf_transformation")
-            | Some("skolemisation")
-            | Some("skolemize")
-            | Some("fof_nnf")
-            | Some("fof_nnf_transformation")
-            | Some("nnf_transformation")
-            | Some("distribute")
+        Some("cnf_transformation") | Some("distribute")
     );
     if let Some(j) = job
         && let Some(prob) = &j.problem

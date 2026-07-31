@@ -70,7 +70,7 @@ const EQUIV_RULES: &[&str] = &[
 ];
 
 /// Single-premise rules that project one conjunct out of a conjunction.
-const PROJECTION_RULES: &[&str] = &["split_conjunct"];
+const PROJECTION_RULES: &[&str] = &["split_conjunct", "cnf_transformation"];
 
 /// Returns `true` if `rule` is one this module knows how to *attempt*.
 /// (It may still fail the structural check and fall through to the ATP.)
@@ -140,7 +140,7 @@ fn contains_too_many_iffs(f: &Formula) -> bool {
 
 /// Sound (partial) logical-equivalence test: `a ≡ b` confirmed via
 /// `canon(nnf(a)) =α= canon(nnf(b))`.
-fn equiv(a: &Formula, b: &Formula) -> bool {
+pub fn equiv(a: &Formula, b: &Formula) -> bool {
     if contains_too_many_iffs(a) || contains_too_many_iffs(b) {
         return false;
     }
@@ -163,10 +163,20 @@ fn projects_conjunct(parent: &Formula, concl: &Formula) -> bool {
         binders.push(*v);
         body = inner;
     }
-    let conjuncts: Vec<&Formula> = match body {
-        Formula::And(cs) => cs.iter().collect(),
-        _ => return false,
-    };
+    let mut conjuncts: Vec<&Formula> = Vec::new();
+    fn collect_conjuncts<'a>(f: &'a Formula, list: &mut Vec<&'a Formula>) {
+        if let Formula::And(cs) = f {
+            for c in cs {
+                collect_conjuncts(c, list);
+            }
+        } else {
+            list.push(f);
+        }
+    }
+    collect_conjuncts(body, &mut conjuncts);
+    if conjuncts.is_empty() {
+        return false;
+    }
     let concl_nnf = to_nnf(concl);
     for c in conjuncts {
         // Re-wrap the conjunct in the peeled universal prefix.
@@ -190,10 +200,20 @@ fn projects_disjunct(parent: &Formula, concl: &Formula) -> bool {
     while let Formula::Forall(_, inner) | Formula::Exists(_, inner) = body {
         body = inner;
     }
-    let disjuncts: Vec<&Formula> = match body {
-        Formula::Or(cs) => cs.iter().collect(),
-        _ => return false,
-    };
+    let mut disjuncts: Vec<&Formula> = Vec::new();
+    fn collect_disjuncts<'a>(f: &'a Formula, list: &mut Vec<&'a Formula>) {
+        if let Formula::Or(cs) = f {
+            for c in cs {
+                collect_disjuncts(c, list);
+            }
+        } else {
+            list.push(f);
+        }
+    }
+    collect_disjuncts(body, &mut disjuncts);
+    if disjuncts.is_empty() {
+        return false;
+    }
     let concl_nnf = to_nnf(concl);
     let mut concl_body = &concl_nnf;
     while let Formula::Forall(_, inner) | Formula::Exists(_, inner) = concl_body {
