@@ -384,30 +384,25 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     }
                 }
             }
-            let (final_id, tstp_proof) = if config.use_avatar && !state.branch_empty_ids.is_empty()
-            {
-                let legacy_store: std::collections::HashMap<_, _> = state
+            let (final_id, tstp_proof) = if config.use_avatar {
+                let mut legacy_store: std::collections::HashMap<_, _> = state
                     .clause_store
                     .iter()
                     .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
                     .collect();
-                let mut combined_proof = std::collections::HashMap::new();
-                for &bid in &state.branch_empty_ids {
-                    if legacy_store.contains_key(&bid) {
-                        let proof = mrs_proof::extract::extract_proof(bid, &legacy_store);
-                        for clause in proof {
-                            combined_proof.insert(clause.id, clause);
-                        }
+
+                let mut parents = Vec::new();
+                for clause in legacy_store.values() {
+                    let is_split = matches!(
+                        &clause.source,
+                        mrs_core::clause::ClauseSource::Inference { rule, .. }
+                            if *rule == "avatar_split_clause"
+                    );
+                    if clause.is_empty() || is_split {
+                        parents.push(clause.id);
                     }
                 }
-                let mut parents = state.branch_empty_ids.clone();
-                for clause in combined_proof.values() {
-                    if let mrs_core::clause::ClauseSource::Inference { rule, .. } = &clause.source {
-                        if *rule == "avatar_split_clause" {
-                            parents.push(clause.id);
-                        }
-                    }
-                }
+
                 let final_id = mrs_core::clause::ClauseId(999_999_999);
                 let final_false_clause = mrs_core::clause::Clause::new(
                     final_id,
@@ -417,10 +412,11 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         parents: parents.into(),
                     },
                 );
-                combined_proof.insert(final_id, final_false_clause);
-                let mut final_proof: Vec<mrs_core::clause::Clause> =
-                    combined_proof.into_values().collect();
+                legacy_store.insert(final_id, final_false_clause);
+
+                let mut final_proof = mrs_proof::extract::extract_proof(final_id, &legacy_store);
                 final_proof.sort_unstable_by_key(|c| c.id.0);
+
                 let tstp = if state.symbols.is_empty() {
                     String::new()
                 } else {
