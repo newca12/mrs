@@ -130,6 +130,14 @@ impl SearchState {
         ml_log_csv: bool,
         weight_fn: crate::ClauseWeightFn,
     ) -> Self {
+        let mut local_symbols = (*symbols).clone();
+        if use_avatar {
+            for i in 1..=2000 {
+                local_symbols.intern(&format!("spl0_{}", i));
+            }
+        }
+        let symbols = Arc::new(local_symbols);
+
         let mut term_bank = TermBank::new();
         let mut clause_store: HashMap<ClauseId, IdClause> = HashMap::default();
         let mut unprocessed = UnprocessedSet::new(config.clone());
@@ -178,7 +186,13 @@ impl SearchState {
                 &goal_symbols,
             );
             if use_avatar {
-                if let Some(splits) = avatar.split_clause_id(&id_clause, &mut id_gen, &term_bank) {
+                if let Some(splits) = avatar.split_clause_id(
+                    &id_clause,
+                    &mut id_gen,
+                    &term_bank,
+                    &mut clause_store,
+                    &symbols,
+                ) {
                     for split in splits {
                         let sw = crate::weight::clause_weight_fn(
                             &split,

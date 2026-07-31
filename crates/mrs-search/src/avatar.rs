@@ -1,8 +1,10 @@
 use crate::{HashMap, HashSet};
+use smallvec::SmallVec;
 
 use cadical::Solver;
 
-use mrs_core::clause::{Clause, ClauseIdGen, Literal};
+use mrs_core::SymbolTable;
+use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource, Literal};
 use mrs_core::formula::Atom;
 use mrs_core::term::{Term, VarId};
 use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank, TermNode};
@@ -168,6 +170,8 @@ impl AvatarContext {
         clause: &IdClause,
         id_gen: &mut ClauseIdGen,
         bank: &TermBank,
+        clause_store: &mut HashMap<mrs_core::clause::ClauseId, IdClause>,
+        symbols: &SymbolTable,
     ) -> Option<Vec<IdClause>> {
         if clause.literals.len() <= 1 {
             return None;
@@ -233,9 +237,11 @@ impl AvatarContext {
 
         let mut split_clauses = Vec::new();
         let mut sat_clause = Vec::new();
+        let mut split_lits = Vec::new();
 
-        for lits in parts {
-            let comp_str = canonical_component_key_id(&lits, bank);
+        // 1. Generate split component variable IDs and construct the parent split clause
+        for lits in &parts {
+            let comp_str = canonical_component_key_id(lits, bank);
 
             let var = if let Some(&v) = self.component_vars.get(&comp_str) {
                 v
@@ -248,11 +254,46 @@ impl AvatarContext {
 
             sat_clause.push(var as i32);
 
+            let sym_name = format!("spl0_{}", var);
+            let sym_id = symbols
+                .resolve_name(&sym_name)
+                .expect("spl0 symbol must exist");
+            let atom = IdAtom::Pred(sym_id, SmallVec::new());
+            let lit = IdLiteral {
+                positive: true,
+                atom,
+            };
+            split_lits.push(lit);
+        }
+
+        let split_id = id_gen.next();
+        let split_c = IdClause::new_avatar(
+            split_id,
+            split_lits,
+            ClauseSource::Inference {
+                rule: "avatar_split_clause",
+                parents: vec![clause.id].into(),
+            },
+            clause.avatar.clone(),
+        );
+        clause_store.insert(split_id, split_c);
+
+        // 2. Construct each component clause derived from split_c
+        for (i, lits) in parts.into_iter().enumerate() {
+            let var = sat_clause[i] as u32;
+
             let mut new_avatar = clause.avatar.clone();
             new_avatar.push(var);
 
-            let new_clause =
-                IdClause::new_avatar(id_gen.next(), lits, clause.source.clone(), new_avatar);
+            let new_clause = IdClause::new_avatar(
+                id_gen.next(),
+                lits,
+                ClauseSource::Inference {
+                    rule: "avatar_component_clause",
+                    parents: vec![split_id].into(),
+                },
+                new_avatar,
+            );
             split_clauses.push(new_clause);
         }
 

@@ -1188,11 +1188,13 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
         let mut model_violated = false;
         for clause in new_clauses {
             if config.use_avatar {
-                if let Some(splits) =
-                    state
-                        .avatar
-                        .split_clause_id(&clause, &mut state.id_gen, &state.term_bank)
-                {
+                if let Some(splits) = state.avatar.split_clause_id(
+                    &clause,
+                    &mut state.id_gen,
+                    &state.term_bank,
+                    &mut state.clause_store,
+                    &state.symbols,
+                ) {
                     if trace_avatar {
                         eprintln!(
                             "[AVATAR] split clause {} ({} lits, avatar={:?}) -> {} components",

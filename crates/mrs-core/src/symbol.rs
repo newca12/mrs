@@ -71,6 +71,11 @@ impl SymbolTable {
         }
     }
 
+    /// Looks up a symbol by name, returning its [`SymbolId`] if it exists.
+    pub fn resolve_name(&self, name: &str) -> Option<SymbolId> {
+        self.ids.get(name).copied()
+    }
+
     /// Resolves a [`SymbolId`] back to its string name.
     ///
     /// # Panics

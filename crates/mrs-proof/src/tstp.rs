@@ -92,10 +92,26 @@ pub fn format_tstp(proof: &[Clause], symbols: &SymbolTable) -> String {
 
         let body = if let Some(formula) = &clause.formula {
             format!("{}", formula.display(symbols))
-        } else if clause.is_empty() {
-            "$false".to_string()
         } else {
-            format!("{}", clause.display(symbols))
+            let mut final_lits = clause.literals.clone();
+            for &v in &clause.avatar {
+                let sym_name = format!("spl0_{}", v);
+                let sym_id = symbols
+                    .resolve_name(&sym_name)
+                    .expect("spl0 symbol must exist");
+                let atom = mrs_core::formula::Atom::pred(sym_id, Vec::new());
+                let lit = mrs_core::clause::Literal::neg(atom);
+                final_lits.push(lit);
+            }
+            if final_lits.is_empty() {
+                "$false".to_string()
+            } else {
+                let mut temp_lines = Vec::new();
+                for lit in &final_lits {
+                    temp_lines.push(format!("{}", lit.display(symbols)));
+                }
+                temp_lines.join(" | ")
+            }
         };
 
         let annotation = match &clause.source {
