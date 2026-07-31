@@ -38,6 +38,8 @@ pub struct SearchState {
     pub config: Arc<SymbolConfig>,
     /// AVATAR context for clause splitting.
     pub avatar: AvatarContext,
+    /// Derived empty clause IDs for each refuted branch.
+    pub branch_empty_ids: Vec<ClauseId>,
     /// Dormant processed clauses (inactive under current AVATAR model).
     pub dormant_processed: HashMap<ClauseId, IdClause>,
     /// Clauses that were in `unprocessed` but are currently inactive.
@@ -237,6 +239,7 @@ impl SearchState {
             id_gen,
             config,
             avatar,
+            branch_empty_ids: Vec::new(),
             dormant_processed: HashMap::default(),
             dormant_unprocessed: HashMap::default(),
             comm_symbols: HashSet::default(),

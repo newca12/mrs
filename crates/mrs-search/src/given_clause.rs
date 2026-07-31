@@ -144,9 +144,11 @@ fn update_model(state: &mut SearchState) {
 /// is now dormant), `false` if UNSAT (full refutation).
 fn avatar_refute_branch(
     state: &mut SearchState,
+    cid: mrs_core::clause::ClauseId,
     avatar: &[u32],
     ordering: &crate::TermOrdering,
 ) -> bool {
+    state.branch_empty_ids.push(cid);
     if state.search_deadline.is_some_and(|d| Instant::now() >= d)
         || state
             .stop_flag
@@ -382,15 +384,61 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     }
                 }
             }
-            let tstp_proof = extract_and_format_proof(empty_id, state);
+            let (final_id, tstp_proof) = if config.use_avatar && !state.branch_empty_ids.is_empty()
+            {
+                let legacy_store: std::collections::HashMap<_, _> = state
+                    .clause_store
+                    .iter()
+                    .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
+                    .collect();
+                let mut combined_proof = std::collections::HashMap::new();
+                for &bid in &state.branch_empty_ids {
+                    if legacy_store.contains_key(&bid) {
+                        let proof = mrs_proof::extract::extract_proof(bid, &legacy_store);
+                        for clause in proof {
+                            combined_proof.insert(clause.id, clause);
+                        }
+                    }
+                }
+                let mut parents = state.branch_empty_ids.clone();
+                for clause in combined_proof.values() {
+                    if let mrs_core::clause::ClauseSource::Inference { rule, .. } = &clause.source {
+                        if *rule == "avatar_split_clause" {
+                            parents.push(clause.id);
+                        }
+                    }
+                }
+                let final_id = mrs_core::clause::ClauseId(999_999_999);
+                let final_false_clause = mrs_core::clause::Clause::new(
+                    final_id,
+                    vec![],
+                    mrs_core::clause::ClauseSource::Inference {
+                        rule: "avatar_sat_refutation",
+                        parents: parents.into(),
+                    },
+                );
+                combined_proof.insert(final_id, final_false_clause);
+                let mut final_proof: Vec<mrs_core::clause::Clause> =
+                    combined_proof.into_values().collect();
+                final_proof.sort_unstable_by_key(|c| c.id.0);
+                let tstp = if state.symbols.is_empty() {
+                    String::new()
+                } else {
+                    mrs_proof::tstp::format_tstp(&final_proof, &state.symbols)
+                };
+                (final_id, tstp)
+            } else {
+                (empty_id, extract_and_format_proof(empty_id, state))
+            };
+
             if std::env::var("TRACE_SEARCH").is_ok() {
                 eprintln!(
                     "[TRACE] wrapper search Refutation called with empty_id = {}, tstp_proof len = {}",
-                    empty_id.0,
+                    final_id.0,
                     tstp_proof.len()
                 );
             }
-            SearchResult::Refutation(empty_id, tstp_proof)
+            SearchResult::Refutation(final_id, tstp_proof)
         }
         SearchResult::Refutation(empty_id, tstp) if tstp.is_empty() && empty_id.0 == 0 => {
             let input_ids: Vec<_> = state.clause_store.keys().copied().collect();
@@ -485,7 +533,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
             } else {
                 let avatar = clause.avatar.clone();
                 let cid = clause.id;
-                if !avatar_refute_branch(state, &avatar, &ordering) {
+                if !avatar_refute_branch(state, cid, &avatar, &ordering) {
                     if std::env::var("TRACE_SEARCH").is_ok() {
                         eprintln!(
                             "[TRACE] return site 3 (line 452) called with id = {}",
@@ -682,7 +730,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         id.0, avatar
                     );
                 }
-                if !avatar_refute_branch(state, &avatar, &ordering) {
+                if !avatar_refute_branch(state, id, &avatar, &ordering) {
                     if std::env::var("TRACE_AVATAR").is_ok() {
                         eprintln!(
                             "[AVATAR] empty given {}: avatar_refute_branch returned false → Refutation",
@@ -1170,7 +1218,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 }
                 let avatar = empty.avatar.clone();
                 let id = empty.id;
-                if !avatar_refute_branch(state, &avatar, &ordering) {
+                if !avatar_refute_branch(state, id, &avatar, &ordering) {
                     if std::env::var("TRACE_SEARCH").is_ok() {
                         eprintln!(
                             "[TRACE] return site 7 (line 1131) called with id = {}",
@@ -1304,7 +1352,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                             id.0, avatar
                         );
                     }
-                    if !avatar_refute_branch(state, &avatar, &ordering) {
+                    if !avatar_refute_branch(state, id, &avatar, &ordering) {
                         if trace_avatar {
                             eprintln!(
                                 "[AVATAR] avatar_refute_branch returned false → SAT UNSAT → Refutation({})",
@@ -1352,7 +1400,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     }
                     let avatar = clause.avatar.clone();
                     let id = clause.id;
-                    if !avatar_refute_branch(state, &avatar, &ordering) {
+                    if !avatar_refute_branch(state, id, &avatar, &ordering) {
                         if std::env::var("TRACE_SEARCH").is_ok() {
                             eprintln!(
                                 "[TRACE] return site 12 (line 1298) called with id = {}",
@@ -1387,7 +1435,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     }
                     let avatar = empty.avatar.clone();
                     let id = empty.id;
-                    if !avatar_refute_branch(state, &avatar, &ordering) {
+                    if !avatar_refute_branch(state, id, &avatar, &ordering) {
                         if std::env::var("TRACE_SEARCH").is_ok() {
                             eprintln!(
                                 "[TRACE] return site 14 (line 1321) called with id = {}",
