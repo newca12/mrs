@@ -523,6 +523,11 @@ fn check_node_prepare<'p>(
         if let Some(outcome) = vampire_skolemisation::try_check(node.formula, &parents, sk_reg) {
             return Prepared::Resolved(outcome);
         }
+        let parent_fof = parents.first().copied();
+        let outcome = skolemize::check(node.formula, parent_fof, sk_reg, node.status);
+        if outcome == StepOutcome::Sound {
+            return Prepared::Resolved(outcome);
+        }
         if parents.len() == 1 {
             let mut ctx = LowerCtx::new(symbols);
             ctx.reset_vars();
