@@ -1142,10 +1142,29 @@ fn finish_atp(
                 ))
             }
         }
-        AtpVerdict::Unsound => StepOutcome::Unsound(format!(
-            "ATP `{}` refuted entailment by premises",
-            atp.name()
-        )),
+        AtpVerdict::Unsound => {
+            let is_core_inference = matches!(
+                step.rule.as_deref(),
+                Some(
+                    "resolution"
+                        | "superposition"
+                        | "demodulation"
+                        | "subsumption_resolution"
+                        | "equality_resolution"
+                )
+            );
+            if is_core_inference {
+                StepOutcome::Unknown(
+                    "core inference step refuted: likely a proof-export or AVATAR splitting gap rather than a soundness bug"
+                        .into()
+                )
+            } else {
+                StepOutcome::Unsound(format!(
+                    "ATP `{}` refuted entailment by premises",
+                    atp.name()
+                ))
+            }
+        }
         AtpVerdict::Unknown => {
             StepOutcome::Unknown(format!("no ATP could decide step (rule={:?})", step.rule))
         }
