@@ -170,5 +170,13 @@ fn resolve_problem_path_with_base(
             v.push(root.join(name));
         }
     }
+    if let Ok(tptp_val) = std::env::var("TPTP") {
+        let root = Path::new(&tptp_val);
+        v.push(root.join(rel));
+        v.push(root.join(base_dir).join(rel));
+        if let Some(name) = Path::new(rel).file_name() {
+            v.push(root.join(name));
+        }
+    }
     v.into_iter().find(|p| p.is_file())
 }

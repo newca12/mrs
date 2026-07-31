@@ -66,5 +66,5 @@ ulimit -s unlimited 2>/dev/null || true
 # lazily-committed virtual memory, not counted against RSS until used).
 export RUST_MIN_STACK=67108864
 
-exec timeout --foreground "${SOFT_TIME}s" "${BINARY}" --workers "${PROOVER_WORKERS:-8}" "${ARGS[@]}" "${PROOF}" \
+exec timeout --foreground "${SOFT_TIME}s" "${BINARY}" --time "${SOFT_TIME}" --workers "${PROOVER_WORKERS:-8}" "${ARGS[@]}" "${PROOF}" \
     || echo "% SZS status Unknown : exhausted wall-clock budget"
