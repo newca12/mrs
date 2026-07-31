@@ -25,9 +25,15 @@ cadical = "0.1.16"
 rustc-hash = "2.1"
 wincode = { version = "0.5.5", features = ["derive"] }
 
+[profile.dev]
+debug = 0
+strip = true
+
 [profile.release]
 lto = "fat"
 codegen-units = 1
+debug = 0
+strip = true
 
 [package]
 name = "mrs"
