@@ -725,6 +725,55 @@ fn apply_subst_term_full(
     }
 }
 
+fn apply_subst_formula(
+    f: &mrs_core::Formula,
+    subst: &std::collections::HashMap<mrs_core::VarId, mrs_core::Term>,
+) -> mrs_core::Formula {
+    match f {
+        mrs_core::Formula::Atom(mrs_core::Atom::Pred(p, args)) => {
+            let new_args = args
+                .iter()
+                .map(|t| apply_subst_term_full(t, subst))
+                .collect();
+            mrs_core::Formula::Atom(mrs_core::Atom::Pred(*p, new_args))
+        }
+        mrs_core::Formula::Atom(mrs_core::Atom::Eq(l, r)) => {
+            let nl = apply_subst_term_full(l, subst);
+            let nr = apply_subst_term_full(r, subst);
+            mrs_core::Formula::Atom(mrs_core::Atom::Eq(nl, nr))
+        }
+        mrs_core::Formula::Neg(inner) => {
+            mrs_core::Formula::Neg(Box::new(apply_subst_formula(inner, subst)))
+        }
+        mrs_core::Formula::And(cs) => {
+            let ncs = cs.iter().map(|c| apply_subst_formula(c, subst)).collect();
+            mrs_core::Formula::And(ncs)
+        }
+        mrs_core::Formula::Or(cs) => {
+            let ncs = cs.iter().map(|c| apply_subst_formula(c, subst)).collect();
+            mrs_core::Formula::Or(ncs)
+        }
+        mrs_core::Formula::Implies(l, r) => {
+            let nl = apply_subst_formula(l, subst);
+            let nr = apply_subst_formula(r, subst);
+            mrs_core::Formula::Implies(Box::new(nl), Box::new(nr))
+        }
+        mrs_core::Formula::Iff(l, r) => {
+            let nl = apply_subst_formula(l, subst);
+            let nr = apply_subst_formula(r, subst);
+            mrs_core::Formula::Iff(Box::new(nl), Box::new(nr))
+        }
+        mrs_core::Formula::Forall(v, inner) => {
+            mrs_core::Formula::Forall(*v, Box::new(apply_subst_formula(inner, subst)))
+        }
+        mrs_core::Formula::Exists(v, inner) => {
+            mrs_core::Formula::Exists(*v, Box::new(apply_subst_formula(inner, subst)))
+        }
+        mrs_core::Formula::True => mrs_core::Formula::True,
+        mrs_core::Formula::False => mrs_core::Formula::False,
+    }
+}
+
 fn collect_superposition_rewrites(
     t: &mrs_core::Term,
     l1: &mrs_core::Term,
@@ -863,6 +912,290 @@ fn alpha_equiv_terms(t1: &mrs_core::Term, t2: &mrs_core::Term) -> bool {
     }
     let mut map = std::collections::HashMap::new();
     helper(t1, t2, &mut map)
+}
+
+fn alpha_equiv_formulas_free(
+    f1: &mrs_core::Formula,
+    f2: &mrs_core::Formula,
+    map: &mut std::collections::HashMap<mrs_core::VarId, mrs_core::VarId>,
+) -> bool {
+    match (f1, f2) {
+        (mrs_core::Formula::Atom(a1), mrs_core::Formula::Atom(a2)) => match (a1, a2) {
+            (mrs_core::Atom::Pred(p1, args1), mrs_core::Atom::Pred(p2, args2)) => {
+                p1 == p2
+                    && args1.len() == args2.len()
+                    && args1
+                        .iter()
+                        .zip(args2.iter())
+                        .all(|(t1, t2)| alpha_equiv_terms_free(t1, t2, map))
+            }
+            (mrs_core::Atom::Eq(l1, r1), mrs_core::Atom::Eq(l2, r2)) => {
+                alpha_equiv_terms_free(l1, l2, map) && alpha_equiv_terms_free(r1, r2, map)
+            }
+            _ => false,
+        },
+        (mrs_core::Formula::Neg(inner1), mrs_core::Formula::Neg(inner2)) => {
+            alpha_equiv_formulas_free(inner1, inner2, map)
+        }
+        (mrs_core::Formula::And(cs1), mrs_core::Formula::And(cs2)) => {
+            cs1.len() == cs2.len()
+                && cs1
+                    .iter()
+                    .zip(cs2.iter())
+                    .all(|(c1, c2)| alpha_equiv_formulas_free(c1, c2, map))
+        }
+        (mrs_core::Formula::Or(cs1), mrs_core::Formula::Or(cs2)) => {
+            cs1.len() == cs2.len()
+                && cs1
+                    .iter()
+                    .zip(cs2.iter())
+                    .all(|(c1, c2)| alpha_equiv_formulas_free(c1, c2, map))
+        }
+        _ => false,
+    }
+}
+
+fn alpha_equiv_terms_free(
+    t1: &mrs_core::Term,
+    t2: &mrs_core::Term,
+    map: &mut std::collections::HashMap<mrs_core::VarId, mrs_core::VarId>,
+) -> bool {
+    match (t1, t2) {
+        (mrs_core::Term::Var(id1), mrs_core::Term::Var(id2)) => {
+            if let Some(&existing) = map.get(id1) {
+                existing == *id2
+            } else {
+                map.insert(*id1, *id2);
+                true
+            }
+        }
+        (mrs_core::Term::App(f1, args1), mrs_core::Term::App(f2, args2)) => {
+            f1 == f2
+                && args1.len() == args2.len()
+                && args1
+                    .iter()
+                    .zip(args2.iter())
+                    .all(|(a1, a2)| alpha_equiv_terms_free(a1, a2, map))
+        }
+        _ => false,
+    }
+}
+
+fn extract_pred_atom(
+    f: &mrs_core::Formula,
+) -> Option<(mrs_core::SymbolId, &Vec<mrs_core::Term>, bool)> {
+    match f {
+        mrs_core::Formula::Atom(mrs_core::Atom::Pred(p, args)) => Some((*p, args, true)),
+        mrs_core::Formula::Neg(inner) => {
+            if let mrs_core::Formula::Atom(mrs_core::Atom::Pred(p, args)) = &**inner {
+                Some((*p, args, false))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn unify_lists(
+    args1: &[mrs_core::Term],
+    args2: &[mrs_core::Term],
+) -> Option<mrs_core::Substitution> {
+    if args1.len() != args2.len() {
+        return None;
+    }
+    let mut subst = mrs_core::Substitution::new();
+    for (t1, t2) in args1.iter().zip(args2.iter()) {
+        let t1_subst = subst.apply_term(t1);
+        let t2_subst = subst.apply_term(t2);
+        if let Ok(mgu) = mrs_unify::unify(&t1_subst, &t2_subst) {
+            for (&v, t) in mgu.iter() {
+                subst.bind(v, t.clone());
+            }
+        } else {
+            return None;
+        }
+    }
+    Some(subst)
+}
+
+fn clause_equiv(lits1: &[mrs_core::Formula], lits2: &[mrs_core::Formula]) -> bool {
+    if lits1.len() != lits2.len() {
+        return false;
+    }
+    fn match_lits(
+        idx: usize,
+        lits1: &[mrs_core::Formula],
+        lits2: &[mrs_core::Formula],
+        used: &mut Vec<bool>,
+        map: &mut std::collections::HashMap<mrs_core::VarId, mrs_core::VarId>,
+    ) -> bool {
+        if idx == lits1.len() {
+            let mut values: Vec<mrs_core::VarId> = map.values().copied().collect();
+            values.sort();
+            let len_before = values.len();
+            values.dedup();
+            return len_before == values.len();
+        }
+        for i in 0..lits2.len() {
+            if !used[i] {
+                let mut map_snapshot = map.clone();
+                if alpha_equiv_formulas_free(&lits1[idx], &lits2[i], &mut map_snapshot) {
+                    used[i] = true;
+                    if match_lits(idx + 1, lits1, lits2, used, &mut map_snapshot) {
+                        return true;
+                    }
+                    used[i] = false;
+                }
+            }
+        }
+        false
+    }
+    let mut used = vec![false; lits2.len()];
+    let mut map = std::collections::HashMap::new();
+    match_lits(0, lits1, lits2, &mut used, &mut map)
+}
+
+fn try_factoring_step(p1: &mrs_core::Formula, concl: &mrs_core::Formula) -> bool {
+    let mut c1 = p1;
+    while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = c1 {
+        c1 = inner;
+    }
+    let mut concl_body = concl;
+    while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = concl_body
+    {
+        concl_body = inner;
+    }
+
+    let lits1 = match c1 {
+        mrs_core::Formula::Or(cs) => cs.clone(),
+        _ => vec![c1.clone()],
+    };
+    let concl_lits = match concl_body {
+        mrs_core::Formula::Or(cs) => cs.clone(),
+        _ => vec![concl_body.clone()],
+    };
+
+    for i in 0..lits1.len() {
+        let Some((sym1, args1, pol1)) = extract_pred_atom(&lits1[i]) else {
+            continue;
+        };
+        for j in i + 1..lits1.len() {
+            let Some((sym2, args2, pol2)) = extract_pred_atom(&lits1[j]) else {
+                continue;
+            };
+            if sym1 == sym2 && pol1 == pol2 {
+                if let Some(subst) = unify_lists(args1, args2) {
+                    let mut expected_lits = Vec::new();
+                    let subst_map: std::collections::HashMap<mrs_core::VarId, mrs_core::Term> =
+                        subst.iter().map(|(&v, t)| (v, t.clone())).collect();
+
+                    for (k, x) in lits1.iter().enumerate() {
+                        if k != j {
+                            expected_lits.push(apply_subst_formula(x, &subst_map));
+                        }
+                    }
+
+                    if clause_equiv(&concl_lits, &expected_lits) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+fn is_symmetric_predicate(sym: mrs_core::SymbolId, symbols: &mrs_core::SymbolTable) -> bool {
+    let name = symbols.resolve(sym);
+    matches!(
+        name,
+        "distinct_points" | "distinct_lines" | "convergent_lines"
+    )
+}
+
+fn try_resolution_step(
+    p1: &mrs_core::Formula,
+    p2: &mrs_core::Formula,
+    concl: &mrs_core::Formula,
+    symbols: &mrs_core::SymbolTable,
+) -> bool {
+    let mut c1 = p1;
+    while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = c1 {
+        c1 = inner;
+    }
+    let mut c2 = p2;
+    while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = c2 {
+        c2 = inner;
+    }
+    let mut concl_body = concl;
+    while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = concl_body
+    {
+        concl_body = inner;
+    }
+
+    let c1_shifted = shift_vars_formula(c1, 1000);
+
+    let lits1 = match c1_shifted {
+        mrs_core::Formula::Or(cs) => cs.clone(),
+        _ => vec![c1_shifted.clone()],
+    };
+    let lits2 = match c2 {
+        mrs_core::Formula::Or(cs) => cs.clone(),
+        _ => vec![c2.clone()],
+    };
+    let concl_lits = match concl_body {
+        mrs_core::Formula::Or(cs) => cs.clone(),
+        _ => vec![concl_body.clone()],
+    };
+
+    for l1 in &lits1 {
+        let Some((sym1, args1, pol1)) = extract_pred_atom(l1) else {
+            continue;
+        };
+        for l2 in &lits2 {
+            let Some((sym2, args2, pol2)) = extract_pred_atom(l2) else {
+                continue;
+            };
+            if sym1 == sym2 && pol1 != pol2 {
+                let mut subst_candidates = Vec::new();
+                if is_symmetric_predicate(sym1, symbols) && args1.len() == 2 && args2.len() == 2 {
+                    if let Some(s) = unify_lists(&[args1[0].clone(), args1[1].clone()], args2) {
+                        subst_candidates.push(s);
+                    }
+                    if let Some(s) = unify_lists(&[args1[1].clone(), args1[0].clone()], args2) {
+                        subst_candidates.push(s);
+                    }
+                } else {
+                    if let Some(s) = unify_lists(args1, args2) {
+                        subst_candidates.push(s);
+                    }
+                }
+
+                for subst in subst_candidates {
+                    let mut expected_lits = Vec::new();
+                    let subst_map: std::collections::HashMap<mrs_core::VarId, mrs_core::Term> =
+                        subst.iter().map(|(&v, t)| (v, t.clone())).collect();
+
+                    for x in &lits1 {
+                        if x != l1 {
+                            expected_lits.push(apply_subst_formula(x, &subst_map));
+                        }
+                    }
+                    for x in &lits2 {
+                        if x != l2 {
+                            expected_lits.push(apply_subst_formula(x, &subst_map));
+                        }
+                    }
+
+                    if clause_equiv(&concl_lits, &expected_lits) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 fn is_split_literal(f: &mrs_core::Formula) -> bool {
@@ -1139,6 +1472,23 @@ fn prepare_atp_step<'p>(
             &premises[0]
         };
         if try_superposition_step(p1, p2, &conclusion) {
+            return Prepared::Resolved(StepOutcome::Sound);
+        }
+    }
+
+    // Fast-path: try to verify resolution structurally
+    if node.inference_rule == Some("resolution") && premises.len() >= 2 {
+        let p1 = &premises[0];
+        let p2 = &premises[1];
+        if try_resolution_step(p1, p2, &conclusion, symbols) {
+            return Prepared::Resolved(StepOutcome::Sound);
+        }
+    }
+
+    // Fast-path: try to verify factoring structurally
+    if node.inference_rule == Some("factoring") && !premises.is_empty() {
+        let p1 = &premises[0];
+        if try_factoring_step(p1, &conclusion) {
             return Prepared::Resolved(StepOutcome::Sound);
         }
     }

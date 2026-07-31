@@ -19,5 +19,6 @@ mrs-tptp = { workspace = true, features = ["proover", "owned"] }
 mrs-core = { workspace = true, features = ["proover"] }
 mrs-cnf = { workspace = true }
 mrs-search = { workspace = true }
+mrs-unify = { workspace = true }
 cadical = { workspace = true }
 num_cpus = "1.17.0"
