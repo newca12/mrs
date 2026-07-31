@@ -1228,7 +1228,34 @@ fn try_verify_avatar_step(
         conclusion = inner;
     }
 
-    if rule == "avatar_component_clause" && premises.len() == 1 {
+    if rule == "split_component" && premises.len() == 1 {
+        let mut parent = &premises[0];
+        while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = parent
+        {
+            parent = inner;
+        }
+        let parent_lits = match parent {
+            mrs_core::Formula::Or(cs) => cs.clone(),
+            _ => vec![parent.clone()],
+        };
+        let concl_lits = match conclusion {
+            mrs_core::Formula::Or(cs) => cs.clone(),
+            _ => vec![conclusion.clone()],
+        };
+        if concl_lits.len() == 1 {
+            let lit = &concl_lits[0];
+            let mut found = false;
+            for pl in &parent_lits {
+                if mrs_core::alpha::alpha_equiv(lit, pl) {
+                    found = true;
+                    break;
+                }
+            }
+            if found {
+                return Some(StepOutcome::Sound);
+            }
+        }
+    } else if rule == "avatar_component_clause" && premises.len() == 1 {
         let mut parent = &premises[0];
         while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = parent
         {
