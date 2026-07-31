@@ -132,7 +132,7 @@ impl SearchState {
     ) -> Self {
         let mut local_symbols = (*symbols).clone();
         if use_avatar {
-            for i in 1..=2000 {
+            for i in 1..=50000 {
                 local_symbols.intern(&format!("spl0_{}", i));
             }
         }
