@@ -272,6 +272,185 @@ pub(crate) fn canon_eq(a: &Formula, b: &Formula, symbols: Option<&SymbolTable>) 
     canon_form(a, &mut Vec::new(), symbols) == canon_form(b, &mut Vec::new(), symbols)
 }
 
+fn collect_free_vars_term(t: &Term, vars: &mut Vec<VarId>) {
+    match t {
+        Term::Var(v) => {
+            if !vars.contains(v) {
+                vars.push(*v);
+            }
+        }
+        Term::App(_, args) => {
+            for a in args {
+                collect_free_vars_term(a, vars);
+            }
+        }
+    }
+}
+
+fn collect_free_vars(f: &Formula, vars: &mut Vec<VarId>) {
+    match f {
+        Formula::Atom(Atom::Pred(_, args)) => {
+            for t in args {
+                collect_free_vars_term(t, vars);
+            }
+        }
+        Formula::Atom(Atom::Eq(l, r)) => {
+            collect_free_vars_term(l, vars);
+            collect_free_vars_term(r, vars);
+        }
+        Formula::Neg(inner) => collect_free_vars(inner, vars),
+        Formula::And(cs) | Formula::Or(cs) => {
+            for c in cs {
+                collect_free_vars(c, vars);
+            }
+        }
+        Formula::Implies(l, r) | Formula::Iff(l, r) => {
+            collect_free_vars(l, vars);
+            collect_free_vars(r, vars);
+        }
+        _ => {}
+    }
+}
+
+fn apply_subst_term_fold(t: &Term, subst: &HashMap<VarId, Term>) -> Term {
+    match t {
+        Term::Var(id) => {
+            if let Some(existing) = subst.get(id) {
+                existing.clone()
+            } else {
+                t.clone()
+            }
+        }
+        Term::App(f, args) => {
+            let n_args = args
+                .iter()
+                .map(|arg| apply_subst_term_fold(arg, subst))
+                .collect();
+            Term::App(*f, n_args)
+        }
+    }
+}
+
+fn apply_subst_formula_fold(f: &Formula, subst: &HashMap<VarId, Term>) -> Formula {
+    match f {
+        Formula::Atom(Atom::Pred(p, args)) => {
+            let n_args = args
+                .iter()
+                .map(|t| apply_subst_term_fold(t, subst))
+                .collect();
+            Formula::Atom(Atom::Pred(*p, n_args))
+        }
+        Formula::Atom(Atom::Eq(l, r)) => {
+            let nl = apply_subst_term_fold(l, subst);
+            let nr = apply_subst_term_fold(r, subst);
+            Formula::Atom(Atom::Eq(nl, nr))
+        }
+        Formula::Neg(inner) => Formula::Neg(Box::new(apply_subst_formula_fold(inner, subst))),
+        Formula::And(cs) => {
+            let ncs = cs
+                .iter()
+                .map(|c| apply_subst_formula_fold(c, subst))
+                .collect();
+            Formula::And(ncs)
+        }
+        Formula::Or(cs) => {
+            let ncs = cs
+                .iter()
+                .map(|c| apply_subst_formula_fold(c, subst))
+                .collect();
+            Formula::Or(ncs)
+        }
+        Formula::Implies(l, r) => {
+            let nl = apply_subst_formula_fold(l, subst);
+            let nr = apply_subst_formula_fold(r, subst);
+            Formula::Implies(Box::new(nl), Box::new(nr))
+        }
+        Formula::Iff(l, r) => {
+            let nl = apply_subst_formula_fold(l, subst);
+            let nr = apply_subst_formula_fold(r, subst);
+            Formula::Iff(Box::new(nl), Box::new(nr))
+        }
+        Formula::Forall(v, inner) => {
+            Formula::Forall(*v, Box::new(apply_subst_formula_fold(inner, subst)))
+        }
+        Formula::Exists(v, inner) => {
+            Formula::Exists(*v, Box::new(apply_subst_formula_fold(inner, subst)))
+        }
+        Formula::True => Formula::True,
+        Formula::False => Formula::False,
+    }
+}
+
+fn match_permutations(
+    idx: usize,
+    f_vars: &[VarId],
+    p_vars: &[VarId],
+    used: &mut Vec<bool>,
+    current_map: &mut HashMap<VarId, VarId>,
+    proof_f: &Formula,
+    prob_canon: &CForm,
+    symbols: Option<&SymbolTable>,
+) -> bool {
+    if idx == f_vars.len() {
+        let mut map: HashMap<VarId, Term> = HashMap::new();
+        for (&v, &pv) in current_map.iter() {
+            map.insert(v, Term::Var(pv));
+        }
+        let mapped_f = apply_subst_formula_fold(proof_f, &map);
+        let ca = canon_form(&mapped_f, &mut Vec::new(), symbols);
+        return ca == *prob_canon;
+    }
+    for i in 0..p_vars.len() {
+        if !used[i] {
+            used[i] = true;
+            current_map.insert(f_vars[idx], p_vars[i]);
+            if match_permutations(
+                idx + 1,
+                f_vars,
+                p_vars,
+                used,
+                current_map,
+                proof_f,
+                prob_canon,
+                symbols,
+            ) {
+                return true;
+            }
+            current_map.remove(&f_vars[idx]);
+            used[i] = false;
+        }
+    }
+    false
+}
+
+pub(crate) fn canon_eq_free(a: &Formula, b: &Formula, symbols: Option<&SymbolTable>) -> bool {
+    let mut a_body = a;
+    while let Formula::Forall(_, inner) | Formula::Exists(_, inner) = a_body {
+        a_body = inner;
+    }
+    let mut b_body = b;
+    while let Formula::Forall(_, inner) | Formula::Exists(_, inner) = b_body {
+        b_body = inner;
+    }
+
+    let mut a_vars = Vec::new();
+    collect_free_vars(a_body, &mut a_vars);
+    let mut b_vars = Vec::new();
+    collect_free_vars(b_body, &mut b_vars);
+
+    if a_vars.len() != b_vars.len() {
+        return false;
+    }
+
+    let cb = canon_form(b_body, &mut Vec::new(), symbols);
+
+    let mut used = vec![false; b_vars.len()];
+    let mut map = HashMap::new();
+    match_permutations(
+        0, &a_vars, &b_vars, &mut used, &mut map, a_body, &cb, symbols,
+    )
+}
+
 /// `scope` is the stack of bound variables (innermost last); a `Var(v)`
 /// resolves to `Bound(index)` using the nearest enclosing binder of `v`,
 /// else `Free(v)`.
@@ -290,6 +469,9 @@ fn canon_term(t: &Term, scope: &[VarId], symbols: Option<&SymbolTable>) -> CTerm
                     || name == "least_upper_bound"
                     || name == "meet"
                     || name == "join"
+                    || name == "+"
+                    || name == "times"
+                    || name == "*"
                 {
                     c_args.sort();
                 }

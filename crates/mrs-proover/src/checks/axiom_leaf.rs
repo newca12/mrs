@@ -65,7 +65,11 @@ pub fn check_leaf<'p>(
             ctx.reset_vars();
             let prob_f = lower_annotated_formula(&mut ctx, af);
             if alpha_equiv(&proof_f, &prob_f)
-                || crate::checks::definition_folding::canon_eq(&proof_f, &prob_f, Some(ctx.symbols))
+                || crate::checks::definition_folding::canon_eq_free(
+                    &proof_f,
+                    &prob_f,
+                    Some(ctx.symbols),
+                )
             {
                 return StepOutcome::Sound;
             }
@@ -75,8 +79,11 @@ pub fn check_leaf<'p>(
             let clauses = mrs_cnf::clausify(&prob_f, ctx.symbols, &mut id_gen, "prob", "axiom");
             for c in clauses {
                 let c_form = clause_to_formula_with_forall(&c);
-                if crate::checks::definition_folding::canon_eq(&proof_f, &c_form, Some(ctx.symbols))
-                {
+                if crate::checks::definition_folding::canon_eq_free(
+                    &proof_f,
+                    &c_form,
+                    Some(ctx.symbols),
+                ) {
                     return StepOutcome::Sound;
                 }
             }
@@ -142,7 +149,11 @@ pub fn check_leaf<'p>(
             ctx.reset_vars();
             let prob_f = lower_annotated_formula(&mut ctx, af);
             if alpha_equiv(&proof_f, &prob_f)
-                || crate::checks::definition_folding::canon_eq(&proof_f, &prob_f, Some(ctx.symbols))
+                || crate::checks::definition_folding::canon_eq_free(
+                    &proof_f,
+                    &prob_f,
+                    Some(ctx.symbols),
+                )
             {
                 return StepOutcome::Sound;
             }
@@ -165,7 +176,7 @@ pub fn check_leaf<'p>(
     let prob_f = lower_annotated_formula(&mut ctx, target_af.unwrap());
 
     if alpha_equiv(&proof_f, &prob_f)
-        || crate::checks::definition_folding::canon_eq(&proof_f, &prob_f, Some(ctx.symbols))
+        || crate::checks::definition_folding::canon_eq_free(&proof_f, &prob_f, Some(ctx.symbols))
     {
         StepOutcome::Sound
     } else {
