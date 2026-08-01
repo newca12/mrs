@@ -13,6 +13,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use std::time::Duration;
@@ -35,6 +36,7 @@ fn main() {
     let mut workers: Option<usize> = None;
     let mut auto_schedule = false;
     let mut ml_prune_ratio: Option<f32> = None;
+    let mut self_check = false;
     #[cfg(feature = "ml")]
     let mut ml_premise_weights: Option<String> = None;
 
@@ -52,19 +54,28 @@ fn main() {
                     eprintln!("Error: --time requires a positive integer, got {:?}", val);
                     process::exit(1);
                 });
+                if time_secs == 0 {
+                    eprintln!("Error: --time requires a positive integer");
+                    process::exit(1);
+                }
             }
             "--workers" => {
                 let val = args.next().unwrap_or_else(|| {
                     eprintln!("Usage: mrs [--workers <N>] <file.p>");
                     process::exit(1);
                 });
-                workers = Some(val.parse().unwrap_or_else(|_| {
+                let parsed = val.parse().unwrap_or_else(|_| {
                     eprintln!(
                         "Error: --workers requires a positive integer, got {:?}",
                         val
                     );
                     process::exit(1);
-                }));
+                });
+                if parsed == 0 {
+                    eprintln!("Error: --workers requires a positive integer");
+                    process::exit(1);
+                }
+                workers = Some(parsed);
             }
             "--schedule" => {
                 let val = args.next().unwrap_or_else(|| {
@@ -99,6 +110,9 @@ fn main() {
             }
             "--auto-schedule" => {
                 auto_schedule = true;
+            }
+            "--self-check" => {
+                self_check = true;
             }
             // Deprecated: the ML schedule classifier is retired (degenerate
             // majority-class model + label mismatch; see docs/BENCHMARKS.md).
@@ -156,7 +170,9 @@ fn main() {
             "--quiet" => quiet = true,
             _ => {
                 if path.is_some() {
-                    eprintln!("Usage: mrs [--time <seconds>] [--schedule NAME] <file.p>");
+                    eprintln!(
+                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--self-check] <file.p>"
+                    );
                     process::exit(1);
                 }
                 path = Some(arg);
@@ -164,7 +180,7 @@ fn main() {
         }
     }
     let Some(path) = path else {
-        eprintln!("Usage: mrs [--time <seconds>] [--schedule NAME] <file.p>");
+        eprintln!("Usage: mrs [--time <seconds>] [--schedule NAME] [--self-check] <file.p>");
         eprintln!("  An automated theorem prover for TPTP problems.");
         eprintln!(
             "  Schedules: {} (default: casc)",
@@ -643,43 +659,72 @@ fn main() {
         }
     }
 
-    // --- In-Process Self-Verification Guard ---
-    let mut is_verified_good = true;
-    if let SearchResult::Refutation(..) = &result {
-        let elapsed = start.elapsed();
-        let remaining = Duration::from_secs(time_secs).saturating_sub(elapsed);
+    // --- Optional strict self-verification guard ---------------------------
+    // The normal CASC path deliberately does not spend part of the search
+    // budget on the competition checker.  `--self-check` is an explicit
+    // release/development mode: only a positive verification result permits
+    // the refutation and proof to be emitted.
+    let mut proof_certified = !self_check;
+    if self_check {
+        if !matches!(result, SearchResult::Refutation(..)) {
+            proof_certified = true;
+        } else {
+            let mut failure = None;
+            let elapsed = start.elapsed();
+            let remaining = Duration::from_secs(time_secs).saturating_sub(elapsed);
 
-        // Skip self-verification if we are low on time (< 2s) or reading from stdin
-        if remaining >= Duration::from_secs(2)
-            && path != "-"
-            && let SearchResult::Refutation(_, tstp_proof) = &result
-        {
-            // Prepend % Proof : <path> header so mrs-proover can locate the problem
-            let temp_proof_text = format!("% Proof : {}\n{}", path, tstp_proof);
-            let temp_path =
-                std::env::temp_dir().join(format!("mrs_self_verify_{}.p", problem_name));
+            if path == "-" {
+                failure = Some("strict self-check does not yet support stdin".to_string());
+            } else if remaining < Duration::from_secs(2) {
+                failure = Some("insufficient time remains for strict self-check".to_string());
+            } else if let SearchResult::Refutation(_, tstp_proof) = &result {
+                // Include the real problem path in the proof header so the
+                // checker resolves the same problem and include tree.
+                let temp_proof_text = format!("% Proof : {}\n{}", path, tstp_proof);
+                let counter = SELF_VERIFY_COUNTER.fetch_add(1, Ordering::Relaxed);
+                let temp_path = std::env::temp_dir().join(format!(
+                    "mrs_self_verify_{}_{}_{}.p",
+                    process::id(),
+                    counter,
+                    problem_name
+                ));
 
-            let tptp_root = std::env::var("TPTP").ok().map(std::path::PathBuf::from);
-            if std::fs::write(&temp_path, &temp_proof_text).is_ok() {
-                if let Ok(job) = mrs_proover::load::load(&temp_path, tptp_root.as_deref()) {
-                    let settings = mrs_proover::verify::Settings {
-                        total_budget: Duration::from_secs(1)
-                            .min(remaining - Duration::from_secs(1)),
-                        per_step_budget: Duration::from_millis(350),
-                        verbose: false,
-                        workers: 1, // Single-threaded is optimal and fast
-                    };
-
-                    let verdict = mrs_proover::verify::verify(&job, &settings);
-                    if let mrs_proover::verdict::Verdict::VerifiedBad(reason) = verdict {
-                        eprintln!("% Warning: Self-verification failed: {}", reason);
-                        status = SzsStatus::GaveUp;
-                        is_verified_good = false;
+                let tptp_root = std::env::var("TPTP").ok().map(std::path::PathBuf::from);
+                match std::fs::write(&temp_path, &temp_proof_text) {
+                    Ok(()) => match mrs_proover::load::load(&temp_path, tptp_root.as_deref()) {
+                        Ok(job) => {
+                            let verdict = mrs_proover::strict::verify_loaded_job_default(&job);
+                            if matches!(verdict, mrs_proof_kernel::KernelVerdict::Certified) {
+                                proof_certified = true;
+                            } else {
+                                failure = Some(format!("strict self-check returned {verdict}"));
+                            }
+                        }
+                        Err(error) => {
+                            failure =
+                                Some(format!("strict self-check could not load proof: {error}"));
+                        }
+                    },
+                    Err(error) => {
+                        failure = Some(format!("strict self-check could not write proof: {error}"));
                     }
                 }
                 let _ = std::fs::remove_file(&temp_path);
             }
+
+            if let Some(reason) = failure {
+                eprintln!("% Strict self-verification failed: {reason}");
+                status = SzsStatus::GaveUp;
+                proof_certified = false;
+            }
         }
+    }
+
+    if self_check
+        && !proof_certified
+        && matches!(status, SzsStatus::Theorem | SzsStatus::Unsatisfiable)
+    {
+        status = SzsStatus::GaveUp;
     }
 
     println!("{}", szs_status_line(status, problem_name));
@@ -691,7 +736,7 @@ fn main() {
     #[cfg(not(feature = "proover"))]
     let emit_extras = true;
 
-    if emit_extras && is_verified_good {
+    if emit_extras && proof_certified {
         if let SearchResult::Refutation(_, tstp_proof) = &result {
             println!("{}", szs_output_start("Proof", problem_name));
             println!("{}", tstp_proof);
@@ -699,10 +744,12 @@ fn main() {
         }
 
         print_statistics(status, start.elapsed(), &final_report);
-    } else if emit_extras && !is_verified_good {
+    } else if emit_extras && !proof_certified {
         print_statistics(status, start.elapsed(), &final_report);
     }
 }
+
+static SELF_VERIFY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Returns peak virtual memory in MB by reading /proc/self/status (Linux only).
 fn peak_memory_mb() -> Option<u64> {

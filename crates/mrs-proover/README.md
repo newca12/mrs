@@ -23,12 +23,18 @@ The binary lands at `target/release/mrs-proover`.
 ## Usage
 
 ```sh
-mrs-proover [--problems-dir DIR] [--no-atp] [--no-mrs] [--no-fmb]
+mrs-proover [--strict] [--problems-dir DIR] [--no-atp] [--no-mrs] [--no-fmb]
             [--eprover PATH] [--vampire PATH]
             [--only-mrs|--only-eprover|--only-vampire]
             [--time SECS] [--workers N] [--verbose]
             <proof.p>
 ```
+
+`--strict` uses the independent `mrs-proof-kernel` only. It never invokes
+`mrs-search`, E prover, Vampire, or a finite-model finder. Unsupported proof
+rules return `Unknown`; only a fully checked proof returns `VerifiedGood`.
+Without `--strict`, the competition verifier uses its broader structural and
+ATP-backed policy for ProoVer scoring.
 
 The proof file is expected to contain a header line of the form
 

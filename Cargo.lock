@@ -3541,6 +3541,7 @@ dependencies = [
  "mrs-cnf",
  "mrs-core",
  "mrs-proof",
+ "mrs-proof-kernel",
  "mrs-proover",
  "mrs-search",
  "mrs-szs",
@@ -3620,12 +3621,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "mrs-proof-kernel"
+version = "0.2.2"
+dependencies = [
+ "mrs-core",
+ "mrs-tptp",
+]
+
+[[package]]
 name = "mrs-proover"
 version = "0.2.2"
 dependencies = [
  "cadical",
  "mrs-cnf",
  "mrs-core",
+ "mrs-proof-kernel",
  "mrs-search",
  "mrs-tptp",
  "mrs-unify",

@@ -30,6 +30,7 @@ pub fn check_leaf<'p>(
     node: &AnnotatedFormula<'p>,
     problem: Option<&TPTPProblem<'_>>,
     symbols: &mut SymbolTable,
+    strict: bool,
 ) -> StepOutcome {
     let Some(ann) = node.annotations() else {
         // No annotation → cannot prove provenance. Conservative.
@@ -39,6 +40,11 @@ pub fn check_leaf<'p>(
         return StepOutcome::Unknown("leaf source is not file(_,_)".into());
     };
     let Some(problem) = problem else {
+        if strict {
+            return StepOutcome::Unknown(
+                "strict mode requires a linked problem for leaf provenance".into(),
+            );
+        }
         // If no problem file is loaded (e.g. Otter subset of Zenodo benchmark),
         // we cannot verify if the leaf is a valid axiom in the problem file.
         // We fallback to treating the leaf as Sound (verifying the proof
@@ -253,4 +259,35 @@ fn clause_to_formula_with_forall(clause: &mrs_core::clause::Clause) -> mrs_core:
         body = mrs_core::Formula::Forall(v, Box::new(body));
     }
     body
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mrs_tptp::parse_tptp;
+
+    fn leaf(input: &'static str) -> &'static AnnotatedFormula<'static> {
+        let problem = Box::leak(Box::new(parse_tptp(input).expect("parse")));
+        &problem.formulas[0]
+    }
+
+    #[test]
+    fn strict_mode_requires_linked_problem_for_leaf() {
+        let node = leaf("fof(a, axiom, p(a), file('problem.p', a)).");
+        let mut symbols = SymbolTable::new();
+        assert!(matches!(
+            check_leaf(node, None, &mut symbols, true),
+            StepOutcome::Unknown(_)
+        ));
+    }
+
+    #[test]
+    fn competition_mode_keeps_modulo_assumption_leaf_behavior() {
+        let node = leaf("fof(a, axiom, p(a), file('problem.p', a)).");
+        let mut symbols = SymbolTable::new();
+        assert_eq!(
+            check_leaf(node, None, &mut symbols, false),
+            StepOutcome::Sound
+        );
+    }
 }

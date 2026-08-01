@@ -47,7 +47,7 @@ fof(goal, conjecture, mortal(socrates)).
 ## Options
 
 ```
-mrs [--time <seconds>] [--workers <N>] [--schedule <name>] <file.p>
+mrs [--time <seconds>] [--workers <N>] [--schedule <name>] [--self-check] <file.p>
 ```
 
 | Option | Default | Description |
@@ -55,6 +55,7 @@ mrs [--time <seconds>] [--workers <N>] [--schedule <name>] <file.p>
 | `--time <n>` | `30` | Wall-clock time limit in seconds |
 | `--workers <N>` | physical cores | Maximum number of parallel search threads |
 | `--schedule <name>` | `casc` | Strategy schedule to run. Built-ins: `casc` (the default CASC portfolio; aliases `default`, `casc_feq`), `casc_fne`/`casc_ueq`/`casc_epr` (division-tuned portfolios, one strategy per worker), `fast` (single KBO strategy for short budgets), `mini` (3-strategy compact portfolio), and `ml*` variants for ML-guided selection (require an `ml-guidance` build and `--ml-weights`). |
+| `--self-check` | off | Require the generated refutation to be positively verified before emitting a theorem and proof; inconclusive verification becomes `GaveUp`. |
 | `--list-schedules` | — | Print known schedule names and exit |
 
 ### Reproducible single-strategy runs

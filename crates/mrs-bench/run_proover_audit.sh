@@ -38,9 +38,15 @@
 #   cargo build --release -p mrs -p mrs-proover -p mrs-codex
 # (this script will attempt that build automatically if binaries are missing).
 #
-# Any line containing "[FAILED Verif]" is a confirmed soundness bug: mrs
-# reported Theorem/Unsatisfiable but mrs-proover could not validate the proof.
-# Treat that as a blocking failure -- do not submit.
+# Exit status:
+#   0 = every MRS refutation was verified good
+#   2 = at least one MRS refutation was verified bad
+#   3 = no confirmed bad proof, but one or more refutations were unverified
+#   1 = infrastructure/setup failure
+#
+# Any line containing `Proover: VerifiedBad` is a confirmed soundness bug: mrs
+# reported Theorem/Unsatisfiable but mrs-proover rejected its proof. Treat
+# that as a blocking failure -- do not submit.
 #
 # Any Theorem/Unsatisfiable line with *no* verification marker at all means
 # mrs-proover returned Unknown (could not decide, e.g. CWA's componentwise
@@ -176,12 +182,21 @@ LOG_FILE="$(mktemp)"
 
 echo "--------------------------------------------------------"
 
-failed=$(grep -c "VerifiedBad" "${LOG_FILE}" || true)
-unknown=$(grep -E "\.p \.\.\. (Theorem|Unsatisfiable)" "${LOG_FILE}" | grep -c "Unknown" || true)
+theorem_results=$(grep -E "\.p \.\.\. (Theorem|Unsatisfiable)" "${LOG_FILE}" || true)
+theorem_count=$(printf '%s\n' "${theorem_results}" | sed '/^$/d' | wc -l)
+verified=$(grep -c "Proover: VerifiedGood" "${LOG_FILE}" || true)
+failed=$(grep -c "Proover: VerifiedBad" "${LOG_FILE}" || true)
+unknown=$(grep -c "Proover: Unknown" "${LOG_FILE}" || true)
+unmarked=$(( theorem_count - verified - failed - unknown ))
+if (( unmarked < 0 )); then
+    unmarked=0
+fi
+unverified=$(( unknown + unmarked ))
 
 echo -e "${CYAN}Audit Finished!${NC}"
+echo -e "  * Verified good                     : ${GREEN}${verified}${NC}"
 echo -e "  * Confirmed unsound (VerifiedBad) : ${RED}${failed}${NC}"
-echo -e "  * Unverified Theorem/Unsatisfiable  : ${YELLOW}${unknown}${NC} (Verifier returned Unknown; inspect by hand)"
+echo -e "  * Unverified Theorem/Unsatisfiable  : ${YELLOW}${unverified}${NC} (Unknown or missing verification marker)"
 
 if (( failed > 0 )); then
     echo -e "${RED}SOUNDNESS BUG CONFIRMED by verifier -- do NOT submit.${NC}"
@@ -190,9 +205,11 @@ if (( failed > 0 )); then
     exit 2
 fi
 
-if (( unknown > 0 )); then
-    echo -e "${YELLOW}No confirmed unsoundness, but ${unknown} result(s) could not be independently verified.${NC}"
+if (( unverified > 0 )); then
+    echo -e "${YELLOW}No confirmed unsoundness, but ${unverified} result(s) could not be independently verified.${NC}"
     echo -e "${YELLOW}Re-check these with the full ATP ladder (./target/release/mrs-proover <proof.p>) before submitting.${NC}"
+    rm -f "${LOG_FILE}"
+    exit 3
 fi
 
 rm -f "${LOG_FILE}"

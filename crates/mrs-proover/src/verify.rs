@@ -33,6 +33,13 @@ pub struct Settings {
     pub verbose: bool,
     /// Number of parallel worker threads to spawn for ATP verification.
     pub workers: usize,
+    /// Require strict provenance for self-verification.
+    ///
+    /// Competition mode may verify a proof modulo assumptions when the linked
+    /// problem is unavailable. Strict mode never does that: a missing problem
+    /// or unverifiable leaf is inconclusive and therefore cannot certify the
+    /// proof.
+    pub strict: bool,
 }
 
 impl Default for Settings {
@@ -42,6 +49,7 @@ impl Default for Settings {
             per_step_budget: Duration::from_secs(3),
             verbose: false,
             workers: num_cpus::get_physical().max(1),
+            strict: false,
         }
     }
 }
@@ -55,6 +63,12 @@ pub fn verify(job: &LoadedJob, settings: &Settings) -> Verdict {
 /// Run with a specific ATP backend.
 pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdict {
     let started = Instant::now();
+
+    if settings.strict && job.problem.is_none() {
+        return Verdict::Unknown(
+            "strict: proof has no linked problem file for provenance verification".into(),
+        );
+    }
 
     // 1) Build the DAG.
     let dag = match dag::build(job.proof.problem()) {
@@ -142,7 +156,15 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
         let slot = outcomes.len();
         names.push(dag.nodes[idx].name);
         rules.push(dag.nodes[idx].inference_rule.unwrap_or("-"));
-        match check_node_prepare(&dag, idx, job, &mut symbols, &mut sk_reg, &lowered_formulas) {
+        match check_node_prepare(
+            &dag,
+            idx,
+            job,
+            settings.strict,
+            &mut symbols,
+            &mut sk_reg,
+            &lowered_formulas,
+        ) {
             Prepared::Resolved(oc) => outcomes.push(Some(oc)),
             Prepared::NeedsAtp(step) => {
                 outcomes.push(None);
@@ -380,6 +402,7 @@ fn check_node_prepare<'p>(
     dag: &Dag<'p>,
     idx: usize,
     job: &LoadedJob,
+    strict: bool,
     symbols: &mut SymbolTable,
     sk_reg: &mut skolemize::SkolemRegistry,
     lowered_formulas: &std::collections::HashMap<usize, mrs_core::Formula>,
@@ -404,6 +427,7 @@ fn check_node_prepare<'p>(
             node.formula,
             job.problem.as_ref().map(|p| p.problem()),
             symbols,
+            strict,
         ));
     }
 
@@ -562,7 +586,7 @@ fn check_node_prepare<'p>(
 
     // Other plain/thm/cth steps → prepare an ATP query for Pass 2.
     //
-    prepare_atp_step(dag, idx, Some(job), symbols, lowered_formulas)
+    prepare_atp_step(dag, idx, Some(job), strict, symbols, lowered_formulas)
 }
 
 /// Decide a step via the ATP, keeping the prepare/finish split internal.
@@ -585,7 +609,7 @@ fn delegate_to_atp<'p>(
         ctx.reset_vars();
         lowered_formulas.insert(i, lower_annotated_formula(&mut ctx, node.formula));
     }
-    match prepare_atp_step(dag, idx, None, symbols, &lowered_formulas) {
+    match prepare_atp_step(dag, idx, None, false, symbols, &lowered_formulas) {
         Prepared::Resolved(oc) => oc,
         Prepared::NeedsAtp(step) => finish_atp(atp, symbols, &step, budget),
     }
@@ -1089,21 +1113,22 @@ fn try_factoring_step(p1: &mrs_core::Formula, concl: &mrs_core::Formula) -> bool
             let Some((sym2, args2, pol2)) = extract_pred_atom(&lits1[j]) else {
                 continue;
             };
-            if sym1 == sym2 && pol1 == pol2 {
-                if let Some(subst) = unify_lists(args1, args2) {
-                    let mut expected_lits = Vec::new();
-                    let subst_map: std::collections::HashMap<mrs_core::VarId, mrs_core::Term> =
-                        subst.iter().map(|(&v, t)| (v, t.clone())).collect();
+            if sym1 == sym2
+                && pol1 == pol2
+                && let Some(subst) = unify_lists(args1, args2)
+            {
+                let mut expected_lits = Vec::new();
+                let subst_map: std::collections::HashMap<mrs_core::VarId, mrs_core::Term> =
+                    subst.iter().map(|(&v, t)| (v, t.clone())).collect();
 
-                    for (k, x) in lits1.iter().enumerate() {
-                        if k != j {
-                            expected_lits.push(apply_subst_formula(x, &subst_map));
-                        }
+                for (k, x) in lits1.iter().enumerate() {
+                    if k != j {
+                        expected_lits.push(apply_subst_formula(x, &subst_map));
                     }
+                }
 
-                    if clause_equiv(&concl_lits, &expected_lits) {
-                        return true;
-                    }
+                if clause_equiv(&concl_lits, &expected_lits) {
+                    return true;
                 }
             }
         }
@@ -1111,19 +1136,10 @@ fn try_factoring_step(p1: &mrs_core::Formula, concl: &mrs_core::Formula) -> bool
     false
 }
 
-fn is_symmetric_predicate(sym: mrs_core::SymbolId, symbols: &mrs_core::SymbolTable) -> bool {
-    let name = symbols.resolve(sym);
-    matches!(
-        name,
-        "distinct_points" | "distinct_lines" | "convergent_lines"
-    )
-}
-
 fn try_resolution_step(
     p1: &mrs_core::Formula,
     p2: &mrs_core::Formula,
     concl: &mrs_core::Formula,
-    symbols: &mrs_core::SymbolTable,
 ) -> bool {
     let mut c1 = p1;
     while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = c1 {
@@ -1164,17 +1180,8 @@ fn try_resolution_step(
             };
             if sym1 == sym2 && pol1 != pol2 {
                 let mut subst_candidates = Vec::new();
-                if is_symmetric_predicate(sym1, symbols) && args1.len() == 2 && args2.len() == 2 {
-                    if let Some(s) = unify_lists(&[args1[0].clone(), args1[1].clone()], args2) {
-                        subst_candidates.push(s);
-                    }
-                    if let Some(s) = unify_lists(&[args1[1].clone(), args1[0].clone()], args2) {
-                        subst_candidates.push(s);
-                    }
-                } else {
-                    if let Some(s) = unify_lists(args1, args2) {
-                        subst_candidates.push(s);
-                    }
+                if let Some(s) = unify_lists(args1, args2) {
+                    subst_candidates.push(s);
                 }
 
                 for subst in subst_candidates {
@@ -1329,6 +1336,7 @@ fn prepare_atp_step<'p>(
     dag: &Dag<'p>,
     idx: usize,
     job: Option<&LoadedJob>,
+    strict: bool,
     symbols: &mut SymbolTable,
     lowered_formulas: &std::collections::HashMap<usize, mrs_core::Formula>,
 ) -> Prepared {
@@ -1462,7 +1470,8 @@ fn prepare_atp_step<'p>(
 
     let conclusion = lowered_formulas.get(&idx).unwrap().clone();
 
-    if let Some(rule) = node.inference_rule
+    if !strict
+        && let Some(rule) = node.inference_rule
         && let Some(outcome) =
             try_verify_avatar_step(rule, &premises[0..node.parents.len()], &conclusion)
     {
@@ -1484,14 +1493,18 @@ fn prepare_atp_step<'p>(
     // propositional disjunction of the `spl` symbols. Unfolding all
     // `spl` symbols in the conclusion yields a formula α-equivalent
     // to the original clause, exactly as for `definition_folding`.
-    if matches!(
+    let definition_folding_rule = matches!(
         node.inference_rule,
-        Some("definition_folding") | Some("avatar_split_clause") | Some("cnf_transformation")
-    ) && let Some(outcome) = crate::checks::definition_folding::try_check(
-        &premises[0..node.parents.len()],
-        &premise_is_def[0..node.parents.len()],
-        &conclusion,
-    ) {
+        Some("definition_folding") | Some("cnf_transformation")
+    ) || (!strict
+        && node.inference_rule == Some("avatar_split_clause"));
+    if definition_folding_rule
+        && let Some(outcome) = crate::checks::definition_folding::try_check(
+            &premises[0..node.parents.len()],
+            &premise_is_def[0..node.parents.len()],
+            &conclusion,
+        )
+    {
         return Prepared::Resolved(outcome);
     }
 
@@ -1512,7 +1525,7 @@ fn prepare_atp_step<'p>(
     if node.inference_rule == Some("resolution") && premises.len() >= 2 {
         let p1 = &premises[0];
         let p2 = &premises[1];
-        if try_resolution_step(p1, p2, &conclusion, symbols) {
+        if try_resolution_step(p1, p2, &conclusion) {
             return Prepared::Resolved(StepOutcome::Sound);
         }
     }

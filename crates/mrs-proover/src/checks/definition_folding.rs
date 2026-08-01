@@ -381,6 +381,7 @@ fn apply_subst_formula_fold(f: &Formula, subst: &HashMap<VarId, Term>) -> Formul
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn match_permutations(
     idx: usize,
     f_vars: &[VarId],

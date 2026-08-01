@@ -19,5 +19,6 @@ pub mod checks;
 pub mod dag;
 pub mod load;
 pub mod lower;
+pub mod strict;
 pub mod verdict;
 pub mod verify;

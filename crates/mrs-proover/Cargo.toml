@@ -16,6 +16,7 @@ path = "src/bin/mrs-proover.rs"
 
 [dependencies]
 mrs-tptp = { workspace = true, features = ["proover", "owned"] }
+mrs-proof-kernel = { workspace = true }
 mrs-core = { workspace = true, features = ["proover"] }
 mrs-cnf = { workspace = true }
 mrs-search = { workspace = true }

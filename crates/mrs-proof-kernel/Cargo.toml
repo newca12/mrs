@@ -1,0 +1,12 @@
+[package]
+name = "mrs-proof-kernel"
+version.workspace = true
+edition.workspace = true
+description = "Deterministic independent proof kernel for MRS TSTP proofs"
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mrs-core = { workspace = true, features = ["proover"] }
+mrs-tptp = { workspace = true, features = ["proover"] }
