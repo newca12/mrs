@@ -95,6 +95,7 @@ The first strict kernel implementation certifies only:
 - `factoring` over same-polarity predicate literals
 - bounded `equality_resolution`
 - bounded `equality_factoring`
+- bounded `condensation`
 - bounded `demodulation` from cited positive unit equalities
 - bounded `superposition` into a cited target clause
 

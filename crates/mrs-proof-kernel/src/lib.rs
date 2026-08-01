@@ -226,6 +226,7 @@ pub fn verify_strict_with_source(
             "factoring" => verify_factoring(&parents, conclusion, limits),
             "equality_resolution" => verify_equality_resolution(&parents, conclusion, limits),
             "equality_factoring" => verify_equality_factoring(&parents, conclusion, limits),
+            "condensation" => verify_condensation(&parents, conclusion, limits),
             "demodulation" => verify_demodulation(&parents, conclusion, limits),
             "superposition" => verify_superposition(&parents, conclusion, limits),
             "split_component" => verify_split_component(
@@ -306,6 +307,7 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "factoring"
         | "equality_resolution"
         | "equality_factoring"
+        | "condensation"
         | "demodulation"
         | "split_component"
         | "avatar_sat_refutation"
@@ -2568,6 +2570,106 @@ fn verify_equality_factoring(
     KernelVerdict::Rejected("equality_factoring conclusion is not a valid factor".into())
 }
 
+fn verify_condensation(
+    parents: &[Formula],
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if parents.len() != 1 {
+        return KernelVerdict::Rejected("condensation must have one parent".into());
+    }
+    let Some(parent) = clause_from_formula(&parents[0], limits) else {
+        return KernelVerdict::Inconclusive("condensation parent is not a supported clause".into());
+    };
+    let Some(goal) = clause_from_formula(conclusion, limits) else {
+        return KernelVerdict::Inconclusive(
+            "condensation conclusion is not a supported clause".into(),
+        );
+    };
+    if parent.len() < 2 || goal.len() >= parent.len() {
+        return KernelVerdict::Rejected("condensation must remove at least one literal".into());
+    }
+
+    for removed in 0..parent.len() {
+        for matched in 0..parent.len() {
+            if removed == matched || parent[removed].positive != parent[matched].positive {
+                continue;
+            }
+            let Some(substitution) =
+                unify_atoms_for_condensation(&parent[removed].atom, &parent[matched].atom)
+            else {
+                continue;
+            };
+            let mut expected = Vec::with_capacity(parent.len() - 1);
+            for (index, literal) in parent.iter().enumerate() {
+                if index == removed {
+                    continue;
+                }
+                let substituted = apply_substitution_literal(literal, &substitution);
+                if !expected.contains(&substituted) {
+                    expected.push(substituted);
+                }
+            }
+            if expected.len() >= parent.len() {
+                continue;
+            }
+            let mut matching_steps = 0;
+            let subsumes_parent = match clause_subsumes(
+                &expected,
+                &parent,
+                &mut matching_steps,
+                limits.max_subsumption_steps,
+            ) {
+                Ok(value) => value,
+                Err(()) => {
+                    return KernelVerdict::Inconclusive(
+                        "condensation exceeded strict matching-step limit".into(),
+                    );
+                }
+            };
+            if subsumes_parent && clause_alpha_equiv(&expected, &goal) {
+                return KernelVerdict::Certified;
+            }
+        }
+    }
+    KernelVerdict::Rejected("condensation conclusion is not a valid condensed clause".into())
+}
+
+fn unify_atoms_for_condensation(left: &Atom, right: &Atom) -> Option<HashMap<VarId, Term>> {
+    match (left, right) {
+        (Atom::Pred(left_symbol, left_args), Atom::Pred(right_symbol, right_args))
+            if left_symbol == right_symbol && left_args.len() == right_args.len() =>
+        {
+            let mut substitution = HashMap::new();
+            if left_args
+                .iter()
+                .zip(right_args)
+                .all(|(left, right)| unify_terms(left, right, &mut substitution))
+            {
+                Some(substitution)
+            } else {
+                None
+            }
+        }
+        (Atom::Eq(left_left, left_right), Atom::Eq(right_left, right_right)) => {
+            let mut substitution = HashMap::new();
+            if unify_terms(left_left, right_left, &mut substitution)
+                && unify_terms(left_right, right_right, &mut substitution)
+            {
+                return Some(substitution);
+            }
+            let mut substitution = HashMap::new();
+            if unify_terms(left_left, right_right, &mut substitution)
+                && unify_terms(left_right, right_left, &mut substitution)
+            {
+                return Some(substitution);
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 fn verify_demodulation(
     parents: &[Formula],
     conclusion: &Formula,
@@ -4113,6 +4215,29 @@ mod tests {
                      fof(mid, plain, q(a), inference(resolution, [status(thm)], [s,n1])).\n\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [mid,n2])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_condensation() {
+        let problem = "fof(a, axiom, p(X) | q(X) | p(Y)).\n\
+                       fof(n, axiom, ~p(a)).\n\
+                       fof(nq, axiom, ~q(a)).";
+        let proof = "fof(a, axiom, p(X) | q(X) | p(Y), file('problem.p', a)).\
+                     fof(n, axiom, ~p(a), file('problem.p', n)).\
+                     fof(nq, axiom, ~q(a), file('problem.p', nq)).\
+                     cnf(c, plain, p(X) | q(X), inference(condensation, [status(thm)], [a])).\
+                     cnf(mid, plain, q(a), inference(resolution, [status(thm)], [c,n])).\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [mid,nq])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_forged_condensation_conclusion() {
+        let problem = "fof(a, axiom, p(X) | p(a) | q(X)).";
+        let proof = "fof(a, axiom, p(X) | p(a) | q(X), file('problem.p', a)).\
+                     cnf(c, plain, p(a) | r(a), inference(condensation, [status(thm)], [a])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [c])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
     }
 
     #[test]

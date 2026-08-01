@@ -57,8 +57,8 @@ The current kernel checks:
 - fresh biconditional definitions and simple bounded CNF clause extraction;
 - bounded nested Tseitin definitions and transitive definition dependencies in
   `cnf_transformation` parents;
-- resolution, factoring, equality resolution, equality factoring, subsumption
-  resolution, demodulation, and superposition;
+- resolution, factoring, equality resolution, equality factoring, condensation,
+  subsumption resolution, demodulation, and superposition;
 - explicit CWA-style `split_component` and `avatar_sat_refutation`
   certificates with complete branch coverage.
 
@@ -71,7 +71,7 @@ literal removed.
 The kernel returns `Inconclusive` for, among other cases:
 
 - multi-parent Skolemization;
-- justified literal-deletion rules not listed above;
+- justified literal-deletion rules other than bounded condensation;
 - multi-parent CNF transformations and definitional CNF outside the bounded
   clause-extraction fragment;
 - general AVATAR SAT proofs without explicit complete case-split certificates;
