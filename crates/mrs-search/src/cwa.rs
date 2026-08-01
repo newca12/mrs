@@ -292,8 +292,9 @@ fn make_branch_unit(top_clause: &Clause, k: usize, id_gen: &mut ClauseIdGen) -> 
 /// - `None` if the input doesn't match the pattern, any branch times out, or
 ///   any branch saturates under the weight bound (which is incomplete).
 ///
-/// The TSTP proof string returned on refutation simply concatenates the
-/// per-branch proofs with explanatory comments — it is informational only.
+/// The TSTP proof string returned on refutation contains the original top
+/// disjunction followed by every branch derivation and an explicit
+/// `avatar_sat_refutation` roll-up.
 pub fn try_componentwise_refute(
     clauses: &[Clause],
     provenance: &[Clause],
@@ -395,13 +396,22 @@ pub fn try_componentwise_refute(
     let mut final_proof: Vec<Clause> = combined_proof.into_values().collect();
 
     // Add the final unified/roll-up $false clause (avatar_sat_refutation)
-    let final_id = ClauseId(999_999_999);
+    // Allocate the roll-up node after all branch sub-searches so it cannot
+    // collide with a real clause ID. The original fixed sentinel made the
+    // proof graph depend on an out-of-band magic value.
+    let final_id = id_gen.next();
     let final_false_clause = Clause::new(
         final_id,
         vec![], // empty literal set represents $false
         ClauseSource::Inference {
             rule: "avatar_sat_refutation",
-            parents: branch_empty_ids.into(),
+            // The first parent is the original top disjunction; the remaining
+            // parents are the independently refuted branch roots. This makes
+            // the CWA case split explicit and kernel-checkable.
+            parents: std::iter::once(top_clause.id)
+                .chain(branch_empty_ids)
+                .collect::<Vec<_>>()
+                .into(),
         },
     );
     final_proof.push(final_false_clause);

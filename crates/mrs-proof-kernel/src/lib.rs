@@ -86,6 +86,7 @@ pub fn verify_strict_with_source(
         };
         proof_formulas.insert(idx, formula);
     }
+    let mut branch_contexts: HashMap<usize, BranchContext> = HashMap::new();
 
     let mut problem_names = HashSet::with_capacity(problem.formulas.len());
     for formula in &problem.formulas {
@@ -160,6 +161,11 @@ pub fn verify_strict_with_source(
             .first()
             .and_then(|parent| dag.by_name.get(parent.name))
             .map(|idx| dag.nodes[*idx].role);
+        let parent_indices = node
+            .parents
+            .iter()
+            .map(|parent| *dag.by_name.get(parent.name).expect("validated parent"))
+            .collect::<Vec<_>>();
         let outcome = match rule {
             "negated_conjecture" | "assume_negation" => {
                 verify_negated_conjecture(node, &parents, parent_role, conclusion)
@@ -177,6 +183,25 @@ pub fn verify_strict_with_source(
             "equality_resolution" => verify_equality_resolution(&parents, conclusion, limits),
             "demodulation" => verify_demodulation(&parents, conclusion, limits),
             "superposition" => verify_superposition(&parents, conclusion, limits),
+            "split_component" => verify_split_component(
+                &parents,
+                conclusion,
+                parent_indices.first().copied(),
+                limits,
+            )
+            .map(|context| {
+                branch_contexts.insert(idx, context);
+                KernelVerdict::Certified
+            })
+            .unwrap_or_else(|verdict| verdict),
+            "avatar_sat_refutation" => verify_case_split(
+                node,
+                &dag,
+                &parent_indices,
+                &proof_formulas,
+                &branch_contexts,
+                limits,
+            ),
             _ => KernelVerdict::Inconclusive(format!(
                 "node `{}` uses unsupported strict rule `{rule}`",
                 node.name
@@ -192,6 +217,27 @@ pub fn verify_strict_with_source(
         }
         if !matches!(outcome, KernelVerdict::Certified) {
             return outcome;
+        }
+        if rule != "split_component" && rule != "avatar_sat_refutation" {
+            let mut context: Option<BranchContext> = None;
+            for parent_idx in &parent_indices {
+                let Some(parent_context) = branch_contexts.get(parent_idx) else {
+                    continue;
+                };
+                if let Some(existing) = &context {
+                    if existing != parent_context {
+                        return KernelVerdict::Rejected(format!(
+                            "node `{}` combines incompatible case-split branches",
+                            node.name
+                        ));
+                    }
+                } else {
+                    context = Some(parent_context.clone());
+                }
+            }
+            if let Some(context) = context {
+                branch_contexts.insert(idx, context);
+            }
         }
     }
 
@@ -213,6 +259,8 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "factoring"
         | "equality_resolution"
         | "demodulation"
+        | "split_component"
+        | "avatar_sat_refutation"
         | "superposition" => Some("thm"),
         _ => None,
     }
@@ -535,6 +583,13 @@ fn verify_existential_free_identity(parents: &[Formula], conclusion: &Formula) -
 struct Literal {
     positive: bool,
     atom: Atom,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BranchContext {
+    split_parent: usize,
+    branch_index: usize,
+    literal: Literal,
 }
 
 fn verify_resolution(
@@ -883,6 +938,132 @@ fn verify_superposition(
         }
     }
     KernelVerdict::Rejected("superposition conclusion is not a valid rewrite".into())
+}
+
+fn verify_split_component(
+    parents: &[Formula],
+    conclusion: &Formula,
+    split_parent: Option<usize>,
+    limits: VerificationLimits,
+) -> Result<BranchContext, KernelVerdict> {
+    if parents.len() != 1 {
+        return Err(KernelVerdict::Rejected(
+            "split_component must have one parent".into(),
+        ));
+    }
+    let Some(parent_clause) = clause_from_formula(&parents[0], limits) else {
+        return Err(KernelVerdict::Inconclusive(
+            "split_component parent is not a supported clause".into(),
+        ));
+    };
+    let Some(conclusion_clause) = clause_from_formula(conclusion, limits) else {
+        return Err(KernelVerdict::Inconclusive(
+            "split_component conclusion is not a supported clause".into(),
+        ));
+    };
+    if conclusion_clause.len() != 1 {
+        return Err(KernelVerdict::Rejected(
+            "split_component conclusion must be a unit literal".into(),
+        ));
+    }
+    let literal = conclusion_clause[0].clone();
+    let branch_index = parent_clause
+        .iter()
+        .position(|parent_literal| {
+            clause_alpha_equiv(
+                std::slice::from_ref(parent_literal),
+                std::slice::from_ref(&literal),
+            )
+        })
+        .ok_or_else(|| {
+            KernelVerdict::Rejected(
+                "split_component conclusion is not a literal of its parent".into(),
+            )
+        })?;
+    Ok(BranchContext {
+        split_parent: split_parent
+            .ok_or_else(|| KernelVerdict::Rejected("split_component has no parent index".into()))?,
+        branch_index,
+        literal,
+    })
+}
+
+fn verify_case_split(
+    node: &Node<'_>,
+    dag: &Dag<'_>,
+    parent_indices: &[usize],
+    formulas: &HashMap<usize, Formula>,
+    branch_contexts: &HashMap<usize, BranchContext>,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if parent_indices.len() < 2 {
+        return KernelVerdict::Rejected(
+            "avatar_sat_refutation requires a split parent and branch roots".into(),
+        );
+    }
+    if !node.is_false {
+        return KernelVerdict::Rejected("avatar_sat_refutation must conclude `$false`".into());
+    }
+    let split_parent = parent_indices[0];
+    let Some(top_clause) = formulas
+        .get(&split_parent)
+        .and_then(|formula| clause_from_formula(formula, limits))
+    else {
+        return KernelVerdict::Inconclusive(
+            "avatar_sat_refutation split parent is not a supported clause".into(),
+        );
+    };
+    if top_clause.len() < 2 {
+        return KernelVerdict::Rejected(
+            "avatar_sat_refutation split parent must be a disjunction".into(),
+        );
+    }
+    let mut seen = HashSet::new();
+    for branch_root in &parent_indices[1..] {
+        let Some(context) = branch_contexts.get(branch_root) else {
+            return KernelVerdict::Rejected(format!(
+                "avatar_sat_refutation branch `{}` has no case context",
+                dag.nodes[*branch_root].name
+            ));
+        };
+        if context.split_parent != split_parent {
+            return KernelVerdict::Rejected(format!(
+                "avatar_sat_refutation branch `{}` cites a different split parent",
+                dag.nodes[*branch_root].name
+            ));
+        }
+        if !seen.insert(context.branch_index) {
+            return KernelVerdict::Rejected(
+                "avatar_sat_refutation contains a duplicate branch".into(),
+            );
+        }
+        let matches_top = top_clause
+            .get(context.branch_index)
+            .is_some_and(|top_literal| {
+                clause_alpha_equiv(
+                    std::slice::from_ref(top_literal),
+                    std::slice::from_ref(&context.literal),
+                )
+            });
+        if !matches_top {
+            return KernelVerdict::Rejected(
+                "avatar_sat_refutation branch literal does not match split parent".into(),
+            );
+        }
+        if !dag.nodes[*branch_root].is_false {
+            return KernelVerdict::Rejected(
+                "avatar_sat_refutation branch root is not `$false`".into(),
+            );
+        }
+    }
+    if seen.len() != top_clause.len() {
+        return KernelVerdict::Rejected(format!(
+            "avatar_sat_refutation covers {} of {} branches",
+            seen.len(),
+            top_clause.len()
+        ));
+    }
+    KernelVerdict::Certified
 }
 
 fn atom_term_positions(atom: &Atom) -> Vec<(usize, Vec<usize>)> {
@@ -1939,6 +2120,33 @@ mod tests {
                      fof(target, axiom, p(f(a)), file('problem.p', target)).\n\
                      fof(s, plain, q(b), inference(superposition, [status(thm)], [eq,target])).\n\
                      fof(bot, plain, $false, inference(consequence, [status(thm)], [s])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn certifies_complete_case_split() {
+        let problem = "fof(top, axiom, p | q).\n\
+                       fof(np, axiom, ~p).\n\
+                       fof(nq, axiom, ~q).";
+        let proof = "fof(top, axiom, p | q, file('problem.p', top)).\n\
+                     fof(np, axiom, ~p, file('problem.p', np)).\n\
+                     fof(nq, axiom, ~q, file('problem.p', nq)).\n\
+                     fof(b0, plain, p, inference(split_component, [status(thm)], [top])).\n\
+                     fof(b1, plain, q, inference(split_component, [status(thm)], [top])).\n\
+                     fof(f0, plain, $false, inference(resolution, [status(thm)], [b0,np])).\n\
+                     fof(f1, plain, $false, inference(resolution, [status(thm)], [b1,nq])).\n\
+                     fof(bot, plain, $false, inference(avatar_sat_refutation, [status(thm)], [top,f0,f1])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_case_split_with_missing_branch() {
+        let problem = "fof(top, axiom, p | q).\nfof(np, axiom, ~p).";
+        let proof = "fof(top, axiom, p | q, file('problem.p', top)).\n\
+                     fof(np, axiom, ~p, file('problem.p', np)).\n\
+                     fof(b0, plain, p, inference(split_component, [status(thm)], [top])).\n\
+                     fof(f0, plain, $false, inference(resolution, [status(thm)], [b0,np])).\n\
+                     fof(bot, plain, $false, inference(avatar_sat_refutation, [status(thm)], [top,f0])).";
         assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
     }
 }
