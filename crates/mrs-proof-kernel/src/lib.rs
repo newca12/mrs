@@ -7,6 +7,7 @@
 use std::collections::{HashMap, HashSet};
 
 use mrs_core::{Atom, Formula, SymbolTable, Term, VarId};
+use mrs_tptp::ast::common::{AtomicWord, GeneralTerm};
 use mrs_tptp::proover::ParentRef;
 use mrs_tptp::{AnnotatedFormula, BinaryConnective, CNFFormula, CNFLiteral, CNFStatement};
 use mrs_tptp::{FOFAtomicFormula, FOFFormula, FOFStatement, FOFTerm, FormulaRole, Quantifier};
@@ -108,8 +109,10 @@ pub fn verify_strict_with_source(
     }
 
     let mut known_function_symbols: HashSet<String> = HashSet::new();
+    let mut known_symbols: HashSet<String> = HashSet::new();
     for formula in &problem.formulas {
         collect_function_symbols(formula, &mut known_function_symbols);
+        collect_all_symbols(formula, &mut known_symbols);
     }
 
     for &idx in &dag.topo {
@@ -131,6 +134,7 @@ pub fn verify_strict_with_source(
             match verify_leaf(node, problem, expected_source, &mut symbols, limits) {
                 Ok(()) => {
                     collect_function_symbols(node.formula, &mut known_function_symbols);
+                    collect_all_symbols(node.formula, &mut known_symbols);
                     continue;
                 }
                 Err(v) => return v,
@@ -138,6 +142,17 @@ pub fn verify_strict_with_source(
         }
 
         if node.parents.is_empty() {
+            if let Some(annotations) = node.formula.annotations()
+                && is_introduced_definition(annotations)
+            {
+                let outcome = verify_definition(node, annotations, &known_symbols);
+                if !matches!(outcome, KernelVerdict::Certified) {
+                    return outcome;
+                }
+                collect_function_symbols(node.formula, &mut known_function_symbols);
+                collect_all_symbols(node.formula, &mut known_symbols);
+                continue;
+            }
             return KernelVerdict::Inconclusive(format!(
                 "node `{}` has no provenance and no parents",
                 node.name
@@ -190,7 +205,7 @@ pub fn verify_strict_with_source(
                 conclusion,
                 &known_function_symbols,
             ),
-            "cnf_transformation" => verify_alpha_identity(&parents, conclusion),
+            "cnf_transformation" => verify_cnf_transformation(&parents, conclusion, limits),
             "resolution" | "subsumption_resolution" => {
                 verify_resolution(&parents, conclusion, limits)
             }
@@ -255,6 +270,7 @@ pub fn verify_strict_with_source(
             }
         }
         collect_function_symbols(node.formula, &mut known_function_symbols);
+        collect_all_symbols(node.formula, &mut known_symbols);
     }
 
     KernelVerdict::Certified
@@ -279,6 +295,335 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "avatar_sat_refutation"
         | "superposition" => Some("thm"),
         _ => None,
+    }
+}
+
+fn is_introduced_definition(annotations: &mrs_tptp::Annotations<'_>) -> bool {
+    let GeneralTerm::Function(AtomicWord::Lower("introduced"), args) = &annotations.source else {
+        return false;
+    };
+    args.first().is_some_and(|term| {
+        matches!(
+            term,
+            GeneralTerm::Word(AtomicWord::Lower("definition"))
+                | GeneralTerm::Word(AtomicWord::SingleQuoted("definition"))
+        )
+    })
+}
+
+fn declared_definition_symbol<'a>(annotations: &'a mrs_tptp::Annotations<'a>) -> Option<&'a str> {
+    let GeneralTerm::Function(AtomicWord::Lower("introduced"), args) = &annotations.source else {
+        return None;
+    };
+    let GeneralTerm::List(info) = args.get(1)? else {
+        return None;
+    };
+    for item in info {
+        let GeneralTerm::Function(AtomicWord::Lower("new_symbols"), args) = item else {
+            continue;
+        };
+        let GeneralTerm::List(symbols) = args.get(1)? else {
+            continue;
+        };
+        if symbols.len() == 1
+            && let GeneralTerm::Word(AtomicWord::Lower(symbol) | AtomicWord::SingleQuoted(symbol)) =
+                &symbols[0]
+        {
+            return Some(symbol);
+        }
+    }
+    None
+}
+
+fn verify_definition(
+    node: &Node<'_>,
+    annotations: &mrs_tptp::Annotations<'_>,
+    known_symbols: &HashSet<String>,
+) -> KernelVerdict {
+    if node.role != FormulaRole::Definition {
+        return KernelVerdict::Rejected(format!(
+            "definition `{}` must have role `definition`",
+            node.name
+        ));
+    }
+    let Some(declared) = declared_definition_symbol(annotations) else {
+        return KernelVerdict::Inconclusive(format!(
+            "definition `{}` lacks a single new_symbols declaration",
+            node.name
+        ));
+    };
+    if known_symbols.contains(declared) {
+        return KernelVerdict::Rejected(format!(
+            "definition `{}` reuses existing symbol `{declared}`",
+            node.name
+        ));
+    }
+    let Some(fof) = node.formula.as_fof() else {
+        return KernelVerdict::Inconclusive("definition is not FOF".into());
+    };
+    let FOFStatement::Logical(formula) = &fof.formula else {
+        return KernelVerdict::Inconclusive("definition sequent is unsupported".into());
+    };
+    let body = strip_forall_fof(formula);
+    let FOFFormula::Binary {
+        left,
+        connective: BinaryConnective::Iff,
+        right,
+    } = body
+    else {
+        return KernelVerdict::Rejected(format!(
+            "definition `{}` is not a biconditional",
+            node.name
+        ));
+    };
+    let (head, rhs) = if let Some(head) = definition_head(left, declared) {
+        (head, right.as_ref())
+    } else if let Some(head) = definition_head(right, declared) {
+        (head, left.as_ref())
+    } else {
+        return KernelVerdict::Rejected(format!(
+            "definition `{}` does not define `{declared}`",
+            node.name
+        ));
+    };
+    if formula_contains_predicate(rhs, declared) {
+        return KernelVerdict::Rejected(format!("definition `{}` is recursive", node.name));
+    }
+    if head
+        .iter()
+        .any(|term| !matches!(term, FOFTerm::Variable(_)))
+    {
+        return KernelVerdict::Rejected(format!(
+            "definition `{}` has a non-variable predicate head",
+            node.name
+        ));
+    }
+    let mut free = HashSet::new();
+    collect_free_variable_names(rhs, &mut free);
+    let mut head_vars = HashSet::new();
+    for term in head {
+        collect_term_variable_names(term, &mut head_vars);
+    }
+    if !free.is_subset(&head_vars) {
+        return KernelVerdict::Rejected(format!(
+            "definition `{}` leaves free variables outside its head",
+            node.name
+        ));
+    }
+    KernelVerdict::Certified
+}
+
+fn formula_contains_predicate(formula: &FOFFormula<'_>, symbol: &str) -> bool {
+    match formula {
+        FOFFormula::Atomic(FOFAtomicFormula::Plain(name, _)) => name.as_str() == symbol,
+        FOFFormula::Atomic(FOFAtomicFormula::Defined(name, _)) => format!("${}", name.0) == symbol,
+        FOFFormula::Atomic(FOFAtomicFormula::System(name, _)) => format!("$${}", name.0) == symbol,
+        FOFFormula::Atomic(FOFAtomicFormula::True | FOFAtomicFormula::False) => false,
+        FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => {
+            formula_contains_predicate(inner, symbol)
+        }
+        FOFFormula::Quantified { formula, .. } => formula_contains_predicate(formula, symbol),
+        FOFFormula::Binary { left, right, .. } => {
+            formula_contains_predicate(left, symbol) || formula_contains_predicate(right, symbol)
+        }
+        FOFFormula::Equality(_, _) | FOFFormula::Inequality(_, _) => false,
+    }
+}
+
+fn verify_cnf_transformation(
+    parents: &[Formula],
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if parents.is_empty() || parents.len() > 2 {
+        return KernelVerdict::Inconclusive(
+            "strict CNF transformation requires one formula parent and at most one definition parent".into(),
+        );
+    }
+    let source = &parents[0];
+    if contains_exists(source) {
+        return KernelVerdict::Inconclusive(
+            "strict CNF transformation requires an existential-free parent".into(),
+        );
+    }
+    let Some(goal) = clause_from_formula(conclusion, limits) else {
+        return KernelVerdict::Inconclusive("CNF conclusion is not a supported clause".into());
+    };
+    let mut expanded = Vec::new();
+    let normalized = to_nnf(source);
+    if !cnf_expand(&normalized, &mut expanded, limits) {
+        return KernelVerdict::Inconclusive("CNF expansion exceeded strict limits".into());
+    }
+    if expanded
+        .iter()
+        .any(|clause| clause_alpha_equiv(clause, &goal))
+    {
+        KernelVerdict::Certified
+    } else {
+        KernelVerdict::Rejected("CNF conclusion is not a clause of the parent CNF".into())
+    }
+}
+
+fn cnf_expand(
+    formula: &Formula,
+    output: &mut Vec<Vec<Literal>>,
+    limits: VerificationLimits,
+) -> bool {
+    match formula {
+        Formula::And(parts) => {
+            for part in parts {
+                if !cnf_expand(part, output, limits) {
+                    return false;
+                }
+            }
+            true
+        }
+        Formula::Or(parts) => {
+            let mut clauses = vec![Vec::<Literal>::new()];
+            for part in parts {
+                let mut child = Vec::new();
+                if !cnf_expand(part, &mut child, limits) {
+                    return false;
+                }
+                let mut next = Vec::new();
+                for left in &clauses {
+                    for right in &child {
+                        let mut merged = left.clone();
+                        merged.extend(right.clone());
+                        if merged.len() > limits.max_clause_literals {
+                            return false;
+                        }
+                        next.push(merged);
+                        if next.len() > limits.max_nodes {
+                            return false;
+                        }
+                    }
+                }
+                clauses = next;
+            }
+            output.extend(clauses);
+            true
+        }
+        Formula::Atom(atom) => {
+            output.push(vec![Literal {
+                positive: true,
+                atom: atom.clone(),
+            }]);
+            true
+        }
+        Formula::Neg(inner) => match inner.as_ref() {
+            Formula::Atom(atom) => {
+                output.push(vec![Literal {
+                    positive: false,
+                    atom: atom.clone(),
+                }]);
+                true
+            }
+            _ => false,
+        },
+        Formula::False => {
+            output.push(Vec::new());
+            true
+        }
+        Formula::True => true,
+        Formula::Forall(_, inner) => cnf_expand(inner, output, limits),
+        Formula::Implies(_, _) | Formula::Iff(_, _) | Formula::Exists(_, _) => false,
+    }
+}
+
+fn definition_head<'a>(formula: &'a FOFFormula<'a>, symbol: &str) -> Option<&'a [FOFTerm<'a>]> {
+    match formula {
+        FOFFormula::Atomic(FOFAtomicFormula::Plain(name, args)) if name.as_str() == symbol => {
+            Some(args)
+        }
+        _ => None,
+    }
+}
+
+fn strip_forall_fof<'a>(formula: &'a FOFFormula<'a>) -> &'a FOFFormula<'a> {
+    match formula {
+        FOFFormula::Parens(inner) => strip_forall_fof(inner),
+        FOFFormula::Quantified {
+            quantifier: Quantifier::Forall,
+            formula,
+            ..
+        } => strip_forall_fof(formula),
+        _ => formula,
+    }
+}
+
+fn collect_free_variable_names(formula: &FOFFormula<'_>, out: &mut HashSet<String>) {
+    fn walk(formula: &FOFFormula<'_>, bound: &mut HashSet<String>, out: &mut HashSet<String>) {
+        match formula {
+            FOFFormula::Atomic(atom) => match atom {
+                FOFAtomicFormula::Plain(_, terms)
+                | FOFAtomicFormula::Defined(_, terms)
+                | FOFAtomicFormula::System(_, terms) => {
+                    for term in terms {
+                        collect_free_term_names(term, bound, out);
+                    }
+                }
+                FOFAtomicFormula::True | FOFAtomicFormula::False => {}
+            },
+            FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => walk(inner, bound, out),
+            FOFFormula::Binary { left, right, .. } => {
+                walk(left, bound, out);
+                walk(right, bound, out);
+            }
+            FOFFormula::Equality(left, right) | FOFFormula::Inequality(left, right) => {
+                collect_free_term_names(left, bound, out);
+                collect_free_term_names(right, bound, out);
+            }
+            FOFFormula::Quantified {
+                variables, formula, ..
+            } => {
+                let mut inserted = Vec::new();
+                for variable in variables {
+                    if bound.insert((*variable).to_string()) {
+                        inserted.push(*variable);
+                    }
+                }
+                walk(formula, bound, out);
+                for variable in inserted {
+                    bound.remove(variable);
+                }
+            }
+        }
+    }
+    walk(formula, &mut HashSet::new(), out);
+}
+
+fn collect_free_term_names(term: &FOFTerm<'_>, bound: &HashSet<String>, out: &mut HashSet<String>) {
+    match term {
+        FOFTerm::Variable(variable) => {
+            if !bound.contains(*variable) {
+                out.insert((*variable).to_string());
+            }
+        }
+        FOFTerm::Function(_, args)
+        | FOFTerm::DefinedFunction(_, args)
+        | FOFTerm::SystemFunction(_, args) => {
+            for arg in args {
+                collect_free_term_names(arg, bound, out);
+            }
+        }
+        FOFTerm::Number(_) | FOFTerm::DistinctObject(_) => {}
+    }
+}
+
+fn collect_term_variable_names(term: &FOFTerm<'_>, out: &mut HashSet<String>) {
+    match term {
+        FOFTerm::Variable(variable) => {
+            out.insert((*variable).to_string());
+        }
+        FOFTerm::Function(_, args)
+        | FOFTerm::DefinedFunction(_, args)
+        | FOFTerm::SystemFunction(_, args) => {
+            for arg in args {
+                collect_term_variable_names(arg, out);
+            }
+        }
+        FOFTerm::Number(_) | FOFTerm::DistinctObject(_) => {}
     }
 }
 
@@ -747,6 +1092,100 @@ fn collect_function_symbols_term(term: &FOFTerm<'_>, symbols: &mut HashSet<Strin
         }
         FOFTerm::Variable(_) | FOFTerm::Number(_) | FOFTerm::DistinctObject(_) => {}
     }
+}
+
+fn collect_all_symbols(formula: &AnnotatedFormula<'_>, symbols: &mut HashSet<String>) {
+    match formula {
+        AnnotatedFormula::FOF(formula) => {
+            if let FOFStatement::Logical(formula) = &formula.formula {
+                collect_all_formula_symbols(formula, symbols);
+            }
+        }
+        AnnotatedFormula::CNF(formula) => {
+            let CNFStatement::Logical(formula) = &formula.formula;
+            collect_all_cnf_symbols(formula, symbols);
+        }
+        _ => {}
+    }
+}
+
+fn collect_all_formula_symbols(formula: &FOFFormula<'_>, symbols: &mut HashSet<String>) {
+    match formula {
+        FOFFormula::Atomic(atom) => match atom {
+            FOFAtomicFormula::Plain(name, terms) => {
+                symbols.insert(name.as_str().to_string());
+                for term in terms {
+                    collect_all_term_symbols(term, symbols);
+                }
+            }
+            FOFAtomicFormula::Defined(name, terms) => {
+                symbols.insert(format!("${}", name.0));
+                for term in terms {
+                    collect_all_term_symbols(term, symbols);
+                }
+            }
+            FOFAtomicFormula::System(name, terms) => {
+                symbols.insert(format!("$${}", name.0));
+                for term in terms {
+                    collect_all_term_symbols(term, symbols);
+                }
+            }
+            FOFAtomicFormula::True | FOFAtomicFormula::False => {}
+        },
+        FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => {
+            collect_all_formula_symbols(inner, symbols)
+        }
+        FOFFormula::Quantified { formula, .. } => collect_all_formula_symbols(formula, symbols),
+        FOFFormula::Binary { left, right, .. } => {
+            collect_all_formula_symbols(left, symbols);
+            collect_all_formula_symbols(right, symbols);
+        }
+        FOFFormula::Equality(left, right) | FOFFormula::Inequality(left, right) => {
+            collect_all_term_symbols(left, symbols);
+            collect_all_term_symbols(right, symbols);
+        }
+    }
+}
+
+fn collect_all_cnf_symbols(formula: &CNFFormula<'_>, symbols: &mut HashSet<String>) {
+    match formula {
+        CNFFormula::Parens(inner) => collect_all_cnf_symbols(inner, symbols),
+        CNFFormula::Disjunction(literals) => {
+            for literal in literals {
+                match literal {
+                    CNFLiteral::Positive(atom) | CNFLiteral::Negative(atom) => match atom {
+                        mrs_tptp::CNFAtomicFormula::Plain(name, terms) => {
+                            symbols.insert(name.as_str().to_string());
+                            for term in terms {
+                                collect_all_term_symbols(term, symbols);
+                            }
+                        }
+                        mrs_tptp::CNFAtomicFormula::Defined(name, terms) => {
+                            symbols.insert(format!("${}", name.0));
+                            for term in terms {
+                                collect_all_term_symbols(term, symbols);
+                            }
+                        }
+                        mrs_tptp::CNFAtomicFormula::System(name, terms) => {
+                            symbols.insert(format!("$${}", name.0));
+                            for term in terms {
+                                collect_all_term_symbols(term, symbols);
+                            }
+                        }
+                        mrs_tptp::CNFAtomicFormula::True | mrs_tptp::CNFAtomicFormula::False => {}
+                    },
+                    CNFLiteral::Equality(left, right) | CNFLiteral::Inequality(left, right) => {
+                        collect_all_term_symbols(left, symbols);
+                        collect_all_term_symbols(right, symbols);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collect_all_term_symbols(term: &FOFTerm<'_>, symbols: &mut HashSet<String>) {
+    collect_function_symbols_term(term, symbols);
 }
 
 struct SkolemMatch {
@@ -2454,6 +2893,45 @@ mod tests {
                      cnf(derived, plain, q(a), inference(resolution, [status(thm)], [clause, fact])).\n\
                      cnf(bot, plain, $false, inference(subsumption_resolution, [status(thm)], [derived, neg])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_fresh_definition_and_its_cnf_clause() {
+        let problem = "fof(p, axiom, p(a)).\nfof(np, axiom, ~p(a)).";
+        let proof = "fof(p, axiom, p(a), file('problem.p', p)).\n\
+                     fof(np, axiom, ~p(a), file('problem.p', np)).\n\
+                     fof(d, definition, ![X] : (d0(X) <=> p(X)), introduced(definition, [new_symbols(definition, [d0])])).\n\
+                     cnf(d_clause, plain, ~d0(X) | p(X), inference(cnf_transformation, [status(thm)], [d])).\n\
+                     cnf(d_other, plain, d0(X) | ~p(X), inference(cnf_transformation, [status(thm)], [d])).\n\
+                     cnf(d_atom, plain, d0(a), inference(resolution, [status(thm)], [d_other,p])).\n\
+                     cnf(p_again, plain, p(a), inference(resolution, [status(thm)], [d_clause,d_atom])).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [p_again,np])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_non_fresh_definition_symbol() {
+        let problem = "fof(d, axiom, p(a)).";
+        let proof = "fof(d, definition, ![X] : (p(X) <=> q(X)), introduced(definition, [new_symbols(definition, [p])])).\n\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [d])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn rejects_recursive_definition() {
+        let problem = "fof(a, axiom, p(a)).";
+        let proof = "fof(d, definition, ![X] : (d0(X) <=> (p(X) | d0(X))), introduced(definition, [new_symbols(definition, [d0])])).\n\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [d])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn rejects_forged_cnf_clause() {
+        let problem = "fof(a, axiom, p(a) | q(a)).";
+        let proof = "fof(a, axiom, p(a) | q(a), file('problem.p', a)).\n\
+                     cnf(s, plain, p(b), inference(cnf_transformation, [status(thm)], [a])).\n\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [s])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
     }
 
     #[test]
