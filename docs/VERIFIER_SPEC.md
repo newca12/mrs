@@ -94,6 +94,7 @@ The first strict kernel implementation certifies only:
   matching and exact target-literal deletion
 - `factoring` over same-polarity predicate literals
 - bounded `equality_resolution`
+- bounded `equality_factoring`
 - bounded `demodulation` from cited positive unit equalities
 - bounded `superposition` into a cited target clause
 

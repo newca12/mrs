@@ -225,6 +225,7 @@ pub fn verify_strict_with_source(
             "subsumption_resolution" => verify_subsumption_resolution(&parents, conclusion, limits),
             "factoring" => verify_factoring(&parents, conclusion, limits),
             "equality_resolution" => verify_equality_resolution(&parents, conclusion, limits),
+            "equality_factoring" => verify_equality_factoring(&parents, conclusion, limits),
             "demodulation" => verify_demodulation(&parents, conclusion, limits),
             "superposition" => verify_superposition(&parents, conclusion, limits),
             "split_component" => verify_split_component(
@@ -304,6 +305,7 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "subsumption_resolution"
         | "factoring"
         | "equality_resolution"
+        | "equality_factoring"
         | "demodulation"
         | "split_component"
         | "avatar_sat_refutation"
@@ -2499,6 +2501,73 @@ fn verify_equality_resolution(
     )
 }
 
+fn verify_equality_factoring(
+    parents: &[Formula],
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if parents.len() != 1 {
+        return KernelVerdict::Rejected("equality_factoring must have one parent".into());
+    }
+    let Some(parent) = clause_from_formula(&parents[0], limits) else {
+        return KernelVerdict::Inconclusive(
+            "equality_factoring parent is not a supported clause".into(),
+        );
+    };
+    let Some(goal) = clause_from_formula(conclusion, limits) else {
+        return KernelVerdict::Inconclusive(
+            "equality_factoring conclusion is not a supported clause".into(),
+        );
+    };
+    for first in 0..parent.len() {
+        let Literal {
+            positive: true,
+            atom: Atom::Eq(first_left, first_right),
+        } = &parent[first]
+        else {
+            continue;
+        };
+        for second in (first + 1)..parent.len() {
+            let Literal {
+                positive: true,
+                atom: Atom::Eq(second_left, second_right),
+            } = &parent[second]
+            else {
+                continue;
+            };
+            for (left, right, other_left, other_right) in [
+                (first_left, first_right, second_left, second_right),
+                (first_left, first_right, second_right, second_left),
+                (first_right, first_left, second_left, second_right),
+                (first_right, first_left, second_right, second_left),
+            ] {
+                let mut substitution = HashMap::new();
+                if !unify_terms(left, other_left, &mut substitution) {
+                    continue;
+                }
+                let mut expected = Vec::with_capacity(parent.len());
+                expected.push(apply_substitution_literal(&parent[first], &substitution));
+                expected.push(Literal {
+                    positive: false,
+                    atom: Atom::Eq(
+                        apply_substitution_term(right, &substitution),
+                        apply_substitution_term(other_right, &substitution),
+                    ),
+                });
+                for (index, literal) in parent.iter().enumerate() {
+                    if index != first && index != second {
+                        expected.push(apply_substitution_literal(literal, &substitution));
+                    }
+                }
+                if clause_alpha_equiv(&expected, &goal) {
+                    return KernelVerdict::Certified;
+                }
+            }
+        }
+    }
+    KernelVerdict::Rejected("equality_factoring conclusion is not a valid factor".into())
+}
+
 fn verify_demodulation(
     parents: &[Formula],
     conclusion: &Formula,
@@ -4054,6 +4123,30 @@ mod tests {
                      fof(s, plain, p(a), inference(equality_resolution, [status(thm)], [a])).\n\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [s,n])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_equality_factoring() {
+        let problem = "fof(a, axiom, f(X) = a | f(X) = a).\n\
+                       fof(target, axiom, p(f(b))).\n\
+                       fof(np, axiom, ~p(a)).";
+        let proof = "fof(a, axiom, f(X) = a | f(X) = a, file('problem.p', a)).\
+                     fof(target, axiom, p(f(b)), file('problem.p', target)).\
+                     fof(np, axiom, ~p(a), file('problem.p', np)).\
+                     fof(f, plain, f(X) = a | ~(a = a), inference(equality_factoring, [status(thm)], [a])).\
+                     fof(mid, plain, ~(a = a) | p(a), inference(superposition, [status(thm)], [f,target])).\
+                     fof(last, plain, p(a), inference(equality_resolution, [status(thm)], [mid])).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [last,np])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_forged_equality_factoring_conclusion() {
+        let problem = "fof(a, axiom, f(X) = a | f(Y) = b | p(X, Y)).";
+        let proof = "fof(a, axiom, f(X) = a | f(Y) = b | p(X, Y), file('problem.p', a)).\
+                     fof(f, plain, f(a) = a | ~(a = c) | p(a, a), inference(equality_factoring, [status(thm)], [a])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [f])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
     }
 
     #[test]
