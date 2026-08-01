@@ -125,4 +125,5 @@ preprocessing, incorrect Skolem scopes and witnesses, incomplete case splits,
 resource-limit fail-closed behavior, and every parseable committed proof in
 `evil-proofs/exploits/`. The mutation suite also changes formulas, signs, terms,
 parents, rules, statuses, roles, provenance, and roots; no tested mutation may
-reach `Certified`.
+reach `Certified`. Malformed parser and DAG cases are also checked to fail
+closed without panics.
