@@ -689,9 +689,10 @@ fn main() {
             } else if remaining < Duration::from_secs(2) {
                 failure = Some("insufficient time remains for strict self-check".to_string());
             } else if let SearchResult::Refutation(_, tstp_proof) = &result {
-                // Include the real problem path in the proof header so the
-                // checker resolves the same problem and include tree.
-                let temp_proof_text = format!("% Proof : {}\n{}", path, tstp_proof);
+                // Use the same source label as `format_tstp`: stdin proofs use
+                // `input` because there is no filesystem path to cite.
+                let proof_source = if path == "-" { "input" } else { path.as_str() };
+                let temp_proof_text = format!("% Proof : {proof_source}\n{tstp_proof}");
                 let tptp_root = std::env::var("TPTP").ok().map(std::path::PathBuf::from);
                 if path == "-" {
                     let root = include_root.as_deref().expect("stdin include root checked");

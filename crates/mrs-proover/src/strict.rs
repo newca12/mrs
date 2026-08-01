@@ -152,4 +152,34 @@ mod tests {
         );
         assert!(matches!(verdict, KernelVerdict::Inconclusive(_)));
     }
+
+    #[test]
+    fn verifies_in_memory_text_with_include_root() {
+        let root = std::env::temp_dir().join(format!(
+            "mrs_strict_include_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("include root creates");
+        std::fs::write(
+            root.join("axioms.p"),
+            "fof(a, axiom, p(a)).\nfof(b, axiom, ~p(a)).\n",
+        )
+        .expect("include writes");
+        let verdict = verify_text_with_include_root(
+            "include('axioms.p').\n".to_string(),
+            "% Proof : input\n\
+             fof(a, axiom, p(a), file('input', a)).\
+             fof(b, axiom, ~p(a), file('input', b)).\
+             fof(bot, plain, $false, inference(resolution, [status(thm)], [a,b]))."
+                .to_string(),
+            &root,
+            VerificationLimits::default(),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(verdict, KernelVerdict::Certified);
+    }
 }
