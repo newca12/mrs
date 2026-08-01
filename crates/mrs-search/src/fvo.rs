@@ -18,7 +18,6 @@
 //! 5. Return `SearchResult::Refutation` with the TSTP-formatted proof.
 
 use crate::{HashMap, HashSet};
-use std::collections::VecDeque;
 
 use mrs_core::SymbolTable;
 use mrs_core::clause::{Clause, ClauseId, ClauseIdGen, ClauseSource, Literal};
@@ -246,6 +245,22 @@ fn lift_clause(
 // Main entry point
 // ---------------------------------------------------------------------------
 
+fn dfs_topo(
+    idx: usize,
+    prop_sources: &[PSrc],
+    visited: &mut HashSet<usize>,
+    order: &mut Vec<usize>,
+) {
+    if !visited.insert(idx) {
+        return;
+    }
+    if let PSrc::Resolvent { left, right } = &prop_sources[idx] {
+        dfs_topo(*left, prop_sources, visited, order);
+        dfs_topo(*right, prop_sources, visited, order);
+    }
+    order.push(idx);
+}
+
 /// Attempts to refute an FVO clause set using propositional skeleton resolution.
 ///
 /// Returns `Some(SearchResult::Refutation(id, tstp))` if:
@@ -285,25 +300,8 @@ pub fn try_fvo_refutation(
 
     // Collect the proof ancestors in topological order (parents before children).
     let mut visited: HashSet<usize> = HashSet::default();
-    let mut queue: VecDeque<usize> = VecDeque::new();
     let mut order: Vec<usize> = Vec::new();
-
-    queue.push_back(empty_idx);
-    visited.insert(empty_idx);
-
-    while let Some(idx) = queue.pop_front() {
-        order.push(idx);
-        if let PSrc::Resolvent { left, right } = &prop_sources[idx] {
-            if visited.insert(*left) {
-                queue.push_back(*left);
-            }
-            if visited.insert(*right) {
-                queue.push_back(*right);
-            }
-        }
-    }
-
-    order.reverse(); // topological: inputs first, empty clause last
+    dfs_topo(empty_idx, &prop_sources, &mut visited, &mut order);
 
     // Build the lifted FOF proof.
     let mut prop_idx_to_fof_id: HashMap<usize, ClauseId> = HashMap::default();
