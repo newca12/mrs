@@ -333,7 +333,7 @@ pub fn verify_strict_with_source(
             | "distribute"
             | "ennf_transformation"
             | "simplification" => verify_formula_equivalence(&parents, conclusion, limits),
-            "skolemisation" => verify_skolemisation(
+            "skolemisation" | "skolemize" => verify_skolemisation(
                 node,
                 &dag,
                 &parent_indices,
@@ -419,7 +419,7 @@ pub fn verify_strict_with_source(
             }
         }
         collect_function_symbols(node.formula, &mut known_function_symbols);
-        if rule != "skolemisation" {
+        if !matches!(rule, "skolemisation" | "skolemize") {
             collect_function_symbols(node.formula, &mut known_non_skolem_function_symbols);
         }
         collect_all_symbols(node.formula, &mut known_symbols);
@@ -431,7 +431,7 @@ pub fn verify_strict_with_source(
 fn expected_status(rule: &str) -> Option<&'static str> {
     match rule {
         "negated_conjecture" | "assume_negation" => Some("cth"),
-        "skolemisation" => Some("esa"),
+        "skolemisation" | "skolemize" => Some("esa"),
         "fof_nnf"
         | "fof_nnf_transformation"
         | "nnf_transformation"
@@ -1857,6 +1857,12 @@ fn verify_skolemisation(
         .annotations()
         .map(|annotations| annotations.new_symbols())
         .unwrap_or_default();
+    let is_e_skolemize = node.rule == Some("skolemize");
+    if is_e_skolemize && parent_indices.len() > 1 {
+        return KernelVerdict::Inconclusive(
+            "strict `skolemize` verification currently supports one parent".into(),
+        );
+    }
     if parent_indices.len() > 1 && parents.len() > 1 {
         return verify_multi_parent_skolemisation(
             node,
@@ -1868,7 +1874,29 @@ fn verify_skolemisation(
             limits,
         );
     }
-    if !declared_symbols.is_empty() {
+    let annotation = if is_e_skolemize {
+        let Some(annotations) = node.formula.annotations() else {
+            return KernelVerdict::Inconclusive("`skolemize` node has no annotations".into());
+        };
+        let Some(info) = annotations.skolemize_info() else {
+            return KernelVerdict::Inconclusive(
+                "strict `skolemize` verification requires skolemize(...) metadata".into(),
+            );
+        };
+        if declared_symbols.len() != 1 || declared_symbols[0] != info.skolem_symbol {
+            return KernelVerdict::Rejected(
+                "`skolemize` metadata must declare exactly its witness symbol".into(),
+            );
+        }
+        Some(SkolemAnnotation {
+            variable: info.var.to_string(),
+            symbol: info.skolem_symbol.to_string(),
+            arguments: info.args.iter().map(|arg| (*arg).to_string()).collect(),
+        })
+    } else {
+        None
+    };
+    if !declared_symbols.is_empty() && !is_e_skolemize {
         return KernelVerdict::Rejected(
             "Skolemization with declared new symbols must cite its Skolem axioms".into(),
         );
@@ -1900,7 +1928,24 @@ fn verify_skolemisation(
         .cloned()
         .collect();
     if fresh.is_empty() {
+        if is_e_skolemize {
+            return KernelVerdict::Inconclusive(
+                "`skolemize` conclusion introduces no fresh witness symbol".into(),
+            );
+        }
         return verify_existential_free_identity(parents, conclusion);
+    }
+    if is_e_skolemize && !contains_skolemizable_existential(parent_formula, true) {
+        return KernelVerdict::Inconclusive(
+            "`skolemize` metadata names no eliminable existential".into(),
+        );
+    }
+    if is_e_skolemize
+        && (fresh.len() != 1 || !fresh.contains(&annotation.as_ref().expect("E metadata").symbol))
+    {
+        return KernelVerdict::Rejected(
+            "`skolemize` metadata must describe the sole fresh witness".into(),
+        );
     }
     if !contains_skolemizable_existential(parent_formula, true) {
         return KernelVerdict::Inconclusive(
@@ -1908,6 +1953,7 @@ fn verify_skolemisation(
         );
     }
     let mut state = SkolemMatch::new(fresh.clone(), limits.max_skolem_steps);
+    state.annotation = annotation;
     if !match_skolem_formula(parent_formula, step_formula, &mut state) {
         if state.exhausted.get() {
             return KernelVerdict::Inconclusive(
@@ -1919,6 +1965,14 @@ fn verify_skolemisation(
             node.name
         ));
     }
+    if let Some(annotation) = &state.annotation
+        && !validate_skolem_annotation(annotation, &state)
+    {
+        return KernelVerdict::Rejected(format!(
+            "node `{}` has inconsistent skolemize(...) metadata",
+            node.name
+        ));
+    }
     if state.used_symbols != fresh {
         return KernelVerdict::Rejected(format!(
             "node `{}` does not use exactly its fresh Skolem symbols",
@@ -1926,6 +1980,13 @@ fn verify_skolemisation(
         ));
     }
     KernelVerdict::Certified
+}
+
+fn validate_skolem_annotation(annotation: &SkolemAnnotation, state: &SkolemMatch) -> bool {
+    let Some((symbol, arguments)) = state.existential_witnesses.get(&annotation.variable) else {
+        return false;
+    };
+    symbol == &annotation.symbol && arguments == &annotation.arguments
 }
 
 struct SkolemVerificationContext<'a> {
@@ -2898,6 +2959,15 @@ struct SkolemMatch {
     steps: Rc<Cell<usize>>,
     step_limit: usize,
     exhausted: Rc<Cell<bool>>,
+    annotation: Option<SkolemAnnotation>,
+    existential_witnesses: HashMap<String, (String, Vec<String>)>,
+}
+
+#[derive(Clone)]
+struct SkolemAnnotation {
+    variable: String,
+    symbol: String,
+    arguments: Vec<String>,
 }
 
 impl SkolemMatch {
@@ -2913,6 +2983,8 @@ impl SkolemMatch {
             steps: Rc::new(Cell::new(0)),
             step_limit,
             exhausted: Rc::new(Cell::new(false)),
+            annotation: None,
+            existential_witnesses: HashMap::new(),
         }
     }
 
@@ -3319,10 +3391,18 @@ fn match_skolem_term(parent: &FOFTerm<'_>, step: &FOFTerm<'_>, state: &mut Skole
                 {
                     return false;
                 }
+                let witness_symbol = symbol.clone();
                 state
                     .witness_owners
                     .insert(symbol.clone(), parent_var.clone());
                 state.used_symbols.insert(symbol);
+                state.existential_witnesses.insert(
+                    parent_var.clone(),
+                    (
+                        witness_symbol,
+                        actual.iter().map(|arg| (*arg).to_string()).collect(),
+                    ),
+                );
                 state.existential_terms.insert(parent_var, step_repr);
                 true
             } else if let Some(mapped) = state.universal_map.get(&parent_var) {
@@ -5457,6 +5537,61 @@ mod tests {
         };
         assert!(matches!(
             verify_strict(&problem, &proof, limits),
+            KernelVerdict::Inconclusive(_)
+        ));
+    }
+
+    #[test]
+    fn certifies_e_style_skolemize_metadata() {
+        let problem = "fof(a, axiom, ![X] : ?[Y] : r(X, Y)).\n\
+                       fof(n, axiom, ![X,Y] : ~r(X, Y)).";
+        let proof = "fof(a, axiom, ![X] : ?[Y] : r(X, Y), file('problem.p', a)).\
+                     fof(sk, plain, ![X] : r(X, sK0(X)),\
+                         inference(skolemize,\
+                                   [status(esa), new_symbols(skolem, [sK0]),\
+                                    skolemize(Y, sK0(X))], [a])).\
+                     fof(n, axiom, ![X,Y] : ~r(X, Y), file('problem.p', n)).\
+                     fof(bot, plain, $false,\
+                         inference(resolution, [status(thm)], [sk, n])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_e_style_negated_skolemize_metadata() {
+        let problem = "fof(a, axiom, ~![X] : p(X)).\n\
+                       fof(n, axiom, ![X] : p(X)).";
+        let proof = "fof(a, axiom, ~![X] : p(X), file('problem.p', a)).\
+                     fof(sk, plain, ~p(sK0),\
+                         inference(skolemize,\
+                                   [status(esa), new_symbols(skolem, [sK0]),\
+                                    skolemize(X, sK0)], [a])).\
+                     fof(n, axiom, ![X] : p(X), file('problem.p', n)).\
+                     fof(bot, plain, $false,\
+                         inference(resolution, [status(thm)], [sk, n])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_e_style_skolemize_metadata_mismatch() {
+        let problem = "fof(a, axiom, ![X] : ?[Y] : r(X, Y)).";
+        let proof = "fof(a, axiom, ![X] : ?[Y] : r(X, Y), file('problem.p', a)).\
+                     fof(sk, plain, ![X] : r(X, sK0(X)),\
+                         inference(skolemize,\
+                                   [status(esa), new_symbols(skolem, [sK0]),\
+                                    skolemize(Y, sK0)], [a])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [sk])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn e_style_skolemize_without_metadata_is_inconclusive() {
+        let problem = "fof(a, axiom, ![X] : ?[Y] : r(X, Y)).";
+        let proof = "fof(a, axiom, ![X] : ?[Y] : r(X, Y), file('problem.p', a)).\
+                     fof(sk, plain, ![X] : r(X, sK0(X)),\
+                         inference(skolemize, [status(esa)], [a])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [sk])).";
+        assert!(matches!(
+            check(problem, proof),
             KernelVerdict::Inconclusive(_)
         ));
     }

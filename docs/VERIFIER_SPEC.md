@@ -87,7 +87,8 @@ The first strict kernel implementation certifies only:
 - NNF rewrites whose conclusion equals independently computed NNF
 - single-parent `skolemisation` with exact fresh witnesses, scope, arity,
   bounded associative matrix matching, and effective quantifier polarity under
-  negation
+  negation; complete single-parent E-style `skolemize` metadata is also
+  checked when supplied
 - bounded Vampire-style multi-parent `skolemisation` with validated
   `skolem_symbol_introduction` axiom parents, dependent rewrite ordering,
   fresh witness declarations, scope/arity checks, and exact final formulas
@@ -106,10 +107,11 @@ The first strict kernel implementation certifies only:
 - bounded `demodulation` from cited positive unit equalities
 - bounded `superposition` into a cited target clause
 
-General directional/quantified multi-parent CNF transformations and general
-AVATAR SAT certificates remain inconclusive until their kernel rules are
-implemented. CWA-style splits are accepted only through the explicit
-case-split certificate described below.
+Incomplete or multi-parent E-style `skolemize` forms, general
+directional/quantified multi-parent CNF transformations, and general AVATAR SAT
+certificates remain inconclusive until their kernel rules are implemented.
+CWA-style splits are accepted only through the explicit case-split certificate
+described below.
 
 ## 6. Case-Split Requirement
 
