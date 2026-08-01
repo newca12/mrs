@@ -85,8 +85,9 @@ The first strict kernel implementation certifies only:
 - direct `negated_conjecture` / `assume_negation`
 - exact alpha-equivalent variable-renaming and identity rewrites
 - NNF rewrites whose conclusion equals independently computed NNF
-- single-parent `skolemisation` with exact fresh witnesses, scope, arity, and
-  bounded associative matrix matching
+- single-parent `skolemisation` with exact fresh witnesses, scope, arity,
+  bounded associative matrix matching, and effective quantifier polarity under
+  negation
 - bounded Vampire-style multi-parent `skolemisation` with validated
   `skolem_symbol_introduction` axiom parents, dependent rewrite ordering,
   fresh witness declarations, scope/arity checks, and exact final formulas

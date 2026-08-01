@@ -1857,7 +1857,7 @@ fn verify_skolemisation(
     if fresh.is_empty() {
         return verify_existential_free_identity(parents, conclusion);
     }
-    if !contains_exists(&parents[0]) {
+    if !contains_skolemizable_existential(parent_formula, true) {
         return KernelVerdict::Inconclusive(
             "Skolemization introduced symbols without an existential parent".into(),
         );
@@ -2888,11 +2888,20 @@ fn match_skolem_formula(
     step: &FOFFormula<'_>,
     state: &mut SkolemMatch,
 ) -> bool {
+    match_skolem_formula_with_polarity(parent, step, state, true)
+}
+
+fn match_skolem_formula_with_polarity(
+    parent: &FOFFormula<'_>,
+    step: &FOFFormula<'_>,
+    state: &mut SkolemMatch,
+    polarity: bool,
+) -> bool {
     if !state.charge() {
         return false;
     }
     let mut candidate = state.clone();
-    if match_skolem_formula_inner(parent, step, &mut candidate) {
+    if match_skolem_formula_inner(parent, step, &mut candidate, polarity) {
         *state = candidate;
         true
     } else {
@@ -2904,24 +2913,25 @@ fn match_skolem_formula_inner(
     parent: &FOFFormula<'_>,
     step: &FOFFormula<'_>,
     state: &mut SkolemMatch,
+    polarity: bool,
 ) -> bool {
     let (parent_prefix, parent_matrix) = leading_quantifiers(parent);
     let (step_prefix, step_matrix) = leading_quantifiers(step);
     let step_universals: Vec<String> = step_prefix
         .iter()
-        .filter(|(quantifier, _)| *quantifier == Quantifier::Forall)
+        .filter(|(quantifier, _)| is_effective_universal(*quantifier, polarity))
         .flat_map(|(_, variables)| variables.iter().cloned())
         .collect();
     if step_prefix
         .iter()
-        .any(|(quantifier, _)| *quantifier == Quantifier::Exists)
+        .any(|(quantifier, _)| !is_effective_universal(*quantifier, polarity))
     {
         return false;
     }
 
     let parent_universal_count = parent_prefix
         .iter()
-        .filter(|(quantifier, _)| *quantifier == Quantifier::Forall)
+        .filter(|(quantifier, _)| is_effective_universal(*quantifier, polarity))
         .map(|(_, variables)| variables.len())
         .sum::<usize>();
     if parent_universal_count != step_universals.len() {
@@ -2932,43 +2942,40 @@ fn match_skolem_formula_inner(
     let mut local_universals = Vec::new();
     let mut local_existentials = Vec::new();
     for (quantifier, variables) in &parent_prefix {
-        match quantifier {
-            Quantifier::Forall => {
-                for parent_var in variables {
-                    let Some(step_var) = step_universals.get(step_universal_idx) else {
-                        return false;
-                    };
-                    if state.universal_map.contains_key(parent_var)
-                        || state.active_existentials.contains_key(parent_var)
-                        || state.active_universals.contains(step_var)
-                    {
-                        return false;
-                    }
-                    state
-                        .universal_map
-                        .insert(parent_var.clone(), step_var.clone());
-                    state.active_universals.push(step_var.clone());
-                    local_universals.push(parent_var.clone());
-                    step_universal_idx += 1;
+        if is_effective_universal(*quantifier, polarity) {
+            for parent_var in variables {
+                let Some(step_var) = step_universals.get(step_universal_idx) else {
+                    return false;
+                };
+                if state.universal_map.contains_key(parent_var)
+                    || state.active_existentials.contains_key(parent_var)
+                    || state.active_universals.contains(step_var)
+                {
+                    return false;
                 }
+                state
+                    .universal_map
+                    .insert(parent_var.clone(), step_var.clone());
+                state.active_universals.push(step_var.clone());
+                local_universals.push(parent_var.clone());
+                step_universal_idx += 1;
             }
-            Quantifier::Exists => {
-                for parent_var in variables {
-                    if state.universal_map.contains_key(parent_var)
-                        || state.active_existentials.contains_key(parent_var)
-                    {
-                        return false;
-                    }
-                    state
-                        .active_existentials
-                        .insert(parent_var.clone(), state.active_universals.clone());
-                    local_existentials.push(parent_var.clone());
+        } else {
+            for parent_var in variables {
+                if state.universal_map.contains_key(parent_var)
+                    || state.active_existentials.contains_key(parent_var)
+                {
+                    return false;
                 }
+                state
+                    .active_existentials
+                    .insert(parent_var.clone(), state.active_universals.clone());
+                local_existentials.push(parent_var.clone());
             }
         }
     }
 
-    let matched = match_skolem_matrix(parent_matrix, step_matrix, state);
+    let matched = match_skolem_matrix(parent_matrix, step_matrix, state, polarity);
     for parent_var in local_existentials.into_iter().rev() {
         state.active_existentials.remove(&parent_var);
     }
@@ -2977,6 +2984,38 @@ fn match_skolem_formula_inner(
         state.active_universals.pop();
     }
     matched
+}
+
+fn is_effective_universal(quantifier: Quantifier, polarity: bool) -> bool {
+    matches!(
+        (quantifier, polarity),
+        (Quantifier::Forall, true) | (Quantifier::Exists, false)
+    )
+}
+
+fn contains_skolemizable_existential(formula: &FOFFormula<'_>, polarity: bool) -> bool {
+    let formula = strip_skolem_parens(formula);
+    match formula {
+        FOFFormula::Negation(inner) => contains_skolemizable_existential(inner, !polarity),
+        FOFFormula::Quantified {
+            quantifier,
+            formula,
+            ..
+        } => {
+            if !is_effective_universal(*quantifier, polarity) {
+                true
+            } else {
+                contains_skolemizable_existential(formula, polarity)
+            }
+        }
+        FOFFormula::Binary { left, right, .. } => {
+            contains_skolemizable_existential(left, polarity)
+                || contains_skolemizable_existential(right, polarity)
+        }
+        FOFFormula::Equality(_, _) | FOFFormula::Inequality(_, _) => false,
+        FOFFormula::Atomic(_) => false,
+        FOFFormula::Parens(_) => unreachable!("parentheses are stripped above"),
+    }
 }
 
 fn leading_quantifiers<'a, 'p>(
@@ -3012,20 +3051,21 @@ fn match_skolem_matrix(
     parent: &FOFFormula<'_>,
     step: &FOFFormula<'_>,
     state: &mut SkolemMatch,
+    polarity: bool,
 ) -> bool {
     let parent = strip_skolem_parens(parent);
     let step = strip_skolem_parens(step);
     if matches!(parent, FOFFormula::Quantified { .. })
         || matches!(step, FOFFormula::Quantified { .. })
     {
-        return match_skolem_formula(parent, step, state);
+        return match_skolem_formula_with_polarity(parent, step, state, polarity);
     }
     match (parent, step) {
         (FOFFormula::Atomic(parent), FOFFormula::Atomic(step)) => {
             match_skolem_atom(parent, step, state)
         }
         (FOFFormula::Negation(parent), FOFFormula::Negation(step)) => {
-            match_skolem_formula(parent, step, state)
+            match_skolem_formula_with_polarity(parent, step, state, !polarity)
         }
         (
             FOFFormula::Binary {
@@ -3045,10 +3085,10 @@ fn match_skolem_matrix(
             ) {
                 let parent_parts = flatten_skolem_associative(parent, *parent_connective);
                 let step_parts = flatten_skolem_associative(step, *step_connective);
-                match_skolem_multiset(&parent_parts, &step_parts, state)
+                match_skolem_multiset(&parent_parts, &step_parts, state, polarity)
             } else {
-                match_skolem_formula(parent_left, step_left, state)
-                    && match_skolem_formula(parent_right, step_right, state)
+                match_skolem_formula_with_polarity(parent_left, step_left, state, polarity)
+                    && match_skolem_formula_with_polarity(parent_right, step_right, state, polarity)
             }
         }
         (
@@ -3102,6 +3142,7 @@ fn match_skolem_multiset(
     parent: &[&FOFFormula<'_>],
     step: &[&FOFFormula<'_>],
     state: &mut SkolemMatch,
+    polarity: bool,
 ) -> bool {
     if parent.len() != step.len() {
         return false;
@@ -3112,6 +3153,7 @@ fn match_skolem_multiset(
         parent_idx: usize,
         used: &mut [bool],
         state: &mut SkolemMatch,
+        polarity: bool,
     ) -> bool {
         if !state.charge() {
             return false;
@@ -3124,9 +3166,14 @@ fn match_skolem_multiset(
                 continue;
             }
             let mut candidate = state.clone();
-            if match_skolem_formula(parent[parent_idx], step[step_idx], &mut candidate) {
+            if match_skolem_formula_with_polarity(
+                parent[parent_idx],
+                step[step_idx],
+                &mut candidate,
+                polarity,
+            ) {
                 used[step_idx] = true;
-                if visit(parent, step, parent_idx + 1, used, &mut candidate) {
+                if visit(parent, step, parent_idx + 1, used, &mut candidate, polarity) {
                     *state = candidate;
                     return true;
                 }
@@ -3136,7 +3183,14 @@ fn match_skolem_multiset(
         false
     }
 
-    visit(parent, step, 0, &mut vec![false; step.len()], state)
+    visit(
+        parent,
+        step,
+        0,
+        &mut vec![false; step.len()],
+        state,
+        polarity,
+    )
 }
 
 fn match_skolem_atom(
@@ -5423,6 +5477,78 @@ mod tests {
                      fof(n, axiom, ![X] : ![Y] : ~(p(X, Y)), file('problem.p', n)).\n\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [s,n])).";
         assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn certifies_negated_universal_skolemization() {
+        let problem = "fof(a, axiom, ![X] : r(X)).\n\
+                       fof(c, conjecture, ![X] : r(X)).";
+        let proof = "fof(a, axiom, ![X] : r(X), file('problem.p', a)).\
+                     fof(c, conjecture, ![X] : r(X), file('problem.p', c)).\
+                     fof(neg, negated_conjecture, ~![X] : r(X),\
+                         inference(negated_conjecture, [status(cth)], [c])).\
+                     fof(sk, plain, ~r(sk0),\
+                         inference(skolemisation, [status(esa)], [neg])).\
+                     fof(bot, plain, $false,\
+                         inference(resolution, [status(thm)], [a, sk])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_scoped_negated_universal_skolemization() {
+        let problem = "fof(a, axiom, ![U] : ~(![X] : p(U, X))).\n\
+                       fof(n, axiom, ![U,X] : p(U, X)).";
+        let proof = "fof(a, axiom, ![U] : ~(![X] : p(U, X)), file('problem.p', a)).\
+                     fof(n, axiom, ![U,X] : p(U, X), file('problem.p', n)).\
+                     fof(sk, plain, ![U] : ~p(U, sk0(U)),\
+                         inference(skolemisation, [status(esa)], [a])).\
+                     fof(bot, plain, $false,\
+                         inference(resolution, [status(thm)], [n, sk])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_negated_skolemization_with_dropped_scope() {
+        let problem = "fof(a, axiom, ![U] : ~(![X] : p(U, X))).";
+        let proof = "fof(a, axiom, ![U] : ~(![X] : p(U, X)), file('problem.p', a)).\
+                     fof(sk, plain, ![U] : ~p(U, sk0),\
+                         inference(skolemisation, [status(esa)], [a])).\
+                     fof(bot, plain, $false,\
+                         inference(consequence, [status(thm)], [sk])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn rejects_skolemization_of_universal_effective_quantifier() {
+        let problem = "fof(a, axiom, ~?[X] : p(X)).";
+        let proof = "fof(a, axiom, ~?[X] : p(X), file('problem.p', a)).\
+                     fof(sk, plain, ~p(sk0),\
+                         inference(skolemisation, [status(esa)], [a])).\
+                     fof(bot, plain, $false,\
+                         inference(consequence, [status(thm)], [sk])).";
+        assert!(matches!(
+            check(problem, proof),
+            KernelVerdict::Inconclusive(_)
+        ));
+    }
+
+    #[test]
+    fn negated_skolemization_matching_limit_is_inconclusive() {
+        let problem = parse_tptp("fof(a, axiom, ~![X] : p(X)).").expect("problem parses");
+        let proof = parse_tptp(
+            "fof(a, axiom, ~![X] : p(X), file('problem.p', a)).\
+             fof(sk, plain, ~p(sk0), inference(skolemisation, [status(esa)], [a])).\
+             fof(bot, plain, $false, inference(consequence, [status(thm)], [sk])).",
+        )
+        .expect("proof parses");
+        let limits = VerificationLimits {
+            max_skolem_steps: 1,
+            ..VerificationLimits::default()
+        };
+        assert!(matches!(
+            verify_strict(&problem, &proof, limits),
+            KernelVerdict::Inconclusive(_)
+        ));
     }
 
     #[test]
