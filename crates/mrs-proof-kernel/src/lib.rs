@@ -45,6 +45,7 @@ pub struct VerificationLimits {
     pub max_rewrite_steps: usize,
     pub max_subsumption_steps: usize,
     pub max_skolem_steps: usize,
+    pub max_equivalence_steps: usize,
 }
 
 impl Default for VerificationLimits {
@@ -57,6 +58,7 @@ impl Default for VerificationLimits {
             max_rewrite_steps: 64,
             max_subsumption_steps: 5_000,
             max_skolem_steps: 5_000,
+            max_equivalence_steps: 5_000,
         }
     }
 }
@@ -204,6 +206,18 @@ pub fn verify_strict_with_source(
                 verify_nnf(&parents, conclusion)
             }
             "variable_rename" | "rectify" => verify_alpha_identity(&parents, conclusion),
+            "formula_equivalence"
+            | "equivalence"
+            | "fof_simplification"
+            | "true_and_iff_removal"
+            | "trivial_inequality_removal"
+            | "evaluation"
+            | "remove_duplicate_literals"
+            | "duplicate_literal_removal"
+            | "flattening"
+            | "distribute"
+            | "ennf_transformation"
+            | "simplification" => verify_formula_equivalence(&parents, conclusion, limits),
             "skolemisation" => verify_skolemisation(
                 node,
                 &dag,
@@ -301,6 +315,18 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "nnf_transformation"
         | "variable_rename"
         | "rectify"
+        | "formula_equivalence"
+        | "equivalence"
+        | "fof_simplification"
+        | "true_and_iff_removal"
+        | "trivial_inequality_removal"
+        | "evaluation"
+        | "remove_duplicate_literals"
+        | "duplicate_literal_removal"
+        | "flattening"
+        | "distribute"
+        | "ennf_transformation"
+        | "simplification"
         | "cnf_transformation"
         | "resolution"
         | "subsumption_resolution"
@@ -1387,6 +1413,143 @@ fn verify_alpha_identity(parents: &[Formula], conclusion: &Formula) -> KernelVer
     } else {
         KernelVerdict::Rejected("conclusion is not alpha-equivalent to parent".into())
     }
+}
+
+fn verify_formula_equivalence(
+    parents: &[Formula],
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if parents.len() != 1 {
+        return KernelVerdict::Rejected("formula equivalence must have one parent".into());
+    }
+    if formula_size(&parents[0]) > limits.max_formula_nodes
+        || formula_size(conclusion) > limits.max_formula_nodes
+    {
+        return KernelVerdict::Inconclusive(
+            "formula equivalence exceeded strict formula-size limit".into(),
+        );
+    }
+    let mut steps = 0;
+    let left = match canonicalize_equivalence(&to_nnf(&parents[0]), &mut steps, limits) {
+        Some(formula) => formula,
+        None => {
+            return KernelVerdict::Inconclusive(
+                "formula equivalence exceeded strict matching-step limit".into(),
+            );
+        }
+    };
+    let right = match canonicalize_equivalence(&to_nnf(conclusion), &mut steps, limits) {
+        Some(formula) => formula,
+        None => {
+            return KernelVerdict::Inconclusive(
+                "formula equivalence exceeded strict matching-step limit".into(),
+            );
+        }
+    };
+    if alpha_equiv(&left, &right) {
+        KernelVerdict::Certified
+    } else {
+        KernelVerdict::Rejected("conclusion is not equivalent to its parent".into())
+    }
+}
+
+fn formula_size(formula: &Formula) -> usize {
+    match formula {
+        Formula::Atom(Atom::Pred(_, terms)) => 1 + terms.iter().map(term_size).sum::<usize>(),
+        Formula::Atom(Atom::Eq(left, right)) => 1 + term_size(left) + term_size(right),
+        Formula::Neg(inner) | Formula::Forall(_, inner) | Formula::Exists(_, inner) => {
+            1 + formula_size(inner)
+        }
+        Formula::And(parts) | Formula::Or(parts) => {
+            1 + parts.iter().map(formula_size).sum::<usize>()
+        }
+        Formula::Implies(left, right) | Formula::Iff(left, right) => {
+            1 + formula_size(left) + formula_size(right)
+        }
+        Formula::True | Formula::False => 1,
+    }
+}
+
+fn term_size(term: &Term) -> usize {
+    match term {
+        Term::Var(_) => 1,
+        Term::App(_, args) => 1 + args.iter().map(term_size).sum::<usize>(),
+    }
+}
+
+fn canonicalize_equivalence(
+    formula: &Formula,
+    steps: &mut usize,
+    limits: VerificationLimits,
+) -> Option<Formula> {
+    *steps += 1;
+    if *steps > limits.max_equivalence_steps {
+        return None;
+    }
+    let result = match formula {
+        Formula::And(parts) => {
+            let mut flattened = Vec::new();
+            for part in parts {
+                let part = canonicalize_equivalence(part, steps, limits)?;
+                match part {
+                    Formula::And(nested) => flattened.extend(nested),
+                    other => flattened.push(other),
+                }
+            }
+            deduplicate_and_sort_formulas(&mut flattened);
+            match flattened.len() {
+                0 => Formula::True,
+                1 => flattened.pop().expect("one canonical conjunct"),
+                _ => Formula::And(flattened),
+            }
+        }
+        Formula::Or(parts) => {
+            let mut flattened = Vec::new();
+            for part in parts {
+                let part = canonicalize_equivalence(part, steps, limits)?;
+                match part {
+                    Formula::Or(nested) => flattened.extend(nested),
+                    other => flattened.push(other),
+                }
+            }
+            deduplicate_and_sort_formulas(&mut flattened);
+            match flattened.len() {
+                0 => Formula::False,
+                1 => flattened.pop().expect("one canonical disjunct"),
+                _ => Formula::Or(flattened),
+            }
+        }
+        Formula::Neg(inner) => Formula::neg(canonicalize_equivalence(inner, steps, limits)?),
+        Formula::Forall(var, inner) => {
+            Formula::forall(*var, canonicalize_equivalence(inner, steps, limits)?)
+        }
+        Formula::Exists(var, inner) => {
+            Formula::exists(*var, canonicalize_equivalence(inner, steps, limits)?)
+        }
+        Formula::Implies(left, right) => Formula::implies(
+            canonicalize_equivalence(left, steps, limits)?,
+            canonicalize_equivalence(right, steps, limits)?,
+        ),
+        Formula::Iff(left, right) => {
+            let mut parts = vec![
+                Formula::or(vec![Formula::neg((**left).clone()), (**right).clone()]),
+                Formula::or(vec![Formula::neg((**right).clone()), (**left).clone()]),
+            ];
+            for part in &mut parts {
+                *part = canonicalize_equivalence(part, steps, limits)?;
+            }
+            deduplicate_and_sort_formulas(&mut parts);
+            Formula::And(parts)
+        }
+        Formula::Atom(_) | Formula::True | Formula::False => formula.clone(),
+    };
+    Some(result)
+}
+
+fn deduplicate_and_sort_formulas(formulas: &mut Vec<Formula>) {
+    formulas.sort_by_key(|formula| format!("{formula:?}"));
+    formulas.dedup();
 }
 
 fn verify_existential_free_identity(parents: &[Formula], conclusion: &Formula) -> KernelVerdict {
@@ -3883,6 +4046,45 @@ mod tests {
                      fof(b, axiom, ~p(a), file('problem.p', b)).\n\
                      fof(s, plain, $false, inference(resolution, [status(thm)], [a,b])).";
         assert_eq!(check(input, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_bounded_formula_equivalence() {
+        let problem = "fof(a, axiom, (p & q & p)).\nfof(n, axiom, ~p).";
+        let proof = "fof(a, axiom, (p & q & p), file('problem.p', a)).\
+                     fof(s, plain, (q & p), inference(formula_equivalence, [status(thm)], [a])).\
+                     cnf(sc, plain, p, inference(cnf_transformation, [status(thm)], [s])).\
+                     fof(n, axiom, ~p, file('problem.p', n)).\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [sc,n])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_forged_formula_equivalence() {
+        let problem = "fof(a, axiom, (p & q)).";
+        let proof = "fof(a, axiom, (p & q), file('problem.p', a)).\
+                     fof(s, plain, p, inference(formula_equivalence, [status(thm)], [a])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [s])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn formula_equivalence_limit_is_inconclusive() {
+        let problem = parse_tptp("fof(a, axiom, (p & q)).").expect("problem parses");
+        let proof = parse_tptp(
+            "fof(a, axiom, (p & q), file('problem.p', a)).\
+             fof(s, plain, (q & p), inference(formula_equivalence, [status(thm)], [a])).\
+             fof(bot, plain, $false, inference(consequence, [status(thm)], [s])).",
+        )
+        .expect("proof parses");
+        let limits = VerificationLimits {
+            max_equivalence_steps: 1,
+            ..VerificationLimits::default()
+        };
+        assert!(matches!(
+            verify_strict(&problem, &proof, limits),
+            KernelVerdict::Inconclusive(_)
+        ));
     }
 
     #[test]

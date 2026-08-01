@@ -96,6 +96,8 @@ The first strict kernel implementation certifies only:
 - bounded `equality_resolution`
 - bounded `equality_factoring`
 - bounded `condensation`
+- bounded formula equivalence after independent NNF and AC/idempotent
+  canonicalization
 - bounded `demodulation` from cited positive unit equalities
 - bounded `superposition` into a cited target clause
 
