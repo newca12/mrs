@@ -333,6 +333,7 @@ pub fn verify_strict_with_source(
             | "distribute"
             | "ennf_transformation"
             | "simplification" => verify_formula_equivalence(&parents, conclusion, limits),
+            "instantiate" => verify_instantiation(&parents, conclusion, limits),
             "skolemisation" | "skolemize" => verify_skolemisation(
                 node,
                 &dag,
@@ -449,6 +450,7 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "distribute"
         | "ennf_transformation"
         | "simplification"
+        | "instantiate"
         | "cnf_transformation"
         | "resolution"
         | "subsumption_resolution"
@@ -1723,6 +1725,163 @@ fn verify_formula_equivalence(
         KernelVerdict::Certified
     } else {
         KernelVerdict::Rejected("conclusion is not equivalent to its parent".into())
+    }
+}
+
+fn verify_instantiation(
+    parents: &[Formula],
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if parents.len() != 1 {
+        return KernelVerdict::Rejected("instantiate must have one parent".into());
+    }
+    if formula_size(&parents[0]) > limits.max_formula_nodes
+        || formula_size(conclusion) > limits.max_formula_nodes
+    {
+        return KernelVerdict::Inconclusive(
+            "instantiate exceeded strict formula-size limit".into(),
+        );
+    }
+    let (_, parent_body) = leading_forall_core(&parents[0]);
+    let (_, target_body) = leading_forall_core(conclusion);
+    let mut substitution = HashMap::new();
+    let mut bound = HashMap::new();
+    let mut steps = 0;
+    if !match_universal_instance(
+        parent_body,
+        target_body,
+        &mut substitution,
+        &mut bound,
+        &mut steps,
+        limits,
+    ) {
+        if steps >= limits.max_equivalence_steps {
+            return KernelVerdict::Inconclusive(
+                "instantiate exceeded strict matching-step limit".into(),
+            );
+        }
+        return KernelVerdict::Rejected("instantiate conclusion is not a parent instance".into());
+    }
+    KernelVerdict::Certified
+}
+
+fn leading_forall_core(formula: &Formula) -> (Vec<VarId>, &Formula) {
+    let mut variables = Vec::new();
+    let mut current = formula;
+    while let Formula::Forall(variable, body) = current {
+        variables.push(*variable);
+        current = body;
+    }
+    (variables, current)
+}
+
+fn match_universal_instance(
+    parent: &Formula,
+    target: &Formula,
+    substitution: &mut HashMap<VarId, Term>,
+    bound: &mut HashMap<VarId, VarId>,
+    steps: &mut usize,
+    limits: VerificationLimits,
+) -> bool {
+    *steps += 1;
+    if *steps > limits.max_equivalence_steps {
+        return false;
+    }
+    match (parent, target) {
+        (Formula::Atom(left), Formula::Atom(right)) => {
+            match_instance_atom(left, right, substitution, bound)
+        }
+        (Formula::Neg(left), Formula::Neg(right)) => {
+            match_universal_instance(left, right, substitution, bound, steps, limits)
+        }
+        (Formula::And(left), Formula::And(right)) | (Formula::Or(left), Formula::Or(right)) => {
+            left.len() == right.len()
+                && left.iter().zip(right).all(|(left, right)| {
+                    match_universal_instance(left, right, substitution, bound, steps, limits)
+                })
+        }
+        (Formula::Implies(left_a, left_b), Formula::Implies(right_a, right_b))
+        | (Formula::Iff(left_a, left_b), Formula::Iff(right_a, right_b)) => {
+            match_universal_instance(left_a, right_a, substitution, bound, steps, limits)
+                && match_universal_instance(left_b, right_b, substitution, bound, steps, limits)
+        }
+        (Formula::Forall(left_var, left_body), Formula::Forall(right_var, right_body))
+        | (Formula::Exists(left_var, left_body), Formula::Exists(right_var, right_body)) => {
+            let mut nested = substitution.clone();
+            let mut nested_bound = bound.clone();
+            nested.remove(left_var);
+            nested_bound.insert(*left_var, *right_var);
+            let matched = match_universal_instance(
+                left_body,
+                right_body,
+                &mut nested,
+                &mut nested_bound,
+                steps,
+                limits,
+            );
+            if matched {
+                *substitution = nested;
+                *bound = nested_bound;
+            }
+            matched
+        }
+        (Formula::True, Formula::True) | (Formula::False, Formula::False) => true,
+        _ => false,
+    }
+}
+
+fn match_instance_atom(
+    parent: &Atom,
+    target: &Atom,
+    substitution: &mut HashMap<VarId, Term>,
+    bound: &HashMap<VarId, VarId>,
+) -> bool {
+    match (parent, target) {
+        (Atom::Pred(left_symbol, left_args), Atom::Pred(right_symbol, right_args)) => {
+            left_symbol == right_symbol
+                && left_args.len() == right_args.len()
+                && left_args
+                    .iter()
+                    .zip(right_args)
+                    .all(|(left, right)| match_instance_term(left, right, substitution, bound))
+        }
+        (Atom::Eq(left_a, left_b), Atom::Eq(right_a, right_b)) => {
+            match_instance_term(left_a, right_a, substitution, bound)
+                && match_instance_term(left_b, right_b, substitution, bound)
+        }
+        _ => false,
+    }
+}
+
+fn match_instance_term(
+    parent: &Term,
+    target: &Term,
+    substitution: &mut HashMap<VarId, Term>,
+    bound: &HashMap<VarId, VarId>,
+) -> bool {
+    match parent {
+        Term::Var(var) if bound.contains_key(var) => {
+            matches!(target, Term::Var(target_var) if bound.get(var) == Some(target_var))
+        }
+        Term::Var(var) => match substitution.get(var) {
+            Some(existing) => existing == target,
+            None => {
+                substitution.insert(*var, target.clone());
+                true
+            }
+        },
+        Term::App(left_symbol, left_args) => match target {
+            Term::App(right_symbol, right_args) => {
+                left_symbol == right_symbol
+                    && left_args.len() == right_args.len()
+                    && left_args
+                        .iter()
+                        .zip(right_args)
+                        .all(|(left, right)| match_instance_term(left, right, substitution, bound))
+            }
+            Term::Var(_) => false,
+        },
     }
 }
 
@@ -5592,6 +5751,64 @@ mod tests {
                      fof(bot, plain, $false, inference(consequence, [status(thm)], [sk])).";
         assert!(matches!(
             check(problem, proof),
+            KernelVerdict::Inconclusive(_)
+        ));
+    }
+
+    #[test]
+    fn certifies_ground_instantiate() {
+        let problem = "fof(a, axiom, ![X] : p(X)).\nfof(n, axiom, ~p(a)).";
+        let proof = "fof(a, axiom, ![X] : p(X), file('problem.p', a)).\
+                     fof(i, plain, p(a), inference(instantiate, [status(thm)], [a])).\
+                     fof(n, axiom, ~p(a), file('problem.p', n)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [i,n])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_nested_instantiate() {
+        let problem = "fof(a, axiom, ![X] : ![Y] : p(X, Y)).\n\
+                       fof(n, axiom, ~p(a, b)).";
+        let proof = "fof(a, axiom, ![X] : ![Y] : p(X, Y), file('problem.p', a)).\
+                     fof(i, plain, p(a, b), inference(instantiate, [status(thm)], [a])).\
+                     fof(n, axiom, ~p(a, b), file('problem.p', n)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [i,n])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_instantiate_with_inconsistent_substitution() {
+        let problem = "fof(a, axiom, ![X] : p(X, X)).";
+        let proof = "fof(a, axiom, ![X] : p(X, X), file('problem.p', a)).\
+                     fof(i, plain, p(a, b), inference(instantiate, [status(thm)], [a])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [i])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn rejects_instantiate_with_changed_matrix() {
+        let problem = "fof(a, axiom, ![X] : p(X)).";
+        let proof = "fof(a, axiom, ![X] : p(X), file('problem.p', a)).\
+                     fof(i, plain, q(a), inference(instantiate, [status(thm)], [a])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [i])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn instantiate_matching_limit_is_inconclusive() {
+        let problem = parse_tptp("fof(a, axiom, ![X] : p(X)).").expect("problem parses");
+        let proof = parse_tptp(
+            "fof(a, axiom, ![X] : p(X), file('problem.p', a)).\
+             fof(i, plain, p(a), inference(instantiate, [status(thm)], [a])).\
+             fof(bot, plain, $false, inference(consequence, [status(thm)], [i])).",
+        )
+        .expect("proof parses");
+        let limits = VerificationLimits {
+            max_equivalence_steps: 1,
+            ..VerificationLimits::default()
+        };
+        assert!(matches!(
+            verify_strict(&problem, &proof, limits),
             KernelVerdict::Inconclusive(_)
         ));
     }

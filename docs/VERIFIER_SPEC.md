@@ -104,6 +104,8 @@ The first strict kernel implementation certifies only:
 - bounded `condensation`
 - bounded formula equivalence after independent NNF and AC/idempotent
   canonicalization
+- bounded universal `instantiate` steps with exact substitutions and rigid
+  nested binders
 - bounded `demodulation` from cited positive unit equalities
 - bounded `superposition` into a cited target clause
 
