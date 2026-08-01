@@ -19,6 +19,9 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
 use mrs_core::display::DisplayWithSymbols;
 use mrs_core::{Formula, SymbolTable};
 
@@ -334,26 +337,46 @@ fn run_atp(
     if cancel.load(std::sync::atomic::Ordering::Relaxed) {
         return AtpVerdict::Unknown;
     }
-    let Ok(mut child) = Command::new(binary)
+    let mut command = Command::new(binary);
+    command
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    // Put the ATP and any descendants it launches in their own process group
+    // so timeout/cancellation cleanup cannot leave inherited pipe handles.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == -1 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+    let Ok(mut child) = command.spawn() else {
         return AtpVerdict::Unknown;
     };
     // Feed stdin from a thread so a full kernel pipe buffer cannot
     // deadlock us before the child has read it.
-    if let Some(mut stdin) = child.stdin.take() {
+    let stdin_handle = if let Some(mut stdin) = child.stdin.take() {
         let buf = problem.as_bytes().to_vec();
-        thread::spawn(move || {
+        Some(thread::spawn(move || {
             let _ = stdin.write_all(&buf);
-        });
-    }
+        }))
+    } else {
+        None
+    };
     let (drain_handle, stdout_bytes) = drain_to_bytes(child.stdout.take());
-    let (verdict, stdout) =
-        wait_with_timeout(&mut child, budget, drain_handle, stdout_bytes, cancel);
+    let (verdict, stdout) = wait_with_timeout(
+        &mut child,
+        budget,
+        stdin_handle,
+        drain_handle,
+        stdout_bytes,
+        cancel,
+    );
     maybe_debug_dump(binary, args, problem, &stdout, verdict);
     verdict
 }
@@ -409,12 +432,13 @@ fn drain_to_bytes(
 fn wait_with_timeout(
     child: &mut Child,
     budget: Duration,
+    stdin_handle: Option<thread::JoinHandle<()>>,
     drain_handle: Option<thread::JoinHandle<()>>,
     stdout_bytes: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> (AtpVerdict, String) {
     let started = Instant::now();
-    let deadline = started + budget + Duration::from_millis(200);
+    let deadline = started + budget;
     let mut poll = Duration::from_millis(1);
     let max_poll = Duration::from_millis(25);
     loop {
@@ -422,19 +446,18 @@ fn wait_with_timeout(
             Ok(Some(_)) => break,
             Ok(None) => {
                 if cancel.load(std::sync::atomic::Ordering::Relaxed) || Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    terminate_child(child);
                     break;
                 }
-                thread::sleep(poll);
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                thread::sleep(poll.min(remaining));
                 // Exponential backoff once we're past the fast-poll window.
                 if started.elapsed() > Duration::from_millis(50) && poll < max_poll {
                     poll = std::cmp::min(poll * 2, max_poll);
                 }
             }
             Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                terminate_child(child);
                 return (AtpVerdict::Unknown, String::new());
             }
         }
@@ -444,6 +467,9 @@ fn wait_with_timeout(
     if let Some(h) = drain_handle {
         let _ = h.join();
     }
+    if let Some(h) = stdin_handle {
+        let _ = h.join();
+    }
     let bytes = match stdout_bytes.lock() {
         Ok(g) => g.clone(),
         Err(_) => Vec::new(),
@@ -451,6 +477,20 @@ fn wait_with_timeout(
     let stdout = String::from_utf8_lossy(&bytes).into_owned();
     let verdict = parse_szs(&stdout);
     (verdict, stdout)
+}
+
+fn terminate_child(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let process_group = -(child.id() as libc::pid_t);
+        // The direct child fallback below handles races where the group was
+        // already reaped or process-group setup was unavailable.
+        unsafe {
+            let _ = libc::kill(process_group, libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Debug hook: when MRS_DEBUG_ATP is set, dump every problem we send
@@ -557,5 +597,25 @@ mod tests {
     #[test]
     fn parse_unknown_when_nothing() {
         assert_eq!(parse_szs(""), AtpVerdict::Unknown);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timeout_terminates_process_group_promptly() {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let started = Instant::now();
+        let verdict = run_atp(
+            std::path::Path::new("sh"),
+            &["-c", "sleep 5"],
+            "",
+            Duration::from_millis(50),
+            &cancel,
+        );
+        assert_eq!(verdict, AtpVerdict::Unknown);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "timeout cleanup took too long: {:?}",
+            started.elapsed()
+        );
     }
 }

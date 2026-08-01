@@ -3633,6 +3633,7 @@ name = "mrs-proover"
 version = "0.2.2"
 dependencies = [
  "cadical",
+ "libc",
  "mrs-cnf",
  "mrs-core",
  "mrs-proof-kernel",

@@ -63,6 +63,12 @@ parallel rather than trying them one after another: the first `Sound`/
 shared `AtomicBool` flag, so a step that only `eprover` can close no longer
 pays the full `vampire` budget (or vice versa) on top of it.
 
+External ATPs have a hard Rust wall-clock deadline. On Unix, each child runs
+in its own process group, and timeout or cancellation kills the group and then
+waits for the direct child. Stdin writer and stdout drain workers are joined
+before the backend returns, preventing leaked pipe handles and wrapper
+processes.
+
 ## Architecture
 
 | Layer | What it does |
