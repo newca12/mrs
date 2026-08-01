@@ -94,6 +94,7 @@ pub fn verify_strict_with_source(
         proof_formulas.insert(idx, formula);
     }
     let mut branch_contexts: HashMap<usize, BranchContext> = HashMap::new();
+    let mut defined_symbols = HashSet::new();
 
     let mut problem_names = HashSet::with_capacity(problem.formulas.len());
     for formula in &problem.formulas {
@@ -151,12 +152,12 @@ pub fn verify_strict_with_source(
             if let Some(annotations) = node.formula.annotations()
                 && is_introduced_definition(annotations)
             {
-                let outcome = verify_definition(node, annotations, &known_symbols);
+                let outcome =
+                    verify_definition(node, annotations, &known_symbols, &mut defined_symbols);
                 if !matches!(outcome, KernelVerdict::Certified) {
                     return outcome;
                 }
                 collect_function_symbols(node.formula, &mut known_function_symbols);
-                collect_all_symbols(node.formula, &mut known_symbols);
                 continue;
             }
             return KernelVerdict::Inconclusive(format!(
@@ -212,7 +213,14 @@ pub fn verify_strict_with_source(
                 &known_function_symbols,
                 limits,
             ),
-            "cnf_transformation" => verify_cnf_transformation(&parents, conclusion, limits),
+            "cnf_transformation" => verify_cnf_transformation(
+                node.name,
+                &parents,
+                conclusion,
+                &dag,
+                &parent_indices,
+                limits,
+            ),
             "resolution" => verify_resolution(&parents, conclusion, limits),
             "subsumption_resolution" => verify_subsumption_resolution(&parents, conclusion, limits),
             "factoring" => verify_factoring(&parents, conclusion, limits),
@@ -345,6 +353,7 @@ fn verify_definition(
     node: &Node<'_>,
     annotations: &mrs_tptp::Annotations<'_>,
     known_symbols: &HashSet<String>,
+    defined_symbols: &mut HashSet<String>,
 ) -> KernelVerdict {
     if node.role != FormulaRole::Definition {
         return KernelVerdict::Rejected(format!(
@@ -358,7 +367,7 @@ fn verify_definition(
             node.name
         ));
     };
-    if known_symbols.contains(declared) {
+    if known_symbols.contains(declared) || !defined_symbols.insert(declared.to_string()) {
         return KernelVerdict::Rejected(format!(
             "definition `{}` reuses existing symbol `{declared}`",
             node.name
@@ -437,13 +446,21 @@ fn formula_contains_predicate(formula: &FOFFormula<'_>, symbol: &str) -> bool {
 }
 
 fn verify_cnf_transformation(
+    node_name: &str,
     parents: &[Formula],
     conclusion: &Formula,
+    dag: &Dag<'_>,
+    parent_indices: &[usize],
     limits: VerificationLimits,
 ) -> KernelVerdict {
-    if parents.is_empty() || parents.len() > 2 {
+    if parents.is_empty() {
         return KernelVerdict::Inconclusive(
-            "strict CNF transformation requires one formula parent and at most one definition parent".into(),
+            "strict CNF transformation requires a formula parent".into(),
+        );
+    }
+    if parents.len() != parent_indices.len() {
+        return KernelVerdict::Rejected(
+            "CNF transformation parent metadata is inconsistent".into(),
         );
     }
     let source = &parents[0];
@@ -455,18 +472,454 @@ fn verify_cnf_transformation(
     let Some(goal) = clause_from_formula(conclusion, limits) else {
         return KernelVerdict::Inconclusive("CNF conclusion is not a supported clause".into());
     };
+
+    let mut definitions = Vec::with_capacity(parents.len().saturating_sub(1));
+    for (parent, parent_idx) in parents.iter().skip(1).zip(&parent_indices[1..]) {
+        if !dag.nodes[*parent_idx]
+            .formula
+            .annotations()
+            .is_some_and(is_introduced_definition)
+        {
+            return KernelVerdict::Inconclusive(
+                "CNF transformation extra parents must be introduced definitions".into(),
+            );
+        }
+        let Some(definition) = core_definition(parent) else {
+            return KernelVerdict::Inconclusive(
+                "CNF transformation definition parent has an unsupported shape".into(),
+            );
+        };
+        definitions.push(definition);
+    }
+    if let Err(verdict) = validate_definition_dependencies(source, &definitions) {
+        return verdict;
+    }
+
+    let named_source = replace_definition_subformulas(source, &definitions);
     let mut expanded = Vec::new();
-    let normalized = to_nnf(source);
+    let normalized = to_nnf(&named_source);
     if !cnf_expand(&normalized, &mut expanded, limits) {
         return KernelVerdict::Inconclusive("CNF expansion exceeded strict limits".into());
     }
+
+    for definition in &definitions {
+        let Some(direction) = definition_direction_clauses(definition, limits) else {
+            return KernelVerdict::Inconclusive(
+                "CNF definition parent does not contain clause-shaped conjuncts".into(),
+            );
+        };
+        expanded.extend(direction);
+        if expanded.len() > limits.max_nodes {
+            return KernelVerdict::Inconclusive("CNF expansion exceeded strict limits".into());
+        }
+    }
+
     if expanded
         .iter()
         .any(|clause| clause_alpha_equiv(clause, &goal))
     {
         KernelVerdict::Certified
     } else {
-        KernelVerdict::Rejected("CNF conclusion is not a clause of the parent CNF".into())
+        KernelVerdict::Rejected(format!(
+            "CNF node `{node_name}` is not a clause of the cited parents"
+        ))
+    }
+}
+
+#[derive(Clone)]
+struct CoreDefinition {
+    head: Atom,
+    rhs: Formula,
+}
+
+fn core_definition(formula: &Formula) -> Option<CoreDefinition> {
+    let body = strip_forall_core(formula);
+    let Formula::Iff(left, right) = body else {
+        return None;
+    };
+    let (head, rhs) = if let Some(head) = core_definition_head(left) {
+        (head, right.as_ref())
+    } else {
+        let head = core_definition_head(right)?;
+        (head, left.as_ref())
+    };
+    Some(CoreDefinition {
+        head,
+        rhs: rhs.clone(),
+    })
+}
+
+fn strip_forall_core(formula: &Formula) -> &Formula {
+    let mut current = formula;
+    while let Formula::Forall(_, body) = current {
+        current = body;
+    }
+    current
+}
+
+fn core_definition_head(formula: &Formula) -> Option<Atom> {
+    let Formula::Atom(Atom::Pred(symbol, args)) = formula else {
+        return None;
+    };
+    if args.iter().all(|term| matches!(term, Term::Var(_))) {
+        Some(Atom::Pred(*symbol, args.clone()))
+    } else {
+        None
+    }
+}
+
+fn validate_definition_dependencies(
+    source: &Formula,
+    definitions: &[CoreDefinition],
+) -> Result<(), KernelVerdict> {
+    let mut source_symbols = HashSet::new();
+    collect_core_predicate_symbols(source, &mut source_symbols);
+    let mut definition_indices = HashMap::new();
+    for (index, definition) in definitions.iter().enumerate() {
+        let Atom::Pred(symbol, _) = definition.head else {
+            return Err(KernelVerdict::Inconclusive(
+                "CNF definition head is not a predicate".into(),
+            ));
+        };
+        if definition_indices.insert(symbol, index).is_some() {
+            return Err(KernelVerdict::Rejected(
+                "CNF transformation cites duplicate definition symbols".into(),
+            ));
+        }
+        if !matches!(definition.rhs, Formula::And(_)) {
+            return Err(KernelVerdict::Inconclusive(
+                "CNF transformation extra definitions must name conjunctions".into(),
+            ));
+        }
+    }
+
+    let mut dependencies = vec![Vec::new(); definitions.len()];
+    for (index, definition) in definitions.iter().enumerate() {
+        let Atom::Pred(head, _) = definition.head else {
+            unreachable!("validated definition head")
+        };
+        let mut rhs_symbols = HashSet::new();
+        collect_core_predicate_symbols(&definition.rhs, &mut rhs_symbols);
+        for symbol in rhs_symbols {
+            if symbol == head || source_symbols.contains(&symbol) {
+                continue;
+            }
+            let Some(&dependency) = definition_indices.get(&symbol) else {
+                return Err(KernelVerdict::Inconclusive(
+                    "CNF definition references an uncited fresh predicate".into(),
+                ));
+            };
+            dependencies[index].push(dependency);
+        }
+    }
+
+    fn visit(index: usize, dependencies: &[Vec<usize>], marks: &mut [u8]) -> bool {
+        if marks[index] == 1 {
+            return false;
+        }
+        if marks[index] == 2 {
+            return true;
+        }
+        marks[index] = 1;
+        if dependencies[index]
+            .iter()
+            .all(|dependency| visit(*dependency, dependencies, marks))
+        {
+            marks[index] = 2;
+            true
+        } else {
+            false
+        }
+    }
+
+    let mut marks = vec![0; definitions.len()];
+    if (0..definitions.len()).all(|index| visit(index, &dependencies, &mut marks)) {
+        Ok(())
+    } else {
+        Err(KernelVerdict::Rejected(
+            "CNF definition dependency graph contains a cycle".into(),
+        ))
+    }
+}
+
+fn collect_core_predicate_symbols(formula: &Formula, symbols: &mut HashSet<mrs_core::SymbolId>) {
+    match formula {
+        Formula::Atom(Atom::Pred(symbol, _)) => {
+            symbols.insert(*symbol);
+        }
+        Formula::Atom(Atom::Eq(_, _)) | Formula::True | Formula::False => {}
+        Formula::Neg(inner) | Formula::Forall(_, inner) | Formula::Exists(_, inner) => {
+            collect_core_predicate_symbols(inner, symbols)
+        }
+        Formula::And(parts) | Formula::Or(parts) => {
+            for part in parts {
+                collect_core_predicate_symbols(part, symbols);
+            }
+        }
+        Formula::Implies(left, right) | Formula::Iff(left, right) => {
+            collect_core_predicate_symbols(left, symbols);
+            collect_core_predicate_symbols(right, symbols);
+        }
+    }
+}
+
+fn definition_direction_clauses(
+    definition: &CoreDefinition,
+    limits: VerificationLimits,
+) -> Option<Vec<Vec<Literal>>> {
+    let definition_formula = Formula::iff(
+        Formula::atom(definition.head.clone()),
+        definition.rhs.clone(),
+    );
+    let mut clauses = Vec::new();
+    if !cnf_expand(&to_nnf(&definition_formula), &mut clauses, limits) {
+        None
+    } else {
+        Some(clauses)
+    }
+}
+
+fn replace_definition_subformulas(source: &Formula, definitions: &[CoreDefinition]) -> Formula {
+    let mut current = source.clone();
+    loop {
+        let mut changed = false;
+        for definition in definitions {
+            let (next, replaced) = replace_one_definition(&current, definition);
+            current = next;
+            changed |= replaced;
+        }
+        if !changed {
+            return current;
+        }
+    }
+}
+
+fn replace_one_definition(source: &Formula, definition: &CoreDefinition) -> (Formula, bool) {
+    let (transformed, replaced) = match source {
+        Formula::Atom(_) | Formula::True | Formula::False => (source.clone(), false),
+        Formula::Neg(inner) => {
+            let (inner, replaced) = replace_one_definition(inner, definition);
+            (Formula::neg(inner), replaced)
+        }
+        Formula::And(parts) => {
+            let mut replaced = false;
+            let parts = parts
+                .iter()
+                .map(|part| {
+                    let (part, part_replaced) = replace_one_definition(part, definition);
+                    replaced |= part_replaced;
+                    part
+                })
+                .collect();
+            (Formula::And(parts), replaced)
+        }
+        Formula::Or(parts) => {
+            let mut replaced = false;
+            let parts = parts
+                .iter()
+                .map(|part| {
+                    let (part, part_replaced) = replace_one_definition(part, definition);
+                    replaced |= part_replaced;
+                    part
+                })
+                .collect();
+            (Formula::Or(parts), replaced)
+        }
+        Formula::Implies(left, right) => {
+            let (left, left_replaced) = replace_one_definition(left, definition);
+            let (right, right_replaced) = replace_one_definition(right, definition);
+            (
+                Formula::implies(left, right),
+                left_replaced || right_replaced,
+            )
+        }
+        Formula::Iff(left, right) => {
+            let (left, left_replaced) = replace_one_definition(left, definition);
+            let (right, right_replaced) = replace_one_definition(right, definition);
+            (Formula::iff(left, right), left_replaced || right_replaced)
+        }
+        Formula::Forall(var, body) => {
+            let (body, replaced) = replace_one_definition(body, definition);
+            (Formula::forall(*var, body), replaced)
+        }
+        Formula::Exists(var, body) => {
+            let (body, replaced) = replace_one_definition(body, definition);
+            (Formula::exists(*var, body), replaced)
+        }
+    };
+
+    let mut mapping = HashMap::new();
+    if match_core_formula(&definition.rhs, &transformed, &mut mapping)
+        && let Some(head) = apply_core_definition_head(&definition.head, &mapping)
+    {
+        (Formula::atom(head), true)
+    } else {
+        (transformed, replaced)
+    }
+}
+
+fn apply_core_definition_head(head: &Atom, mapping: &HashMap<VarId, Term>) -> Option<Atom> {
+    fn apply_term(term: &Term, mapping: &HashMap<VarId, Term>) -> Option<Term> {
+        match term {
+            Term::Var(var) => mapping.get(var).cloned(),
+            Term::App(symbol, args) => Some(Term::App(
+                *symbol,
+                args.iter()
+                    .map(|arg| apply_term(arg, mapping))
+                    .collect::<Option<Vec<_>>>()?,
+            )),
+        }
+    }
+    match head {
+        Atom::Pred(symbol, args) => Some(Atom::Pred(
+            *symbol,
+            args.iter()
+                .map(|arg| apply_term(arg, mapping))
+                .collect::<Option<Vec<_>>>()?,
+        )),
+        Atom::Eq(_, _) => None,
+    }
+}
+
+fn match_core_formula(
+    pattern: &Formula,
+    target: &Formula,
+    mapping: &mut HashMap<VarId, Term>,
+) -> bool {
+    match (pattern, target) {
+        (Formula::Atom(pattern), Formula::Atom(target)) => {
+            match_core_atom(pattern, target, mapping)
+        }
+        (Formula::Neg(pattern), Formula::Neg(target)) => {
+            match_core_formula(pattern, target, mapping)
+        }
+        (Formula::And(_), Formula::And(_)) | (Formula::Or(_), Formula::Or(_)) => {
+            let connective = if matches!(pattern, Formula::And(_)) {
+                CoreConnective::And
+            } else {
+                CoreConnective::Or
+            };
+            let patterns = flatten_core_parts(pattern, connective);
+            let targets = flatten_core_parts(target, connective);
+            match_core_multiset(&patterns, &targets, mapping)
+        }
+        (
+            Formula::Implies(pattern_left, pattern_right),
+            Formula::Implies(target_left, target_right),
+        )
+        | (Formula::Iff(pattern_left, pattern_right), Formula::Iff(target_left, target_right)) => {
+            match_core_formula(pattern_left, target_left, mapping)
+                && match_core_formula(pattern_right, target_right, mapping)
+        }
+        (Formula::True, Formula::True) | (Formula::False, Formula::False) => true,
+        _ => false,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CoreConnective {
+    And,
+    Or,
+}
+
+fn flatten_core_parts(formula: &Formula, connective: CoreConnective) -> Vec<&Formula> {
+    let mut output = Vec::new();
+    let mut pending = vec![formula];
+    while let Some(current) = pending.pop() {
+        let matching = match (connective, current) {
+            (CoreConnective::And, Formula::And(parts))
+            | (CoreConnective::Or, Formula::Or(parts)) => Some(parts),
+            _ => None,
+        };
+        if let Some(parts) = matching {
+            pending.extend(parts.iter());
+        } else {
+            output.push(current);
+        }
+    }
+    output
+}
+
+fn match_core_multiset(
+    patterns: &[&Formula],
+    targets: &[&Formula],
+    mapping: &mut HashMap<VarId, Term>,
+) -> bool {
+    if patterns.len() != targets.len() {
+        return false;
+    }
+    fn visit(
+        patterns: &[&Formula],
+        targets: &[&Formula],
+        index: usize,
+        used: &mut [bool],
+        mapping: &mut HashMap<VarId, Term>,
+    ) -> bool {
+        if index == patterns.len() {
+            return true;
+        }
+        for target_idx in 0..targets.len() {
+            if used[target_idx] {
+                continue;
+            }
+            let mut next_mapping = mapping.clone();
+            if match_core_formula(patterns[index], targets[target_idx], &mut next_mapping) {
+                used[target_idx] = true;
+                if visit(patterns, targets, index + 1, used, &mut next_mapping) {
+                    *mapping = next_mapping;
+                    return true;
+                }
+                used[target_idx] = false;
+            }
+        }
+        false
+    }
+    visit(
+        patterns,
+        targets,
+        0,
+        &mut vec![false; targets.len()],
+        mapping,
+    )
+}
+
+fn match_core_atom(pattern: &Atom, target: &Atom, mapping: &mut HashMap<VarId, Term>) -> bool {
+    match (pattern, target) {
+        (Atom::Pred(pattern_symbol, pattern_args), Atom::Pred(target_symbol, target_args)) => {
+            pattern_symbol == target_symbol
+                && pattern_args.len() == target_args.len()
+                && pattern_args
+                    .iter()
+                    .zip(target_args)
+                    .all(|(pattern, target)| match_core_term(pattern, target, mapping))
+        }
+        (Atom::Eq(pattern_left, pattern_right), Atom::Eq(target_left, target_right)) => {
+            match_core_term(pattern_left, target_left, mapping)
+                && match_core_term(pattern_right, target_right, mapping)
+        }
+        _ => false,
+    }
+}
+
+fn match_core_term(pattern: &Term, target: &Term, mapping: &mut HashMap<VarId, Term>) -> bool {
+    match (pattern, target) {
+        (Term::Var(pattern), target) => {
+            if let Some(mapped) = mapping.get(pattern) {
+                mapped == target
+            } else {
+                mapping.insert(*pattern, target.clone());
+                true
+            }
+        }
+        (Term::App(pattern_symbol, pattern_args), Term::App(target_symbol, target_args)) => {
+            pattern_symbol == target_symbol
+                && pattern_args.len() == target_args.len()
+                && pattern_args
+                    .iter()
+                    .zip(target_args)
+                    .all(|(pattern, target)| match_core_term(pattern, target, mapping))
+        }
+        _ => false,
     }
 }
 
@@ -3365,6 +3818,51 @@ mod tests {
                      cnf(p_again, plain, p(a), inference(resolution, [status(thm)], [d_clause,d_atom])).\n\
                      cnf(bot, plain, $false, inference(resolution, [status(thm)], [p_again,np])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_nested_definitional_cnf_with_transitive_parents() {
+        let problem = "fof(src, axiom, p(a) | ((~q(a) | (r(a) & s(a))) & (q(a) | t(a)))).\n\
+                       fof(np, axiom, ~p(a)).\n\
+                       fof(nq, axiom, ~q(a)).\
+                       fof(nt, axiom, ~t(a)).";
+        let proof = "fof(src, axiom, p(a) | ((~q(a) | (r(a) & s(a))) & (q(a) | t(a))), file('problem.p', src)).\
+                     fof(np, axiom, ~p(a), file('problem.p', np)).\
+                     fof(nq, axiom, ~q(a), file('problem.p', nq)).\
+                     fof(nt, axiom, ~t(a), file('problem.p', nt)).\
+                     fof(d0, definition, ![X] : (d0(X) <=> (r(X) & s(X))), introduced(definition, [new_symbols(definition, [d0])])).\
+                     fof(d1, definition, ![X] : (d1(X) <=> ((~q(X) | d0(X)) & (q(X) | t(X)))), introduced(definition, [new_symbols(definition, [d1])])).\
+                     cnf(main, plain, p(a) | d1(a), inference(cnf_transformation, [status(thm)], [src,d1,d0])).\
+                     cnf(d1_body, plain, ~d1(X) | q(X) | t(X), inference(cnf_transformation, [status(thm)], [src,d1,d0])).\
+                     cnf(d1_from_source, plain, d1(a), inference(resolution, [status(thm)], [main,np])).\
+                     cnf(nd1_or_t, plain, ~d1(a) | t(a), inference(resolution, [status(thm)], [d1_body,nq])).\
+                     cnf(nd1, plain, ~d1(a), inference(resolution, [status(thm)], [nd1_or_t,nt])).\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [d1_from_source,nd1])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_forged_definitional_cnf_clause() {
+        let problem = "fof(src, axiom, p(a) | (q(a) & r(a))).";
+        let proof = "fof(src, axiom, p(a) | (q(a) & r(a)), file('problem.p', src)).\
+                     fof(d, definition, ![X] : (d0(X) <=> (q(X) & r(X))), introduced(definition, [new_symbols(definition, [d0])])).\
+                     cnf(forged, plain, p(a) | d0(b), inference(cnf_transformation, [status(thm)], [src,d])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [forged])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn rejects_definitional_cnf_without_transitive_definition_parent() {
+        let problem = "fof(src, axiom, p(a) | ((~q(a) | (r(a) & s(a))) & (q(a) | t(a)))).";
+        let proof = "fof(src, axiom, p(a) | ((~q(a) | (r(a) & s(a))) & (q(a) | t(a))), file('problem.p', src)).\
+                     fof(d0, definition, ![X] : (d0(X) <=> (r(X) & s(X))), introduced(definition, [new_symbols(definition, [d0])])).\
+                     fof(d1, definition, ![X] : (d1(X) <=> ((~q(X) | d0(X)) & (q(X) | t(X)))), introduced(definition, [new_symbols(definition, [d1])])).\
+                     cnf(main, plain, p(a) | d1(a), inference(cnf_transformation, [status(thm)], [src,d1])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [main])).";
+        assert!(matches!(
+            check(problem, proof),
+            KernelVerdict::Inconclusive(_) | KernelVerdict::Rejected(_)
+        ));
     }
 
     #[test]

@@ -55,6 +55,8 @@ The current kernel checks:
   scope, distinct witnesses, nested matrices, regrouped universals, and
   bounded associative matrix matching;
 - fresh biconditional definitions and simple bounded CNF clause extraction;
+- bounded nested Tseitin definitions and transitive definition dependencies in
+  `cnf_transformation` parents;
 - resolution, factoring, equality resolution, subsumption resolution,
   demodulation, and superposition;
 - explicit CWA-style `split_component` and `avatar_sat_refutation`
@@ -70,7 +72,7 @@ The kernel returns `Inconclusive` for, among other cases:
 
 - multi-parent Skolemization;
 - equality factoring and justified literal-deletion rules not listed above;
-- multi-clause or nested definitional CNF transformations outside the bounded
+- multi-parent CNF transformations and definitional CNF outside the bounded
   clause-extraction fragment;
 - general AVATAR SAT proofs without explicit complete case-split certificates;
 - unsupported TPTP dialects, sequents, or formula shapes.
