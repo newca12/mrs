@@ -63,7 +63,7 @@ The current kernel checks:
   bounded formula equivalence, subsumption resolution, demodulation, and
   superposition;
 - explicit CWA-style `split_component` and `avatar_sat_refutation`
-  certificates with complete branch coverage.
+  certificates with complete branch coverage and linked fixture coverage.
 
 Subsumption resolution uses standardized-apart, one-way multiset matching and
 requires the conclusion to be exactly the target clause with one justified
