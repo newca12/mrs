@@ -752,10 +752,17 @@ fn verify_cnf_transformation(
         return verdict;
     }
 
-    let named_source = replace_definition_subformulas(source, &definitions);
+    let Some(named_source) = replace_definition_subformulas(source, &definitions, limits) else {
+        return KernelVerdict::Inconclusive(
+            "CNF definition replacement exceeded strict limits".into(),
+        );
+    };
     let mut expanded = Vec::new();
     let normalized = to_nnf(&named_source);
     if !cnf_expand(&normalized, &mut expanded, limits) {
+        return KernelVerdict::Inconclusive("CNF expansion exceeded strict limits".into());
+    }
+    if expanded.len() > limits.max_nodes {
         return KernelVerdict::Inconclusive("CNF expansion exceeded strict limits".into());
     }
 
@@ -806,6 +813,15 @@ fn core_definition(formula: &Formula) -> Option<CoreDefinition> {
     })
 }
 
+fn is_flat_definition_clause(formula: &Formula) -> bool {
+    match formula {
+        Formula::Atom(Atom::Pred(..)) => true,
+        Formula::Neg(inner) => matches!(inner.as_ref(), Formula::Atom(Atom::Pred(..))),
+        Formula::Or(parts) => parts.iter().all(is_flat_definition_clause),
+        _ => false,
+    }
+}
+
 fn strip_forall_core(formula: &Formula) -> &Formula {
     let mut current = formula;
     while let Formula::Forall(_, body) = current {
@@ -843,11 +859,24 @@ fn validate_definition_dependencies(
                 "CNF transformation cites duplicate definition symbols".into(),
             ));
         }
-        if !matches!(definition.rhs, Formula::And(_)) {
+        if !matches!(definition.rhs, Formula::And(_)) && !is_flat_definition_clause(&definition.rhs)
+        {
             return Err(KernelVerdict::Inconclusive(
-                "CNF transformation extra definitions must name conjunctions".into(),
+                "CNF transformation extra definitions must name conjunctions or flat clauses"
+                    .into(),
             ));
         }
+    }
+
+    if definitions.iter().any(|definition| {
+        let Atom::Pred(symbol, _) = definition.head else {
+            return false;
+        };
+        source_symbols.contains(&symbol)
+    }) {
+        return Err(KernelVerdict::Rejected(
+            "CNF transformation source contains a cited fresh definition symbol".into(),
+        ));
     }
 
     let mut dependencies = vec![Vec::new(); definitions.len()];
@@ -858,15 +887,22 @@ fn validate_definition_dependencies(
         let mut rhs_symbols = HashSet::new();
         collect_core_predicate_symbols(&definition.rhs, &mut rhs_symbols);
         for symbol in rhs_symbols {
-            if symbol == head || source_symbols.contains(&symbol) {
+            if symbol == head || definition_indices.contains_key(&symbol) {
+                if symbol == head {
+                    continue;
+                }
+                let dependency = definition_indices
+                    .get(&symbol)
+                    .copied()
+                    .expect("definition dependency exists");
+                dependencies[index].push(dependency);
                 continue;
             }
-            let Some(&dependency) = definition_indices.get(&symbol) else {
+            if !source_symbols.contains(&symbol) {
                 return Err(KernelVerdict::Inconclusive(
                     "CNF definition references an uncited fresh predicate".into(),
                 ));
             };
-            dependencies[index].push(dependency);
         }
     }
 
@@ -936,9 +972,18 @@ fn definition_direction_clauses(
     }
 }
 
-fn replace_definition_subformulas(source: &Formula, definitions: &[CoreDefinition]) -> Formula {
+fn replace_definition_subformulas(
+    source: &Formula,
+    definitions: &[CoreDefinition],
+    limits: VerificationLimits,
+) -> Option<Formula> {
     let mut current = source.clone();
+    let mut steps = 0;
     loop {
+        if steps >= limits.max_rewrite_steps {
+            return None;
+        }
+        steps += 1;
         let mut changed = false;
         for definition in definitions {
             let (next, replaced) = replace_one_definition(&current, definition);
@@ -946,7 +991,7 @@ fn replace_definition_subformulas(source: &Formula, definitions: &[CoreDefinitio
             changed |= replaced;
         }
         if !changed {
-            return current;
+            return Some(current);
         }
     }
 }
@@ -5114,6 +5159,36 @@ mod tests {
         verify_strict(&problem, &proof, VerificationLimits::default())
     }
 
+    fn flat_definition_problem() -> &'static str {
+        "fof(src, axiom, q(a) | r(a)).\n\
+         fof(nq, axiom, ~q(a)).\n\
+         fof(nr, axiom, ~r(a))."
+    }
+
+    fn flat_definition_proof() -> &'static str {
+        "fof(src, axiom, q(a) | r(a), file('problem.p', src)).\
+         fof(nq, axiom, ~q(a), file('problem.p', nq)).\
+         fof(nr, axiom, ~r(a), file('problem.p', nr)).\
+         fof(d0, definition, ![X] : (d0(X) <=> q(X)),\
+             introduced(definition, [new_symbols(definition, [d0])])).\
+         fof(d1, definition, ![X] : (d1(X) <=> (d0(X) | r(X))),\
+             introduced(definition, [new_symbols(definition, [d1])])).\
+         cnf(main, plain, d1(a),\
+             inference(cnf_transformation, [status(thm)], [src,d1,d0])).\
+         cnf(d0_forward, plain, ~d0(X) | q(X),\
+             inference(cnf_transformation, [status(thm)], [src,d1,d0])).\
+         cnf(d1_forward, plain, ~d1(X) | d0(X) | r(X),\
+             inference(cnf_transformation, [status(thm)], [src,d1,d0])).\
+         cnf(nd0, plain, ~d0(a),\
+             inference(resolution, [status(thm)], [d0_forward,nq])).\
+         cnf(nd1_or_d0, plain, ~d1(a) | d0(a),\
+             inference(resolution, [status(thm)], [d1_forward,nr])).\
+         cnf(nd1, plain, ~d1(a),\
+             inference(resolution, [status(thm)], [nd1_or_d0,nd0])).\
+         cnf(bot, plain, $false,\
+             inference(resolution, [status(thm)], [main,nd1]))."
+    }
+
     #[test]
     fn certifies_direct_resolution() {
         let input = "fof(a, axiom, p(a)).\nfof(b, axiom, ~p(a)).";
@@ -5328,6 +5403,61 @@ mod tests {
         assert!(matches!(
             check(problem, proof),
             KernelVerdict::Inconclusive(_) | KernelVerdict::Rejected(_)
+        ));
+    }
+
+    #[test]
+    fn certifies_flat_clause_definition_dependencies() {
+        assert_eq!(
+            check(flat_definition_problem(), flat_definition_proof()),
+            KernelVerdict::Certified
+        );
+    }
+
+    #[test]
+    fn rejects_flat_definition_cnf_with_missing_dependency() {
+        let proof = flat_definition_proof().replacen(",d1,d0]", ",d1]", 1);
+        assert!(matches!(
+            check(flat_definition_problem(), &proof),
+            KernelVerdict::Inconclusive(_)
+        ));
+    }
+
+    #[test]
+    fn rejects_flat_definition_cnf_with_wrong_instantiation() {
+        let proof =
+            flat_definition_proof().replace("cnf(main, plain, d1(a)", "cnf(main, plain, d1(b)");
+        assert!(matches!(
+            check(flat_definition_problem(), &proof),
+            KernelVerdict::Rejected(_)
+        ));
+    }
+
+    #[test]
+    fn rejects_cyclic_flat_definition_dependencies() {
+        let problem = "fof(src, axiom, q(a) | r(a)).";
+        let proof = "fof(src, axiom, q(a) | r(a), file('problem.p', src)).\
+                     fof(d0, definition, ![X] : (d0(X) <=> (d1(X) | q(X))),\
+                         introduced(definition, [new_symbols(definition, [d0])])).\
+                     fof(d1, definition, ![X] : (d1(X) <=> (d0(X) | r(X))),\
+                         introduced(definition, [new_symbols(definition, [d1])])).\
+                     cnf(main, plain, d0(a),\
+                         inference(cnf_transformation, [status(thm)], [src,d0,d1])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [main])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn flat_definition_cnf_literal_limit_is_inconclusive() {
+        let problem = parse_tptp(flat_definition_problem()).expect("problem parses");
+        let proof = parse_tptp(flat_definition_proof()).expect("proof parses");
+        let limits = VerificationLimits {
+            max_clause_literals: 2,
+            ..VerificationLimits::default()
+        };
+        assert!(matches!(
+            verify_strict(&problem, &proof, limits),
+            KernelVerdict::Inconclusive(_)
         ));
     }
 
