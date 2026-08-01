@@ -4,7 +4,9 @@
 //! the competition verifier. Unsupported proof rules return `Inconclusive`;
 //! they are never accepted by guessing or by an inference-rule name.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use mrs_core::{Atom, Formula, SymbolTable, Term, VarId};
 use mrs_tptp::ast::common::{AtomicWord, GeneralTerm};
@@ -41,6 +43,8 @@ pub struct VerificationLimits {
     pub max_clause_literals: usize,
     pub max_term_depth: usize,
     pub max_rewrite_steps: usize,
+    pub max_subsumption_steps: usize,
+    pub max_skolem_steps: usize,
 }
 
 impl Default for VerificationLimits {
@@ -51,6 +55,8 @@ impl Default for VerificationLimits {
             max_clause_literals: 10_000,
             max_term_depth: 256,
             max_rewrite_steps: 64,
+            max_subsumption_steps: 5_000,
+            max_skolem_steps: 5_000,
         }
     }
 }
@@ -204,11 +210,11 @@ pub fn verify_strict_with_source(
                 &parents,
                 conclusion,
                 &known_function_symbols,
+                limits,
             ),
             "cnf_transformation" => verify_cnf_transformation(&parents, conclusion, limits),
-            "resolution" | "subsumption_resolution" => {
-                verify_resolution(&parents, conclusion, limits)
-            }
+            "resolution" => verify_resolution(&parents, conclusion, limits),
+            "subsumption_resolution" => verify_subsumption_resolution(&parents, conclusion, limits),
             "factoring" => verify_factoring(&parents, conclusion, limits),
             "equality_resolution" => verify_equality_resolution(&parents, conclusion, limits),
             "demodulation" => verify_demodulation(&parents, conclusion, limits),
@@ -947,6 +953,7 @@ fn verify_skolemisation(
     parents: &[Formula],
     conclusion: &Formula,
     known_function_symbols: &HashSet<String>,
+    limits: VerificationLimits,
 ) -> KernelVerdict {
     if parent_indices.len() != 1 || parents.len() != 1 {
         return KernelVerdict::Inconclusive(
@@ -982,8 +989,13 @@ fn verify_skolemisation(
             "Skolemization introduced symbols without an existential parent".into(),
         );
     }
-    let mut state = SkolemMatch::new(fresh.clone());
+    let mut state = SkolemMatch::new(fresh.clone(), limits.max_skolem_steps);
     if !match_skolem_formula(parent_formula, step_formula, &mut state) {
+        if state.exhausted.get() {
+            return KernelVerdict::Inconclusive(
+                "Skolemization exceeded strict matching-step limit".into(),
+            );
+        }
         return KernelVerdict::Rejected(format!(
             "node `{}` is not an exact Skolemization of its parent",
             node.name
@@ -1188,26 +1200,44 @@ fn collect_all_term_symbols(term: &FOFTerm<'_>, symbols: &mut HashSet<String>) {
     collect_function_symbols_term(term, symbols);
 }
 
+#[derive(Clone)]
 struct SkolemMatch {
     fresh_symbols: HashSet<String>,
     used_symbols: HashSet<String>,
     universal_map: HashMap<String, String>,
     existential_terms: HashMap<String, String>,
     witness_owners: HashMap<String, String>,
-    active_existentials: HashSet<String>,
+    active_existentials: HashMap<String, Vec<String>>,
     active_universals: Vec<String>,
+    steps: Rc<Cell<usize>>,
+    step_limit: usize,
+    exhausted: Rc<Cell<bool>>,
 }
 
 impl SkolemMatch {
-    fn new(fresh_symbols: HashSet<String>) -> Self {
+    fn new(fresh_symbols: HashSet<String>, step_limit: usize) -> Self {
         Self {
             fresh_symbols,
             used_symbols: HashSet::new(),
             universal_map: HashMap::new(),
             existential_terms: HashMap::new(),
             witness_owners: HashMap::new(),
-            active_existentials: HashSet::new(),
+            active_existentials: HashMap::new(),
             active_universals: Vec::new(),
+            steps: Rc::new(Cell::new(0)),
+            step_limit,
+            exhausted: Rc::new(Cell::new(false)),
+        }
+    }
+
+    fn charge(&self) -> bool {
+        let steps = self.steps.get();
+        if steps >= self.step_limit {
+            self.exhausted.set(true);
+            false
+        } else {
+            self.steps.set(steps + 1);
+            true
         }
     }
 }
@@ -1217,68 +1247,139 @@ fn match_skolem_formula(
     step: &FOFFormula<'_>,
     state: &mut SkolemMatch,
 ) -> bool {
-    match (parent, step) {
-        (FOFFormula::Parens(parent), _) => match_skolem_formula(parent, step, state),
-        (_, FOFFormula::Parens(step)) => match_skolem_formula(parent, step, state),
-        (
-            FOFFormula::Quantified {
-                quantifier: parent_q,
-                variables: parent_vars,
-                formula: parent_body,
-            },
-            FOFFormula::Quantified {
-                quantifier: step_q,
-                variables: step_vars,
-                formula: step_body,
-            },
-        ) if parent_q == step_q && parent_vars.len() == step_vars.len() => {
-            let mut inserted = Vec::new();
-            for (parent_var, step_var) in parent_vars.iter().zip(step_vars) {
-                if parent_q == &Quantifier::Exists {
-                    state.active_existentials.insert((*parent_var).to_string());
-                    inserted.push((*parent_var, None));
-                } else {
+    if !state.charge() {
+        return false;
+    }
+    let mut candidate = state.clone();
+    if match_skolem_formula_inner(parent, step, &mut candidate) {
+        *state = candidate;
+        true
+    } else {
+        false
+    }
+}
+
+fn match_skolem_formula_inner(
+    parent: &FOFFormula<'_>,
+    step: &FOFFormula<'_>,
+    state: &mut SkolemMatch,
+) -> bool {
+    let (parent_prefix, parent_matrix) = leading_quantifiers(parent);
+    let (step_prefix, step_matrix) = leading_quantifiers(step);
+    let step_universals: Vec<String> = step_prefix
+        .iter()
+        .filter(|(quantifier, _)| *quantifier == Quantifier::Forall)
+        .flat_map(|(_, variables)| variables.iter().cloned())
+        .collect();
+    if step_prefix
+        .iter()
+        .any(|(quantifier, _)| *quantifier == Quantifier::Exists)
+    {
+        return false;
+    }
+
+    let parent_universal_count = parent_prefix
+        .iter()
+        .filter(|(quantifier, _)| *quantifier == Quantifier::Forall)
+        .map(|(_, variables)| variables.len())
+        .sum::<usize>();
+    if parent_universal_count != step_universals.len() {
+        return false;
+    }
+
+    let mut step_universal_idx = 0;
+    let mut local_universals = Vec::new();
+    let mut local_existentials = Vec::new();
+    for (quantifier, variables) in &parent_prefix {
+        match quantifier {
+            Quantifier::Forall => {
+                for parent_var in variables {
+                    let Some(step_var) = step_universals.get(step_universal_idx) else {
+                        return false;
+                    };
+                    if state.universal_map.contains_key(parent_var)
+                        || state.active_existentials.contains_key(parent_var)
+                        || state.active_universals.contains(step_var)
+                    {
+                        return false;
+                    }
                     state
                         .universal_map
-                        .insert((*parent_var).to_string(), (*step_var).to_string());
-                    state.active_universals.push((*step_var).to_string());
-                    inserted.push((*parent_var, Some(*step_var)));
+                        .insert(parent_var.clone(), step_var.clone());
+                    state.active_universals.push(step_var.clone());
+                    local_universals.push(parent_var.clone());
+                    step_universal_idx += 1;
                 }
             }
-            let ok = if parent_q == &Quantifier::Exists {
-                match_skolem_formula(parent_body, step, state)
-            } else {
-                match_skolem_formula(parent_body, step_body, state)
-            };
-            for (parent_var, step_var) in inserted.into_iter().rev() {
-                if parent_q == &Quantifier::Exists {
-                    state.active_existentials.remove(parent_var);
-                } else {
-                    state.universal_map.remove(parent_var);
-                    if step_var.is_some() {
-                        state.active_universals.pop();
+            Quantifier::Exists => {
+                for parent_var in variables {
+                    if state.universal_map.contains_key(parent_var)
+                        || state.active_existentials.contains_key(parent_var)
+                    {
+                        return false;
                     }
+                    state
+                        .active_existentials
+                        .insert(parent_var.clone(), state.active_universals.clone());
+                    local_existentials.push(parent_var.clone());
                 }
             }
-            ok
         }
-        (
-            FOFFormula::Quantified {
-                quantifier: Quantifier::Exists,
-                variables,
-                formula,
-            },
-            _,
-        ) => {
-            for variable in variables {
-                state.active_existentials.insert((*variable).to_string());
-            }
-            let ok = match_skolem_formula(formula, step, state);
-            for variable in variables {
-                state.active_existentials.remove(*variable);
-            }
-            ok
+    }
+
+    let matched = match_skolem_matrix(parent_matrix, step_matrix, state);
+    for parent_var in local_existentials.into_iter().rev() {
+        state.active_existentials.remove(&parent_var);
+    }
+    for parent_var in local_universals.into_iter().rev() {
+        state.universal_map.remove(&parent_var);
+        state.active_universals.pop();
+    }
+    matched
+}
+
+fn leading_quantifiers<'a, 'p>(
+    formula: &'a FOFFormula<'p>,
+) -> (Vec<(Quantifier, Vec<String>)>, &'a FOFFormula<'p>) {
+    let mut current = formula;
+    let mut prefix = Vec::new();
+    loop {
+        while let FOFFormula::Parens(inner) = current {
+            current = inner;
         }
+        let FOFFormula::Quantified {
+            quantifier,
+            variables,
+            formula,
+        } = current
+        else {
+            break;
+        };
+        prefix.push((
+            *quantifier,
+            variables
+                .iter()
+                .map(|variable| (*variable).to_string())
+                .collect(),
+        ));
+        current = formula;
+    }
+    (prefix, current)
+}
+
+fn match_skolem_matrix(
+    parent: &FOFFormula<'_>,
+    step: &FOFFormula<'_>,
+    state: &mut SkolemMatch,
+) -> bool {
+    let parent = strip_skolem_parens(parent);
+    let step = strip_skolem_parens(step);
+    if matches!(parent, FOFFormula::Quantified { .. })
+        || matches!(step, FOFFormula::Quantified { .. })
+    {
+        return match_skolem_formula(parent, step, state);
+    }
+    match (parent, step) {
         (FOFFormula::Atomic(parent), FOFFormula::Atomic(step)) => {
             match_skolem_atom(parent, step, state)
         }
@@ -1288,18 +1389,26 @@ fn match_skolem_formula(
         (
             FOFFormula::Binary {
                 left: parent_left,
-                connective: parent_conn,
+                connective: parent_connective,
                 right: parent_right,
             },
             FOFFormula::Binary {
                 left: step_left,
-                connective: step_conn,
+                connective: step_connective,
                 right: step_right,
             },
-        ) => {
-            parent_conn == step_conn
-                && match_skolem_formula(parent_left, step_left, state)
-                && match_skolem_formula(parent_right, step_right, state)
+        ) if parent_connective == step_connective => {
+            if matches!(
+                parent_connective,
+                BinaryConnective::And | BinaryConnective::Or
+            ) {
+                let parent_parts = flatten_skolem_associative(parent, *parent_connective);
+                let step_parts = flatten_skolem_associative(step, *step_connective);
+                match_skolem_multiset(&parent_parts, &step_parts, state)
+            } else {
+                match_skolem_formula(parent_left, step_left, state)
+                    && match_skolem_formula(parent_right, step_right, state)
+            }
         }
         (
             FOFFormula::Equality(parent_left, parent_right),
@@ -1314,6 +1423,79 @@ fn match_skolem_formula(
         }
         _ => false,
     }
+}
+
+fn strip_skolem_parens<'a, 'p>(formula: &'a FOFFormula<'p>) -> &'a FOFFormula<'p> {
+    let mut current = formula;
+    while let FOFFormula::Parens(inner) = current {
+        current = inner;
+    }
+    current
+}
+
+fn flatten_skolem_associative<'a, 'p>(
+    formula: &'a FOFFormula<'p>,
+    connective: BinaryConnective,
+) -> Vec<&'a FOFFormula<'p>> {
+    let mut result = Vec::new();
+    let mut pending = vec![formula];
+    while let Some(current) = pending.pop() {
+        let current = strip_skolem_parens(current);
+        if let FOFFormula::Binary {
+            left,
+            connective: current_connective,
+            right,
+        } = current
+            && *current_connective == connective
+        {
+            pending.push(right);
+            pending.push(left);
+        } else {
+            result.push(current);
+        }
+    }
+    result
+}
+
+fn match_skolem_multiset(
+    parent: &[&FOFFormula<'_>],
+    step: &[&FOFFormula<'_>],
+    state: &mut SkolemMatch,
+) -> bool {
+    if parent.len() != step.len() {
+        return false;
+    }
+    fn visit(
+        parent: &[&FOFFormula<'_>],
+        step: &[&FOFFormula<'_>],
+        parent_idx: usize,
+        used: &mut [bool],
+        state: &mut SkolemMatch,
+    ) -> bool {
+        if !state.charge() {
+            return false;
+        }
+        if parent_idx == parent.len() {
+            return true;
+        }
+        for step_idx in 0..step.len() {
+            if used[step_idx] {
+                continue;
+            }
+            let mut candidate = state.clone();
+            if match_skolem_formula(parent[parent_idx], step[step_idx], &mut candidate) {
+                used[step_idx] = true;
+                if visit(parent, step, parent_idx + 1, used, &mut candidate) {
+                    *state = candidate;
+                    return true;
+                }
+                used[step_idx] = false;
+            }
+        }
+        false
+    }
+
+    visit(parent, step, 0, &mut vec![false; step.len()], state)
 }
 
 fn match_skolem_atom(
@@ -1364,49 +1546,50 @@ fn match_skolem_atom(
 fn match_skolem_term(parent: &FOFTerm<'_>, step: &FOFTerm<'_>, state: &mut SkolemMatch) -> bool {
     match parent {
         FOFTerm::Variable(parent_var) => {
-            if let Some(previous) = state.existential_terms.get(*parent_var) {
-                return previous == &format!("{step:?}");
-            }
-            if let Some(mapped) = state.universal_map.get(*parent_var) {
-                return matches!(step, FOFTerm::Variable(step_var) if *step_var == mapped);
-            }
-            if !state.active_existentials.contains(*parent_var) {
-                return matches!(step, FOFTerm::Variable(step_var) if *step_var == *parent_var);
-            }
-            if let FOFTerm::Function(symbol, args) = step {
-                let symbol = symbol.as_str();
-                let witness_args = args
+            let parent_var = (*parent_var).to_string();
+            if let Some(scope) = state.active_existentials.get(&parent_var).cloned() {
+                let step_repr = format!("{step:?}");
+                if let Some(previous) = state.existential_terms.get(&parent_var) {
+                    return previous == &step_repr;
+                }
+                let Some((symbol, arguments)) = skolem_application(step) else {
+                    return false;
+                };
+                let expected: HashSet<&str> = scope.iter().map(String::as_str).collect();
+                let actual: Option<Vec<&str>> = arguments
                     .iter()
-                    .map(|arg| match arg {
+                    .map(|argument| match argument {
                         FOFTerm::Variable(variable) => Some(*variable),
                         _ => None,
                     })
-                    .collect::<Option<HashSet<_>>>();
-                let expected_args: HashSet<&str> =
-                    state.active_universals.iter().map(String::as_str).collect();
-                if state.fresh_symbols.contains(symbol)
-                    && witness_args.as_ref().is_some_and(|args| {
-                        args.len() == expected_args.len()
-                            && args.iter().all(|arg| expected_args.contains(arg))
-                    })
+                    .collect();
+                let Some(actual) = actual else {
+                    return false;
+                };
+                let actual_set: HashSet<&str> = actual.iter().copied().collect();
+                if arguments.len() != expected.len()
+                    || actual.len() != actual_set.len()
+                    || actual_set != expected
+                    || !state.fresh_symbols.contains(&symbol)
                 {
-                    if let Some(owner) = state.witness_owners.get(symbol)
-                        && owner != parent_var
-                    {
-                        return false;
-                    }
-                    state
-                        .witness_owners
-                        .insert(symbol.to_string(), (*parent_var).to_string());
-                    state.used_symbols.insert(symbol.to_string());
-                    state
-                        .existential_terms
-                        .insert((*parent_var).to_string(), format!("{step:?}"));
-                    return true;
+                    return false;
                 }
-                let _ = args;
+                if let Some(owner) = state.witness_owners.get(&symbol)
+                    && owner != &parent_var
+                {
+                    return false;
+                }
+                state
+                    .witness_owners
+                    .insert(symbol.clone(), parent_var.clone());
+                state.used_symbols.insert(symbol);
+                state.existential_terms.insert(parent_var, step_repr);
+                true
+            } else if let Some(mapped) = state.universal_map.get(&parent_var) {
+                matches!(step, FOFTerm::Variable(step_var) if *step_var == mapped)
+            } else {
+                matches!(step, FOFTerm::Variable(step_var) if *step_var == parent_var)
             }
-            false
         }
         FOFTerm::Function(parent_name, parent_args) => match step {
             FOFTerm::Function(step_name, step_args) => {
@@ -1447,6 +1630,15 @@ fn match_skolem_term(parent: &FOFTerm<'_>, step: &FOFTerm<'_>, state: &mut Skole
         FOFTerm::DistinctObject(parent) => {
             matches!(step, FOFTerm::DistinctObject(step) if parent == step)
         }
+    }
+}
+
+fn skolem_application<'a, 'p>(term: &'a FOFTerm<'p>) -> Option<(String, &'a [FOFTerm<'p>])> {
+    match term {
+        FOFTerm::Function(symbol, args) => Some((symbol.as_str().to_string(), args)),
+        FOFTerm::DefinedFunction(symbol, args) => Some((format!("${}", symbol.0), args)),
+        FOFTerm::SystemFunction(symbol, args) => Some((format!("$${}", symbol.0), args)),
+        _ => None,
     }
 }
 
@@ -1534,6 +1726,227 @@ fn verify_resolution(
         }
     }
     KernelVerdict::Rejected("resolution conclusion is not a parent resolvent".into())
+}
+
+fn verify_subsumption_resolution(
+    parents: &[Formula],
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if parents.len() != 2 {
+        return KernelVerdict::Rejected(
+            "subsumption_resolution must have a target and an active parent".into(),
+        );
+    }
+    let Some(target) = clause_from_formula(&parents[0], limits) else {
+        return KernelVerdict::Inconclusive(
+            "subsumption_resolution target is not a supported clause".into(),
+        );
+    };
+    let Some(active) = clause_from_formula(&parents[1], limits) else {
+        return KernelVerdict::Inconclusive(
+            "subsumption_resolution active parent is not a supported clause".into(),
+        );
+    };
+    let Some(goal) = clause_from_formula(conclusion, limits) else {
+        return KernelVerdict::Inconclusive(
+            "subsumption_resolution conclusion is not a supported clause".into(),
+        );
+    };
+    if active.is_empty() || active.len() > target.len() {
+        return KernelVerdict::Rejected(
+            "subsumption_resolution active parent cannot subsume the target".into(),
+        );
+    }
+
+    let mut matching_steps = 0;
+    for removed_idx in 0..target.len() {
+        let mut modified_target = target.clone();
+        modified_target[removed_idx].positive = !modified_target[removed_idx].positive;
+        match clause_subsumes(
+            &active,
+            &modified_target,
+            &mut matching_steps,
+            limits.max_subsumption_steps,
+        ) {
+            Ok(false) => continue,
+            Err(()) => {
+                return KernelVerdict::Inconclusive(
+                    "subsumption_resolution exceeded strict matching-step limit".into(),
+                );
+            }
+            Ok(true) => {}
+        }
+
+        let expected: Vec<Literal> = target
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| *idx != removed_idx)
+            .map(|(_, literal)| literal.clone())
+            .collect();
+        if clause_alpha_equiv(&expected, &goal) {
+            return KernelVerdict::Certified;
+        }
+    }
+
+    KernelVerdict::Rejected(
+        "subsumption_resolution conclusion is not the target with a justified literal removed"
+            .into(),
+    )
+}
+
+fn clause_subsumes(
+    pattern: &[Literal],
+    target: &[Literal],
+    steps: &mut usize,
+    step_limit: usize,
+) -> Result<bool, ()> {
+    if pattern.len() > target.len() {
+        return Ok(false);
+    }
+
+    // Keep target variables rigid while allowing only the standardized-apart
+    // active-clause variables to receive matching substitutions.
+    let shift = max_var_clause(target).saturating_add(1);
+    let mut pattern = pattern.to_vec();
+    shift_clause(&mut pattern, shift);
+    let mut used = vec![false; target.len()];
+    match_subsumption_literals(
+        &pattern,
+        target,
+        &HashMap::new(),
+        shift,
+        &mut used,
+        steps,
+        step_limit,
+    )
+}
+
+fn match_subsumption_literals(
+    remaining: &[Literal],
+    target: &[Literal],
+    substitution: &HashMap<VarId, Term>,
+    min_bindable: VarId,
+    used: &mut [bool],
+    steps: &mut usize,
+    step_limit: usize,
+) -> Result<bool, ()> {
+    let Some((literal, rest)) = remaining.split_first() else {
+        return Ok(true);
+    };
+    if *steps >= step_limit {
+        return Err(());
+    }
+    *steps += 1;
+
+    for (target_idx, target_literal) in target.iter().enumerate() {
+        if used[target_idx] {
+            continue;
+        }
+        if literal.positive != target_literal.positive {
+            continue;
+        }
+        if let Some(next) = match_subsumption_atom(
+            &literal.atom,
+            &target_literal.atom,
+            substitution,
+            min_bindable,
+        ) {
+            used[target_idx] = true;
+            let matched = match_subsumption_literals(
+                rest,
+                target,
+                &next,
+                min_bindable,
+                used,
+                steps,
+                step_limit,
+            );
+            used[target_idx] = false;
+            match matched {
+                Ok(true) => return Ok(true),
+                Ok(false) => {}
+                Err(()) => return Err(()),
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn match_subsumption_atom(
+    pattern: &Atom,
+    target: &Atom,
+    substitution: &HashMap<VarId, Term>,
+    min_bindable: VarId,
+) -> Option<HashMap<VarId, Term>> {
+    match (pattern, target) {
+        (Atom::Pred(pattern_symbol, pattern_args), Atom::Pred(target_symbol, target_args))
+            if pattern_symbol == target_symbol && pattern_args.len() == target_args.len() =>
+        {
+            let mut next = substitution.clone();
+            for (pattern, target) in pattern_args.iter().zip(target_args) {
+                let pattern = apply_substitution_term(pattern, &next);
+                if !match_subsumption_term(&pattern, target, &mut next, min_bindable) {
+                    return None;
+                }
+            }
+            Some(next)
+        }
+        (Atom::Eq(pattern_left, pattern_right), Atom::Eq(target_left, target_right)) => {
+            let original_left = pattern_left;
+            let original_right = pattern_right;
+            let mut next = substitution.clone();
+            let pattern_left = apply_substitution_term(original_left, &next);
+            if match_subsumption_term(&pattern_left, target_left, &mut next, min_bindable) {
+                let pattern_right = apply_substitution_term(original_right, &next);
+                if match_subsumption_term(&pattern_right, target_right, &mut next, min_bindable) {
+                    return Some(next);
+                }
+            }
+
+            let mut next = substitution.clone();
+            let pattern_left = apply_substitution_term(original_left, &next);
+            if match_subsumption_term(&pattern_left, target_right, &mut next, min_bindable) {
+                let pattern_right = apply_substitution_term(original_right, &next);
+                if match_subsumption_term(&pattern_right, target_left, &mut next, min_bindable) {
+                    return Some(next);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn match_subsumption_term(
+    pattern: &Term,
+    target: &Term,
+    substitution: &mut HashMap<VarId, Term>,
+    min_bindable: VarId,
+) -> bool {
+    let pattern = apply_substitution_term(pattern, substitution);
+    match (&pattern, target) {
+        (Term::Var(var), target) if *var >= min_bindable => {
+            if let Some(bound) = substitution.get(var) {
+                bound == target
+            } else {
+                substitution.insert(*var, target.clone());
+                true
+            }
+        }
+        (Term::Var(_), Term::Var(target_var)) => pattern == Term::Var(*target_var),
+        (Term::App(pattern_symbol, pattern_args), Term::App(target_symbol, target_args)) => {
+            pattern_symbol == target_symbol
+                && pattern_args.len() == target_args.len()
+                && pattern_args
+                    .iter()
+                    .zip(target_args)
+                    .all(|(pattern, target)| {
+                        match_subsumption_term(pattern, target, substitution, min_bindable)
+                    })
+        }
+        _ => false,
+    }
 }
 
 fn verify_factoring(
@@ -2849,6 +3262,51 @@ mod tests {
     }
 
     #[test]
+    fn certifies_subsumption_resolution_with_matching() {
+        let input = "cnf(target, axiom, ~p(a) | q(a) | r(a)).\n\
+                     cnf(active, axiom, p(X) | q(X)).\n\
+                     cnf(nq, axiom, ~q(a)).\n\
+                     cnf(nr, axiom, ~r(a)).";
+        let proof = "cnf(target, axiom, ~p(a) | q(a) | r(a), file('problem.p', target)).\n\
+                     cnf(active, axiom, p(X) | q(X), file('problem.p', active)).\n\
+                     cnf(cut, plain, q(a) | r(a), inference(subsumption_resolution, [status(thm)], [target,active])).\n\
+                     cnf(nq, axiom, ~q(a), file('problem.p', nq)).\n\
+                     cnf(r, plain, r(a), inference(resolution, [status(thm)], [cut,nq])).\n\
+                     cnf(nr, axiom, ~r(a), file('problem.p', nr)).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [r,nr])).";
+        assert_eq!(check(input, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_forged_subsumption_resolution_conclusion() {
+        let input = "cnf(target, axiom, ~p(a) | q(a) | r(a)).\n\
+                     cnf(active, axiom, p(X) | q(X)).\n\
+                     cnf(nq, axiom, ~q(a)).\n\
+                     cnf(ns, axiom, ~s(a)).";
+        let proof = "cnf(target, axiom, ~p(a) | q(a) | r(a), file('problem.p', target)).\n\
+                     cnf(active, axiom, p(X) | q(X), file('problem.p', active)).\n\
+                     cnf(forged, plain, q(a) | s(a), inference(subsumption_resolution, [status(thm)], [target,active])).\n\
+                     cnf(nq, axiom, ~q(a), file('problem.p', nq)).\n\
+                     cnf(s, plain, s(a), inference(resolution, [status(thm)], [forged,nq])).\n\
+                     cnf(ns, axiom, ~s(a), file('problem.p', ns)).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [s,ns])).";
+        assert!(matches!(check(input, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn rejects_subsumption_resolution_reusing_a_target_literal() {
+        let input = "cnf(target, axiom, ~p(a) | r(a)).\n\
+                     cnf(active, axiom, p(X) | p(Y)).\n\
+                     cnf(nr, axiom, ~r(a)).";
+        let proof = "cnf(target, axiom, ~p(a) | r(a), file('problem.p', target)).\n\
+                     cnf(active, axiom, p(X) | p(Y), file('problem.p', active)).\n\
+                     cnf(forged, plain, r(a), inference(subsumption_resolution, [status(thm)], [target,active])).\n\
+                     cnf(nr, axiom, ~r(a), file('problem.p', nr)).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [forged,nr])).";
+        assert!(matches!(check(input, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
     fn rejects_forged_resolution_conclusion() {
         let input = "fof(a, axiom, p(a)).\nfof(b, axiom, ~p(a)).";
         let proof = "fof(a, axiom, p(a), file('problem.p', a)).\n\
@@ -2952,6 +3410,88 @@ mod tests {
                      fof(n, axiom, ![X] : ~p(a, X), file('problem.p', n)).\n\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [s,n])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_nested_multi_existential_skolemization() {
+        let problem = "fof(a, axiom, ?[X] : (![Y] : ?[Z] : (p(X, Z) | q(Y, Z)))).\n\
+                       fof(np, axiom, ![X,Y] : ~p(X, Y)).\n\
+                       fof(nq, axiom, ![X,Y] : ~q(X, Y)).";
+        let proof = "fof(a, axiom, ?[X] : (![Y] : ?[Z] : (p(X, Z) | q(Y, Z))), file('problem.p', a)).\n\
+                     fof(s, plain, ![Y] : (p(sk0, sk1(Y)) | q(Y, sk1(Y))), inference(skolemisation, [status(esa)], [a])).\n\
+                     fof(np, axiom, ![X,Y] : ~p(X, Y), file('problem.p', np)).\n\
+                     fof(mid, plain, q(Y, sk1(Y)), inference(resolution, [status(thm)], [s,np])).\n\
+                     fof(nq, axiom, ![X,Y] : ~q(X, Y), file('problem.p', nq)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [mid,nq])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_regrouped_universal_skolemization() {
+        let problem = "fof(a, axiom, ![X] : (? [Y] : (![Z] : (? [W] : (p(X, Y) | q(Z, W)))))).\n\
+                       fof(np, axiom, ![X,Y] : ~p(X, Y)).\n\
+                       fof(nq, axiom, ![X,Y] : ~q(X, Y)).";
+        let proof = "fof(a, axiom, ![X] : (? [Y] : (![Z] : (? [W] : (p(X, Y) | q(Z, W))))), file('problem.p', a)).\
+                     fof(s, plain, ![X,Z] : (p(X, sk0(X)) | q(Z, sk1(X,Z))), inference(skolemisation, [status(esa)], [a])).\
+                     fof(np, axiom, ![X,Y] : ~p(X, Y), file('problem.p', np)).\
+                     fof(mid, plain, q(Z, sk1(X,Z)), inference(resolution, [status(thm)], [s,np])).\
+                     fof(nq, axiom, ![X,Y] : ~q(X, Y), file('problem.p', nq)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [mid,nq])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_associative_reordered_skolemization_matrix() {
+        let problem = "fof(a, axiom, ?[X] : (p(X) | (q(X) | r(X)))).\n\
+                       fof(np, axiom, ~p(X)).\n\
+                       fof(nq, axiom, ~q(X)).\
+                       fof(nr, axiom, ~r(X)).";
+        let proof = "fof(a, axiom, ?[X] : (p(X) | (q(X) | r(X))), file('problem.p', a)).\
+                     fof(s, plain, (q(sk0) | r(sk0)) | p(sk0), inference(skolemisation, [status(esa)], [a])).\
+                     fof(np, axiom, ~p(X), file('problem.p', np)).\
+                     fof(mid, plain, q(sk0) | r(sk0), inference(resolution, [status(thm)], [s,np])).\
+                     fof(nq, axiom, ~q(X), file('problem.p', nq)).\
+                     fof(last, plain, r(sk0), inference(resolution, [status(thm)], [mid,nq])).\
+                     fof(nr, axiom, ~r(X), file('problem.p', nr)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [last,nr])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_skolemization_with_extra_witness_argument() {
+        let problem = "fof(a, axiom, ![X] : ?[Y] : p(X, Y)).";
+        let proof = "fof(a, axiom, ![X] : ?[Y] : p(X, Y), file('problem.p', a)).\
+                     fof(s, plain, ![X] : p(X, sk0(X, X)), inference(skolemisation, [status(esa)], [a])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [s])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn rejects_nested_skolemization_that_drops_matrix_content() {
+        let problem = "fof(a, axiom, ?[X] : (![Y] : ?[Z] : (p(X, Z) | q(Y, Z)))).";
+        let proof = "fof(a, axiom, ?[X] : (![Y] : ?[Z] : (p(X, Z) | q(Y, Z))), file('problem.p', a)).\
+                     fof(s, plain, ![Y] : p(sk0, sk1(Y)), inference(skolemisation, [status(esa)], [a])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [s])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn skolemization_matching_limit_is_inconclusive() {
+        let problem = parse_tptp("fof(a, axiom, ![X] : ?[Y] : p(X, Y)).").expect("problem parses");
+        let proof = parse_tptp(
+            "fof(a, axiom, ![X] : ?[Y] : p(X, Y), file('problem.p', a)).\
+             fof(s, plain, ![X] : p(X, sk0(X)), inference(skolemisation, [status(esa)], [a])).\
+             fof(bot, plain, $false, inference(consequence, [status(thm)], [s])).",
+        )
+        .expect("proof parses");
+        let limits = VerificationLimits {
+            max_skolem_steps: 1,
+            ..VerificationLimits::default()
+        };
+        assert!(matches!(
+            verify_strict(&problem, &proof, limits),
+            KernelVerdict::Inconclusive(_)
+        ));
     }
 
     #[test]

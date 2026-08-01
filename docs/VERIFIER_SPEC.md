@@ -85,22 +85,25 @@ The first strict kernel implementation certifies only:
 - direct `negated_conjecture` / `assume_negation`
 - exact alpha-equivalent variable-renaming and identity rewrites
 - NNF rewrites whose conclusion equals independently computed NNF
-- existential-free `skolemisation` identity steps
+- single-parent `skolemisation` with exact fresh witnesses, scope, arity, and
+  bounded associative matrix matching
 - exact single-clause `cnf_transformation`
 - first-order `resolution`
-- first-order `subsumption_resolution` when it is an exact resolution step
+- first-order `subsumption_resolution` with standardized-apart multiset
+  matching and exact target-literal deletion
 - `factoring` over same-polarity predicate literals
 - bounded `equality_resolution`
 - bounded `demodulation` from cited positive unit equalities
 - bounded `superposition` into a cited target clause
 
-Skolemization involving existential elimination, definitions, equality
-factoring, AVATAR, CWA, and multi-clause CNF transformations remain
-inconclusive until their kernel rules are implemented.
+Multi-parent Skolemization, equality factoring, general AVATAR SAT certificates,
+and multi-clause CNF transformations remain inconclusive until their kernel
+rules are implemented. CWA-style splits are accepted only through the explicit
+case-split certificate described below.
 
 ## 6. Case-Split Requirement
 
-AVATAR and CWA may not be represented as ordinary parent entailments. A future
+CWA and AVATAR may not be represented as ordinary parent entailments. A
 case-split certificate must contain:
 
 1. the original disjunctive clause;
@@ -121,6 +124,8 @@ Resource exhaustion is never positive proof evidence. The kernel returns
 - maximum parent count
 - maximum clause literals
 - maximum term depth
+- maximum subsumption matching steps
+- maximum Skolemization matching steps
 
 Limits are explicit inputs to the kernel and are recorded in strict-mode
 telemetry.
