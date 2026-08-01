@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use mrs_core::{Atom, Formula, SymbolTable, Term, VarId};
+use mrs_core::{Atom, Formula, Substitution, SymbolTable, Term, VarId};
 use mrs_tptp::ast::common::{AtomicWord, GeneralTerm};
 use mrs_tptp::proover::ParentRef;
 use mrs_tptp::{AnnotatedFormula, BinaryConnective, CNFFormula, CNFLiteral, CNFStatement};
@@ -162,6 +162,7 @@ pub fn verify_strict_with_source(
     }
     let mut branch_contexts: HashMap<usize, BranchContext> = HashMap::new();
     let mut defined_symbols = HashSet::new();
+    let mut skolem_axioms: HashMap<usize, OwnedSkolemAxiom> = HashMap::new();
 
     let mut problem_names = HashSet::with_capacity(problem.formulas.len());
     for formula in &problem.formulas {
@@ -183,10 +184,12 @@ pub fn verify_strict_with_source(
     }
 
     let mut known_function_symbols: HashSet<String> = HashSet::new();
+    let mut known_non_skolem_function_symbols: HashSet<String> = HashSet::new();
     let mut known_symbols: HashSet<String> = HashSet::new();
     let mut signatures = HashMap::new();
     for formula in &problem.formulas {
         collect_function_symbols(formula, &mut known_function_symbols);
+        collect_function_symbols(formula, &mut known_non_skolem_function_symbols);
         collect_all_symbols(formula, &mut known_symbols);
         if formula.role() != FormulaRole::Type {
             let lowered = match lower_annotated(&mut symbols, formula, limits) {
@@ -226,6 +229,7 @@ pub fn verify_strict_with_source(
             match verify_leaf(node, problem, expected_source, &mut symbols, limits) {
                 Ok(()) => {
                     collect_function_symbols(node.formula, &mut known_function_symbols);
+                    collect_function_symbols(node.formula, &mut known_non_skolem_function_symbols);
                     collect_all_symbols(node.formula, &mut known_symbols);
                     continue;
                 }
@@ -237,12 +241,40 @@ pub fn verify_strict_with_source(
             if let Some(annotations) = node.formula.annotations()
                 && is_introduced_definition(annotations)
             {
-                let outcome =
-                    verify_definition(node, annotations, &known_symbols, &mut defined_symbols);
+                let outcome = if is_skolem_symbol_introduction(annotations) {
+                    match extract_skolem_axiom(
+                        conclusion,
+                        &symbols,
+                        &known_non_skolem_function_symbols,
+                        limits,
+                    ) {
+                        Ok(axiom) => {
+                            let declared: HashSet<_> = annotations
+                                .new_symbols()
+                                .into_iter()
+                                .filter_map(|name| symbols.resolve_name(name))
+                                .collect();
+                            if !declared.is_empty() && declared != axiom.fresh_symbols {
+                                return KernelVerdict::Rejected(format!(
+                                    "Skolem axiom `{}` declaration does not match its fresh symbols",
+                                    node.name
+                                ));
+                            }
+                            skolem_axioms.insert(idx, axiom);
+                            KernelVerdict::Certified
+                        }
+                        Err(verdict) => verdict,
+                    }
+                } else {
+                    verify_definition(node, annotations, &known_symbols, &mut defined_symbols)
+                };
                 if !matches!(outcome, KernelVerdict::Certified) {
                     return outcome;
                 }
                 collect_function_symbols(node.formula, &mut known_function_symbols);
+                if !is_skolem_symbol_introduction(annotations) {
+                    collect_function_symbols(node.formula, &mut known_non_skolem_function_symbols);
+                }
                 continue;
             }
             return KernelVerdict::Inconclusive(format!(
@@ -307,8 +339,12 @@ pub fn verify_strict_with_source(
                 &parent_indices,
                 &parents,
                 conclusion,
-                &known_function_symbols,
-                limits,
+                SkolemVerificationContext {
+                    symbols: &symbols,
+                    known_function_symbols: &known_function_symbols,
+                    skolem_axioms: &skolem_axioms,
+                    limits,
+                },
             ),
             "cnf_transformation" => verify_cnf_transformation(
                 node.name,
@@ -383,6 +419,9 @@ pub fn verify_strict_with_source(
             }
         }
         collect_function_symbols(node.formula, &mut known_function_symbols);
+        if rule != "skolemisation" {
+            collect_function_symbols(node.formula, &mut known_non_skolem_function_symbols);
+        }
         collect_all_symbols(node.formula, &mut known_symbols);
     }
 
@@ -527,6 +566,20 @@ fn is_introduced_definition(annotations: &mrs_tptp::Annotations<'_>) -> bool {
                 | GeneralTerm::Word(AtomicWord::SingleQuoted("definition"))
         )
     })
+}
+
+fn is_skolem_symbol_introduction(annotations: &mrs_tptp::Annotations<'_>) -> bool {
+    let GeneralTerm::Function(AtomicWord::Lower("introduced"), args) = &annotations.source else {
+        return false;
+    };
+    matches!(
+        args.get(2),
+        Some(GeneralTerm::List(items)) if items.iter().any(|item| matches!(
+            item,
+            GeneralTerm::Word(AtomicWord::Lower("skolem_symbol_introduction"))
+                | GeneralTerm::Word(AtomicWord::SingleQuoted("skolem_symbol_introduction"))
+        ))
+    )
 }
 
 fn declared_definition_symbol<'a>(annotations: &'a mrs_tptp::Annotations<'a>) -> Option<&'a str> {
@@ -1746,9 +1799,35 @@ fn verify_skolemisation(
     parent_indices: &[usize],
     parents: &[Formula],
     conclusion: &Formula,
-    known_function_symbols: &HashSet<String>,
-    limits: VerificationLimits,
+    context: SkolemVerificationContext<'_>,
 ) -> KernelVerdict {
+    let SkolemVerificationContext {
+        symbols,
+        known_function_symbols,
+        skolem_axioms,
+        limits,
+    } = context;
+    let declared_symbols = node
+        .formula
+        .annotations()
+        .map(|annotations| annotations.new_symbols())
+        .unwrap_or_default();
+    if parent_indices.len() > 1 && parents.len() > 1 {
+        return verify_multi_parent_skolemisation(
+            node,
+            parent_indices,
+            parents,
+            conclusion,
+            symbols,
+            skolem_axioms,
+            limits,
+        );
+    }
+    if !declared_symbols.is_empty() {
+        return KernelVerdict::Rejected(
+            "Skolemization with declared new symbols must cite its Skolem axioms".into(),
+        );
+    }
     if parent_indices.len() != 1 || parents.len() != 1 {
         return KernelVerdict::Inconclusive(
             "strict kernel currently supports single-parent Skolemization".into(),
@@ -1802,6 +1881,774 @@ fn verify_skolemisation(
         ));
     }
     KernelVerdict::Certified
+}
+
+struct SkolemVerificationContext<'a> {
+    symbols: &'a SymbolTable,
+    known_function_symbols: &'a HashSet<String>,
+    skolem_axioms: &'a HashMap<usize, OwnedSkolemAxiom>,
+    limits: VerificationLimits,
+}
+
+#[derive(Clone)]
+struct OwnedSkolemAxiom {
+    universals: Vec<VarId>,
+    existentials: Vec<VarId>,
+    antecedent: Formula,
+    consequent: Formula,
+    fresh_symbols: HashSet<mrs_core::SymbolId>,
+}
+
+fn extract_skolem_axiom(
+    formula: &Formula,
+    symbols: &SymbolTable,
+    known_function_symbols: &HashSet<String>,
+    limits: VerificationLimits,
+) -> Result<OwnedSkolemAxiom, KernelVerdict> {
+    if formula_size(formula) > limits.max_formula_nodes {
+        return Err(KernelVerdict::Inconclusive(
+            "Skolem axiom exceeds strict formula-size limit".into(),
+        ));
+    }
+    let (universals, body) = leading_foralls_owned(formula);
+    let Formula::Implies(left, right) = body else {
+        return Err(KernelVerdict::Inconclusive(
+            "Skolem axiom must be an implication".into(),
+        ));
+    };
+    let (existentials, antecedent) = leading_exists_owned(&left);
+    if existentials.is_empty() {
+        return Err(KernelVerdict::Inconclusive(
+            "Skolem axiom has no existential antecedent".into(),
+        ));
+    }
+
+    let allowed_antecedent_vars = universals
+        .iter()
+        .chain(&existentials)
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    let allowed_consequent_vars = universals
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    if !antecedent
+        .free_vars()
+        .iter()
+        .all(|var| allowed_antecedent_vars.contains(var))
+        || !right
+            .free_vars()
+            .iter()
+            .all(|var| allowed_consequent_vars.contains(var))
+    {
+        return Err(KernelVerdict::Rejected(
+            "Skolem axiom contains variables outside its declared scope".into(),
+        ));
+    }
+
+    let antecedent_symbols = formula_function_symbols(&antecedent);
+    let consequent_symbols = formula_function_symbols(&right);
+    let fresh_symbols: HashSet<_> = consequent_symbols
+        .difference(&antecedent_symbols)
+        .copied()
+        .collect();
+    if fresh_symbols.len() != existentials.len() || fresh_symbols.is_empty() {
+        return Err(KernelVerdict::Rejected(
+            "Skolem axiom must introduce one fresh function per existential".into(),
+        ));
+    }
+    if fresh_symbols
+        .iter()
+        .any(|symbol| known_function_symbols.contains(symbols.resolve(*symbol)))
+    {
+        return Err(KernelVerdict::Rejected(
+            "Skolem axiom reuses a problem function symbol".into(),
+        ));
+    }
+
+    let universals_set = universals.iter().copied().collect::<HashSet<_>>();
+    let existentials_set = existentials.iter().copied().collect::<HashSet<_>>();
+    let mut state = AxiomMatch::default();
+    let mut universal_map = universals
+        .iter()
+        .copied()
+        .map(|var| (var, var))
+        .collect::<HashMap<_, _>>();
+    if !match_axiom_formula(
+        &antecedent,
+        &right,
+        &universals_set,
+        &existentials_set,
+        &mut universal_map,
+        &mut state,
+    ) {
+        return Err(KernelVerdict::Rejected(
+            "Skolem axiom consequent does not preserve its matrix".into(),
+        ));
+    }
+    if state
+        .universal_terms
+        .iter()
+        .any(|(var, term)| term != &Term::Var(*universal_map.get(var).unwrap_or(var)))
+    {
+        return Err(KernelVerdict::Rejected(
+            "Skolem axiom consequent changes its universal matrix variables".into(),
+        ));
+    }
+    if state.existential_terms.len() != existentials.len()
+        || state.existential_terms.values().any(|term| {
+            let Some((symbol, args)) = function_application(term) else {
+                return true;
+            };
+            if !fresh_symbols.contains(&symbol) || args.len() != universals.len() {
+                return true;
+            }
+            args.iter()
+                .zip(&universals)
+                .any(|(arg, universal)| !matches!(arg, Term::Var(var) if var == universal))
+        })
+    {
+        return Err(KernelVerdict::Rejected(
+            "Skolem axiom witness has invalid symbol, arity, or scope".into(),
+        ));
+    }
+    Ok(OwnedSkolemAxiom {
+        universals,
+        existentials,
+        antecedent,
+        consequent: *right,
+        fresh_symbols,
+    })
+}
+
+fn verify_multi_parent_skolemisation(
+    node: &Node<'_>,
+    parent_indices: &[usize],
+    parents: &[Formula],
+    conclusion: &Formula,
+    symbols: &SymbolTable,
+    skolem_axioms: &HashMap<usize, OwnedSkolemAxiom>,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    let Some(annotations) = node.formula.annotations() else {
+        return KernelVerdict::Inconclusive("multi-parent Skolemization has no annotations".into());
+    };
+    let declared = annotations
+        .new_symbols()
+        .into_iter()
+        .filter_map(|symbol| symbols.resolve_name(symbol))
+        .collect::<HashSet<_>>();
+    if declared.is_empty() {
+        return KernelVerdict::Inconclusive(
+            "multi-parent Skolemization must declare new Skolem symbols".into(),
+        );
+    }
+    let sources = parent_indices
+        .iter()
+        .enumerate()
+        .filter_map(|(position, index)| (!skolem_axioms.contains_key(index)).then_some(position))
+        .collect::<Vec<_>>();
+    if sources.len() != 1 {
+        return KernelVerdict::Inconclusive(
+            "multi-parent Skolemization requires exactly one source parent".into(),
+        );
+    }
+    let source_position = sources[0];
+    let mut axiom_ids = parent_indices
+        .iter()
+        .enumerate()
+        .filter_map(|(position, index)| (position != source_position).then_some(*index))
+        .collect::<Vec<_>>();
+    if axiom_ids.is_empty() {
+        return KernelVerdict::Inconclusive(
+            "multi-parent Skolemization requires at least one Skolem axiom".into(),
+        );
+    }
+    let mut union = HashSet::new();
+    for id in &axiom_ids {
+        let Some(axiom) = skolem_axioms.get(id) else {
+            return KernelVerdict::Inconclusive("Skolem axiom parent was not validated".into());
+        };
+        union.extend(axiom.fresh_symbols.iter().copied());
+    }
+    if union != declared {
+        return KernelVerdict::Rejected(
+            "multi-parent Skolemization declaration does not match axiom symbols".into(),
+        );
+    }
+
+    let mut current = parents[source_position].clone();
+    let mut steps = 0;
+    let mut exhausted = false;
+    while !axiom_ids.is_empty() {
+        let mut progressed = false;
+        let mut remaining = Vec::new();
+        for id in axiom_ids {
+            let axiom = skolem_axioms.get(&id).expect("validated axiom parent");
+            if let Some(rewritten) =
+                apply_owned_skolem_axiom(&current, axiom, limits, &mut steps, &mut exhausted)
+            {
+                current = rewritten;
+                progressed = true;
+            } else {
+                remaining.push(id);
+            }
+        }
+        if !progressed {
+            if exhausted {
+                return KernelVerdict::Inconclusive(
+                    "multi-parent Skolemization exceeded strict matching-step limit".into(),
+                );
+            }
+            return KernelVerdict::Rejected(format!(
+                "multi-parent Skolemization node `{}` cannot apply all cited axioms",
+                node.name
+            ));
+        }
+        axiom_ids = remaining;
+    }
+    if alpha_equiv(&current, conclusion) {
+        KernelVerdict::Certified
+    } else {
+        KernelVerdict::Rejected(format!(
+            "multi-parent Skolemization node `{}` conclusion mismatch",
+            node.name
+        ))
+    }
+}
+
+fn apply_owned_skolem_axiom(
+    formula: &Formula,
+    axiom: &OwnedSkolemAxiom,
+    limits: VerificationLimits,
+    steps: &mut usize,
+    exhausted: &mut bool,
+) -> Option<Formula> {
+    let shift = max_formula_var(formula)
+        .max(max_formula_var(&axiom.consequent))
+        .max(max_formula_var(&axiom.antecedent))
+        .saturating_add(1);
+    let axiom = shift_owned_axiom(axiom, shift);
+    apply_owned_skolem_axiom_walk(formula, &axiom, steps, limits.max_skolem_steps, exhausted)
+}
+
+fn apply_owned_skolem_axiom_walk(
+    formula: &Formula,
+    axiom: &OwnedSkolemAxiom,
+    steps: &mut usize,
+    limit: usize,
+    exhausted: &mut bool,
+) -> Option<Formula> {
+    *steps += 1;
+    if *steps > limit {
+        *exhausted = true;
+        return None;
+    }
+    let (target_existentials, target_body) = leading_exists_owned(formula);
+    if target_existentials.len() == axiom.existentials.len() {
+        let mut existential_map = HashMap::new();
+        for (pattern, target) in axiom.existentials.iter().zip(&target_existentials) {
+            existential_map.insert(*pattern, *target);
+        }
+        let mut state = AxiomMatch::default();
+        let universals = axiom.universals.iter().copied().collect::<HashSet<_>>();
+        let existentials = axiom.existentials.iter().copied().collect::<HashSet<_>>();
+        if match_axiom_formula(
+            &axiom.antecedent,
+            &target_body,
+            &universals,
+            &existentials,
+            &mut existential_map,
+            &mut state,
+        ) && state.universal_terms.len() == axiom.universals.len()
+            && state
+                .existential_terms
+                .iter()
+                .all(|(pattern, term)| matches!(term, Term::Var(var) if existential_map.get(pattern) == Some(var)))
+        {
+            let mut substitution = Substitution::new();
+            for (var, term) in state.universal_terms {
+                substitution.bind(var, term);
+            }
+            return Some(substitution.apply_formula(&axiom.consequent));
+        }
+    }
+
+    match formula {
+        Formula::Neg(inner) => Some(Formula::neg(apply_owned_skolem_axiom_walk(
+            inner, axiom, steps, limit, exhausted,
+        )?)),
+        Formula::And(parts) => rewrite_owned_children(parts, axiom, steps, limit, exhausted, true),
+        Formula::Or(parts) => rewrite_owned_children(parts, axiom, steps, limit, exhausted, false),
+        Formula::Implies(left, right) => {
+            if let Some(left) = apply_owned_skolem_axiom_walk(left, axiom, steps, limit, exhausted)
+            {
+                Some(Formula::implies(left, (**right).clone()))
+            } else {
+                Some(Formula::implies(
+                    (**left).clone(),
+                    apply_owned_skolem_axiom_walk(right, axiom, steps, limit, exhausted)?,
+                ))
+            }
+        }
+        Formula::Iff(left, right) => {
+            if let Some(left) = apply_owned_skolem_axiom_walk(left, axiom, steps, limit, exhausted)
+            {
+                Some(Formula::iff(left, (**right).clone()))
+            } else {
+                Some(Formula::iff(
+                    (**left).clone(),
+                    apply_owned_skolem_axiom_walk(right, axiom, steps, limit, exhausted)?,
+                ))
+            }
+        }
+        Formula::Forall(var, body) => Some(Formula::forall(
+            *var,
+            apply_owned_skolem_axiom_walk(body, axiom, steps, limit, exhausted)?,
+        )),
+        Formula::Exists(var, body) => Some(Formula::exists(
+            *var,
+            apply_owned_skolem_axiom_walk(body, axiom, steps, limit, exhausted)?,
+        )),
+        Formula::Atom(_) | Formula::True | Formula::False => None,
+    }
+}
+
+fn rewrite_owned_children(
+    parts: &[Formula],
+    axiom: &OwnedSkolemAxiom,
+    steps: &mut usize,
+    limit: usize,
+    exhausted: &mut bool,
+    conjunction: bool,
+) -> Option<Formula> {
+    for index in 0..parts.len() {
+        if let Some(rewritten) =
+            apply_owned_skolem_axiom_walk(&parts[index], axiom, steps, limit, exhausted)
+        {
+            let mut next = parts.to_vec();
+            next[index] = rewritten;
+            return Some(if conjunction {
+                Formula::And(next)
+            } else {
+                Formula::Or(next)
+            });
+        }
+    }
+    None
+}
+
+fn leading_foralls_owned(formula: &Formula) -> (Vec<VarId>, Formula) {
+    let mut vars = Vec::new();
+    let mut current = formula.clone();
+    while let Formula::Forall(var, body) = current {
+        vars.push(var);
+        current = *body;
+    }
+    (vars, current)
+}
+
+fn leading_exists_owned(formula: &Formula) -> (Vec<VarId>, Formula) {
+    let mut vars = Vec::new();
+    let mut current = formula.clone();
+    while let Formula::Exists(var, body) = current {
+        vars.push(var);
+        current = *body;
+    }
+    (vars, current)
+}
+
+fn max_formula_var(formula: &Formula) -> VarId {
+    fn visit_term(term: &Term, max: &mut VarId) {
+        match term {
+            Term::Var(var) => *max = (*max).max(*var),
+            Term::App(_, args) => args.iter().for_each(|arg| visit_term(arg, max)),
+        }
+    }
+    fn visit(formula: &Formula, max: &mut VarId) {
+        match formula {
+            Formula::Atom(Atom::Pred(_, args)) => args.iter().for_each(|arg| visit_term(arg, max)),
+            Formula::Atom(Atom::Eq(left, right)) => {
+                visit_term(left, max);
+                visit_term(right, max);
+            }
+            Formula::Neg(inner) | Formula::Forall(_, inner) | Formula::Exists(_, inner) => {
+                visit(inner, max)
+            }
+            Formula::And(parts) | Formula::Or(parts) => {
+                parts.iter().for_each(|part| visit(part, max))
+            }
+            Formula::Implies(left, right) | Formula::Iff(left, right) => {
+                visit(left, max);
+                visit(right, max);
+            }
+            Formula::True | Formula::False => {}
+        }
+    }
+    let mut max = 0;
+    visit(formula, &mut max);
+    max
+}
+
+fn shift_owned_axiom(axiom: &OwnedSkolemAxiom, shift: VarId) -> OwnedSkolemAxiom {
+    OwnedSkolemAxiom {
+        universals: axiom
+            .universals
+            .iter()
+            .map(|var| var.saturating_add(shift))
+            .collect(),
+        existentials: axiom
+            .existentials
+            .iter()
+            .map(|var| var.saturating_add(shift))
+            .collect(),
+        antecedent: shift_formula(&axiom.antecedent, shift),
+        consequent: shift_formula(&axiom.consequent, shift),
+        fresh_symbols: axiom.fresh_symbols.clone(),
+    }
+}
+
+fn shift_formula(formula: &Formula, shift: VarId) -> Formula {
+    match formula {
+        Formula::Atom(Atom::Pred(symbol, args)) => Formula::atom(Atom::Pred(
+            *symbol,
+            args.iter()
+                .map(|arg| shift_owned_term(arg, shift))
+                .collect(),
+        )),
+        Formula::Atom(Atom::Eq(left, right)) => Formula::atom(Atom::Eq(
+            shift_owned_term(left, shift),
+            shift_owned_term(right, shift),
+        )),
+        Formula::Neg(inner) => Formula::neg(shift_formula(inner, shift)),
+        Formula::And(parts) => Formula::And(
+            parts
+                .iter()
+                .map(|part| shift_formula(part, shift))
+                .collect(),
+        ),
+        Formula::Or(parts) => Formula::Or(
+            parts
+                .iter()
+                .map(|part| shift_formula(part, shift))
+                .collect(),
+        ),
+        Formula::Implies(left, right) => {
+            Formula::implies(shift_formula(left, shift), shift_formula(right, shift))
+        }
+        Formula::Iff(left, right) => {
+            Formula::iff(shift_formula(left, shift), shift_formula(right, shift))
+        }
+        Formula::Forall(var, body) => {
+            Formula::forall(var.saturating_add(shift), shift_formula(body, shift))
+        }
+        Formula::Exists(var, body) => {
+            Formula::exists(var.saturating_add(shift), shift_formula(body, shift))
+        }
+        Formula::True => Formula::True,
+        Formula::False => Formula::False,
+    }
+}
+
+fn shift_owned_term(term: &Term, shift: VarId) -> Term {
+    match term {
+        Term::Var(var) => Term::Var(var.saturating_add(shift)),
+        Term::App(symbol, args) => Term::App(
+            *symbol,
+            args.iter()
+                .map(|arg| shift_owned_term(arg, shift))
+                .collect(),
+        ),
+    }
+}
+
+fn formula_function_symbols(formula: &Formula) -> HashSet<mrs_core::SymbolId> {
+    fn visit_term(value: &Term, symbols: &mut HashSet<mrs_core::SymbolId>) {
+        if let Term::App(symbol, args) = value {
+            symbols.insert(*symbol);
+            for arg in args {
+                visit_term(arg, symbols);
+            }
+        }
+    }
+    fn visit(formula: &Formula, symbols: &mut HashSet<mrs_core::SymbolId>) {
+        match formula {
+            Formula::Atom(Atom::Pred(_, args)) => {
+                for arg in args {
+                    visit_term(arg, symbols);
+                }
+            }
+            Formula::Atom(Atom::Eq(left, right)) => {
+                visit_term(left, symbols);
+                visit_term(right, symbols);
+            }
+            Formula::Neg(inner) | Formula::Forall(_, inner) | Formula::Exists(_, inner) => {
+                visit(inner, symbols)
+            }
+            Formula::And(parts) | Formula::Or(parts) => {
+                for part in parts {
+                    visit(part, symbols);
+                }
+            }
+            Formula::Implies(left, right) | Formula::Iff(left, right) => {
+                visit(left, symbols);
+                visit(right, symbols);
+            }
+            Formula::True | Formula::False => {}
+        }
+    }
+    let mut symbols = HashSet::new();
+    visit(formula, &mut symbols);
+    symbols
+}
+
+fn function_application(term: &Term) -> Option<(mrs_core::SymbolId, &[Term])> {
+    match term {
+        Term::App(symbol, args) => Some((*symbol, args)),
+        Term::Var(_) => None,
+    }
+}
+
+#[derive(Clone, Default)]
+struct AxiomMatch {
+    existential_terms: HashMap<VarId, Term>,
+    universal_terms: HashMap<VarId, Term>,
+}
+
+fn match_axiom_formula(
+    pattern: &Formula,
+    target: &Formula,
+    universals: &HashSet<VarId>,
+    existentials: &HashSet<VarId>,
+    universal_map: &mut HashMap<VarId, VarId>,
+    state: &mut AxiomMatch,
+) -> bool {
+    match (pattern, target) {
+        (Formula::Atom(left), Formula::Atom(right)) => {
+            match_axiom_atom(left, right, universals, existentials, universal_map, state)
+        }
+        (Formula::Neg(left), Formula::Neg(right)) => {
+            match_axiom_formula(left, right, universals, existentials, universal_map, state)
+        }
+        (Formula::And(left), Formula::And(right)) | (Formula::Or(left), Formula::Or(right)) => {
+            left.len() == right.len()
+                && left.iter().zip(right).all(|(left, right)| {
+                    match_axiom_formula(left, right, universals, existentials, universal_map, state)
+                })
+        }
+        (Formula::Implies(left_a, left_b), Formula::Implies(right_a, right_b))
+        | (Formula::Iff(left_a, left_b), Formula::Iff(right_a, right_b)) => {
+            match_axiom_formula(
+                left_a,
+                right_a,
+                universals,
+                existentials,
+                universal_map,
+                state,
+            ) && match_axiom_formula(
+                left_b,
+                right_b,
+                universals,
+                existentials,
+                universal_map,
+                state,
+            )
+        }
+        (Formula::Forall(..), Formula::Forall(..)) | (Formula::Exists(..), Formula::Exists(..)) => {
+            let (left_forall, left_vars, left_body) = quantifier_block(pattern);
+            let (right_forall, right_vars, right_body) = quantifier_block(target);
+            let mut context = AxiomMatchContext {
+                universals,
+                existentials,
+                universal_map: universal_map.clone(),
+                state: state.clone(),
+            };
+            left_forall == right_forall
+                && left_vars.len() == right_vars.len()
+                && match_axiom_quantifier_binders(
+                    &left_vars,
+                    &right_vars,
+                    left_body,
+                    right_body,
+                    &mut context,
+                )
+                && {
+                    *universal_map = context.universal_map;
+                    *state = context.state;
+                    true
+                }
+        }
+        (Formula::True, Formula::True) | (Formula::False, Formula::False) => true,
+        _ => false,
+    }
+}
+
+struct AxiomMatchContext<'a> {
+    universals: &'a HashSet<VarId>,
+    existentials: &'a HashSet<VarId>,
+    universal_map: HashMap<VarId, VarId>,
+    state: AxiomMatch,
+}
+
+fn quantifier_block(formula: &Formula) -> (bool, Vec<VarId>, &Formula) {
+    let mut current = formula;
+    let forall = matches!(current, Formula::Forall(_, _));
+    let mut vars = Vec::new();
+    loop {
+        match (forall, current) {
+            (true, Formula::Forall(var, body)) | (false, Formula::Exists(var, body)) => {
+                vars.push(*var);
+                current = body;
+            }
+            _ => return (forall, vars, current),
+        }
+    }
+}
+
+fn match_axiom_quantifier_binders(
+    left_vars: &[VarId],
+    right_vars: &[VarId],
+    left_body: &Formula,
+    right_body: &Formula,
+    context: &mut AxiomMatchContext<'_>,
+) -> bool {
+    fn visit(
+        index: usize,
+        left_vars: &[VarId],
+        right_vars: &[VarId],
+        left_body: &Formula,
+        right_body: &Formula,
+        context: &mut AxiomMatchContext<'_>,
+        used: &mut [bool],
+    ) -> bool {
+        if index == left_vars.len() {
+            return match_axiom_formula(
+                left_body,
+                right_body,
+                context.universals,
+                context.existentials,
+                &mut context.universal_map,
+                &mut context.state,
+            );
+        }
+        for target_index in 0..right_vars.len() {
+            if used[target_index] {
+                continue;
+            }
+            used[target_index] = true;
+            let mut candidate = AxiomMatchContext {
+                universals: context.universals,
+                existentials: context.existentials,
+                universal_map: context.universal_map.clone(),
+                state: context.state.clone(),
+            };
+            candidate
+                .universal_map
+                .insert(left_vars[index], right_vars[target_index]);
+            if visit(
+                index + 1,
+                left_vars,
+                right_vars,
+                left_body,
+                right_body,
+                &mut candidate,
+                used,
+            ) {
+                *context = candidate;
+                return true;
+            }
+            used[target_index] = false;
+        }
+        false
+    }
+
+    let mut used = vec![false; right_vars.len()];
+    visit(
+        0, left_vars, right_vars, left_body, right_body, context, &mut used,
+    )
+}
+
+fn match_axiom_atom(
+    pattern: &Atom,
+    target: &Atom,
+    universals: &HashSet<VarId>,
+    existentials: &HashSet<VarId>,
+    universal_map: &mut HashMap<VarId, VarId>,
+    state: &mut AxiomMatch,
+) -> bool {
+    match (pattern, target) {
+        (Atom::Pred(left_symbol, left_args), Atom::Pred(right_symbol, right_args)) => {
+            left_symbol == right_symbol
+                && left_args.len() == right_args.len()
+                && left_args.iter().zip(right_args).all(|(left, right)| {
+                    match_axiom_term(left, right, universals, existentials, universal_map, state)
+                })
+        }
+        (Atom::Eq(left_a, left_b), Atom::Eq(right_a, right_b)) => {
+            match_axiom_term(
+                left_a,
+                right_a,
+                universals,
+                existentials,
+                universal_map,
+                state,
+            ) && match_axiom_term(
+                left_b,
+                right_b,
+                universals,
+                existentials,
+                universal_map,
+                state,
+            )
+        }
+        _ => false,
+    }
+}
+
+fn match_axiom_term(
+    pattern: &Term,
+    target: &Term,
+    universals: &HashSet<VarId>,
+    existentials: &HashSet<VarId>,
+    universal_map: &mut HashMap<VarId, VarId>,
+    state: &mut AxiomMatch,
+) -> bool {
+    match pattern {
+        Term::Var(var) if existentials.contains(var) => {
+            if let Some(previous) = state.existential_terms.get(var) {
+                previous == target
+            } else {
+                state.existential_terms.insert(*var, target.clone());
+                true
+            }
+        }
+        Term::Var(var) if universals.contains(var) => {
+            if let Some(previous) = state.universal_terms.get(var) {
+                previous == target
+            } else {
+                state.universal_terms.insert(*var, target.clone());
+                true
+            }
+        }
+        Term::Var(var) => target == &Term::Var(*universal_map.get(var).unwrap_or(var)),
+        Term::App(symbol, args) => match target {
+            Term::App(target_symbol, target_args) => {
+                symbol == target_symbol
+                    && args.len() == target_args.len()
+                    && args.iter().zip(target_args).all(|(left, right)| {
+                        match_axiom_term(
+                            left,
+                            right,
+                            universals,
+                            existentials,
+                            universal_map,
+                            state,
+                        )
+                    })
+            }
+            Term::Var(_) => false,
+        },
+    }
 }
 
 fn collect_function_symbols(formula: &AnnotatedFormula<'_>, symbols: &mut HashSet<String>) {
@@ -4576,6 +5423,134 @@ mod tests {
                      fof(n, axiom, ![X] : ![Y] : ~(p(X, Y)), file('problem.p', n)).\n\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [s,n])).";
         assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn certifies_vampire_dependent_multi_parent_skolemization() {
+        let problem = "fof(source, axiom, ?[X] : (p(X) | ?[Y] : r(X, Y))).\n\
+                       fof(np, axiom, ![X] : ~p(X)).\n\
+                       fof(nr, axiom, ![X,Y] : ~r(X, Y)).";
+        let proof = "fof(source, axiom, ?[X] : (p(X) | ?[Y] : r(X, Y)), file('problem.p', source)).\
+                     fof(ax_outer, plain,\
+                         ((? [X] : (p(X) | ? [Y] : r(X, Y)))\
+                          => (p(sk0) | ? [Y] : r(sk0, Y))),\
+                         introduced(definition, [], [skolem_symbol_introduction])).\
+                     fof(ax_inner, plain,\
+                         ((? [Y] : r(sk0, Y)) => r(sk0, sk1)),\
+                         introduced(definition, [], [skolem_symbol_introduction])).\
+                     fof(step, plain, (p(sk0) | r(sk0, sk1)),\
+                         inference(skolemisation,\
+                                   [status(esa), new_symbols(skolem, [sk0, sk1])],\
+                                   [source, ax_inner, ax_outer])).\
+                     fof(np, axiom, ![X] : ~p(X), file('problem.p', np)).\
+                     fof(nr, axiom, ![X,Y] : ~r(X, Y), file('problem.p', nr)).\
+                      fof(mid, plain, r(sk0, sk1), inference(resolution, [status(thm)], [step, np])).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [mid, nr])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_multi_existential_skolem_axiom() {
+        let problem = "fof(source, axiom, ?[X] : ?[Y] : (p(X) | q(Y))).\n\
+                       fof(np, axiom, ![X] : ~p(X)).\n\
+                       fof(nq, axiom, ![X] : ~q(X)).";
+        let proof = "fof(source, axiom, ?[X] : ?[Y] : (p(X) | q(Y)), file('problem.p', source)).\
+                     fof(ax, plain,\
+                         ((? [X] : ? [Y] : (p(X) | q(Y))) => (p(sk0) | q(sk1))),\
+                         introduced(definition, [], [skolem_symbol_introduction])).\
+                     fof(step, plain, (p(sk0) | q(sk1)),\
+                         inference(skolemisation,\
+                                   [status(esa), new_symbols(skolem, [sk0, sk1])],\
+                                   [source, ax])).\
+                     fof(np, axiom, ![X] : ~p(X), file('problem.p', np)).\
+                     fof(nq, axiom, ![X] : ~q(X), file('problem.p', nq)).\
+                     fof(mid, plain, q(sk1), inference(resolution, [status(thm)], [step, np])).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [mid, nq])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_forged_multi_parent_skolemization_conclusion() {
+        let problem = "fof(source, axiom, ?[X] : (p(X) & ?[Y] : r(X, Y))).";
+        let proof = "fof(source, axiom, ?[X] : (p(X) & ?[Y] : r(X, Y)), file('problem.p', source)).\
+                     fof(ax_outer, plain,\
+                         ((? [X] : (p(X) & ? [Y] : r(X, Y)))\
+                          => (p(sk0) & ? [Y] : r(sk0, Y))),\
+                         introduced(definition, [], [skolem_symbol_introduction])).\
+                     fof(ax_inner, plain,\
+                         ((? [Y] : r(sk0, Y)) => r(sk0, sk1)),\
+                         introduced(definition, [], [skolem_symbol_introduction])).\
+                     fof(step, plain, (p(sk0) & q(sk1)),\
+                         inference(skolemisation,\
+                                   [status(esa), new_symbols(skolem, [sk0, sk1])],\
+                                   [source, ax_outer, ax_inner])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn rejects_multi_parent_skolemization_with_omitted_axiom() {
+        let problem = "fof(source, axiom, ?[X] : (p(X) & ?[Y] : r(X, Y))).";
+        let proof = "fof(source, axiom, ?[X] : (p(X) & ?[Y] : r(X, Y)), file('problem.p', source)).\
+                     fof(ax_outer, plain,\
+                         ((? [X] : (p(X) & ? [Y] : r(X, Y)))\
+                          => (p(sk0) & ? [Y] : r(sk0, Y))),\
+                         introduced(definition, [], [skolem_symbol_introduction])).\
+                     fof(step, plain, (p(sk0) & r(sk0, sk1)),\
+                         inference(skolemisation,\
+                                   [status(esa), new_symbols(skolem, [sk0, sk1])],\
+                                   [source, ax_outer])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn rejects_multi_parent_skolemization_with_wrong_declaration() {
+        let problem = "fof(source, axiom, ?[X] : (p(X) & ?[Y] : r(X, Y))).";
+        let proof = "fof(source, axiom, ?[X] : (p(X) & ?[Y] : r(X, Y)), file('problem.p', source)).\
+                     fof(ax_outer, plain,\
+                         ((? [X] : (p(X) & ? [Y] : r(X, Y)))\
+                          => (p(sk0) & ? [Y] : r(sk0, Y))),\
+                         introduced(definition, [], [skolem_symbol_introduction])).\
+                     fof(ax_inner, plain,\
+                         ((? [Y] : r(sk0, Y)) => r(sk0, sk1)),\
+                         introduced(definition, [], [skolem_symbol_introduction])).\
+                     fof(step, plain, (p(sk0) & r(sk0, sk1)),\
+                         inference(skolemisation,\
+                                   [status(esa), new_symbols(skolem, [sk0])],\
+                                   [source, ax_outer, ax_inner])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn multi_parent_skolemization_matching_limit_is_inconclusive() {
+        let problem = "fof(source, axiom, ?[X] : (p(X) & ?[Y] : r(X, Y))).\n\
+                       fof(np, axiom, ![X] : ~p(X)).\n\
+                       fof(nr, axiom, ![X,Y] : ~r(X, Y)).";
+        let proof = "fof(source, axiom, ?[X] : (p(X) & ?[Y] : r(X, Y)), file('problem.p', source)).\
+                     fof(ax_outer, plain,\
+                         ((? [X] : (p(X) & ? [Y] : r(X, Y)))\
+                          => (p(sk0) & ? [Y] : r(sk0, Y))),\
+                         introduced(definition, [], [skolem_symbol_introduction])).\
+                     fof(ax_inner, plain,\
+                         ((? [Y] : r(sk0, Y)) => r(sk0, sk1)),\
+                         introduced(definition, [], [skolem_symbol_introduction])).\
+                     fof(step, plain, (p(sk0) & r(sk0, sk1)),\
+                         inference(skolemisation,\
+                                   [status(esa), new_symbols(skolem, [sk0, sk1])],\
+                                   [source, ax_inner, ax_outer])).\
+                     fof(np, axiom, ![X] : ~p(X), file('problem.p', np)).\
+                     fof(nr, axiom, ![X,Y] : ~r(X, Y), file('problem.p', nr)).\
+                     fof(mid, plain, r(sk0, sk1), inference(resolution, [status(thm)], [step, np])).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [mid, nr])).";
+        let problem = parse_tptp(problem).expect("problem parses");
+        let proof = parse_tptp(proof).expect("proof parses");
+        let limits = VerificationLimits {
+            max_skolem_steps: 1,
+            ..VerificationLimits::default()
+        };
+        assert!(matches!(
+            verify_strict(&problem, &proof, limits),
+            KernelVerdict::Inconclusive(_)
+        ));
     }
 
     #[test]
