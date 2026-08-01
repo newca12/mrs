@@ -117,6 +117,40 @@ pub fn load(proof_path: &Path, problems_root: Option<&Path>) -> Result<LoadedJob
     Ok(job)
 }
 
+/// Parse a problem and proof from memory and resolve `%include` directives
+/// below an explicit root directory.
+pub fn load_text(
+    problem_text: String,
+    proof_text: String,
+    include_root: &Path,
+) -> Result<LoadedJob, LoadError> {
+    let proof = mrs_tptp::owned::parse_tptp_owned(proof_text.clone())
+        .map_err(|e| LoadError::ParseProof(e.to_string()))?;
+    let mut problem = mrs_tptp::owned::parse_tptp_owned(problem_text)
+        .map_err(|e| LoadError::ParseProblem(e.to_string(), include_root.join("stdin.p")))?;
+    let virtual_proof_path = include_root.join("stdin.p");
+    let mut problem_includes = Vec::new();
+    resolve_includes_recursive(
+        &virtual_proof_path,
+        Some(include_root),
+        &problem.problem().includes,
+        include_root,
+        &mut problem_includes,
+    )?;
+    for inc in &problem_includes {
+        let inc_tptp: &mrs_tptp::ast::TPTPProblem<'static> = inc;
+        problem.append_formulas(&inc_tptp.formulas);
+    }
+    Ok(LoadedJob {
+        proof_path: virtual_proof_path,
+        proof_text,
+        proof,
+        problem_path: None,
+        problem: Some(problem),
+        problem_includes,
+    })
+}
+
 fn resolve_includes_recursive(
     proof_path: &Path,
     problems_root: Option<&Path>,

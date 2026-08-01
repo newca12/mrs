@@ -77,6 +77,20 @@ pub fn verify_text_with_telemetry(
     ))
 }
 
+/// Verify in-memory problem/proof text after resolving includes from `root`.
+pub fn verify_text_with_include_root(
+    problem_text: String,
+    proof_text: String,
+    root: &std::path::Path,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    let job = match crate::load::load_text(problem_text, proof_text, root) {
+        Ok(job) => job,
+        Err(error) => return KernelVerdict::Inconclusive(format!("strict load: {error}")),
+    };
+    verify_loaded_job(&job, limits)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,5 +139,17 @@ mod tests {
         assert_eq!(telemetry.proof_cnf_nodes, 1);
         assert_eq!(telemetry.proof_clause_literals, 1);
         assert!(matches!(telemetry.verdict, KernelVerdict::Certified));
+    }
+
+    #[test]
+    fn include_root_load_failure_is_inconclusive() {
+        let root = std::env::temp_dir().join("mrs_strict_missing_include_root");
+        let verdict = verify_text_with_include_root(
+            "%include('missing.p').".to_string(),
+            "fof(bot, plain, $false, inference(consequence, [status(thm)], [])).".to_string(),
+            &root,
+            VerificationLimits::default(),
+        );
+        assert!(matches!(verdict, KernelVerdict::Inconclusive(_)));
     }
 }

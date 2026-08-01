@@ -102,6 +102,9 @@ problem/proof node counts, FOF/CNF counts, clause-literal count, and verdict.
 no-include problem/proof inputs. Include-bearing jobs continue through the
 resolved loader so their include provenance is preserved.
 
+Stdin jobs can resolve includes through `mrs --include-root DIR`; omitting the
+root keeps strict self-verification fail-closed.
+
 Run the kernel tests inside the repository development environment:
 
 ```sh

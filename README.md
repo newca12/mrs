@@ -91,6 +91,13 @@ TPTP=/path/to/TPTP-v9.x.x mrs problem.p
 
 This is not needed for problems that are self-contained.
 
+When reading a problem from stdin, pass an explicit include root so strict
+self-verification can resolve external files:
+
+```bash
+cat problem.p | TPTP=/path/to/TPTP-v9.x.x mrs --self-check --include-root /path/to/TPTP-v9.x.x -
+```
+
 ## Building from source
 
 ```bash

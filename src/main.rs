@@ -37,6 +37,7 @@ fn main() {
     let mut auto_schedule = false;
     let mut ml_prune_ratio: Option<f32> = None;
     let mut self_check = false;
+    let mut include_root: Option<PathBuf> = None;
     #[cfg(feature = "ml")]
     let mut ml_premise_weights: Option<String> = None;
 
@@ -114,6 +115,13 @@ fn main() {
             "--self-check" => {
                 self_check = true;
             }
+            "--include-root" => {
+                let value = args.next().unwrap_or_else(|| {
+                    eprintln!("Error: --include-root requires a directory path");
+                    process::exit(1);
+                });
+                include_root = Some(PathBuf::from(value));
+            }
             // Deprecated: the ML schedule classifier is retired (degenerate
             // majority-class model + label mismatch; see docs/BENCHMARKS.md).
             // --ml-schedule now maps to the rule-based --auto-schedule.
@@ -171,7 +179,7 @@ fn main() {
             _ => {
                 if path.is_some() {
                     eprintln!(
-                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--self-check] <file.p>"
+                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--self-check] [--include-root DIR] <file.p>"
                     );
                     process::exit(1);
                 }
@@ -180,7 +188,9 @@ fn main() {
         }
     }
     let Some(path) = path else {
-        eprintln!("Usage: mrs [--time <seconds>] [--schedule NAME] [--self-check] <file.p>");
+        eprintln!(
+            "Usage: mrs [--time <seconds>] [--schedule NAME] [--self-check] [--include-root DIR] <file.p>"
+        );
         eprintln!("  An automated theorem prover for TPTP problems.");
         eprintln!(
             "  Schedules: {} (default: casc)",
@@ -673,8 +683,9 @@ fn main() {
             let elapsed = start.elapsed();
             let remaining = Duration::from_secs(time_secs).saturating_sub(elapsed);
 
-            if path == "-" {
-                failure = Some("strict self-check does not yet support stdin".to_string());
+            if path == "-" && include_root.is_none() {
+                failure =
+                    Some("strict self-check for stdin requires --include-root DIR".to_string());
             } else if remaining < Duration::from_secs(2) {
                 failure = Some("insufficient time remains for strict self-check".to_string());
             } else if let SearchResult::Refutation(_, tstp_proof) = &result {
@@ -682,7 +693,20 @@ fn main() {
                 // checker resolves the same problem and include tree.
                 let temp_proof_text = format!("% Proof : {}\n{}", path, tstp_proof);
                 let tptp_root = std::env::var("TPTP").ok().map(std::path::PathBuf::from);
-                if problem.includes.is_empty() {
+                if path == "-" {
+                    let root = include_root.as_deref().expect("stdin include root checked");
+                    let verdict = mrs_proover::strict::verify_text_with_include_root(
+                        input.clone(),
+                        temp_proof_text.clone(),
+                        root,
+                        mrs_proof_kernel::VerificationLimits::default(),
+                    );
+                    if matches!(verdict, mrs_proof_kernel::KernelVerdict::Certified) {
+                        proof_certified = true;
+                    } else {
+                        failure = Some(format!("strict self-check returned {verdict}"));
+                    }
+                } else if problem.includes.is_empty() {
                     let verdict = mrs_proover::strict::verify_text(
                         &input,
                         &temp_proof_text,
