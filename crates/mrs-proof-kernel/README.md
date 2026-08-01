@@ -122,4 +122,5 @@ nix develop -c cargo test --workspace
 
 Adversarial tests cover forged conclusions, invalid provenance, malformed
 preprocessing, incorrect Skolem scopes and witnesses, incomplete case splits,
-and resource-limit fail-closed behavior.
+resource-limit fail-closed behavior, and every parseable committed proof in
+`evil-proofs/exploits/`.
