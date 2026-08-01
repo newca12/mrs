@@ -107,6 +107,11 @@ pub fn verify_strict_with_source(
         }
     }
 
+    let mut known_function_symbols: HashSet<String> = HashSet::new();
+    for formula in &problem.formulas {
+        collect_function_symbols(formula, &mut known_function_symbols);
+    }
+
     for &idx in &dag.topo {
         let node = &dag.nodes[idx];
         let conclusion = proof_formulas.get(&idx).expect("lowered proof formula");
@@ -124,7 +129,10 @@ pub fn verify_strict_with_source(
                 ));
             }
             match verify_leaf(node, problem, expected_source, &mut symbols, limits) {
-                Ok(()) => continue,
+                Ok(()) => {
+                    collect_function_symbols(node.formula, &mut known_function_symbols);
+                    continue;
+                }
                 Err(v) => return v,
             }
         }
@@ -174,7 +182,14 @@ pub fn verify_strict_with_source(
                 verify_nnf(&parents, conclusion)
             }
             "variable_rename" | "rectify" => verify_alpha_identity(&parents, conclusion),
-            "skolemisation" => verify_existential_free_identity(&parents, conclusion),
+            "skolemisation" => verify_skolemisation(
+                node,
+                &dag,
+                &parent_indices,
+                &parents,
+                conclusion,
+                &known_function_symbols,
+            ),
             "cnf_transformation" => verify_alpha_identity(&parents, conclusion),
             "resolution" | "subsumption_resolution" => {
                 verify_resolution(&parents, conclusion, limits)
@@ -239,6 +254,7 @@ pub fn verify_strict_with_source(
                 branch_contexts.insert(idx, context);
             }
         }
+        collect_function_symbols(node.formula, &mut known_function_symbols);
     }
 
     KernelVerdict::Certified
@@ -577,6 +593,422 @@ fn verify_existential_free_identity(parents: &[Formula], conclusion: &Formula) -
         );
     }
     verify_alpha_identity(parents, conclusion)
+}
+
+fn verify_skolemisation(
+    node: &Node<'_>,
+    dag: &Dag<'_>,
+    parent_indices: &[usize],
+    parents: &[Formula],
+    conclusion: &Formula,
+    known_function_symbols: &HashSet<String>,
+) -> KernelVerdict {
+    if parent_indices.len() != 1 || parents.len() != 1 {
+        return KernelVerdict::Inconclusive(
+            "strict kernel currently supports single-parent Skolemization".into(),
+        );
+    }
+    let parent_ast = dag.nodes[parent_indices[0]].formula;
+    let Some(parent_fof) = parent_ast.as_fof() else {
+        return KernelVerdict::Inconclusive("Skolemization parent is not FOF".into());
+    };
+    let Some(node_fof) = node.formula.as_fof() else {
+        return KernelVerdict::Inconclusive("Skolemization conclusion is not FOF".into());
+    };
+    let (FOFStatement::Logical(parent_formula), FOFStatement::Logical(step_formula)) =
+        (&parent_fof.formula, &node_fof.formula)
+    else {
+        return KernelVerdict::Inconclusive("Skolemization sequents are unsupported".into());
+    };
+    let mut parent_symbols = HashSet::new();
+    collect_function_symbols_formula(parent_formula, &mut parent_symbols);
+    let mut step_symbols = HashSet::new();
+    collect_function_symbols_formula(step_formula, &mut step_symbols);
+    let fresh: HashSet<String> = step_symbols
+        .difference(&parent_symbols)
+        .filter(|symbol| !known_function_symbols.contains(*symbol))
+        .cloned()
+        .collect();
+    if fresh.is_empty() {
+        return verify_existential_free_identity(parents, conclusion);
+    }
+    if !contains_exists(&parents[0]) {
+        return KernelVerdict::Inconclusive(
+            "Skolemization introduced symbols without an existential parent".into(),
+        );
+    }
+    let mut state = SkolemMatch::new(fresh.clone());
+    if !match_skolem_formula(parent_formula, step_formula, &mut state) {
+        return KernelVerdict::Rejected(format!(
+            "node `{}` is not an exact Skolemization of its parent",
+            node.name
+        ));
+    }
+    if state.used_symbols != fresh {
+        return KernelVerdict::Rejected(format!(
+            "node `{}` does not use exactly its fresh Skolem symbols",
+            node.name
+        ));
+    }
+    KernelVerdict::Certified
+}
+
+fn collect_function_symbols(formula: &AnnotatedFormula<'_>, symbols: &mut HashSet<String>) {
+    match formula {
+        AnnotatedFormula::FOF(formula) => match &formula.formula {
+            FOFStatement::Logical(formula) => collect_function_symbols_formula(formula, symbols),
+            FOFStatement::Sequent(left, right) => {
+                for formula in left.iter().chain(right) {
+                    collect_function_symbols_formula(formula, symbols);
+                }
+            }
+        },
+        AnnotatedFormula::CNF(formula) => match &formula.formula {
+            CNFStatement::Logical(formula) => collect_function_symbols_cnf(formula, symbols),
+        },
+        _ => {}
+    }
+}
+
+fn collect_function_symbols_formula(formula: &FOFFormula<'_>, symbols: &mut HashSet<String>) {
+    match formula {
+        FOFFormula::Atomic(atom) => match atom {
+            FOFAtomicFormula::Plain(_, terms)
+            | FOFAtomicFormula::Defined(_, terms)
+            | FOFAtomicFormula::System(_, terms) => {
+                for term in terms {
+                    collect_function_symbols_term(term, symbols);
+                }
+            }
+            FOFAtomicFormula::True | FOFAtomicFormula::False => {}
+        },
+        FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => {
+            collect_function_symbols_formula(inner, symbols)
+        }
+        FOFFormula::Quantified { formula, .. } => {
+            collect_function_symbols_formula(formula, symbols)
+        }
+        FOFFormula::Binary { left, right, .. } => {
+            collect_function_symbols_formula(left, symbols);
+            collect_function_symbols_formula(right, symbols);
+        }
+        FOFFormula::Equality(left, right) | FOFFormula::Inequality(left, right) => {
+            collect_function_symbols_term(left, symbols);
+            collect_function_symbols_term(right, symbols);
+        }
+    }
+}
+
+fn collect_function_symbols_cnf(formula: &CNFFormula<'_>, symbols: &mut HashSet<String>) {
+    match formula {
+        CNFFormula::Parens(inner) => collect_function_symbols_cnf(inner, symbols),
+        CNFFormula::Disjunction(literals) => {
+            for literal in literals {
+                match literal {
+                    CNFLiteral::Positive(atom) | CNFLiteral::Negative(atom) => match atom {
+                        mrs_tptp::CNFAtomicFormula::Plain(_, terms)
+                        | mrs_tptp::CNFAtomicFormula::Defined(_, terms)
+                        | mrs_tptp::CNFAtomicFormula::System(_, terms) => {
+                            for term in terms {
+                                collect_function_symbols_term(term, symbols);
+                            }
+                        }
+                        mrs_tptp::CNFAtomicFormula::True | mrs_tptp::CNFAtomicFormula::False => {}
+                    },
+                    CNFLiteral::Equality(left, right) | CNFLiteral::Inequality(left, right) => {
+                        collect_function_symbols_term(left, symbols);
+                        collect_function_symbols_term(right, symbols);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collect_function_symbols_term(term: &FOFTerm<'_>, symbols: &mut HashSet<String>) {
+    match term {
+        FOFTerm::Function(name, args) => {
+            symbols.insert(name.as_str().to_string());
+            for arg in args {
+                collect_function_symbols_term(arg, symbols);
+            }
+        }
+        FOFTerm::DefinedFunction(name, args) => {
+            symbols.insert(format!("${}", name.0));
+            for arg in args {
+                collect_function_symbols_term(arg, symbols);
+            }
+        }
+        FOFTerm::SystemFunction(name, args) => {
+            symbols.insert(format!("$${}", name.0));
+            for arg in args {
+                collect_function_symbols_term(arg, symbols);
+            }
+        }
+        FOFTerm::Variable(_) | FOFTerm::Number(_) | FOFTerm::DistinctObject(_) => {}
+    }
+}
+
+struct SkolemMatch {
+    fresh_symbols: HashSet<String>,
+    used_symbols: HashSet<String>,
+    universal_map: HashMap<String, String>,
+    existential_terms: HashMap<String, String>,
+    witness_owners: HashMap<String, String>,
+    active_existentials: HashSet<String>,
+    active_universals: Vec<String>,
+}
+
+impl SkolemMatch {
+    fn new(fresh_symbols: HashSet<String>) -> Self {
+        Self {
+            fresh_symbols,
+            used_symbols: HashSet::new(),
+            universal_map: HashMap::new(),
+            existential_terms: HashMap::new(),
+            witness_owners: HashMap::new(),
+            active_existentials: HashSet::new(),
+            active_universals: Vec::new(),
+        }
+    }
+}
+
+fn match_skolem_formula(
+    parent: &FOFFormula<'_>,
+    step: &FOFFormula<'_>,
+    state: &mut SkolemMatch,
+) -> bool {
+    match (parent, step) {
+        (FOFFormula::Parens(parent), _) => match_skolem_formula(parent, step, state),
+        (_, FOFFormula::Parens(step)) => match_skolem_formula(parent, step, state),
+        (
+            FOFFormula::Quantified {
+                quantifier: parent_q,
+                variables: parent_vars,
+                formula: parent_body,
+            },
+            FOFFormula::Quantified {
+                quantifier: step_q,
+                variables: step_vars,
+                formula: step_body,
+            },
+        ) if parent_q == step_q && parent_vars.len() == step_vars.len() => {
+            let mut inserted = Vec::new();
+            for (parent_var, step_var) in parent_vars.iter().zip(step_vars) {
+                if parent_q == &Quantifier::Exists {
+                    state.active_existentials.insert((*parent_var).to_string());
+                    inserted.push((*parent_var, None));
+                } else {
+                    state
+                        .universal_map
+                        .insert((*parent_var).to_string(), (*step_var).to_string());
+                    state.active_universals.push((*step_var).to_string());
+                    inserted.push((*parent_var, Some(*step_var)));
+                }
+            }
+            let ok = if parent_q == &Quantifier::Exists {
+                match_skolem_formula(parent_body, step, state)
+            } else {
+                match_skolem_formula(parent_body, step_body, state)
+            };
+            for (parent_var, step_var) in inserted.into_iter().rev() {
+                if parent_q == &Quantifier::Exists {
+                    state.active_existentials.remove(parent_var);
+                } else {
+                    state.universal_map.remove(parent_var);
+                    if step_var.is_some() {
+                        state.active_universals.pop();
+                    }
+                }
+            }
+            ok
+        }
+        (
+            FOFFormula::Quantified {
+                quantifier: Quantifier::Exists,
+                variables,
+                formula,
+            },
+            _,
+        ) => {
+            for variable in variables {
+                state.active_existentials.insert((*variable).to_string());
+            }
+            let ok = match_skolem_formula(formula, step, state);
+            for variable in variables {
+                state.active_existentials.remove(*variable);
+            }
+            ok
+        }
+        (FOFFormula::Atomic(parent), FOFFormula::Atomic(step)) => {
+            match_skolem_atom(parent, step, state)
+        }
+        (FOFFormula::Negation(parent), FOFFormula::Negation(step)) => {
+            match_skolem_formula(parent, step, state)
+        }
+        (
+            FOFFormula::Binary {
+                left: parent_left,
+                connective: parent_conn,
+                right: parent_right,
+            },
+            FOFFormula::Binary {
+                left: step_left,
+                connective: step_conn,
+                right: step_right,
+            },
+        ) => {
+            parent_conn == step_conn
+                && match_skolem_formula(parent_left, step_left, state)
+                && match_skolem_formula(parent_right, step_right, state)
+        }
+        (
+            FOFFormula::Equality(parent_left, parent_right),
+            FOFFormula::Equality(step_left, step_right),
+        )
+        | (
+            FOFFormula::Inequality(parent_left, parent_right),
+            FOFFormula::Inequality(step_left, step_right),
+        ) => {
+            match_skolem_term(parent_left, step_left, state)
+                && match_skolem_term(parent_right, step_right, state)
+        }
+        _ => false,
+    }
+}
+
+fn match_skolem_atom(
+    parent: &FOFAtomicFormula<'_>,
+    step: &FOFAtomicFormula<'_>,
+    state: &mut SkolemMatch,
+) -> bool {
+    match (parent, step) {
+        (
+            FOFAtomicFormula::Plain(parent_name, parent_args),
+            FOFAtomicFormula::Plain(step_name, step_args),
+        ) => {
+            parent_name == step_name
+                && parent_args.len() == step_args.len()
+                && parent_args
+                    .iter()
+                    .zip(step_args)
+                    .all(|(parent, step)| match_skolem_term(parent, step, state))
+        }
+        (
+            FOFAtomicFormula::Defined(parent_name, parent_args),
+            FOFAtomicFormula::Defined(step_name, step_args),
+        ) => {
+            parent_name == step_name
+                && parent_args.len() == step_args.len()
+                && parent_args
+                    .iter()
+                    .zip(step_args)
+                    .all(|(parent, step)| match_skolem_term(parent, step, state))
+        }
+        (
+            FOFAtomicFormula::System(parent_name, parent_args),
+            FOFAtomicFormula::System(step_name, step_args),
+        ) => {
+            parent_name == step_name
+                && parent_args.len() == step_args.len()
+                && parent_args
+                    .iter()
+                    .zip(step_args)
+                    .all(|(parent, step)| match_skolem_term(parent, step, state))
+        }
+        (FOFAtomicFormula::True, FOFAtomicFormula::True)
+        | (FOFAtomicFormula::False, FOFAtomicFormula::False) => true,
+        _ => false,
+    }
+}
+
+fn match_skolem_term(parent: &FOFTerm<'_>, step: &FOFTerm<'_>, state: &mut SkolemMatch) -> bool {
+    match parent {
+        FOFTerm::Variable(parent_var) => {
+            if let Some(previous) = state.existential_terms.get(*parent_var) {
+                return previous == &format!("{step:?}");
+            }
+            if let Some(mapped) = state.universal_map.get(*parent_var) {
+                return matches!(step, FOFTerm::Variable(step_var) if *step_var == mapped);
+            }
+            if !state.active_existentials.contains(*parent_var) {
+                return matches!(step, FOFTerm::Variable(step_var) if *step_var == *parent_var);
+            }
+            if let FOFTerm::Function(symbol, args) = step {
+                let symbol = symbol.as_str();
+                let witness_args = args
+                    .iter()
+                    .map(|arg| match arg {
+                        FOFTerm::Variable(variable) => Some(*variable),
+                        _ => None,
+                    })
+                    .collect::<Option<HashSet<_>>>();
+                let expected_args: HashSet<&str> =
+                    state.active_universals.iter().map(String::as_str).collect();
+                if state.fresh_symbols.contains(symbol)
+                    && witness_args.as_ref().is_some_and(|args| {
+                        args.len() == expected_args.len()
+                            && args.iter().all(|arg| expected_args.contains(arg))
+                    })
+                {
+                    if let Some(owner) = state.witness_owners.get(symbol)
+                        && owner != parent_var
+                    {
+                        return false;
+                    }
+                    state
+                        .witness_owners
+                        .insert(symbol.to_string(), (*parent_var).to_string());
+                    state.used_symbols.insert(symbol.to_string());
+                    state
+                        .existential_terms
+                        .insert((*parent_var).to_string(), format!("{step:?}"));
+                    return true;
+                }
+                let _ = args;
+            }
+            false
+        }
+        FOFTerm::Function(parent_name, parent_args) => match step {
+            FOFTerm::Function(step_name, step_args) => {
+                parent_name == step_name
+                    && parent_args.len() == step_args.len()
+                    && parent_args
+                        .iter()
+                        .zip(step_args)
+                        .all(|(parent, step)| match_skolem_term(parent, step, state))
+            }
+            _ => false,
+        },
+        FOFTerm::DefinedFunction(parent_name, parent_args) => match step {
+            FOFTerm::DefinedFunction(step_name, step_args) => {
+                parent_name == step_name
+                    && parent_args.len() == step_args.len()
+                    && parent_args
+                        .iter()
+                        .zip(step_args)
+                        .all(|(parent, step)| match_skolem_term(parent, step, state))
+            }
+            _ => false,
+        },
+        FOFTerm::SystemFunction(parent_name, parent_args) => match step {
+            FOFTerm::SystemFunction(step_name, step_args) => {
+                parent_name == step_name
+                    && parent_args.len() == step_args.len()
+                    && parent_args
+                        .iter()
+                        .zip(step_args)
+                        .all(|(parent, step)| match_skolem_term(parent, step, state))
+            }
+            _ => false,
+        },
+        FOFTerm::Number(parent) => {
+            matches!(step, FOFTerm::Number(step) if parent.as_str() == step.as_str())
+        }
+        FOFTerm::DistinctObject(parent) => {
+            matches!(step, FOFTerm::DistinctObject(step) if parent == step)
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2022,6 +2454,47 @@ mod tests {
                      cnf(derived, plain, q(a), inference(resolution, [status(thm)], [clause, fact])).\n\
                      cnf(bot, plain, $false, inference(subsumption_resolution, [status(thm)], [derived, neg])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_constant_skolemization() {
+        let problem = "fof(a, axiom, ?[X] : p(X)).\nfof(n, axiom, ![X] : ~p(X)).";
+        let proof = "fof(a, axiom, ?[X] : p(X), file('problem.p', a)).\n\
+                     fof(s, plain, p(sk0), inference(skolemisation, [status(esa)], [a])).\n\
+                     fof(n, axiom, ![X] : ~p(X), file('problem.p', n)).\n\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [s,n])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_scoped_skolemization() {
+        let problem = "fof(a, axiom, ![X] : ?[Y] : p(X, Y)).\nfof(n, axiom, ![X] : ~p(a, X)).";
+        let proof = "fof(a, axiom, ![X] : ?[Y] : p(X, Y), file('problem.p', a)).\n\
+                     fof(s, plain, ![X] : p(X, sk0(X)), inference(skolemisation, [status(esa)], [a])).\n\
+                     fof(n, axiom, ![X] : ~p(a, X), file('problem.p', n)).\n\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [s,n])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_skolem_that_drops_universal_scope() {
+        let problem = "fof(a, axiom, ![X] : ?[Y] : p(X, Y)).\nfof(n, axiom, ![X] : ~p(a, X)).";
+        let proof = "fof(a, axiom, ![X] : ?[Y] : p(X, Y), file('problem.p', a)).\n\
+                     fof(s, plain, ![X] : p(X, sk0), inference(skolemisation, [status(esa)], [a])).\n\
+                     fof(n, axiom, ![X] : ~p(a, X), file('problem.p', n)).\n\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [s,n])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn rejects_skolem_witness_reuse_across_existentials() {
+        let problem = "fof(a, axiom, ?[X] : ?[Y] : p(X, Y)).\n\
+                       fof(n, axiom, ![X] : ![Y] : ~(p(X, Y))).";
+        let proof = "fof(a, axiom, ?[X] : ?[Y] : p(X, Y), file('problem.p', a)).\n\
+                     fof(s, plain, p(sk0, sk0), inference(skolemisation, [status(esa)], [a])).\n\
+                     fof(n, axiom, ![X] : ![Y] : ~(p(X, Y)), file('problem.p', n)).\n\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [s,n])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
     }
 
     #[test]
