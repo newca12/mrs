@@ -92,6 +92,10 @@ rewrite steps, subsumption matching steps, and Skolemization matching steps.
 Matching and transformation backtracking return `Inconclusive` when their
 budgets are exhausted.
 
+`verify_strict_with_telemetry` and
+`verify_strict_with_telemetry_and_source` additionally report elapsed time,
+problem/proof node counts, FOF/CNF counts, clause-literal count, and verdict.
+
 ## Testing
 
 `mrs-proover::strict::verify_text` provides an in-memory integration path for

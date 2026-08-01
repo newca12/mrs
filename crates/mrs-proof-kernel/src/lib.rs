@@ -7,6 +7,7 @@
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use mrs_core::{Atom, Formula, SymbolTable, Term, VarId};
 use mrs_tptp::ast::common::{AtomicWord, GeneralTerm};
@@ -23,6 +24,18 @@ pub enum KernelVerdict {
     Rejected(String),
     /// The proof uses a rule or resource shape not implemented by the kernel.
     Inconclusive(String),
+}
+
+/// Verification measurements collected alongside a kernel verdict.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerificationTelemetry {
+    pub elapsed: Duration,
+    pub problem_nodes: usize,
+    pub proof_nodes: usize,
+    pub proof_fof_nodes: usize,
+    pub proof_cnf_nodes: usize,
+    pub proof_clause_literals: usize,
+    pub verdict: KernelVerdict,
 }
 
 impl std::fmt::Display for KernelVerdict {
@@ -70,6 +83,58 @@ pub fn verify_strict(
     limits: VerificationLimits,
 ) -> KernelVerdict {
     verify_strict_with_source(problem, proof, None, limits)
+}
+
+/// Verify a proof and return deterministic structural counts plus elapsed time.
+pub fn verify_strict_with_telemetry(
+    problem: &mrs_tptp::TPTPProblem<'_>,
+    proof: &mrs_tptp::TPTPProblem<'_>,
+    limits: VerificationLimits,
+) -> VerificationTelemetry {
+    verify_strict_with_telemetry_and_source(problem, proof, None, limits)
+}
+
+/// Telemetry variant of [`verify_strict_with_source`].
+pub fn verify_strict_with_telemetry_and_source(
+    problem: &mrs_tptp::TPTPProblem<'_>,
+    proof: &mrs_tptp::TPTPProblem<'_>,
+    expected_source: Option<&str>,
+    limits: VerificationLimits,
+) -> VerificationTelemetry {
+    let start = Instant::now();
+    let proof_nodes = proof
+        .formulas
+        .iter()
+        .filter(|formula| formula.role() != FormulaRole::Type)
+        .collect::<Vec<_>>();
+    let problem_nodes = problem
+        .formulas
+        .iter()
+        .filter(|formula| formula.role() != FormulaRole::Type)
+        .count();
+    let proof_fof_nodes = proof_nodes
+        .iter()
+        .filter(|formula| formula.is_fof())
+        .count();
+    let proof_cnf_nodes = proof_nodes
+        .iter()
+        .filter(|formula| formula.is_cnf())
+        .count();
+    let proof_clause_literals = proof_nodes
+        .iter()
+        .filter_map(|formula| formula.as_cnf())
+        .map(|formula| cnf_literal_count(&formula.formula))
+        .sum();
+    let verdict = verify_strict_with_source(problem, proof, expected_source, limits);
+    VerificationTelemetry {
+        elapsed: start.elapsed(),
+        problem_nodes,
+        proof_nodes: proof_nodes.len(),
+        proof_fof_nodes,
+        proof_cnf_nodes,
+        proof_clause_literals,
+        verdict,
+    }
 }
 
 /// Verify a proof while requiring every `file(...)` leaf to cite the exact
@@ -357,6 +422,18 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "avatar_sat_refutation"
         | "superposition" => Some("thm"),
         _ => None,
+    }
+}
+
+fn cnf_literal_count(statement: &CNFStatement<'_>) -> usize {
+    fn count(formula: &CNFFormula<'_>) -> usize {
+        match formula {
+            CNFFormula::Parens(inner) => count(inner),
+            CNFFormula::Disjunction(literals) => literals.len(),
+        }
+    }
+    match statement {
+        CNFStatement::Logical(formula) => count(formula),
     }
 }
 

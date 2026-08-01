@@ -1,6 +1,9 @@
 //! Strict proof-kernel integration.
 
-use mrs_proof_kernel::{KernelVerdict, VerificationLimits, verify_strict_with_source};
+use mrs_proof_kernel::{
+    KernelVerdict, VerificationLimits, VerificationTelemetry, verify_strict_with_source,
+    verify_strict_with_telemetry_and_source,
+};
 use mrs_tptp::parse_tptp;
 use mrs_tptp::proover::proof_header_link;
 
@@ -55,6 +58,25 @@ pub fn verify_text_default(problem_text: &str, proof_text: &str) -> KernelVerdic
     )
 }
 
+/// Verify in-memory text and return kernel telemetry.
+pub fn verify_text_with_telemetry(
+    problem_text: &str,
+    proof_text: &str,
+    expected_source: Option<&str>,
+    limits: VerificationLimits,
+) -> Result<VerificationTelemetry, KernelVerdict> {
+    let problem = parse_tptp(problem_text)
+        .map_err(|error| KernelVerdict::Inconclusive(format!("strict problem parse: {error}")))?;
+    let proof = parse_tptp(proof_text)
+        .map_err(|error| KernelVerdict::Inconclusive(format!("strict proof parse: {error}")))?;
+    Ok(verify_strict_with_telemetry_and_source(
+        &problem,
+        &proof,
+        expected_source,
+        limits,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,5 +104,26 @@ mod tests {
             verify_text("not tptp", "not tptp", None, VerificationLimits::default()),
             KernelVerdict::Inconclusive(_)
         ));
+    }
+
+    #[test]
+    fn telemetry_counts_nodes_and_literals() {
+        let problem = "fof(a, axiom, p(a)).\nfof(b, axiom, ~p(a)).";
+        let proof = "fof(a, axiom, p(a), file('problem.p', a)).\
+                     fof(b, axiom, ~p(a), file('problem.p', b)).\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [a,b])).";
+        let telemetry = verify_text_with_telemetry(
+            problem,
+            proof,
+            Some("problem.p"),
+            VerificationLimits::default(),
+        )
+        .expect("text parses");
+        assert_eq!(telemetry.problem_nodes, 2);
+        assert_eq!(telemetry.proof_nodes, 3);
+        assert_eq!(telemetry.proof_fof_nodes, 2);
+        assert_eq!(telemetry.proof_cnf_nodes, 1);
+        assert_eq!(telemetry.proof_clause_literals, 1);
+        assert!(matches!(telemetry.verdict, KernelVerdict::Certified));
     }
 }
