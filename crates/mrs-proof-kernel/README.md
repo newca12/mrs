@@ -50,6 +50,8 @@ The current kernel checks:
 - named problem leaves, roles, provenance, source identity, and reachability;
 - unique names, parent references, acyclicity, disconnected nodes, and one
   reachable unparented `$false` root;
+- consistent predicate/function signatures and arities across the problem and
+  proof DAG;
 - negated conjectures, NNF transformations, and alpha-equivalent identities;
 - single-parent Skolemization with fresh symbols, exact arity, active-universal
   scope, distinct witnesses, nested matrices, regrouped universals, and

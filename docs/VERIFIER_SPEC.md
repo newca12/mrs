@@ -132,6 +132,9 @@ Resource exhaustion is never positive proof evidence. The kernel returns
 - maximum subsumption matching steps
 - maximum Skolemization matching steps
 
+The kernel also rejects inconsistent predicate/function arities across the
+linked problem and proof DAG.
+
 Limits are explicit inputs to the kernel and are recorded in strict-mode
 telemetry.
 

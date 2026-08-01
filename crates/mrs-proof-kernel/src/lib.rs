@@ -119,14 +119,32 @@ pub fn verify_strict_with_source(
 
     let mut known_function_symbols: HashSet<String> = HashSet::new();
     let mut known_symbols: HashSet<String> = HashSet::new();
+    let mut signatures = HashMap::new();
     for formula in &problem.formulas {
         collect_function_symbols(formula, &mut known_function_symbols);
         collect_all_symbols(formula, &mut known_symbols);
+        if formula.role() != FormulaRole::Type {
+            let lowered = match lower_annotated(&mut symbols, formula, limits) {
+                Ok(formula) => formula,
+                Err(v) => return v,
+            };
+            if let Err(reason) = register_signatures(&lowered, &mut signatures) {
+                return KernelVerdict::Rejected(format!(
+                    "problem has inconsistent symbol signature: {reason}"
+                ));
+            }
+        }
     }
 
     for &idx in &dag.topo {
         let node = &dag.nodes[idx];
         let conclusion = proof_formulas.get(&idx).expect("lowered proof formula");
+        if let Err(reason) = register_signatures(conclusion, &mut signatures) {
+            return KernelVerdict::Rejected(format!(
+                "proof node `{}` has inconsistent symbol signature: {reason}",
+                node.name
+            ));
+        }
 
         if node
             .formula
@@ -340,6 +358,85 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "superposition" => Some("thm"),
         _ => None,
     }
+}
+
+fn register_signatures(
+    formula: &Formula,
+    signatures: &mut HashMap<mrs_core::SymbolId, usize>,
+) -> Result<(), String> {
+    fn visit_term(
+        value: &Term,
+        signatures: &mut HashMap<mrs_core::SymbolId, usize>,
+    ) -> Result<(), String> {
+        match value {
+            Term::Var(_) => Ok(()),
+            Term::App(symbol, args) => {
+                register(*symbol, args.len(), signatures)?;
+                for arg in args {
+                    visit_term(arg, signatures)?;
+                }
+                Ok(())
+            }
+        }
+    }
+    fn atom(
+        atom: &Atom,
+        signatures: &mut HashMap<mrs_core::SymbolId, usize>,
+    ) -> Result<(), String> {
+        match atom {
+            Atom::Pred(symbol, args) => {
+                register(*symbol, args.len(), signatures)?;
+                for arg in args {
+                    visit_term(arg, signatures)?;
+                }
+                Ok(())
+            }
+            Atom::Eq(left, right) => {
+                visit_term(left, signatures)?;
+                visit_term(right, signatures)
+            }
+        }
+    }
+    fn visit(
+        formula: &Formula,
+        signatures: &mut HashMap<mrs_core::SymbolId, usize>,
+    ) -> Result<(), String> {
+        match formula {
+            Formula::Atom(atom_value) => atom(atom_value, signatures),
+            Formula::Neg(inner) | Formula::Forall(_, inner) | Formula::Exists(_, inner) => {
+                visit(inner, signatures)
+            }
+            Formula::And(parts) | Formula::Or(parts) => {
+                for part in parts {
+                    visit(part, signatures)?;
+                }
+                Ok(())
+            }
+            Formula::Implies(left, right) | Formula::Iff(left, right) => {
+                visit(left, signatures)?;
+                visit(right, signatures)
+            }
+            Formula::True | Formula::False => Ok(()),
+        }
+    }
+    fn register(
+        symbol: mrs_core::SymbolId,
+        arity: usize,
+        signatures: &mut HashMap<mrs_core::SymbolId, usize>,
+    ) -> Result<(), String> {
+        if let Some(previous) = signatures.insert(symbol, arity)
+            && previous != arity
+        {
+            return Err(format!(
+                "symbol {} used with arities {} and {}",
+                symbol.index(),
+                previous,
+                arity
+            ));
+        }
+        Ok(())
+    }
+    visit(formula, signatures)
 }
 
 fn is_introduced_definition(annotations: &mrs_tptp::Annotations<'_>) -> bool {
@@ -4064,6 +4161,24 @@ mod tests {
         let problem = "fof(a, axiom, (p & q)).";
         let proof = "fof(a, axiom, (p & q), file('problem.p', a)).\
                      fof(s, plain, p, inference(formula_equivalence, [status(thm)], [a])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [s])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn rejects_inconsistent_symbol_arity() {
+        let problem = "fof(a, axiom, p(a)).\nfof(b, axiom, p(a, b)).";
+        let proof = "fof(a, axiom, p(a), file('problem.p', a)).\
+                     fof(b, axiom, p(a, b), file('problem.p', b)).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [a])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn rejects_proof_symbol_arity_change() {
+        let problem = "fof(a, axiom, p(a)).";
+        let proof = "fof(a, axiom, p(a), file('problem.p', a)).\
+                     fof(s, plain, p(a, b), inference(formula_equivalence, [status(thm)], [a])).\
                      fof(bot, plain, $false, inference(consequence, [status(thm)], [s])).";
         assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
     }
