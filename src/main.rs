@@ -681,35 +681,50 @@ fn main() {
                 // Include the real problem path in the proof header so the
                 // checker resolves the same problem and include tree.
                 let temp_proof_text = format!("% Proof : {}\n{}", path, tstp_proof);
-                let counter = SELF_VERIFY_COUNTER.fetch_add(1, Ordering::Relaxed);
-                let temp_path = std::env::temp_dir().join(format!(
-                    "mrs_self_verify_{}_{}_{}.p",
-                    process::id(),
-                    counter,
-                    problem_name
-                ));
-
                 let tptp_root = std::env::var("TPTP").ok().map(std::path::PathBuf::from);
-                match std::fs::write(&temp_path, &temp_proof_text) {
-                    Ok(()) => match mrs_proover::load::load(&temp_path, tptp_root.as_deref()) {
-                        Ok(job) => {
-                            let verdict = mrs_proover::strict::verify_loaded_job_default(&job);
-                            if matches!(verdict, mrs_proof_kernel::KernelVerdict::Certified) {
-                                proof_certified = true;
-                            } else {
-                                failure = Some(format!("strict self-check returned {verdict}"));
+                if problem.includes.is_empty() {
+                    let verdict = mrs_proover::strict::verify_text(
+                        &input,
+                        &temp_proof_text,
+                        Some(&path),
+                        mrs_proof_kernel::VerificationLimits::default(),
+                    );
+                    if matches!(verdict, mrs_proof_kernel::KernelVerdict::Certified) {
+                        proof_certified = true;
+                    } else {
+                        failure = Some(format!("strict self-check returned {verdict}"));
+                    }
+                } else {
+                    let counter = SELF_VERIFY_COUNTER.fetch_add(1, Ordering::Relaxed);
+                    let temp_path = std::env::temp_dir().join(format!(
+                        "mrs_self_verify_{}_{}_{}.p",
+                        process::id(),
+                        counter,
+                        problem_name
+                    ));
+                    match std::fs::write(&temp_path, &temp_proof_text) {
+                        Ok(()) => match mrs_proover::load::load(&temp_path, tptp_root.as_deref()) {
+                            Ok(job) => {
+                                let verdict = mrs_proover::strict::verify_loaded_job_default(&job);
+                                if matches!(verdict, mrs_proof_kernel::KernelVerdict::Certified) {
+                                    proof_certified = true;
+                                } else {
+                                    failure = Some(format!("strict self-check returned {verdict}"));
+                                }
                             }
-                        }
+                            Err(error) => {
+                                failure = Some(format!(
+                                    "strict self-check could not load proof: {error}"
+                                ));
+                            }
+                        },
                         Err(error) => {
                             failure =
-                                Some(format!("strict self-check could not load proof: {error}"));
+                                Some(format!("strict self-check could not write proof: {error}"));
                         }
-                    },
-                    Err(error) => {
-                        failure = Some(format!("strict self-check could not write proof: {error}"));
                     }
+                    let _ = std::fs::remove_file(&temp_path);
                 }
-                let _ = std::fs::remove_file(&temp_path);
             }
 
             if let Some(reason) = failure {

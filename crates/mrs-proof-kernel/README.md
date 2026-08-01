@@ -94,6 +94,10 @@ budgets are exhausted.
 
 ## Testing
 
+`mrs-proover::strict::verify_text` provides an in-memory integration path for
+no-include problem/proof inputs. Include-bearing jobs continue through the
+resolved loader so their include provenance is preserved.
+
 Run the kernel tests inside the repository development environment:
 
 ```sh
