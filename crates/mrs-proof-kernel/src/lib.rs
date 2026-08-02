@@ -71,6 +71,7 @@ pub struct VerificationLimits {
     pub max_subsumption_steps: usize,
     pub max_skolem_steps: usize,
     pub max_equivalence_steps: usize,
+    pub max_avatar_steps: usize,
 }
 
 impl Default for VerificationLimits {
@@ -84,6 +85,7 @@ impl Default for VerificationLimits {
             max_subsumption_steps: 5_000,
             max_skolem_steps: 5_000,
             max_equivalence_steps: 5_000,
+            max_avatar_steps: 100_000,
         }
     }
 }
