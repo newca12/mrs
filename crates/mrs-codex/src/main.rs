@@ -145,7 +145,7 @@ fn fetch_completed_problems(
     )?;
 
     let problem_names = stmt.query_map(
-        params![system_id, parameter_id, hardware_id, timeout],
+        params![system_id, parameter_id, hardware_id, timeout as i64],
         |row| row.get::<_, String>(0),
     )?;
 
@@ -317,7 +317,7 @@ fn writer_thread(db_path: PathBuf, receiver: Receiver<RunResult>) {
                 result.system_id,
                 result.hardware_id,
                 result.parameter_id,
-                result.timeout,
+                result.timeout as i64,
                 result.time_to_solve,
                 result.status,
                 result.proover_validated,
@@ -334,6 +334,11 @@ fn writer_thread(db_path: PathBuf, receiver: Receiver<RunResult>) {
 
 fn main() {
     let args = Args::parse();
+
+    if args.timeout > i64::MAX as u64 {
+        eprintln!("Error: --timeout must not exceed {} seconds.", i64::MAX);
+        std::process::exit(1);
+    }
 
     if !args.folder.exists() {
         eprintln!(

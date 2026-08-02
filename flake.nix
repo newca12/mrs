@@ -10,22 +10,40 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      nixpkgs,
+      rust-overlay,
+      flake-utils,
+      ...
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs { inherit system overlays; };
 
-        # Pin the exact stable toolchain (>= 1.95 required by Cargo.toml,
-        # edition 2024). The `default` profile bundles cargo, rustfmt,
-        # clippy, rust-std and rust-docs; we add rust-src + rust-analyzer
-        # for editor support. This toolchain lives in the Nix store and is
-        # GC-rooted by the flake, so it is immune to the ~/.rustup linker
-        # shim breakage that occurs when nixpkgs `rustup` is rebuilt and the
-        # old build is garbage-collected.
-        rustToolchain = pkgs.rust-bin.stable."1.97.0".default.override {
-          extensions = [ "rust-src" "rust-analyzer" ];
-        };
+        # Parse Cargo.toml dynamically
+        cargoToml = fromTOML (builtins.readFile ./Cargo.toml);
+        rustVersion =
+          if builtins.isString (cargoToml.package.rust-version or null) then
+            cargoToml.package.rust-version
+          else
+            cargoToml.workspace.package.rust-version or "latest";
+
+        rustToolchain =
+          (
+            if rustVersion == "latest" then
+              pkgs.rust-bin.stable.latest.default
+            else
+              pkgs.rust-bin.stable.${rustVersion}.default
+          ).override
+            {
+              extensions = [
+                "rust-src"
+                "rust-analyzer"
+              ];
+            };
 
         # Optional runtime libraries for the `ml`/`ml-guidance` feature builds
         # (Burn + wgpu). Not needed for the default CASC / ProoVer builds.
@@ -73,5 +91,6 @@
 
         # `nix fmt` formats this flake.
         formatter = pkgs.nixpkgs-fmt;
-      });
+      }
+    );
 }

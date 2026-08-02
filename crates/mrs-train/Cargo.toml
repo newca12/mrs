@@ -24,6 +24,6 @@ burn = { version = "0.21.0", default-features = false, features = [
     "train",
     "dataset",
 ] }
-wincode = "0.5.5"
+wincode = { workspace = true }
 walkdir = "2.5.0"
 rand = "0.10"
