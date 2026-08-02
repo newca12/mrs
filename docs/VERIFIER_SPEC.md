@@ -119,6 +119,8 @@ The first strict kernel implementation certifies only:
   universal instantiation
 - bounded `horn` forward chaining over direct single-antecedent implications
   and fact parents; unsupported conjunction antecedents remain inconclusive
+- `consequence` only when its cited parents and conclusion recompute as a
+  bounded two-parent resolution step
 - bounded `demodulation` from cited positive unit equalities
 - bounded `superposition` into a cited target clause
 

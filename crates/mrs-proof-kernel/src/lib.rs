@@ -340,6 +340,7 @@ pub fn verify_strict_with_source(
             "excluded_middle" => verify_excluded_middle(&parents, conclusion, limits),
             "modus_ponens" => verify_modus_ponens(&parents, conclusion, limits),
             "horn" => verify_horn(&parents, conclusion, limits),
+            "consequence" => verify_resolution(&parents, conclusion, limits),
             "instantiate" => verify_instantiation(&parents, conclusion, limits),
             "existential_gen" => verify_existential_generation(&parents, conclusion, limits),
             "conjunction" => verify_conjunction(&parents, conclusion, limits),
@@ -469,6 +470,7 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "excluded_middle"
         | "modus_ponens"
         | "horn"
+        | "consequence"
         | "instantiate"
         | "existential_gen"
         | "conjunction"
@@ -6671,6 +6673,32 @@ mod tests {
     }
 
     #[test]
+    fn certifies_consequence_as_resolution_alias() {
+        let problem = "fof(p, axiom, p(a)).\nfof(np, axiom, ~p(a)).";
+        let proof = "fof(p, axiom, p(a), file('problem.p', p)).\
+                     fof(np, axiom, ~p(a), file('problem.p', np)).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [p,np])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_consequence_with_forged_non_resolution_step() {
+        let problem = "fof(p, axiom, p(a)).\nfof(q, axiom, q(a)).";
+        let proof = "fof(p, axiom, p(a), file('problem.p', p)).\
+                     fof(q, axiom, q(a), file('problem.p', q)).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [p,q])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn consequence_requires_two_parents() {
+        let problem = "fof(p, axiom, p(a)).";
+        let proof = "fof(p, axiom, p(a), file('problem.p', p)).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [p])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
     fn modus_ponens_matching_limit_is_inconclusive() {
         let problem = parse_tptp(
             "fof(rule, axiom, ![X] : (p(X) => q(X))).\n\
@@ -6751,7 +6779,7 @@ mod tests {
         let proof = parse_tptp(
             "fof(a, axiom, ![X] : p(X), file('problem.p', a)).\
              fof(i, plain, p(a), inference(instantiate, [status(thm)], [a])).\
-             fof(bot, plain, $false, inference(consequence, [status(thm)], [i])).",
+             fof(bot, plain, $false, inference(limit_wrapper, [status(thm)], [i])).",
         )
         .expect("proof parses");
         let limits = VerificationLimits {
@@ -6878,7 +6906,7 @@ mod tests {
         let proof = parse_tptp(
             "fof(a, axiom, ![X] : ?[Y] : p(X, Y), file('problem.p', a)).\
              fof(s, plain, ![X] : p(X, sk0(X)), inference(skolemisation, [status(esa)], [a])).\
-             fof(bot, plain, $false, inference(consequence, [status(thm)], [s])).",
+             fof(bot, plain, $false, inference(limit_wrapper, [status(thm)], [s])).",
         )
         .expect("proof parses");
         let limits = VerificationLimits {
