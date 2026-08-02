@@ -338,6 +338,7 @@ pub fn verify_strict_with_source(
             | "double_negation"
             | "remove_double_negation" => verify_formula_equivalence(&parents, conclusion, limits),
             "excluded_middle" => verify_excluded_middle(&parents, conclusion, limits),
+            "modus_ponens" => verify_modus_ponens(&parents, conclusion, limits),
             "instantiate" => verify_instantiation(&parents, conclusion, limits),
             "existential_gen" => verify_existential_generation(&parents, conclusion, limits),
             "conjunction" => verify_conjunction(&parents, conclusion, limits),
@@ -465,6 +466,7 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "double_negation"
         | "remove_double_negation"
         | "excluded_middle"
+        | "modus_ponens"
         | "instantiate"
         | "existential_gen"
         | "conjunction"
@@ -1920,6 +1922,60 @@ fn verify_excluded_middle(
         KernelVerdict::Certified
     } else {
         KernelVerdict::Rejected("excluded_middle conclusion is not A | ~A".into())
+    }
+}
+
+fn verify_modus_ponens(
+    parents: &[Formula],
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if parents.len() != 2 {
+        return KernelVerdict::Rejected("modus_ponens must have two parents".into());
+    }
+    if parents
+        .iter()
+        .any(|parent| formula_size(parent) > limits.max_formula_nodes)
+        || formula_size(conclusion) > limits.max_formula_nodes
+    {
+        return KernelVerdict::Inconclusive(
+            "modus_ponens exceeded strict formula-size limit".into(),
+        );
+    }
+
+    let mut exhausted = false;
+    for (implication_index, premise_index) in [(0, 1), (1, 0)] {
+        let (_, implication) = leading_forall_core(&parents[implication_index]);
+        if !matches!(implication, Formula::Implies(_, _)) {
+            continue;
+        }
+        let target = Formula::implies(parents[premise_index].clone(), conclusion.clone());
+        let mut substitution = HashMap::new();
+        let mut bound = HashMap::new();
+        let mut steps = 0;
+        if !match_universal_instance(
+            implication,
+            &target,
+            &mut substitution,
+            &mut bound,
+            &mut steps,
+            limits,
+        ) {
+            exhausted |= steps >= limits.max_equivalence_steps;
+            continue;
+        }
+        let mut core_substitution = Substitution::new();
+        for (var, term) in substitution {
+            core_substitution.bind(var, term);
+        }
+        if alpha_equiv(&core_substitution.apply_formula(implication), &target) {
+            return KernelVerdict::Certified;
+        }
+    }
+    if exhausted {
+        KernelVerdict::Inconclusive("modus_ponens exceeded strict matching-step limit".into())
+    } else {
+        KernelVerdict::Rejected("modus_ponens conclusion does not follow from its parents".into())
     }
 }
 
@@ -6382,6 +6438,82 @@ mod tests {
                      fof(mid, plain, ~p(a), inference(resolution, [status(thm)], [e,n])).\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [mid,a])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_modus_ponens_with_universal_instantiation() {
+        let problem = "fof(rule, axiom, ![X] : (p(X) => q(X))).\n\
+                       fof(fact, axiom, p(a)).\n\
+                       fof(nq, axiom, ~q(a)).";
+        let proof = "fof(rule, axiom, ![X] : (p(X) => q(X)), file('problem.p', rule)).\
+                     fof(fact, axiom, p(a), file('problem.p', fact)).\
+                     fof(s, plain, q(a), inference(modus_ponens, [status(thm)], [rule,fact])).\
+                     fof(nq, axiom, ~q(a), file('problem.p', nq)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [s,nq])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_modus_ponens_with_reversed_parents() {
+        let problem = "fof(rule, axiom, (p(a) => q(a))).\n\
+                       fof(fact, axiom, p(a)).\n\
+                       fof(nq, axiom, ~q(a)).";
+        let proof = "fof(rule, axiom, (p(a) => q(a)), file('problem.p', rule)).\
+                     fof(fact, axiom, p(a), file('problem.p', fact)).\
+                     fof(s, plain, q(a), inference(modus_ponens, [status(thm)], [fact,rule])).\
+                     fof(nq, axiom, ~q(a), file('problem.p', nq)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [s,nq])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_modus_ponens_with_forged_conclusion() {
+        let problem = "fof(rule, axiom, (p(a) => q(a))).\n\
+                       fof(fact, axiom, p(a)).\n\
+                       fof(nr, axiom, ~r(a)).";
+        let proof = "fof(rule, axiom, (p(a) => q(a)), file('problem.p', rule)).\
+                     fof(fact, axiom, p(a), file('problem.p', fact)).\
+                     fof(s, plain, r(a), inference(modus_ponens, [status(thm)], [rule,fact])).\
+                     fof(nr, axiom, ~r(a), file('problem.p', nr)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [s,nr])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn rejects_modus_ponens_without_an_antecedent_parent() {
+        let problem = "fof(rule, axiom, ![X] : (p(X) => q(X))).\n\
+                       fof(nq, axiom, ~q(a)).";
+        let proof = "fof(rule, axiom, ![X] : (p(X) => q(X)), file('problem.p', rule)).\
+                     fof(s, plain, q(a), inference(modus_ponens, [status(thm)], [rule])).\
+                     fof(nq, axiom, ~q(a), file('problem.p', nq)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [s,nq])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn modus_ponens_matching_limit_is_inconclusive() {
+        let problem = parse_tptp(
+            "fof(rule, axiom, ![X] : (p(X) => q(X))).\n\
+             fof(fact, axiom, p(a)).\n\
+             fof(nq, axiom, ~q(a)).",
+        )
+        .expect("problem parses");
+        let proof = parse_tptp(
+            "fof(rule, axiom, ![X] : (p(X) => q(X)), file('problem.p', rule)).\
+             fof(fact, axiom, p(a), file('problem.p', fact)).\
+             fof(s, plain, q(a), inference(modus_ponens, [status(thm)], [rule,fact])).\
+             fof(nq, axiom, ~q(a), file('problem.p', nq)).\
+             fof(bot, plain, $false, inference(resolution, [status(thm)], [s,nq])).",
+        )
+        .expect("proof parses");
+        let limits = VerificationLimits {
+            max_equivalence_steps: 1,
+            ..VerificationLimits::default()
+        };
+        assert!(matches!(
+            verify_strict(&problem, &proof, limits),
+            KernelVerdict::Inconclusive(_)
+        ));
     }
 
     #[test]
