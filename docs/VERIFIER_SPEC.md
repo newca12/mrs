@@ -109,7 +109,7 @@ The first strict kernel implementation certifies only:
 - bounded single-parent `existential_gen` steps with consistent witness
   replacement and rigid nested binders
 - bounded multi-parent `conjunction` steps with exact parent-part coverage
-  modulo associative/commutative conjunction order
+  modulo associative/commutative conjunction order and bounded matching work
 - bounded `demodulation` from cited positive unit equalities
 - bounded `superposition` into a cited target clause
 
