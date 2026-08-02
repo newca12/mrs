@@ -335,9 +335,11 @@ pub fn verify_strict_with_source(
             | "ennf_transformation"
             | "simplification"
             | "double_negation"
-            | "remove_double_negation" => verify_formula_equivalence(&parents, conclusion, limits),
+            | "remove_double_negation"
+            | "commute" => verify_formula_equivalence(&parents, conclusion, limits),
             "excluded_middle" => verify_excluded_middle(&parents, conclusion, limits),
             "modus_ponens" => verify_modus_ponens(&parents, conclusion, limits),
+            "instantiate_mp" => verify_modus_ponens(&parents, conclusion, limits),
             "horn" => verify_horn(&parents, conclusion, limits),
             "consequence" => verify_resolution(&parents, conclusion, limits),
             "ex_falso" => verify_ex_falso(&parents, limits),
@@ -472,8 +474,10 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "simplification"
         | "double_negation"
         | "remove_double_negation"
+        | "commute"
         | "excluded_middle"
         | "modus_ponens"
+        | "instantiate_mp"
         | "horn"
         | "consequence"
         | "ex_falso"
@@ -7110,6 +7114,35 @@ mod tests {
             verify_strict(&problem, &proof, VerificationLimits::default()),
             KernelVerdict::Inconclusive(_) | KernelVerdict::Rejected(_)
         ));
+    }
+
+    #[test]
+    fn certifies_commute_and_instantiate_mp_aliases() {
+        let problem = "fof(rule, axiom, ![X] : (p(X) => q(X))).\n\
+                       fof(fact, axiom, p(a)).\n\
+                       fof(nq, axiom, ~q(a)).";
+        let proof = "fof(rule, axiom, ![X] : (p(X) => q(X)), file('problem.p', rule)).\
+                     fof(fact, axiom, p(a), file('problem.p', fact)).\
+                     fof(s, plain, q(a), inference(instantiate_mp, [status(thm)], [rule,fact])).\
+                     fof(em, plain, (q(a) | ~q(a)), inference(excluded_middle, [status(thm)], [s])).\
+                     fof(commuted, plain, (~q(a) | q(a)), inference(commute, [status(thm)], [em])).\
+                     fof(nq, axiom, ~q(a), file('problem.p', nq)).\
+                     fof(mid, plain, ~q(a), inference(resolution, [status(thm)], [commuted,nq])).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [mid,s])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_instantiate_mp_with_forged_conclusion() {
+        let problem = "fof(rule, axiom, ![X] : (p(X) => q(X))).\n\
+                       fof(fact, axiom, p(a)).\n\
+                       fof(nr, axiom, ~r(a)).";
+        let proof = "fof(rule, axiom, ![X] : (p(X) => q(X)), file('problem.p', rule)).\
+                     fof(fact, axiom, p(a), file('problem.p', fact)).\
+                     fof(s, plain, r(a), inference(instantiate_mp, [status(thm)], [rule,fact])).\
+                     fof(nr, axiom, ~r(a), file('problem.p', nr)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [s,nr])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
     }
 
     #[test]

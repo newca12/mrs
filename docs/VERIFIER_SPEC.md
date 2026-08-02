@@ -129,6 +129,8 @@ The first strict kernel implementation certifies only:
 - exact one-parent `reflexivity` steps whose conclusion is `t = t`
 - bounded ground `transitivity` steps with explicit equality orientation and
   common-middle-term checks; variable-bearing chains remain inconclusive
+- `commute` through bounded formula-equivalence checking and `instantiate_mp`
+  through exact modus-ponens recomputation
 - bounded `demodulation` from cited positive unit equalities
 - bounded `superposition` into a cited target clause
 
