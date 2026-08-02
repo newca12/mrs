@@ -174,7 +174,9 @@ The kernel also rejects inconsistent predicate/function arities across the
 linked problem and proof DAG.
 
 Limits are explicit inputs to the kernel and are recorded in strict-mode
-telemetry.
+telemetry. Telemetry also reports each reachable proof node in topological
+order with its name, rule, parent count, lowered formula size, and bounded
+clause-literal count.
 
 ## 8. Required Invariants
 

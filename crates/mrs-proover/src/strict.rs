@@ -138,6 +138,23 @@ mod tests {
         assert_eq!(telemetry.proof_fof_nodes, 2);
         assert_eq!(telemetry.proof_cnf_nodes, 1);
         assert_eq!(telemetry.proof_clause_literals, 1);
+        assert_eq!(telemetry.steps.len(), 3);
+        let leaf = telemetry
+            .steps
+            .iter()
+            .find(|step| step.name == "a")
+            .expect("a telemetry step");
+        assert_eq!(leaf.rule, None);
+        assert_eq!(leaf.parent_count, 0);
+        assert!(leaf.formula_nodes > 0);
+        let root = telemetry
+            .steps
+            .iter()
+            .find(|step| step.name == "bot")
+            .expect("bot telemetry step");
+        assert_eq!(root.rule.as_deref(), Some("resolution"));
+        assert_eq!(root.parent_count, 2);
+        assert_eq!(root.clause_literals, 0);
         assert!(matches!(telemetry.verdict, KernelVerdict::Certified));
     }
 

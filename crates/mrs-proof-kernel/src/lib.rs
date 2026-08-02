@@ -35,7 +35,19 @@ pub struct VerificationTelemetry {
     pub proof_fof_nodes: usize,
     pub proof_cnf_nodes: usize,
     pub proof_clause_literals: usize,
+    /// Structural measurements for proof nodes in topological order.
+    pub steps: Vec<VerificationStepTelemetry>,
     pub verdict: KernelVerdict,
+}
+
+/// Structural measurements for one proof node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerificationStepTelemetry {
+    pub name: String,
+    pub rule: Option<String>,
+    pub parent_count: usize,
+    pub formula_nodes: usize,
+    pub clause_literals: usize,
 }
 
 impl std::fmt::Display for KernelVerdict {
@@ -125,7 +137,14 @@ pub fn verify_strict_with_telemetry_and_source(
         .filter_map(|formula| formula.as_cnf())
         .map(|formula| cnf_literal_count(&formula.formula))
         .sum();
-    let verdict = verify_strict_with_source(problem, proof, expected_source, limits);
+    let mut steps = Vec::with_capacity(proof_nodes.len());
+    let verdict = verify_strict_with_source_internal(
+        problem,
+        proof,
+        expected_source,
+        limits,
+        Some(&mut steps),
+    );
     VerificationTelemetry {
         elapsed: start.elapsed(),
         problem_nodes,
@@ -133,6 +152,7 @@ pub fn verify_strict_with_telemetry_and_source(
         proof_fof_nodes,
         proof_cnf_nodes,
         proof_clause_literals,
+        steps,
         verdict,
     }
 }
@@ -144,6 +164,16 @@ pub fn verify_strict_with_source(
     proof: &mrs_tptp::TPTPProblem<'_>,
     expected_source: Option<&str>,
     limits: VerificationLimits,
+) -> KernelVerdict {
+    verify_strict_with_source_internal(problem, proof, expected_source, limits, None)
+}
+
+fn verify_strict_with_source_internal(
+    problem: &mrs_tptp::TPTPProblem<'_>,
+    proof: &mrs_tptp::TPTPProblem<'_>,
+    expected_source: Option<&str>,
+    limits: VerificationLimits,
+    mut telemetry: Option<&mut Vec<VerificationStepTelemetry>>,
 ) -> KernelVerdict {
     let dag = match build_dag(proof, limits) {
         Ok(dag) => dag,
@@ -159,6 +189,19 @@ pub fn verify_strict_with_source(
             Err(v) => return v,
         };
         proof_formulas.insert(idx, formula);
+    }
+    if let Some(telemetry) = telemetry.as_mut() {
+        telemetry.extend(dag.topo.iter().map(|idx| {
+            let node = &dag.nodes[*idx];
+            let formula = proof_formulas.get(idx).expect("lowered proof formula");
+            VerificationStepTelemetry {
+                name: node.name.to_owned(),
+                rule: node.rule.map(str::to_owned),
+                parent_count: node.parents.len(),
+                formula_nodes: formula_size(formula),
+                clause_literals: lowered_clause_literal_count(formula, limits),
+            }
+        }));
     }
     let mut branch_contexts: HashMap<usize, BranchContext> = HashMap::new();
     let mut defined_symbols = HashSet::new();
@@ -2753,6 +2796,10 @@ fn formula_size(formula: &Formula) -> usize {
         }
         Formula::True | Formula::False => 1,
     }
+}
+
+fn lowered_clause_literal_count(formula: &Formula, limits: VerificationLimits) -> usize {
+    clause_from_formula(formula, limits).map_or(0, |clause| clause.len())
 }
 
 fn term_size(term: &Term) -> usize {
