@@ -60,3 +60,66 @@ fn resolution_mutations_never_certify() {
         );
     }
 }
+
+#[test]
+fn newly_certified_rule_mutations_never_certify() {
+    let cases = [
+        (
+            "modus_ponens",
+            "fof(rule, axiom, ![X] : (p(X) => q(X))).\nfof(fact, axiom, p(a)).\nfof(nq, axiom, ~q(a)).",
+            "fof(rule, axiom, ![X] : (p(X) => q(X)), file('problem.p', rule)).\
+             fof(fact, axiom, p(a), file('problem.p', fact)).\
+             fof(s, plain, r(a), inference(modus_ponens, [status(thm)], [rule,fact])).\
+             fof(nq, axiom, ~q(a), file('problem.p', nq)).\
+             fof(bot, plain, $false, inference(resolution, [status(thm)], [s,nq])).",
+        ),
+        (
+            "excluded_middle",
+            "fof(a, axiom, p(a)).\nfof(n, axiom, ~p(a)).",
+            "fof(a, axiom, p(a), file('problem.p', a)).\
+             fof(e, plain, (q(a) | ~q(a)), inference(excluded_middle, [status(thm)], [a])).\
+             fof(n, axiom, ~p(a), file('problem.p', n)).\
+             fof(bot, plain, $false, inference(resolution, [status(thm)], [a,n])).",
+        ),
+        (
+            "consequence",
+            "fof(p, axiom, p(a)).\nfof(q, axiom, q(a)).",
+            "fof(p, axiom, p(a), file('problem.p', p)).\
+             fof(q, axiom, q(a), file('problem.p', q)).\
+             fof(bot, plain, $false, inference(consequence, [status(thm)], [p,q])).",
+        ),
+        (
+            "reflexivity",
+            "fof(src, axiom, p(a)).\nfof(n, axiom, ~p(a)).",
+            "fof(src, axiom, p(a), file('problem.p', src)).\
+             fof(eq, plain, a = b, inference(reflexivity, [status(thm)], [src])).\
+             fof(pair, plain, (a = b & p(a)), inference(conjunction, [status(thm)], [eq,src])).\
+             fof(selected, plain, p(a), inference(split_conjunct, [status(thm)], [pair])).\
+             fof(n, axiom, ~p(a), file('problem.p', n)).\
+             fof(bot, plain, $false, inference(resolution, [status(thm)], [selected,n])).",
+        ),
+        (
+            "paramodulation",
+            "fof(eq, axiom, f(a) = b).\nfof(target, axiom, p(f(a))).",
+            "fof(eq, axiom, f(a) = b, file('problem.p', eq)).\
+             fof(target, axiom, p(f(a)), file('problem.p', target)).\
+             fof(s, plain, q(b), inference(paramodulation, [status(thm)], [eq,target])).\
+             fof(bot, plain, $false, inference(consequence, [status(thm)], [s,s])).",
+        ),
+    ];
+
+    for (name, problem_text, proof_text) in cases {
+        let problem = parse_tptp(problem_text).expect("mutation problem parses");
+        let proof = parse_tptp(proof_text).expect("mutation proof parses");
+        let verdict = verify_strict_with_source(
+            &problem,
+            &proof,
+            Some("problem.p"),
+            VerificationLimits::default(),
+        );
+        assert!(
+            !matches!(verdict, KernelVerdict::Certified),
+            "new-rule mutation `{name}` was certified: {verdict}"
+        );
+    }
+}
