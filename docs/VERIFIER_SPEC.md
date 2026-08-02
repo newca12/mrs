@@ -108,6 +108,8 @@ The first strict kernel implementation certifies only:
   nested binders
 - bounded single-parent `existential_gen` steps with consistent witness
   replacement and rigid nested binders
+- bounded multi-parent `conjunction` steps with exact parent-part coverage
+  modulo associative/commutative conjunction order
 - bounded `demodulation` from cited positive unit equalities
 - bounded `superposition` into a cited target clause
 

@@ -335,6 +335,7 @@ pub fn verify_strict_with_source(
             | "simplification" => verify_formula_equivalence(&parents, conclusion, limits),
             "instantiate" => verify_instantiation(&parents, conclusion, limits),
             "existential_gen" => verify_existential_generation(&parents, conclusion, limits),
+            "conjunction" => verify_conjunction(&parents, conclusion, limits),
             "skolemisation" | "skolemize" => verify_skolemisation(
                 node,
                 &dag,
@@ -453,6 +454,7 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "simplification"
         | "instantiate"
         | "existential_gen"
+        | "conjunction"
         | "cnf_transformation"
         | "resolution"
         | "subsumption_resolution"
@@ -1802,6 +1804,82 @@ fn verify_existential_generation(
     } else {
         KernelVerdict::Rejected("existential_gen conclusion is not a parent generalization".into())
     }
+}
+
+fn verify_conjunction(
+    parents: &[Formula],
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if parents.len() < 2 {
+        return KernelVerdict::Rejected("conjunction must have at least two parents".into());
+    }
+    if parents
+        .iter()
+        .any(|parent| formula_size(parent) > limits.max_formula_nodes)
+        || formula_size(conclusion) > limits.max_formula_nodes
+    {
+        return KernelVerdict::Inconclusive(
+            "conjunction exceeded strict formula-size limit".into(),
+        );
+    }
+    let mut conclusion_parts = Vec::new();
+    flatten_conjunction(conclusion, &mut conclusion_parts);
+    if conclusion_parts.len() != parents.len() {
+        return KernelVerdict::Rejected(
+            "conjunction conclusion does not contain exactly one part per parent".into(),
+        );
+    }
+    let mut used = vec![false; conclusion_parts.len()];
+    let mut steps = 0;
+    if match_conjunction_parts(parents, &conclusion_parts, &mut used, 0, &mut steps, limits) {
+        KernelVerdict::Certified
+    } else if steps >= limits.max_equivalence_steps {
+        KernelVerdict::Inconclusive("conjunction exceeded strict matching-step limit".into())
+    } else {
+        KernelVerdict::Rejected("conjunction conclusion does not match its parents".into())
+    }
+}
+
+fn flatten_conjunction<'a>(formula: &'a Formula, parts: &mut Vec<&'a Formula>) {
+    match formula {
+        Formula::And(children) => {
+            for child in children {
+                flatten_conjunction(child, parts);
+            }
+        }
+        _ => parts.push(formula),
+    }
+}
+
+fn match_conjunction_parts(
+    parents: &[Formula],
+    conclusion: &[&Formula],
+    used: &mut [bool],
+    index: usize,
+    steps: &mut usize,
+    limits: VerificationLimits,
+) -> bool {
+    *steps += 1;
+    if *steps > limits.max_equivalence_steps {
+        return false;
+    }
+    if index == parents.len() {
+        return true;
+    }
+    for target_index in 0..conclusion.len() {
+        if used[target_index] {
+            continue;
+        }
+        if alpha_equiv(&parents[index], conclusion[target_index]) {
+            used[target_index] = true;
+            if match_conjunction_parts(parents, conclusion, used, index + 1, steps, limits) {
+                return true;
+            }
+            used[target_index] = false;
+        }
+    }
+    false
 }
 
 #[derive(Clone, Default)]
@@ -5973,6 +6051,22 @@ mod tests {
         (parent, conclusion)
     }
 
+    fn lower_test_formulas(inputs: &[&str]) -> Vec<Formula> {
+        let mut symbols = SymbolTable::new();
+        inputs
+            .iter()
+            .map(|input| {
+                let problem = parse_tptp(input).expect("formula parses");
+                lower_annotated(
+                    &mut symbols,
+                    &problem.formulas[0],
+                    VerificationLimits::default(),
+                )
+                .expect("formula lowers")
+            })
+            .collect()
+    }
+
     #[test]
     fn certifies_existential_generation_from_ground_witness() {
         let (parent, conclusion) =
@@ -6025,6 +6119,62 @@ mod tests {
         };
         assert!(matches!(
             verify_existential_generation(&[parent], &conclusion, limits),
+            KernelVerdict::Inconclusive(_)
+        ));
+    }
+
+    #[test]
+    fn certifies_conjunction_of_parents() {
+        let formulas = lower_test_formulas(&[
+            "fof(a, axiom, p(a)).",
+            "fof(a, axiom, q(a)).",
+            "fof(a, plain, p(a) & q(a)).",
+        ]);
+        assert_eq!(
+            verify_conjunction(&formulas[..2], &formulas[2], VerificationLimits::default()),
+            KernelVerdict::Certified
+        );
+    }
+
+    #[test]
+    fn certifies_reordered_conjunction_of_parents() {
+        let formulas = lower_test_formulas(&[
+            "fof(a, axiom, p(a)).",
+            "fof(a, axiom, q(a)).",
+            "fof(a, plain, q(a) & p(a)).",
+        ]);
+        assert_eq!(
+            verify_conjunction(&formulas[..2], &formulas[2], VerificationLimits::default()),
+            KernelVerdict::Certified
+        );
+    }
+
+    #[test]
+    fn rejects_conjunction_with_missing_parent_part() {
+        let problem = "fof(a, axiom, p(a)).\nfof(b, axiom, q(a)).";
+        let proof = "fof(a, axiom, p(a), file('problem.p', a)).\
+                     fof(b, axiom, q(a), file('problem.p', b)).\
+                     fof(c, plain, p(a), inference(conjunction, [status(thm)], [a,b])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [c])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn conjunction_matching_limit_is_inconclusive() {
+        let problem = "fof(a, axiom, p(a)).\nfof(b, axiom, q(a)).";
+        let proof = "fof(a, axiom, p(a), file('problem.p', a)).\
+                     fof(b, axiom, q(a), file('problem.p', b)).\
+                     fof(c, plain, (p(a) & q(a)),\
+                         inference(conjunction, [status(thm)], [a,b])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [c])).";
+        let problem = parse_tptp(problem).expect("problem parses");
+        let proof = parse_tptp(proof).expect("proof parses");
+        let limits = VerificationLimits {
+            max_equivalence_steps: 1,
+            ..VerificationLimits::default()
+        };
+        assert!(matches!(
+            verify_strict(&problem, &proof, limits),
             KernelVerdict::Inconclusive(_)
         ));
     }
