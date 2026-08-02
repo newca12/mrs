@@ -110,6 +110,8 @@ The first strict kernel implementation certifies only:
   replacement and rigid nested binders
 - bounded multi-parent `conjunction` steps with exact parent-part coverage
   modulo associative/commutative conjunction order and bounded matching work
+- bounded single-parent `split_conjunct` projection with preserved universal
+  prefixes
 - bounded `demodulation` from cited positive unit equalities
 - bounded `superposition` into a cited target clause
 

@@ -336,6 +336,7 @@ pub fn verify_strict_with_source(
             "instantiate" => verify_instantiation(&parents, conclusion, limits),
             "existential_gen" => verify_existential_generation(&parents, conclusion, limits),
             "conjunction" => verify_conjunction(&parents, conclusion, limits),
+            "split_conjunct" => verify_split_conjunct(&parents, conclusion, limits),
             "skolemisation" | "skolemize" => verify_skolemisation(
                 node,
                 &dag,
@@ -455,6 +456,7 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "instantiate"
         | "existential_gen"
         | "conjunction"
+        | "split_conjunct"
         | "cnf_transformation"
         | "resolution"
         | "subsumption_resolution"
@@ -1839,6 +1841,60 @@ fn verify_conjunction(
     } else {
         KernelVerdict::Rejected("conjunction conclusion does not match its parents".into())
     }
+}
+
+fn verify_split_conjunct(
+    parents: &[Formula],
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if parents.len() != 1 {
+        return KernelVerdict::Rejected("split_conjunct must have one parent".into());
+    }
+    if formula_size(&parents[0]) > limits.max_formula_nodes
+        || formula_size(conclusion) > limits.max_formula_nodes
+    {
+        return KernelVerdict::Inconclusive(
+            "split_conjunct exceeded strict formula-size limit".into(),
+        );
+    }
+    let mut parent_binders = Vec::new();
+    let parent_body = strip_leading_foralls(&parents[0], &mut parent_binders);
+    let mut conclusion_binders = Vec::new();
+    let conclusion_body = strip_leading_foralls(conclusion, &mut conclusion_binders);
+    if parent_binders.len() != conclusion_binders.len() {
+        return KernelVerdict::Rejected(
+            "split_conjunct conclusion changes the universal prefix".into(),
+        );
+    }
+    let mut parts = Vec::new();
+    flatten_conjunction(parent_body, &mut parts);
+    for (steps, part) in parts.into_iter().enumerate() {
+        if steps >= limits.max_equivalence_steps {
+            return KernelVerdict::Inconclusive(
+                "split_conjunct exceeded strict matching-step limit".into(),
+            );
+        }
+        let mut parent_wrapped = part.clone();
+        for binder in parent_binders.iter().rev() {
+            parent_wrapped = Formula::forall(*binder, parent_wrapped);
+        }
+        if alpha_equiv(&parent_wrapped, conclusion)
+            || (parent_binders.is_empty() && alpha_equiv(part, conclusion_body))
+        {
+            return KernelVerdict::Certified;
+        }
+    }
+    KernelVerdict::Rejected("split_conjunct conclusion is not a parent conjunct".into())
+}
+
+fn strip_leading_foralls<'a>(formula: &'a Formula, binders: &mut Vec<VarId>) -> &'a Formula {
+    let mut current = formula;
+    while let Formula::Forall(variable, body) = current {
+        binders.push(*variable);
+        current = body;
+    }
+    current
 }
 
 fn flatten_conjunction<'a>(formula: &'a Formula, parts: &mut Vec<&'a Formula>) {
@@ -6175,6 +6231,52 @@ mod tests {
         };
         assert!(matches!(
             verify_strict(&problem, &proof, limits),
+            KernelVerdict::Inconclusive(_)
+        ));
+    }
+
+    #[test]
+    fn certifies_split_conjunct() {
+        let (parent, conclusion) =
+            lower_test_formula_pair("fof(a, axiom, p(a) & q(a)).", "fof(a, plain, p(a)).");
+        assert_eq!(
+            verify_split_conjunct(&[parent], &conclusion, VerificationLimits::default()),
+            KernelVerdict::Certified
+        );
+    }
+
+    #[test]
+    fn certifies_split_conjunct_under_universal_prefix() {
+        let (parent, conclusion) = lower_test_formula_pair(
+            "fof(a, axiom, ![X] : (p(X) & q(X))).",
+            "fof(a, plain, ![X] : q(X)).",
+        );
+        assert_eq!(
+            verify_split_conjunct(&[parent], &conclusion, VerificationLimits::default()),
+            KernelVerdict::Certified
+        );
+    }
+
+    #[test]
+    fn rejects_split_conjunct_with_non_conjunct() {
+        let (parent, conclusion) =
+            lower_test_formula_pair("fof(a, axiom, p(a) & q(a)).", "fof(a, plain, r(a)).");
+        assert!(matches!(
+            verify_split_conjunct(&[parent], &conclusion, VerificationLimits::default()),
+            KernelVerdict::Rejected(_)
+        ));
+    }
+
+    #[test]
+    fn split_conjunct_matching_limit_is_inconclusive() {
+        let (parent, conclusion) =
+            lower_test_formula_pair("fof(a, axiom, p(a) & q(a)).", "fof(a, plain, q(a)).");
+        let limits = VerificationLimits {
+            max_equivalence_steps: 1,
+            ..VerificationLimits::default()
+        };
+        assert!(matches!(
+            verify_split_conjunct(&[parent], &conclusion, limits),
             KernelVerdict::Inconclusive(_)
         ));
     }
