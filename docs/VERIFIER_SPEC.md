@@ -131,6 +131,8 @@ The first strict kernel implementation certifies only:
   common-middle-term checks; variable-bearing chains remain inconclusive
 - `commute` through bounded formula-equivalence checking and `instantiate_mp`
   through exact modus-ponens recomputation
+- bounded `contrapositive` implication steps and `disjunctive_syllogism`
+  disjunct deletion, both recomputed from their cited parents
 - bounded `demodulation` from cited positive unit equalities
 - bounded `superposition` into a cited target clause
 

@@ -340,6 +340,8 @@ pub fn verify_strict_with_source(
             "excluded_middle" => verify_excluded_middle(&parents, conclusion, limits),
             "modus_ponens" => verify_modus_ponens(&parents, conclusion, limits),
             "instantiate_mp" => verify_modus_ponens(&parents, conclusion, limits),
+            "contrapositive" => verify_contrapositive(&parents, conclusion, limits),
+            "disjunctive_syllogism" => verify_disjunctive_syllogism(&parents, conclusion, limits),
             "horn" => verify_horn(&parents, conclusion, limits),
             "consequence" => verify_resolution(&parents, conclusion, limits),
             "ex_falso" => verify_ex_falso(&parents, limits),
@@ -478,6 +480,8 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "excluded_middle"
         | "modus_ponens"
         | "instantiate_mp"
+        | "contrapositive"
+        | "disjunctive_syllogism"
         | "horn"
         | "consequence"
         | "ex_falso"
@@ -1994,6 +1998,137 @@ fn verify_modus_ponens(
     } else {
         KernelVerdict::Rejected("modus_ponens conclusion does not follow from its parents".into())
     }
+}
+
+fn verify_contrapositive(
+    parents: &[Formula],
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if parents.len() != 2 {
+        return KernelVerdict::Rejected("contrapositive must have two parents".into());
+    }
+    if parents
+        .iter()
+        .any(|parent| formula_size(parent) > limits.max_formula_nodes)
+        || formula_size(conclusion) > limits.max_formula_nodes
+    {
+        return KernelVerdict::Inconclusive(
+            "contrapositive exceeded strict formula-size limit".into(),
+        );
+    }
+    let Formula::Neg(conclusion_inner) = conclusion else {
+        return KernelVerdict::Rejected("contrapositive conclusion is not negated".into());
+    };
+    let mut exhausted = false;
+    for (implication_index, premise_index) in [(0, 1), (1, 0)] {
+        let (_, implication) = leading_forall_core(&parents[implication_index]);
+        if !matches!(implication, Formula::Implies(_, _)) {
+            continue;
+        }
+        let Formula::Neg(premise_inner) = &parents[premise_index] else {
+            continue;
+        };
+        let target = Formula::implies((**conclusion_inner).clone(), (**premise_inner).clone());
+        let mut substitution = HashMap::new();
+        let mut bound = HashMap::new();
+        let mut steps = 0;
+        if !match_universal_instance(
+            implication,
+            &target,
+            &mut substitution,
+            &mut bound,
+            &mut steps,
+            limits,
+        ) {
+            exhausted |= steps >= limits.max_equivalence_steps;
+            continue;
+        }
+        let mut core_substitution = Substitution::new();
+        for (variable, term) in substitution {
+            core_substitution.bind(variable, term);
+        }
+        if alpha_equiv(&core_substitution.apply_formula(implication), &target) {
+            return KernelVerdict::Certified;
+        }
+    }
+    if exhausted {
+        KernelVerdict::Inconclusive("contrapositive exceeded strict matching-step limit".into())
+    } else {
+        KernelVerdict::Rejected("contrapositive conclusion does not follow from its parents".into())
+    }
+}
+
+fn verify_disjunctive_syllogism(
+    parents: &[Formula],
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if parents.len() != 2 {
+        return KernelVerdict::Rejected("disjunctive_syllogism must have two parents".into());
+    }
+    if parents
+        .iter()
+        .any(|parent| formula_size(parent) > limits.max_formula_nodes)
+        || formula_size(conclusion) > limits.max_formula_nodes
+    {
+        return KernelVerdict::Inconclusive(
+            "disjunctive_syllogism exceeded strict formula-size limit".into(),
+        );
+    }
+    let mut steps = 0;
+    let Some(disjunction) = canonicalize_equivalence(&to_nnf(&parents[0]), &mut steps, limits)
+    else {
+        return KernelVerdict::Inconclusive(
+            "disjunctive_syllogism exceeded strict matching-step limit".into(),
+        );
+    };
+    let Some(negative) = canonicalize_equivalence(&to_nnf(&parents[1]), &mut steps, limits) else {
+        return KernelVerdict::Inconclusive(
+            "disjunctive_syllogism exceeded strict matching-step limit".into(),
+        );
+    };
+    let Formula::Neg(removed) = negative else {
+        return KernelVerdict::Rejected(
+            "disjunctive_syllogism second parent is not negated".into(),
+        );
+    };
+    let mut disjuncts = Vec::new();
+    flatten_disjunction(&disjunction, &mut disjuncts);
+    if disjuncts.len() < 2 {
+        return KernelVerdict::Rejected(
+            "disjunctive_syllogism first parent is not a disjunction".into(),
+        );
+    }
+    let Some(conclusion) = canonicalize_equivalence(&to_nnf(conclusion), &mut steps, limits) else {
+        return KernelVerdict::Inconclusive(
+            "disjunctive_syllogism exceeded strict matching-step limit".into(),
+        );
+    };
+    for removed_index in 0..disjuncts.len() {
+        if steps >= limits.max_equivalence_steps {
+            return KernelVerdict::Inconclusive(
+                "disjunctive_syllogism exceeded strict matching-step limit".into(),
+            );
+        }
+        steps += 1;
+        if !alpha_equiv(disjuncts[removed_index], &removed) {
+            continue;
+        }
+        let remaining = disjuncts
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != removed_index)
+            .map(|(_, part)| (*part).clone())
+            .collect();
+        let expected = Formula::or(remaining);
+        if alpha_equiv(&expected, &conclusion) {
+            return KernelVerdict::Certified;
+        }
+    }
+    KernelVerdict::Rejected(
+        "disjunctive_syllogism conclusion is not the remaining disjunction".into(),
+    )
 }
 
 fn verify_horn(
@@ -7142,6 +7277,52 @@ mod tests {
                      fof(s, plain, r(a), inference(instantiate_mp, [status(thm)], [rule,fact])).\
                      fof(nr, axiom, ~r(a), file('problem.p', nr)).\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [s,nr])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn certifies_contrapositive_and_disjunctive_syllogism() {
+        let problem = "fof(rule, axiom, ![X] : (p(X) => q(X))).\n\
+                       fof(nq, axiom, ~q(a)).\n\
+                       fof(disj, axiom, (r(a) | q(a))).\n\
+                       fof(nq2, axiom, ~q(a)).\n\
+                       fof(nr, axiom, ~r(a)).";
+        let proof = "fof(rule, axiom, ![X] : (p(X) => q(X)), file('problem.p', rule)).\
+                     fof(nq, axiom, ~q(a), file('problem.p', nq)).\
+                     fof(np, plain, ~p(a), inference(contrapositive, [status(thm)], [rule,nq])).\
+                     fof(disj, axiom, (r(a) | q(a)), file('problem.p', disj)).\
+                     fof(nq2, axiom, ~q(a), file('problem.p', nq)).\
+                     fof(r, plain, r(a), inference(disjunctive_syllogism, [status(thm)], [disj,nq2])).\
+                     fof(nr, axiom, ~r(a), file('problem.p', nr)).\
+                     fof(mid, plain, $false, inference(resolution, [status(thm)], [r,nr])).\
+                     fof(ex, plain, p(a), inference(ex_falso, [status(thm)], [mid])).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [ex,np])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_contrapositive_with_forged_conclusion() {
+        let problem = "fof(rule, axiom, ![X] : (p(X) => q(X))).\n\
+                       fof(nq, axiom, ~q(a)).\n\
+                       fof(nr, axiom, ~r(a)).";
+        let proof = "fof(rule, axiom, ![X] : (p(X) => q(X)), file('problem.p', rule)).\
+                     fof(nq, axiom, ~q(a), file('problem.p', nq)).\
+                     fof(nr, axiom, ~r(a), file('problem.p', nr)).\
+                     fof(np, plain, ~p(a), inference(contrapositive, [status(thm)], [rule,nr])).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [np,nq])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn rejects_disjunctive_syllogism_with_wrong_remaining_disjunct() {
+        let problem = "fof(disj, axiom, (p(a) | q(a))).\n\
+                       fof(nq, axiom, ~q(a)).\n\
+                       fof(ns, axiom, ~s(a)).";
+        let proof = "fof(disj, axiom, (p(a) | q(a)), file('problem.p', disj)).\
+                     fof(nq, axiom, ~q(a), file('problem.p', nq)).\
+                     fof(s, plain, s(a), inference(disjunctive_syllogism, [status(thm)], [disj,nq])).\
+                     fof(ns, axiom, ~s(a), file('problem.p', ns)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [s,ns])).";
         assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
     }
 
