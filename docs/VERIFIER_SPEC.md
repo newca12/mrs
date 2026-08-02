@@ -114,6 +114,7 @@ The first strict kernel implementation certifies only:
   prefixes
 - structural `copy`, rename/alpha, and double-negation aliases checked as
   identity or equivalence with bounded canonicalization, never by rule name alone
+- bounded single-parent `excluded_middle` construction of `A | ~A`
 - bounded `demodulation` from cited positive unit equalities
 - bounded `superposition` into a cited target clause
 

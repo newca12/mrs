@@ -337,6 +337,7 @@ pub fn verify_strict_with_source(
             | "simplification"
             | "double_negation"
             | "remove_double_negation" => verify_formula_equivalence(&parents, conclusion, limits),
+            "excluded_middle" => verify_excluded_middle(&parents, conclusion, limits),
             "instantiate" => verify_instantiation(&parents, conclusion, limits),
             "existential_gen" => verify_existential_generation(&parents, conclusion, limits),
             "conjunction" => verify_conjunction(&parents, conclusion, limits),
@@ -463,6 +464,7 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "simplification"
         | "double_negation"
         | "remove_double_negation"
+        | "excluded_middle"
         | "instantiate"
         | "existential_gen"
         | "conjunction"
@@ -1896,6 +1898,44 @@ fn verify_split_conjunct(
         }
     }
     KernelVerdict::Rejected("split_conjunct conclusion is not a parent conjunct".into())
+}
+
+fn verify_excluded_middle(
+    parents: &[Formula],
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if parents.len() != 1 {
+        return KernelVerdict::Rejected("excluded_middle must have one parent".into());
+    }
+    if formula_size(&parents[0]) > limits.max_formula_nodes
+        || formula_size(conclusion) > limits.max_formula_nodes
+    {
+        return KernelVerdict::Inconclusive(
+            "excluded_middle exceeded strict formula-size limit".into(),
+        );
+    }
+    let expected = Formula::or(vec![parents[0].clone(), Formula::neg(parents[0].clone())]);
+    if formula_equivalent_with_limit(&expected, conclusion, limits) {
+        KernelVerdict::Certified
+    } else {
+        KernelVerdict::Rejected("excluded_middle conclusion is not A | ~A".into())
+    }
+}
+
+fn formula_equivalent_with_limit(
+    left: &Formula,
+    right: &Formula,
+    limits: VerificationLimits,
+) -> bool {
+    let mut steps = 0;
+    let Some(left) = canonicalize_equivalence(&to_nnf(left), &mut steps, limits) else {
+        return false;
+    };
+    let Some(right) = canonicalize_equivalence(&to_nnf(right), &mut steps, limits) else {
+        return false;
+    };
+    alpha_equiv(&left, &right)
 }
 
 fn strip_leading_foralls<'a>(formula: &'a Formula, binders: &mut Vec<VarId>) -> &'a Formula {
@@ -5807,7 +5847,7 @@ mod tests {
         )
         .expect("proof parses");
         let limits = VerificationLimits {
-            max_equivalence_steps: 1,
+            max_formula_nodes: 2,
             ..VerificationLimits::default()
         };
         assert!(matches!(
@@ -6180,7 +6220,7 @@ mod tests {
         let (parent, conclusion) =
             lower_test_formula_pair("fof(a, axiom, p(a)).", "fof(a, plain, ?[X] : p(X)).");
         let limits = VerificationLimits {
-            max_equivalence_steps: 1,
+            max_formula_nodes: 2,
             ..VerificationLimits::default()
         };
         assert!(matches!(
@@ -6330,6 +6370,49 @@ mod tests {
                      fof(f, axiom, $false, file('problem.p', f)).\
                      fof(bot, plain, $false, inference(conjunction, [status(thm)], [d,f])).";
         assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn certifies_excluded_middle() {
+        let problem = "fof(a, axiom, p(a)).\nfof(n, axiom, ~p(a)).";
+        let proof = "fof(a, axiom, p(a), file('problem.p', a)).\
+                     fof(e, plain, (p(a) | ~p(a)),\
+                         inference(excluded_middle, [status(thm)], [a])).\
+                     fof(n, axiom, ~p(a), file('problem.p', n)).\
+                     fof(mid, plain, ~p(a), inference(resolution, [status(thm)], [e,n])).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [mid,a])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_excluded_middle_with_changed_formula() {
+        let problem = "fof(a, axiom, p(a)).\nfof(n, axiom, ~p(a)).";
+        let proof = "fof(a, axiom, p(a), file('problem.p', a)).\
+                     fof(e, plain, (q(a) | ~q(a)),\
+                         inference(excluded_middle, [status(thm)], [a])).\
+                     fof(n, axiom, ~p(a), file('problem.p', n)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [a,n])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn excluded_middle_matching_limit_is_inconclusive() {
+        let problem = parse_tptp("fof(a, axiom, (p(a) & q(a) & r(a))).").expect("problem parses");
+        let proof = parse_tptp(
+            "fof(a, axiom, (p(a) & q(a) & r(a)), file('problem.p', a)).\
+             fof(e, plain, ((p(a) & q(a) & r(a)) | ~(p(a) & q(a) & r(a))),\
+                 inference(excluded_middle, [status(thm)], [a])).\
+             fof(bot, plain, $false, inference(consequence, [status(thm)], [e])).",
+        )
+        .expect("proof parses");
+        let limits = VerificationLimits {
+            max_formula_nodes: 2,
+            ..VerificationLimits::default()
+        };
+        assert!(matches!(
+            verify_strict(&problem, &proof, limits),
+            KernelVerdict::Inconclusive(_)
+        ));
     }
 
     #[test]
