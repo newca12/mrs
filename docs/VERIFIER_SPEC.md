@@ -95,6 +95,10 @@ The first strict kernel implementation certifies only:
 - exact single-clause `cnf_transformation`, including bounded nested fresh
   Tseitin definitions, flat clause-shaped full definitions, and transitive
   definition dependencies
+- bounded quantified `cnf_transformation` after one explicitly cited,
+  independently checked Skolemization parent; NNF, universal prenexing, and
+  clause expansion are recomputed, while missing/unrelated witness parents
+  remain inconclusive or rejected
 - first-order `resolution`
 - first-order `subsumption_resolution` with standardized-apart multiset
   matching and exact target-literal deletion
@@ -138,9 +142,9 @@ The first strict kernel implementation certifies only:
 - bounded `demodulation` from cited positive unit equalities
 - bounded `superposition` into a cited target clause
 
-Incomplete or multi-parent E-style `skolemize` forms, general
-directional/quantified multi-parent CNF transformations, and general AVATAR SAT
-certificates remain inconclusive until their kernel rules are implemented.
+Incomplete or multi-parent E-style `skolemize` forms, general directional
+multi-parent CNF transformations, and general AVATAR SAT certificates remain
+inconclusive until their kernel rules are implemented.
 CWA-style splits are accepted only through the explicit case-split certificate
 described below.
 

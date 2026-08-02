@@ -808,18 +808,46 @@ fn verify_cnf_transformation(
             "CNF transformation parent metadata is inconsistent".into(),
         );
     }
-    let source = &parents[0];
-    if contains_exists(source) {
-        return KernelVerdict::Inconclusive(
-            "strict CNF transformation requires an existential-free parent".into(),
-        );
+    let source_origin_position = 0;
+    let mut source_position = source_origin_position;
+    if contains_exists(&parents[0]) {
+        let candidates = parents
+            .iter()
+            .enumerate()
+            .skip(1)
+            .filter(|(_, parent)| !contains_exists(parent))
+            .filter(|(position, _)| {
+                let parent_idx = parent_indices[*position];
+                matches!(
+                    dag.nodes[parent_idx].rule,
+                    Some("skolemisation" | "skolemize")
+                )
+            })
+            .collect::<Vec<_>>();
+        if candidates.len() != 1 {
+            return KernelVerdict::Inconclusive(
+                "existential CNF transformation requires one cited Skolemization parent".into(),
+            );
+        }
+        let (position, _) = candidates[0];
+        let skolem_idx = parent_indices[position];
+        if !dag_has_ancestor(dag, skolem_idx, parent_indices[source_origin_position]) {
+            return KernelVerdict::Rejected(
+                "CNF Skolemization parent does not cite the existential source".into(),
+            );
+        }
+        source_position = position;
     }
+    let source = &parents[source_position];
     let Some(goal) = clause_from_formula(conclusion, limits) else {
         return KernelVerdict::Inconclusive("CNF conclusion is not a supported clause".into());
     };
 
     let mut definitions = Vec::with_capacity(parents.len().saturating_sub(1));
-    for (parent, parent_idx) in parents.iter().skip(1).zip(&parent_indices[1..]) {
+    for (position, (parent, parent_idx)) in parents.iter().zip(parent_indices).enumerate() {
+        if position == source_origin_position || position == source_position {
+            continue;
+        }
         if !dag.nodes[*parent_idx]
             .formula
             .annotations()
@@ -845,9 +873,13 @@ fn verify_cnf_transformation(
             "CNF definition replacement exceeded strict limits".into(),
         );
     };
+    let normalized = match normalize_quantified_cnf(&named_source, limits) {
+        Ok(formula) => formula,
+        Err(verdict) => return verdict,
+    };
+    let normalized_matrix = strip_forall_core(&normalized);
     let mut expanded = Vec::new();
-    let normalized = to_nnf(&named_source);
-    if !cnf_expand(&normalized, &mut expanded, limits) {
+    if !cnf_expand(normalized_matrix, &mut expanded, limits) {
         return KernelVerdict::Inconclusive("CNF expansion exceeded strict limits".into());
     }
     if expanded.len() > limits.max_nodes {
@@ -916,6 +948,161 @@ fn strip_forall_core(formula: &Formula) -> &Formula {
         current = body;
     }
     current
+}
+
+fn dag_has_ancestor(dag: &Dag<'_>, start: usize, target: usize) -> bool {
+    let mut stack = vec![start];
+    let mut visited = HashSet::new();
+    while let Some(index) = stack.pop() {
+        if !visited.insert(index) {
+            continue;
+        }
+        if index == target {
+            return true;
+        }
+        for parent in &dag.nodes[index].parents {
+            if let Some(parent_index) = dag.by_name.get(parent.name) {
+                stack.push(*parent_index);
+            }
+        }
+    }
+    false
+}
+
+fn normalize_quantified_cnf(
+    formula: &Formula,
+    limits: VerificationLimits,
+) -> Result<Formula, KernelVerdict> {
+    let normalized = to_nnf(formula);
+    if formula_size(&normalized) > limits.max_formula_nodes {
+        return Err(KernelVerdict::Inconclusive(
+            "quantified CNF normalization exceeded strict formula-size limit".into(),
+        ));
+    }
+    let mut next_var = max_formula_var(&normalized).saturating_add(1);
+    let mut steps = 0;
+    let (prefix, matrix) = prenex_quantified_cnf(
+        &normalized,
+        &mut next_var,
+        &mut steps,
+        limits.max_equivalence_steps,
+    )?;
+    let mut result = matrix;
+    for variable in prefix.into_iter().rev() {
+        result = Formula::forall(variable, result);
+    }
+    Ok(result)
+}
+
+fn prenex_quantified_cnf(
+    formula: &Formula,
+    next_var: &mut VarId,
+    steps: &mut usize,
+    step_limit: usize,
+) -> Result<(Vec<VarId>, Formula), KernelVerdict> {
+    *steps += 1;
+    if *steps > step_limit {
+        return Err(KernelVerdict::Inconclusive(
+            "quantified CNF normalization exceeded strict matching-step limit".into(),
+        ));
+    }
+    match formula {
+        Formula::Forall(variable, body) => {
+            let (mut prefix, matrix) = prenex_quantified_cnf(body, next_var, steps, step_limit)?;
+            prefix.insert(0, *variable);
+            Ok((prefix, matrix))
+        }
+        Formula::Exists(_, _) => Err(KernelVerdict::Inconclusive(
+            "quantified CNF source contains an uneliminated existential".into(),
+        )),
+        Formula::And(parts) | Formula::Or(parts) => {
+            let is_conjunction = matches!(formula, Formula::And(_));
+            let mut prefix = Vec::new();
+            let mut matrices = Vec::with_capacity(parts.len());
+            for part in parts {
+                let (part_prefix, mut matrix) =
+                    prenex_quantified_cnf(part, next_var, steps, step_limit)?;
+                let mut fresh_prefix = Vec::with_capacity(part_prefix.len());
+                for variable in part_prefix {
+                    let fresh = *next_var;
+                    *next_var = next_var.saturating_add(1);
+                    matrix = rename_formula_variable(&matrix, variable, fresh);
+                    fresh_prefix.push(fresh);
+                }
+                prefix.extend(fresh_prefix);
+                matrices.push(matrix);
+            }
+            let matrix = if is_conjunction {
+                Formula::and(matrices)
+            } else {
+                Formula::or(matrices)
+            };
+            Ok((prefix, matrix))
+        }
+        Formula::Neg(inner) => {
+            let (prefix, matrix) = prenex_quantified_cnf(inner, next_var, steps, step_limit)?;
+            Ok((prefix, Formula::neg(matrix)))
+        }
+        Formula::Implies(_, _) | Formula::Iff(_, _) => {
+            let normalized = to_nnf(formula);
+            prenex_quantified_cnf(&normalized, next_var, steps, step_limit)
+        }
+        Formula::Atom(_) | Formula::True | Formula::False => Ok((Vec::new(), formula.clone())),
+    }
+}
+
+fn rename_formula_variable(formula: &Formula, from: VarId, to: VarId) -> Formula {
+    fn rename_term(term: &Term, from: VarId, to: VarId) -> Term {
+        match term {
+            Term::Var(variable) if *variable == from => Term::Var(to),
+            Term::Var(variable) => Term::Var(*variable),
+            Term::App(symbol, args) => Term::App(
+                *symbol,
+                args.iter().map(|arg| rename_term(arg, from, to)).collect(),
+            ),
+        }
+    }
+    match formula {
+        Formula::Atom(Atom::Pred(symbol, args)) => Formula::atom(Atom::Pred(
+            *symbol,
+            args.iter().map(|arg| rename_term(arg, from, to)).collect(),
+        )),
+        Formula::Atom(Atom::Eq(left, right)) => Formula::atom(Atom::Eq(
+            rename_term(left, from, to),
+            rename_term(right, from, to),
+        )),
+        Formula::Neg(inner) => Formula::neg(rename_formula_variable(inner, from, to)),
+        Formula::And(parts) => Formula::and(
+            parts
+                .iter()
+                .map(|part| rename_formula_variable(part, from, to))
+                .collect(),
+        ),
+        Formula::Or(parts) => Formula::or(
+            parts
+                .iter()
+                .map(|part| rename_formula_variable(part, from, to))
+                .collect(),
+        ),
+        Formula::Implies(left, right) => Formula::implies(
+            rename_formula_variable(left, from, to),
+            rename_formula_variable(right, from, to),
+        ),
+        Formula::Iff(left, right) => Formula::iff(
+            rename_formula_variable(left, from, to),
+            rename_formula_variable(right, from, to),
+        ),
+        Formula::Forall(variable, body) => Formula::forall(
+            if *variable == from { to } else { *variable },
+            rename_formula_variable(body, from, to),
+        ),
+        Formula::Exists(variable, body) => Formula::exists(
+            if *variable == from { to } else { *variable },
+            rename_formula_variable(body, from, to),
+        ),
+        Formula::True => Formula::True,
+        Formula::False => Formula::False,
+    }
 }
 
 fn core_definition_head(formula: &Formula) -> Option<Atom> {
@@ -6369,6 +6556,87 @@ mod tests {
                      fof(n, axiom, ~p, file('problem.p', n)).\
                      cnf(bot, plain, $false, inference(resolution, [status(thm)], [sc,n])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_quantified_cnf_after_explicit_skolemization() {
+        let problem = "fof(src, axiom, ?[X] : p(X)).\n\
+                       fof(n, axiom, ![X] : ~p(X)).";
+        let proof = "fof(src, axiom, ?[X] : p(X), file('problem.p', src)).\
+                     fof(n, axiom, ![X] : ~p(X), file('problem.p', n)).\
+                     fof(sk, plain, p(sk0), inference(skolemisation, [status(esa)], [src])).\
+                     cnf(c, plain, p(sk0), inference(cnf_transformation, [status(thm)], [src,sk])).\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [c,n])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_cnf_with_quantifiers_under_disjunction() {
+        let problem = "fof(src, axiom, (![X] : p(X)) | (![Y] : q(Y))).\n\
+                       fof(np, axiom, ![X] : ~p(X)).\n\
+                       fof(nq, axiom, ![Y] : ~q(Y)).";
+        let proof = "fof(src, axiom, (![X] : p(X)) | (![Y] : q(Y)), file('problem.p', src)).\
+                     fof(np, axiom, ![X] : ~p(X), file('problem.p', np)).\
+                     fof(nq, axiom, ![Y] : ~q(Y), file('problem.p', nq)).\
+                     cnf(c, plain, p(X) | q(Y), inference(cnf_transformation, [status(thm)], [src])).\
+                     cnf(mid, plain, q(Y), inference(resolution, [status(thm)], [c,np])).\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [mid,nq])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn quantified_cnf_requires_a_cited_skolemization_parent() {
+        let problem = "fof(src, axiom, ?[X] : p(X)).\n\
+                       fof(n, axiom, ![X] : ~p(X)).";
+        let proof = "fof(src, axiom, ?[X] : p(X), file('problem.p', src)).\
+                     fof(n, axiom, ![X] : ~p(X), file('problem.p', n)).\
+                     cnf(c, plain, p(sk0), inference(cnf_transformation, [status(thm)], [src])).\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [c,n])).";
+        assert!(matches!(
+            check(problem, proof),
+            KernelVerdict::Inconclusive(_)
+        ));
+    }
+
+    #[test]
+    fn quantified_cnf_rejects_unrelated_skolemization_parent() {
+        let problem = "fof(src, axiom, ?[X] : p(X)).\n\
+                       fof(other, axiom, ?[X] : q(X)).\n\
+                       fof(n, axiom, ![X] : ~p(X)).";
+        let proof = "fof(src, axiom, ?[X] : p(X), file('problem.p', src)).\
+                     fof(other, axiom, ?[X] : q(X), file('problem.p', other)).\
+                     fof(n, axiom, ![X] : ~p(X), file('problem.p', n)).\
+                     fof(sk, plain, q(sk0), inference(skolemisation, [status(esa)], [other])).\
+                     cnf(c, plain, p(sk0), inference(cnf_transformation, [status(thm)], [src,sk])).\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [c,n])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn quantified_cnf_normalization_limit_is_inconclusive() {
+        let problem = parse_tptp(
+            "fof(src, axiom, (![X] : p(X)) | (![Y] : q(Y))).\n\
+             fof(np, axiom, ![X] : ~p(X)).\n\
+             fof(nq, axiom, ![Y] : ~q(Y)).",
+        )
+        .expect("problem parses");
+        let proof = parse_tptp(
+            "fof(src, axiom, (![X] : p(X)) | (![Y] : q(Y)), file('problem.p', src)).\
+             fof(np, axiom, ![X] : ~p(X), file('problem.p', np)).\
+             fof(nq, axiom, ![Y] : ~q(Y), file('problem.p', nq)).\
+             cnf(c, plain, p(X) | q(Y), inference(cnf_transformation, [status(thm)], [src])).\
+             cnf(mid, plain, q(Y), inference(resolution, [status(thm)], [c,np])).\
+             cnf(bot, plain, $false, inference(resolution, [status(thm)], [mid,nq])).",
+        )
+        .expect("proof parses");
+        let limits = VerificationLimits {
+            max_equivalence_steps: 1,
+            ..VerificationLimits::default()
+        };
+        assert!(matches!(
+            verify_strict(&problem, &proof, limits),
+            KernelVerdict::Inconclusive(_)
+        ));
     }
 
     #[test]
