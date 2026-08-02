@@ -126,6 +126,7 @@ The first strict kernel implementation certifies only:
   contradiction
 - bounded `weaken` steps that add disjuncts to a parent clause after independent
   NNF/canonicalization
+- exact one-parent `reflexivity` steps whose conclusion is `t = t`
 - bounded `demodulation` from cited positive unit equalities
 - bounded `superposition` into a cited target clause
 

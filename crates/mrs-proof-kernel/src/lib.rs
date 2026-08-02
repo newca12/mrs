@@ -342,6 +342,7 @@ pub fn verify_strict_with_source(
             "consequence" => verify_resolution(&parents, conclusion, limits),
             "ex_falso" => verify_ex_falso(&parents, limits),
             "weaken" => verify_weakening(&parents, conclusion, limits),
+            "reflexivity" => verify_reflexivity(&parents, conclusion),
             "instantiate" => verify_instantiation(&parents, conclusion, limits),
             "existential_gen" => verify_existential_generation(&parents, conclusion, limits),
             "conjunction" => verify_conjunction(&parents, conclusion, limits),
@@ -476,6 +477,7 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "consequence"
         | "ex_falso"
         | "weaken"
+        | "reflexivity"
         | "instantiate"
         | "existential_gen"
         | "conjunction"
@@ -2120,6 +2122,17 @@ fn verify_weakening(
         KernelVerdict::Inconclusive("weaken exceeded strict matching-step limit".into())
     } else {
         KernelVerdict::Rejected("weaken conclusion does not contain the parent disjuncts".into())
+    }
+}
+
+fn verify_reflexivity(parents: &[Formula], conclusion: &Formula) -> KernelVerdict {
+    if parents.len() != 1 {
+        return KernelVerdict::Rejected("reflexivity must have one parent".into());
+    }
+    if matches!(conclusion, Formula::Atom(Atom::Eq(left, right)) if left == right) {
+        KernelVerdict::Certified
+    } else {
+        KernelVerdict::Rejected("reflexivity conclusion is not t = t".into())
     }
 }
 
@@ -6936,6 +6949,40 @@ mod tests {
             verify_strict(&problem, &proof, limits),
             KernelVerdict::Inconclusive(_)
         ));
+    }
+
+    #[test]
+    fn certifies_reflexivity_from_a_dependency_parent() {
+        let problem = "fof(src, axiom, p(a)).\nfof(neg, axiom, ~p(a)).";
+        let proof = "fof(src, axiom, p(a), file('problem.p', src)).\
+                     fof(eq, plain, f(a) = f(a), inference(reflexivity, [status(thm)], [src])).\
+                     fof(pair, plain, (f(a) = f(a) & p(a)), inference(conjunction, [status(thm)], [eq,src])).\
+                     fof(selected, plain, p(a), inference(split_conjunct, [status(thm)], [pair])).\
+                     fof(neg, axiom, ~p(a), file('problem.p', neg)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [selected,neg])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_reflexivity_with_non_reflexive_equality() {
+        let problem = "fof(src, axiom, p(a)).";
+        let proof = "fof(src, axiom, p(a), file('problem.p', src)).\
+                     fof(eq, plain, a = b, inference(reflexivity, [status(thm)], [src])).\
+                     fof(pair, plain, (a = b & p(a)), inference(conjunction, [status(thm)], [eq,src])).\
+                     fof(selected, plain, p(a), inference(split_conjunct, [status(thm)], [pair])).\
+                     fof(neg, axiom, ~p(a), file('problem.p', src)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [selected,neg])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn rejects_reflexivity_without_a_parent() {
+        let problem = "fof(src, axiom, p(a)).";
+        let proof = "fof(src, axiom, p(a), file('problem.p', src)).\
+                     fof(eq, plain, a = a, inference(reflexivity, [status(thm)], [src,src])).\
+                     fof(neg, axiom, ~p(a), file('problem.p', src)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [src,neg])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
     }
 
     #[test]
