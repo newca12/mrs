@@ -1763,7 +1763,15 @@ fn verify_instantiation(
         }
         return KernelVerdict::Rejected("instantiate conclusion is not a parent instance".into());
     }
-    KernelVerdict::Certified
+    let mut core_substitution = Substitution::new();
+    for (var, term) in substitution {
+        core_substitution.bind(var, term);
+    }
+    if alpha_equiv(&core_substitution.apply_formula(parent_body), target_body) {
+        KernelVerdict::Certified
+    } else {
+        KernelVerdict::Rejected("instantiate conclusion is not a parent instance".into())
+    }
 }
 
 fn leading_forall_core(formula: &Formula) -> (Vec<VarId>, &Formula) {
