@@ -133,6 +133,8 @@ The first strict kernel implementation certifies only:
   through exact modus-ponens recomputation
 - bounded `contrapositive` implication steps and `disjunctive_syllogism`
   disjunct deletion, both recomputed from their cited parents
+- `paramodulation` through bounded superposition recomputation in either
+  parent order
 - bounded `demodulation` from cited positive unit equalities
 - bounded `superposition` into a cited target clause
 

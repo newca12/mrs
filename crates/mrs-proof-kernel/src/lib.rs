@@ -381,6 +381,7 @@ pub fn verify_strict_with_source(
             "condensation" => verify_condensation(&parents, conclusion, limits),
             "demodulation" => verify_demodulation(&parents, conclusion, limits),
             "superposition" => verify_superposition(&parents, conclusion, limits),
+            "paramodulation" => verify_paramodulation(&parents, conclusion, limits),
             "split_component" => verify_split_component(
                 &parents,
                 conclusion,
@@ -502,7 +503,8 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "demodulation"
         | "split_component"
         | "avatar_sat_refutation"
-        | "superposition" => Some("thm"),
+        | "superposition"
+        | "paramodulation" => Some("thm"),
         _ => None,
     }
 }
@@ -5221,6 +5223,29 @@ fn verify_superposition(
     KernelVerdict::Rejected("superposition conclusion is not a valid rewrite".into())
 }
 
+fn verify_paramodulation(
+    parents: &[Formula],
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if parents.len() != 2 {
+        return KernelVerdict::Rejected("paramodulation must have two parents".into());
+    }
+    let first = verify_superposition(parents, conclusion, limits);
+    if matches!(first, KernelVerdict::Certified) {
+        return first;
+    }
+    let reversed = [parents[1].clone(), parents[0].clone()];
+    let second = verify_superposition(&reversed, conclusion, limits);
+    if matches!(second, KernelVerdict::Certified) {
+        second
+    } else if matches!(first, KernelVerdict::Inconclusive(_)) {
+        first
+    } else {
+        second
+    }
+}
+
 fn verify_split_component(
     parents: &[Formula],
     conclusion: &Formula,
@@ -7323,6 +7348,32 @@ mod tests {
                      fof(s, plain, s(a), inference(disjunctive_syllogism, [status(thm)], [disj,nq])).\
                      fof(ns, axiom, ~s(a), file('problem.p', ns)).\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [s,ns])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn certifies_paramodulation_in_both_parent_orders() {
+        let problem = "fof(eq, axiom, f(a) = b).\n\
+                       fof(target, axiom, p(f(a))).\n\
+                       fof(neg, axiom, ~p(b)).";
+        let proof = "fof(eq, axiom, f(a) = b, file('problem.p', eq)).\
+                     fof(target, axiom, p(f(a)), file('problem.p', target)).\
+                     fof(first, plain, p(b), inference(paramodulation, [status(thm)], [eq,target])).\
+                     fof(second, plain, p(b), inference(paramodulation, [status(thm)], [target,eq])).\
+                     fof(neg, axiom, ~p(b), file('problem.p', neg)).\
+                     fof(bot1, plain, $false, inference(resolution, [status(thm)], [first,neg])).\
+                     fof(pair, plain, (p(b) & $false), inference(conjunction, [status(thm)], [second,bot1])).\
+                     fof(bot, plain, $false, inference(split_conjunct, [status(thm)], [pair])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_forged_paramodulation_conclusion() {
+        let problem = "fof(eq, axiom, f(a) = b).\nfof(target, axiom, p(f(a))).";
+        let proof = "fof(eq, axiom, f(a) = b, file('problem.p', eq)).\
+                     fof(target, axiom, p(f(a)), file('problem.p', target)).\
+                     fof(s, plain, q(b), inference(paramodulation, [status(thm)], [eq,target])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [s,s])).";
         assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
     }
 
