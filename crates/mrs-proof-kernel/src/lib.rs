@@ -6555,7 +6555,9 @@ mod tests {
                      cnf(sc, plain, p, inference(cnf_transformation, [status(thm)], [s])).\
                      fof(n, axiom, ~p, file('problem.p', n)).\
                      cnf(bot, plain, $false, inference(resolution, [status(thm)], [sc,n])).";
-        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+        let verdict = check(problem, proof);
+        eprintln!("quantified definition CNF verdict: {verdict}");
+        assert_eq!(verdict, KernelVerdict::Certified);
     }
 
     #[test]
@@ -6567,6 +6569,42 @@ mod tests {
                      fof(sk, plain, p(sk0), inference(skolemisation, [status(esa)], [src])).\
                      cnf(c, plain, p(sk0), inference(cnf_transformation, [status(thm)], [src,sk])).\
                      cnf(bot, plain, $false, inference(resolution, [status(thm)], [c,n])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_scoped_existential_quantified_cnf_clauses() {
+        let problem = "fof(src, axiom, ![X] : ?[Y] : (p(X,Y) & q(Y))).\n\
+                       fof(np, axiom, ![X,Y] : ~p(X,Y)).\n\
+                       fof(nq, axiom, ![Y] : ~q(Y)).";
+        let proof = "fof(src, axiom, ![X] : ?[Y] : (p(X,Y) & q(Y)), file('problem.p', src)).\
+                     fof(np, axiom, ![X,Y] : ~p(X,Y), file('problem.p', np)).\
+                     fof(nq, axiom, ![Y] : ~q(Y), file('problem.p', nq)).\
+                     fof(sk, plain, ![X] : (p(X,sk0(X)) & q(sk0(X))), inference(skolemisation, [status(esa)], [src])).\
+                     cnf(cp, plain, p(X,sk0(X)), inference(cnf_transformation, [status(thm)], [src,sk])).\
+                     cnf(cq, plain, q(sk0(X)), inference(cnf_transformation, [status(thm)], [src,sk])).\
+                     cnf(fp, plain, $false, inference(resolution, [status(thm)], [cp,np])).\
+                     cnf(fq, plain, $false, inference(resolution, [status(thm)], [cq,nq])).\
+                     fof(pair, plain, ($false & $false), inference(conjunction, [status(thm)], [fp,fq])).\
+                     fof(bot, plain, $false, inference(split_conjunct, [status(thm)], [pair])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_quantified_cnf_with_a_fresh_definition_parent() {
+        let problem = "fof(src, axiom, ?[X] : (p(X) | (q(X) & r(X)))).\n\
+                       fof(np, axiom, ![X] : ~p(X)).\n\
+                       fof(nq, axiom, ![X] : ~q(X)).";
+        let proof = "fof(src, axiom, ?[X] : (p(X) | (q(X) & r(X))), file('problem.p', src)).\
+                     fof(np, axiom, ![X] : ~p(X), file('problem.p', np)).\
+                     fof(nq, axiom, ![X] : ~q(X), file('problem.p', nq)).\
+                     fof(sk, plain, p(sk0) | (q(sk0) & r(sk0)), inference(skolemisation, [status(esa)], [src])).\
+                     fof(d, definition, ![X] : (d(X) <=> (q(X) & r(X))), introduced(definition, [new_symbols(definition, [d])])).\
+                     cnf(main, plain, p(sk0) | d(sk0), inference(cnf_transformation, [status(thm)], [src,sk,d])).\
+                     cnf(dq, plain, ~d(X) | q(X), inference(cnf_transformation, [status(thm)], [src,sk,d])).\
+                     cnf(mid, plain, d(sk0), inference(resolution, [status(thm)], [main,np])).\
+                     cnf(nd, plain, ~d(X), inference(resolution, [status(thm)], [dq,nq])).\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [mid,nd])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
     }
 
