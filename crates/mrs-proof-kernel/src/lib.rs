@@ -343,6 +343,7 @@ pub fn verify_strict_with_source(
             "ex_falso" => verify_ex_falso(&parents, limits),
             "weaken" => verify_weakening(&parents, conclusion, limits),
             "reflexivity" => verify_reflexivity(&parents, conclusion),
+            "transitivity" => verify_transitivity(&parents, conclusion, limits),
             "instantiate" => verify_instantiation(&parents, conclusion, limits),
             "existential_gen" => verify_existential_generation(&parents, conclusion, limits),
             "conjunction" => verify_conjunction(&parents, conclusion, limits),
@@ -478,6 +479,7 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "ex_falso"
         | "weaken"
         | "reflexivity"
+        | "transitivity"
         | "instantiate"
         | "existential_gen"
         | "conjunction"
@@ -2133,6 +2135,65 @@ fn verify_reflexivity(parents: &[Formula], conclusion: &Formula) -> KernelVerdic
         KernelVerdict::Certified
     } else {
         KernelVerdict::Rejected("reflexivity conclusion is not t = t".into())
+    }
+}
+
+fn verify_transitivity(
+    parents: &[Formula],
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if parents.len() != 2 {
+        return KernelVerdict::Rejected("transitivity must have two parents".into());
+    }
+    if parents
+        .iter()
+        .any(|parent| formula_size(parent) > limits.max_formula_nodes)
+        || formula_size(conclusion) > limits.max_formula_nodes
+    {
+        return KernelVerdict::Inconclusive(
+            "transitivity exceeded strict formula-size limit".into(),
+        );
+    }
+    let Some((left_a, left_b)) = positive_equality(&parents[0]) else {
+        return KernelVerdict::Rejected("transitivity parent is not a positive equality".into());
+    };
+    let Some((right_a, right_b)) = positive_equality(&parents[1]) else {
+        return KernelVerdict::Rejected("transitivity parent is not a positive equality".into());
+    };
+    let Some((goal_left, goal_right)) = positive_equality(conclusion) else {
+        return KernelVerdict::Rejected(
+            "transitivity conclusion is not a positive equality".into(),
+        );
+    };
+    if [left_a, left_b, right_a, right_b, goal_left, goal_right]
+        .iter()
+        .any(|term| !term_var_set(term).is_empty())
+    {
+        return KernelVerdict::Inconclusive(
+            "transitivity strict fragment requires ground equalities".into(),
+        );
+    }
+
+    for (first_left, first_right) in [(left_a, left_b), (left_b, left_a)] {
+        for (second_left, second_right) in [(right_a, right_b), (right_b, right_a)] {
+            if first_right != second_left {
+                continue;
+            }
+            if (goal_left == first_left && goal_right == second_right)
+                || (goal_left == second_right && goal_right == first_left)
+            {
+                return KernelVerdict::Certified;
+            }
+        }
+    }
+    KernelVerdict::Rejected("transitivity conclusion is not a parent equality chain".into())
+}
+
+fn positive_equality(formula: &Formula) -> Option<(&Term, &Term)> {
+    match formula {
+        Formula::Atom(Atom::Eq(left, right)) => Some((left, right)),
+        _ => None,
     }
 }
 
@@ -6983,6 +7044,72 @@ mod tests {
                      fof(neg, axiom, ~p(a), file('problem.p', src)).\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [src,neg])).";
         assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn certifies_ground_equality_transitivity() {
+        let problem = "fof(ab, axiom, a = b).\n\
+                       fof(bc, axiom, b = c).\n\
+                       fof(p, axiom, p(a)).\n\
+                       fof(n, axiom, ~p(a)).";
+        let proof = "fof(ab, axiom, a = b, file('problem.p', ab)).\
+                     fof(bc, axiom, b = c, file('problem.p', bc)).\
+                     fof(ac, plain, a = c, inference(transitivity, [status(thm)], [ab,bc])).\
+                     fof(p, axiom, p(a), file('problem.p', p)).\
+                     fof(pair, plain, (a = c & p(a)), inference(conjunction, [status(thm)], [ac,p])).\
+                     fof(selected, plain, p(a), inference(split_conjunct, [status(thm)], [pair])).\
+                     fof(n, axiom, ~p(a), file('problem.p', n)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [selected,n])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_transitivity_with_reversed_orientation() {
+        let problem = "fof(ab, axiom, a = b).\n\
+                       fof(cb, axiom, c = b).\n\
+                       fof(p, axiom, p(a)).\n\
+                       fof(n, axiom, ~p(a)).";
+        let proof = "fof(ab, axiom, a = b, file('problem.p', ab)).\
+                     fof(cb, axiom, c = b, file('problem.p', cb)).\
+                     fof(ac, plain, a = c, inference(transitivity, [status(thm)], [ab,cb])).\
+                     fof(p, axiom, p(a), file('problem.p', p)).\
+                     fof(pair, plain, (a = c & p(a)), inference(conjunction, [status(thm)], [ac,p])).\
+                     fof(selected, plain, p(a), inference(split_conjunct, [status(thm)], [pair])).\
+                     fof(n, axiom, ~p(a), file('problem.p', n)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [selected,n])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_transitivity_with_wrong_middle_term() {
+        let problem = "fof(ab, axiom, a = b).\n\
+                       fof(cd, axiom, c = d).\n\
+                       fof(n, axiom, ~p(a)).";
+        let proof = "fof(ab, axiom, a = b, file('problem.p', ab)).\
+                     fof(cd, axiom, c = d, file('problem.p', cd)).\
+                     fof(ad, plain, a = d, inference(transitivity, [status(thm)], [ab,cd])).\
+                     fof(p, axiom, p(a), file('problem.p', p)).\
+                     fof(n, axiom, ~p(a), file('problem.p', n)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [p,n])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn transitivity_with_variables_is_inconclusive() {
+        let problem =
+            parse_tptp("fof(ab, axiom, a = b).\nfof(bc, axiom, b = c).").expect("problem parses");
+        let proof = parse_tptp(
+            "fof(ab, axiom, X = b, file('problem.p', ab)).\
+             fof(bc, axiom, b = c, file('problem.p', bc)).\
+             fof(ac, plain, X = c, inference(transitivity, [status(thm)], [ab,bc])).\
+             fof(n, axiom, ~p(a), file('problem.p', n)).\
+             fof(bot, plain, $false, inference(consequence, [status(thm)], [n,n])).",
+        )
+        .expect("proof parses");
+        assert!(matches!(
+            verify_strict(&problem, &proof, VerificationLimits::default()),
+            KernelVerdict::Inconclusive(_) | KernelVerdict::Rejected(_)
+        ));
     }
 
     #[test]

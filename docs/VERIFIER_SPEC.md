@@ -127,6 +127,8 @@ The first strict kernel implementation certifies only:
 - bounded `weaken` steps that add disjuncts to a parent clause after independent
   NNF/canonicalization
 - exact one-parent `reflexivity` steps whose conclusion is `t = t`
+- bounded ground `transitivity` steps with explicit equality orientation and
+  common-middle-term checks; variable-bearing chains remain inconclusive
 - bounded `demodulation` from cited positive unit equalities
 - bounded `superposition` into a cited target clause
 
