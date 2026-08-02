@@ -112,6 +112,8 @@ The first strict kernel implementation certifies only:
   modulo associative/commutative conjunction order and bounded matching work
 - bounded single-parent `split_conjunct` projection with preserved universal
   prefixes
+- structural `copy`, rename/alpha, and double-negation aliases checked as
+  identity or equivalence with bounded canonicalization, never by rule name alone
 - bounded `demodulation` from cited positive unit equalities
 - bounded `superposition` into a cited target clause
 

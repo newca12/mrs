@@ -320,7 +320,9 @@ pub fn verify_strict_with_source(
             "fof_nnf" | "fof_nnf_transformation" | "nnf_transformation" => {
                 verify_nnf(&parents, conclusion)
             }
-            "variable_rename" | "rectify" => verify_alpha_identity(&parents, conclusion),
+            "variable_rename" | "rename_variable" | "rename" | "alpha" | "rectify" | "copy" => {
+                verify_alpha_identity(&parents, conclusion)
+            }
             "formula_equivalence"
             | "equivalence"
             | "fof_simplification"
@@ -332,7 +334,9 @@ pub fn verify_strict_with_source(
             | "flattening"
             | "distribute"
             | "ennf_transformation"
-            | "simplification" => verify_formula_equivalence(&parents, conclusion, limits),
+            | "simplification"
+            | "double_negation"
+            | "remove_double_negation" => verify_formula_equivalence(&parents, conclusion, limits),
             "instantiate" => verify_instantiation(&parents, conclusion, limits),
             "existential_gen" => verify_existential_generation(&parents, conclusion, limits),
             "conjunction" => verify_conjunction(&parents, conclusion, limits),
@@ -440,7 +444,11 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "fof_nnf_transformation"
         | "nnf_transformation"
         | "variable_rename"
+        | "rename_variable"
+        | "rename"
+        | "alpha"
         | "rectify"
+        | "copy"
         | "formula_equivalence"
         | "equivalence"
         | "fof_simplification"
@@ -453,6 +461,8 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "distribute"
         | "ennf_transformation"
         | "simplification"
+        | "double_negation"
+        | "remove_double_negation"
         | "instantiate"
         | "existential_gen"
         | "conjunction"
@@ -6279,6 +6289,47 @@ mod tests {
             verify_split_conjunct(&[parent], &conclusion, limits),
             KernelVerdict::Inconclusive(_)
         ));
+    }
+
+    #[test]
+    fn certifies_copy_alias() {
+        let problem = "fof(a, axiom, p(a)).\nfof(n, axiom, ~p(a)).";
+        let proof = "fof(a, axiom, p(a), file('problem.p', a)).\
+                     fof(c, plain, p(a), inference(copy, [status(thm)], [a])).\
+                     fof(n, axiom, ~p(a), file('problem.p', n)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [c,n])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_double_negation_alias() {
+        let problem = "fof(a, axiom, ~~p(a)).\nfof(n, axiom, ~p(a)).";
+        let proof = "fof(a, axiom, ~~p(a), file('problem.p', a)).\
+                     fof(d, plain, p(a),\
+                         inference(double_negation, [status(thm)], [a])).\
+                     fof(n, axiom, ~p(a), file('problem.p', n)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [d,n])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_copy_with_changed_formula() {
+        let problem = "fof(a, axiom, p(a)).\nfof(f, axiom, $false).";
+        let proof = "fof(a, axiom, p(a), file('problem.p', a)).\
+                     fof(c, plain, q(a), inference(copy, [status(thm)], [a])).\
+                     fof(f, axiom, $false, file('problem.p', f)).\
+                     fof(bot, plain, $false, inference(conjunction, [status(thm)], [c,f])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn rejects_double_negation_with_non_equivalent_formula() {
+        let problem = "fof(a, axiom, p(a)).\nfof(f, axiom, $false).";
+        let proof = "fof(a, axiom, p(a), file('problem.p', a)).\
+                     fof(d, plain, ~~q(a), inference(double_negation, [status(thm)], [a])).\
+                     fof(f, axiom, $false, file('problem.p', f)).\
+                     fof(bot, plain, $false, inference(conjunction, [status(thm)], [d,f])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
     }
 
     #[test]
