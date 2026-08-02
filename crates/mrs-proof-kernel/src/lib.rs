@@ -340,6 +340,7 @@ pub fn verify_strict_with_source(
             "modus_ponens" => verify_modus_ponens(&parents, conclusion, limits),
             "horn" => verify_horn(&parents, conclusion, limits),
             "consequence" => verify_resolution(&parents, conclusion, limits),
+            "ex_falso" => verify_ex_falso(&parents, limits),
             "instantiate" => verify_instantiation(&parents, conclusion, limits),
             "existential_gen" => verify_existential_generation(&parents, conclusion, limits),
             "conjunction" => verify_conjunction(&parents, conclusion, limits),
@@ -472,6 +473,7 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "modus_ponens"
         | "horn"
         | "consequence"
+        | "ex_falso"
         | "instantiate"
         | "existential_gen"
         | "conjunction"
@@ -2053,6 +2055,29 @@ fn verify_horn(
         }
     }
     KernelVerdict::Rejected("horn conclusion is not reachable from its parents".into())
+}
+
+fn verify_ex_falso(parents: &[Formula], limits: VerificationLimits) -> KernelVerdict {
+    if parents.len() == 1 && matches!(parents[0], Formula::False) {
+        return KernelVerdict::Certified;
+    }
+    if parents.len() != 2 {
+        return KernelVerdict::Rejected(
+            "ex_falso must have one `$false` parent or two contradiction parents".into(),
+        );
+    }
+    if parents
+        .iter()
+        .any(|parent| formula_size(parent) > limits.max_formula_nodes)
+    {
+        return KernelVerdict::Inconclusive("ex_falso exceeded strict formula-size limit".into());
+    }
+    let verdict = verify_resolution(&parents[..2], &Formula::False, limits);
+    if matches!(verdict, KernelVerdict::Certified) {
+        KernelVerdict::Certified
+    } else {
+        verdict
+    }
 }
 
 fn instantiate_horn_rule(
@@ -6717,6 +6742,57 @@ mod tests {
                      fof(a, plain, q(a), inference(assume, [status(thm)], [p])).\
                      fof(n, axiom, ~q(a), file('problem.p', n)).\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [a,n])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn certifies_ex_falso_from_two_contradiction_parents() {
+        let problem = "fof(p, axiom, p(a)).\n\
+                       fof(np, axiom, ~p(a)).\n\
+                       fof(nq, axiom, ~q(a)).";
+        let proof = "fof(p, axiom, p(a), file('problem.p', p)).\
+                     fof(np, axiom, ~p(a), file('problem.p', np)).\
+                     fof(nq, axiom, ~q(a), file('problem.p', nq)).\
+                     fof(ex, plain, q(a), inference(ex_falso, [status(thm)], [p,np])).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [ex,nq])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_ex_falso_from_a_false_parent() {
+        let problem = "fof(p, axiom, p(a)).\n\
+                       fof(np, axiom, ~p(a)).\n\
+                       fof(nq, axiom, ~q(a)).";
+        let proof = "fof(p, axiom, p(a), file('problem.p', p)).\
+                     fof(np, axiom, ~p(a), file('problem.p', np)).\
+                     fof(false_parent, plain, $false, inference(resolution, [status(thm)], [p,np])).\
+                     fof(ex, plain, q(a), inference(ex_falso, [status(thm)], [false_parent])).\
+                     fof(nq, axiom, ~q(a), file('problem.p', nq)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [ex,nq])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_ex_falso_without_a_contradiction() {
+        let problem = "fof(p, axiom, p(a)).\n\
+                       fof(q, axiom, q(a)).\n\
+                       fof(nq, axiom, ~q(a)).";
+        let proof = "fof(p, axiom, p(a), file('problem.p', p)).\
+                     fof(q, axiom, q(a), file('problem.p', q)).\
+                     fof(nq, axiom, ~q(a), file('problem.p', nq)).\
+                     fof(ex, plain, q(a), inference(ex_falso, [status(thm)], [p,q])).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [ex,nq])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn rejects_ex_falso_with_wrong_parent_count() {
+        let problem = "fof(p, axiom, p(a)).\nfof(n, axiom, ~p(a)).";
+        let proof = "fof(p, axiom, p(a), file('problem.p', p)).\
+                     fof(n, axiom, ~p(a), file('problem.p', n)).\
+                     fof(ex, plain, q(a), inference(ex_falso, [status(thm)], [p,n,p])).\
+                     fof(nq, axiom, ~q(a), file('problem.p', n)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [ex,nq])).";
         assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
     }
 

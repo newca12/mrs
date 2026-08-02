@@ -122,6 +122,8 @@ The first strict kernel implementation certifies only:
 - `consequence` only when its cited parents and conclusion recompute as a
   bounded two-parent resolution step
 - exact one-parent identity aliases for `assume` and `rewrite`
+- `ex_falso` only from a cited `$false` parent or a recomputed two-parent
+  contradiction
 - bounded `demodulation` from cited positive unit equalities
 - bounded `superposition` into a cited target clause
 
