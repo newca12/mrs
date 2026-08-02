@@ -320,9 +320,8 @@ pub fn verify_strict_with_source(
             "fof_nnf" | "fof_nnf_transformation" | "nnf_transformation" => {
                 verify_nnf(&parents, conclusion)
             }
-            "variable_rename" | "rename_variable" | "rename" | "alpha" | "rectify" | "copy" => {
-                verify_alpha_identity(&parents, conclusion)
-            }
+            "variable_rename" | "rename_variable" | "rename" | "alpha" | "rectify" | "copy"
+            | "assume" | "rewrite" => verify_alpha_identity(&parents, conclusion),
             "formula_equivalence"
             | "equivalence"
             | "fof_simplification"
@@ -453,6 +452,8 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "alpha"
         | "rectify"
         | "copy"
+        | "assume"
+        | "rewrite"
         | "formula_equivalence"
         | "equivalence"
         | "fof_simplification"
@@ -6695,6 +6696,27 @@ mod tests {
         let problem = "fof(p, axiom, p(a)).";
         let proof = "fof(p, axiom, p(a), file('problem.p', p)).\
                      fof(bot, plain, $false, inference(consequence, [status(thm)], [p])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn certifies_assume_and_rewrite_identity_aliases() {
+        let problem = "fof(p, axiom, p(a)).\nfof(n, axiom, ~p(a)).";
+        let proof = "fof(p, axiom, p(a), file('problem.p', p)).\
+                     fof(a, plain, p(a), inference(assume, [status(thm)], [p])).\
+                     fof(r, plain, p(a), inference(rewrite, [status(thm)], [a])).\
+                     fof(n, axiom, ~p(a), file('problem.p', n)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [r,n])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_assume_with_changed_formula() {
+        let problem = "fof(p, axiom, p(a)).\nfof(n, axiom, ~q(a)).";
+        let proof = "fof(p, axiom, p(a), file('problem.p', p)).\
+                     fof(a, plain, q(a), inference(assume, [status(thm)], [p])).\
+                     fof(n, axiom, ~q(a), file('problem.p', n)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [a,n])).";
         assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
     }
 

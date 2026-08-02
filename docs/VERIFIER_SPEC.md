@@ -121,6 +121,7 @@ The first strict kernel implementation certifies only:
   and fact parents; unsupported conjunction antecedents remain inconclusive
 - `consequence` only when its cited parents and conclusion recompute as a
   bounded two-parent resolution step
+- exact one-parent identity aliases for `assume` and `rewrite`
 - bounded `demodulation` from cited positive unit equalities
 - bounded `superposition` into a cited target clause
 
