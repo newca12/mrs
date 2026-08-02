@@ -106,6 +106,8 @@ The first strict kernel implementation certifies only:
   canonicalization
 - bounded universal `instantiate` steps with exact substitutions and rigid
   nested binders
+- bounded single-parent `existential_gen` steps with consistent witness
+  replacement and rigid nested binders
 - bounded `demodulation` from cited positive unit equalities
 - bounded `superposition` into a cited target clause
 

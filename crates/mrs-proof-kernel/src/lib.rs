@@ -334,6 +334,7 @@ pub fn verify_strict_with_source(
             | "ennf_transformation"
             | "simplification" => verify_formula_equivalence(&parents, conclusion, limits),
             "instantiate" => verify_instantiation(&parents, conclusion, limits),
+            "existential_gen" => verify_existential_generation(&parents, conclusion, limits),
             "skolemisation" | "skolemize" => verify_skolemisation(
                 node,
                 &dag,
@@ -451,6 +452,7 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "ennf_transformation"
         | "simplification"
         | "instantiate"
+        | "existential_gen"
         | "cnf_transformation"
         | "resolution"
         | "subsumption_resolution"
@@ -1771,6 +1773,174 @@ fn verify_instantiation(
         KernelVerdict::Certified
     } else {
         KernelVerdict::Rejected("instantiate conclusion is not a parent instance".into())
+    }
+}
+
+fn verify_existential_generation(
+    parents: &[Formula],
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if parents.len() != 1 {
+        return KernelVerdict::Rejected("existential_gen must have one parent".into());
+    }
+    if formula_size(&parents[0]) > limits.max_formula_nodes
+        || formula_size(conclusion) > limits.max_formula_nodes
+    {
+        return KernelVerdict::Inconclusive(
+            "existential_gen exceeded strict formula-size limit".into(),
+        );
+    }
+    let mut steps = 0;
+    let mut state = ExistentialGenerationState::default();
+    if match_existential_generation(&parents[0], conclusion, &mut state, &mut steps, limits)
+        && state.introduced > 0
+    {
+        KernelVerdict::Certified
+    } else if steps >= limits.max_equivalence_steps {
+        KernelVerdict::Inconclusive("existential_gen exceeded strict matching-step limit".into())
+    } else {
+        KernelVerdict::Rejected("existential_gen conclusion is not a parent generalization".into())
+    }
+}
+
+#[derive(Clone, Default)]
+struct ExistentialGenerationState {
+    bound: HashMap<VarId, VarId>,
+    witnesses: HashMap<VarId, Term>,
+    existential_vars: HashSet<VarId>,
+    introduced: usize,
+}
+
+fn match_existential_generation(
+    parent: &Formula,
+    conclusion: &Formula,
+    state: &mut ExistentialGenerationState,
+    steps: &mut usize,
+    limits: VerificationLimits,
+) -> bool {
+    *steps += 1;
+    if *steps > limits.max_equivalence_steps {
+        return false;
+    }
+    if let Formula::Exists(target_var, target_body) = conclusion {
+        if let Formula::Exists(parent_var, parent_body) = parent {
+            let mut preserved = state.clone();
+            preserved.bound.insert(*parent_var, *target_var);
+            if match_existential_generation(parent_body, target_body, &mut preserved, steps, limits)
+            {
+                *state = preserved;
+                return true;
+            }
+        }
+        let mut introduced = state.clone();
+        introduced.existential_vars.insert(*target_var);
+        introduced.introduced += 1;
+        if match_existential_generation(parent, target_body, &mut introduced, steps, limits) {
+            *state = introduced;
+            return true;
+        }
+        return false;
+    }
+
+    let mut candidate = state.clone();
+    let matched = match (parent, conclusion) {
+        (Formula::Forall(parent_var, parent_body), Formula::Forall(target_var, target_body)) => {
+            candidate.bound.insert(*parent_var, *target_var);
+            match_existential_generation(parent_body, target_body, &mut candidate, steps, limits)
+        }
+        (Formula::Exists(parent_var, parent_body), Formula::Exists(target_var, target_body)) => {
+            candidate.bound.insert(*parent_var, *target_var);
+            match_existential_generation(parent_body, target_body, &mut candidate, steps, limits)
+        }
+        (Formula::Neg(parent_inner), Formula::Neg(target_inner)) => {
+            match_existential_generation(parent_inner, target_inner, &mut candidate, steps, limits)
+        }
+        (Formula::And(parent_parts), Formula::And(target_parts))
+        | (Formula::Or(parent_parts), Formula::Or(target_parts)) => {
+            parent_parts.len() == target_parts.len()
+                && parent_parts
+                    .iter()
+                    .zip(target_parts)
+                    .all(|(parent, target)| {
+                        match_existential_generation(parent, target, &mut candidate, steps, limits)
+                    })
+        }
+        (
+            Formula::Implies(parent_left, parent_right),
+            Formula::Implies(target_left, target_right),
+        )
+        | (Formula::Iff(parent_left, parent_right), Formula::Iff(target_left, target_right)) => {
+            match_existential_generation(parent_left, target_left, &mut candidate, steps, limits)
+                && match_existential_generation(
+                    parent_right,
+                    target_right,
+                    &mut candidate,
+                    steps,
+                    limits,
+                )
+        }
+        (Formula::Atom(parent_atom), Formula::Atom(target_atom)) => {
+            match_existential_atom(parent_atom, target_atom, &mut candidate)
+        }
+        (Formula::True, Formula::True) | (Formula::False, Formula::False) => true,
+        _ => false,
+    };
+    if matched {
+        *state = candidate;
+    }
+    matched
+}
+
+fn match_existential_atom(
+    parent: &Atom,
+    conclusion: &Atom,
+    state: &mut ExistentialGenerationState,
+) -> bool {
+    match (parent, conclusion) {
+        (Atom::Pred(left_symbol, left_args), Atom::Pred(right_symbol, right_args)) => {
+            left_symbol == right_symbol
+                && left_args.len() == right_args.len()
+                && left_args
+                    .iter()
+                    .zip(right_args)
+                    .all(|(left, right)| match_existential_term(left, right, state))
+        }
+        (Atom::Eq(left_a, left_b), Atom::Eq(right_a, right_b)) => {
+            match_existential_term(left_a, right_a, state)
+                && match_existential_term(left_b, right_b, state)
+        }
+        _ => false,
+    }
+}
+
+fn match_existential_term(
+    parent: &Term,
+    conclusion: &Term,
+    state: &mut ExistentialGenerationState,
+) -> bool {
+    match (parent, conclusion) {
+        (parent, Term::Var(conclusion_var)) if state.existential_vars.contains(conclusion_var) => {
+            match state.witnesses.get(conclusion_var) {
+                Some(witness) => witness == parent,
+                None => {
+                    state.witnesses.insert(*conclusion_var, parent.clone());
+                    true
+                }
+            }
+        }
+        (Term::Var(left), Term::Var(right)) => {
+            state.bound.get(left).copied().unwrap_or(*left) == *right
+        }
+        (Term::App(left_symbol, left_args), Term::App(right_symbol, right_args)) => {
+            left_symbol == right_symbol
+                && left_args.len() == right_args.len()
+                && left_args
+                    .iter()
+                    .zip(right_args)
+                    .all(|(left, right)| match_existential_term(left, right, state))
+        }
+        _ => false,
     }
 }
 
@@ -5782,6 +5952,81 @@ mod tests {
                      fof(n, axiom, ~p(a, b), file('problem.p', n)).\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [i,n])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    fn lower_test_formula_pair(parent_text: &str, conclusion_text: &str) -> (Formula, Formula) {
+        let parent_problem = parse_tptp(parent_text).expect("parent parses");
+        let conclusion_problem = parse_tptp(conclusion_text).expect("conclusion parses");
+        let mut symbols = SymbolTable::new();
+        let parent = lower_annotated(
+            &mut symbols,
+            &parent_problem.formulas[0],
+            VerificationLimits::default(),
+        )
+        .expect("parent lowers");
+        let conclusion = lower_annotated(
+            &mut symbols,
+            &conclusion_problem.formulas[0],
+            VerificationLimits::default(),
+        )
+        .expect("conclusion lowers");
+        (parent, conclusion)
+    }
+
+    #[test]
+    fn certifies_existential_generation_from_ground_witness() {
+        let (parent, conclusion) =
+            lower_test_formula_pair("fof(a, axiom, p(a)).", "fof(a, plain, ?[X] : p(X)).");
+        assert_eq!(
+            verify_existential_generation(&[parent], &conclusion, VerificationLimits::default()),
+            KernelVerdict::Certified
+        );
+    }
+
+    #[test]
+    fn certifies_existential_generation_under_universal_scope() {
+        let (parent, conclusion) = lower_test_formula_pair(
+            "fof(a, axiom, ![Y] : p(Y, a)).",
+            "fof(a, plain, ![Y] : ?[X] : p(Y, X)).",
+        );
+        assert_eq!(
+            verify_existential_generation(&[parent], &conclusion, VerificationLimits::default()),
+            KernelVerdict::Certified
+        );
+    }
+
+    #[test]
+    fn rejects_existential_generation_with_changed_matrix() {
+        let (parent, conclusion) =
+            lower_test_formula_pair("fof(a, axiom, p(a)).", "fof(a, plain, ?[X] : q(X)).");
+        assert!(matches!(
+            verify_existential_generation(&[parent], &conclusion, VerificationLimits::default()),
+            KernelVerdict::Rejected(_)
+        ));
+    }
+
+    #[test]
+    fn rejects_existential_generation_without_existential() {
+        let (parent, conclusion) =
+            lower_test_formula_pair("fof(a, axiom, p(a)).", "fof(a, plain, p(a)).");
+        assert!(matches!(
+            verify_existential_generation(&[parent], &conclusion, VerificationLimits::default()),
+            KernelVerdict::Rejected(_)
+        ));
+    }
+
+    #[test]
+    fn existential_generation_matching_limit_is_inconclusive() {
+        let (parent, conclusion) =
+            lower_test_formula_pair("fof(a, axiom, p(a)).", "fof(a, plain, ?[X] : p(X)).");
+        let limits = VerificationLimits {
+            max_equivalence_steps: 1,
+            ..VerificationLimits::default()
+        };
+        assert!(matches!(
+            verify_existential_generation(&[parent], &conclusion, limits),
+            KernelVerdict::Inconclusive(_)
+        ));
     }
 
     #[test]
