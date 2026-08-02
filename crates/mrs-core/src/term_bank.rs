@@ -2,7 +2,7 @@ use crate::{HashMap, HashSet};
 use smallvec::{SmallVec, smallvec};
 
 use crate::Formula;
-use crate::clause::{Clause, ClauseId, ClauseSource, Literal};
+use crate::clause::{Clause, ClauseCertificate, ClauseId, ClauseSource, Literal};
 use crate::formula::Atom;
 use crate::symbol::SymbolId;
 use crate::term::{Term, VarId};
@@ -75,6 +75,7 @@ pub struct IdClause {
     /// provenance. Its empty `literals` would otherwise be misread as the
     /// empty clause (a refutation) by the given-clause loop.
     pub formula: Option<Box<Formula>>,
+    pub certificate: Option<ClauseCertificate>,
 }
 
 impl IdClause {
@@ -89,6 +90,7 @@ impl IdClause {
             avatar: Vec::new(),
             distance: 1000,
             formula: None,
+            certificate: None,
         }
     }
 
@@ -96,6 +98,9 @@ impl IdClause {
     where
         L: Into<SmallVec<[IdLiteral; 4]>>,
     {
+        let mut avatar = avatar;
+        avatar.sort_unstable();
+        avatar.dedup();
         Self {
             id,
             literals: literals.into(),
@@ -103,6 +108,7 @@ impl IdClause {
             avatar,
             distance: 1000,
             formula: None,
+            certificate: None,
         }
     }
 
@@ -419,6 +425,7 @@ impl TermBank {
         c.avatar = clause.avatar.clone();
         c.distance = clause.distance;
         c.formula = clause.formula.clone();
+        c.certificate = clause.certificate.clone();
         c
     }
 
@@ -434,6 +441,7 @@ impl TermBank {
             avatar: clause.avatar.clone(),
             distance: clause.distance,
             formula: clause.formula.clone(),
+            certificate: clause.certificate.clone(),
         }
     }
 }

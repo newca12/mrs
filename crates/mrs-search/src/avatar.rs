@@ -4,7 +4,9 @@ use smallvec::SmallVec;
 use cadical::Solver;
 
 use mrs_core::SymbolTable;
-use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource, Literal};
+use mrs_core::clause::{
+    AvatarComponent, Clause, ClauseCertificate, ClauseIdGen, ClauseSource, Literal,
+};
 use mrs_core::formula::Atom;
 use mrs_core::term::{Term, VarId};
 use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank, TermNode};
@@ -213,16 +215,16 @@ impl AvatarContext {
             }
         }
 
-        let mut components: HashMap<usize, Vec<IdLiteral>> = HashMap::default();
-        let mut ground_lits: Vec<IdLiteral> = Vec::new();
+        let mut components: HashMap<usize, Vec<(usize, IdLiteral)>> = HashMap::default();
+        let mut ground_lits: Vec<(usize, IdLiteral)> = Vec::new();
 
         for (i, lit) in clause.literals.iter().enumerate() {
             let p = find(&mut parent, i);
             let vars = id_literal_vars(lit, bank);
             if vars.is_empty() {
-                ground_lits.push(lit.clone());
+                ground_lits.push((i, lit.clone()));
             } else {
-                components.entry(p).or_default().push(lit.clone());
+                components.entry(p).or_default().push((i, lit.clone()));
             }
         }
 
@@ -231,9 +233,10 @@ impl AvatarContext {
             return None;
         }
 
-        let mut parts_raw: Vec<(usize, Vec<IdLiteral>)> = components.into_iter().collect();
+        let mut parts_raw: Vec<(usize, Vec<(usize, IdLiteral)>)> = components.into_iter().collect();
         parts_raw.sort_unstable_by_key(|(k, _)| *k);
-        let mut parts: Vec<Vec<IdLiteral>> = parts_raw.into_iter().map(|(_, lits)| lits).collect();
+        let mut parts: Vec<Vec<(usize, IdLiteral)>> =
+            parts_raw.into_iter().map(|(_, lits)| lits).collect();
         for lit in ground_lits {
             parts.push(vec![lit]);
         }
@@ -243,8 +246,9 @@ impl AvatarContext {
         let mut split_lits = Vec::new();
 
         // 1. Generate split component variable IDs and construct the parent split clause
-        for lits in &parts {
-            let comp_str = canonical_component_key_id(lits, bank);
+        for entries in &parts {
+            let lits: Vec<IdLiteral> = entries.iter().map(|(_, lit)| lit.clone()).collect();
+            let comp_str = canonical_component_key_id(&lits, bank);
 
             let var = if let Some(&v) = self.component_vars.get(&comp_str) {
                 v
@@ -270,7 +274,7 @@ impl AvatarContext {
         }
 
         let split_id = id_gen.next();
-        let split_c = IdClause::new_avatar(
+        let mut split_c = IdClause::new_avatar(
             split_id,
             split_lits,
             ClauseSource::Inference {
@@ -279,16 +283,31 @@ impl AvatarContext {
             },
             clause.avatar.clone(),
         );
+        split_c.certificate = Some(ClauseCertificate::AvatarSplit {
+            inherited: clause.avatar.clone(),
+            components: sat_clause
+                .iter()
+                .enumerate()
+                .map(|(branch_index, var)| AvatarComponent {
+                    branch_index,
+                    sat_var: *var as u32,
+                    literal_indices: parts[branch_index]
+                        .iter()
+                        .map(|(index, _)| *index)
+                        .collect(),
+                })
+                .collect(),
+        });
         clause_store.insert(split_id, split_c);
-
         // 2. Construct each component clause derived from split_c
-        for (i, lits) in parts.into_iter().enumerate() {
+        for (i, entries) in parts.into_iter().enumerate() {
             let var = sat_clause[i] as u32;
+            let lits: Vec<IdLiteral> = entries.into_iter().map(|(_, lit)| lit).collect();
 
             let mut new_avatar = clause.avatar.clone();
             new_avatar.push(var);
 
-            let new_clause = IdClause::new_avatar(
+            let mut new_clause = IdClause::new_avatar(
                 id_gen.next(),
                 lits,
                 ClauseSource::Inference {
@@ -297,6 +316,11 @@ impl AvatarContext {
                 },
                 new_avatar,
             );
+            new_clause.certificate = Some(ClauseCertificate::AvatarComponent {
+                split_parent: split_id,
+                branch_index: i,
+                sat_var: var,
+            });
             split_clauses.push(new_clause);
         }
 

@@ -22,8 +22,8 @@ use mrs_calculus::resolution;
 use mrs_calculus::subsumption;
 use mrs_calculus::superposition;
 use mrs_core::SymbolId;
-use mrs_core::clause::{Clause as LegacyClause, ClauseId, ClauseSource};
-use mrs_core::term_bank::{IdAtom, IdClause, TermId, TermNode};
+use mrs_core::clause::{Clause as LegacyClause, ClauseCertificate, ClauseId, ClauseSource};
+use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermId, TermNode};
 use mrs_index::fvi::FeatureVector;
 use mrs_proof::extract::extract_proof_ids;
 
@@ -148,7 +148,6 @@ fn avatar_refute_branch(
     avatar: &[u32],
     ordering: &crate::TermOrdering,
 ) -> bool {
-    state.branch_empty_ids.push(cid);
     if state.search_deadline.is_some_and(|d| Instant::now() >= d)
         || state
             .stop_flag
@@ -160,6 +159,45 @@ fn avatar_refute_branch(
     let sat_clause: Vec<i32> = avatar.iter().map(|&a| -(a as i32)).collect();
     state.avatar.solver.add_clause(sat_clause);
 
+    if state.branch_empty_ids.iter().any(|existing| {
+        state
+            .clause_store
+            .get(existing)
+            .and_then(|clause| clause.certificate.as_ref())
+            .is_some_and(|certificate| {
+                matches!(
+                    certificate,
+                    ClauseCertificate::AvatarBranchRefutation { context }
+                        if context == avatar
+                )
+            })
+    }) {
+        if matches!(state.avatar.solver.solve(), Some(true)) {
+            update_model(state);
+            sync_active_dormant(state, ordering);
+            return true;
+        }
+        return false;
+    }
+
+    // The first-order empty clause is a branch refutation even when the SAT
+    // solver still has another model.  Record every such branch; the final
+    // SAT roll-up needs the complete set of excluded contexts, not only the
+    // call that happened to make CaDiCaL return UNSAT.
+    let mut branch_root = IdClause::new(
+        state.id_gen.next(),
+        Vec::<IdLiteral>::new(),
+        ClauseSource::Inference {
+            rule: "avatar_branch_refutation",
+            parents: vec![cid].into(),
+        },
+    );
+    branch_root.certificate = Some(ClauseCertificate::AvatarBranchRefutation {
+        context: avatar.to_vec(),
+    });
+    state.register_clause(&branch_root);
+    state.branch_empty_ids.push(branch_root.id);
+
     if matches!(state.avatar.solver.solve(), Some(true)) {
         update_model(state);
         sync_active_dormant(state, ordering);
@@ -167,6 +205,41 @@ fn avatar_refute_branch(
     } else {
         false
     }
+}
+
+fn avatar_certificate_parents(state: &crate::state::SearchState) -> Vec<ClauseId> {
+    let mut relevant = HashSet::default();
+    for branch_root in &state.branch_empty_ids {
+        for ancestor in extract_proof_ids(*branch_root, &state.clause_store) {
+            if matches!(
+                state.clause_store.get(&ancestor).map(|clause| &clause.source),
+                Some(ClauseSource::Inference { rule, .. }) if *rule == "avatar_split_clause"
+            ) {
+                relevant.insert(ancestor);
+            }
+        }
+    }
+    let mut parents: Vec<_> = relevant.into_iter().collect();
+    parents.sort_unstable_by_key(|id| id.0);
+    parents.extend(state.branch_empty_ids.iter().copied());
+    parents.dedup();
+    parents
+}
+
+fn avatar_certificate_split_ids(state: &crate::state::SearchState) -> Vec<ClauseId> {
+    avatar_certificate_parents(state)
+        .into_iter()
+        .filter(|id| {
+            matches!(
+                state.clause_store.get(id).map(|clause| &clause.source),
+                Some(ClauseSource::Inference { rule, .. }) if *rule == "avatar_split_clause"
+            )
+        })
+        .collect()
+}
+
+fn avatar_certificate_branch_ids(state: &crate::state::SearchState) -> Vec<ClauseId> {
+    state.branch_empty_ids.clone()
 }
 
 /// Scans the clause store for commutativity and associativity axioms:
@@ -391,20 +464,15 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
                     .collect();
 
-                let mut parents = Vec::new();
-                for clause in legacy_store.values() {
-                    let is_split = matches!(
-                        &clause.source,
-                        mrs_core::clause::ClauseSource::Inference { rule, .. }
-                            if *rule == "avatar_split_clause"
+                let parents = avatar_certificate_parents(state);
+                if parents.is_empty() {
+                    return SearchResult::Refutation(
+                        empty_id,
+                        extract_and_format_proof(empty_id, state),
                     );
-                    if clause.is_empty() || is_split {
-                        parents.push(clause.id);
-                    }
                 }
-
-                let final_id = mrs_core::clause::ClauseId(999_999_999);
-                let final_false_clause = mrs_core::clause::Clause::new(
+                let final_id = state.id_gen.next();
+                let mut final_false_clause = mrs_core::clause::Clause::new(
                     final_id,
                     vec![],
                     mrs_core::clause::ClauseSource::Inference {
@@ -412,6 +480,10 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         parents: parents.into(),
                     },
                 );
+                final_false_clause.certificate = Some(ClauseCertificate::AvatarSatRefutation {
+                    split_nodes: avatar_certificate_split_ids(state),
+                    branch_roots: avatar_certificate_branch_ids(state),
+                });
                 legacy_store.insert(final_id, final_false_clause);
 
                 let mut final_proof = mrs_proof::extract::extract_proof(final_id, &legacy_store);
@@ -437,9 +509,12 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             SearchResult::Refutation(final_id, tstp_proof)
         }
         SearchResult::Refutation(empty_id, tstp) if tstp.is_empty() && empty_id.0 == 0 => {
-            let input_ids: Vec<_> = state.clause_store.keys().copied().collect();
-            let final_id = mrs_core::clause::ClauseId(999_999_999);
-            let final_false_clause = mrs_core::clause::Clause::new(
+            let input_ids = avatar_certificate_parents(state);
+            if input_ids.is_empty() {
+                return SearchResult::Refutation(empty_id, String::new());
+            }
+            let final_id = state.id_gen.next();
+            let mut final_false_clause = mrs_core::clause::Clause::new(
                 final_id,
                 vec![],
                 mrs_core::clause::ClauseSource::Inference {
@@ -447,6 +522,11 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     parents: input_ids.into(),
                 },
             );
+
+            final_false_clause.certificate = Some(ClauseCertificate::AvatarSatRefutation {
+                split_nodes: avatar_certificate_split_ids(state),
+                branch_roots: avatar_certificate_branch_ids(state),
+            });
 
             let mut final_proof: Vec<mrs_core::clause::Clause> = state
                 .clause_store

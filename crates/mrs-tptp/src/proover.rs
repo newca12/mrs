@@ -43,6 +43,42 @@ pub struct ParentRef<'a> {
     pub negated: bool,
 }
 
+/// One branch entry in an explicit AVATAR split annotation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AvatarSplitComponent<'a> {
+    pub branch_index: usize,
+    pub sat_var: &'a str,
+    pub literal_indices: Vec<usize>,
+}
+
+/// Metadata carried by an `avatar_split_clause` step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AvatarSplitInfo<'a> {
+    pub components: Vec<AvatarSplitComponent<'a>>,
+    pub inherited: Vec<&'a str>,
+}
+
+/// Metadata carried by an `avatar_component_clause` step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AvatarComponentInfo<'a> {
+    pub split_parent: &'a str,
+    pub branch_index: usize,
+    pub sat_var: &'a str,
+}
+
+/// Metadata carried by an `avatar_branch_refutation` step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AvatarBranchInfo<'a> {
+    pub context: Vec<&'a str>,
+}
+
+/// Metadata carried by the final `avatar_sat_refutation` step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AvatarSatInfo<'a> {
+    pub split_nodes: Vec<&'a str>,
+    pub branch_roots: Vec<&'a str>,
+}
+
 impl<'a> Annotations<'a> {
     /// Extract the inference rule name from `inference(rule, …, …)` source.
     pub fn inference_rule(&self) -> Option<&'a str> {
@@ -164,6 +200,109 @@ impl<'a> Annotations<'a> {
         Vec::new()
     }
 
+    /// Extract the SAT literals recorded by an AVATAR branch certificate.
+    pub fn avatar_context(&self) -> Vec<&'a str> {
+        for item in self.info_items() {
+            if let GeneralTerm::Function(AtomicWord::Lower("avatar_context"), args) = item
+                && let Some(GeneralTerm::List(items)) = args.first()
+            {
+                return items
+                    .iter()
+                    .filter_map(|item| match item {
+                        GeneralTerm::Word(AtomicWord::Lower(name)) => Some(*name),
+                        GeneralTerm::Word(AtomicWord::SingleQuoted(name)) => Some(*name),
+                        _ => None,
+                    })
+                    .collect();
+            }
+        }
+        Vec::new()
+    }
+
+    /// Parse `avatar_split([branch(0, spl0_1, [0]), ...], [spl0_9, ...])`.
+    pub fn avatar_split(&self) -> Option<AvatarSplitInfo<'a>> {
+        let args = self.info_function("avatar_split")?;
+        if args.len() != 2 {
+            return None;
+        }
+        let components = match args.first()? {
+            GeneralTerm::List(items) => items
+                .iter()
+                .map(|item| {
+                    let GeneralTerm::Function(name, args) = item else {
+                        return None;
+                    };
+                    if !word_is(name, "branch") || args.len() != 3 {
+                        return None;
+                    }
+                    Some(AvatarSplitComponent {
+                        branch_index: number_value(args.first()?)?,
+                        sat_var: word_value(args.get(1)?)?,
+                        literal_indices: number_list(args.get(2)?)?,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?,
+            _ => return None,
+        };
+        let inherited = match args.get(1) {
+            Some(GeneralTerm::List(items)) => items.iter().filter_map(word_value).collect(),
+            _ => return None,
+        };
+        Some(AvatarSplitInfo {
+            components,
+            inherited,
+        })
+    }
+
+    /// Parse `avatar_component(c123, 0, spl0_1)`.
+    pub fn avatar_component(&self) -> Option<AvatarComponentInfo<'a>> {
+        let args = self.info_function("avatar_component")?;
+        if args.len() != 3 {
+            return None;
+        }
+        Some(AvatarComponentInfo {
+            split_parent: word_value(args.first()?)?,
+            branch_index: number_value(args.get(1)?)?,
+            sat_var: word_value(args.get(2)?)?,
+        })
+    }
+
+    /// Parse `avatar_context([spl0_1, spl0_2])`.
+    pub fn avatar_branch(&self) -> Option<AvatarBranchInfo<'a>> {
+        let args = self.info_function("avatar_context")?;
+        if args.len() != 1 {
+            return None;
+        }
+        let context = match args.first()? {
+            GeneralTerm::List(items) => items.iter().map(word_value).collect::<Option<Vec<_>>>()?,
+            _ => return None,
+        };
+        Some(AvatarBranchInfo { context })
+    }
+
+    /// Parse `avatar_sat_refutation([c1, ...], [c2, ...])`.
+    pub fn avatar_sat(&self) -> Option<AvatarSatInfo<'a>> {
+        let args = self.info_function("avatar_sat_refutation")?;
+        if args.len() != 2 {
+            return None;
+        }
+        let split_nodes = term_list(args.first()?)?;
+        let branch_roots = term_list(args.get(1)?)?;
+        Some(AvatarSatInfo {
+            split_nodes,
+            branch_roots,
+        })
+    }
+
+    fn info_function(&self, name: &str) -> Option<&[GeneralTerm<'a>]> {
+        self.info_items().iter().find_map(|item| match item {
+            GeneralTerm::Function(function, args) if word_is(function, name) => {
+                Some(args.as_slice())
+            }
+            _ => None,
+        })
+    }
+
     /// Extract `skolemize(Var, sk(args…))` if present.
     pub fn skolemize_info(&self) -> Option<SkolemizeInfo<'a>> {
         for it in self.info_items() {
@@ -232,6 +371,43 @@ impl<'a> Annotations<'a> {
             }
             _ => None,
         }
+    }
+}
+
+fn word_is(word: &AtomicWord<'_>, expected: &str) -> bool {
+    matches!(
+        word,
+        AtomicWord::Lower(value) | AtomicWord::SingleQuoted(value) if *value == expected
+    )
+}
+
+fn word_value<'a>(term: &GeneralTerm<'a>) -> Option<&'a str> {
+    match term {
+        GeneralTerm::Word(AtomicWord::Lower(value) | AtomicWord::SingleQuoted(value)) => {
+            Some(*value)
+        }
+        _ => None,
+    }
+}
+
+fn number_value(term: &GeneralTerm<'_>) -> Option<usize> {
+    match term {
+        GeneralTerm::Number(value) => value.as_str().parse().ok(),
+        _ => None,
+    }
+}
+
+fn term_list<'a>(term: &GeneralTerm<'a>) -> Option<Vec<&'a str>> {
+    match term {
+        GeneralTerm::List(items) => items.iter().map(word_value).collect(),
+        _ => None,
+    }
+}
+
+fn number_list(term: &GeneralTerm<'_>) -> Option<Vec<usize>> {
+    match term {
+        GeneralTerm::List(items) => items.iter().map(number_value).collect(),
+        _ => None,
     }
 }
 
@@ -383,5 +559,18 @@ mod tests {
         assert_eq!(refs.len(), 1, "expected exactly one parent, got {refs:?}");
         assert_eq!(refs[0].name, "refute_0_8");
         assert!(!refs[0].negated);
+    }
+
+    #[test]
+    fn avatar_certificate_metadata_is_parsed() {
+        let ann = parse_single(
+            "fof(split, plain, spl0_1 | spl0_2, \
+             inference(avatar_split, [status(thm), \
+               avatar_split([branch(0, spl0_1, [0]), branch(1, spl0_2, [1])], [])], [top])).",
+        );
+        let split = ann.avatar_split().expect("split metadata");
+        assert_eq!(split.components.len(), 2);
+        assert_eq!(split.components[1].branch_index, 1);
+        assert_eq!(split.components[1].literal_indices, vec![1]);
     }
 }

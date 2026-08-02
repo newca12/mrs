@@ -13,7 +13,7 @@
 use std::sync::OnceLock;
 
 use mrs_core::SymbolTable;
-use mrs_core::clause::{Clause, ClauseSource};
+use mrs_core::clause::{Clause, ClauseCertificate, ClauseSource};
 use mrs_core::display::DisplayWithSymbols;
 
 /// The path of the problem file currently being proved, as passed on the
@@ -122,10 +122,15 @@ pub fn format_tstp(proof: &[Clause], symbols: &SymbolTable) -> String {
                 let parent_names: Vec<String> =
                     parents.iter().map(|p| format!("c{}", p.0)).collect();
                 let status = status_for_rule(rule);
+                let mut info = format!("status({status})");
+                if let Some(certificate) = &clause.certificate {
+                    info.push_str(", ");
+                    info.push_str(&format_certificate(certificate));
+                }
                 format!(
-                    "inference({}, [status({})], [{}])",
+                    "inference({}, [{}], [{}])",
                     rule,
-                    status,
+                    info,
                     parent_names.join(", ")
                 )
             }
@@ -167,6 +172,71 @@ pub fn format_tstp(proof: &[Clause], symbols: &SymbolTable) -> String {
     }
 
     lines.join("\n")
+}
+
+fn format_certificate(certificate: &ClauseCertificate) -> String {
+    match certificate {
+        ClauseCertificate::AvatarSplit {
+            inherited,
+            components,
+        } => {
+            let components = components
+                .iter()
+                .map(|component| {
+                    format!(
+                        "branch({}, spl0_{}, [{}])",
+                        component.branch_index,
+                        component.sat_var,
+                        component
+                            .literal_indices
+                            .iter()
+                            .map(|index| index.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let inherited = inherited
+                .iter()
+                .map(|var| format!("spl0_{var}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("avatar_split([{components}], [{inherited}])")
+        }
+        ClauseCertificate::AvatarComponent {
+            split_parent,
+            branch_index,
+            sat_var,
+        } => format!(
+            "avatar_component(c{}, {}, spl0_{})",
+            split_parent.0, branch_index, sat_var
+        ),
+        ClauseCertificate::AvatarBranchRefutation { context } => {
+            let context = context
+                .iter()
+                .map(|var| format!("spl0_{var}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("avatar_context([{context}])")
+        }
+        ClauseCertificate::AvatarSatRefutation {
+            split_nodes,
+            branch_roots,
+        } => {
+            let split_nodes = split_nodes
+                .iter()
+                .map(|id| format!("c{}", id.0))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let branch_roots = branch_roots
+                .iter()
+                .map(|id| format!("c{}", id.0))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("avatar_sat_refutation([{split_nodes}], [{branch_roots}])")
+        }
+    }
 }
 
 #[cfg(test)]
@@ -411,5 +481,32 @@ mod tests {
         assert!(output.contains(
             "fof(c5, definition, (def_ax1_0 <=> q), introduced(definition, [new_symbols(definition, [def_ax1_0])]))."
         ));
+    }
+
+    #[test]
+    fn format_avatar_certificate_metadata() {
+        use mrs_core::clause::{AvatarComponent, ClauseCertificate};
+
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let clause = Clause::new(
+            mrs_core::clause::ClauseId(3),
+            vec![Literal::pos(Atom::pred(p, vec![]))],
+            ClauseSource::Inference {
+                rule: "avatar_split_clause",
+                parents: vec![mrs_core::clause::ClauseId(1)].into(),
+            },
+        );
+        let mut clause = clause;
+        clause.certificate = Some(ClauseCertificate::AvatarSplit {
+            inherited: vec![],
+            components: vec![AvatarComponent {
+                branch_index: 0,
+                sat_var: 7,
+                literal_indices: vec![0],
+            }],
+        });
+        let output = format_tstp(&[clause], &symbols);
+        assert!(output.contains("avatar_split([branch(0, spl0_7, [0])], [])"));
     }
 }

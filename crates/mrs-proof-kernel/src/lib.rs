@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 
 use mrs_core::{Atom, Formula, Substitution, SymbolTable, Term, VarId};
 use mrs_tptp::ast::common::{AtomicWord, GeneralTerm};
-use mrs_tptp::proover::ParentRef;
+use mrs_tptp::proover::{
+    AvatarBranchInfo, AvatarComponentInfo, AvatarSatInfo, AvatarSplitInfo, ParentRef,
+};
 use mrs_tptp::{AnnotatedFormula, BinaryConnective, CNFFormula, CNFLiteral, CNFStatement};
 use mrs_tptp::{FOFAtomicFormula, FOFFormula, FOFStatement, FOFTerm, FormulaRole, Quantifier};
 
@@ -206,6 +208,7 @@ fn verify_strict_with_source_internal(
         }));
     }
     let mut branch_contexts: HashMap<usize, BranchContext> = HashMap::new();
+    let mut avatar_splits: HashMap<usize, AvatarSplitContext> = HashMap::new();
     let mut defined_symbols = HashSet::new();
     let mut skolem_axioms: HashMap<usize, OwnedSkolemAxiom> = HashMap::new();
 
@@ -438,14 +441,94 @@ fn verify_strict_with_source_internal(
                 KernelVerdict::Certified
             })
             .unwrap_or_else(|verdict| verdict),
-            "avatar_sat_refutation" => verify_case_split(
-                node,
-                &dag,
-                &parent_indices,
-                &proof_formulas,
-                &branch_contexts,
+            "avatar_split_clause" => verify_avatar_split_clause(
+                &parents,
+                conclusion,
+                parent_indices.first().copied(),
+                parent_indices
+                    .first()
+                    .and_then(|parent| branch_contexts.get(parent)),
+                node.formula.annotations().and_then(|a| a.avatar_split()),
+                &symbols,
                 limits,
-            ),
+            )
+            .map(|context| {
+                let inherited = BranchContext {
+                    assumptions: context.inherited_assumptions.clone(),
+                    sat_context: context.inherited_vars.clone(),
+                };
+                avatar_splits.insert(idx, context);
+                branch_contexts.insert(idx, inherited);
+                KernelVerdict::Certified
+            })
+            .unwrap_or_else(|verdict| verdict),
+            "avatar_component_clause" => verify_avatar_component_clause(
+                &parents,
+                conclusion,
+                parent_indices.first().copied(),
+                &avatar_splits,
+                parent_indices
+                    .first()
+                    .and_then(|parent| branch_contexts.get(parent)),
+                node.parents.first().map(|parent| parent.name),
+                node.formula
+                    .annotations()
+                    .and_then(|a| a.avatar_component()),
+                &symbols,
+                limits,
+            )
+            .map(|context| {
+                branch_contexts.insert(idx, context);
+                KernelVerdict::Certified
+            })
+            .unwrap_or_else(|verdict| verdict),
+            "avatar_branch_refutation" => verify_avatar_branch_refutation(
+                &parents,
+                conclusion,
+                parent_indices.first().copied(),
+                &branch_contexts,
+                node.formula.annotations().and_then(|a| a.avatar_branch()),
+                &symbols,
+                limits,
+            )
+            .map(|context| {
+                branch_contexts.insert(idx, context);
+                KernelVerdict::Certified
+            })
+            .unwrap_or_else(|verdict| verdict),
+            "avatar_sat_refutation" => {
+                let explicit = parent_indices
+                    .first()
+                    .is_some_and(|parent| dag.nodes[*parent].rule == Some("avatar_split_clause"));
+                if explicit
+                    || node
+                        .formula
+                        .annotations()
+                        .and_then(|a| a.avatar_sat())
+                        .is_some()
+                {
+                    verify_avatar_sat_refutation(
+                        node,
+                        &dag,
+                        &parent_indices,
+                        &branch_contexts,
+                        &avatar_splits,
+                        node.formula.annotations().and_then(|a| a.avatar_sat()),
+                        limits,
+                    )
+                } else {
+                    verify_case_split(
+                        node,
+                        &dag,
+                        &parent_indices,
+                        &proof_formulas,
+                        &branch_contexts,
+                        &avatar_splits,
+                        &symbols,
+                        limits,
+                    )
+                }
+            }
             _ => KernelVerdict::Inconclusive(format!(
                 "node `{}` uses unsupported strict rule `{rule}`",
                 node.name
@@ -462,7 +545,14 @@ fn verify_strict_with_source_internal(
         if !matches!(outcome, KernelVerdict::Certified) {
             return outcome;
         }
-        if rule != "split_component" && rule != "avatar_sat_refutation" {
+        if !matches!(
+            rule,
+            "split_component"
+                | "avatar_split_clause"
+                | "avatar_component_clause"
+                | "avatar_branch_refutation"
+                | "avatar_sat_refutation"
+        ) {
             let mut context: Option<BranchContext> = None;
             for parent_idx in &parent_indices {
                 let Some(parent_context) = branch_contexts.get(parent_idx) else {
@@ -547,6 +637,9 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "condensation"
         | "demodulation"
         | "split_component"
+        | "avatar_split_clause"
+        | "avatar_component_clause"
+        | "avatar_branch_refutation"
         | "avatar_sat_refutation"
         | "superposition"
         | "paramodulation" => Some("thm"),
@@ -4718,9 +4811,26 @@ struct Literal {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct BranchContext {
+    assumptions: Vec<BranchAssumption>,
+    sat_context: Vec<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BranchAssumption {
     split_parent: usize,
     branch_index: usize,
     literal: Literal,
+    sat_var: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AvatarSplitContext {
+    split_parent: usize,
+    parent_literals: Vec<Literal>,
+    branch_vars: Vec<u32>,
+    component_literal_indices: Vec<Vec<usize>>,
+    inherited_vars: Vec<u32>,
+    inherited_assumptions: Vec<BranchAssumption>,
 }
 
 fn verify_resolution(
@@ -5523,19 +5633,591 @@ fn verify_split_component(
             )
         })?;
     Ok(BranchContext {
-        split_parent: split_parent
-            .ok_or_else(|| KernelVerdict::Rejected("split_component has no parent index".into()))?,
-        branch_index,
-        literal,
+        assumptions: vec![BranchAssumption {
+            split_parent: split_parent.ok_or_else(|| {
+                KernelVerdict::Rejected("split_component has no parent index".into())
+            })?,
+            branch_index,
+            literal,
+            sat_var: None,
+        }],
+        sat_context: Vec::new(),
     })
 }
 
+fn verify_avatar_split_clause(
+    parents: &[Formula],
+    conclusion: &Formula,
+    split_parent: Option<usize>,
+    inherited_context: Option<&BranchContext>,
+    annotation: Option<AvatarSplitInfo<'_>>,
+    symbols: &SymbolTable,
+    limits: VerificationLimits,
+) -> Result<AvatarSplitContext, KernelVerdict> {
+    if parents.len() != 1 {
+        return Err(KernelVerdict::Rejected(
+            "avatar_split_clause must have one parent".into(),
+        ));
+    }
+    let split_parent = split_parent
+        .ok_or_else(|| KernelVerdict::Rejected("avatar_split_clause has no parent index".into()))?;
+    let Some(parent_formula) = clause_from_formula(&parents[0], limits) else {
+        return Err(KernelVerdict::Inconclusive(
+            "avatar_split_clause parent is not a supported clause".into(),
+        ));
+    };
+    let Some(split_formula) = clause_from_formula(conclusion, limits) else {
+        return Err(KernelVerdict::Inconclusive(
+            "avatar_split_clause conclusion is not a supported clause".into(),
+        ));
+    };
+    let (parent, parent_context, parent_positive) = split_avatar_markers(parent_formula, symbols)?;
+    let (split, split_context, split_positive) = split_avatar_markers(split_formula, symbols)?;
+    if !parent_positive.is_empty()
+        || parent.len() < 2
+        || !split.is_empty()
+        || split_positive.len() < 2
+        || split_context != parent_context
+    {
+        return Err(KernelVerdict::Rejected(
+            "avatar_split_clause has invalid parent or split marker clauses".into(),
+        ));
+    }
+    let Some(annotation) = annotation else {
+        return Err(KernelVerdict::Inconclusive(
+            "avatar_split_clause lacks explicit branch metadata".into(),
+        ));
+    };
+    if annotation.components.len() != split_positive.len()
+        || annotation.inherited.iter().any(|name| {
+            let Some(var) = parse_avatar_var(name) else {
+                return true;
+            };
+            var == 0
+        })
+    {
+        return Err(KernelVerdict::Rejected(
+            "avatar_split_clause metadata does not cover the parent clause".into(),
+        ));
+    }
+    let mut branch_vars = vec![0; split_positive.len()];
+    let mut seen_vars = HashSet::new();
+    let mut component_literal_indices = vec![Vec::new(); split_positive.len()];
+    let mut seen_indices = HashSet::new();
+    for component in &annotation.components {
+        if component.branch_index >= split_positive.len()
+            || !seen_indices.insert(component.branch_index)
+            || component.literal_indices.is_empty()
+        {
+            return Err(KernelVerdict::Rejected(
+                "avatar_split_clause has invalid branch indices".into(),
+            ));
+        }
+        let Some(var) = parse_avatar_var(component.sat_var) else {
+            return Err(KernelVerdict::Rejected(
+                "avatar_split_clause has an invalid SAT variable".into(),
+            ));
+        };
+        if !seen_vars.insert(var) {
+            return Err(KernelVerdict::Rejected(
+                "avatar_split_clause reuses a SAT variable".into(),
+            ));
+        }
+        if split_positive[component.branch_index] != var {
+            return Err(KernelVerdict::Rejected(
+                "avatar_split_clause metadata does not match its split literal".into(),
+            ));
+        }
+        if component
+            .literal_indices
+            .iter()
+            .any(|index| *index >= parent.len())
+        {
+            return Err(KernelVerdict::Rejected(
+                "avatar_split_clause references an out-of-range literal".into(),
+            ));
+        }
+        branch_vars[component.branch_index] = var;
+        component_literal_indices[component.branch_index] = component.literal_indices.clone();
+    }
+    if branch_vars.contains(&0) {
+        return Err(KernelVerdict::Rejected(
+            "avatar_split_clause contains duplicate or missing branches".into(),
+        ));
+    }
+    let mut covered = HashSet::new();
+    for component in &annotation.components {
+        for index in &component.literal_indices {
+            if !covered.insert(*index) {
+                return Err(KernelVerdict::Rejected(
+                    "avatar_split_clause assigns a literal to multiple components".into(),
+                ));
+            }
+        }
+    }
+    if covered.len() != parent.len() {
+        return Err(KernelVerdict::Rejected(
+            "avatar_split_clause does not cover every parent literal".into(),
+        ));
+    }
+    let inherited_vars = annotation
+        .inherited
+        .iter()
+        .map(|name| {
+            parse_avatar_var(name).ok_or_else(|| {
+                KernelVerdict::Rejected("avatar_split_clause has invalid inherited context".into())
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let inherited_assumptions = inherited_context
+        .map(|context| context.assumptions.clone())
+        .unwrap_or_default();
+    if let Some(context) = inherited_context {
+        let mut expected = context.sat_context.clone();
+        normalize_avatar_vars(&mut expected);
+        let mut actual = inherited_vars.clone();
+        normalize_avatar_vars(&mut actual);
+        if expected != actual {
+            return Err(KernelVerdict::Rejected(
+                "avatar_split_clause inherited context does not match its parent".into(),
+            ));
+        }
+    } else if !inherited_vars.is_empty() {
+        return Err(KernelVerdict::Rejected(
+            "avatar_split_clause has inherited context without a branch parent".into(),
+        ));
+    }
+    Ok(AvatarSplitContext {
+        split_parent,
+        parent_literals: parent,
+        branch_vars,
+        component_literal_indices,
+        inherited_vars,
+        inherited_assumptions,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_avatar_component_clause(
+    parents: &[Formula],
+    conclusion: &Formula,
+    split_parent: Option<usize>,
+    splits: &HashMap<usize, AvatarSplitContext>,
+    inherited_context: Option<&BranchContext>,
+    split_parent_name: Option<&str>,
+    annotation: Option<AvatarComponentInfo<'_>>,
+    symbols: &SymbolTable,
+    limits: VerificationLimits,
+) -> Result<BranchContext, KernelVerdict> {
+    if parents.len() != 1 {
+        return Err(KernelVerdict::Rejected(
+            "avatar_component_clause must have one parent".into(),
+        ));
+    }
+    let split_id = split_parent.ok_or_else(|| {
+        KernelVerdict::Rejected("avatar_component_clause has no parent index".into())
+    })?;
+    let Some(split) = splits.get(&split_id) else {
+        return Err(KernelVerdict::Rejected(
+            "avatar_component_clause parent is not a validated split".into(),
+        ));
+    };
+    let Some(annotation) = annotation else {
+        return Err(KernelVerdict::Inconclusive(
+            "avatar_component_clause lacks explicit branch metadata".into(),
+        ));
+    };
+    if Some(annotation.split_parent) != split_parent_name {
+        return Err(KernelVerdict::Rejected(
+            "avatar_component_clause cites the wrong split parent".into(),
+        ));
+    }
+    let Some(goal_formula) = clause_from_formula(conclusion, limits) else {
+        return Err(KernelVerdict::Inconclusive(
+            "avatar_component_clause conclusion is not a supported clause".into(),
+        ));
+    };
+    let (goal, goal_context, goal_positive) = split_avatar_markers(goal_formula, symbols)?;
+    if !goal_positive.is_empty() {
+        return Err(KernelVerdict::Rejected(
+            "avatar_component_clause contains a positive SAT marker".into(),
+        ));
+    }
+    let branch_index = annotation.branch_index;
+    let Some(branch_var) = split.branch_vars.get(branch_index).copied() else {
+        return Err(KernelVerdict::Rejected(
+            "avatar_component_clause references an unknown branch".into(),
+        ));
+    };
+    let mut expected_context = split.inherited_vars.clone();
+    expected_context.push(branch_var);
+    normalize_avatar_vars(&mut expected_context);
+    if split.branch_vars.get(branch_index).copied() != parse_avatar_var(annotation.sat_var)
+        || normalize_avatar_vars_copy(goal_context) != expected_context
+        || goal.len() != split.component_literal_indices[branch_index].len()
+    {
+        return Err(KernelVerdict::Rejected(
+            "avatar_component_clause metadata does not match its branch".into(),
+        ));
+    }
+    let Some(literal) = goal.first().cloned() else {
+        return Err(KernelVerdict::Rejected(
+            "avatar_component_clause has an empty component".into(),
+        ));
+    };
+    let expected_indices = &split.component_literal_indices[branch_index];
+    let expected = expected_indices
+        .iter()
+        .map(|index| split.parent_literals[*index].clone())
+        .collect::<Vec<_>>();
+    if !clause_alpha_equiv(&expected, &goal) {
+        return Err(KernelVerdict::Rejected(
+            "avatar_component_clause does not contain its declared component".into(),
+        ));
+    }
+    let mut assumptions = inherited_context
+        .map(|context| context.assumptions.clone())
+        .unwrap_or_default();
+    assumptions.push(BranchAssumption {
+        split_parent: split_id,
+        branch_index,
+        literal,
+        sat_var: Some(split.branch_vars[branch_index]),
+    });
+    let mut sat_context = inherited_context
+        .map(|context| context.sat_context.clone())
+        .unwrap_or_else(|| split.inherited_vars.clone());
+    sat_context.push(split.branch_vars[branch_index]);
+    sat_context.sort_unstable();
+    sat_context.dedup();
+    Ok(BranchContext {
+        assumptions,
+        sat_context,
+    })
+}
+
+fn verify_avatar_branch_refutation(
+    parents: &[Formula],
+    conclusion: &Formula,
+    parent_index: Option<usize>,
+    contexts: &HashMap<usize, BranchContext>,
+    annotation: Option<AvatarBranchInfo<'_>>,
+    symbols: &SymbolTable,
+    limits: VerificationLimits,
+) -> Result<BranchContext, KernelVerdict> {
+    if parents.len() != 1 || !matches!(conclusion, Formula::False) {
+        return Err(KernelVerdict::Rejected(
+            "avatar_branch_refutation must derive `$false` from one branch root".into(),
+        ));
+    }
+    let parent_index = parent_index.ok_or_else(|| {
+        KernelVerdict::Rejected("avatar_branch_refutation has no branch parent".into())
+    })?;
+    let Some(context) = contexts.get(&parent_index) else {
+        return Err(KernelVerdict::Rejected(
+            "avatar_branch_refutation parent has no branch context".into(),
+        ));
+    };
+    let Some(annotation) = annotation else {
+        return Err(KernelVerdict::Inconclusive(
+            "avatar_branch_refutation lacks explicit SAT context".into(),
+        ));
+    };
+    let annotated_context = annotation
+        .context
+        .iter()
+        .map(|name| {
+            parse_avatar_var(name).ok_or_else(|| {
+                KernelVerdict::Rejected("avatar_branch_refutation has invalid SAT context".into())
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if normalize_avatar_vars_copy(annotated_context) != context.sat_context {
+        return Err(KernelVerdict::Rejected(
+            "avatar_branch_refutation SAT context does not match its branch".into(),
+        ));
+    }
+    if formula_size(&parents[0]) > limits.max_formula_nodes {
+        return Err(KernelVerdict::Inconclusive(
+            "avatar_branch_refutation exceeded strict formula-size limit".into(),
+        ));
+    }
+    let Some(parent_clause) = clause_from_formula(&parents[0], limits) else {
+        return Err(KernelVerdict::Inconclusive(
+            "avatar_branch_refutation parent is not a supported clause".into(),
+        ));
+    };
+    let (ordinary, negative, positive) =
+        split_avatar_markers(parent_clause, symbols).map_err(|_| {
+            KernelVerdict::Rejected("avatar_branch_refutation parent has invalid markers".into())
+        })?;
+    if !ordinary.is_empty() || !positive.is_empty() || negative != context.sat_context {
+        return Err(KernelVerdict::Rejected(
+            "avatar_branch_refutation parent is not false under its SAT context".into(),
+        ));
+    }
+    Ok(context.clone())
+}
+
+fn verify_avatar_sat_refutation(
+    node: &Node<'_>,
+    dag: &Dag<'_>,
+    parent_indices: &[usize],
+    contexts: &HashMap<usize, BranchContext>,
+    splits: &HashMap<usize, AvatarSplitContext>,
+    annotation: Option<AvatarSatInfo<'_>>,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if !node.is_false || parent_indices.len() < 2 {
+        return KernelVerdict::Rejected(
+            "avatar_sat_refutation must conclude `$false` from a split and branches".into(),
+        );
+    }
+    let Some(annotation) = annotation else {
+        return KernelVerdict::Inconclusive(
+            "avatar_sat_refutation lacks explicit SAT metadata".into(),
+        );
+    };
+    let Some(split_indices) = annotation
+        .split_nodes
+        .iter()
+        .map(|name| dag.by_name.get(name).copied())
+        .collect::<Option<Vec<_>>>()
+    else {
+        return KernelVerdict::Rejected(
+            "avatar_sat_refutation references an unknown split node".into(),
+        );
+    };
+    let Some(branch_indices) = annotation
+        .branch_roots
+        .iter()
+        .map(|name| dag.by_name.get(name).copied())
+        .collect::<Option<Vec<_>>>()
+    else {
+        return KernelVerdict::Rejected(
+            "avatar_sat_refutation references an unknown branch root".into(),
+        );
+    };
+    if split_indices.is_empty() || branch_indices.is_empty() {
+        return KernelVerdict::Rejected(
+            "avatar_sat_refutation must cite split nodes and branch roots".into(),
+        );
+    }
+    let parent_set: HashSet<_> = parent_indices.iter().copied().collect();
+    let metadata_set: HashSet<_> = split_indices
+        .iter()
+        .chain(&branch_indices)
+        .copied()
+        .collect();
+    if parent_indices.len() != metadata_set.len() || parent_set != metadata_set {
+        return KernelVerdict::Rejected(
+            "avatar_sat_refutation metadata does not match its parent list".into(),
+        );
+    }
+
+    let mut split_contexts = Vec::new();
+    let mut variables = HashSet::new();
+    for split_index in &split_indices {
+        if dag.nodes[*split_index].rule != Some("avatar_split_clause") {
+            return KernelVerdict::Rejected("avatar_sat_refutation cites a non-split node".into());
+        }
+        let Some(split) = splits.get(split_index) else {
+            return KernelVerdict::Rejected(
+                "avatar_sat_refutation cites an unvalidated split".into(),
+            );
+        };
+        variables.extend(split.inherited_vars.iter().copied());
+        variables.extend(split.branch_vars.iter().copied());
+        split_contexts.push(split);
+    }
+
+    let split_index_set: HashSet<_> = split_indices.iter().copied().collect();
+    let mut branch_context_list = Vec::new();
+    let mut seen_contexts = HashSet::new();
+    for branch_root in &branch_indices {
+        let Some(context) = contexts.get(branch_root) else {
+            return KernelVerdict::Rejected(format!(
+                "avatar_sat_refutation branch `{}` has no context",
+                dag.nodes[*branch_root].name
+            ));
+        };
+        if !dag.nodes[*branch_root].is_false {
+            return KernelVerdict::Rejected(
+                "avatar_sat_refutation branch root is not `$false`".into(),
+            );
+        }
+        if dag.nodes[*branch_root].rule != Some("avatar_branch_refutation") {
+            return KernelVerdict::Rejected(
+                "avatar_sat_refutation branch root is not an AVATAR branch refutation".into(),
+            );
+        }
+        if context
+            .assumptions
+            .iter()
+            .any(|assumption| !split_index_set.contains(&assumption.split_parent))
+        {
+            return KernelVerdict::Rejected(
+                "avatar_sat_refutation branch descends from an uncited split".into(),
+            );
+        }
+        for assumption in &context.assumptions {
+            let Some(split) = splits.get(&assumption.split_parent) else {
+                return KernelVerdict::Rejected(
+                    "avatar_sat_refutation branch cites an unknown split context".into(),
+                );
+            };
+            if assumption.branch_index >= split.branch_vars.len()
+                || assumption.sat_var != Some(split.branch_vars[assumption.branch_index])
+            {
+                return KernelVerdict::Rejected(
+                    "avatar_sat_refutation branch has an invalid SAT assumption".into(),
+                );
+            }
+        }
+        let mut normalized_context = context.sat_context.clone();
+        normalize_avatar_vars(&mut normalized_context);
+        if !seen_contexts.insert(normalized_context.clone()) {
+            return KernelVerdict::Rejected(
+                "avatar_sat_refutation contains a duplicate branch context".into(),
+            );
+        }
+        variables.extend(normalized_context.iter().copied());
+        branch_context_list.push(normalized_context);
+    }
+    let mut variables: Vec<_> = variables.into_iter().collect();
+    variables.sort_unstable();
+    if variables.len() >= usize::BITS as usize {
+        return KernelVerdict::Inconclusive(
+            "avatar_sat_refutation has too many SAT variables".into(),
+        );
+    }
+    let assignments = 1usize << variables.len();
+    if assignments > limits.max_avatar_steps {
+        return KernelVerdict::Inconclusive(
+            "avatar_sat_refutation exceeded strict AVATAR enumeration limit".into(),
+        );
+    }
+    let position: HashMap<u32, usize> = variables
+        .iter()
+        .enumerate()
+        .map(|(index, variable)| (*variable, index))
+        .collect();
+    let mut steps = 0usize;
+    for mask in 0..assignments {
+        steps += 1;
+        let sat = split_contexts.iter().all(|split| {
+            !split
+                .inherited_vars
+                .iter()
+                .all(|variable| mask & (1usize << position[variable]) != 0)
+                || split
+                    .branch_vars
+                    .iter()
+                    .any(|variable| mask & (1usize << position[variable]) != 0)
+        });
+        if !sat {
+            continue;
+        }
+        let covered = branch_context_list.iter().any(|context| {
+            context
+                .iter()
+                .all(|variable| mask & (1usize << position[variable]) != 0)
+        });
+        if !covered {
+            return KernelVerdict::Rejected(
+                "avatar_sat_refutation leaves a satisfiable SAT assignment unrefuted".into(),
+            );
+        }
+    }
+    if steps > limits.max_avatar_steps {
+        return KernelVerdict::Inconclusive(
+            "avatar_sat_refutation exceeded strict AVATAR step limit".into(),
+        );
+    }
+    KernelVerdict::Certified
+}
+
+fn parse_avatar_var(name: &str) -> Option<u32> {
+    name.strip_prefix("spl0_")
+        .or_else(|| name.strip_prefix("spl_"))?
+        .parse()
+        .ok()
+        .filter(|var| *var > 0)
+}
+
+fn normalize_avatar_vars(vars: &mut Vec<u32>) {
+    vars.sort_unstable();
+    vars.dedup();
+}
+
+fn normalize_avatar_vars_copy(mut vars: Vec<u32>) -> Vec<u32> {
+    normalize_avatar_vars(&mut vars);
+    vars
+}
+
+#[allow(clippy::type_complexity)]
+fn split_avatar_markers(
+    clause: Vec<Literal>,
+    symbols: &SymbolTable,
+) -> Result<(Vec<Literal>, Vec<u32>, Vec<u32>), KernelVerdict> {
+    let mut ordinary = Vec::new();
+    let mut negative = Vec::new();
+    let mut positive = Vec::new();
+    for literal in clause {
+        let marker = match &literal.atom {
+            Atom::Pred(symbol, args)
+                if args.is_empty() && {
+                    let name = symbols.resolve(*symbol);
+                    name.starts_with("spl0_") || name.starts_with("spl_")
+                } =>
+            {
+                Some(symbols.resolve(match &literal.atom {
+                    Atom::Pred(symbol, _) => *symbol,
+                    Atom::Eq(_, _) => unreachable!(),
+                }))
+            }
+            _ => None,
+        };
+        let Some(marker) = marker else {
+            ordinary.push(literal);
+            continue;
+        };
+        let Some(var) = parse_avatar_var(marker) else {
+            return Err(KernelVerdict::Rejected(
+                "AVATAR marker has an invalid SAT variable".into(),
+            ));
+        };
+        if literal.positive {
+            positive.push(var);
+        } else {
+            negative.push(var);
+        }
+    }
+    normalize_avatar_vars(&mut negative);
+    Ok((ordinary, negative, positive))
+}
+
+fn is_avatar_split_literal(literal: &Literal, symbols: &SymbolTable) -> bool {
+    match &literal.atom {
+        Atom::Pred(symbol, args) => {
+            literal.positive && args.is_empty() && {
+                let name = symbols.resolve(*symbol);
+                name.starts_with("spl0_") || name.starts_with("spl_")
+            }
+        }
+        Atom::Eq(_, _) => false,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn verify_case_split(
     node: &Node<'_>,
     dag: &Dag<'_>,
     parent_indices: &[usize],
     formulas: &HashMap<usize, Formula>,
     branch_contexts: &HashMap<usize, BranchContext>,
+    splits: &HashMap<usize, AvatarSplitContext>,
+    symbols: &SymbolTable,
     limits: VerificationLimits,
 ) -> KernelVerdict {
     if parent_indices.len() < 2 {
@@ -5547,6 +6229,7 @@ fn verify_case_split(
         return KernelVerdict::Rejected("avatar_sat_refutation must conclude `$false`".into());
     }
     let split_parent = parent_indices[0];
+    let split_definition = splits.get(&split_parent);
     let Some(top_clause) = formulas
         .get(&split_parent)
         .and_then(|formula| clause_from_formula(formula, limits))
@@ -5568,29 +6251,31 @@ fn verify_case_split(
                 dag.nodes[*branch_root].name
             ));
         };
-        if context.split_parent != split_parent {
-            return KernelVerdict::Rejected(format!(
-                "avatar_sat_refutation branch `{}` cites a different split parent",
-                dag.nodes[*branch_root].name
-            ));
-        }
-        if !seen.insert(context.branch_index) {
-            return KernelVerdict::Rejected(
-                "avatar_sat_refutation contains a duplicate branch".into(),
-            );
-        }
-        let matches_top = top_clause
-            .get(context.branch_index)
-            .is_some_and(|top_literal| {
-                clause_alpha_equiv(
-                    std::slice::from_ref(top_literal),
-                    std::slice::from_ref(&context.literal),
-                )
-            });
-        if !matches_top {
-            return KernelVerdict::Rejected(
-                "avatar_sat_refutation branch literal does not match split parent".into(),
-            );
+        for assumption in &context.assumptions {
+            if assumption.split_parent != split_parent {
+                return KernelVerdict::Rejected(format!(
+                    "avatar_sat_refutation branch `{}` cites a different split parent",
+                    dag.nodes[*branch_root].name
+                ));
+            }
+            if !seen.insert(assumption.branch_index) {
+                return KernelVerdict::Rejected(
+                    "avatar_sat_refutation contains a duplicate branch".into(),
+                );
+            }
+            let matches_top = top_clause
+                .get(assumption.branch_index)
+                .is_some_and(|top_literal| {
+                    clause_alpha_equiv(
+                        std::slice::from_ref(top_literal),
+                        std::slice::from_ref(&assumption.literal),
+                    )
+                });
+            if !matches_top {
+                return KernelVerdict::Rejected(
+                    "avatar_sat_refutation branch literal does not match split parent".into(),
+                );
+            }
         }
         if !dag.nodes[*branch_root].is_false {
             return KernelVerdict::Rejected(
@@ -5604,6 +6289,15 @@ fn verify_case_split(
             seen.len(),
             top_clause.len()
         ));
+    }
+    if split_definition.is_none()
+        && !top_clause
+            .iter()
+            .all(|literal| !is_avatar_split_literal(literal, symbols))
+    {
+        return KernelVerdict::Rejected(
+            "avatar_sat_refutation lacks an explicit validated split certificate".into(),
+        );
     }
     KernelVerdict::Certified
 }
@@ -8344,6 +9038,91 @@ mod tests {
                      fof(b0, plain, p, inference(split_component, [status(thm)], [top])).\n\
                      fof(f0, plain, $false, inference(resolution, [status(thm)], [b0,np])).\n\
                      fof(bot, plain, $false, inference(avatar_sat_refutation, [status(thm)], [top,f0])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn certifies_explicit_avatar_certificate() {
+        let problem = "fof(top, axiom, p | q).\n\
+                       fof(np, axiom, ~p).\n\
+                       fof(nq, axiom, ~q).";
+        let proof = "fof(top, axiom, p | q, file('problem.p', top)).\
+                     fof(np, axiom, ~p, file('problem.p', np)).\
+                     fof(nq, axiom, ~q, file('problem.p', nq)).\
+                     fof(split, plain, spl0_1 | spl0_2,\
+                         inference(avatar_split_clause,\
+                           [status(thm),\
+                            avatar_split([branch(0, spl0_1, [0]),\
+                                         branch(1, spl0_2, [1])], [])],\
+                           [top])).\
+                     fof(comp_p, plain, p | ~spl0_1,\
+                         inference(avatar_component_clause,\
+                           [status(thm), avatar_component(split, 0, spl0_1)],\
+                           [split])).\
+                     fof(comp_q, plain, q | ~spl0_2,\
+                         inference(avatar_component_clause,\
+                           [status(thm), avatar_component(split, 1, spl0_2)],\
+                           [split])).\
+                     fof(empty_p, plain, ~spl0_1,\
+                         inference(resolution, [status(thm)], [comp_p, np])).\
+                     fof(empty_q, plain, ~spl0_2,\
+                         inference(resolution, [status(thm)], [comp_q, nq])).\
+                     fof(branch_p, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(thm), avatar_context([spl0_1])], [empty_p])).\
+                     fof(branch_q, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(thm), avatar_context([spl0_2])], [empty_q])).\
+                     fof(bot, plain, $false,\
+                         inference(avatar_sat_refutation,\
+                           [status(thm),\
+                            avatar_sat_refutation([split], [branch_p, branch_q])],\
+                           [split, branch_p, branch_q])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn explicit_avatar_certificate_requires_metadata() {
+        let problem = "fof(top, axiom, p | q).\nfof(np, axiom, ~p).\nfof(nq, axiom, ~q).";
+        let proof = "fof(top, axiom, p | q, file('problem.p', top)).\
+                     fof(np, axiom, ~p, file('problem.p', np)).\
+                     fof(nq, axiom, ~q, file('problem.p', nq)).\
+                     fof(split, plain, spl0_1 | spl0_2,\
+                         inference(avatar_split_clause, [status(thm)], [top])).\
+                     fof(bot, plain, $false,\
+                         inference(avatar_sat_refutation,\
+                           [status(thm)], [split])).";
+        assert!(matches!(
+            check(problem, proof),
+            KernelVerdict::Inconclusive(_) | KernelVerdict::Rejected(_)
+        ));
+    }
+
+    #[test]
+    fn rejects_explicit_avatar_certificate_with_duplicate_branch_context() {
+        let problem = "fof(top, axiom, p | q).\nfof(np, axiom, ~p).\nfof(nq, axiom, ~q).";
+        let proof = "fof(top, axiom, p | q, file('problem.p', top)).\
+                     fof(np, axiom, ~p, file('problem.p', np)).\
+                     fof(nq, axiom, ~q, file('problem.p', nq)).\
+                     fof(split, plain, spl0_1 | spl0_2,\
+                         inference(avatar_split_clause,\
+                           [status(thm),\
+                            avatar_split([branch(0, spl0_1, [0]),\
+                                         branch(1, spl0_2, [1])], [])],\
+                           [top])).\
+                     fof(empty_p, plain, ~spl0_1,\
+                         inference(resolution, [status(thm)], [split,np])).\
+                     fof(branch_p, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(thm), avatar_context([spl0_1])], [empty_p])).\
+                     fof(branch_p2, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(thm), avatar_context([spl0_1])], [empty_p])).\
+                     fof(bot, plain, $false,\
+                         inference(avatar_sat_refutation,\
+                           [status(thm),\
+                            avatar_sat_refutation([split], [branch_p, branch_p2])],\
+                           [split, branch_p, branch_p2])).";
         assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
     }
 }

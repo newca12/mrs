@@ -109,6 +109,46 @@ pub enum ClauseSource {
     },
 }
 
+/// Explicit proof metadata for a generated AVATAR certificate.
+///
+/// The metadata is deliberately kept separate from [`ClauseSource`].  The
+/// source records the ordinary proof-DAG parents, while these records preserve
+/// the propositional branch information that cannot be represented by a first-
+/// order parent edge alone.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ClauseCertificate {
+    /// A split clause declares one SAT variable for each original clause
+    /// literal.  `branch_index` refers to the original literal position.
+    AvatarSplit {
+        inherited: Vec<u32>,
+        components: Vec<AvatarComponent>,
+    },
+    /// A conditional component clause belonging to an AVATAR split.
+    AvatarComponent {
+        split_parent: ClauseId,
+        branch_index: usize,
+        sat_var: u32,
+    },
+    /// A first-order branch refutation closed under the listed SAT
+    /// assumptions.  The corresponding TSTP node is an unconditional `$false`
+    /// node plus an explicit `avatar_context(...)` annotation.
+    AvatarBranchRefutation { context: Vec<u32> },
+    /// The final SAT roll-up.  The kernel independently checks that the split
+    /// clauses and branch-refutation clauses are propositionally inconsistent.
+    AvatarSatRefutation {
+        split_nodes: Vec<ClauseId>,
+        branch_roots: Vec<ClauseId>,
+    },
+}
+
+/// One original clause literal and the SAT variable representing its branch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AvatarComponent {
+    pub branch_index: usize,
+    pub sat_var: u32,
+    pub literal_indices: Vec<usize>,
+}
+
 /// A clause: a disjunction of literals.
 ///
 /// All variables in a clause are implicitly universally quantified.
@@ -142,6 +182,8 @@ pub struct Clause {
     /// the search loop. These clauses exist only for proof-provenance lookup
     /// (`clause_store`) at proof-extraction time.
     pub formula: Option<Box<Formula>>,
+    /// Optional explicit certificate metadata for specialized proof rules.
+    pub certificate: Option<ClauseCertificate>,
 }
 
 impl Clause {
@@ -157,6 +199,7 @@ impl Clause {
             avatar: Vec::new(),
             distance: 1000,
             formula: None,
+            certificate: None,
         }
     }
 
@@ -175,6 +218,7 @@ impl Clause {
             avatar: Vec::new(),
             distance: 1000,
             formula: Some(Box::new(formula)),
+            certificate: None,
         }
     }
 
@@ -197,6 +241,7 @@ impl Clause {
             avatar,
             distance: 1000,
             formula: None,
+            certificate: None,
         }
     }
 
