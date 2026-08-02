@@ -117,6 +117,8 @@ The first strict kernel implementation certifies only:
 - bounded single-parent `excluded_middle` construction of `A | ~A`
 - bounded two-parent `modus_ponens` with exact implication matching and outer
   universal instantiation
+- bounded `horn` forward chaining over direct single-antecedent implications
+  and fact parents; unsupported conjunction antecedents remain inconclusive
 - bounded `demodulation` from cited positive unit equalities
 - bounded `superposition` into a cited target clause
 

@@ -339,6 +339,7 @@ pub fn verify_strict_with_source(
             | "remove_double_negation" => verify_formula_equivalence(&parents, conclusion, limits),
             "excluded_middle" => verify_excluded_middle(&parents, conclusion, limits),
             "modus_ponens" => verify_modus_ponens(&parents, conclusion, limits),
+            "horn" => verify_horn(&parents, conclusion, limits),
             "instantiate" => verify_instantiation(&parents, conclusion, limits),
             "existential_gen" => verify_existential_generation(&parents, conclusion, limits),
             "conjunction" => verify_conjunction(&parents, conclusion, limits),
@@ -467,6 +468,7 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "remove_double_negation"
         | "excluded_middle"
         | "modus_ponens"
+        | "horn"
         | "instantiate"
         | "existential_gen"
         | "conjunction"
@@ -1977,6 +1979,112 @@ fn verify_modus_ponens(
     } else {
         KernelVerdict::Rejected("modus_ponens conclusion does not follow from its parents".into())
     }
+}
+
+fn verify_horn(
+    parents: &[Formula],
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if parents.len() < 2 {
+        return KernelVerdict::Rejected("horn must have at least two parents".into());
+    }
+    if parents
+        .iter()
+        .any(|parent| formula_size(parent) > limits.max_formula_nodes)
+        || formula_size(conclusion) > limits.max_formula_nodes
+    {
+        return KernelVerdict::Inconclusive("horn exceeded strict formula-size limit".into());
+    }
+
+    let mut rules = Vec::new();
+    let mut derived = Vec::new();
+    for parent in parents {
+        let (_, body) = leading_forall_core(parent);
+        if matches!(body, Formula::Implies(_, _)) {
+            rules.push(body);
+        } else {
+            derived.push(parent.clone());
+        }
+    }
+    if rules.is_empty() || derived.is_empty() {
+        return KernelVerdict::Rejected(
+            "horn needs at least one implication and one fact parent".into(),
+        );
+    }
+
+    let mut steps = 0;
+    let mut changed = true;
+    while changed {
+        changed = false;
+        let snapshot = derived.clone();
+        for rule in &rules {
+            for fact in &snapshot {
+                let Some(candidate) = instantiate_horn_rule(rule, fact, &mut steps, limits) else {
+                    if steps >= limits.max_equivalence_steps {
+                        return KernelVerdict::Inconclusive(
+                            "horn exceeded strict matching-step limit".into(),
+                        );
+                    }
+                    continue;
+                };
+                if formula_size(&candidate) > limits.max_formula_nodes {
+                    return KernelVerdict::Inconclusive(
+                        "horn derived formula exceeded strict formula-size limit".into(),
+                    );
+                }
+                if alpha_equiv(&candidate, conclusion) {
+                    return KernelVerdict::Certified;
+                }
+                if derived.iter().any(|known| alpha_equiv(known, &candidate)) {
+                    continue;
+                }
+                if derived.len() >= limits.max_equivalence_steps {
+                    return KernelVerdict::Inconclusive(
+                        "horn exceeded strict derived-formula limit".into(),
+                    );
+                }
+                derived.push(candidate);
+                changed = true;
+            }
+        }
+    }
+    KernelVerdict::Rejected("horn conclusion is not reachable from its parents".into())
+}
+
+fn instantiate_horn_rule(
+    rule: &Formula,
+    fact: &Formula,
+    steps: &mut usize,
+    limits: VerificationLimits,
+) -> Option<Formula> {
+    let Formula::Implies(antecedent, consequent) = rule else {
+        return None;
+    };
+    let mut substitution = HashMap::new();
+    let mut bound = HashMap::new();
+    if !match_universal_instance(
+        antecedent,
+        fact,
+        &mut substitution,
+        &mut bound,
+        steps,
+        limits,
+    ) {
+        return None;
+    }
+    if consequent
+        .free_vars()
+        .iter()
+        .any(|variable| !substitution.contains_key(variable))
+    {
+        return None;
+    }
+    let mut core_substitution = Substitution::new();
+    for (variable, term) in substitution {
+        core_substitution.bind(variable, term);
+    }
+    Some(core_substitution.apply_formula(consequent))
 }
 
 fn formula_equivalent_with_limit(
@@ -6488,6 +6596,78 @@ mod tests {
                      fof(nq, axiom, ~q(a), file('problem.p', nq)).\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [s,nq])).";
         assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn certifies_bounded_horn_forward_chain() {
+        let problem = "fof(r1, axiom, ![X] : (p(X) => q(X))).\n\
+                       fof(r2, axiom, ![X] : (q(X) => r(X))).\n\
+                       fof(fact, axiom, p(a)).\n\
+                       fof(nr, axiom, ~r(a)).";
+        let proof = "fof(r1, axiom, ![X] : (p(X) => q(X)), file('problem.p', r1)).\
+                     fof(r2, axiom, ![X] : (q(X) => r(X)), file('problem.p', r2)).\
+                     fof(fact, axiom, p(a), file('problem.p', fact)).\
+                     fof(h, plain, r(a), inference(horn, [status(thm)], [r2,fact,r1])).\
+                     fof(nr, axiom, ~r(a), file('problem.p', nr)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [h,nr])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_horn_with_forged_conclusion() {
+        let problem = "fof(r1, axiom, ![X] : (p(X) => q(X))).\n\
+                       fof(fact, axiom, p(a)).\n\
+                       fof(ns, axiom, ~s(a)).";
+        let proof = "fof(r1, axiom, ![X] : (p(X) => q(X)), file('problem.p', r1)).\
+                     fof(fact, axiom, p(a), file('problem.p', fact)).\
+                     fof(h, plain, s(a), inference(horn, [status(thm)], [fact,r1])).\
+                     fof(ns, axiom, ~s(a), file('problem.p', ns)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [h,ns])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn horn_does_not_split_conjunction_antecedents() {
+        let problem = "fof(rule, axiom, ((p(a) & q(a)) => r(a))).\n\
+                       fof(p, axiom, p(a)).\n\
+                       fof(q, axiom, q(a)).\n\
+                       fof(nr, axiom, ~r(a)).";
+        let proof = "fof(rule, axiom, ((p(a) & q(a)) => r(a)), file('problem.p', rule)).\
+                     fof(p, axiom, p(a), file('problem.p', p)).\
+                     fof(q, axiom, q(a), file('problem.p', q)).\
+                     fof(h, plain, r(a), inference(horn, [status(thm)], [rule,p,q])).\
+                     fof(nr, axiom, ~r(a), file('problem.p', nr)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [h,nr])).";
+        assert!(matches!(
+            check(problem, proof),
+            KernelVerdict::Rejected(_) | KernelVerdict::Inconclusive(_)
+        ));
+    }
+
+    #[test]
+    fn horn_matching_limit_is_inconclusive() {
+        let problem = parse_tptp(
+            "fof(rule, axiom, ![X] : (p(X) => q(X))).\n\
+             fof(fact, axiom, p(a)).\n\
+             fof(nq, axiom, ~q(a)).",
+        )
+        .expect("problem parses");
+        let proof = parse_tptp(
+            "fof(rule, axiom, ![X] : (p(X) => q(X)), file('problem.p', rule)).\
+             fof(fact, axiom, p(a), file('problem.p', fact)).\
+             fof(h, plain, q(a), inference(horn, [status(thm)], [fact,rule])).\
+             fof(nq, axiom, ~q(a), file('problem.p', nq)).\
+             fof(bot, plain, $false, inference(resolution, [status(thm)], [h,nq])).",
+        )
+        .expect("proof parses");
+        let limits = VerificationLimits {
+            max_equivalence_steps: 0,
+            ..VerificationLimits::default()
+        };
+        assert!(matches!(
+            verify_strict(&problem, &proof, limits),
+            KernelVerdict::Inconclusive(_)
+        ));
     }
 
     #[test]
