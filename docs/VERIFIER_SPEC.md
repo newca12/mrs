@@ -124,6 +124,8 @@ The first strict kernel implementation certifies only:
 - exact one-parent identity aliases for `assume` and `rewrite`
 - `ex_falso` only from a cited `$false` parent or a recomputed two-parent
   contradiction
+- bounded `weaken` steps that add disjuncts to a parent clause after independent
+  NNF/canonicalization
 - bounded `demodulation` from cited positive unit equalities
 - bounded `superposition` into a cited target clause
 

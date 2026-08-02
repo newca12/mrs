@@ -341,6 +341,7 @@ pub fn verify_strict_with_source(
             "horn" => verify_horn(&parents, conclusion, limits),
             "consequence" => verify_resolution(&parents, conclusion, limits),
             "ex_falso" => verify_ex_falso(&parents, limits),
+            "weaken" => verify_weakening(&parents, conclusion, limits),
             "instantiate" => verify_instantiation(&parents, conclusion, limits),
             "existential_gen" => verify_existential_generation(&parents, conclusion, limits),
             "conjunction" => verify_conjunction(&parents, conclusion, limits),
@@ -474,6 +475,7 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "horn"
         | "consequence"
         | "ex_falso"
+        | "weaken"
         | "instantiate"
         | "existential_gen"
         | "conjunction"
@@ -2080,6 +2082,47 @@ fn verify_ex_falso(parents: &[Formula], limits: VerificationLimits) -> KernelVer
     }
 }
 
+fn verify_weakening(
+    parents: &[Formula],
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if parents.len() != 1 {
+        return KernelVerdict::Rejected("weaken must have one parent".into());
+    }
+    if formula_size(&parents[0]) > limits.max_formula_nodes
+        || formula_size(conclusion) > limits.max_formula_nodes
+    {
+        return KernelVerdict::Inconclusive("weaken exceeded strict formula-size limit".into());
+    }
+    let mut steps = 0;
+    let Some(parent) = canonicalize_equivalence(&to_nnf(&parents[0]), &mut steps, limits) else {
+        return KernelVerdict::Inconclusive("weaken exceeded strict matching-step limit".into());
+    };
+    let Some(conclusion) = canonicalize_equivalence(&to_nnf(conclusion), &mut steps, limits) else {
+        return KernelVerdict::Inconclusive("weaken exceeded strict matching-step limit".into());
+    };
+    let mut parent_parts = Vec::new();
+    flatten_disjunction(&parent, &mut parent_parts);
+    let mut conclusion_parts = Vec::new();
+    flatten_disjunction(&conclusion, &mut conclusion_parts);
+    let mut used = vec![false; conclusion_parts.len()];
+    if match_disjunction_parts(
+        &parent_parts,
+        &conclusion_parts,
+        &mut used,
+        0,
+        &mut steps,
+        limits,
+    ) {
+        KernelVerdict::Certified
+    } else if steps >= limits.max_equivalence_steps {
+        KernelVerdict::Inconclusive("weaken exceeded strict matching-step limit".into())
+    } else {
+        KernelVerdict::Rejected("weaken conclusion does not contain the parent disjuncts".into())
+    }
+}
+
 fn instantiate_horn_rule(
     rule: &Formula,
     fact: &Formula,
@@ -2150,6 +2193,17 @@ fn flatten_conjunction<'a>(formula: &'a Formula, parts: &mut Vec<&'a Formula>) {
     }
 }
 
+fn flatten_disjunction<'a>(formula: &'a Formula, parts: &mut Vec<&'a Formula>) {
+    match formula {
+        Formula::Or(children) => {
+            for child in children {
+                flatten_disjunction(child, parts);
+            }
+        }
+        _ => parts.push(formula),
+    }
+}
+
 fn match_conjunction_parts(
     parents: &[Formula],
     conclusion: &[&Formula],
@@ -2172,6 +2226,36 @@ fn match_conjunction_parts(
         if alpha_equiv(&parents[index], conclusion[target_index]) {
             used[target_index] = true;
             if match_conjunction_parts(parents, conclusion, used, index + 1, steps, limits) {
+                return true;
+            }
+            used[target_index] = false;
+        }
+    }
+    false
+}
+
+fn match_disjunction_parts(
+    parents: &[&Formula],
+    conclusion: &[&Formula],
+    used: &mut [bool],
+    index: usize,
+    steps: &mut usize,
+    limits: VerificationLimits,
+) -> bool {
+    *steps += 1;
+    if *steps > limits.max_equivalence_steps {
+        return false;
+    }
+    if index == parents.len() {
+        return true;
+    }
+    for target_index in 0..conclusion.len() {
+        if used[target_index] {
+            continue;
+        }
+        if alpha_equiv(parents[index], conclusion[target_index]) {
+            used[target_index] = true;
+            if match_disjunction_parts(parents, conclusion, used, index + 1, steps, limits) {
                 return true;
             }
             used[target_index] = false;
@@ -6794,6 +6878,64 @@ mod tests {
                      fof(nq, axiom, ~q(a), file('problem.p', n)).\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [ex,nq])).";
         assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn certifies_bounded_disjunctive_weakening() {
+        let problem = "fof(src, axiom, p(a)).\n\
+                       fof(nq, axiom, ~q(a)).\n\
+                       fof(nr, axiom, ~r(a)).\n\
+                       fof(np, axiom, ~p(a)).";
+        let proof = "fof(src, axiom, p(a), file('problem.p', src)).\
+                     fof(w, plain, (r(a) | p(a) | q(a)), inference(weaken, [status(thm)], [src])).\
+                     fof(nq, axiom, ~q(a), file('problem.p', nq)).\
+                     fof(mid, plain, (r(a) | p(a)), inference(resolution, [status(thm)], [w,nq])).\
+                     fof(nr, axiom, ~r(a), file('problem.p', nr)).\
+                     fof(last, plain, p(a), inference(resolution, [status(thm)], [mid,nr])).\
+                     fof(np, axiom, ~p(a), file('problem.p', np)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [last,np])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_weakening_that_changes_a_parent_disjunct() {
+        let problem = "fof(src, axiom, p(a) | q(a)).\nfof(nr, axiom, ~r(a)).";
+        let proof = "fof(src, axiom, p(a) | q(a), file('problem.p', src)).\
+                     fof(w, plain, p(a) | r(a), inference(weaken, [status(thm)], [src])).\
+                     fof(nr, axiom, ~r(a), file('problem.p', nr)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [w,nr])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn rejects_weakening_with_non_disjunctive_conclusion() {
+        let problem = "fof(src, axiom, p(a)).\nfof(np, axiom, ~p(a)).";
+        let proof = "fof(src, axiom, p(a), file('problem.p', src)).\
+                     fof(w, plain, (p(a) & q(a)), inference(weaken, [status(thm)], [src])).\
+                     fof(np, axiom, ~p(a), file('problem.p', np)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [w,np])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn weaken_matching_limit_is_inconclusive() {
+        let problem = parse_tptp("fof(src, axiom, p(a) | q(a)).\nfof(nr, axiom, ~r(a)).")
+            .expect("problem parses");
+        let proof = parse_tptp(
+            "fof(src, axiom, p(a) | q(a), file('problem.p', src)).\
+             fof(w, plain, (p(a) | q(a) | r(a)), inference(weaken, [status(thm)], [src])).\
+             fof(nr, axiom, ~r(a), file('problem.p', nr)).\
+             fof(bot, plain, $false, inference(resolution, [status(thm)], [w,nr])).",
+        )
+        .expect("proof parses");
+        let limits = VerificationLimits {
+            max_equivalence_steps: 1,
+            ..VerificationLimits::default()
+        };
+        assert!(matches!(
+            verify_strict(&problem, &proof, limits),
+            KernelVerdict::Inconclusive(_)
+        ));
     }
 
     #[test]
