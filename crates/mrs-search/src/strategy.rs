@@ -382,7 +382,7 @@ impl StrategySchedule {
 ///
 /// `symbols` is required so that the TSTP proof string can be formatted inside the
 /// worker thread (while `SearchState` is still live), before the non-`Send`
-/// `cadical::Solver` is dropped.
+/// `mrs_cadical::Solver` is dropped.
 /// Options controlling ML data logging and ML-guided selection.
 ///
 /// Plain data in every build; only acted upon when the `ml-guidance`
@@ -571,14 +571,14 @@ pub fn run_schedule(
 
     // EPR pre-grounding is disabled: naive ground instance enumeration causes
     // OOM on large EPR problems (tens of thousands of ground clauses inflate
-    // cadical's SAT instance beyond memory limits).  AVATAR handles EPR
+    // CaDiCaL's SAT instance beyond memory limits). AVATAR handles EPR
     // structure lazily and correctly without pre-expansion.
 
     // Detect EPR structure even when the full expansion exceeds MAX_INSTANCES.
     // EPR problems (only variables and ground terms, no function symbols of
     // arity ≥ 1) must run without AVATAR regardless of whether we succeeded in
     // expanding them: AVATAR's SAT instance grows without bound during a
-    // resolution search over EPR clauses and can cause cadical to block for
+    // resolution search over EPR clauses and can cause CaDiCaL to block for
     // minutes with no way to interrupt it.
     let is_problem_epr = is_epr(&clauses_owned);
 
@@ -631,7 +631,7 @@ pub fn run_schedule(
     // a genuine Saturation; every other thread notices it on its next time-check
     // iteration and returns Timeout.
     //
-    // SearchState (and the cadical::Solver it contains) is Send, but TermBank
+    // SearchState (and the mrs_cadical::Solver it contains) is Send, but TermBank
     // is heavily thread-local (interning IDs are only valid locally). So each
     // thread constructs its own SearchState from the cloned clause data, but
     // we share a pool of globally discovered unit equalities via an RwLock.

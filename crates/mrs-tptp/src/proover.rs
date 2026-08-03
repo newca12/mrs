@@ -77,6 +77,8 @@ pub struct AvatarBranchInfo<'a> {
 pub struct AvatarSatInfo<'a> {
     pub split_nodes: Vec<&'a str>,
     pub branch_roots: Vec<&'a str>,
+    pub trace_format: Option<&'a str>,
+    pub trace_variables: Option<usize>,
 }
 
 impl<'a> Annotations<'a> {
@@ -280,17 +282,31 @@ impl<'a> Annotations<'a> {
         Some(AvatarBranchInfo { context })
     }
 
-    /// Parse `avatar_sat_refutation([c1, ...], [c2, ...])`.
+    /// Parse `avatar_sat_refutation([c1, ...], [c2, ...], sat_trace(frat, N))`.
     pub fn avatar_sat(&self) -> Option<AvatarSatInfo<'a>> {
         let args = self.info_function("avatar_sat_refutation")?;
-        if args.len() != 2 {
+        if args.len() < 2 || args.len() > 3 {
             return None;
         }
         let split_nodes = term_list(args.first()?)?;
         let branch_roots = term_list(args.get(1)?)?;
+        let (trace_format, trace_variables) = match args.get(2) {
+            Some(GeneralTerm::Function(name, trace_args))
+                if word_is(name, "sat_trace") && trace_args.len() == 2 =>
+            {
+                (
+                    Some(word_value(trace_args.first()?)?),
+                    Some(number_value(trace_args.get(1)?)?),
+                )
+            }
+            None => (None, None),
+            _ => return None,
+        };
         Some(AvatarSatInfo {
             split_nodes,
             branch_roots,
+            trace_format,
+            trace_variables,
         })
     }
 

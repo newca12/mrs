@@ -553,7 +553,7 @@ fn main() {
         let actual_workers = workers.unwrap_or_else(|| num_cpus::get_physical().max(1));
 
         let search_budget = total_budget - elapsed;
-        let schedule = match schedule_name.as_deref() {
+        let mut schedule = match schedule_name.as_deref() {
             None => StrategySchedule::default_schedule(search_budget, actual_workers),
             Some(name) => {
                 match mrs_search::strategy::named::by_name(name, search_budget, actual_workers) {
@@ -569,6 +569,11 @@ fn main() {
                 }
             }
         };
+        if self_check {
+            for (config, _) in &mut schedule.strategies {
+                config.emit_avatar_trace = true;
+            }
+        }
 
         // Pass the *already-resolved* worker count (the same value the
         // schedule above was time-sliced for) rather than the raw CLI

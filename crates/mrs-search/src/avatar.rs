@@ -1,7 +1,7 @@
 use crate::{HashMap, HashSet};
 use smallvec::SmallVec;
 
-use cadical::Solver;
+use mrs_cadical::Solver;
 
 use mrs_core::SymbolTable;
 use mrs_core::clause::{
@@ -20,6 +20,10 @@ pub struct AvatarContext {
 
     // The current SAT model (true variables)
     pub current_model: HashSet<u32>,
+
+    /// Exact clauses submitted to the SAT solver, in insertion order.
+    /// This manifest is replayed by proof-mode CaDiCaL after search.
+    pub sat_manifest: Vec<Vec<i32>>,
 }
 
 impl AvatarContext {
@@ -29,7 +33,13 @@ impl AvatarContext {
             component_vars: HashMap::default(),
             next_var: 1, // cadical variables start from 1
             current_model: HashSet::default(),
+            sat_manifest: Vec::new(),
         }
+    }
+
+    pub fn add_sat_clause(&mut self, clause: Vec<i32>) {
+        self.solver.add_clause(&clause);
+        self.sat_manifest.push(clause);
     }
 
     /// Splits a clause into variable-disjoint components.
@@ -150,7 +160,7 @@ impl AvatarContext {
             sat_clause.push(-(a as i32));
         }
 
-        self.solver.add_clause(sat_clause);
+        self.add_sat_clause(sat_clause);
 
         Some(split_clauses)
     }
@@ -328,7 +338,7 @@ impl AvatarContext {
             sat_clause.push(-(a as i32));
         }
 
-        self.solver.add_clause(sat_clause);
+        self.add_sat_clause(sat_clause);
         Some(split_clauses)
     }
 }

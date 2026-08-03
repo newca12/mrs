@@ -11,7 +11,7 @@
 //!
 //! This module exposes [`try_propositional`], which detects when every
 //! input formula is purely propositional (only 0-ary `Atom::Pred`, no
-//! `Atom::Eq`, no quantifiers) and, if so, asks cadical whether
+//! `Atom::Eq`, no quantifiers) and, if so, asks CaDiCaL whether
 //! `(premises) ∧ ¬conclusion` is satisfiable. UNSAT means the step is
 //! sound; SAT means it is unsound (there's a propositional
 //! counter-model). Returns `None` whenever any input contains a
@@ -28,7 +28,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cadical::Solver;
+use mrs_cadical::{SolveResult, Solver};
 use mrs_core::{Atom, Formula, Term};
 
 /// Outcome of the propositional fast-path.
@@ -70,9 +70,9 @@ pub fn try_propositional(premises: &[Formula], conclusion: &Formula) -> Option<P
     solver.add_clause([-neg_concl]);
 
     match solver.solve() {
-        Some(false) => Some(PropOutcome::Sound),
-        Some(true) => Some(PropOutcome::Unsound),
-        None => None,
+        SolveResult::Unsat => Some(PropOutcome::Sound),
+        SolveResult::Sat => Some(PropOutcome::Unsound),
+        SolveResult::Unknown => None,
     }
 }
 
@@ -694,7 +694,7 @@ pub fn try_propositional_abstraction(premises: &[Formula], conclusion: &Formula)
     if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
         eprintln!("[prop-sat-dbg] solver solve outcome = {:?}", sol);
     }
-    matches!(sol, Some(false))
+    matches!(sol, SolveResult::Unsat)
 }
 
 /// Walks `f` returning `true` iff it contains no quantifier. Unlike
@@ -906,7 +906,7 @@ mod tests {
 
     #[test]
     fn counter_model_is_unsound() {
-        // p ⊨ q  is invalid; cadical finds the counter-model p=true, q=false.
+        // p ⊨ q is invalid; CaDiCaL finds the counter-model p=true, q=false.
         let mut s = SymbolTable::new();
         let pp = p(&mut s, "p");
         let pq = p(&mut s, "q");

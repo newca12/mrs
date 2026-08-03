@@ -1,0 +1,15 @@
+[package]
+name = "mrs-cadical-sys"
+version.workspace = true
+edition.workspace = true
+description = "Workspace-owned CaDiCaL 3.0.1 FFI for MRS"
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+links = "mrs-cadical"
+
+[lib]
+path = "src/lib.rs"
+
+[build-dependencies]
+cc = "1.2.54"

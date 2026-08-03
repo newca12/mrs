@@ -33,7 +33,7 @@ fn main() {
     let mut var_map = HashMap::new();
     let mut next_var = 1;
 
-    let mut solver: cadical::Solver = cadical::Solver::new();
+    let mut solver = mrs_cadical::Solver::new();
     for c in &all_clauses {
         let mut sat_clause = Vec::new();
         for lit in &c.literals {

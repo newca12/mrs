@@ -223,6 +223,7 @@ fn format_certificate(certificate: &ClauseCertificate) -> String {
         ClauseCertificate::AvatarSatRefutation {
             split_nodes,
             branch_roots,
+            sat_trace,
         } => {
             let split_nodes = split_nodes
                 .iter()
@@ -234,7 +235,11 @@ fn format_certificate(certificate: &ClauseCertificate) -> String {
                 .map(|id| format!("c{}", id.0))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("avatar_sat_refutation([{split_nodes}], [{branch_roots}])")
+            let trace = sat_trace
+                .as_ref()
+                .map(|trace| format!(", sat_trace('{}', {})", trace.format, trace.variables))
+                .unwrap_or_default();
+            format!("avatar_sat_refutation([{split_nodes}], [{branch_roots}]{trace})")
         }
     }
 }

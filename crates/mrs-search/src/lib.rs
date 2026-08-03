@@ -245,6 +245,9 @@ pub struct SearchConfig {
     pub max_term_weight: Option<u32>,
     /// Whether to enable AVATAR clause splitting via an embedded SAT solver.
     pub use_avatar: bool,
+    /// Emit a replayable CaDiCaL SAT trace for the final AVATAR certificate.
+    /// Disabled by default because trace generation is a verification cost.
+    pub emit_avatar_trace: bool,
     /// If true, only generate resolvents where at least one parent is a unit
     /// (single-literal clause).  This restricts the inference to unit resolution,
     /// which dramatically reduces passive-set growth on FNE-encoded problems whose
@@ -288,6 +291,7 @@ impl Default for SearchConfig {
             ordering: TermOrdering::KBO,
             max_term_weight: Some(200),
             use_avatar: true,
+            emit_avatar_trace: false,
             unit_only_resolution: false,
             weight_fn: ClauseWeightFn::Standard,
             sos_depth: u32::MAX, // disabled

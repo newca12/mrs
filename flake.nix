@@ -54,8 +54,8 @@
       in
       {
         devShells.default = pkgs.mkShell {
-          # stdenv supplies a C/C++ compiler, which the `cadical` crate
-          # (CaDiCaL SAT solver, built from source via the `cc` crate) needs.
+          # stdenv supplies a C/C++ compiler, which the `mrs-cadical-sys`
+          # crate (CaDiCaL 3.0.1 built from source via `cc`) needs.
           nativeBuildInputs = [
             rustToolchain
             pkgs.pkg-config

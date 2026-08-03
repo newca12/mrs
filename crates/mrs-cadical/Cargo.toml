@@ -1,0 +1,11 @@
+[package]
+name = "mrs-cadical"
+version.workspace = true
+edition.workspace = true
+description = "Safe, MRS-specific CaDiCaL 3.0.1 interface"
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mrs-cadical-sys = { workspace = true }

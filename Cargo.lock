@@ -928,15 +928,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cadical"
-version = "0.1.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a54f8130f9e6a40dd1ec66180c4e8be624257705740b7ce1502146c807c7778e"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "candle-core"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3529,8 +3520,8 @@ name = "mrs"
 version = "0.2.2"
 dependencies = [
  "burn",
- "cadical",
  "mimalloc",
+ "mrs-cadical",
  "mrs-calculus",
  "mrs-cnf",
  "mrs-core",
@@ -3552,6 +3543,20 @@ dependencies = [
  "mrs-core",
  "mrs-tptp",
  "walkdir",
+]
+
+[[package]]
+name = "mrs-cadical"
+version = "0.2.2"
+dependencies = [
+ "mrs-cadical-sys",
+]
+
+[[package]]
+name = "mrs-cadical-sys"
+version = "0.2.2"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -3626,8 +3631,8 @@ dependencies = [
 name = "mrs-proover"
 version = "0.2.2"
 dependencies = [
- "cadical",
  "libc",
+ "mrs-cadical",
  "mrs-cnf",
  "mrs-core",
  "mrs-proof-kernel",
@@ -3642,7 +3647,7 @@ name = "mrs-search"
 version = "0.2.2"
 dependencies = [
  "burn",
- "cadical",
+ "mrs-cadical",
  "mrs-calculus",
  "mrs-core",
  "mrs-index",

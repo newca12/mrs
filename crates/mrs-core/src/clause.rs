@@ -138,7 +138,20 @@ pub enum ClauseCertificate {
     AvatarSatRefutation {
         split_nodes: Vec<ClauseId>,
         branch_roots: Vec<ClauseId>,
+        sat_trace: Option<AvatarSatTrace>,
     },
+}
+
+/// A bounded SAT manifest and proof trace associated with an AVATAR roll-up.
+/// The trace bytes are kept separate from the ordinary TSTP formula text so
+/// strict verification can transport them in a proof bundle without making
+/// TSTP annotations enormous.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AvatarSatTrace {
+    pub format: &'static str,
+    pub variables: u32,
+    pub clauses: Vec<Vec<i32>>,
+    pub trace: Vec<u8>,
 }
 
 /// One original clause literal and the SAT variable representing its branch.

@@ -22,7 +22,9 @@ use mrs_calculus::resolution;
 use mrs_calculus::subsumption;
 use mrs_calculus::superposition;
 use mrs_core::SymbolId;
-use mrs_core::clause::{Clause as LegacyClause, ClauseCertificate, ClauseId, ClauseSource};
+use mrs_core::clause::{
+    AvatarSatTrace, Clause as LegacyClause, ClauseCertificate, ClauseId, ClauseSource,
+};
 use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermId, TermNode};
 use mrs_index::fvi::FeatureVector;
 use mrs_proof::extract::extract_proof_ids;
@@ -157,7 +159,7 @@ fn avatar_refute_branch(
         return true;
     }
     let sat_clause: Vec<i32> = avatar.iter().map(|&a| -(a as i32)).collect();
-    state.avatar.solver.add_clause(sat_clause);
+    state.avatar.add_sat_clause(sat_clause);
 
     if state.branch_empty_ids.iter().any(|existing| {
         state
@@ -172,7 +174,7 @@ fn avatar_refute_branch(
                 )
             })
     }) {
-        if matches!(state.avatar.solver.solve(), Some(true)) {
+        if matches!(state.avatar.solver.solve(), mrs_cadical::SolveResult::Sat) {
             update_model(state);
             sync_active_dormant(state, ordering);
             return true;
@@ -198,7 +200,7 @@ fn avatar_refute_branch(
     state.register_clause(&branch_root);
     state.branch_empty_ids.push(branch_root.id);
 
-    if matches!(state.avatar.solver.solve(), Some(true)) {
+    if matches!(state.avatar.solver.solve(), mrs_cadical::SolveResult::Sat) {
         update_model(state);
         sync_active_dormant(state, ordering);
         true
@@ -240,6 +242,33 @@ fn avatar_certificate_split_ids(state: &crate::state::SearchState) -> Vec<Clause
 
 fn avatar_certificate_branch_ids(state: &crate::state::SearchState) -> Vec<ClauseId> {
     state.branch_empty_ids.clone()
+}
+
+fn avatar_sat_trace(
+    state: &crate::state::SearchState,
+    enabled: bool,
+) -> Option<AvatarSatTrace> {
+    if !enabled {
+        return None;
+    }
+    if state.avatar.sat_manifest.is_empty() {
+        return None;
+    }
+    let max_variable = state
+        .avatar
+        .sat_manifest
+        .iter()
+        .flat_map(|clause| clause.iter())
+        .map(|literal| literal.unsigned_abs())
+        .max()
+        .unwrap_or(0);
+    let trace = mrs_cadical::trace_manifest(&state.avatar.sat_manifest, max_variable).ok()?;
+    Some(AvatarSatTrace {
+        format: "frat-lrat",
+        variables: max_variable,
+        clauses: state.avatar.sat_manifest.clone(),
+        trace,
+    })
 }
 
 /// Scans the clause store for commutativity and associativity axioms:
@@ -483,6 +512,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 final_false_clause.certificate = Some(ClauseCertificate::AvatarSatRefutation {
                     split_nodes: avatar_certificate_split_ids(state),
                     branch_roots: avatar_certificate_branch_ids(state),
+                    sat_trace: avatar_sat_trace(state, config.emit_avatar_trace),
                 });
                 legacy_store.insert(final_id, final_false_clause);
 
@@ -526,6 +556,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             final_false_clause.certificate = Some(ClauseCertificate::AvatarSatRefutation {
                 split_nodes: avatar_certificate_split_ids(state),
                 branch_roots: avatar_certificate_branch_ids(state),
+                sat_trace: avatar_sat_trace(state, config.emit_avatar_trace),
             });
 
             let mut final_proof: Vec<mrs_core::clause::Clause> = state
@@ -583,7 +614,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
     // Initial SAT sync
     if config.use_avatar {
         state.avatar.current_model.clear();
-        if matches!(state.avatar.solver.solve(), Some(true)) {
+        if matches!(state.avatar.solver.solve(), mrs_cadical::SolveResult::Sat) {
             update_model(state);
         } else {
             if std::env::var("TRACE_SEARCH").is_ok() {
@@ -1373,7 +1404,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         given.id.0
                     );
                 }
-                if matches!(state.avatar.solver.solve(), Some(true)) {
+                if matches!(state.avatar.solver.solve(), mrs_cadical::SolveResult::Sat) {
                     update_model(state);
                     sync_active_dormant(state, &ordering);
                 } else {

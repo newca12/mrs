@@ -11,7 +11,7 @@
 //!
 //! The algorithm:
 //! 1. Detect FVO (no equality, all predicate args are variables).
-//! 2. Use `cadical` as a fast oracle to check propositional UNSAT.
+//! 2. Use `mrs-cadical` as a fast oracle to check propositional UNSAT.
 //! 3. If UNSAT, run a BFS resolution prover to produce a step-by-step proof.
 //! 4. Lift each propositional resolution step to first-order by introducing
 //!    fresh variables for each predicate argument.
@@ -27,6 +27,7 @@ use mrs_core::term::Term;
 use mrs_proof::tstp::format_tstp;
 
 use crate::SearchResult;
+use mrs_cadical::{SolveResult, Solver};
 
 // ---------------------------------------------------------------------------
 // FVO detection
@@ -265,7 +266,7 @@ fn dfs_topo(
 ///
 /// Returns `Some(SearchResult::Refutation(id, tstp))` if:
 /// - The problem is FVO (all predicate args are variables, no equality), **and**
-/// - The propositional skeleton is UNSAT (confirmed by `cadical`), **and**
+/// - The propositional skeleton is UNSAT (confirmed by `mrs-cadical`), **and**
 /// - A BFS resolution proof is found within `MAX_DERIVED` derived clauses.
 ///
 /// Returns `None` in all other cases; the caller should try the regular
@@ -282,16 +283,16 @@ pub fn try_fvo_refutation(
 
     let abs = PropAbstraction::build(clauses);
 
-    // Fast oracle: use cadical to check propositional UNSAT before BFS.
+    // Fast oracle: use CaDiCaL to check propositional UNSAT before BFS.
     // This avoids O(n²) BFS work when the problem is actually satisfiable.
     {
-        let mut solver: cadical::Solver = cadical::Solver::new();
+        let mut solver = Solver::new();
         for pc in &abs.prop_clauses {
-            solver.add_clause(pc.iter().copied());
+            solver.add_clause(pc.as_slice());
         }
         match solver.solve() {
-            Some(false) => {} // UNSAT: proceed to proof extraction
-            _ => return None, // SAT or solver error: give up
+            SolveResult::Unsat => {} // UNSAT: proceed to proof extraction
+            _ => return None,        // SAT or solver error: give up
         }
     }
 
