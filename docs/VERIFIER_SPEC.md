@@ -142,9 +142,11 @@ The first strict kernel implementation certifies only:
 - bounded `demodulation` from cited positive unit equalities
 - bounded `superposition` into a cited target clause
 
-Incomplete or multi-parent E-style `skolemize` forms, general directional
-multi-parent CNF transformations, and general AVATAR SAT certificates remain
-inconclusive until their kernel rules are implemented.
+Incomplete or multi-parent E-style `skolemize` forms and general directional
+multi-parent CNF transformations remain inconclusive until their kernel rules
+are implemented. Bounded explicit AVATAR certificates may include a
+replayable `frat-lrat` payload; unsupported RAT, incremental, and other SAT
+trace variants remain inconclusive.
 CWA-style splits are accepted only through the explicit case-split certificate
 described below.
 

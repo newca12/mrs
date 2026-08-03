@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use crossbeam_channel::{Receiver, unbounded};
 use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
@@ -16,6 +16,27 @@ use sysinfo::System;
 use tempfile::NamedTempFile;
 use wait_timeout::ChildExt;
 use walkdir::WalkDir;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum VerifyMode {
+    /// Run the independent strict proof kernel only.
+    Kernel,
+    /// Run the existing competition-oriented verification checks.
+    Competition,
+    /// Do not verify proof output.
+    #[value(name = "none")]
+    None,
+}
+
+impl VerifyMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Kernel => "kernel",
+            Self::Competition => "competition",
+            Self::None => "none",
+        }
+    }
+}
 
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
@@ -51,6 +72,10 @@ struct Args {
     /// Number of parallel jobs
     #[arg(short, long)]
     jobs: Option<usize>,
+
+    /// Proof verification policy: kernel, competition, or none
+    #[arg(long, value_enum, default_value_t = VerifyMode::Competition)]
+    verify_mode: VerifyMode,
 }
 
 #[derive(Debug, Clone)]
@@ -215,6 +240,45 @@ fn verify_proof_with_proover(stdout: &str) -> String {
     run().unwrap_or_else(|| "Unknown".to_string())
 }
 
+/// Verify a proof using only the independent strict proof kernel.
+fn verify_proof_with_kernel(stdout: &str) -> String {
+    let run = || -> Option<String> {
+        let mut temp_file = NamedTempFile::new().ok()?;
+        temp_file.write_all(stdout.as_bytes()).ok()?;
+
+        let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("mrs-codex"));
+        let proover_exe = current_exe
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("mrs-proover");
+        let mut command = Command::new(proover_exe);
+        command.args(["--strict", "--workers", "1", "--time", "10"]);
+        let mut child = command
+            .arg(temp_file.path())
+            .stdout(Stdio::piped())
+            .spawn()
+            .ok()?;
+
+        match child.wait_timeout(Duration::from_secs(60)) {
+            Ok(Some(_)) => {
+                let output = child.wait_with_output().ok()?;
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                match extract_szs_status(&stdout).as_deref() {
+                    Some("VerifiedGood") => Some("VerifiedGood".to_string()),
+                    Some("VerifiedBad") => Some("VerifiedBad".to_string()),
+                    _ => Some("Unknown".to_string()),
+                }
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                Some("Unknown".to_string())
+            }
+        }
+    };
+    run().unwrap_or_else(|| "Unknown".to_string())
+}
+
 /// Verifies a TSTP proof using the StarExec entrypoint script.
 /// Returns the parsed status ("VerifiedGood", "VerifiedBad", "Unknown") and the duration.
 fn verify_proof_with_starexec(stdout: &str) -> (String, f64) {
@@ -353,7 +417,14 @@ fn main() {
         std::process::exit(1);
     }
 
-    let parameters = args.params.clone().unwrap_or_else(|| args.cmd.clone());
+    let parameter_text = args.params.clone().unwrap_or_else(|| args.cmd.clone());
+    // Verification policy changes both the work performed and the meaning of
+    // the recorded validation columns, so make it part of the resumable
+    // configuration key.
+    let parameters = format!(
+        "{parameter_text} [verify-mode={}]",
+        args.verify_mode.as_str()
+    );
     let hardware = args.hardware.unwrap_or_else(detect_hardware);
 
     let conn = Connection::open(&args.db).expect("Failed to open SQLite database");
@@ -377,6 +448,7 @@ fn main() {
         "Found {} already completed problems for this configuration.",
         completed_problems.len()
     );
+    println!("Proof verification mode: {:?}", args.verify_mode);
     println!("Scanning {} for .p files...", args.folder.display());
 
     let mut pending_files = Vec::new();
@@ -471,14 +543,26 @@ fn main() {
                                     {
                                         status_str = szs.clone();
 
-                                        // If a proof was found, we want to run mrs-proover to verify it
+                                        // Verify proof output according to the explicit policy.
                                         if szs == "Theorem" || szs == "Unsatisfiable" {
-                                            proover_validated =
-                                                Some(verify_proof_with_proover(&stdout));
-                                            let (st_val, st_time) =
-                                                verify_proof_with_starexec(&stdout);
-                                            starexec_validated = Some(st_val);
-                                            time_to_verify = Some(st_time);
+                                            match args.verify_mode {
+                                                VerifyMode::Kernel => {
+                                                    let verify_start = Instant::now();
+                                                    proover_validated =
+                                                        Some(verify_proof_with_kernel(&stdout));
+                                                    time_to_verify =
+                                                        Some(verify_start.elapsed().as_secs_f64());
+                                                }
+                                                VerifyMode::Competition => {
+                                                    proover_validated =
+                                                        Some(verify_proof_with_proover(&stdout));
+                                                    let (st_val, st_time) =
+                                                        verify_proof_with_starexec(&stdout);
+                                                    starexec_validated = Some(st_val);
+                                                    time_to_verify = Some(st_time);
+                                                }
+                                                VerifyMode::None => {}
+                                            }
                                         }
                                     } else {
                                         if status.success() {
@@ -531,14 +615,26 @@ fn main() {
                     .map(|t| format!("{:.2}s", t))
                     .unwrap_or_else(|| "N/A".to_string());
 
-                let val_disp = match (&proover_validated, &starexec_validated) {
-                    (Some(pv), Some(sv)) => format!(
-                        " [Proover: {}, StarExec: {} (verify: {:.2}s)]",
-                        pv,
-                        sv,
-                        time_to_verify.unwrap_or(0.0)
-                    ),
-                    _ => "".to_string(),
+                let val_disp = match args.verify_mode {
+                    VerifyMode::Kernel => proover_validated
+                        .as_deref()
+                        .map(|status| {
+                            format!(
+                                " [Kernel: {status} (verify: {:.2}s)]",
+                                time_to_verify.unwrap_or(0.0)
+                            )
+                        })
+                        .unwrap_or_default(),
+                    VerifyMode::Competition => match (&proover_validated, &starexec_validated) {
+                        (Some(pv), Some(sv)) => format!(
+                            " [Proover: {}, StarExec: {} (verify: {:.2}s)]",
+                            pv,
+                            sv,
+                            time_to_verify.unwrap_or(0.0)
+                        ),
+                        _ => "".to_string(),
+                    },
+                    VerifyMode::None => String::new(),
                 };
 
                 println!(
@@ -554,4 +650,40 @@ fn main() {
     writer_handle.join().expect("Writer thread panicked");
 
     println!("Processing complete.");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_args() -> Vec<&'static str> {
+        vec![
+            "mrs-codex",
+            "problems",
+            "--system",
+            "mrs",
+            "--cmd",
+            "mrs {file}",
+        ]
+    }
+
+    #[test]
+    fn verifier_mode_defaults_to_competition() {
+        let args = Args::try_parse_from(base_args()).expect("default arguments parse");
+        assert_eq!(args.verify_mode, VerifyMode::Competition);
+    }
+
+    #[test]
+    fn verifier_modes_parse_explicitly() {
+        for (value, expected) in [
+            ("kernel", VerifyMode::Kernel),
+            ("competition", VerifyMode::Competition),
+            ("none", VerifyMode::None),
+        ] {
+            let mut argv = base_args();
+            argv.extend(["--verify-mode", value]);
+            let args = Args::try_parse_from(argv).expect("verification mode parses");
+            assert_eq!(args.verify_mode, expected);
+        }
+    }
 }
