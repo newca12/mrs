@@ -606,14 +606,23 @@ pub fn run_schedule(
     // symbols, plus definition clauses encoding each conjunct.  Refute every
     // branch independently.
     {
+        // Strict self-check requires a replayable SAT trace. CWA currently
+        // emits a structural case-split certificate without the SAT manifest,
+        // so let the regular AVATAR path produce the trace instead.
+        let strict_trace = schedule
+            .strategies
+            .iter()
+            .any(|(config, _)| config.emit_avatar_trace);
         let mut cwa_id_gen = id_gen.clone();
-        if let Some(result) = try_componentwise_refute(
-            &clauses_owned,
-            provenance,
-            &mut cwa_id_gen,
-            symbols_arc.clone(),
-            config.clone(),
-        ) {
+        if !strict_trace
+            && let Some(result) = try_componentwise_refute(
+                &clauses_owned,
+                provenance,
+                &mut cwa_id_gen,
+                symbols_arc.clone(),
+                config.clone(),
+            )
+        {
             return (result, crate::ScheduleReport::default());
         }
     }

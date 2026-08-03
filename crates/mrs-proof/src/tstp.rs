@@ -237,11 +237,59 @@ fn format_certificate(certificate: &ClauseCertificate) -> String {
                 .join(", ");
             let trace = sat_trace
                 .as_ref()
-                .map(|trace| format!(", sat_trace('{}', {})", trace.format, trace.variables))
+                .map(|trace| {
+                    let ids = trace
+                        .original_ids
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let clauses = trace
+                        .clauses
+                        .iter()
+                        .map(|clause| {
+                            format!(
+                                "[{}]",
+                                clause
+                                    .iter()
+                                    .map(ToString::to_string)
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let cited_indices = trace
+                        .cited_indices
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!(
+                        ", sat_trace('{}', {}, '{}', [{}], [{}], [{}], '{}')",
+                        trace.format,
+                        trace.variables,
+                        hex_encode(&trace.digest),
+                        ids,
+                        cited_indices,
+                        clauses,
+                        hex_encode(&trace.trace)
+                    )
+                })
                 .unwrap_or_default();
             format!("avatar_sat_refutation([{split_nodes}], [{branch_roots}]{trace})")
         }
     }
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
 }
 
 #[cfg(test)]

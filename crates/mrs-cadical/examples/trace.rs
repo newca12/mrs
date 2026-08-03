@@ -11,8 +11,8 @@ fn main() {
     solver
         .start_file_trace(&path, ProofFormat::FratLrat)
         .expect("start FRAT trace");
-    solver.add_clause(&[1]);
-    solver.add_clause(&[-1]);
+    solver.add_clause([1]);
+    solver.add_clause([-1]);
     assert_eq!(solver.solve(), SolveResult::Unsat);
     solver.close_file_trace();
     println!("{}", path.display());

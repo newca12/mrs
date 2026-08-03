@@ -24,6 +24,7 @@ use mrs_calculus::superposition;
 use mrs_core::SymbolId;
 use mrs_core::clause::{
     AvatarSatTrace, Clause as LegacyClause, ClauseCertificate, ClauseId, ClauseSource,
+    avatar_sat_trace_digest,
 };
 use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermId, TermNode};
 use mrs_index::fvi::FeatureVector;
@@ -246,29 +247,97 @@ fn avatar_certificate_branch_ids(state: &crate::state::SearchState) -> Vec<Claus
 
 fn avatar_sat_trace(
     state: &crate::state::SearchState,
+    split_nodes: &[ClauseId],
+    branch_roots: &[ClauseId],
     enabled: bool,
 ) -> Option<AvatarSatTrace> {
     if !enabled {
         return None;
     }
-    if state.avatar.sat_manifest.is_empty() {
+    let cited_clauses = avatar_certificate_manifest(state, split_nodes, branch_roots)?;
+    let clauses = state.avatar.sat_manifest.clone();
+    if clauses.is_empty() {
         return None;
     }
-    let max_variable = state
-        .avatar
-        .sat_manifest
+    let mut used = vec![false; clauses.len()];
+    let mut cited_indices = Vec::with_capacity(cited_clauses.len());
+    for cited_clause in cited_clauses {
+        let (index, _) = clauses
+            .iter()
+            .enumerate()
+            .find(|(index, clause)| !used[*index] && **clause == cited_clause)?;
+        used[index] = true;
+        cited_indices.push(index);
+    }
+    let max_variable = clauses
         .iter()
         .flat_map(|clause| clause.iter())
         .map(|literal| literal.unsigned_abs())
         .max()
         .unwrap_or(0);
-    let trace = mrs_cadical::trace_manifest(&state.avatar.sat_manifest, max_variable).ok()?;
+    let trace = mrs_cadical::trace_manifest(&clauses, max_variable).ok()?;
+    let parsed = mrs_cadical::parse_frat_ascii(std::str::from_utf8(&trace).ok()?).ok()?;
+    let original_ids = parsed
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            mrs_cadical::ProofEvent::OriginalClause { id, .. } => Some(*id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if original_ids.len() != clauses.len() {
+        return None;
+    }
+    let digest = avatar_sat_trace_digest(
+        "frat-lrat",
+        max_variable,
+        &original_ids,
+        &cited_indices,
+        &clauses,
+        &trace,
+    );
     Some(AvatarSatTrace {
         format: "frat-lrat",
         variables: max_variable,
-        clauses: state.avatar.sat_manifest.clone(),
+        original_ids,
+        cited_indices,
+        clauses,
         trace,
+        digest,
     })
+}
+
+fn avatar_certificate_manifest(
+    state: &crate::state::SearchState,
+    split_nodes: &[ClauseId],
+    branch_roots: &[ClauseId],
+) -> Option<Vec<Vec<i32>>> {
+    let mut manifest = Vec::with_capacity(split_nodes.len() + branch_roots.len());
+    for split_id in split_nodes {
+        let clause = state.clause_store.get(split_id)?;
+        let ClauseCertificate::AvatarSplit {
+            inherited,
+            components,
+        } = clause.certificate.as_ref()?
+        else {
+            return None;
+        };
+        let mut sat_clause = components
+            .iter()
+            .map(|component| component.sat_var as i32)
+            .collect::<Vec<_>>();
+        sat_clause.extend(inherited.iter().map(|var| -(*var as i32)));
+        manifest.push(sat_clause);
+    }
+    for branch_id in branch_roots {
+        let clause = state.clause_store.get(branch_id)?;
+        let ClauseCertificate::AvatarBranchRefutation { context } = clause.certificate.as_ref()?
+        else {
+            return None;
+        };
+        manifest.push(context.iter().map(|var| -(*var as i32)).collect());
+    }
+    Some(manifest)
 }
 
 /// Scans the clause store for commutativity and associativity axioms:
@@ -501,6 +570,8 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     );
                 }
                 let final_id = state.id_gen.next();
+                let split_nodes = avatar_certificate_split_ids(state);
+                let branch_roots = avatar_certificate_branch_ids(state);
                 let mut final_false_clause = mrs_core::clause::Clause::new(
                     final_id,
                     vec![],
@@ -510,9 +581,14 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     },
                 );
                 final_false_clause.certificate = Some(ClauseCertificate::AvatarSatRefutation {
-                    split_nodes: avatar_certificate_split_ids(state),
-                    branch_roots: avatar_certificate_branch_ids(state),
-                    sat_trace: avatar_sat_trace(state, config.emit_avatar_trace),
+                    sat_trace: avatar_sat_trace(
+                        state,
+                        &split_nodes,
+                        &branch_roots,
+                        config.emit_avatar_trace,
+                    ),
+                    split_nodes,
+                    branch_roots,
                 });
                 legacy_store.insert(final_id, final_false_clause);
 
@@ -544,6 +620,8 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 return SearchResult::Refutation(empty_id, String::new());
             }
             let final_id = state.id_gen.next();
+            let split_nodes = avatar_certificate_split_ids(state);
+            let branch_roots = avatar_certificate_branch_ids(state);
             let mut final_false_clause = mrs_core::clause::Clause::new(
                 final_id,
                 vec![],
@@ -554,9 +632,14 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             );
 
             final_false_clause.certificate = Some(ClauseCertificate::AvatarSatRefutation {
-                split_nodes: avatar_certificate_split_ids(state),
-                branch_roots: avatar_certificate_branch_ids(state),
-                sat_trace: avatar_sat_trace(state, config.emit_avatar_trace),
+                sat_trace: avatar_sat_trace(
+                    state,
+                    &split_nodes,
+                    &branch_roots,
+                    config.emit_avatar_trace,
+                ),
+                split_nodes,
+                branch_roots,
             });
 
             let mut final_proof: Vec<mrs_core::clause::Clause> = state

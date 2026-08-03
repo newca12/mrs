@@ -79,6 +79,11 @@ pub struct AvatarSatInfo<'a> {
     pub branch_roots: Vec<&'a str>,
     pub trace_format: Option<&'a str>,
     pub trace_variables: Option<usize>,
+    pub trace_digest: Option<&'a str>,
+    pub trace_original_ids: Vec<i64>,
+    pub trace_cited_indices: Vec<usize>,
+    pub trace_clauses: Vec<Vec<i32>>,
+    pub trace_bytes: Option<&'a str>,
 }
 
 impl<'a> Annotations<'a> {
@@ -282,7 +287,10 @@ impl<'a> Annotations<'a> {
         Some(AvatarBranchInfo { context })
     }
 
-    /// Parse `avatar_sat_refutation([c1, ...], [c2, ...], sat_trace(frat, N))`.
+    /// Parse the self-contained SAT payload carried by an AVATAR certificate.
+    ///
+    /// The supported shape is
+    /// `sat_trace(frat-lrat, Variables, Digest, [Ids], [Cited], [[Clauses]], HexBytes)`.
     pub fn avatar_sat(&self) -> Option<AvatarSatInfo<'a>> {
         let args = self.info_function("avatar_sat_refutation")?;
         if args.len() < 2 || args.len() > 3 {
@@ -290,16 +298,32 @@ impl<'a> Annotations<'a> {
         }
         let split_nodes = term_list(args.first()?)?;
         let branch_roots = term_list(args.get(1)?)?;
-        let (trace_format, trace_variables) = match args.get(2) {
+        let (
+            trace_format,
+            trace_variables,
+            trace_digest,
+            trace_original_ids,
+            trace_cited_indices,
+            trace_clauses,
+            trace_bytes,
+        ) = match args.get(2) {
             Some(GeneralTerm::Function(name, trace_args))
-                if word_is(name, "sat_trace") && trace_args.len() == 2 =>
+                if word_is(name, "sat_trace") && trace_args.len() == 7 =>
             {
+                let original_ids = number_list_i64(trace_args.get(3)?)?;
+                let cited_indices = number_list(trace_args.get(4)?)?;
+                let clauses = clause_list(trace_args.get(5)?)?;
                 (
                     Some(word_value(trace_args.first()?)?),
                     Some(number_value(trace_args.get(1)?)?),
+                    Some(word_value(trace_args.get(2)?)?),
+                    original_ids,
+                    cited_indices,
+                    clauses,
+                    Some(word_value(trace_args.get(6)?)?),
                 )
             }
-            None => (None, None),
+            None => (None, None, None, Vec::new(), Vec::new(), Vec::new(), None),
             _ => return None,
         };
         Some(AvatarSatInfo {
@@ -307,6 +331,11 @@ impl<'a> Annotations<'a> {
             branch_roots,
             trace_format,
             trace_variables,
+            trace_digest,
+            trace_original_ids,
+            trace_cited_indices,
+            trace_clauses,
+            trace_bytes,
         })
     }
 
@@ -423,6 +452,38 @@ fn term_list<'a>(term: &GeneralTerm<'a>) -> Option<Vec<&'a str>> {
 fn number_list(term: &GeneralTerm<'_>) -> Option<Vec<usize>> {
     match term {
         GeneralTerm::List(items) => items.iter().map(number_value).collect(),
+        _ => None,
+    }
+}
+
+fn number_list_i64(term: &GeneralTerm<'_>) -> Option<Vec<i64>> {
+    match term {
+        GeneralTerm::List(items) => items
+            .iter()
+            .map(|item| match item {
+                GeneralTerm::Number(value) => value.as_str().parse().ok(),
+                _ => None,
+            })
+            .collect(),
+        _ => None,
+    }
+}
+
+fn clause_list(term: &GeneralTerm<'_>) -> Option<Vec<Vec<i32>>> {
+    match term {
+        GeneralTerm::List(clauses) => clauses
+            .iter()
+            .map(|clause| match clause {
+                GeneralTerm::List(literals) => literals
+                    .iter()
+                    .map(|literal| match literal {
+                        GeneralTerm::Number(value) => value.as_str().parse().ok(),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => None,
+            })
+            .collect(),
         _ => None,
     }
 }
@@ -588,5 +649,19 @@ mod tests {
         assert_eq!(split.components.len(), 2);
         assert_eq!(split.components[1].branch_index, 1);
         assert_eq!(split.components[1].literal_indices, vec![1]);
+    }
+
+    #[test]
+    fn avatar_sat_trace_metadata_is_parsed() {
+        let ann = parse_single(
+            "fof(bot, plain, $false, inference(avatar_sat_refutation, [status(thm), avatar_sat_refutation([split], [branch], sat_trace('frat-lrat', 2, '00', [1], [0], [[1]], 'aa'))], [split, branch])).",
+        );
+        let sat = ann.avatar_sat().expect("SAT metadata");
+        assert_eq!(sat.trace_format, Some("frat-lrat"));
+        assert_eq!(sat.trace_variables, Some(2));
+        assert_eq!(sat.trace_original_ids, vec![1]);
+        assert_eq!(sat.trace_cited_indices, vec![0]);
+        assert_eq!(sat.trace_clauses, vec![vec![1]]);
+        assert_eq!(sat.trace_bytes, Some("aa"));
     }
 }

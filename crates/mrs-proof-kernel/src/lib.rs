@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use mrs_core::clause::avatar_sat_trace_digest;
 use mrs_core::{Atom, Formula, Substitution, SymbolTable, Term, VarId};
 use mrs_tptp::ast::common::{AtomicWord, GeneralTerm};
 use mrs_tptp::proover::{
@@ -5978,6 +5979,21 @@ fn verify_avatar_sat_refutation(
             "avatar_sat_refutation lacks explicit SAT metadata".into(),
         );
     };
+    let has_trace_payload = annotation.trace_format.is_some()
+        || annotation.trace_variables.is_some()
+        || annotation.trace_digest.is_some()
+        || !annotation.trace_original_ids.is_empty()
+        || !annotation.trace_cited_indices.is_empty()
+        || !annotation.trace_clauses.is_empty()
+        || annotation.trace_bytes.is_some();
+    if !has_trace_payload {
+        return KernelVerdict::Inconclusive(
+            "avatar_sat_refutation lacks a replayable SAT proof trace".into(),
+        );
+    }
+    if has_trace_payload && let Err(verdict) = verify_avatar_sat_trace(&annotation, limits) {
+        return verdict;
+    }
     let Some(split_indices) = annotation
         .split_nodes
         .iter()
@@ -6084,6 +6100,17 @@ fn verify_avatar_sat_refutation(
         variables.extend(normalized_context.iter().copied());
         branch_context_list.push(normalized_context);
     }
+    if has_trace_payload
+        && let Err(verdict) = verify_avatar_sat_manifest_binding(
+            &annotation,
+            &split_indices,
+            &branch_indices,
+            splits,
+            contexts,
+        )
+    {
+        return verdict;
+    }
     let mut variables: Vec<_> = variables.into_iter().collect();
     variables.sort_unstable();
     if variables.len() >= usize::BITS as usize {
@@ -6135,6 +6162,414 @@ fn verify_avatar_sat_refutation(
         );
     }
     KernelVerdict::Certified
+}
+
+fn verify_avatar_sat_manifest_binding(
+    annotation: &AvatarSatInfo<'_>,
+    split_indices: &[usize],
+    branch_indices: &[usize],
+    splits: &HashMap<usize, AvatarSplitContext>,
+    contexts: &HashMap<usize, BranchContext>,
+) -> Result<(), KernelVerdict> {
+    let mut expected = Vec::with_capacity(split_indices.len() + branch_indices.len());
+    for split_index in split_indices {
+        let split = splits.get(split_index).ok_or_else(|| {
+            KernelVerdict::Rejected("avatar SAT trace references an unvalidated split".into())
+        })?;
+        let mut clause = split
+            .branch_vars
+            .iter()
+            .map(|variable| *variable as i32)
+            .collect::<Vec<_>>();
+        clause.extend(
+            split
+                .inherited_vars
+                .iter()
+                .map(|variable| -(*variable as i32)),
+        );
+        expected.push(clause);
+    }
+    for branch_index in branch_indices {
+        let context = contexts.get(branch_index).ok_or_else(|| {
+            KernelVerdict::Rejected("avatar SAT trace references an unknown branch".into())
+        })?;
+        expected.push(
+            context
+                .sat_context
+                .iter()
+                .map(|variable| -(*variable as i32))
+                .collect(),
+        );
+    }
+    if expected.len() != annotation.trace_cited_indices.len() {
+        return Err(KernelVerdict::Rejected(
+            "avatar SAT trace citation indices do not match cited split and branch count".into(),
+        ));
+    }
+    let mut seen = HashSet::new();
+    for (expected_clause, index) in expected.iter().zip(&annotation.trace_cited_indices) {
+        if !seen.insert(*index) {
+            return Err(KernelVerdict::Rejected(
+                "avatar SAT trace cites one manifest clause more than once".into(),
+            ));
+        }
+        if annotation.trace_clauses.get(*index) != Some(expected_clause) {
+            return Err(KernelVerdict::Rejected(
+                "avatar SAT trace citation does not match its AVATAR certificate".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_avatar_sat_trace(
+    annotation: &AvatarSatInfo<'_>,
+    limits: VerificationLimits,
+) -> Result<(), KernelVerdict> {
+    let format = annotation.trace_format.ok_or_else(|| {
+        KernelVerdict::Inconclusive("avatar SAT trace metadata is incomplete".into())
+    })?;
+    if format != "frat-lrat" {
+        return Err(KernelVerdict::Inconclusive(format!(
+            "unsupported AVATAR SAT trace format `{format}`"
+        )));
+    }
+    let variables = annotation.trace_variables.ok_or_else(|| {
+        KernelVerdict::Inconclusive("avatar SAT trace omits its variable bound".into())
+    })?;
+    if variables > u32::MAX as usize {
+        return Err(KernelVerdict::Inconclusive(
+            "avatar SAT trace variable bound exceeds the supported integer range".into(),
+        ));
+    }
+    if variables > limits.max_avatar_steps {
+        return Err(KernelVerdict::Inconclusive(
+            "avatar SAT trace declares too many variables".into(),
+        ));
+    }
+    let digest_text = annotation
+        .trace_digest
+        .ok_or_else(|| KernelVerdict::Inconclusive("avatar SAT trace omits its digest".into()))?;
+    let expected_digest = decode_hex_digest(digest_text).ok_or_else(|| {
+        KernelVerdict::Rejected("avatar SAT trace has an invalid SHA-256 digest".into())
+    })?;
+    let trace_hex = annotation.trace_bytes.ok_or_else(|| {
+        KernelVerdict::Inconclusive("avatar SAT trace omits its proof bytes".into())
+    })?;
+    let trace = decode_hex(trace_hex).ok_or_else(|| {
+        KernelVerdict::Rejected("avatar SAT trace has invalid hexadecimal proof bytes".into())
+    })?;
+    if trace.len() > limits.max_clause_literals.saturating_mul(1024) {
+        return Err(KernelVerdict::Inconclusive(
+            "avatar SAT trace exceeds the strict byte limit".into(),
+        ));
+    }
+    if annotation.trace_original_ids.len() != annotation.trace_clauses.len()
+        || annotation.trace_original_ids.is_empty()
+        || annotation.trace_cited_indices.is_empty()
+    {
+        return Err(KernelVerdict::Rejected(
+            "avatar SAT trace clause IDs do not match its manifest".into(),
+        ));
+    }
+    if annotation.trace_clauses.len() > limits.max_nodes {
+        return Err(KernelVerdict::Inconclusive(
+            "avatar SAT trace manifest exceeds the strict node limit".into(),
+        ));
+    }
+    if annotation
+        .trace_cited_indices
+        .iter()
+        .any(|index| *index >= annotation.trace_clauses.len())
+    {
+        return Err(KernelVerdict::Rejected(
+            "avatar SAT trace cites an out-of-range manifest index".into(),
+        ));
+    }
+    if annotation
+        .trace_clauses
+        .iter()
+        .flatten()
+        .any(|literal| literal == &0 || literal.unsigned_abs() as usize > variables)
+    {
+        return Err(KernelVerdict::Rejected(
+            "avatar SAT trace manifest contains an invalid literal".into(),
+        ));
+    }
+    let actual_digest = avatar_sat_trace_digest(
+        format,
+        variables as u32,
+        &annotation.trace_original_ids,
+        &annotation.trace_cited_indices,
+        &annotation.trace_clauses,
+        &trace,
+    );
+    if actual_digest != expected_digest {
+        return Err(KernelVerdict::Rejected(
+            "avatar SAT trace digest does not match its payload".into(),
+        ));
+    }
+    replay_frat_lrat(
+        &annotation.trace_clauses,
+        &annotation.trace_original_ids,
+        &trace,
+        variables,
+        limits,
+    )
+}
+
+fn decode_hex_digest(value: &str) -> Option<[u8; 32]> {
+    let bytes = decode_hex(value)?;
+    bytes.try_into().ok()
+}
+
+fn decode_hex(value: &str) -> Option<Vec<u8>> {
+    if !value.len().is_multiple_of(2) {
+        return None;
+    }
+    let bytes = value.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len() / 2);
+    for pair in bytes.chunks_exact(2) {
+        let high = hex_digit(pair[0])?;
+        let low = hex_digit(pair[1])?;
+        output.push((high << 4) | low);
+    }
+    Some(output)
+}
+
+fn hex_digit(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn replay_frat_lrat(
+    manifest: &[Vec<i32>],
+    original_ids: &[i64],
+    trace: &[u8],
+    variables: usize,
+    limits: VerificationLimits,
+) -> Result<(), KernelVerdict> {
+    let text = std::str::from_utf8(trace)
+        .map_err(|_| KernelVerdict::Rejected("avatar SAT trace is not valid UTF-8 FRAT".into()))?;
+    let mut clauses = HashMap::<i64, Vec<i32>>::new();
+    let mut original_index = 0usize;
+    let mut finalized_empty = false;
+    let mut events = 0usize;
+    let mut total_literals = 0usize;
+    for (line_number, raw_line) in text.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('c') {
+            continue;
+        }
+        events += 1;
+        if events > limits.max_nodes.saturating_mul(32) {
+            return Err(KernelVerdict::Inconclusive(
+                "avatar SAT trace exceeds the strict event limit".into(),
+            ));
+        }
+        let mut tokens = line.split_whitespace();
+        let kind = tokens
+            .next()
+            .ok_or_else(|| trace_error(line_number, "missing record kind"))?;
+        let id = tokens
+            .next()
+            .ok_or_else(|| trace_error(line_number, "missing clause ID"))?
+            .parse::<i64>()
+            .map_err(|_| trace_error(line_number, "invalid clause ID"))?;
+        let clause = parse_trace_clause(&mut tokens, line_number, limits.max_clause_literals)?;
+        total_literals = total_literals.saturating_add(clause.len());
+        if total_literals > limits.max_clause_literals.saturating_mul(limits.max_nodes) {
+            return Err(KernelVerdict::Inconclusive(
+                "avatar SAT trace exceeds the strict literal limit".into(),
+            ));
+        }
+        if clause
+            .iter()
+            .any(|literal| literal.unsigned_abs() as usize > variables)
+        {
+            return Err(trace_error(
+                line_number,
+                "trace clause uses a literal outside the declared variable bound",
+            ));
+        }
+        match kind {
+            "o" => {
+                if tokens.next().is_some() {
+                    return Err(trace_error(line_number, "unexpected original record data"));
+                }
+                let expected_id = original_ids.get(original_index).ok_or_else(|| {
+                    trace_error(
+                        line_number,
+                        "trace has more original clauses than its manifest",
+                    )
+                })?;
+                let expected_clause = manifest.get(original_index).ok_or_else(|| {
+                    trace_error(line_number, "trace original clause index exceeds manifest")
+                })?;
+                if id != *expected_id || clause != *expected_clause {
+                    return Err(trace_error(
+                        line_number,
+                        "trace original clause does not match its manifest entry",
+                    ));
+                }
+                if id <= 0 || clauses.insert(id, clause).is_some() {
+                    return Err(trace_error(line_number, "duplicate original clause ID"));
+                }
+                original_index += 1;
+            }
+            "a" => {
+                let mut antecedents = Vec::new();
+                if let Some(marker) = tokens.next() {
+                    if marker != "l" {
+                        return Err(trace_error(line_number, "expected LRAT antecedent marker"));
+                    }
+                    loop {
+                        let token = tokens.next().ok_or_else(|| {
+                            trace_error(line_number, "unterminated antecedent list")
+                        })?;
+                        if token == "0" {
+                            break;
+                        }
+                        antecedents.push(token.parse::<i64>().map_err(|_| {
+                            trace_error(line_number, "invalid antecedent clause ID")
+                        })?);
+                    }
+                }
+                if tokens.next().is_some()
+                    || id <= 0
+                    || clauses.contains_key(&id)
+                    || (antecedents.is_empty() && !is_tautology_kernel(&clause))
+                    || (!antecedents.is_empty()
+                        && !rup_check_kernel(&clauses, &clause, &antecedents))
+                {
+                    return Err(trace_error(line_number, "invalid LRAT/RUP clause addition"));
+                }
+                clauses.insert(id, clause);
+            }
+            "d" => {
+                if tokens.next().is_some() {
+                    return Err(trace_error(line_number, "unexpected deletion record data"));
+                }
+                let Some(existing) = clauses.remove(&id) else {
+                    return Err(trace_error(
+                        line_number,
+                        "deletion references an unknown clause",
+                    ));
+                };
+                if existing != clause {
+                    return Err(trace_error(line_number, "deletion clause does not match"));
+                }
+            }
+            "f" => {
+                if tokens.next().is_some() || clauses.get(&id) != Some(&clause) {
+                    return Err(trace_error(line_number, "invalid clause finalization"));
+                }
+                finalized_empty |= clause.is_empty();
+            }
+            _ => return Err(trace_error(line_number, "unsupported FRAT record")),
+        }
+    }
+    if original_index != manifest.len() {
+        return Err(KernelVerdict::Rejected(
+            "SAT trace does not contain every manifest clause".into(),
+        ));
+    }
+    if finalized_empty {
+        Ok(())
+    } else {
+        Err(KernelVerdict::Rejected(
+            "SAT trace does not finalize the empty clause".into(),
+        ))
+    }
+}
+
+fn parse_trace_clause<'a>(
+    tokens: &mut impl Iterator<Item = &'a str>,
+    line_number: usize,
+    max_literals: usize,
+) -> Result<Vec<i32>, KernelVerdict> {
+    let mut clause = Vec::new();
+    loop {
+        let token = tokens
+            .next()
+            .ok_or_else(|| trace_error(line_number, "unterminated clause"))?;
+        if token == "0" {
+            return Ok(clause);
+        }
+        let literal = token
+            .parse::<i32>()
+            .map_err(|_| trace_error(line_number, "invalid clause literal"))?;
+        if literal == 0 {
+            return Err(trace_error(line_number, "zero is not a clause literal"));
+        }
+        if clause.len() >= max_literals {
+            return Err(KernelVerdict::Inconclusive(
+                "avatar SAT trace clause exceeds the strict literal limit".into(),
+            ));
+        }
+        clause.push(literal);
+    }
+}
+
+fn trace_error(line_number: usize, reason: &str) -> KernelVerdict {
+    KernelVerdict::Rejected(format!(
+        "malformed AVATAR SAT trace at line {}: {reason}",
+        line_number + 1
+    ))
+}
+
+fn rup_check_kernel(
+    clauses: &HashMap<i64, Vec<i32>>,
+    conclusion: &[i32],
+    antecedents: &[i64],
+) -> bool {
+    if antecedents.iter().any(|id| !clauses.contains_key(id)) {
+        return false;
+    }
+    let mut assignment = HashSet::new();
+    for &literal in conclusion {
+        assignment.insert(-literal);
+    }
+    for &id in antecedents {
+        let Some(clause) = clauses.get(&id) else {
+            return false;
+        };
+        let mut satisfied = false;
+        let mut unit = None;
+        let mut multiple = false;
+        for &literal in clause {
+            if assignment.contains(&literal) {
+                satisfied = true;
+                break;
+            }
+            if !assignment.contains(&-literal) && unit.replace(literal).is_some() {
+                multiple = true;
+            }
+        }
+        if satisfied {
+            continue;
+        }
+        if clause.is_empty() {
+            return true;
+        }
+        if multiple {
+            return false;
+        }
+        if let Some(unit) = unit {
+            assignment.insert(unit);
+        } else {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_tautology_kernel(clause: &[i32]) -> bool {
+    clause.iter().any(|literal| clause.contains(&-*literal))
 }
 
 fn parse_avatar_var(name: &str) -> Option<u32> {
@@ -7231,7 +7666,33 @@ mod tests {
          cnf(nd1, plain, ~d1(a),\
              inference(resolution, [status(thm)], [nd1_or_d0,nd0])).\
          cnf(bot, plain, $false,\
-             inference(resolution, [status(thm)], [main,nd1]))."
+         inference(resolution, [status(thm)], [main,nd1]))."
+    }
+
+    fn explicit_avatar_sat_trace() -> (String, String) {
+        let manifest = vec![vec![1, 2], vec![-1], vec![-2]];
+        let original_ids = vec![1, 2, 4];
+        let trace = b"o 1  1 2 0\no 2  -1 0\na 3  2 0  l 2 1 0\no 4  -2 0\na 5  0  l 3 4 0\nd 4  -2 0\nf 2  -1 0\nf 3  2 0\nf 1  1 2 0\nf 5  0\n";
+        let digest = mrs_core::clause::avatar_sat_trace_digest(
+            "frat-lrat",
+            2,
+            &original_ids,
+            &[0, 1, 2],
+            &manifest,
+            trace,
+        );
+        let hex = |bytes: &[u8]| {
+            bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        let annotation = format!(
+            "avatar_sat_refutation([split], [branch_p, branch_q], sat_trace('frat-lrat', 2, '{}', [1, 2, 4], [0, 1, 2], [[1, 2], [-1], [-2]], '{}'))",
+            hex(&digest),
+            hex(trace),
+        );
+        (annotation, hex(&digest))
     }
 
     #[test]
@@ -9046,7 +9507,9 @@ mod tests {
         let problem = "fof(top, axiom, p | q).\n\
                        fof(np, axiom, ~p).\n\
                        fof(nq, axiom, ~q).";
-        let proof = "fof(top, axiom, p | q, file('problem.p', top)).\
+        let (sat_trace, _) = explicit_avatar_sat_trace();
+        let proof = format!(
+            "fof(top, axiom, p | q, file('problem.p', top)).\
                      fof(np, axiom, ~p, file('problem.p', np)).\
                      fof(nq, axiom, ~q, file('problem.p', nq)).\
                      fof(split, plain, spl0_1 | spl0_2,\
@@ -9075,10 +9538,43 @@ mod tests {
                            [status(thm), avatar_context([spl0_2])], [empty_q])).\
                      fof(bot, plain, $false,\
                          inference(avatar_sat_refutation,\
-                           [status(thm),\
-                            avatar_sat_refutation([split], [branch_p, branch_q])],\
-                           [split, branch_p, branch_q])).";
-        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+                            [status(thm),\
+                             {sat_trace}],\
+                            [split, branch_p, branch_q])).",
+        );
+        assert_eq!(check(problem, &proof), KernelVerdict::Certified);
+
+        let (sat_trace, digest) = explicit_avatar_sat_trace();
+        let corrupted = proof.replace(&digest, &"0".repeat(digest.len()));
+        assert!(matches!(
+            check(problem, &corrupted),
+            KernelVerdict::Rejected(_) | KernelVerdict::Inconclusive(_)
+        ));
+        assert!(sat_trace.contains("sat_trace"));
+    }
+
+    #[test]
+    fn rejects_avatar_trace_manifest_binding_mutation() {
+        let problem = "fof(top, axiom, p | q).\nfof(np, axiom, ~p).\nfof(nq, axiom, ~q).";
+        let (sat_trace, _) = explicit_avatar_sat_trace();
+        let proof = format!(
+            "fof(top, axiom, p | q, file('problem.p', top)).\
+             fof(np, axiom, ~p, file('problem.p', np)).\
+             fof(nq, axiom, ~q, file('problem.p', nq)).\
+             fof(split, plain, spl0_1 | spl0_2, inference(avatar_split_clause, [status(thm), avatar_split([branch(0, spl0_1, [0]), branch(1, spl0_2, [1])], [])], [top])).\
+             fof(comp_p, plain, p | ~spl0_1, inference(avatar_component_clause, [status(thm), avatar_component(split, 0, spl0_1)], [split])).\
+             fof(comp_q, plain, q | ~spl0_2, inference(avatar_component_clause, [status(thm), avatar_component(split, 1, spl0_2)], [split])).\
+             fof(empty_p, plain, ~spl0_1, inference(resolution, [status(thm)], [comp_p, np])).\
+             fof(empty_q, plain, ~spl0_2, inference(resolution, [status(thm)], [comp_q, nq])).\
+             fof(branch_p, plain, $false, inference(avatar_branch_refutation, [status(thm), avatar_context([spl0_1])], [empty_p])).\
+             fof(branch_q, plain, $false, inference(avatar_branch_refutation, [status(thm), avatar_context([spl0_2])], [empty_q])).\
+             fof(bot, plain, $false, inference(avatar_sat_refutation, [status(thm), {sat_trace}], [split, branch_p, branch_q]))."
+        );
+        let mutated = proof.replace("[0, 1, 2]", "[0, 0, 2]");
+        assert!(matches!(
+            check(problem, &mutated),
+            KernelVerdict::Rejected(_) | KernelVerdict::Inconclusive(_)
+        ));
     }
 
     #[test]

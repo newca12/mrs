@@ -5,6 +5,7 @@
 //! over all its variables. This is the working format for resolution-based provers.
 
 use crate::HashSet;
+use sha2::Digest;
 use smallvec::SmallVec;
 
 use crate::Formula;
@@ -143,15 +144,82 @@ pub enum ClauseCertificate {
 }
 
 /// A bounded SAT manifest and proof trace associated with an AVATAR roll-up.
-/// The trace bytes are kept separate from the ordinary TSTP formula text so
-/// strict verification can transport them in a proof bundle without making
-/// TSTP annotations enormous.
+///
+/// Strict proof output serializes this value in the final TSTP annotation. The
+/// canonical digest input is provided by [`avatar_sat_trace_digest_input`] so
+/// the producer and the independent kernel agree on exactly what is hashed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AvatarSatTrace {
     pub format: &'static str,
     pub variables: u32,
+    pub original_ids: Vec<i64>,
+    /// Full-manifest positions corresponding to the cited split/branch clauses.
+    pub cited_indices: Vec<usize>,
     pub clauses: Vec<Vec<i32>>,
     pub trace: Vec<u8>,
+    pub digest: [u8; 32],
+}
+
+/// Build the canonical byte sequence covered by an AVATAR SAT-trace digest.
+///
+/// This is deliberately a small, dependency-free wire encoding. Every
+/// variable-length field carries an explicit little-endian `u64` length, so
+/// concatenation cannot make two distinct manifests hash to the same input.
+pub fn avatar_sat_trace_digest_input(
+    format: &str,
+    variables: u32,
+    original_ids: &[i64],
+    cited_indices: &[usize],
+    clauses: &[Vec<i32>],
+    trace: &[u8],
+) -> Vec<u8> {
+    fn put_u64(output: &mut Vec<u8>, value: u64) {
+        output.extend_from_slice(&value.to_le_bytes());
+    }
+
+    let mut output = Vec::new();
+    output.extend_from_slice(b"MRS-AVATAR-SAT-TRACE\0");
+    put_u64(&mut output, format.len() as u64);
+    output.extend_from_slice(format.as_bytes());
+    output.extend_from_slice(&variables.to_le_bytes());
+    put_u64(&mut output, original_ids.len() as u64);
+    for &id in original_ids {
+        output.extend_from_slice(&id.to_le_bytes());
+    }
+    put_u64(&mut output, cited_indices.len() as u64);
+    for &index in cited_indices {
+        put_u64(&mut output, index as u64);
+    }
+    put_u64(&mut output, clauses.len() as u64);
+    for clause in clauses {
+        put_u64(&mut output, clause.len() as u64);
+        for &literal in clause {
+            output.extend_from_slice(&literal.to_le_bytes());
+        }
+    }
+    put_u64(&mut output, trace.len() as u64);
+    output.extend_from_slice(trace);
+    output
+}
+
+/// Return the SHA-256 digest of an AVATAR SAT-trace payload.
+pub fn avatar_sat_trace_digest(
+    format: &str,
+    variables: u32,
+    original_ids: &[i64],
+    cited_indices: &[usize],
+    clauses: &[Vec<i32>],
+    trace: &[u8],
+) -> [u8; 32] {
+    sha2::Sha256::digest(avatar_sat_trace_digest_input(
+        format,
+        variables,
+        original_ids,
+        cited_indices,
+        clauses,
+        trace,
+    ))
+    .into()
 }
 
 /// One original clause literal and the SAT variable representing its branch.

@@ -192,6 +192,7 @@ pub fn encode_frat_ascii(trace: &ProofTrace) -> Result<Vec<u8>, TraceError> {
 /// competition instance can remain optimized and mutable during search.
 pub fn trace_manifest(clauses: &[Vec<i32>], max_variable: u32) -> Result<Vec<u8>, TraceError> {
     let mut solver = Solver::new();
+    solver.connect_trace(TraceConfig::default())?;
     solver
         .configure("plain")
         .map_err(|_| TraceError::FfiFailure)?;
@@ -201,7 +202,6 @@ pub fn trace_manifest(clauses: &[Vec<i32>], max_variable: u32) -> Result<Vec<u8>
     if max_variable > 0 {
         solver.declare_variables(max_variable as i32);
     }
-    solver.connect_trace(TraceConfig::default())?;
     for clause in clauses {
         solver.add_clause(clause);
     }
@@ -225,7 +225,7 @@ fn write_frat_clause(output: &mut String, kind: char, id: i64, clause: &[i32], h
         output.push_str(&literal.to_string());
         output.push(' ');
     }
-    output.push_str("0");
+    output.push('0');
     if !hints.is_empty() {
         output.push_str("  l ");
         for hint in hints {
@@ -943,8 +943,8 @@ mod tests {
     fn reports_version_and_solves() {
         assert_eq!(Solver::version(), "3.0.1");
         let mut solver = Solver::new();
-        solver.add_clause(&[1]);
-        solver.add_clause(&[-1]);
+        solver.add_clause([1]);
+        solver.add_clause([-1]);
         assert_eq!(solver.solve(), SolveResult::Unsat);
     }
 
@@ -955,8 +955,8 @@ mod tests {
         solver
             .connect_trace(TraceConfig::default())
             .expect("connect trace");
-        solver.add_clause(&[1]);
-        solver.add_clause(&[-1]);
+        solver.add_clause([1]);
+        solver.add_clause([-1]);
         assert_eq!(solver.solve(), SolveResult::Unsat);
         let trace = solver.disconnect_trace().expect("disconnect trace");
         check_proof_trace(&trace).expect("check callback trace");
@@ -976,8 +976,8 @@ mod tests {
         solver
             .start_file_trace(&path, ProofFormat::FratLrat)
             .expect("start FRAT trace");
-        solver.add_clause(&[1]);
-        solver.add_clause(&[-1]);
+        solver.add_clause([1]);
+        solver.add_clause([-1]);
         assert_eq!(solver.solve(), SolveResult::Unsat);
         solver.close_file_trace();
 
