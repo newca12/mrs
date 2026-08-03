@@ -41,7 +41,7 @@ fn main() {
     }
     println!(
         "cargo:rerun-if-changed={}",
-        source_dir.join("VERSION").display()
+        manifest.join("vendor/cadical/VERSION").display()
     );
     build.compile("mrs_cadical");
 
