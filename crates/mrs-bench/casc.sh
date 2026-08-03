@@ -67,6 +67,18 @@ declare -A CASC30_TIMES=(
     [tfn]=120   # TFN (typed first-order non-theorems)
 )
 
+# Official CASC-J13 wall-clock time limits per division (seconds).
+declare -A CASCJ13_TIMES=(
+    [fne]=180   # FOF, no equality
+    [feq]=180   # FOF, with equality
+    [ueq]=180   # unit equality
+    [fnn]=180   # FNT, no equality
+    [fnq]=180   # FNT, with equality
+    [tne]=180   # THF, no equality
+    [teq]=180   # THF, with equality
+    [prv]=180   # PRV
+)
+
 # Per-division overrides set via --time-DIV flags; populated during arg parsing.
 declare -A DIV_OVERRIDE=()
 
@@ -93,14 +105,26 @@ done
 # ---------- resolve per-division time limit ----------
 # Priority (highest to lowest):
 #   1. --time-DIV N  (explicit per-division override)
-#   2. --casc-times  (official CASC-30 defaults)
+#   2. --casc-times  (official CASC wall-clock defaults for the active edition)
 #   3. --time N      (global fallback)
 div_time() {
     local div="$1"
     if [[ -n "${DIV_OVERRIDE[${div}]+x}" ]]; then
         echo "${DIV_OVERRIDE[${div}]}"
-    elif [[ "${USE_CASC_TIMES}" -eq 1 && -n "${CASC30_TIMES[${div}]+x}" ]]; then
-        echo "${CASC30_TIMES[${div}]}"
+    elif [[ "${USE_CASC_TIMES}" -eq 1 ]]; then
+        if [[ "${EDITION}" == "casc-j13" ]]; then
+            if [[ -n "${CASCJ13_TIMES[${div}]+x}" ]]; then
+                echo "${CASCJ13_TIMES[${div}]}"
+            else
+                echo "${TIME_LIMIT}"
+            fi
+        else
+            if [[ -n "${CASC30_TIMES[${div}]+x}" ]]; then
+                echo "${CASC30_TIMES[${div}]}"
+            else
+                echo "${TIME_LIMIT}"
+            fi
+        fi
     else
         echo "${TIME_LIMIT}"
     fi
@@ -161,11 +185,14 @@ IFS=',' read -ra DIVISION_LIST <<< "${DIVISIONS}"
 
 # Reference answers file. Used inline by the worker to grade each
 # system run. Missing file → every verdict is `unknown`.
-ANSWERS="${SCRIPT_DIR}/systems/reference/answers.tsv"
+ANSWERS="${SCRIPT_DIR}/systems/reference/answers_${EDITION}.tsv"
 if [[ ! -f "${ANSWERS}" ]]; then
-    echo "WARNING: reference answers not found at ${ANSWERS}" >&2
+    ANSWERS="${SCRIPT_DIR}/systems/reference/answers.tsv"
+fi
+if [[ ! -f "${ANSWERS}" ]]; then
+    echo "WARNING: reference answers not found at ${SCRIPT_DIR}/systems/reference/answers_${EDITION}.tsv or answers.tsv" >&2
     echo "         all verdicts will be reported as 'unknown'." >&2
-    echo "         Run: crates/mrs-bench/systems/reference/fetch_answers.sh" >&2
+    echo "         Run: crates/mrs-bench/systems/reference/fetch_answers.sh --edition ${EDITION}" >&2
 fi
 
 CSV="${OUTPUT}/run.csv"
@@ -207,7 +234,11 @@ echo "[casc] Systems:     ${SYSTEMS_LIST[*]}" >&2
 echo "[casc] Divisions:   ${DIVISION_LIST[*]}" >&2
 echo "[casc] Time limits: ${div_times_summary% }" >&2
 if [[ "${USE_CASC_TIMES}" -eq 1 ]]; then
-    echo "[casc] Mode:        --casc-times (official CASC-30 wall-clock limits)" >&2
+    if [[ "${EDITION}" == "casc-j13" ]]; then
+        echo "[casc] Mode:        --casc-times (official CASC-J13 wall-clock limits)" >&2
+    else
+        echo "[casc] Mode:        --casc-times (official CASC-30 wall-clock limits)" >&2
+    fi
 else
     echo "[casc] Mode:        --time ${TIME_LIMIT} (uniform, all divisions)" >&2
 fi

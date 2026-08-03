@@ -10,13 +10,18 @@ PROBLEM_PATH="${1:?Usage: invoke.sh <problem_path> <time_limit_secs>}"
 # $2 (time limit) intentionally ignored.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ANSWERS="${SCRIPT_DIR}/answers.tsv"
+# Deduce edition from problem path, e.g. .../problems/casc-j13/FEQ/PROB.p
+EDITION=$(basename "$(dirname "$(dirname "$PROBLEM_PATH")")")
+ANSWERS="${SCRIPT_DIR}/answers_${EDITION}.tsv"
+if [[ ! -f "$ANSWERS" ]]; then
+    ANSWERS="${SCRIPT_DIR}/answers.tsv"
+fi
 
 problem=$(basename "$PROBLEM_PATH" .p)
 
 if [[ ! -f "$ANSWERS" ]]; then
     echo "% SZS status GaveUp for $problem"
-    echo "% (answers.tsv missing — run: crates/mrs-bench/systems/reference/fetch_answers.sh)" >&2
+    echo "% (answers_${EDITION}.tsv or answers.tsv missing — run: crates/mrs-bench/systems/reference/fetch_answers.sh --edition ${EDITION})" >&2
     exit 0
 fi
 

@@ -26,9 +26,13 @@ case "${EDITION}" in
         BASE_URL="https://tptp.org/CASC/30"
         DEST="${SCRIPT_DIR}/problems/casc-30"
         ;;
+    casc-j13)
+        BASE_URL="https://tptp.org/CASC/J13"
+        DEST="${SCRIPT_DIR}/problems/casc-j13"
+        ;;
     *)
         echo "Unknown edition: ${EDITION}" >&2
-        echo "Supported: casc-30" >&2
+        echo "Supported: casc-30, casc-j13" >&2
         exit 1
         ;;
 esac
@@ -80,6 +84,24 @@ download_and_extract() {
 download_and_extract "Problems"
 download_and_extract "Axioms"
 
+# Generate division list files dynamically if they are not already present
+if [[ ! -d "${DEST}/lists" ]]; then
+    echo "[setup] Generating lists directory at ${DEST}/lists..."
+    mkdir -p "${DEST}/lists"
+    # Find all directories directly under DEST (except Axioms and lists)
+    for d_path in "${DEST}"/*/; do
+        # Ignore wildcards if directory is empty
+        [[ -d "${d_path}" ]] || continue
+        d=$(basename "${d_path}")
+        if [[ "${d}" != "Axioms" && "${d}" != "lists" ]]; then
+            list_file="${DEST}/lists/${d,,}.list"
+            # Get sorted names of all .p files in the directory, removing .p extension
+            find "${d_path}" -maxdepth 1 -name "*.p" -exec basename {} .p \; | sort > "${list_file}"
+            echo "[setup] Generated list for division '${d,,}' with $(wc -l < "${list_file}") problems."
+        fi
+    done
+fi
+
 echo ""
-echo "[setup] Done. Set TPTP=${DEST} before running mrs."
+echo "[setup] Done. Set TPTP=${DEST} before running mrs. "
 echo "        Example: TPTP=${DEST} crates/mrs-bench/casc.sh --systems mrs --divisions fne"
