@@ -431,8 +431,14 @@ fn check_node_prepare<'p>(
         ));
     }
 
-    // Generic equisatisfiability fast-path for inlined E-prover steps carrying status(esa).
-    if node.status == Some("esa") && node.parents.len() == 1 {
+    // Generic equisatisfiability fast-path for inlined E-prover steps carrying
+    // status(esa). Explicit Skolemization rules must go through their exact
+    // metadata and scope checks below; otherwise this broader matcher could
+    // certify malformed witnesses before those checks run.
+    if node.status == Some("esa")
+        && !matches!(node.inference_rule, Some("skolemize" | "skolemisation"))
+        && node.parents.len() == 1
+    {
         let parent_idx = *dag.by_name.get(&node.parents[0]).unwrap();
         let parent_node = &dag.nodes[parent_idx];
 
@@ -461,7 +467,7 @@ fn check_node_prepare<'p>(
                     let mut ctx_sk = crate::lower::LowerCtx::new(&mut sym_tab_sk);
                     let parent_core = crate::lower::lower_fof_formula(&mut ctx_sk, pf);
                     for s in &fresh {
-                        sk_reg.record_skolem(s, parent_core.clone());
+                        sk_reg.record_skolem_source(s, parent_core.clone(), pf);
                     }
                     return Prepared::Resolved(StepOutcome::Sound);
                 }
@@ -586,7 +592,7 @@ fn check_node_prepare<'p>(
 
     // Other plain/thm/cth steps → prepare an ATP query for Pass 2.
     //
-    prepare_atp_step(dag, idx, Some(job), strict, symbols, lowered_formulas)
+    prepare_atp_step(dag, idx, strict, symbols, lowered_formulas)
 }
 
 /// Decide a step via the ATP, keeping the prepare/finish split internal.
@@ -609,27 +615,9 @@ fn delegate_to_atp<'p>(
         ctx.reset_vars();
         lowered_formulas.insert(i, lower_annotated_formula(&mut ctx, node.formula));
     }
-    match prepare_atp_step(dag, idx, None, false, symbols, &lowered_formulas) {
+    match prepare_atp_step(dag, idx, false, symbols, &lowered_formulas) {
         Prepared::Resolved(oc) => oc,
         Prepared::NeedsAtp(step) => finish_atp(atp, symbols, &step, budget),
-    }
-}
-
-fn is_ground_unit_clause(f: &mrs_core::Formula) -> bool {
-    match f {
-        mrs_core::Formula::Atom(a) => match a {
-            mrs_core::Atom::Eq(l, r) => is_ground_term_core(l) && is_ground_term_core(r),
-            mrs_core::Atom::Pred(_, args) => args.iter().all(is_ground_term_core),
-        },
-        mrs_core::Formula::Neg(inner) => is_ground_unit_clause(inner),
-        _ => false,
-    }
-}
-
-fn is_ground_term_core(t: &mrs_core::Term) -> bool {
-    match t {
-        mrs_core::Term::Var(_) => false,
-        mrs_core::Term::App(_, args) => args.iter().all(is_ground_term_core),
     }
 }
 
@@ -1335,7 +1323,6 @@ fn try_verify_avatar_step(
 fn prepare_atp_step<'p>(
     dag: &Dag<'p>,
     idx: usize,
-    job: Option<&LoadedJob>,
     strict: bool,
     symbols: &mut SymbolTable,
     lowered_formulas: &std::collections::HashMap<usize, mrs_core::Formula>,
@@ -1362,7 +1349,7 @@ fn prepare_atp_step<'p>(
     // negate before handing it to the ATP — otherwise we'll feed
     // `co1 ∧ definitions ⊨ ¬co1` (genuinely unsatisfiable) and get back
     // a spurious `Unsound` verdict.
-    let mut ctx = LowerCtx::new(symbols);
+    let ctx = LowerCtx::new(symbols);
     let mut premises = Vec::with_capacity(node.parents.len());
     // Parallel to `premises`: whether each premise is an *introduced
     // definition* (E `predicate_definition_introduction` or Vampire
@@ -1423,48 +1410,6 @@ fn prepare_atp_step<'p>(
             }
             premises.push(f);
             premise_is_def.push(is_def);
-        }
-    }
-
-    // Append any negated_conjecture formulas as global assumptions of the proof (safe and sound)
-    for (other_idx, other_node) in dag.nodes.iter().enumerate() {
-        if other_node.role == FormulaRole::NegatedConjecture
-            && other_node.name != node.name
-            && let Some(neg_conj_f) = lowered_formulas.get(&other_idx)
-        {
-            premises.push(neg_conj_f.clone());
-            premise_is_def.push(false);
-        }
-    }
-
-    // Collect and append all previous ground unit clauses as extra premises to resolve citation gaps
-    let current_pos = dag.topo.iter().position(|&x| x == idx).unwrap();
-    for &prev_idx in &dag.topo[0..current_pos] {
-        let prev_node = &dag.nodes[prev_idx];
-        let prev_f = lowered_formulas.get(&prev_idx).unwrap();
-        if prev_node.role != FormulaRole::Conjecture && is_ground_unit_clause(prev_f) {
-            premises.push(prev_f.clone());
-            premise_is_def.push(false);
-        }
-    }
-
-    // Append all original problem axioms and hypotheses as global premises to resolve clausification & theory gaps
-    let is_fof_translation = matches!(
-        node.inference_rule,
-        Some("cnf_transformation") | Some("distribute")
-    );
-    if let Some(j) = job
-        && let Some(prob) = &j.problem
-    {
-        for f in &prob.problem().formulas {
-            if f.role() == FormulaRole::Axiom || f.role() == FormulaRole::Hypothesis {
-                ctx.reset_vars();
-                let axiom_f = lower_annotated_formula(&mut ctx, f);
-                if is_fof_translation || is_ac_axiom(&axiom_f) {
-                    premises.push(axiom_f);
-                    premise_is_def.push(false);
-                }
-            }
         }
     }
 
@@ -2113,16 +2058,5 @@ mod budget_tests {
             step_budget(deadline, Duration::from_secs(8), 8, 1000, false),
             Duration::from_secs(1)
         );
-    }
-}
-
-fn is_ac_axiom(f: &mrs_core::Formula) -> bool {
-    match f {
-        mrs_core::Formula::Forall(_, inner) => is_ac_axiom(inner),
-        mrs_core::Formula::Atom(mrs_core::Atom::Eq(l, r)) => match (l, r) {
-            (mrs_core::Term::App(f1, _), mrs_core::Term::App(f2, _)) => f1 == f2,
-            _ => false,
-        },
-        _ => false,
     }
 }

@@ -158,6 +158,22 @@ impl<'a> Annotations<'a> {
         out
     }
 
+    /// Return whether an inference pedigree contains only supported parent
+    /// reference terms.
+    ///
+    /// `parent_refs` intentionally returns a flat list for callers that need
+    /// the common case. It must not silently turn an unsupported term into an
+    /// omitted citation, because that changes the logical premises of a step.
+    pub fn parent_refs_well_formed(&self) -> bool {
+        match &self.source {
+            GeneralTerm::Function(AtomicWord::Lower("inference"), args) => {
+                inference_parent_terms_well_formed(args)
+            }
+            GeneralTerm::Function(AtomicWord::SingleQuoted("inference"), _) => false,
+            _ => true,
+        }
+    }
+
     /// Iterate the inference-info list (the second arg of `inference/3`).
     fn info_items(&self) -> &[GeneralTerm<'a>] {
         match &self.source {
@@ -426,6 +442,37 @@ fn word_is(word: &AtomicWord<'_>, expected: &str) -> bool {
     )
 }
 
+fn inference_parent_terms_well_formed(args: &[GeneralTerm<'_>]) -> bool {
+    if args.len() != 3
+        || !matches!(args[0], GeneralTerm::Word(_))
+        || !matches!(args[1], GeneralTerm::List(_))
+    {
+        return false;
+    }
+    let GeneralTerm::List(parents) = &args[2] else {
+        return false;
+    };
+    parents.iter().all(parent_term_well_formed)
+}
+
+fn parent_term_well_formed(term: &GeneralTerm<'_>) -> bool {
+    match term {
+        GeneralTerm::Word(_) | GeneralTerm::Number(_) => true,
+        GeneralTerm::Function(AtomicWord::Lower("inference"), args) => {
+            inference_parent_terms_well_formed(args)
+        }
+        GeneralTerm::Function(AtomicWord::SingleQuoted("inference"), _) => false,
+        // Metis attaches an explicit substitution to the cited parent. The
+        // verifier currently consumes the parent reference but not the
+        // substitution payload, so require the standard list-shaped payload
+        // rather than accepting arbitrary ignored syntax.
+        GeneralTerm::ColonPair(left, right) => {
+            matches!(right.as_ref(), GeneralTerm::List(_)) && parent_term_well_formed(left)
+        }
+        _ => false,
+    }
+}
+
 fn word_value<'a>(term: &GeneralTerm<'a>) -> Option<&'a str> {
     match term {
         GeneralTerm::Word(AtomicWord::Lower(value) | AtomicWord::SingleQuoted(value)) => {
@@ -614,10 +661,33 @@ mod tests {
         let ann = parse_single(
             "fof(c_0_5, plain, ($false), inference(cn,[status(thm)],[c_0_3, c_0_4])).",
         );
+        assert!(ann.parent_refs_well_formed());
         let refs = ann.parent_refs();
         assert_eq!(refs.len(), 2);
         assert_eq!(refs[0].name, "c_0_3");
         assert_eq!(refs[1].name, "c_0_4");
+    }
+
+    #[test]
+    fn unsupported_parent_term_is_not_well_formed() {
+        let ann = parse_single(
+            "fof(bot, plain, $false, inference(consequence, [status(thm)], [S0, s6])).",
+        );
+        assert!(!ann.parent_refs_well_formed());
+        assert_eq!(ann.parent_refs().len(), 1);
+        assert_eq!(ann.parent_refs()[0].name, "s6");
+    }
+
+    #[test]
+    fn nested_inference_parent_is_well_formed() {
+        let ann = parse_single(
+            "fof(bot, plain, $false, inference(consequence, [status(thm)], [inference(assume_negation, [], [c])])).",
+        );
+        assert!(ann.parent_refs_well_formed());
+        let refs = ann.parent_refs();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].name, "c");
+        assert!(refs[0].negated);
     }
 
     #[test]

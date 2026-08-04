@@ -14,6 +14,7 @@
 //! given in the annotation).
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 
 use mrs_tptp::{
     AnnotatedFormula, AtomicWord, BinaryConnective, FOFAtomicFormula, FOFFormula, FOFStatement,
@@ -28,6 +29,13 @@ pub struct SkolemRegistry {
     pub seen_symbols: HashSet<String>,
     pub problem_symbols: HashSet<String>,
     pub introduced_skolems: HashMap<String, Formula>,
+    /// Source-level parent signatures for Skolems introduced by a FOF step.
+    ///
+    /// The lowered `Formula` stores interned `SymbolId`s, whose numeric values
+    /// are local to a `SymbolTable`. Comparing formulas lowered into separate
+    /// tables can therefore treat different predicates such as `p` and `q` as
+    /// equal. Keep a normalized FOF signature for freshness/reuse checks.
+    pub introduced_skolem_sources: HashMap<String, String>,
 }
 
 impl SkolemRegistry {
@@ -36,6 +44,7 @@ impl SkolemRegistry {
             seen_symbols: HashSet::new(),
             problem_symbols: HashSet::new(),
             introduced_skolems: HashMap::new(),
+            introduced_skolem_sources: HashMap::new(),
         }
     }
 
@@ -49,6 +58,13 @@ impl SkolemRegistry {
     pub fn record_skolem(&mut self, sym: &str, parent: Formula) {
         self.seen_symbols.insert(sym.to_string());
         self.introduced_skolems.insert(sym.to_string(), parent);
+    }
+
+    /// Record a Skolem and retain a symbol-name-aware parent signature.
+    pub fn record_skolem_source(&mut self, sym: &str, parent: Formula, source: &FOFFormula<'_>) {
+        self.record_skolem(sym, parent);
+        self.introduced_skolem_sources
+            .insert(sym.to_string(), parent_signature(source));
     }
 
     /// Record every symbol occurring in a FOF statement.
@@ -118,6 +134,143 @@ impl Default for SkolemRegistry {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Produce an alpha-normalized, symbol-name-aware signature for a FOF formula.
+///
+/// This is used only for comparing Skolem parent provenance. The lowered core
+/// formula cannot be used for that comparison because `SymbolId` values are
+/// allocated independently by each `SymbolTable`.
+fn parent_signature(formula: &FOFFormula<'_>) -> String {
+    fn variable(name: &str, bound: &[&str]) -> String {
+        if let Some(distance) = bound.iter().rev().position(|candidate| *candidate == name) {
+            format!("b{distance}")
+        } else {
+            format!("f{name}")
+        }
+    }
+
+    fn term_node(value: &FOFTerm<'_>, bound: &[&str], out: &mut String) {
+        match value {
+            FOFTerm::Variable(name) => {
+                let _ = write!(out, "v{};", variable(name, bound));
+            }
+            FOFTerm::Function(name, args) => {
+                let _ = write!(out, "fn{}[", name.as_str());
+                for arg in args {
+                    term_node(arg, bound, out);
+                }
+                out.push(']');
+            }
+            FOFTerm::DefinedFunction(name, args) => {
+                let _ = write!(out, "fd{}[", name.0);
+                for arg in args {
+                    term_node(arg, bound, out);
+                }
+                out.push(']');
+            }
+            FOFTerm::SystemFunction(name, args) => {
+                let _ = write!(out, "fs{}[", name.0);
+                for arg in args {
+                    term_node(arg, bound, out);
+                }
+                out.push(']');
+            }
+            FOFTerm::Number(number) => {
+                let _ = write!(out, "n{};", number.as_str());
+            }
+            FOFTerm::DistinctObject(value) => {
+                let _ = write!(out, "d{};", value);
+            }
+        }
+    }
+
+    fn formula_node<'a>(value: &FOFFormula<'a>, bound: &mut Vec<&'a str>, out: &mut String) {
+        match value {
+            FOFFormula::Atomic(FOFAtomicFormula::Plain(name, args)) => {
+                let _ = write!(out, "p{}(", name.as_str());
+                for arg in args {
+                    term_node(arg, bound, out);
+                }
+                out.push(')');
+            }
+            FOFFormula::Atomic(FOFAtomicFormula::Defined(name, args)) => {
+                let _ = write!(out, "dp{}(", name.0);
+                for arg in args {
+                    term_node(arg, bound, out);
+                }
+                out.push(')');
+            }
+            FOFFormula::Atomic(FOFAtomicFormula::System(name, args)) => {
+                let _ = write!(out, "sp{}(", name.0);
+                for arg in args {
+                    term_node(arg, bound, out);
+                }
+                out.push(')');
+            }
+            FOFFormula::Atomic(FOFAtomicFormula::True) => out.push_str("true"),
+            FOFFormula::Atomic(FOFAtomicFormula::False) => out.push_str("false"),
+            FOFFormula::Negation(inner) => {
+                out.push_str("not(");
+                formula_node(inner, bound, out);
+                out.push(')');
+            }
+            FOFFormula::Parens(inner) => formula_node(inner, bound, out),
+            FOFFormula::Quantified {
+                quantifier,
+                variables,
+                formula: inner,
+            } => {
+                out.push_str(match quantifier {
+                    Quantifier::Forall => "all[",
+                    Quantifier::Exists => "ex[",
+                });
+                let old_len = bound.len();
+                bound.extend(variables.iter().copied());
+                formula_node(inner, bound, out);
+                bound.truncate(old_len);
+                out.push(']');
+            }
+            FOFFormula::Binary {
+                left,
+                connective,
+                right,
+            } => {
+                out.push_str(match connective {
+                    BinaryConnective::Iff => "iff(",
+                    BinaryConnective::Impl => "impl(",
+                    BinaryConnective::RevImpl => "revimpl(",
+                    BinaryConnective::Xor => "xor(",
+                    BinaryConnective::Nor => "nor(",
+                    BinaryConnective::Nand => "nand(",
+                    BinaryConnective::Or => "or(",
+                    BinaryConnective::And => "and(",
+                });
+                formula_node(left, bound, out);
+                out.push(',');
+                formula_node(right, bound, out);
+                out.push(')');
+            }
+            FOFFormula::Equality(left, right) => {
+                out.push_str("eq(");
+                term_node(left, bound, out);
+                out.push(',');
+                term_node(right, bound, out);
+                out.push(')');
+            }
+            FOFFormula::Inequality(left, right) => {
+                out.push_str("neq(");
+                term_node(left, bound, out);
+                out.push(',');
+                term_node(right, bound, out);
+                out.push(')');
+            }
+        }
+    }
+
+    let mut result = String::new();
+    formula_node(formula, &mut Vec::new(), &mut result);
+    result
 }
 
 /// Check a single `skolemize` step.
@@ -197,12 +350,18 @@ pub fn check<'p>(
     let mut sym_tab_parent = SymbolTable::new();
     let mut ctx_parent = crate::lower::LowerCtx::new(&mut sym_tab_parent);
     let parent_core = crate::lower::lower_fof_formula(&mut ctx_parent, parent_f);
-    if let Some(prev_parent) = registry.introduced_skolems.get(info.skolem_symbol)
-        && parent_core != *prev_parent
-        && !mrs_core::alpha::alpha_equiv(&parent_core, prev_parent)
-    {
+    if let Some(previous_source) = registry.introduced_skolem_sources.get(info.skolem_symbol) {
+        if parent_signature(parent_f) != *previous_source {
+            return StepOutcome::Unsound(format!(
+                "Skolem symbol `{}` is reused for a different parent formula",
+                info.skolem_symbol
+            ));
+        }
+    } else if registry.introduced_skolems.contains_key(info.skolem_symbol) {
+        // A prior non-FOF registration (for example a Vampire Skolem axiom)
+        // cannot establish that this explicit FOF step has the same parent.
         return StepOutcome::Unsound(format!(
-            "Skolem symbol `{}` is reused for a different parent formula",
+            "Skolem symbol `{}` was already introduced without matching FOF provenance",
             info.skolem_symbol
         ));
     }
@@ -288,7 +447,7 @@ pub fn check<'p>(
         || alpha_eq_fof(step_f, &direct_expected)
     {
         // Register the new Skolem symbol so the next step sees it as taken.
-        registry.record_skolem(info.skolem_symbol, parent_core);
+        registry.record_skolem_source(info.skolem_symbol, parent_core, parent_f);
         StepOutcome::Sound
     } else {
         StepOutcome::Unsound(format!(
@@ -1345,14 +1504,10 @@ pub(crate) fn try_positive_skolemize<'p>(
         };
         let is_ok = fresh_set.contains(sym) && !registry.problem_symbols.contains(sym);
         let is_duplicate = if is_ok {
-            if let Some(prev_parent) = registry.introduced_skolems.get(sym) {
-                let mut sym_tab_p = SymbolTable::new();
-                let mut ctx_p = crate::lower::LowerCtx::new(&mut sym_tab_p);
-                let parent_core = crate::lower::lower_fof_formula(&mut ctx_p, parent_f);
-                parent_core == *prev_parent
-                    || mrs_core::alpha::alpha_equiv(&parent_core, prev_parent)
+            if let Some(prev_source) = registry.introduced_skolem_sources.get(sym) {
+                parent_signature(parent_f) == *prev_source
             } else {
-                true
+                !registry.introduced_skolems.contains_key(sym)
             }
         } else {
             false
@@ -1972,7 +2127,7 @@ fn check_e_style_skolemize<'p>(
         let mut ctx_sk = crate::lower::LowerCtx::new(&mut sym_tab_sk);
         let parent_core = crate::lower::lower_fof_formula(&mut ctx_sk, parent_f);
         for s in &fresh {
-            registry.record_skolem(s, parent_core.clone());
+            registry.record_skolem_source(s, parent_core.clone(), parent_f);
         }
         return StepOutcome::Sound;
     }
@@ -2091,7 +2246,7 @@ fn check_e_style_skolemize<'p>(
                 let mut sym_tab_sk = SymbolTable::new();
                 let mut ctx_sk = crate::lower::LowerCtx::new(&mut sym_tab_sk);
                 let parent_core = crate::lower::lower_fof_formula(&mut ctx_sk, parent_f);
-                registry.record_skolem(sk, parent_core);
+                registry.record_skolem_source(sk, parent_core, parent_f);
                 return StepOutcome::Unknown(format!(
                     "skolemize step (unannotated) introduces Skolem `{sk}` whose argument \
                      variables match no existential scope of the parent; cannot confirm \
@@ -2105,7 +2260,7 @@ fn check_e_style_skolemize<'p>(
     let mut ctx_sk = crate::lower::LowerCtx::new(&mut sym_tab_sk);
     let parent_core = crate::lower::lower_fof_formula(&mut ctx_sk, parent_f);
     for s in &fresh {
-        registry.record_skolem(s, parent_core.clone());
+        registry.record_skolem_source(s, parent_core.clone(), parent_f);
     }
     StepOutcome::Unknown(format!(
         "skolemize step missing `skolemize(Var, sk(...))` annotation; \

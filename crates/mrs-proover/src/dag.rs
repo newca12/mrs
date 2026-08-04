@@ -70,6 +70,9 @@ pub enum DagError {
     DuplicateName(String),
     /// A parent reference does not resolve.
     UnknownParent { node: String, parent: String },
+    /// An inference pedigree contains a parent term that this verifier does
+    /// not understand, so accepting the step would change its cited premises.
+    MalformedParent { node: String },
     /// The parent graph contains a cycle.
     Cycle,
     /// The proof has no `$false` step.
@@ -94,6 +97,9 @@ impl std::fmt::Display for DagError {
             DagError::DuplicateName(n) => write!(f, "duplicate node name {n}"),
             DagError::UnknownParent { node, parent } => {
                 write!(f, "node {node} references unknown parent {parent}")
+            }
+            DagError::MalformedParent { node } => {
+                write!(f, "node {node} has a malformed parent reference")
             }
             DagError::Cycle => write!(f, "cycle in parent graph"),
             DagError::NoFalseRoot => write!(f, "proof does not derive $false"),
@@ -131,6 +137,11 @@ pub fn build<'p>(proof: &'p mrs_tptp::TPTPProblem<'p>) -> Result<Dag<'p>, DagErr
             return Err(DagError::DuplicateName(name.to_string()));
         }
         let (parents, negated_parents, rule, status) = if let Some(ann) = af.annotations() {
+            if !ann.parent_refs_well_formed() {
+                return Err(DagError::MalformedParent {
+                    node: name.to_string(),
+                });
+            }
             let refs = ann.parent_refs();
             let rule = ann.inference_rule();
             // Use the direct status, but also propagate esa from nested
