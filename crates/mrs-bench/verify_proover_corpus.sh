@@ -33,6 +33,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 CORPUS_DIR="${SCRIPT_DIR}/proover-corpus"
+PRV_DIR="${CORPUS_DIR}/Proover2026"
 PROBLEMS_DIR="${CORPUS_DIR}/Problems"
 PROOFS_DIR="${CORPUS_DIR}/proofs"
 
@@ -50,7 +51,11 @@ if [[ ! -x "${PROOVER}" ]]; then
     (cd "${WORKSPACE_ROOT}" && cargo build --release -p mrs-proover >&2)
 fi
 
-if [[ ! -d "${PROOFS_DIR}" ]]; then
+if [[ -x "${SCRIPT_DIR}/validate_proover2026_corpus.sh" ]]; then
+    bash "${SCRIPT_DIR}/validate_proover2026_corpus.sh" >&2
+fi
+
+if [[ ! -d "${PROOFS_DIR}" && ! -d "${PRV_DIR}" ]]; then
     echo "[corpus] No corpus found at ${PROOFS_DIR}." >&2
     echo "[corpus] Run crates/mrs-bench/build_proover_corpus.sh first." >&2
     exit 2
@@ -64,6 +69,14 @@ FAILED_LIST=()
 shopt -s nullglob
 PROOFS=("${PROOFS_DIR}"/*.s)
 shopt -u nullglob
+
+if [[ ${#PROOFS[@]} -eq 0 && -d "${PRV_DIR}" ]]; then
+    while IFS=$'\t' read -r id problem_file proof_file category accepted max_score; do
+        [[ -z "${id}" || "${id}" == \#* ]] && continue
+        PROOFS+=("${PRV_DIR}/${proof_file}")
+    done < "${PRV_DIR}/manifest.tsv"
+    PROBLEMS_DIR="${PRV_DIR}"
+fi
 
 echo "[corpus] Verifying ${#PROOFS[@]} proofs (budget ${TIME_BUDGET}s each)..." >&2
 echo "" >&2

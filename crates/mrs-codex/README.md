@@ -8,7 +8,7 @@
 * **Strict Timeouts:** Wraps the prover execution in a wall-clock timeout using `wait-timeout` to prevent hanging on excessively hard problems.
 * **Hardware Auto-detection:** Uses `sysinfo` to automatically detect and log CPU brand, core count, RAM, and OS details (overridable via the `--hardware` flag).
 * **SZS Status Extraction:** Parses standard `% SZS status <Status>` output directly from the prover's stdout/stderr.
-* **Explicit Proof Verification:** Use `--verify-mode kernel` for only the independent strict proof kernel, `--verify-mode competition` (the default) for the existing local and StarExec competition checks, or `--verify-mode none` to skip proof verification. Kernel and competition results are stored in `proover_validated`; `none` leaves verification columns `NULL`.
+* **Explicit Proof Verification:** Use `--verify-mode kernel` for only the independent strict proof kernel, `--verify-mode competition` (the default) for the existing local and StarExec competition checks, or `--verify-mode none` to skip proof verification. Legacy validation columns remain populated for compatibility; new `kernel_*`, `mrs_*`, `competition_*`, and `external_atp_*` columns preserve separate verdicts and timings.
 * **Normalized Database Schema:** Utilizes dedicated tables for `systems`, `hardware`, and `parameters` with foreign keys in the `results` table to ensure scalability and speed when dealing with millions of records.
 
 ## Example Usage

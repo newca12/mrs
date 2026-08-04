@@ -89,8 +89,18 @@ The harness was split into three pieces with a clear separation of concerns.
 - Drops any download that is not a usable refutation (no `fof(`, no `$false`).
 
 This is the **only** networked piece, run only when refreshing the corpus.
-Current corpus: 25 problems × {E, Vampire} ≈ **46 proof files, ~660 KB**, all
-committed to the repo.
+The legacy regression corpus contains 25 problems × {E, Vampire} = **46 proof
+files**, all committed to the repo. The official PRV corpus is maintained
+separately under `proover-corpus/Proover2026/` and contains exactly 100
+problem files and 100 proof files plus a manifest, metadata, and SHA-256
+checksums. The Rust `normalize_proover2026` binary performs the parser-backed
+split; `validate_proover2026` validates the result offline; and
+`score_proover2026` consumes the manifest for deterministic scoring.
+
+`score_proover2026` is the manifest-driven evaluator. `audit_proover` is the
+Rust soundness-audit runner; it records separate MRS and verifier timing fields
+and uses distinct exit codes for infrastructure failure, confirmed bad proofs,
+unknown/timeouts, and parse failures.
 
 ### 3.2 `verify_proover_corpus.sh` — the regression gate (offline)
 
@@ -311,4 +321,3 @@ missing problem files, which the competition supplies.
 >    in-scope universals — confirmed `VerifiedGood` instead of deferred. This raised
 >    PyRes coverage from 86 to 160 with no loss of soundness (falsified proofs
 >    still never `VerifiedGood`).
-

@@ -9,9 +9,13 @@ rust-version.workspace = true
 description = "CASC benchmark harness and report tool for mrs"
 
 [dependencies]
+rayon = "1.12.0"
 mrs-core = { workspace = true }
 mrs-tptp = { workspace = true }
+sha2 = { workspace = true }
+tempfile = "3.27.0"
 walkdir = "2.5.0"
+wait-timeout = "0.2.0"
 
 [[bin]]
 name = "bench_report"
@@ -24,3 +28,15 @@ path = "src/bin/categorize_tptp.rs"
 [[bin]]
 name = "greedy_set_cover"
 path = "src/bin/greedy_set_cover.rs"
+
+[[bin]]
+name = "normalize_proover2026"
+path = "src/bin/normalize_proover2026.rs"
+
+[[bin]]
+name = "validate_proover2026"
+path = "src/bin/validate_proover2026.rs"
+
+[[bin]]
+name = "audit_proover"
+path = "src/bin/audit_proover.rs"

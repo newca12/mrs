@@ -90,6 +90,14 @@ struct RunResult {
     proover_validated: Option<String>,
     starexec_validated: Option<String>,
     time_to_verify: Option<f64>,
+    kernel_validated: Option<String>,
+    kernel_time: Option<f64>,
+    mrs_validated: Option<String>,
+    mrs_verify_time: Option<f64>,
+    competition_validated: Option<String>,
+    competition_time: Option<f64>,
+    external_atp_validated: Option<String>,
+    external_atp_time: Option<f64>,
 }
 
 fn init_db(conn: &Connection) -> SqliteResult<()> {
@@ -127,6 +135,14 @@ fn init_db(conn: &Connection) -> SqliteResult<()> {
             proover_validated TEXT,
             starexec_validated TEXT,
             time_to_verify REAL,
+            kernel_validated TEXT,
+            kernel_time REAL,
+            mrs_validated TEXT,
+            mrs_verify_time REAL,
+            competition_validated TEXT,
+            competition_time REAL,
+            external_atp_validated TEXT,
+            external_atp_time REAL,
             FOREIGN KEY(system_id) REFERENCES systems(id),
             FOREIGN KEY(hardware_id) REFERENCES hardware(id),
             FOREIGN KEY(parameter_id) REFERENCES parameters(id),
@@ -137,6 +153,21 @@ fn init_db(conn: &Connection) -> SqliteResult<()> {
     // Schema migrations for already-existing databases
     let _ = conn.execute("ALTER TABLE results ADD COLUMN starexec_validated TEXT", []);
     let _ = conn.execute("ALTER TABLE results ADD COLUMN time_to_verify REAL", []);
+    for (name, sql_type) in [
+        ("kernel_validated", "TEXT"),
+        ("kernel_time", "REAL"),
+        ("mrs_validated", "TEXT"),
+        ("mrs_verify_time", "REAL"),
+        ("competition_validated", "TEXT"),
+        ("competition_time", "REAL"),
+        ("external_atp_validated", "TEXT"),
+        ("external_atp_time", "REAL"),
+    ] {
+        let _ = conn.execute(
+            &format!("ALTER TABLE results ADD COLUMN {name} {sql_type}"),
+            [],
+        );
+    }
     Ok(())
 }
 
@@ -374,8 +405,9 @@ fn writer_thread(db_path: PathBuf, receiver: Receiver<RunResult>) {
     for result in receiver {
         let res = conn.execute(
             "INSERT OR REPLACE INTO results 
-             (problem_name, system_id, hardware_id, parameter_id, timeout, time_to_solve, status, proover_validated, starexec_validated, time_to_verify)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             (problem_name, system_id, hardware_id, parameter_id, timeout, time_to_solve, status, proover_validated, starexec_validated, time_to_verify,
+              kernel_validated, kernel_time, mrs_validated, mrs_verify_time, competition_validated, competition_time, external_atp_validated, external_atp_time)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 result.problem_name,
                 result.system_id,
@@ -386,7 +418,15 @@ fn writer_thread(db_path: PathBuf, receiver: Receiver<RunResult>) {
                 result.status,
                 result.proover_validated,
                 result.starexec_validated,
-                result.time_to_verify
+                result.time_to_verify,
+                result.kernel_validated,
+                result.kernel_time,
+                result.mrs_validated,
+                result.mrs_verify_time,
+                result.competition_validated,
+                result.competition_time,
+                result.external_atp_validated,
+                result.external_atp_time,
             ],
         );
 
@@ -523,6 +563,14 @@ fn main() {
                 let mut proover_validated: Option<String> = None;
                 let mut starexec_validated: Option<String> = None;
                 let mut time_to_verify: Option<f64> = None;
+                let mut kernel_validated: Option<String> = None;
+                let mut kernel_time: Option<f64> = None;
+                let mut mrs_validated: Option<String> = None;
+                let mut mrs_verify_time: Option<f64> = None;
+                let mut competition_validated: Option<String> = None;
+                let mut competition_time: Option<f64> = None;
+                let mut external_atp_validated: Option<String> = None;
+                let mut external_atp_time: Option<f64> = None;
 
                 match command.spawn() {
                     Ok(mut child) => {
@@ -548,18 +596,35 @@ fn main() {
                                             match args.verify_mode {
                                                 VerifyMode::Kernel => {
                                                     let verify_start = Instant::now();
-                                                    proover_validated =
-                                                        Some(verify_proof_with_kernel(&stdout));
-                                                    time_to_verify =
-                                                        Some(verify_start.elapsed().as_secs_f64());
+                                                    let verdict = verify_proof_with_kernel(&stdout);
+                                                    let elapsed =
+                                                        verify_start.elapsed().as_secs_f64();
+                                                    kernel_validated = Some(verdict.clone());
+                                                    kernel_time = Some(elapsed);
+                                                    proover_validated = Some(verdict);
+                                                    time_to_verify = Some(elapsed);
                                                 }
                                                 VerifyMode::Competition => {
-                                                    proover_validated =
-                                                        Some(verify_proof_with_proover(&stdout));
+                                                    let mrs_start = Instant::now();
+                                                    let mrs_verdict =
+                                                        verify_proof_with_proover(&stdout);
+                                                    mrs_verify_time =
+                                                        Some(mrs_start.elapsed().as_secs_f64());
+                                                    mrs_validated = Some(mrs_verdict.clone());
+                                                    proover_validated = Some(mrs_verdict);
+                                                    let competition_start = Instant::now();
                                                     let (st_val, st_time) =
                                                         verify_proof_with_starexec(&stdout);
                                                     starexec_validated = Some(st_val);
-                                                    time_to_verify = Some(st_time);
+                                                    competition_time = Some(
+                                                        competition_start.elapsed().as_secs_f64(),
+                                                    );
+                                                    competition_validated =
+                                                        starexec_validated.clone();
+                                                    external_atp_validated =
+                                                        competition_validated.clone();
+                                                    external_atp_time = Some(st_time);
+                                                    time_to_verify = competition_time;
                                                 }
                                                 VerifyMode::None => {}
                                             }
@@ -604,6 +669,14 @@ fn main() {
                     proover_validated: proover_validated.clone(),
                     starexec_validated: starexec_validated.clone(),
                     time_to_verify,
+                    kernel_validated,
+                    kernel_time,
+                    mrs_validated,
+                    mrs_verify_time,
+                    competition_validated,
+                    competition_time,
+                    external_atp_validated,
+                    external_atp_time,
                 };
 
                 sender
