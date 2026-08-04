@@ -254,8 +254,29 @@ validated infrastructure for a future ML iteration.
 
 # Benchmark Log
 
-Append-only log of CASC benchmark runs (`crates/mrs-bench/casc.sh`), newest first.
-Each entry records the mrs commit and the exact command used.
+Append-only log of CASC and ProoVer benchmark runs, newest first. Each entry
+records the mrs commit and the exact command used.
+
+
+## ProoVer 2026 PRV Corpus — 2026-08-04
+
+Commit `0e10c0d` (`fix: harden ProoVer provenance checks`), 100-problem
+competition-mode reproduction with 10-second per-proof budget and 8 workers:
+
+```text
+./target/release/score_proover2026 \
+  ./crates/mrs-bench/proover-corpus/Proover2026 \
+  --competition \
+  --proover ./target/release/mrs-proover \
+  --time 10 \
+  --workers 8
+
+score=148 good=60 bad=39 unknown=1 false_rejection=0 unsound=0
+```
+
+The result is 50 valid proofs verified, 39 ordinary evil proofs rejected, 10
+locally sound evil mutations accepted under the corpus scoring rule, and one
+ordinary evil proof left `Unknown`.
 
 
 TODO — strategy sweeps (Step 1 of portfolio re-tuning):
@@ -277,8 +298,26 @@ TODO — strategy sweeps (Step 1 of portfolio re-tuning):
 
 commit 0b849cb172171e94bf7051eabea1241d095ae4ae (HEAD -> feat/casc-j13-reproduction
 
-[ongoing]
+[done]
 [www@server99 mrs]$  crates/mrs-bench/casc.sh --edition casc-j13 --divisions fne,feq,ueq --systems mrs-starexec --jobs 2 --casc-times
+CASC-J13 Results — 2026-08-04 06:52  (800 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs-starexec
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        26   17.782
+FEQ            300        59   12.573
+UEQ            400        78   32.218
+------------------  --------------------
+TOTAL          800       163   22.804
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected
+130601 Aug  4 08:28 /DATA/ai/mrs/crates/mrs-bench/results/casc-j13/20260803_160925/run.csv
 
 [done]
 [www@server99 mrs]$  crates/mrs-bench/casc.sh --edition casc-j13 --divisions fne,feq,ueq --systems mrs-starexec --jobs 8 --casc-times
