@@ -7,4 +7,4 @@ phase-5	strict MRS integration	6088dd6	src/main.rs	implemented
 phase-6	ProoVer checker policy	0b849cb	crates/mrs-proover	implemented
 phase-7	adversarial validation	8d99b64	crates/mrs-proof-kernel/tests	implemented
 phase-8	reproducible benchmarking	e153d80	crates/mrs-bench/proover-corpus/Proover2026	implemented
-phase-9	focused release and merge gate	HEAD	docs/RELEASE_CHECKLIST.md	implemented
+phase-9	focused release and merge gate	dcadccc	docs/RELEASE_CHECKLIST.md	implemented
