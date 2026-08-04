@@ -1,0 +1,10 @@
+# Phase 9 release manifest: phase<TAB>scope<TAB>anchor_commit<TAB>required_artifact<TAB>status
+phase-1	fail-closed containment	b17f149	docs/VERIFIER_SPEC.md	implemented
+phase-2	formal trust model	3c9c933	docs/VERIFIER_SPEC.md	implemented
+phase-3	independent proof kernel	1594be6	crates/mrs-proof-kernel	implemented
+phase-4	AVATAR/CWA certificates and SAT replay	a7d8e41	crates/mrs-proof-kernel	implemented-bounded
+phase-5	strict MRS integration	6088dd6	src/main.rs	implemented
+phase-6	ProoVer checker policy	0b849cb	crates/mrs-proover	implemented
+phase-7	adversarial validation	8d99b64	crates/mrs-proof-kernel/tests	implemented
+phase-8	reproducible benchmarking	e153d80	crates/mrs-bench/proover-corpus/Proover2026	implemented
+phase-9	focused release and merge gate	HEAD	docs/RELEASE_CHECKLIST.md	implemented
