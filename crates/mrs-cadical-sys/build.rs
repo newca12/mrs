@@ -2,6 +2,23 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
+fn compiler_supports_closefrom() -> bool {
+    let out_dir = match env::var_os("OUT_DIR") {
+        Some(path) => PathBuf::from(path),
+        None => return false,
+    };
+    let probe = out_dir.join("closefrom_probe.cpp");
+    let source = "#include <unistd.h>\nint main() { ::closefrom(3); return 0; }\n";
+
+    if fs::write(&probe, source).is_err() {
+        return false;
+    }
+
+    let mut build = cc::Build::new();
+    build.cpp(true).warnings(false).file(&probe);
+    build.try_compile("mrs_cadical_closefrom_probe").is_ok()
+}
+
 fn main() {
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let source_dir = manifest.join("vendor/cadical/src");
@@ -35,6 +52,9 @@ fn main() {
         .define("QUIET", None)
         .define("VERSION", "\"3.0.1\"")
         .include(&source_dir);
+    if !compiler_supports_closefrom() {
+        build.define("NCLOSEFROM", None);
+    }
     for source in &sources {
         build.file(source);
         println!("cargo:rerun-if-changed={}", source.display());
