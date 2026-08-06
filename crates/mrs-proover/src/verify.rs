@@ -142,7 +142,9 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
         let mut ctx = LowerCtx::new(&mut symbols);
         for &idx in &dag.topo {
             ctx.reset_vars();
-            let f = lower_annotated_formula(&mut ctx, dag.nodes[idx].formula);
+            let Some(f) = lower_annotated_formula(&mut ctx, dag.nodes[idx].formula) else {
+                return Verdict::Unknown("unsupported formula type in proof".into());
+            };
             lowered_formulas.insert(idx, f);
         }
     }
@@ -561,7 +563,11 @@ fn check_node_prepare<'p>(
         if parents.len() == 1 {
             let mut ctx = LowerCtx::new(symbols);
             ctx.reset_vars();
-            let parent_f = lower_annotated_formula(&mut ctx, parents[0]);
+            let Some(parent_f) = lower_annotated_formula(&mut ctx, parents[0]) else {
+                return Prepared::Resolved(StepOutcome::Unknown(
+                    "unsupported formula type in parent".into(),
+                ));
+            };
             ctx.reset_vars();
             let concl_f = lowered_formulas.get(&idx).unwrap();
             if trivial::equiv(&parent_f, concl_f) {
@@ -613,7 +619,10 @@ fn delegate_to_atp<'p>(
     let mut ctx = LowerCtx::new(symbols);
     for (i, node) in dag.nodes.iter().enumerate() {
         ctx.reset_vars();
-        lowered_formulas.insert(i, lower_annotated_formula(&mut ctx, node.formula));
+        let Some(f) = lower_annotated_formula(&mut ctx, node.formula) else {
+            return StepOutcome::Unknown("unsupported formula type in proof".into());
+        };
+        lowered_formulas.insert(i, f);
     }
     match prepare_atp_step(dag, idx, false, symbols, &lowered_formulas) {
         Prepared::Resolved(oc) => oc,

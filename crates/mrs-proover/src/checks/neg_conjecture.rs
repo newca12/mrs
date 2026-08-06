@@ -44,9 +44,13 @@ pub fn check<'p>(
 
     let mut ctx = LowerCtx::new(symbols);
     ctx.reset_vars();
-    let step_f = lower_annotated_formula(&mut ctx, step);
+    let Some(step_f) = lower_annotated_formula(&mut ctx, step) else {
+        return StepOutcome::Unknown("unsupported step formula type".into());
+    };
     ctx.reset_vars();
-    let conj_f = lower_annotated_formula(&mut ctx, parent);
+    let Some(conj_f) = lower_annotated_formula(&mut ctx, parent) else {
+        return StepOutcome::Unknown("unsupported parent formula type".into());
+    };
 
     // Fast path: if the step is structurally the exact negation of the parent conjecture,
     // we can confirm it is Sound instantly without any NNF conversion!

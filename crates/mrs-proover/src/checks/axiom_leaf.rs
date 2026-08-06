@@ -55,7 +55,9 @@ pub fn check_leaf<'p>(
     // Lower the proof leaf formula once for either matching strategy.
     let mut ctx = LowerCtx::new(symbols);
     ctx.reset_vars();
-    let proof_f = lower_annotated_formula(&mut ctx, node);
+    let Some(proof_f) = lower_annotated_formula(&mut ctx, node) else {
+        return StepOutcome::Unknown("unsupported proof leaf formula type".into());
+    };
 
     // --- Anonymous-provenance fallback (Vampire's `file(_, unknown)`) -----
     if expected_name == "unknown" {
@@ -69,7 +71,9 @@ pub fn check_leaf<'p>(
                 continue;
             }
             ctx.reset_vars();
-            let prob_f = lower_annotated_formula(&mut ctx, af);
+            let Some(prob_f) = lower_annotated_formula(&mut ctx, af) else {
+                continue;
+            };
             if alpha_equiv(&proof_f, &prob_f)
                 || crate::checks::definition_folding::canon_eq_free(
                     &proof_f,
@@ -153,7 +157,9 @@ pub fn check_leaf<'p>(
                 continue;
             }
             ctx.reset_vars();
-            let prob_f = lower_annotated_formula(&mut ctx, af);
+            let Some(prob_f) = lower_annotated_formula(&mut ctx, af) else {
+                continue;
+            };
             if alpha_equiv(&proof_f, &prob_f)
                 || crate::checks::definition_folding::canon_eq_free(
                     &proof_f,
@@ -179,7 +185,9 @@ pub fn check_leaf<'p>(
     }
 
     ctx.reset_vars();
-    let prob_f = lower_annotated_formula(&mut ctx, target_af.unwrap());
+    let Some(prob_f) = lower_annotated_formula(&mut ctx, target_af.unwrap()) else {
+        return StepOutcome::Unknown("unsupported target formula type in problem".into());
+    };
 
     if alpha_equiv(&proof_f, &prob_f)
         || crate::checks::definition_folding::canon_eq_free(&proof_f, &prob_f, Some(ctx.symbols))

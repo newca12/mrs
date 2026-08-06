@@ -296,6 +296,93 @@ TODO — strategy sweeps (Step 1 of portfolio re-tuning):
    1 ./crates/mrs-bench/run_all_greedy_sweeps.sh master_run.csv > final_cacs30_portfolios.txt
 
 
+commit 18e2cbec7a6899edd811839f84e5f4b20e569759
+
+[ongoing]
+[root@server01 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --edition casc-30 --divisions epu,icu,feq --systems mrs-starexec --jobs 1 --casc-times
+
+[ongoing]
+[root@server02 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --edition casc-30 --divisions ueq --systems mrs-starexec --jobs 1 --casc-times
+
+[done]
+[root@server03 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --edition casc-30 --divisions fne --systems mrs-starexec --jobs 1 --casc-times
+CASC-30 Results — 2026-08-06 05:46  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs-starexec
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        36   10.101
+------------------  --------------------
+TOTAL          100        36   10.101
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+16400 Aug  6 00:06 /mnt/sdd/mrs/crates/mrs-bench/results/casc-30/20260805_194831/run.csv
+
+[done]
+[root@server04 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --edition casc-30 --divisions eps --systems mrs-starexec --jobs 1 --casc-times
+CASC-30 Results — 2026-08-06 05:40  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs-starexec
+                      Solved  Avg (s)
+------------------  --------------------
+EPS            100        42    8.941
+------------------  --------------------
+TOTAL          100        42    8.941
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+18397 Aug  5 21:47 /mnt/sdd1/mrs/crates/mrs-bench/results/casc-30/20260805_194456/run.csv
+
+commit 1454a85ee6db2736dc15359a70b7d0aba772b606 
+
+[done]
+[www@server99 mrs]$ crates/mrs-bench/casc.sh   --edition casc-j13   --systems mrs   --divisions fne,feq,ueq   --casc-times   --jobs 2   --output crates/mrs-bench/results/casc-j13-baseline-$(date +%Y%m%d)
+crates/mrs-bench/results/casc-j13-baseline-20260805
+CASC-J13 Results — 2026-08-06 06:51  (800 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        29   19.161
+FEQ            300        61   16.006
+UEQ            400        78   31.863
+------------------  --------------------
+TOTAL          800       168   23.913
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+123972 Aug  6 08:49 /DATA/ai/mrs/crates/mrs-bench/results/casc-j13-baseline-20260805/run.csv
+
+[ongoing]
+[PPROD:fr22192@server97:/DATA/ai/user/mrs]$  export RUST_MIN_STACK=67108864 
+for workers in 1 2 4 8; do
+  MRS_WORKERS="$workers" \
+  crates/mrs-bench/casc.sh \
+    --edition casc-j13 \
+    --systems mrs \
+    --divisions fne,feq,ueq \
+    --casc-times \
+    --jobs 1 \
+    --output "crates/mrs-bench/results/casc-j13-workers-${workers}-$(date +%Y%m%d-%H%M%S)"
+
+[done]
+[www@server99 mrs]$ export RUST_MIN_STACK=67108864
+[www@server99 ~]$ crates/mrs-bench/run_strategy_sweep.sh   --edition casc-j13   --divisions fne,feq,ueq   --casc-times   --jobs 32   --output crates/mrs-bench/results/casc-j13-sweep-$(date +%Y%m%d)
+
+
 commit 0b849cb172171e94bf7051eabea1241d095ae4ae (HEAD -> feat/casc-j13-reproduction
 
 [done]
@@ -339,8 +426,29 @@ REFERENCE VIOLATIONS — none detected.
 
 commit 67f31a71d316e0d898fa60f4d5969bbfe6a8cc7f (HEAD -> feat/casc-j13-reproduction-200
 
-[ongoing]
+[done]
 [PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --edition casc-30 --divisions fne,eps,ueq,epu,icu,feq --systems mrs-starexec --jobs 2 --casc-times
+CASC-30 Results — 2026-08-04 17:44  (1101 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs-starexec
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        35   13.805
+EPS            100        43   10.421
+UEQ            300        87   40.304
+EPU            100        16    5.450
+ICU            101         2  208.479
+FEQ            400        91   25.743
+------------------  --------------------
+TOTAL         1101       274   26.586
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+191887 Aug  4 19:42 /DATA/ai/fr22192/mrs/crates/mrs-bench/results/casc-30/20260803_141834/run.csv
 
 [done]
 [PPROD:user@server97:/DATA/ai/user/mrs]$ crates/mrs-bench/casc.sh --edition casc-30 --divisions eps --systems mrs-starexec --jobs 8 --casc-times

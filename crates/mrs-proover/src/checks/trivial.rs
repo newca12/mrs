@@ -105,9 +105,17 @@ pub fn try_check<'p>(
 
     let mut ctx = LowerCtx::new(symbols);
     ctx.reset_vars();
-    let parent_f = lower_annotated_formula(&mut ctx, parent);
+    let Some(parent_f) = lower_annotated_formula(&mut ctx, parent) else {
+        return Some(StepOutcome::Unknown(
+            "unsupported parent formula type".into(),
+        ));
+    };
     ctx.reset_vars();
-    let concl_f = lower_annotated_formula(&mut ctx, node.formula);
+    let Some(concl_f) = lower_annotated_formula(&mut ctx, node.formula) else {
+        return Some(StepOutcome::Unknown(
+            "unsupported conclusion formula type".into(),
+        ));
+    };
 
     if EQUIV_RULES.contains(&rule) {
         if rule == "cnf_transformation" {

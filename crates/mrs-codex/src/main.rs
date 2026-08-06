@@ -958,10 +958,16 @@ mod tests {
     #[test]
     fn test_extract_ground_truth_status() {
         let content = "% Status: Theorem\n% Some other comment";
-        assert_eq!(extract_ground_truth_status(content), Some("Theorem".to_string()));
+        assert_eq!(
+            extract_ground_truth_status(content),
+            Some("Theorem".to_string())
+        );
 
         let content_with_space = "% Status             : CounterSatisfiable (hard)\n% Comment";
-        assert_eq!(extract_ground_truth_status(content_with_space), Some("CounterSatisfiable".to_string()));
+        assert_eq!(
+            extract_ground_truth_status(content_with_space),
+            Some("CounterSatisfiable".to_string())
+        );
 
         let no_status = "% No status here";
         assert_eq!(extract_ground_truth_status(no_status), None);
