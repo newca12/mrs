@@ -8,6 +8,7 @@ rust-version.workspace = true
 description = "A tool to process TPTP files and store results in SQLite"
 
 [dependencies]
+mrs-tptp = { workspace = true }
 clap = { version = "4.4", features = ["derive"] }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 walkdir = "2.4.0"

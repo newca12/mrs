@@ -3587,6 +3587,7 @@ version = "0.2.2"
 dependencies = [
  "clap",
  "crossbeam-channel",
+ "mrs-tptp",
  "rayon",
  "regex",
  "rusqlite",

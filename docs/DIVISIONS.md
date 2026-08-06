@@ -121,3 +121,29 @@ Wide clauses are extremely unlikely to be condensable in practice.
 causing the rewriter to loop indefinitely.  
 **Fix:** Each call to `demodulate_id` is capped at 100 rewriting passes.  If the
 limit is reached, the partially rewritten clause is returned as-is.
+
+---
+
+## 6. Complete CASC Division Support & Scope Map
+
+The table below outlines all possible CASC divisions, including those that are active, legacy, or out of scope for MRS:
+
+| CASC Division | Category / Description | MRS Support Status | Technical Reason / Details |
+|:---|:---|:---|:---|
+| **FOF** | First-Order Formulas (Classical) | 🟢 **Active Competitor** | Core of first-order ATP. Split internally into **FNE** (No Equality) and **FEQ** (With Equality). |
+| **FNE** | FOF No Equality | 🟢 **Active Competitor** | Handled by `casc_fne` schedule with pure resolution/factoring (paramodulation/demodulation disabled). |
+| **FEQ** | FOF with Equality | 🟢 **Active Competitor** | Handled by `casc_feq` schedule using full superposition + demodulation. |
+| **UEQ** | Unit Equality CNF | 🟢 **Active Competitor** | Pure equational logic handled by `casc_ueq` using our sound AC-indexing given-clause loop. |
+| **EPR / EPU / EPS** | Effectively Propositional | 🟡 **Legacy / Local Benchmarks** | Bernays-Schönfinkel class (no functions of arity $\ge 1$). Supported via CaDiCaL SAT-splitting, but no EPR division at CASC-J13. |
+| **ICU** | Intuitionistic First-order logic | 🟡 **Legacy / Local Benchmarks** | Experimental support and fixtures remain, but the division does not exist at CASC-J13. |
+| **THF** | Typed Higher-order Form | ❌ **Out of Scope** | Requires higher-order logic (lambda-calculus, type theory, currying). MRS is strictly a classical *First-Order* solver. |
+| **TNE** | THF No Equality | ❌ **Out of Scope** | Higher-order logic (THF) with no equality. |
+| **TEQ** | THF with Equality | ❌ **Out of Scope** | Higher-order logic (THF) containing equality. |
+| **TFF** | Typed First-order Form | ❌ **Out of Scope** | Monomorphic/polymorphic typed first-order formulas; parsed but ignored by default. |
+| **TFA** | Typed First-order with Arithmetic | ❌ **Out of Scope** | Requires SMT-style arithmetic solvers to handle numeric constraints. MRS does not support numeric theories. |
+| **FNT** | First-order Non-theorems | ❌ **Out of Scope** | Requires finding counter-models (finite model generators). MRS is purely refutation-based. |
+| **FNN** | FNT No Equality | ❌ **Out of Scope** | First-order non-theorems with no equality. |
+| **FNQ** | FNT with Equality | ❌ **Out of Scope** | First-order non-theorems containing equality. |
+| **LTB** | Large Theory Batch | ❌ **Out of Scope** | Large-scale problem sets requiring specialized axiom selection/filtering over thousands of formulas. |
+| **SLH** | Sledgehammer (Isabelle) | ❌ **Out of Scope** | Obligations translated from interactive HOL proof assistants requiring highly specialized translation parsing. |
+| **PRV** | Proof Verification | 🟢 **Active Competitor** | MRS competes in this division via the `mrs-proover` sub-crate (ProoVer 2026 entry), which functions as an independent TSTP proof verifier. |

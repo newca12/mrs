@@ -1,5 +1,8 @@
 use clap::{Parser, ValueEnum};
 use crossbeam_channel::{Receiver, unbounded};
+use mrs_tptp::ast::cnf::*;
+use mrs_tptp::ast::fof::*;
+use mrs_tptp::ast::*;
 use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
 use regex::Regex;
@@ -81,6 +84,7 @@ struct Args {
 #[derive(Debug, Clone)]
 struct RunResult {
     problem_name: String,
+    division: String,
     system_id: i64,
     parameter_id: i64,
     hardware_id: i64,
@@ -98,6 +102,186 @@ struct RunResult {
     competition_time: Option<f64>,
     external_atp_validated: Option<String>,
     external_atp_time: Option<f64>,
+}
+
+fn extract_ground_truth_status(content: &str) -> Option<String> {
+    for line in content.lines() {
+        if line.trim().starts_with("% Status") {
+            return line.find(':').map(|pos| {
+                let status = line[pos + 1..].trim();
+                status.split('(').next().unwrap_or("").trim().to_string()
+            });
+        }
+    }
+    None
+}
+
+fn check_cnf_literal(lit: &CNFLiteral, has_functions: &mut bool) {
+    match lit {
+        CNFLiteral::Positive(CNFAtomicFormula::Plain(_, args))
+        | CNFLiteral::Negative(CNFAtomicFormula::Plain(_, args)) => {
+            for arg in args {
+                check_term(arg, has_functions);
+            }
+        }
+        CNFLiteral::Equality(t1, t2) | CNFLiteral::Inequality(t1, t2) => {
+            check_term(t1, has_functions);
+            check_term(t2, has_functions);
+        }
+        _ => {}
+    }
+}
+
+fn check_fof_formula(formula: &FOFFormula, has_eq: &mut bool, has_funcs: &mut bool) {
+    match formula {
+        FOFFormula::Atomic(FOFAtomicFormula::Plain(_, args)) => {
+            for arg in args {
+                check_term(arg, has_funcs);
+            }
+        }
+        FOFFormula::Equality(t1, t2) | FOFFormula::Inequality(t1, t2) => {
+            *has_eq = true;
+            check_term(t1, has_funcs);
+            check_term(t2, has_funcs);
+        }
+        FOFFormula::Atomic(_) => {}
+        FOFFormula::Negation(f) => check_fof_formula(f, has_eq, has_funcs),
+        FOFFormula::Binary { left, right, .. } => {
+            check_fof_formula(left, has_eq, has_funcs);
+            check_fof_formula(right, has_eq, has_funcs);
+        }
+        FOFFormula::Quantified { formula: f, .. } => check_fof_formula(f, has_eq, has_funcs),
+        FOFFormula::Parens(f) => check_fof_formula(f, has_eq, has_funcs),
+    }
+}
+
+fn check_term(term: &FOFTerm, has_funcs: &mut bool) {
+    if let FOFTerm::Function(_, args) = term {
+        if !args.is_empty() {
+            *has_funcs = true;
+        }
+        for arg in args {
+            check_term(arg, has_funcs);
+        }
+    }
+}
+
+fn file_has_equality(content: &str) -> bool {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('%') {
+            continue;
+        }
+        if trimmed.contains('=') {
+            return true;
+        }
+    }
+    false
+}
+
+fn determine_division_from_ast(ast: &TPTPProblem, status: Option<&str>, content: &str) -> String {
+    let mut has_equality = false;
+    let mut has_functions = false;
+    let mut all_unit = true;
+    let mut all_equalities = true;
+    let mut is_cnf = true;
+    let mut is_thf = false;
+
+    for input in &ast.formulas {
+        let role = input.role();
+        if role == FormulaRole::Type || role == FormulaRole::Definition {
+            continue; // Skip types
+        }
+
+        match input {
+            AnnotatedFormula::CNF(cnf) => {
+                let lits = match &cnf.formula {
+                    CNFStatement::Logical(CNFFormula::Disjunction(lits)) => lits.clone(),
+                    CNFStatement::Logical(CNFFormula::Parens(inner)) => {
+                        if let CNFFormula::Disjunction(lits) = &**inner {
+                            lits.clone()
+                        } else {
+                            return "Other".to_string();
+                        }
+                    }
+                };
+
+                if lits.len() != 1 {
+                    all_unit = false;
+                }
+
+                for lit in lits {
+                    match lit {
+                        CNFLiteral::Equality(..) | CNFLiteral::Inequality(..) => {
+                            has_equality = true;
+                        }
+                        CNFLiteral::Positive(_) | CNFLiteral::Negative(_) => {
+                            all_equalities = false;
+                        }
+                    }
+
+                    // Check for functions arity > 0
+                    check_cnf_literal(&lit, &mut has_functions);
+                }
+            }
+            AnnotatedFormula::FOF(fof) => {
+                is_cnf = false;
+                all_unit = false;
+                all_equalities = false;
+                match &fof.formula {
+                    FOFStatement::Logical(f) => {
+                        check_fof_formula(f, &mut has_equality, &mut has_functions)
+                    }
+                    FOFStatement::Sequent(..) => return "Other".to_string(),
+                }
+            }
+            AnnotatedFormula::THF(_) => {
+                is_thf = true;
+            }
+            AnnotatedFormula::TFF(_) => return "TFF".to_string(),
+            AnnotatedFormula::TCF(_) => return "TCF".to_string(),
+            _ => return "Other".to_string(),
+        }
+    }
+
+    if is_thf {
+        if file_has_equality(content) {
+            return "TEQ".to_string();
+        } else {
+            return "TNE".to_string();
+        }
+    }
+
+    // 1. Effectively Propositional (EPR)
+    if !has_functions {
+        match status {
+            Some("Satisfiable") | Some("CounterSatisfiable") => return "EPS".to_string(),
+            Some("Unsatisfiable") | Some("Theorem") => return "EPU".to_string(),
+            _ => return "EPR".to_string(),
+        }
+    }
+
+    // 2. Unit Equality (UEQ)
+    if is_cnf && all_unit && all_equalities {
+        return "UEQ".to_string();
+    }
+
+    // 3. First-order Non-theorems (FNT)
+    let is_fnt = matches!(status, Some("Satisfiable") | Some("CounterSatisfiable"));
+
+    if is_fnt {
+        if has_equality {
+            "FNQ".to_string()
+        } else {
+            "FNN".to_string()
+        }
+    } else {
+        if has_equality {
+            "FEQ".to_string()
+        } else {
+            "FNE".to_string()
+        }
+    }
 }
 
 fn init_db(conn: &Connection) -> SqliteResult<()> {
@@ -126,6 +310,7 @@ fn init_db(conn: &Connection) -> SqliteResult<()> {
         "CREATE TABLE IF NOT EXISTS results (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             problem_name TEXT NOT NULL,
+            division TEXT,
             system_id INTEGER NOT NULL,
             hardware_id INTEGER NOT NULL,
             parameter_id INTEGER NOT NULL,
@@ -151,6 +336,7 @@ fn init_db(conn: &Connection) -> SqliteResult<()> {
         [],
     )?;
     // Schema migrations for already-existing databases
+    let _ = conn.execute("ALTER TABLE results ADD COLUMN division TEXT", []);
     let _ = conn.execute("ALTER TABLE results ADD COLUMN starexec_validated TEXT", []);
     let _ = conn.execute("ALTER TABLE results ADD COLUMN time_to_verify REAL", []);
     for (name, sql_type) in [
@@ -405,11 +591,12 @@ fn writer_thread(db_path: PathBuf, receiver: Receiver<RunResult>) {
     for result in receiver {
         let res = conn.execute(
             "INSERT OR REPLACE INTO results 
-             (problem_name, system_id, hardware_id, parameter_id, timeout, time_to_solve, status, proover_validated, starexec_validated, time_to_verify,
+             (problem_name, division, system_id, hardware_id, parameter_id, timeout, time_to_solve, status, proover_validated, starexec_validated, time_to_verify,
               kernel_validated, kernel_time, mrs_validated, mrs_verify_time, competition_validated, competition_time, external_atp_validated, external_atp_time)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             params![
                 result.problem_name,
+                result.division,
                 result.system_id,
                 result.hardware_id,
                 result.parameter_id,
@@ -543,6 +730,13 @@ fn main() {
         pending_files
             .par_iter()
             .for_each(|(problem_name, file_path)| {
+                let content = std::fs::read_to_string(file_path).unwrap_or_default();
+                let status = extract_ground_truth_status(&content);
+                let division = match mrs_tptp::parse_tptp(&content) {
+                    Ok(ast) => determine_division_from_ast(&ast, status.as_deref(), &content),
+                    Err(_) => "Other".to_string(),
+                };
+
                 let cmd_args = parse_cmd_template(&args.cmd, file_path, args.timeout);
                 if cmd_args.is_empty() {
                     eprintln!("Error: Command template is empty.");
@@ -660,6 +854,7 @@ fn main() {
 
                 let result = RunResult {
                     problem_name: problem_name.clone(),
+                    division: division.clone(),
                     system_id,
                     parameter_id,
                     hardware_id,
@@ -758,5 +953,45 @@ mod tests {
             let args = Args::try_parse_from(argv).expect("verification mode parses");
             assert_eq!(args.verify_mode, expected);
         }
+    }
+
+    #[test]
+    fn test_extract_ground_truth_status() {
+        let content = "% Status: Theorem\n% Some other comment";
+        assert_eq!(extract_ground_truth_status(content), Some("Theorem".to_string()));
+
+        let content_with_space = "% Status             : CounterSatisfiable (hard)\n% Comment";
+        assert_eq!(extract_ground_truth_status(content_with_space), Some("CounterSatisfiable".to_string()));
+
+        let no_status = "% No status here";
+        assert_eq!(extract_ground_truth_status(no_status), None);
+    }
+
+    #[test]
+    fn test_determine_division() {
+        let content_fne = "fof(a1, axiom, p(f(a))). fof(c1, conjecture, ~p(f(b))).";
+        let ast = mrs_tptp::parse_tptp(content_fne).unwrap();
+        let div = determine_division_from_ast(&ast, Some("Theorem"), content_fne);
+        assert_eq!(div, "FNE");
+
+        let content_feq = "fof(a1, axiom, f(a) = f(b)). fof(c1, conjecture, f(b) != f(c)).";
+        let ast = mrs_tptp::parse_tptp(content_feq).unwrap();
+        let div = determine_division_from_ast(&ast, Some("Theorem"), content_feq);
+        assert_eq!(div, "FEQ");
+
+        let content_ueq = "cnf(a1, axiom, f(a) = f(b)). cnf(c1, negated_conjecture, f(b) != f(c)).";
+        let ast = mrs_tptp::parse_tptp(content_ueq).unwrap();
+        let div = determine_division_from_ast(&ast, Some("Theorem"), content_ueq);
+        assert_eq!(div, "UEQ");
+
+        let content_fnn = "fof(a1, axiom, p(f(a))). fof(c1, conjecture, ~p(f(b))).";
+        let ast = mrs_tptp::parse_tptp(content_fnn).unwrap();
+        let div = determine_division_from_ast(&ast, Some("Satisfiable"), content_fnn);
+        assert_eq!(div, "FNN");
+
+        let content_fnq = "fof(a1, axiom, f(a) = f(b)). fof(c1, conjecture, f(b) != f(c)).";
+        let ast = mrs_tptp::parse_tptp(content_fnq).unwrap();
+        let div = determine_division_from_ast(&ast, Some("CounterSatisfiable"), content_fnq);
+        assert_eq!(div, "FNQ");
     }
 }
