@@ -1321,6 +1321,15 @@ fn try_verify_avatar_step(
         if ok {
             return Some(StepOutcome::Sound);
         }
+    } else if rule == "avatar_branch_refutation" || rule == "avatar_sat_refutation" {
+        if let Some(outcome) = crate::checks::propositional_sat::try_propositional(premises, conclusion) {
+            match outcome {
+                crate::checks::propositional_sat::PropOutcome::Sound => return Some(StepOutcome::Sound),
+                crate::checks::propositional_sat::PropOutcome::Unsound => {
+                    return Some(StepOutcome::Unsound("propositional countermodel".into()));
+                }
+            }
+        }
     }
     None
 }

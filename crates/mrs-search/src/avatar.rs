@@ -122,10 +122,11 @@ impl AvatarContext {
         }
 
         // We have successfully split the clause into `parts`.
+        let split_id = id_gen.next();
         let mut split_clauses = Vec::new();
         let mut sat_clause = Vec::new();
 
-        for lits in parts {
+        for (i, lits) in parts.into_iter().enumerate() {
             // For each part, canonicalize the component by renaming variables
             // 0..N in DFS order through the literals.  Two alpha-equivalent
             // components (identical up to variable renaming) then get the same
@@ -147,8 +148,20 @@ impl AvatarContext {
             let mut new_avatar = clause.avatar.clone();
             new_avatar.push(var);
 
-            let new_clause =
-                Clause::new_avatar(id_gen.next(), lits, clause.source.clone(), new_avatar);
+            let mut new_clause = Clause::new_avatar(
+                id_gen.next(),
+                lits,
+                ClauseSource::Inference {
+                    rule: "avatar_component_clause",
+                    parents: vec![split_id].into(),
+                },
+                new_avatar,
+            );
+            new_clause.certificate = Some(ClauseCertificate::AvatarComponent {
+                split_parent: split_id,
+                branch_index: i,
+                sat_var: var,
+            });
             split_clauses.push(new_clause);
         }
 

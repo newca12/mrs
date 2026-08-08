@@ -7,13 +7,14 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::BuildHasher;
 
-use mrs_core::clause::{Clause, ClauseId, ClauseSource};
+use mrs_core::clause::{Clause, ClauseCertificate, ClauseId, ClauseSource};
 use mrs_core::term_bank::IdClause;
 
 /// Extracts the proof DAG from the clause store.
 ///
 /// Starting from `empty_clause_id`, follows parent pointers in
-/// `ClauseSource::Inference` to collect all ancestor clauses.
+/// `ClauseSource::Inference` and `ClauseCertificate` dependencies to collect
+/// all ancestor clauses.
 ///
 /// Returns a topologically sorted vector: input clauses appear before
 /// any clause that depends on them. The empty clause is last.
@@ -34,12 +35,38 @@ pub fn extract_proof<S: BuildHasher>(
     while let Some(id) = queue.pop_front() {
         order.push(id);
 
-        if let Some(clause) = clause_store.get(&id)
-            && let ClauseSource::Inference { parents, .. } = &clause.source
-        {
-            for &parent_id in parents {
-                if visited.insert(parent_id) {
-                    queue.push_back(parent_id);
+        if let Some(clause) = clause_store.get(&id) {
+            if let ClauseSource::Inference { parents, .. } = &clause.source {
+                for &parent_id in parents {
+                    if visited.insert(parent_id) {
+                        queue.push_back(parent_id);
+                    }
+                }
+            }
+            if let Some(cert) = &clause.certificate {
+                match cert {
+                    ClauseCertificate::AvatarComponent { split_parent, .. } => {
+                        if visited.insert(*split_parent) {
+                            queue.push_back(*split_parent);
+                        }
+                    }
+                    ClauseCertificate::AvatarSatRefutation {
+                        split_nodes,
+                        branch_roots,
+                        ..
+                    } => {
+                        for &split_id in split_nodes {
+                            if visited.insert(split_id) {
+                                queue.push_back(split_id);
+                            }
+                        }
+                        for &branch_id in branch_roots {
+                            if visited.insert(branch_id) {
+                                queue.push_back(branch_id);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -69,12 +96,38 @@ pub fn extract_proof_ids<S: BuildHasher>(
     while let Some(id) = queue.pop_front() {
         order.push(id);
 
-        if let Some(clause) = clause_store.get(&id)
-            && let ClauseSource::Inference { parents, .. } = &clause.source
-        {
-            for &parent_id in parents {
-                if visited.insert(parent_id) {
-                    queue.push_back(parent_id);
+        if let Some(clause) = clause_store.get(&id) {
+            if let ClauseSource::Inference { parents, .. } = &clause.source {
+                for &parent_id in parents {
+                    if visited.insert(parent_id) {
+                        queue.push_back(parent_id);
+                    }
+                }
+            }
+            if let Some(cert) = &clause.certificate {
+                match cert {
+                    ClauseCertificate::AvatarComponent { split_parent, .. } => {
+                        if visited.insert(*split_parent) {
+                            queue.push_back(*split_parent);
+                        }
+                    }
+                    ClauseCertificate::AvatarSatRefutation {
+                        split_nodes,
+                        branch_roots,
+                        ..
+                    } => {
+                        for &split_id in split_nodes {
+                            if visited.insert(split_id) {
+                                queue.push_back(split_id);
+                            }
+                        }
+                        for &branch_id in branch_roots {
+                            if visited.insert(branch_id) {
+                                queue.push_back(branch_id);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -160,5 +213,71 @@ mod tests {
         store.insert(ClauseId(3), inferred(3, vec![1, 2]));
         let proof = extract_proof(ClauseId(3), &store);
         assert_eq!(proof.len(), 4); // c0 appears once, not twice
+    }
+
+    #[test]
+    fn extract_avatar_certificate_dependencies() {
+        // Test that extract_proof traverses certificate dependencies:
+        // c0 (input unsplit clause)
+        // c1 (avatar_split_clause, parent: c0)
+        // c2 (avatar_component_clause, cert split_parent: c1)
+        // c3 (avatar_branch_refutation, parent: c2)
+        // c4 (avatar_sat_refutation, cert split_nodes: [c1], branch_roots: [c3])
+        let mut store = HashMap::new();
+        store.insert(ClauseId(0), input(0));
+
+        let mut c1 = inferred(1, vec![0]);
+        c1.certificate = Some(ClauseCertificate::AvatarSplit {
+            inherited: vec![],
+            components: vec![],
+        });
+        store.insert(ClauseId(1), c1);
+
+        let mut c2 = Clause::new(
+            ClauseId(2),
+            vec![],
+            ClauseSource::Inference {
+                rule: "avatar_component_clause",
+                parents: vec![ClauseId(1)].into(),
+            },
+        );
+        c2.certificate = Some(ClauseCertificate::AvatarComponent {
+            split_parent: ClauseId(1),
+            branch_index: 0,
+            sat_var: 1,
+        });
+        store.insert(ClauseId(2), c2);
+
+        let mut c3 = Clause::new(
+            ClauseId(3),
+            vec![],
+            ClauseSource::Inference {
+                rule: "avatar_branch_refutation",
+                parents: vec![ClauseId(2)].into(),
+            },
+        );
+        c3.certificate = Some(ClauseCertificate::AvatarBranchRefutation {
+            context: vec![1],
+        });
+        store.insert(ClauseId(3), c3);
+
+        let mut c4 = Clause::new(
+            ClauseId(4),
+            vec![],
+            ClauseSource::Inference {
+                rule: "avatar_sat_refutation",
+                parents: vec![ClauseId(1), ClauseId(3)].into(),
+            },
+        );
+        c4.certificate = Some(ClauseCertificate::AvatarSatRefutation {
+            split_nodes: vec![ClauseId(1)],
+            branch_roots: vec![ClauseId(3)],
+            sat_trace: None,
+        });
+        store.insert(ClauseId(4), c4);
+
+        let proof = extract_proof(ClauseId(4), &store);
+        assert_eq!(proof.len(), 5);
+        assert_eq!(proof[proof.len() - 1].id, ClauseId(4));
     }
 }

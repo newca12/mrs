@@ -33,34 +33,10 @@ This document tracks what remains to be built in `mrs` (the prover) to maximise 
 
 (No remaining high-ROI features currently planned before CASC submission. The prover is feature-complete.)
 
-### Known limitation: AVATAR proof self-containedness (not a soundness bug)
+### Implemented: AVATAR proof self-containedness and incomplete splitting citations
 
-Discovered 2026-07-18 while investigating the `PRO013+3.p` soundness incident's
-knock-on `mrs-proover` audit (see `docs/BENCHMARKS.md`). `extract_proof`'s
-plain parent-BFS over `ClauseSource::Inference.parents` doesn't capture the
-SAT-refutation-derived justification AVATAR relies on: when a derived clause
-is split into variable-disjoint components (`avatar.rs::split_clause_id`),
-every surviving component keeps citing the *pre-split* clause's original
-parents, silently omitting *why* the sibling components could be dropped
-(that justification lives in the CaDiCaL SAT model, not in any clause
-parent). Confirmed via `mrs-proover` on `SWC351+1.p`: the SZS answer was
-correct, but some AVATAR-descended proof steps get a (correct, given the
-incomplete citation) `VerifiedBad` from an external checker's ATP ladder.
-
-- **Not a soundness bug**: doesn't affect the SZS status mrs reports, and
-  doesn't affect `mrs-proover`/ProoVer (which never inspects this citation
-  metadata — its `MrsAtp` in-process fallback only checks the boolean
-  `SearchResult::Refutation` outcome of a fresh sub-search, not any printed
-  citation chain).
-- **Proper fix** requires threading SAT-refutation justification through the
-  proof printer, analogous to Vampire's dedicated `avatar_component_clause`/
-  `avatar_split_clause`/`avatar_sat_refutation` TSTP annotations — a
-  substantial change to code exercised on every division, not a same-day fix.
-  Deferred rather than rushed under CASC-J13 deadline pressure (fixing #1,
-  the unrelated nested-Tseytin-definition citation bug, was safe/isolated
-  enough to do immediately; this one is not).
-- Fixing this is **not required** for the FOF/UEQ CASC-J13 entry itself, only
-  for full proof-validity checking (ProoVer-style) of AVATAR-heavy proofs.
+- **Resolved**: `extract_proof` and `extract_proof_ids` BFS traversal now follows `ClauseCertificate` dependencies (`split_nodes`, `branch_roots`, `split_parent`) alongside `ClauseSource::Inference.parents`.
+- **Proof format & Verification**: The proof exporter outputs the full AVATAR TSTP annotation chain (`avatar_split_clause`, `avatar_component_clause`, `avatar_branch_refutation`, `avatar_sat_refutation`), ensuring step-by-step self-containedness. Both `mrs-proof-kernel` and `mrs-proover` verify AVATAR-heavy proofs.
 
 ### Follow-up: audit `fvo.rs` with the same rigor as the CWA polarity fix
 
