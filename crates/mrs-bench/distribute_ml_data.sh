@@ -53,7 +53,7 @@ if [ ! -d "$TPTP_DIR/Problems" ]; then
     exit 1
 fi
 FULL_LIST="$OUT_DIR/full_problems.list"
-find "$TPTP_DIR/Problems" -name "*.p" > "$FULL_LIST"
+find -L "$TPTP_DIR/Problems" -name "*.p" > "$FULL_LIST"
 
 NUM_PROBS=$(wc -l < "$FULL_LIST")
 echo "Found $NUM_PROBS problems. Splitting across $NUM_SERVERS servers..."

@@ -69,7 +69,7 @@ fetch_one() {
     # If the website had no answer, try the local problem file.
     if [[ -z "$status" || "$status" == "GaveUp" ]]; then
         local local_file
-        local_file=$(find "$PROBLEMS_DIR" -maxdepth 2 -name "${problem}.p" 2>/dev/null | head -1)
+        local_file=$(find -L "$PROBLEMS_DIR" -maxdepth 2 -name "${problem}.p" 2>/dev/null | head -1)
         if [[ -n "$local_file" ]]; then
             local local_status
             local_status=$(grep -m1 '% Status' "$local_file" 2>/dev/null | awk '{print $NF}')

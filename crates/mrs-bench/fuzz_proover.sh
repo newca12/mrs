@@ -142,7 +142,7 @@ if [[ "${VERIFY_ONLY}" -eq 1 ]]; then
         | sort
     )
 else
-    mapfile -t PROBLEMS < <(find "${PROBLEMS_DIR}" -type f -name "${PATTERN}" | sort)
+    mapfile -t PROBLEMS < <(find -L "${PROBLEMS_DIR}" -type f -name "${PATTERN}" | sort)
 fi
 if [[ "${LIMIT}" -gt 0 && "${#PROBLEMS[@]}" -gt "${LIMIT}" ]]; then
     PROBLEMS=("${PROBLEMS[@]:0:${LIMIT}}")
