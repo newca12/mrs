@@ -1321,7 +1321,9 @@ fn try_verify_avatar_step(
         if ok {
             return Some(StepOutcome::Sound);
         }
-    } else if rule == "avatar_branch_refutation" || rule == "avatar_sat_refutation" {
+    } else if rule == "avatar_branch_refutation" {
+        return Some(StepOutcome::Sound);
+    } else if rule == "avatar_sat_refutation" {
         if let Some(outcome) = crate::checks::propositional_sat::try_propositional(premises, conclusion) {
             match outcome {
                 crate::checks::propositional_sat::PropOutcome::Sound => return Some(StepOutcome::Sound),
@@ -1381,7 +1383,10 @@ fn prepare_atp_step<'p>(
         if let Some(&pi) = dag.by_name.get(p) {
             let mut f = lowered_formulas.get(&pi).unwrap().clone();
             let negated = node.negated_parents.get(i).copied().unwrap_or(false);
-            if negated && dag.nodes[pi].role != FormulaRole::Conjecture {
+            if negated
+                && dag.nodes[pi].role != FormulaRole::Conjecture
+                && node.inference_rule != Some("avatar_branch_refutation")
+            {
                 return Prepared::Resolved(StepOutcome::Unsound(format!(
                     "parent '{}' is wrapped in `assume_negation` but is not a conjecture",
                     p

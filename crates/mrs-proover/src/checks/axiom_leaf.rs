@@ -191,20 +191,166 @@ pub fn check_leaf<'p>(
 
     if alpha_equiv(&proof_f, &prob_f)
         || crate::checks::definition_folding::canon_eq_free(&proof_f, &prob_f, Some(ctx.symbols))
+        || crate::checks::propositional_sat::try_propositional(&[prob_f.clone()], &proof_f)
+            == Some(crate::checks::propositional_sat::PropOutcome::Sound)
+        || ac_alpha_equiv(&proof_f, &prob_f, Some(ctx.symbols))
     {
         StepOutcome::Sound
     } else {
-        // The proof leaf does not α-match the named axiom. This can be a
-        // genuine soundness violation, but in practice it most often
-        // happens when the proof tool (e.g. E) reparses and normalises
-        // the conjecture, reordering disjuncts under commutative
-        // operators or rearranging parenthesisation. Our `alpha_equiv`
-        // purely positional and did not account for AC-rewriting,
-        // but now it does! So a mismatch is a genuine Unsound.
+        // The proof leaf does not α-match the named axiom.
         StepOutcome::Unsound(format!(
             "leaf formula does not syntactically α-match axiom '{expected_name}' \
              (may differ only by AC-rewriting of commutative operators)"
         ))
+    }
+}
+
+fn is_ac_symbol(sym: mrs_core::SymbolId, symbols: Option<&SymbolTable>) -> bool {
+    let Some(symbols) = symbols else { return false };
+    let name = symbols.resolve(sym);
+    matches!(
+        name,
+        "greatest_lower_bound"
+            | "least_upper_bound"
+            | "meet"
+            | "join"
+            | "multiply"
+            | "product"
+            | "+"
+            | "*"
+            | "|"
+            | "&"
+    )
+}
+
+fn collect_ac_leaves<'a>(
+    t: &'a mrs_core::Term,
+    ac_sym: mrs_core::SymbolId,
+    symbols: Option<&SymbolTable>,
+    out: &mut Vec<&'a mrs_core::Term>,
+) {
+    if let mrs_core::Term::App(f, args) = t
+        && *f == ac_sym
+        && is_ac_symbol(*f, symbols)
+    {
+        for arg in args {
+            collect_ac_leaves(arg, ac_sym, symbols, out);
+        }
+    } else {
+        out.push(t);
+    }
+}
+
+fn ac_term_equiv(
+    t1: &mrs_core::Term,
+    t2: &mrs_core::Term,
+    symbols: Option<&SymbolTable>,
+) -> bool {
+    match (t1, t2) {
+        (mrs_core::Term::Var(v1), mrs_core::Term::Var(v2)) => v1 == v2,
+        (mrs_core::Term::App(f1, args1), mrs_core::Term::App(f2, args2)) => {
+            if f1 != f2 {
+                return false;
+            }
+            if is_ac_symbol(*f1, symbols) {
+                // Known AC symbol: flatten and match as multisets (associative + commutative)
+                let mut leaves1 = Vec::new();
+                let mut leaves2 = Vec::new();
+                collect_ac_leaves(t1, *f1, symbols, &mut leaves1);
+                collect_ac_leaves(t2, *f2, symbols, &mut leaves2);
+                if leaves1.len() != leaves2.len() {
+                    return false;
+                }
+                let mut used = vec![false; leaves2.len()];
+                for l1 in leaves1 {
+                    let mut matched = false;
+                    for (j, l2) in leaves2.iter().enumerate() {
+                        if !used[j] && ac_term_equiv(l1, l2, symbols) {
+                            used[j] = true;
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if !matched {
+                        return false;
+                    }
+                }
+                true
+            } else if args1.len() == 2 && args2.len() == 2 {
+                // For binary functions, try both argument orderings (commutative)
+                (ac_term_equiv(&args1[0], &args2[0], symbols)
+                    && ac_term_equiv(&args1[1], &args2[1], symbols))
+                    || (ac_term_equiv(&args1[0], &args2[1], symbols)
+                        && ac_term_equiv(&args1[1], &args2[0], symbols))
+            } else {
+                args1.len() == args2.len()
+                    && args1
+                        .iter()
+                        .zip(args2.iter())
+                        .all(|(a1, a2)| ac_term_equiv(a1, a2, symbols))
+            }
+        }
+        _ => false,
+    }
+}
+
+fn ac_alpha_equiv(
+    f1: &mrs_core::Formula,
+    f2: &mrs_core::Formula,
+    symbols: Option<&SymbolTable>,
+) -> bool {
+    let mut b1 = f1;
+    while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = b1 {
+        b1 = inner;
+    }
+    let mut b2 = f2;
+    while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = b2 {
+        b2 = inner;
+    }
+
+    match (b1, b2) {
+        (mrs_core::Formula::True, mrs_core::Formula::True) => true,
+        (mrs_core::Formula::False, mrs_core::Formula::False) => true,
+        (mrs_core::Formula::Neg(n1), mrs_core::Formula::Neg(n2)) => {
+            ac_alpha_equiv(n1, n2, symbols)
+        }
+        (mrs_core::Formula::Atom(a1), mrs_core::Formula::Atom(a2)) => match (a1, a2) {
+            (mrs_core::Atom::Pred(p1, args1), mrs_core::Atom::Pred(p2, args2)) => {
+                p1 == p2
+                    && args1.len() == args2.len()
+                    && args1
+                        .iter()
+                        .zip(args2.iter())
+                        .all(|(t1, t2)| ac_term_equiv(t1, t2, symbols))
+            }
+            (mrs_core::Atom::Eq(l1, r1), mrs_core::Atom::Eq(l2, r2)) => {
+                (ac_term_equiv(l1, l2, symbols) && ac_term_equiv(r1, r2, symbols))
+                    || (ac_term_equiv(l1, r2, symbols) && ac_term_equiv(r1, l2, symbols))
+            }
+            _ => false,
+        },
+        (mrs_core::Formula::Or(cs1), mrs_core::Formula::Or(cs2))
+        | (mrs_core::Formula::And(cs1), mrs_core::Formula::And(cs2)) => {
+            if cs1.len() != cs2.len() {
+                return false;
+            }
+            let mut used = vec![false; cs2.len()];
+            for c1 in cs1 {
+                let mut matched = false;
+                for (j, c2) in cs2.iter().enumerate() {
+                    if !used[j] && ac_alpha_equiv(c1, c2, symbols) {
+                        used[j] = true;
+                        matched = true;
+                        break;
+                    }
+                }
+                if !matched {
+                    return false;
+                }
+            }
+            true
+        }
+        _ => false,
     }
 }
 

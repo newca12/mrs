@@ -90,6 +90,9 @@ pub fn format_tstp(proof: &[Clause], symbols: &SymbolTable) -> String {
     // Prepend the standard % Proof : <path> header at the very top
     lines.push(format!("% Proof : {}", problem_path));
 
+    let valid_ids: std::collections::HashSet<mrs_core::clause::ClauseId> =
+        proof_sorted.iter().map(|c| c.id).collect();
+
     for clause in &proof_sorted {
         let id = clause.id.0;
         let is_formula_step = clause.formula.is_some();
@@ -123,8 +126,11 @@ pub fn format_tstp(proof: &[Clause], symbols: &SymbolTable) -> String {
                 format!("file('{}', '{}')", problem_path, name)
             }
             ClauseSource::Inference { rule, parents } => {
-                let parent_names: Vec<String> =
-                    parents.iter().map(|p| format!("c{}", p.0)).collect();
+                let parent_names: Vec<String> = parents
+                    .iter()
+                    .filter(|p| valid_ids.contains(p))
+                    .map(|p| format!("c{}", p.0))
+                    .collect();
                 let status = status_for_rule(rule);
                 let mut info = format!("status({status})");
                 if let Some(certificate) = &clause.certificate {
