@@ -587,7 +587,12 @@ fn verify_strict_with_source_internal(
 fn expected_status(rule: &str) -> Option<&'static str> {
     match rule {
         "negated_conjecture" | "assume_negation" => Some("cth"),
-        "skolemisation" | "skolemize" => Some("esa"),
+        "skolemisation"
+        | "skolemize"
+        | "avatar_split_clause"
+        | "avatar_component_clause"
+        | "avatar_branch_refutation"
+        | "split_component" => Some("esa"),
         "fof_nnf"
         | "fof_nnf_transformation"
         | "nnf_transformation"
@@ -637,10 +642,6 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "equality_factoring"
         | "condensation"
         | "demodulation"
-        | "split_component"
-        | "avatar_split_clause"
-        | "avatar_component_clause"
-        | "avatar_branch_refutation"
         | "avatar_sat_refutation"
         | "superposition"
         | "paramodulation" => Some("thm"),
@@ -9483,8 +9484,8 @@ mod tests {
         let proof = "fof(top, axiom, p | q, file('problem.p', top)).\n\
                      fof(np, axiom, ~p, file('problem.p', np)).\n\
                      fof(nq, axiom, ~q, file('problem.p', nq)).\n\
-                     fof(b0, plain, p, inference(split_component, [status(thm)], [top])).\n\
-                     fof(b1, plain, q, inference(split_component, [status(thm)], [top])).\n\
+                     fof(b0, plain, p, inference(split_component, [status(esa)], [top])).\n\
+                     fof(b1, plain, q, inference(split_component, [status(esa)], [top])).\n\
                      fof(f0, plain, $false, inference(resolution, [status(thm)], [b0,np])).\n\
                      fof(f1, plain, $false, inference(resolution, [status(thm)], [b1,nq])).\n\
                      fof(bot, plain, $false, inference(avatar_sat_refutation, [status(thm)], [top,f0,f1])).";
@@ -9496,7 +9497,7 @@ mod tests {
         let problem = "fof(top, axiom, p | q).\nfof(np, axiom, ~p).";
         let proof = "fof(top, axiom, p | q, file('problem.p', top)).\n\
                      fof(np, axiom, ~p, file('problem.p', np)).\n\
-                     fof(b0, plain, p, inference(split_component, [status(thm)], [top])).\n\
+                     fof(b0, plain, p, inference(split_component, [status(esa)], [top])).\n\
                      fof(f0, plain, $false, inference(resolution, [status(thm)], [b0,np])).\n\
                      fof(bot, plain, $false, inference(avatar_sat_refutation, [status(thm)], [top,f0])).";
         assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
@@ -9514,17 +9515,17 @@ mod tests {
                      fof(nq, axiom, ~q, file('problem.p', nq)).\
                      fof(split, plain, spl0_1 | spl0_2,\
                          inference(avatar_split_clause,\
-                           [status(thm),\
+                           [status(esa),\
                             avatar_split([branch(0, spl0_1, [0]),\
                                          branch(1, spl0_2, [1])], [])],\
                            [top])).\
                      fof(comp_p, plain, p | ~spl0_1,\
                          inference(avatar_component_clause,\
-                           [status(thm), avatar_component(split, 0, spl0_1)],\
+                           [status(esa), avatar_component(split, 0, spl0_1)],\
                            [split])).\
                      fof(comp_q, plain, q | ~spl0_2,\
                          inference(avatar_component_clause,\
-                           [status(thm), avatar_component(split, 1, spl0_2)],\
+                           [status(esa), avatar_component(split, 1, spl0_2)],\
                            [split])).\
                      fof(empty_p, plain, ~spl0_1,\
                          inference(resolution, [status(thm)], [comp_p, np])).\
@@ -9532,10 +9533,10 @@ mod tests {
                          inference(resolution, [status(thm)], [comp_q, nq])).\
                      fof(branch_p, plain, $false,\
                          inference(avatar_branch_refutation,\
-                           [status(thm), avatar_context([spl0_1])], [empty_p])).\
+                           [status(esa), avatar_context([spl0_1])], [empty_p])).\
                      fof(branch_q, plain, $false,\
                          inference(avatar_branch_refutation,\
-                           [status(thm), avatar_context([spl0_2])], [empty_q])).\
+                           [status(esa), avatar_context([spl0_2])], [empty_q])).\
                      fof(bot, plain, $false,\
                          inference(avatar_sat_refutation,\
                             [status(thm),\
@@ -9561,13 +9562,13 @@ mod tests {
             "fof(top, axiom, p | q, file('problem.p', top)).\
              fof(np, axiom, ~p, file('problem.p', np)).\
              fof(nq, axiom, ~q, file('problem.p', nq)).\
-             fof(split, plain, spl0_1 | spl0_2, inference(avatar_split_clause, [status(thm), avatar_split([branch(0, spl0_1, [0]), branch(1, spl0_2, [1])], [])], [top])).\
-             fof(comp_p, plain, p | ~spl0_1, inference(avatar_component_clause, [status(thm), avatar_component(split, 0, spl0_1)], [split])).\
-             fof(comp_q, plain, q | ~spl0_2, inference(avatar_component_clause, [status(thm), avatar_component(split, 1, spl0_2)], [split])).\
+             fof(split, plain, spl0_1 | spl0_2, inference(avatar_split_clause, [status(esa), avatar_split([branch(0, spl0_1, [0]), branch(1, spl0_2, [1])], [])], [top])).\
+             fof(comp_p, plain, p | ~spl0_1, inference(avatar_component_clause, [status(esa), avatar_component(split, 0, spl0_1)], [split])).\
+             fof(comp_q, plain, q | ~spl0_2, inference(avatar_component_clause, [status(esa), avatar_component(split, 1, spl0_2)], [split])).\
              fof(empty_p, plain, ~spl0_1, inference(resolution, [status(thm)], [comp_p, np])).\
              fof(empty_q, plain, ~spl0_2, inference(resolution, [status(thm)], [comp_q, nq])).\
-             fof(branch_p, plain, $false, inference(avatar_branch_refutation, [status(thm), avatar_context([spl0_1])], [empty_p])).\
-             fof(branch_q, plain, $false, inference(avatar_branch_refutation, [status(thm), avatar_context([spl0_2])], [empty_q])).\
+             fof(branch_p, plain, $false, inference(avatar_branch_refutation, [status(esa), avatar_context([spl0_1])], [empty_p])).\
+             fof(branch_q, plain, $false, inference(avatar_branch_refutation, [status(esa), avatar_context([spl0_2])], [empty_q])).\
              fof(bot, plain, $false, inference(avatar_sat_refutation, [status(thm), {sat_trace}], [split, branch_p, branch_q]))."
         );
         let mutated = proof.replace("[0, 1, 2]", "[0, 0, 2]");
@@ -9584,7 +9585,7 @@ mod tests {
                      fof(np, axiom, ~p, file('problem.p', np)).\
                      fof(nq, axiom, ~q, file('problem.p', nq)).\
                      fof(split, plain, spl0_1 | spl0_2,\
-                         inference(avatar_split_clause, [status(thm)], [top])).\
+                         inference(avatar_split_clause, [status(esa)], [top])).\
                      fof(bot, plain, $false,\
                          inference(avatar_sat_refutation,\
                            [status(thm)], [split])).";
@@ -9602,7 +9603,7 @@ mod tests {
                      fof(nq, axiom, ~q, file('problem.p', nq)).\
                      fof(split, plain, spl0_1 | spl0_2,\
                          inference(avatar_split_clause,\
-                           [status(thm),\
+                           [status(esa),\
                             avatar_split([branch(0, spl0_1, [0]),\
                                          branch(1, spl0_2, [1])], [])],\
                            [top])).\
@@ -9610,15 +9611,13 @@ mod tests {
                          inference(resolution, [status(thm)], [split,np])).\
                      fof(branch_p, plain, $false,\
                          inference(avatar_branch_refutation,\
-                           [status(thm), avatar_context([spl0_1])], [empty_p])).\
+                           [status(esa), avatar_context([spl0_1])], [empty_p])).\
                      fof(branch_p2, plain, $false,\
                          inference(avatar_branch_refutation,\
-                           [status(thm), avatar_context([spl0_1])], [empty_p])).\
+                           [status(esa), avatar_context([spl0_1])], [empty_p])).\
                      fof(bot, plain, $false,\
                          inference(avatar_sat_refutation,\
-                           [status(thm),\
-                            avatar_sat_refutation([split], [branch_p, branch_p2])],\
-                           [split, branch_p, branch_p2])).";
+                           [status(thm)], [split, branch_p, branch_p2])).";
         assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
     }
 }

@@ -62,7 +62,11 @@ fn problem_path() -> &'static str {
 /// ordinary `thm` consequences of {skolemization step, definition step(s)}.
 fn status_for_rule(rule: &str) -> &'static str {
     match rule {
-        "skolemisation" => "esa",
+        "skolemisation"
+        | "avatar_split_clause"
+        | "avatar_component_clause"
+        | "avatar_branch_refutation"
+        | "split_component" => "esa",
         "negated_conjecture" => "cth",
         _ => "thm",
     }
@@ -561,5 +565,53 @@ mod tests {
         });
         let output = format_tstp(&[clause], &symbols);
         assert!(output.contains("avatar_split([branch(0, spl0_7, [0])], [])"));
+    }
+
+    #[test]
+    fn format_avatar_step_status_uses_esa() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+
+        let split_clause = Clause::new(
+            ClauseId(1),
+            vec![Literal::pos(Atom::pred(p, vec![]))],
+            ClauseSource::Inference {
+                rule: "avatar_split_clause",
+                parents: vec![ClauseId(0)].into(),
+            },
+        );
+        let component_clause = Clause::new(
+            ClauseId(2),
+            vec![Literal::pos(Atom::pred(p, vec![]))],
+            ClauseSource::Inference {
+                rule: "avatar_component_clause",
+                parents: vec![ClauseId(1)].into(),
+            },
+        );
+        let branch_refutation = Clause::new(
+            ClauseId(3),
+            vec![],
+            ClauseSource::Inference {
+                rule: "avatar_branch_refutation",
+                parents: vec![ClauseId(2)].into(),
+            },
+        );
+        let sat_refutation = Clause::new(
+            ClauseId(4),
+            vec![],
+            ClauseSource::Inference {
+                rule: "avatar_sat_refutation",
+                parents: vec![ClauseId(1), ClauseId(3)].into(),
+            },
+        );
+
+        let output = format_tstp(
+            &[split_clause, component_clause, branch_refutation, sat_refutation],
+            &symbols,
+        );
+        assert!(output.contains("inference(avatar_split_clause, [status(esa)"));
+        assert!(output.contains("inference(avatar_component_clause, [status(esa)"));
+        assert!(output.contains("inference(avatar_branch_refutation, [status(esa)"));
+        assert!(output.contains("inference(avatar_sat_refutation, [status(thm)"));
     }
 }

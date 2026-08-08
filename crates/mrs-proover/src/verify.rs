@@ -1586,6 +1586,10 @@ fn finish_atp(
                         | "introduced_definition"
                         | "fof_nnf"
                         | "distribute"
+                        | "avatar_split_clause"
+                        | "avatar_component_clause"
+                        | "avatar_branch_refutation"
+                        | "split_component"
                 )
             );
             if is_known_esa_rule {
