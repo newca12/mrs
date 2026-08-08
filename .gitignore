@@ -56,3 +56,11 @@ experiment.log
 
 # mrs-codex: runtime output database from processing a problem corpus
 /codex.db
+
+# Local Nix environment
+.direnv/
+
+# Local SQLite runtime databases
+/*.db
+/*.db-shm
+/*.db-wal
