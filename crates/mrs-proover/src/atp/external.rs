@@ -177,6 +177,8 @@ use mrs_search::SearchResult;
 pub struct MrsAtp {
     pub binary: PathBuf,
     pub use_proover_mode: bool,
+    /// In-process schedule reports, one for each completed step query.
+    pub reports: std::sync::Mutex<Vec<mrs_search::ScheduleReport>>,
 }
 
 const INNER_SEARCH_WORKERS: usize = 1;
@@ -187,6 +189,7 @@ impl MrsAtp {
         Self {
             binary: super::discover::find_mrs().unwrap_or_else(|| PathBuf::from("mrs")),
             use_proover_mode: true,
+            reports: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -194,6 +197,7 @@ impl MrsAtp {
         Self {
             binary: binary.into(),
             use_proover_mode: true,
+            reports: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -278,7 +282,7 @@ impl Atp for MrsAtp {
         // already parallelizes independent proof steps at the outer level;
         // nesting the full physical-core portfolio inside every step causes
         // severe CPU oversubscription and timing variance.
-        let (result, _report) = mrs_search::strategy::run_schedule(
+        let (result, report) = mrs_search::strategy::run_schedule(
             &all_clauses,
             &[],
             id_gen,
@@ -287,6 +291,9 @@ impl Atp for MrsAtp {
             mrs_search::strategy::MlOptions::default(),
             Some(INNER_SEARCH_WORKERS),
         );
+        if let Ok(mut reports) = self.reports.lock() {
+            reports.push(report);
+        }
 
         match result {
             SearchResult::Refutation(..) => AtpVerdict::Sound,
@@ -294,6 +301,13 @@ impl Atp for MrsAtp {
             SearchResult::Timeout => AtpVerdict::Unknown,
             SearchResult::GaveUp => AtpVerdict::Unknown,
         }
+    }
+
+    fn search_reports(&self) -> Vec<mrs_search::ScheduleReport> {
+        self.reports
+            .lock()
+            .map(|mut reports| std::mem::take(&mut *reports))
+            .unwrap_or_default()
     }
 }
 
@@ -606,7 +620,38 @@ mod tests {
 
     #[test]
     fn mrs_atp_uses_single_inner_search_worker() {
-        assert_eq!(INNER_SEARCH_WORKERS, 1);
+        let mut symbols = SymbolTable::new();
+        let predicate = symbols.intern("p");
+        let constant = symbols.intern("a");
+        let premise = Formula::atom(mrs_core::Atom::pred(
+            predicate,
+            vec![mrs_core::Term::constant(constant)],
+        ));
+        let atp = MrsAtp::new();
+        let verdict = atp.check_step(
+            &symbols,
+            std::slice::from_ref(&premise),
+            &premise,
+            Duration::from_secs(1),
+            &std::sync::atomic::AtomicBool::new(false),
+        );
+        assert_eq!(verdict, AtpVerdict::Sound);
+        let second_verdict = atp.check_step(
+            &symbols,
+            std::slice::from_ref(&premise),
+            &premise,
+            Duration::from_secs(1),
+            &std::sync::atomic::AtomicBool::new(false),
+        );
+        assert_eq!(second_verdict, AtpVerdict::Sound);
+        let reports = atp.search_reports();
+        assert_eq!(reports.len(), 2);
+        assert!(
+            reports
+                .iter()
+                .all(|report| report.workers == INNER_SEARCH_WORKERS)
+        );
+        assert!(atp.search_reports().is_empty());
     }
 
     #[cfg(unix)]

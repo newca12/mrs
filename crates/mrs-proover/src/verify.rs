@@ -42,6 +42,39 @@ pub struct Settings {
     pub strict: bool,
 }
 
+/// Diagnostic telemetry for one competition-mode verification run.
+#[derive(Clone, Debug, Default)]
+pub struct VerificationTelemetry {
+    pub proof_nodes: usize,
+    pub atp_jobs: usize,
+    pub workers: usize,
+    pub elapsed_ms: u64,
+    pub verdict: Option<Verdict>,
+    pub step_outcomes: Vec<(String, StepOutcome)>,
+    pub mrs_reports: Vec<mrs_search::ScheduleReport>,
+}
+
+impl VerificationTelemetry {
+    /// Stable key/value detail suitable for benchmark logs.
+    pub fn detail(&self) -> String {
+        let mut inner_workers = self
+            .mrs_reports
+            .iter()
+            .map(|report| report.workers.to_string())
+            .collect::<Vec<_>>();
+        inner_workers.sort_unstable();
+        format!(
+            "proof_nodes={} atp_jobs={} workers={} elapsed_ms={} mrs_reports={} inner_workers={}",
+            self.proof_nodes,
+            self.atp_jobs,
+            self.workers,
+            self.elapsed_ms,
+            self.mrs_reports.len(),
+            inner_workers.join(";"),
+        )
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -62,12 +95,31 @@ pub fn verify(job: &LoadedJob, settings: &Settings) -> Verdict {
 
 /// Run with a specific ATP backend.
 pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdict {
+    verify_with_telemetry(job, settings, atp).0
+}
+
+/// Run verification and return the aggregate verdict with diagnostic telemetry.
+pub fn verify_with_telemetry(
+    job: &LoadedJob,
+    settings: &Settings,
+    atp: &dyn Atp,
+) -> (Verdict, VerificationTelemetry) {
     let started = Instant::now();
+    let mut telemetry = VerificationTelemetry::default();
+
+    // A backend may be reused across verifier runs. Discard reports left by a
+    // prior run before any early structural return can bypass the normal drain
+    // below. `Atp` implementations are required to make this operation
+    // thread-safe; the active run drains again only after all jobs have joined.
+    let _ = atp.search_reports();
 
     if settings.strict && job.problem.is_none() {
-        return Verdict::Unknown(
+        let verdict = Verdict::Unknown(
             "strict: proof has no linked problem file for provenance verification".into(),
         );
+        telemetry.elapsed_ms = started.elapsed().as_millis() as u64;
+        telemetry.verdict = Some(verdict.clone());
+        return (verdict, telemetry);
     }
 
     // 1) Build the DAG.
@@ -77,22 +129,37 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
         // verify the proof, but it is NOT evidence the proof is wrong.
         // Map to Unknown (0 pts) rather than VerifiedBad (−1 pts).
         Err(DagError::UnsupportedDialect(n)) => {
-            return Verdict::Unknown(format!(
+            let verdict = Verdict::Unknown(format!(
                 "structural: node {n} uses an unsupported proof dialect (not FOF/CNF)"
             ));
+            telemetry.elapsed_ms = started.elapsed().as_millis() as u64;
+            telemetry.verdict = Some(verdict.clone());
+            return (verdict, telemetry);
         }
         // An empty proof (no FOF/CNF nodes at all, e.g. Alethe/S-expression
         // format, or all content was type declarations) is also not verifiable.
         Err(DagError::EmptyProof) => {
-            return Verdict::Unknown(
+            let verdict = Verdict::Unknown(
                 "structural: proof contains no FOF/CNF nodes (unsupported format)".into(),
             );
+            telemetry.elapsed_ms = started.elapsed().as_millis() as u64;
+            telemetry.verdict = Some(verdict.clone());
+            return (verdict, telemetry);
         }
         Err(DagError::NoFalseRoot) => {
-            return Verdict::Unknown("structural: proof does not derive $false".into());
+            let verdict = Verdict::Unknown("structural: proof does not derive $false".into());
+            telemetry.elapsed_ms = started.elapsed().as_millis() as u64;
+            telemetry.verdict = Some(verdict.clone());
+            return (verdict, telemetry);
         }
-        Err(e) => return Verdict::VerifiedBad(format!("structural: {e}")),
+        Err(e) => {
+            let verdict = Verdict::VerifiedBad(format!("structural: {e}"));
+            telemetry.elapsed_ms = started.elapsed().as_millis() as u64;
+            telemetry.verdict = Some(verdict.clone());
+            return (verdict, telemetry);
+        }
     };
+    telemetry.proof_nodes = dag.nodes.len();
 
     // if dag.topo.len() > 1000 {
     //     return Verdict::Unknown(format!(
@@ -102,12 +169,18 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
     // }
 
     if let Err(e) = crate::checks::introduced_definition::check_cycles(&dag) {
-        return Verdict::VerifiedBad(format!("structural: {e}"));
+        let verdict = Verdict::VerifiedBad(format!("structural: {e}"));
+        telemetry.elapsed_ms = started.elapsed().as_millis() as u64;
+        telemetry.verdict = Some(verdict.clone());
+        return (verdict, telemetry);
     }
 
     // Defensive: must have a $false root.
     if dag.root.is_none() {
-        return Verdict::Unknown("structural: proof does not derive $false".into());
+        let verdict = Verdict::Unknown("structural: proof does not derive $false".into());
+        telemetry.elapsed_ms = started.elapsed().as_millis() as u64;
+        telemetry.verdict = Some(verdict.clone());
+        return (verdict, telemetry);
     }
 
     // 2) Set up shared symbol table and Skolem registry.
@@ -143,7 +216,10 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
         for &idx in &dag.topo {
             ctx.reset_vars();
             let Some(f) = lower_annotated_formula(&mut ctx, dag.nodes[idx].formula) else {
-                return Verdict::Unknown("unsupported formula type in proof".into());
+                let verdict = Verdict::Unknown("unsupported formula type in proof".into());
+                telemetry.elapsed_ms = started.elapsed().as_millis() as u64;
+                telemetry.verdict = Some(verdict.clone());
+                return (verdict, telemetry);
             };
             lowered_formulas.insert(idx, f);
         }
@@ -170,6 +246,7 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
             Prepared::Resolved(oc) => outcomes.push(Some(oc)),
             Prepared::NeedsAtp(step) => {
                 outcomes.push(None);
+                telemetry.atp_jobs += 1;
                 jobs.push(AtpJob {
                     slot,
                     is_skolemisation: dag.nodes[idx].inference_rule == Some("skolemisation"),
@@ -188,6 +265,8 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
     //    the aggregated verdict (and its reason string) stay deterministic.
     run_atp_jobs(&jobs, atp, &symbols, &mut outcomes, started, settings);
 
+    telemetry.mrs_reports = atp.search_reports();
+
     if settings.verbose {
         for i in 0..names.len() {
             eprintln!(
@@ -197,12 +276,25 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
         }
     }
 
-    aggregate(
+    let verdict = aggregate(
         names
             .iter()
-            .zip(outcomes)
-            .map(|(n, o)| (*n, o.expect("every step resolved in pass 1 or pass 2"))),
-    )
+            .zip(outcomes.iter())
+            .map(|(name, outcome)| (*name, outcome.clone().expect("every step resolved"))),
+    );
+    telemetry.step_outcomes = names
+        .iter()
+        .zip(outcomes.iter())
+        .filter_map(|(name, outcome)| {
+            outcome
+                .clone()
+                .map(|outcome| ((*name).to_string(), outcome))
+        })
+        .collect();
+    telemetry.workers = settings.workers;
+    telemetry.elapsed_ms = started.elapsed().as_millis() as u64;
+    telemetry.verdict = Some(verdict.clone());
+    (verdict, telemetry)
 }
 
 /// A single ATP-bound step queued by Pass 1 for parallel execution in Pass 2.
@@ -2657,6 +2749,94 @@ mod budget_tests {
             step_budget(deadline, Duration::from_secs(8), 8, 1000, false),
             Duration::from_secs(1)
         );
+    }
+}
+
+#[cfg(test)]
+mod telemetry_tests {
+    use super::*;
+    use crate::atp::{Atp, AtpVerdict};
+    use crate::load::load_text;
+    use std::path::Path;
+    use std::sync::atomic::AtomicUsize;
+
+    struct ReportingAtp {
+        calls: AtomicUsize,
+        reports: Mutex<Vec<mrs_search::ScheduleReport>>,
+    }
+
+    impl ReportingAtp {
+        fn new() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                reports: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl Atp for ReportingAtp {
+        fn name(&self) -> &'static str {
+            "reporting"
+        }
+
+        fn check_step(
+            &self,
+            _symbols: &SymbolTable,
+            _premises: &[Formula],
+            _conclusion: &Formula,
+            _budget: Duration,
+            _cancel: &std::sync::atomic::AtomicBool,
+        ) -> AtpVerdict {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.reports
+                .lock()
+                .expect("report mutex")
+                .push(mrs_search::ScheduleReport {
+                    workers: 1,
+                    ..mrs_search::ScheduleReport::default()
+                });
+            AtpVerdict::Sound
+        }
+
+        fn search_reports(&self) -> Vec<mrs_search::ScheduleReport> {
+            self.reports
+                .lock()
+                .map(|mut reports| std::mem::take(&mut *reports))
+                .unwrap_or_default()
+        }
+    }
+
+    fn telemetry_job() -> crate::load::LoadedJob {
+        let problem = "fof(a, axiom, ![X]: p(X)).\nfof(c, conjecture, p(a)).";
+        let proof = "fof(a, axiom, ![X]: p(X), file('problem.p', a)).\n\
+                     fof(c, conjecture, p(a), file('problem.p', c)).\n\
+                     fof(nc, negated_conjecture, ~p(a), inference(negated_conjecture, [status(cth)], [c])).\n\
+                     fof(step, plain, p(a), inference(custom, [status(thm)], [a])).\n\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [nc, step])).";
+        load_text(problem.to_owned(), proof.to_owned(), Path::new("."))
+            .expect("telemetry fixture should load")
+    }
+
+    #[test]
+    fn competition_telemetry_collects_all_mrs_reports_and_drains_reuse() {
+        let atp = ReportingAtp::new();
+        let settings = Settings {
+            workers: 1,
+            ..Settings::default()
+        };
+
+        let (_verdict, first) = verify_with_telemetry(&telemetry_job(), &settings, &atp);
+        let first_calls = atp.calls.load(Ordering::Relaxed);
+        assert!(first_calls > 0, "fixture must reach the ATP");
+        assert_eq!(first.mrs_reports.len(), first_calls);
+        assert_eq!(first.workers, 1);
+        assert_eq!(first.atp_jobs, 2);
+        assert!(first.detail().contains("mrs_reports="));
+
+        let (_verdict, second) = verify_with_telemetry(&telemetry_job(), &settings, &atp);
+        let second_calls = atp.calls.load(Ordering::Relaxed) - first_calls;
+        assert_eq!(second.mrs_reports.len(), second_calls);
+        assert_eq!(second_calls, first_calls);
     }
 }
 

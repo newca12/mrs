@@ -830,17 +830,12 @@ fn print_statistics(status: SzsStatus, elapsed: Duration, report: &mrs_search::S
     // classify unsolved problems without re-parsing stdout.
     // Format: "% SZS detail <key=value> ..."
     // Always emitted (even on success) so casc.sh can parse it uniformly.
-    if let Some(detail) = report.failure_reason() {
-        eprintln!("% SZS detail {detail}");
-    } else {
-        // Summarise solved cases too (useful for throughput analysis).
-        let total_processed: u64 = report.strategies.iter().map(|s| s.stats.processed).sum();
-        let total_generated: u64 = report.strategies.iter().map(|s| s.stats.generated).sum();
-        eprintln!(
-            "% SZS detail strategies={} result=Refutation processed={} generated={}",
-            report.strategies.len(),
-            total_processed,
-            total_generated,
-        );
-    }
+    let result_name = match status {
+        SzsStatus::Theorem | SzsStatus::Unsatisfiable => "Refutation",
+        SzsStatus::CounterSatisfiable | SzsStatus::Satisfiable => "Saturation",
+        SzsStatus::GaveUp => "GaveUp",
+        SzsStatus::Timeout | SzsStatus::ResourceOut => "Timeout",
+        SzsStatus::Unknown | SzsStatus::Error => "Error",
+    };
+    eprintln!("% SZS detail {}", report.telemetry_detail(result_name));
 }

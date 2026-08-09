@@ -41,6 +41,15 @@ pub trait Atp: Send + Sync {
         budget: Duration,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> AtpVerdict;
+
+    /// Drain in-process search telemetry collected by this backend.
+    ///
+    /// Backends that do not run an in-process search return an empty vector.
+    /// The reports are diagnostic only and do not affect the ATP verdict. The
+    /// drain semantics keep repeated verifier runs from inheriting old data.
+    fn search_reports(&self) -> Vec<mrs_search::ScheduleReport> {
+        Vec::new()
+    }
 }
 
 /// An ATP that always says `Unknown`. Useful as a placeholder while the real

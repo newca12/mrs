@@ -605,7 +605,13 @@ pub fn run_schedule(
         if let Some(result) =
             try_fvo_refutation(&clauses_owned, provenance, &mut fvo_id_gen, symbols)
         {
-            return (result, crate::ScheduleReport::default());
+            return (
+                result,
+                crate::ScheduleReport {
+                    workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                    ..crate::ScheduleReport::default()
+                },
+            );
         }
     }
 
@@ -636,7 +642,13 @@ pub fn run_schedule(
                 config.clone(),
             )
         {
-            return (result, crate::ScheduleReport::default());
+            return (
+                result,
+                crate::ScheduleReport {
+                    workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                    ..crate::ScheduleReport::default()
+                },
+            );
         }
     }
 
@@ -981,7 +993,10 @@ pub fn run_schedule(
         // Collect results: track the best definitive answer seen.
         // Priority: Refutation > Saturated > GaveUp > Timeout
         let mut best: SearchResult = SearchResult::GaveUp;
-        let mut report = crate::ScheduleReport::default();
+        let mut report = crate::ScheduleReport {
+            workers: num_workers,
+            ..crate::ScheduleReport::default()
+        };
 
         for (idx, res, stats, elapsed_ms) in rx.into_iter() {
             report.strategies.push(crate::StrategyReport {
@@ -1008,6 +1023,7 @@ pub fn run_schedule(
                 SearchResult::Timeout => { /* lowest priority — keep existing best */ }
             }
         }
+        report.elapsed_ms = schedule_start.elapsed().as_millis() as u64;
         (best, report)
     })
 }
@@ -1179,5 +1195,41 @@ mod tests {
             matches!(result, SearchResult::Saturated | SearchResult::GaveUp),
             "expected Saturated or GaveUp, got {result:?}"
         );
+    }
+
+    #[test]
+    fn schedule_report_records_actual_worker_count() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            "ax1",
+        );
+        let schedule = StrategySchedule {
+            strategies: vec![(
+                SearchConfig {
+                    time_limit: Duration::from_millis(50),
+                    max_term_weight: None,
+                    use_avatar: false,
+                    ..SearchConfig::default()
+                },
+                Duration::from_millis(50),
+            )],
+        };
+        let (_result, report) = run_schedule(
+            &[c1],
+            &[],
+            id_gen,
+            &schedule,
+            &syms,
+            MlOptions::default(),
+            Some(1),
+        );
+        assert_eq!(report.workers, 1);
+        assert!(report.elapsed_ms <= 1_000);
+        assert_eq!(report.strategies.len(), 1);
     }
 }

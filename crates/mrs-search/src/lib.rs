@@ -73,6 +73,10 @@ pub struct SearchStats {
     pub backward_deleted: u64,
     /// Clauses discarded by the Limited Resource Strategy (LRS) passive pruning.
     pub lrs_discarded: u64,
+    /// Shared unit-equality chains published by this strategy.
+    pub shared_published: u64,
+    /// Shared unit-equality chains imported by this strategy.
+    pub shared_imported: u64,
 }
 
 /// Summary for one strategy in the portfolio run.
@@ -95,10 +99,72 @@ pub struct StrategyReport {
 /// never launched because a winner was found first are absent).
 #[derive(Clone, Debug, Default)]
 pub struct ScheduleReport {
+    /// Number of search workers actually spawned for the schedule.
+    pub workers: usize,
+    /// Wall-clock duration of the schedule run in milliseconds.
+    pub elapsed_ms: u64,
     pub strategies: Vec<StrategyReport>,
 }
 
 impl ScheduleReport {
+    /// Return stable machine-readable telemetry for one completed schedule.
+    pub fn telemetry_detail(&self, result: &str) -> String {
+        let total_processed: u64 = self.strategies.iter().map(|s| s.stats.processed).sum();
+        let total_generated: u64 = self.strategies.iter().map(|s| s.stats.generated).sum();
+        let total_passive: u64 = self.strategies.iter().map(|s| s.stats.passive_size).sum();
+        let total_weight_discarded: u64 = self
+            .strategies
+            .iter()
+            .map(|s| s.stats.weight_discarded)
+            .sum();
+        let total_lrs_discarded: u64 = self.strategies.iter().map(|s| s.stats.lrs_discarded).sum();
+        let total_forward_subsumed: u64 = self
+            .strategies
+            .iter()
+            .map(|s| s.stats.forward_subsumed)
+            .sum();
+        let total_shared_published: u64 = self
+            .strategies
+            .iter()
+            .map(|s| s.stats.shared_published)
+            .sum();
+        let total_shared_imported: u64 = self
+            .strategies
+            .iter()
+            .map(|s| s.stats.shared_imported)
+            .sum();
+        let timeout = self
+            .strategies
+            .iter()
+            .filter(|s| matches!(s.result, SearchResult::Timeout))
+            .count();
+        let saturated = self
+            .strategies
+            .iter()
+            .filter(|s| matches!(s.result, SearchResult::Saturated))
+            .count();
+
+        format!(
+            "strategies={} workers={} result={} elapsed_ms={} timeout={} saturated={} \
+             processed={} generated={} passive={} weight_discarded={} lrs_discarded={} \
+             fwd_subsumed={} shared_published={} shared_imported={}",
+            self.strategies.len(),
+            self.workers,
+            result,
+            self.elapsed_ms,
+            timeout,
+            saturated,
+            total_processed,
+            total_generated,
+            total_passive,
+            total_weight_discarded,
+            total_lrs_discarded,
+            total_forward_subsumed,
+            total_shared_published,
+            total_shared_imported,
+        )
+    }
+
     /// Human-readable one-line summary of the failure mode seen across all
     /// strategies.  Returns `None` when the search succeeded (Refutation).
     ///

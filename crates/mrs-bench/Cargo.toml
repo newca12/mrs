@@ -44,3 +44,7 @@ path = "src/bin/audit_proover.rs"
 [[bin]]
 name = "release_gate"
 path = "src/bin/release_gate.rs"
+
+[[bin]]
+name = "repeat_search"
+path = "src/bin/repeat_search.rs"

@@ -97,32 +97,49 @@ fn ready_shared_chains(
     ready
 }
 
-fn publish_shared_chain(state: &SearchState, given: &IdClause, iteration: u64, interval: u64) {
+fn publish_shared_chain(
+    state: &SearchState,
+    given: &IdClause,
+    iteration: u64,
+    interval: u64,
+) -> bool {
     if interval == 0 || !is_unit_positive_equality_id(given) || !given.avatar.is_empty() {
-        return;
+        return false;
     }
     let Some(pool_lock) = &state.shared_pool else {
-        return;
+        return false;
     };
     let Ok(mut pool) = pool_lock.write() else {
-        return;
+        return false;
     };
     if pool.len() >= SHARED_POOL_CAP {
-        return;
+        return false;
     }
     let chain = build_shared_chain(state, given.id);
     if chain.is_empty() {
-        return;
+        return false;
     }
     let key = shared_chain_key(&chain, &state.symbols);
     if pool.iter().any(|entry| entry.key == key) {
-        return;
+        return false;
     }
     pool.push(SharedClauseChain {
         epoch: iteration / interval,
         key,
         chain,
     });
+    true
+}
+
+fn publish_shared_chain_counted(
+    state: &mut SearchState,
+    given: &IdClause,
+    iteration: u64,
+    interval: u64,
+) {
+    if publish_shared_chain(state, given, iteration, interval) {
+        state.stats.shared_published += 1;
+    }
 }
 
 /// After the SAT model changes, move clauses between active and dormant sets to
@@ -827,6 +844,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
             }
             for entry in to_add {
                 state.shared_pool_seen.insert(entry.key.clone());
+                state.stats.shared_imported += 1;
                 let chain = entry.chain;
                 // Remap every clause ID in the chain to a fresh local ID,
                 // and rewrite `Inference` parent references accordingly,
@@ -1276,7 +1294,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
         state.processed.insert(given.clone(), &state.term_bank);
         state.stats.processed += 1;
 
-        publish_shared_chain(state, &given, iteration, config.shared_pool_poll_interval);
+        publish_shared_chain_counted(state, &given, iteration, config.shared_pool_poll_interval);
 
         if is_unit_positive_equality_id(&given)
             && let IdAtom::Eq(l, r) = &given.literals[0].atom
@@ -1425,7 +1443,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 for clause in next_processed {
                     state.processed.insert(clause.clone(), &state.term_bank);
 
-                    publish_shared_chain(
+                    publish_shared_chain_counted(
                         state,
                         &clause,
                         iteration,
@@ -1787,8 +1805,10 @@ fn is_trivial_contradiction_id(clause: &IdClause) -> bool {
 mod tests {
     use super::*;
     use crate::TermOrdering;
+    use mrs_calculus::ordering::SymbolConfig;
     use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource};
     use mrs_core::{Atom, Literal, SymbolTable, Term};
+    use std::sync::Arc;
 
     #[test]
     fn fixed_lrs_target_is_independent_of_elapsed_time() {
@@ -1846,6 +1866,50 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["a", "b"]
         );
+    }
+
+    #[test]
+    fn search_imports_shared_chain_at_poll_epoch() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let q = symbols.intern("q");
+        let a = symbols.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+        let initial = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            "initial",
+            "axiom",
+        );
+        let shared = Clause::new(
+            id_gen.next(),
+            vec![Literal::pos(Atom::pred(q, vec![Term::constant(a)]))],
+            ClauseSource::Input {
+                name: "shared".into(),
+                role: "axiom".into(),
+            },
+        );
+        let mut state = SearchState::new(
+            vec![initial],
+            id_gen,
+            Arc::new(SymbolConfig::default()),
+            Arc::new(symbols),
+            false,
+        );
+        state.shared_pool = Some(Arc::new(std::sync::RwLock::new(vec![SharedClauseChain {
+            epoch: 0,
+            key: "shared-chain".into(),
+            chain: vec![shared],
+        }])));
+        let config = SearchConfig {
+            time_limit: Duration::from_millis(50),
+            max_term_weight: None,
+            use_avatar: false,
+            shared_pool_poll_interval: 1,
+            ..SearchConfig::default()
+        };
+        let _ = search(&mut state, &config);
+        assert_eq!(state.stats.shared_imported, 1);
     }
 
     fn input_clause(

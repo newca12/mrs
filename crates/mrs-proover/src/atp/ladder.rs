@@ -116,4 +116,78 @@ impl Atp for LadderAtp {
             resolved
         })
     }
+
+    fn search_reports(&self) -> Vec<mrs_search::ScheduleReport> {
+        self.backends
+            .iter()
+            .flat_map(|backend| backend.search_reports())
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    struct ReportingBackend {
+        reports: Mutex<Vec<mrs_search::ScheduleReport>>,
+    }
+
+    impl ReportingBackend {
+        fn new(worker_counts: &[usize]) -> Self {
+            Self {
+                reports: Mutex::new(
+                    worker_counts
+                        .iter()
+                        .map(|&workers| mrs_search::ScheduleReport {
+                            workers,
+                            ..mrs_search::ScheduleReport::default()
+                        })
+                        .collect(),
+                ),
+            }
+        }
+    }
+
+    impl Atp for ReportingBackend {
+        fn name(&self) -> &'static str {
+            "reporting"
+        }
+
+        fn check_step(
+            &self,
+            _symbols: &SymbolTable,
+            _premises: &[Formula],
+            _conclusion: &Formula,
+            _budget: Duration,
+            _cancel: &std::sync::atomic::AtomicBool,
+        ) -> AtpVerdict {
+            AtpVerdict::Unknown
+        }
+
+        fn search_reports(&self) -> Vec<mrs_search::ScheduleReport> {
+            self.reports
+                .lock()
+                .map(|mut reports| std::mem::take(&mut *reports))
+                .unwrap_or_default()
+        }
+    }
+
+    #[test]
+    fn search_reports_aggregates_and_drains_backends() {
+        let ladder = LadderAtp::new()
+            .push(Box::new(ReportingBackend::new(&[1, 1])))
+            .push(Box::new(ReportingBackend::new(&[2])));
+
+        let reports = ladder.search_reports();
+        assert_eq!(
+            reports
+                .iter()
+                .map(|report| report.workers)
+                .collect::<Vec<_>>(),
+            vec![1, 1, 2]
+        );
+        assert!(ladder.search_reports().is_empty());
+    }
 }
