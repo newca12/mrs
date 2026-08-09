@@ -179,6 +179,8 @@ pub struct MrsAtp {
     pub use_proover_mode: bool,
 }
 
+const INNER_SEARCH_WORKERS: usize = 1;
+
 impl MrsAtp {
     /// Construct an `MrsAtp` (binary path is ignored now that it is in-process).
     pub fn new() -> Self {
@@ -272,7 +274,10 @@ impl Atp for MrsAtp {
             ],
         };
 
-        // 4. Run schedule in memory
+        // 4. Run the in-process schedule with one search worker. The verifier
+        // already parallelizes independent proof steps at the outer level;
+        // nesting the full physical-core portfolio inside every step causes
+        // severe CPU oversubscription and timing variance.
         let (result, _report) = mrs_search::strategy::run_schedule(
             &all_clauses,
             &[],
@@ -280,7 +285,7 @@ impl Atp for MrsAtp {
             &schedule,
             &local_symbols,
             mrs_search::strategy::MlOptions::default(),
-            None,
+            Some(INNER_SEARCH_WORKERS),
         );
 
         match result {
@@ -597,6 +602,11 @@ mod tests {
     #[test]
     fn parse_unknown_when_nothing() {
         assert_eq!(parse_szs(""), AtpVerdict::Unknown);
+    }
+
+    #[test]
+    fn mrs_atp_uses_single_inner_search_worker() {
+        assert_eq!(INNER_SEARCH_WORKERS, 1);
     }
 
     #[cfg(unix)]
