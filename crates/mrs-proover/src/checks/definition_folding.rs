@@ -424,13 +424,17 @@ fn match_permutations(
     false
 }
 
-pub(crate) fn canon_eq_free(a: &Formula, b: &Formula, symbols: Option<&SymbolTable>) -> bool {
+pub(crate) fn canon_eq_free(a: &Formula, b: &Formula, _symbols: Option<&SymbolTable>) -> bool {
+    // FOF free variables are implicitly universal, while CNF lowering makes
+    // that prefix explicit. Ignore only leading universal binders so those
+    // representations can still match. Existential binders are semantic and
+    // must remain visible to the comparison.
     let mut a_body = a;
-    while let Formula::Forall(_, inner) | Formula::Exists(_, inner) = a_body {
+    while let Formula::Forall(_, inner) = a_body {
         a_body = inner;
     }
     let mut b_body = b;
-    while let Formula::Forall(_, inner) | Formula::Exists(_, inner) = b_body {
+    while let Formula::Forall(_, inner) = b_body {
         b_body = inner;
     }
 
@@ -443,40 +447,24 @@ pub(crate) fn canon_eq_free(a: &Formula, b: &Formula, symbols: Option<&SymbolTab
         return false;
     }
 
-    let cb = canon_form(b_body, &mut Vec::new(), symbols);
+    let cb = canon_form(b_body, &mut Vec::new(), None);
 
     let mut used = vec![false; b_vars.len()];
     let mut map = HashMap::new();
-    match_permutations(
-        0, &a_vars, &b_vars, &mut used, &mut map, a_body, &cb, symbols,
-    )
+    match_permutations(0, &a_vars, &b_vars, &mut used, &mut map, a_body, &cb, None)
 }
 
 /// `scope` is the stack of bound variables (innermost last); a `Var(v)`
 /// resolves to `Bound(index)` using the nearest enclosing binder of `v`,
 /// else `Free(v)`.
-fn canon_term(t: &Term, scope: &[VarId], symbols: Option<&SymbolTable>) -> CTerm {
+fn canon_term(t: &Term, scope: &[VarId], _symbols: Option<&SymbolTable>) -> CTerm {
     match t {
         Term::Var(v) => match scope.iter().rposition(|s| s == v) {
             Some(pos) => CTerm::Bound((scope.len() - 1 - pos) as u32),
             None => CTerm::Free(*v),
         },
         Term::App(f, args) => {
-            let mut c_args: Vec<CTerm> =
-                args.iter().map(|a| canon_term(a, scope, symbols)).collect();
-            if let Some(symbols) = symbols {
-                let name = symbols.resolve(*f);
-                if name == "greatest_lower_bound"
-                    || name == "least_upper_bound"
-                    || name == "meet"
-                    || name == "join"
-                    || name == "+"
-                    || name == "times"
-                    || name == "*"
-                {
-                    c_args.sort();
-                }
-            }
+            let c_args = args.iter().map(|a| canon_term(a, scope, None)).collect();
             CTerm::App(*f, c_args)
         }
     }
@@ -1005,6 +993,15 @@ fn sub_term(t: &Term, map: &HashMap<VarId, Term>) -> Term {
 mod tests {
     use super::*;
     use mrs_core::{Atom, Formula, SymbolTable, Term};
+
+    #[test]
+    fn canon_eq_free_preserves_quantifier_kind() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let forall = Formula::forall(0, Formula::atom(Atom::Pred(p, vec![Term::var(0)])));
+        let exists = Formula::exists(0, Formula::atom(Atom::Pred(p, vec![Term::var(0)])));
+        assert!(!canon_eq_free(&forall, &exists, Some(&symbols)));
+    }
 
     #[test]
     fn rejects_when_no_sources() {

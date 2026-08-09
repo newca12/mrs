@@ -42,6 +42,14 @@ external ATPs, specialized Vampire/E checks, and conservative modulo-assumption
 behavior to maximize ProoVer score. These facilities are not part of the strict
 self-verification claim.
 
+Explicit AVATAR certificates are checked structurally in competition mode before
+the ATP fallback: split metadata must cover the source clause, each component
+must match its declared branch and SAT context, each branch refutation must
+derive `$false` under a cited component context, and the final roll-up must
+cover every satisfiable assignment of the cited split constraints. Legacy
+`avatar_sat_refutation` nodes without explicit metadata remain ATP-fallback
+inputs and are not treated as self-contained certificates.
+
 ### Diagnostic mode
 
 Diagnostic runs may use the in-process `MrsAtp` backend and external ATPs for

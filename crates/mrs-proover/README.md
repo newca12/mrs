@@ -117,7 +117,7 @@ entirely, then compared against the default full ladder (`eprover` + `vampire`
 
 | Corpus | `--only-mrs` | Full ladder |
 |---|---|---|
-| Built-in `proover-corpus` (25 problems, 46 E/Vampire proofs) | 43 VerifiedGood / 3 Unknown / **0 VerifiedBad** | identical: 43/3/0 |
+| Built-in `proover-corpus` (25 problems, 46 E/Vampire proofs) | 45 VerifiedGood / 1 Unknown / **0 VerifiedBad** | after conservative AVATAR certificate checks; legacy AVATAR steps may remain Unknown |
 | ATP-Research-Project `correct` (3) | 3/3 VerifiedGood | 3/3 VerifiedGood |
 | ATP-Research-Project `incorrect` (4 "evil") | 3/4 correctly `VerifiedBad`, 1 (`EVL002+1`) degrades to `Unknown` | 4/4 `VerifiedBad` |
 | ATP-Research-Project `samples` (3) | `COR000+1` VerifiedGood, `EVL000+1` VerifiedBad, `TMO000+1` degrades to `Unknown` | all 3 match expectations |

@@ -112,17 +112,16 @@ unknown/timeouts, and parse failures.
 - Never touches the network, so its result is **stable across runs and
   machines**. This is what CI / pre-commit should run.
 
-Representative output (after the fixes in §4):
+Representative output for the current branch (after the AVATAR and leaf-check fixes in §4):
 
 ```
-[corpus]   VerifiedGood      :  43
-[corpus]   Unknown   :   3
+[corpus]   VerifiedGood      :  45
+[corpus]   Unknown   :   1
 [corpus]   VerifiedBad:   0  (must be 0)
 [corpus] PASS: no known-valid proof was VerifiedBad.
 ```
 
-The 3 remaining `Unknown` are E proofs of PEL-style problems (`SYN051+1`,
-`SYN056+1`, `SYN057+1`) where E folds Skolemisation into a `thm`-labelled
+The remaining `Unknown` is an E proof of a PEL-style problem (`SYN051+1`) where E folds Skolemisation into a `thm`-labelled
 `fof_nnf` step, e.g. `inference(fof_nnf,[status(thm)],[inference(skolemize,
 [status(esa)],[...])])`. This is **not a time-budget issue** — confirmed by
 re-running with `--time 60` (6x the default) with an identical result, and by
@@ -140,14 +139,13 @@ verifier — widening that dispatch to catch nested `esa` steps like this one
 was tried and reverted (see the `fix-e-style-skolemize` merge commit) because
 it also hijacked unrelated `esa`-status steps away from their ATP/structural
 fast-paths, regressing this same corpus from 42 to 33 `VerifiedGood`. So today
-these 3 cases cost 0 points with `mrs`, real `eprover`, and real `vampire`
-alike (all three are in the default ladder here and none discharges them);
+this case costs 0 points with `mrs`, real `eprover`, and real `vampire`
+alike (it is in the default ladder here and none discharges it);
 closing them safely would need a smarter structural match for this specific
 nested-`fof_nnf`-wrapping-`skolemize` shape, not a bigger ATP or more time.
-Crucially, the underlying *theorems* are fine: the corpus also has Vampire's
-own proofs of the identical three problems (`SYN051+1__Vampire`,
-`SYN056+1__Vampire`, `SYN057+1__Vampire`), and `mrs-proover` reports
-`VerifiedGood` on all three — Vampire's proof-step shape doesn't fold Skolemize
+Crucially, the underlying *theorem* is fine: the corpus also has Vampire's
+own proof of the identical problem (`SYN051+1__Vampire`), and `mrs-proover`
+reports `VerifiedGood` on it — Vampire's proof-step shape doesn't fold Skolemize
 into an outer `thm` step, so it hits the fast paths cleanly. The gap is in
 *which proof object* was submitted, not in whether the *problem* is provable
 or in `mrs-proover`'s soundness. (A 4th, related case, where E's `skolemize`

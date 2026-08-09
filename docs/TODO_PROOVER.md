@@ -45,7 +45,7 @@ The scoring is highly asymmetric. A single `−10` requires 10 correct `+1` veri
 | Batch ATP queries: in-process `mrs_search` replaces per-step subprocess | `c53c0ad6` |
 | Deterministic offline E+Vampire regression corpus (46 proofs, 0 `VerifiedBad`) | `8f275b16` |
 | `test_tptp_solutions.sh` restricted to E/Vampire allowlist (no format noise) | `8f275b16` |
-| AC-equivalence matching in `axiom_leaf.rs` | `202aae96` |
+| AC-equivalence matching in `axiom_leaf.rs` (explicit axioms; quantifier-safe) | `202aae96` + branch fixes |
 | In-process MrsAtp saturation fallback | `bbd640cf` |
 | `match_multiset` bijective (not subset) skolemize matching + CNF normalisation for E's multi-existential/re-shaped conjuncts (42→43 on `proover-corpus`, 0 regressions) | `98c2573` |
 
@@ -141,7 +141,7 @@ does) would close it.
 | Metis `ColonPair` parent extraction | Medium | ✅ Done (`8f8b3d50`) |
 | Anonymous leaves from clausifying provers → `Unknown` | Medium | ✅ Done (`8f8b3d50`) |
 | Deterministic offline regression corpus | Medium | ✅ Done (`8f275b16`) |
-| AC-equivalence matching in `axiom_leaf.rs` | High | ✅ Done (`202aae96`) |
+| AC-equivalence matching in `axiom_leaf.rs` | High | ✅ Done conservatively (`202aae96` + branch fixes) |
 | In-process MrsAtp saturation fallback (`Unknown` vs `Unsound`) | High | ✅ Done (`bbd640cf`) |
 | Basic E/Vampire structural parsing for CASC dataset hardening | Low–Medium | ✅ Done |
 | Benchmark against Nörgler | After fixes | ✅ Done (full Zenodo 19792604 head-to-head; see §6) |

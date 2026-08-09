@@ -36,7 +36,7 @@ This document tracks what remains to be built in `mrs` (the prover) to maximise 
 ### Implemented: AVATAR proof self-containedness and incomplete splitting citations
 
 - **Resolved**: `extract_proof` and `extract_proof_ids` BFS traversal now follows `ClauseCertificate` dependencies (`split_nodes`, `branch_roots`, `split_parent`) alongside `ClauseSource::Inference.parents`.
-- **Proof format & Verification**: The proof exporter outputs the full AVATAR TSTP annotation chain (`avatar_split_clause`, `avatar_component_clause`, `avatar_branch_refutation`, `avatar_sat_refutation`), ensuring step-by-step self-containedness. Both `mrs-proof-kernel` and `mrs-proover` verify AVATAR-heavy proofs.
+- **Proof format & Verification**: The proof exporter outputs the full AVATAR TSTP annotation chain (`avatar_split_clause`, `avatar_component_clause`, `avatar_branch_refutation`, `avatar_sat_refutation`). The independent kernel and competition verifier validate the explicit split/component/branch structure; strict SAT-trace replay remains limited to the bounded certificate shape documented in `docs/VERIFIER_SPEC.md`. Legacy CWA roll-ups without explicit metadata are handled conservatively and are not described as fully self-contained.
 
 ### Follow-up: audit `fvo.rs` with the same rigor as the CWA polarity fix
 

@@ -13,8 +13,8 @@
 //! the leaf still has to be α-equivalent to *some* declared axiom of the
 //! problem, which is exactly the same standard as the named-axiom check.
 
-use mrs_core::SymbolTable;
 use mrs_core::alpha::alpha_equiv;
+use mrs_core::{SymbolId, SymbolTable};
 use mrs_tptp::{AnnotatedFormula, FormulaRole, TPTPProblem};
 
 use crate::lower::{LowerCtx, lower_annotated_formula};
@@ -58,6 +58,7 @@ pub fn check_leaf<'p>(
     let Some(proof_f) = lower_annotated_formula(&mut ctx, node) else {
         return StepOutcome::Unknown("unsupported proof leaf formula type".into());
     };
+    let algebraic_symbols = explicit_algebraic_symbols(problem, ctx.symbols);
 
     // --- Anonymous-provenance fallback (Vampire's `file(_, unknown)`) -----
     if expected_name == "unknown" {
@@ -80,6 +81,7 @@ pub fn check_leaf<'p>(
                     &prob_f,
                     Some(ctx.symbols),
                 )
+                || ac_alpha_equiv(&proof_f, &prob_f, &algebraic_symbols)
             {
                 return StepOutcome::Sound;
             }
@@ -93,7 +95,8 @@ pub fn check_leaf<'p>(
                     &proof_f,
                     &c_form,
                     Some(ctx.symbols),
-                ) {
+                ) || ac_alpha_equiv(&proof_f, &c_form, &algebraic_symbols)
+                {
                     return StepOutcome::Sound;
                 }
             }
@@ -166,6 +169,7 @@ pub fn check_leaf<'p>(
                     &prob_f,
                     Some(ctx.symbols),
                 )
+                || ac_alpha_equiv(&proof_f, &prob_f, &algebraic_symbols)
             {
                 return StepOutcome::Sound;
             }
@@ -195,7 +199,7 @@ pub fn check_leaf<'p>(
             std::slice::from_ref(&prob_f),
             &proof_f,
         ) == Some(crate::checks::propositional_sat::PropOutcome::Sound)
-        || ac_alpha_equiv(&proof_f, &prob_f, Some(ctx.symbols))
+        || ac_alpha_equiv(&proof_f, &prob_f, &algebraic_symbols)
     {
         StepOutcome::Sound
     } else {
@@ -207,33 +211,129 @@ pub fn check_leaf<'p>(
     }
 }
 
-fn is_ac_symbol(sym: mrs_core::SymbolId, symbols: Option<&SymbolTable>) -> bool {
-    let Some(symbols) = symbols else { return false };
-    let name = symbols.resolve(sym);
-    matches!(
-        name,
-        "greatest_lower_bound"
-            | "least_upper_bound"
-            | "meet"
-            | "join"
-            | "multiply"
-            | "product"
-            | "+"
-            | "*"
-            | "|"
-            | "&"
-    )
+#[derive(Default)]
+struct AlgebraicSymbols {
+    commutative: std::collections::HashSet<SymbolId>,
+    associative: std::collections::HashSet<SymbolId>,
+}
+
+impl AlgebraicSymbols {
+    fn is_commutative(&self, symbol: SymbolId) -> bool {
+        self.commutative.contains(&symbol)
+    }
+
+    fn is_ac(&self, symbol: SymbolId) -> bool {
+        self.commutative.contains(&symbol) && self.associative.contains(&symbol)
+    }
+}
+
+fn explicit_algebraic_symbols(
+    problem: &TPTPProblem<'_>,
+    symbols: &mut SymbolTable,
+) -> AlgebraicSymbols {
+    let mut algebraic = AlgebraicSymbols::default();
+    let mut ctx = LowerCtx::new(symbols);
+    for annotated in &problem.formulas {
+        let role = annotated.role();
+        if !matches!(
+            role,
+            FormulaRole::Axiom | FormulaRole::Hypothesis | FormulaRole::Definition
+        ) {
+            continue;
+        }
+        ctx.reset_vars();
+        if let Some(formula) = lower_annotated_formula(&mut ctx, annotated) {
+            collect_algebraic_axiom(&formula, &mut algebraic);
+        }
+    }
+    algebraic
+}
+
+fn collect_algebraic_axiom(formula: &mrs_core::Formula, symbols: &mut AlgebraicSymbols) {
+    let mut body = formula;
+    while let mrs_core::Formula::Forall(_, inner) = body {
+        body = inner;
+    }
+    let mrs_core::Formula::Atom(mrs_core::Atom::Eq(left, right)) = body else {
+        return;
+    };
+    let (
+        mrs_core::Term::App(left_symbol, left_args),
+        mrs_core::Term::App(right_symbol, right_args),
+    ) = (left, right)
+    else {
+        return;
+    };
+    if left_symbol != right_symbol || left_args.len() != 2 || right_args.len() != 2 {
+        return;
+    }
+    if matches!(
+        (&left_args[0], &left_args[1], &right_args[0], &right_args[1]),
+        (
+            mrs_core::Term::Var(x),
+            mrs_core::Term::Var(y),
+            mrs_core::Term::Var(y2),
+            mrs_core::Term::Var(x2),
+        ) if x != y && x == x2 && y == y2
+    ) {
+        symbols.commutative.insert(*left_symbol);
+    }
+
+    fn variable(term: &mrs_core::Term) -> Option<u32> {
+        match term {
+            mrs_core::Term::Var(variable) => Some(*variable),
+            _ => None,
+        }
+    }
+
+    fn binary_variable_pair(term: &mrs_core::Term, symbol: SymbolId) -> Option<(u32, u32)> {
+        let mrs_core::Term::App(function, args) = term else {
+            return None;
+        };
+        if *function != symbol || args.len() != 2 {
+            return None;
+        }
+        Some((variable(&args[0])?, variable(&args[1])?))
+    }
+
+    let forward = match (
+        binary_variable_pair(&left_args[0], *left_symbol),
+        variable(&left_args[1]),
+        variable(&right_args[0]),
+        binary_variable_pair(&right_args[1], *left_symbol),
+    ) {
+        (Some((x, y)), Some(z), Some(x2), Some((y2, z2))) => {
+            x == x2 && y == y2 && z == z2 && x != y && y != z && x != z
+        }
+        _ => false,
+    };
+    let reverse = match (
+        variable(&left_args[0]),
+        binary_variable_pair(&left_args[1], *left_symbol),
+        binary_variable_pair(&right_args[0], *left_symbol),
+        variable(&right_args[1]),
+    ) {
+        (Some(x), Some((y, z)), Some((x2, y2)), Some(z2)) => {
+            x == x2 && y == y2 && z == z2 && x != y && y != z && x != z
+        }
+        _ => false,
+    };
+    let associative = forward || reverse;
+    if associative {
+        symbols.associative.insert(*left_symbol);
+    }
 }
 
 fn collect_ac_leaves<'a>(
     t: &'a mrs_core::Term,
     ac_sym: mrs_core::SymbolId,
-    symbols: Option<&SymbolTable>,
+    symbols: &AlgebraicSymbols,
     out: &mut Vec<&'a mrs_core::Term>,
 ) {
     if let mrs_core::Term::App(f, args) = t
         && *f == ac_sym
-        && is_ac_symbol(*f, symbols)
+        && symbols.is_ac(*f)
+        && args.len() == 2
     {
         for arg in args {
             collect_ac_leaves(arg, ac_sym, symbols, out);
@@ -243,28 +343,161 @@ fn collect_ac_leaves<'a>(
     }
 }
 
-fn ac_term_equiv(t1: &mrs_core::Term, t2: &mrs_core::Term, symbols: Option<&SymbolTable>) -> bool {
-    match (t1, t2) {
-        (mrs_core::Term::Var(v1), mrs_core::Term::Var(v2)) => v1 == v2,
-        (mrs_core::Term::App(f1, args1), mrs_core::Term::App(f2, args2)) => {
-            if f1 != f2 {
-                return false;
+fn ac_alpha_equiv(
+    f1: &mrs_core::Formula,
+    f2: &mrs_core::Formula,
+    symbols: &AlgebraicSymbols,
+) -> bool {
+    use std::collections::HashMap;
+
+    fn term_eq(
+        t1: &mrs_core::Term,
+        t2: &mrs_core::Term,
+        left: &HashMap<mrs_core::VarId, u32>,
+        right: &HashMap<mrs_core::VarId, u32>,
+        symbols: &AlgebraicSymbols,
+    ) -> bool {
+        match (t1, t2) {
+            (mrs_core::Term::Var(v1), mrs_core::Term::Var(v2)) => {
+                match (left.get(v1), right.get(v2)) {
+                    (Some(d1), Some(d2)) => d1 == d2,
+                    (None, None) => v1 == v2,
+                    _ => false,
+                }
             }
-            if is_ac_symbol(*f1, symbols) {
-                // Known AC symbol: flatten and match as multisets (associative + commutative)
-                let mut leaves1 = Vec::new();
-                let mut leaves2 = Vec::new();
-                collect_ac_leaves(t1, *f1, symbols, &mut leaves1);
-                collect_ac_leaves(t2, *f2, symbols, &mut leaves2);
-                if leaves1.len() != leaves2.len() {
+            (mrs_core::Term::App(f1, args1), mrs_core::Term::App(f2, args2)) => {
+                if f1 != f2 {
                     return false;
                 }
-                let mut used = vec![false; leaves2.len()];
-                for l1 in leaves1 {
+                if symbols.is_ac(*f1) && args1.len() == 2 && args2.len() == 2 {
+                    let mut leaves1 = Vec::new();
+                    let mut leaves2 = Vec::new();
+                    collect_ac_leaves(t1, *f1, symbols, &mut leaves1);
+                    collect_ac_leaves(t2, *f2, symbols, &mut leaves2);
+                    if leaves1.len() != leaves2.len() {
+                        return false;
+                    }
+                    match_terms(&leaves1, &leaves2, left, right, symbols)
+                } else if symbols.is_commutative(*f1) && args1.len() == 2 && args2.len() == 2 {
+                    (term_eq(&args1[0], &args2[0], left, right, symbols)
+                        && term_eq(&args1[1], &args2[1], left, right, symbols))
+                        || (term_eq(&args1[0], &args2[1], left, right, symbols)
+                            && term_eq(&args1[1], &args2[0], left, right, symbols))
+                } else {
+                    args1.len() == args2.len()
+                        && args1
+                            .iter()
+                            .zip(args2)
+                            .all(|(a1, a2)| term_eq(a1, a2, left, right, symbols))
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn match_terms(
+        left_terms: &[&mrs_core::Term],
+        right_terms: &[&mrs_core::Term],
+        left: &HashMap<mrs_core::VarId, u32>,
+        right: &HashMap<mrs_core::VarId, u32>,
+        symbols: &AlgebraicSymbols,
+    ) -> bool {
+        fn visit(
+            index: usize,
+            left_terms: &[&mrs_core::Term],
+            right_terms: &[&mrs_core::Term],
+            used: &mut [bool],
+            left: &HashMap<mrs_core::VarId, u32>,
+            right: &HashMap<mrs_core::VarId, u32>,
+            symbols: &AlgebraicSymbols,
+        ) -> bool {
+            if index == left_terms.len() {
+                return true;
+            }
+            for (j, right_term) in right_terms.iter().enumerate() {
+                if used[j] {
+                    continue;
+                }
+                used[j] = true;
+                if term_eq(left_terms[index], right_term, left, right, symbols)
+                    && visit(
+                        index + 1,
+                        left_terms,
+                        right_terms,
+                        used,
+                        left,
+                        right,
+                        symbols,
+                    )
+                {
+                    return true;
+                }
+                used[j] = false;
+            }
+            false
+        }
+
+        let mut used = vec![false; right_terms.len()];
+        visit(0, left_terms, right_terms, &mut used, left, right, symbols)
+    }
+
+    fn formula_eq(
+        f1: &mrs_core::Formula,
+        f2: &mrs_core::Formula,
+        left: &mut HashMap<mrs_core::VarId, u32>,
+        right: &mut HashMap<mrs_core::VarId, u32>,
+        depth: &mut u32,
+        symbols: &AlgebraicSymbols,
+    ) -> bool {
+        match (f1, f2) {
+            (mrs_core::Formula::True, mrs_core::Formula::True)
+            | (mrs_core::Formula::False, mrs_core::Formula::False) => true,
+            (mrs_core::Formula::Neg(n1), mrs_core::Formula::Neg(n2)) => {
+                formula_eq(n1, n2, left, right, depth, symbols)
+            }
+            (mrs_core::Formula::Atom(a1), mrs_core::Formula::Atom(a2)) => match (a1, a2) {
+                (mrs_core::Atom::Pred(p1, args1), mrs_core::Atom::Pred(p2, args2)) => {
+                    p1 == p2
+                        && args1.len() == args2.len()
+                        && args1
+                            .iter()
+                            .zip(args2)
+                            .all(|(t1, t2)| term_eq(t1, t2, left, right, symbols))
+                }
+                (mrs_core::Atom::Eq(l1, r1), mrs_core::Atom::Eq(l2, r2)) => {
+                    (term_eq(l1, l2, left, right, symbols) && term_eq(r1, r2, left, right, symbols))
+                        || (term_eq(l1, r2, left, right, symbols)
+                            && term_eq(r1, l2, left, right, symbols))
+                }
+                _ => false,
+            },
+            (mrs_core::Formula::And(cs1), mrs_core::Formula::And(cs2))
+            | (mrs_core::Formula::Or(cs1), mrs_core::Formula::Or(cs2)) => {
+                if cs1.len() != cs2.len() {
+                    return false;
+                }
+                let mut used = vec![false; cs2.len()];
+                for c1 in cs1 {
                     let mut matched = false;
-                    for (j, l2) in leaves2.iter().enumerate() {
-                        if !used[j] && ac_term_equiv(l1, l2, symbols) {
+                    for (j, c2) in cs2.iter().enumerate() {
+                        if used[j] {
+                            continue;
+                        }
+                        let mut left_snapshot = left.clone();
+                        let mut right_snapshot = right.clone();
+                        let mut depth_snapshot = *depth;
+                        if formula_eq(
+                            c1,
+                            c2,
+                            &mut left_snapshot,
+                            &mut right_snapshot,
+                            &mut depth_snapshot,
+                            symbols,
+                        ) {
                             used[j] = true;
+                            *left = left_snapshot;
+                            *right = right_snapshot;
+                            *depth = depth_snapshot;
                             matched = true;
                             break;
                         }
@@ -274,80 +507,73 @@ fn ac_term_equiv(t1: &mrs_core::Term, t2: &mrs_core::Term, symbols: Option<&Symb
                     }
                 }
                 true
-            } else if args1.len() == 2 && args2.len() == 2 {
-                // For binary functions, try both argument orderings (commutative)
-                (ac_term_equiv(&args1[0], &args2[0], symbols)
-                    && ac_term_equiv(&args1[1], &args2[1], symbols))
-                    || (ac_term_equiv(&args1[0], &args2[1], symbols)
-                        && ac_term_equiv(&args1[1], &args2[0], symbols))
-            } else {
-                args1.len() == args2.len()
-                    && args1
-                        .iter()
-                        .zip(args2.iter())
-                        .all(|(a1, a2)| ac_term_equiv(a1, a2, symbols))
             }
-        }
-        _ => false,
-    }
-}
-
-fn ac_alpha_equiv(
-    f1: &mrs_core::Formula,
-    f2: &mrs_core::Formula,
-    symbols: Option<&SymbolTable>,
-) -> bool {
-    let mut b1 = f1;
-    while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = b1 {
-        b1 = inner;
-    }
-    let mut b2 = f2;
-    while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = b2 {
-        b2 = inner;
-    }
-
-    match (b1, b2) {
-        (mrs_core::Formula::True, mrs_core::Formula::True) => true,
-        (mrs_core::Formula::False, mrs_core::Formula::False) => true,
-        (mrs_core::Formula::Neg(n1), mrs_core::Formula::Neg(n2)) => ac_alpha_equiv(n1, n2, symbols),
-        (mrs_core::Formula::Atom(a1), mrs_core::Formula::Atom(a2)) => match (a1, a2) {
-            (mrs_core::Atom::Pred(p1, args1), mrs_core::Atom::Pred(p2, args2)) => {
-                p1 == p2
-                    && args1.len() == args2.len()
-                    && args1
-                        .iter()
-                        .zip(args2.iter())
-                        .all(|(t1, t2)| ac_term_equiv(t1, t2, symbols))
+            (mrs_core::Formula::Implies(a1, b1), mrs_core::Formula::Implies(a2, b2)) => {
+                formula_eq(a1, a2, left, right, depth, symbols)
+                    && formula_eq(b1, b2, left, right, depth, symbols)
             }
-            (mrs_core::Atom::Eq(l1, r1), mrs_core::Atom::Eq(l2, r2)) => {
-                (ac_term_equiv(l1, l2, symbols) && ac_term_equiv(r1, r2, symbols))
-                    || (ac_term_equiv(l1, r2, symbols) && ac_term_equiv(r1, l2, symbols))
+            (mrs_core::Formula::Iff(a1, b1), mrs_core::Formula::Iff(a2, b2)) => {
+                let mut left_snapshot = left.clone();
+                let mut right_snapshot = right.clone();
+                let mut depth_snapshot = *depth;
+                if formula_eq(
+                    a1,
+                    a2,
+                    &mut left_snapshot,
+                    &mut right_snapshot,
+                    &mut depth_snapshot,
+                    symbols,
+                ) && formula_eq(
+                    b1,
+                    b2,
+                    &mut left_snapshot,
+                    &mut right_snapshot,
+                    &mut depth_snapshot,
+                    symbols,
+                ) {
+                    *left = left_snapshot;
+                    *right = right_snapshot;
+                    *depth = depth_snapshot;
+                    true
+                } else {
+                    formula_eq(a1, b2, left, right, depth, symbols)
+                        && formula_eq(b1, a2, left, right, depth, symbols)
+                }
             }
-            _ => false,
-        },
-        (mrs_core::Formula::Or(cs1), mrs_core::Formula::Or(cs2))
-        | (mrs_core::Formula::And(cs1), mrs_core::Formula::And(cs2)) => {
-            if cs1.len() != cs2.len() {
-                return false;
-            }
-            let mut used = vec![false; cs2.len()];
-            for c1 in cs1 {
-                let mut matched = false;
-                for (j, c2) in cs2.iter().enumerate() {
-                    if !used[j] && ac_alpha_equiv(c1, c2, symbols) {
-                        used[j] = true;
-                        matched = true;
-                        break;
+            (mrs_core::Formula::Forall(v1, b1), mrs_core::Formula::Forall(v2, b2))
+            | (mrs_core::Formula::Exists(v1, b1), mrs_core::Formula::Exists(v2, b2)) => {
+                let marker = *depth;
+                *depth += 1;
+                let old_left = left.insert(*v1, marker);
+                let old_right = right.insert(*v2, marker);
+                let result = formula_eq(b1, b2, left, right, depth, symbols);
+                match old_left {
+                    Some(value) => {
+                        left.insert(*v1, value);
+                    }
+                    None => {
+                        left.remove(v1);
                     }
                 }
-                if !matched {
-                    return false;
+                match old_right {
+                    Some(value) => {
+                        right.insert(*v2, value);
+                    }
+                    None => {
+                        right.remove(v2);
+                    }
                 }
+                *depth -= 1;
+                result
             }
-            true
+            _ => false,
         }
-        _ => false,
     }
+
+    let mut left = HashMap::new();
+    let mut right = HashMap::new();
+    let mut depth = 0;
+    formula_eq(f1, f2, &mut left, &mut right, &mut depth, symbols)
 }
 
 fn is_truth_role(r: FormulaRole) -> bool {
@@ -439,5 +665,48 @@ mod tests {
             check_leaf(node, None, &mut symbols, false),
             StepOutcome::Sound
         );
+    }
+
+    #[test]
+    fn ac_matching_does_not_reorder_unknown_binary_functions() {
+        let problem = parse_tptp("fof(a, axiom, p(f(a,b))).").expect("problem parses");
+        let mut symbols = SymbolTable::new();
+        let mut proof =
+            parse_tptp("fof(a, axiom, p(f(b,a)), file('problem.p', a)).").expect("proof parses");
+        let proof_node = proof.formulas.pop().expect("proof formula");
+        assert!(matches!(
+            check_leaf(&proof_node, Some(&problem), &mut symbols, true),
+            StepOutcome::Unsound(_)
+        ));
+    }
+
+    #[test]
+    fn ac_matching_accepts_explicitly_commutative_function() {
+        let problem = parse_tptp(
+            "fof(comm, axiom, ![X,Y]: f(X,Y) = f(Y,X)).\n\
+             fof(a, axiom, p(f(a,b))).",
+        )
+        .expect("problem parses");
+        let mut proof =
+            parse_tptp("fof(a, axiom, p(f(b,a)), file('problem.p', a)).").expect("proof parses");
+        let proof_node = proof.formulas.pop().expect("proof formula");
+        let mut symbols = SymbolTable::new();
+        assert_eq!(
+            check_leaf(&proof_node, Some(&problem), &mut symbols, true),
+            StepOutcome::Sound
+        );
+    }
+
+    #[test]
+    fn ac_matching_preserves_quantifier_kind() {
+        let problem = parse_tptp("fof(a, axiom, ![X]: p(X)).").expect("problem parses");
+        let mut proof =
+            parse_tptp("fof(a, axiom, ?[X]: p(X), file('problem.p', a)).").expect("proof parses");
+        let proof_node = proof.formulas.pop().expect("proof formula");
+        let mut symbols = SymbolTable::new();
+        assert!(matches!(
+            check_leaf(&proof_node, Some(&problem), &mut symbols, true),
+            StepOutcome::Unsound(_)
+        ));
     }
 }

@@ -1207,24 +1207,628 @@ fn try_resolution_step(
     false
 }
 
-fn is_split_literal(f: &mrs_core::Formula) -> bool {
-    match f {
-        mrs_core::Formula::Atom(mrs_core::Atom::Pred(_, args)) => args.is_empty(),
-        mrs_core::Formula::Neg(inner) => {
-            if let mrs_core::Formula::Atom(mrs_core::Atom::Pred(_, args)) = &**inner {
-                args.is_empty()
-            } else {
-                false
+#[derive(Clone, Debug)]
+struct AvatarSplitShape {
+    parent_literals: Vec<mrs_core::Formula>,
+    branch_vars: Vec<u32>,
+    inherited_vars: Vec<u32>,
+    component_indices: Vec<Vec<usize>>,
+}
+
+fn strip_forall_prefix(mut formula: &mrs_core::Formula) -> &mrs_core::Formula {
+    while let mrs_core::Formula::Forall(_, inner) = formula {
+        formula = inner;
+    }
+    formula
+}
+
+fn formula_clause_literals(formula: &mrs_core::Formula) -> Option<Vec<mrs_core::Formula>> {
+    fn collect(formula: &mrs_core::Formula, out: &mut Vec<mrs_core::Formula>) -> Option<()> {
+        match formula {
+            mrs_core::Formula::Or(parts) => {
+                for part in parts {
+                    collect(part, out)?;
+                }
+            }
+            mrs_core::Formula::Atom(_) => out.push(formula.clone()),
+            mrs_core::Formula::Neg(inner)
+                if matches!(inner.as_ref(), mrs_core::Formula::Atom(_)) =>
+            {
+                out.push(formula.clone())
+            }
+            mrs_core::Formula::False => {}
+            _ => return None,
+        }
+        Some(())
+    }
+
+    let mut literals = Vec::new();
+    collect(strip_forall_prefix(formula), &mut literals)?;
+    Some(literals)
+}
+
+fn avatar_marker_var(
+    formula: &mrs_core::Formula,
+    symbols: &mrs_core::SymbolTable,
+) -> Option<(bool, u32)> {
+    let (positive, atom) = match formula {
+        mrs_core::Formula::Atom(atom) => (true, atom),
+        mrs_core::Formula::Neg(inner) => match inner.as_ref() {
+            mrs_core::Formula::Atom(atom) => (false, atom),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let mrs_core::Atom::Pred(symbol, args) = atom else {
+        return None;
+    };
+    if !args.is_empty() {
+        return None;
+    }
+    let name = symbols.resolve(*symbol);
+    let value = name
+        .strip_prefix("spl0_")
+        .or_else(|| name.strip_prefix("spl_"))?
+        .parse::<u32>()
+        .ok()
+        .filter(|value| *value > 0)?;
+    Some((positive, value))
+}
+
+fn split_avatar_literals(
+    literals: &[mrs_core::Formula],
+    symbols: &mrs_core::SymbolTable,
+) -> (Vec<mrs_core::Formula>, Vec<u32>, Vec<u32>) {
+    let mut ordinary = Vec::new();
+    let mut negative = Vec::new();
+    let mut positive = Vec::new();
+    for literal in literals {
+        match avatar_marker_var(literal, symbols) {
+            Some((true, value)) => positive.push(value),
+            Some((false, value)) => negative.push(value),
+            None => ordinary.push(literal.clone()),
+        }
+    }
+    (ordinary, negative, positive)
+}
+
+fn parse_avatar_var_name(name: &str) -> Option<u32> {
+    name.strip_prefix("spl0_")
+        .or_else(|| name.strip_prefix("spl_"))?
+        .parse::<u32>()
+        .ok()
+        .filter(|value| *value > 0)
+}
+
+fn normalized_avatar_vars(mut vars: Vec<u32>) -> Option<Vec<u32>> {
+    vars.sort_unstable();
+    if vars.windows(2).any(|pair| pair[0] == pair[1]) {
+        return None;
+    }
+    Some(vars)
+}
+
+fn validate_avatar_split_shape(
+    node: &dag::Node<'_>,
+    parent: &mrs_core::Formula,
+    conclusion: &mrs_core::Formula,
+    symbols: &mrs_core::SymbolTable,
+) -> Result<AvatarSplitShape, StepOutcome> {
+    let Some(annotation) = node
+        .formula
+        .annotations()
+        .and_then(|annotations| annotations.avatar_split())
+    else {
+        return Err(StepOutcome::Unknown(
+            "avatar_split_clause lacks explicit branch metadata".into(),
+        ));
+    };
+    let Some(parent_literals) = formula_clause_literals(parent) else {
+        return Err(StepOutcome::Unknown(
+            "avatar_split_clause parent is not a supported clause".into(),
+        ));
+    };
+    let Some(split_literals) = formula_clause_literals(conclusion) else {
+        return Err(StepOutcome::Unknown(
+            "avatar_split_clause conclusion is not a supported clause".into(),
+        ));
+    };
+    let (parent_ordinary, parent_negative, parent_positive) =
+        split_avatar_literals(&parent_literals, symbols);
+    let (split_ordinary, split_negative, split_positive) =
+        split_avatar_literals(&split_literals, symbols);
+    if parent_ordinary.len() < 2
+        || !parent_positive.is_empty()
+        || !split_ordinary.is_empty()
+        || split_positive.len() < 2
+        || normalized_avatar_vars(split_positive.clone()).is_none()
+        || normalized_avatar_vars(parent_negative.clone())
+            != normalized_avatar_vars(split_negative.clone())
+    {
+        return Err(StepOutcome::Unsound(
+            "avatar_split_clause has invalid parent or split marker clauses".into(),
+        ));
+    }
+
+    let Some(inherited_vars) = annotation
+        .inherited
+        .iter()
+        .map(|name| parse_avatar_var_name(name))
+        .collect::<Option<Vec<_>>>()
+        .and_then(normalized_avatar_vars)
+    else {
+        return Err(StepOutcome::Unsound(
+            "avatar_split_clause has invalid inherited context".into(),
+        ));
+    };
+    if normalized_avatar_vars(parent_negative) != Some(inherited_vars.clone()) {
+        return Err(StepOutcome::Unsound(
+            "avatar_split_clause inherited context does not match its parent".into(),
+        ));
+    }
+    if annotation.components.len() != split_positive.len() {
+        return Err(StepOutcome::Unsound(
+            "avatar_split_clause metadata does not cover every branch".into(),
+        ));
+    }
+
+    let mut branch_vars = vec![None; split_positive.len()];
+    let mut component_indices = vec![None; split_positive.len()];
+    let mut covered = vec![false; parent_ordinary.len()];
+    for component in annotation.components {
+        if component.branch_index >= split_positive.len()
+            || branch_vars[component.branch_index].is_some()
+            || component.literal_indices.is_empty()
+        {
+            return Err(StepOutcome::Unsound(
+                "avatar_split_clause has invalid branch indices".into(),
+            ));
+        }
+        let Some(var) = parse_avatar_var_name(component.sat_var) else {
+            return Err(StepOutcome::Unsound(
+                "avatar_split_clause has an invalid SAT variable".into(),
+            ));
+        };
+        if split_positive[component.branch_index] != var
+            || component
+                .literal_indices
+                .iter()
+                .any(|index| *index >= parent_ordinary.len())
+        {
+            return Err(StepOutcome::Unsound(
+                "avatar_split_clause metadata does not match its split literal".into(),
+            ));
+        }
+        for index in &component.literal_indices {
+            if covered[*index] {
+                return Err(StepOutcome::Unsound(
+                    "avatar_split_clause assigns a literal to multiple components".into(),
+                ));
+            }
+            covered[*index] = true;
+        }
+        branch_vars[component.branch_index] = Some(var);
+        component_indices[component.branch_index] = Some(component.literal_indices);
+    }
+    if covered.iter().any(|covered| !covered) {
+        return Err(StepOutcome::Unsound(
+            "avatar_split_clause does not cover every parent literal".into(),
+        ));
+    }
+
+    Ok(AvatarSplitShape {
+        parent_literals: parent_ordinary,
+        branch_vars: branch_vars.into_iter().flatten().collect(),
+        inherited_vars,
+        component_indices: component_indices.into_iter().flatten().collect(),
+    })
+}
+
+fn validate_avatar_component_step(
+    node: &dag::Node<'_>,
+    dag: &dag::Dag<'_>,
+    lowered_formulas: &std::collections::HashMap<usize, mrs_core::Formula>,
+    symbols: &mrs_core::SymbolTable,
+) -> Option<StepOutcome> {
+    if node.parents.len() != 1 {
+        return Some(StepOutcome::Unsound(
+            "avatar_component_clause must have one parent".into(),
+        ));
+    }
+    let Some(annotation) = node
+        .formula
+        .annotations()
+        .and_then(|annotations| annotations.avatar_component())
+    else {
+        // Legacy Vampire AVATAR output uses this rule name for ordinary
+        // definition-backed clauses without the explicit certificate metadata
+        // emitted by MRS. Leave those steps to the normal ATP ladder.
+        return None;
+    };
+    let Some(&split_idx) = dag.by_name.get(node.parents[0]) else {
+        return Some(StepOutcome::Unsound(
+            "avatar_component_clause references an unknown split parent".into(),
+        ));
+    };
+    let split_node = &dag.nodes[split_idx];
+    if split_node.inference_rule != Some("avatar_split_clause")
+        || annotation.split_parent != split_node.name
+        || split_node.parents.len() != 1
+    {
+        return Some(StepOutcome::Unsound(
+            "avatar_component_clause cites the wrong split parent".into(),
+        ));
+    }
+    let Some(&source_idx) = dag.by_name.get(split_node.parents[0]) else {
+        return Some(StepOutcome::Unsound(
+            "avatar_split_clause references an unknown source parent".into(),
+        ));
+    };
+    let Some(source) = lowered_formulas.get(&source_idx) else {
+        return Some(StepOutcome::Unknown(
+            "avatar_split_clause source parent could not be lowered".into(),
+        ));
+    };
+    let Some(split_formula) = lowered_formulas.get(&split_idx) else {
+        return Some(StepOutcome::Unknown(
+            "avatar_split_clause could not be lowered".into(),
+        ));
+    };
+    let shape = match validate_avatar_split_shape(split_node, source, split_formula, symbols) {
+        Ok(shape) => shape,
+        Err(outcome) => return Some(outcome),
+    };
+    let Some(branch_var) = shape.branch_vars.get(annotation.branch_index).copied() else {
+        return Some(StepOutcome::Unsound(
+            "avatar_component_clause references an unknown branch".into(),
+        ));
+    };
+    if parse_avatar_var_name(annotation.sat_var) != Some(branch_var) {
+        return Some(StepOutcome::Unsound(
+            "avatar_component_clause SAT variable does not match its branch".into(),
+        ));
+    }
+    let Some(conclusion_literals) = formula_clause_literals(
+        lowered_formulas
+            .get(&dag.by_name[node.name])
+            .unwrap_or(&mrs_core::Formula::False),
+    ) else {
+        return Some(StepOutcome::Unknown(
+            "avatar_component_clause conclusion is not a supported clause".into(),
+        ));
+    };
+    let (ordinary, negative, positive) = split_avatar_literals(&conclusion_literals, symbols);
+    let mut expected_context = shape.inherited_vars.clone();
+    expected_context.push(branch_var);
+    expected_context.sort_unstable();
+    if !positive.is_empty() || normalized_avatar_vars(negative) != Some(expected_context) {
+        return Some(StepOutcome::Unsound(
+            "avatar_component_clause has invalid SAT context".into(),
+        ));
+    }
+    let expected = shape.component_indices[annotation.branch_index]
+        .iter()
+        .map(|index| shape.parent_literals[*index].clone())
+        .collect::<Vec<_>>();
+    if !clause_equiv(&expected, &ordinary) {
+        return Some(StepOutcome::Unsound(
+            "avatar_component_clause does not contain its declared component".into(),
+        ));
+    }
+    Some(StepOutcome::Sound)
+}
+
+fn validate_avatar_branch_step(
+    node: &dag::Node<'_>,
+    premises: &[mrs_core::Formula],
+    conclusion: &mrs_core::Formula,
+    symbols: &mrs_core::SymbolTable,
+) -> Option<StepOutcome> {
+    if premises.len() != 1 || !matches!(conclusion, mrs_core::Formula::False) {
+        return Some(StepOutcome::Unsound(
+            "avatar_branch_refutation must derive `$false` from one branch root".into(),
+        ));
+    }
+    let context = node
+        .formula
+        .annotations()
+        .and_then(|annotations| annotations.avatar_branch())?;
+    let Some(context) = context
+        .context
+        .iter()
+        .map(|name| parse_avatar_var_name(name))
+        .collect::<Option<Vec<_>>>()
+        .and_then(normalized_avatar_vars)
+        .filter(|context| !context.is_empty())
+    else {
+        return Some(StepOutcome::Unsound(
+            "avatar_branch_refutation has invalid SAT context".into(),
+        ));
+    };
+    let Some(parent_literals) = formula_clause_literals(&premises[0]) else {
+        return Some(StepOutcome::Unknown(
+            "avatar_branch_refutation parent is not a supported clause".into(),
+        ));
+    };
+    let (ordinary, negative, positive) = split_avatar_literals(&parent_literals, symbols);
+    if !ordinary.is_empty()
+        || !positive.is_empty()
+        || normalized_avatar_vars(negative) != Some(context)
+    {
+        return Some(StepOutcome::Unsound(
+            "avatar_branch_refutation parent is not false under its SAT context".into(),
+        ));
+    }
+    Some(StepOutcome::Sound)
+}
+
+fn validate_avatar_sat_step(
+    node: &dag::Node<'_>,
+    dag: &dag::Dag<'_>,
+    lowered_formulas: &std::collections::HashMap<usize, mrs_core::Formula>,
+    symbols: &mrs_core::SymbolTable,
+) -> Option<StepOutcome> {
+    if !matches!(
+        lowered_formulas.get(&dag.by_name[node.name])?,
+        mrs_core::Formula::False
+    ) {
+        return Some(StepOutcome::Unsound(
+            "avatar_sat_refutation must conclude `$false`".into(),
+        ));
+    }
+    let Some(annotation) = node
+        .formula
+        .annotations()
+        .and_then(|annotations| annotations.avatar_sat())
+    else {
+        // Legacy CWA proofs do not carry the explicit metadata. Let the ATP
+        // ladder handle those instead of accepting an under-specified roll-up.
+        return None;
+    };
+    if annotation.split_nodes.is_empty() || annotation.branch_roots.is_empty() {
+        return Some(StepOutcome::Unsound(
+            "avatar_sat_refutation must cite split nodes and branch roots".into(),
+        ));
+    }
+    let mut metadata_names = annotation.split_nodes.clone();
+    metadata_names.extend(annotation.branch_roots.iter().copied());
+    let mut metadata_set = std::collections::HashSet::new();
+    if metadata_names
+        .iter()
+        .any(|name| !metadata_set.insert(*name))
+    {
+        return Some(StepOutcome::Unsound(
+            "avatar_sat_refutation contains duplicate metadata references".into(),
+        ));
+    }
+    let parent_set: std::collections::HashSet<_> = node.parents.iter().copied().collect();
+    if parent_set != metadata_set || parent_set.len() != node.parents.len() {
+        return Some(StepOutcome::Unsound(
+            "avatar_sat_refutation metadata does not match its parent list".into(),
+        ));
+    }
+    let cited_split_names: std::collections::HashSet<_> =
+        annotation.split_nodes.iter().copied().collect();
+    let mut split_shapes = Vec::new();
+    for split_name in annotation.split_nodes {
+        let Some(&split_idx) = dag.by_name.get(split_name) else {
+            return Some(StepOutcome::Unsound(
+                "avatar_sat_refutation references an unknown split node".into(),
+            ));
+        };
+        let split_node = &dag.nodes[split_idx];
+        if split_node.inference_rule != Some("avatar_split_clause") || split_node.parents.len() != 1
+        {
+            return Some(StepOutcome::Unsound(
+                "avatar_sat_refutation cites a non-split node".into(),
+            ));
+        }
+        let Some(&source_idx) = dag.by_name.get(split_node.parents[0]) else {
+            return Some(StepOutcome::Unsound(
+                "avatar_sat_refutation split has an unknown source parent".into(),
+            ));
+        };
+        let Some(source) = lowered_formulas.get(&source_idx) else {
+            return Some(StepOutcome::Unknown(
+                "avatar_sat_refutation split source could not be lowered".into(),
+            ));
+        };
+        let Some(split_formula) = lowered_formulas.get(&split_idx) else {
+            return Some(StepOutcome::Unknown(
+                "avatar_sat_refutation split could not be lowered".into(),
+            ));
+        };
+        match validate_avatar_split_shape(split_node, source, split_formula, symbols) {
+            Ok(shape) => split_shapes.push(shape),
+            Err(outcome) => return Some(outcome),
+        }
+    }
+
+    let mut branch_contexts = Vec::new();
+    for branch_name in annotation.branch_roots {
+        let Some(&branch_idx) = dag.by_name.get(branch_name) else {
+            return Some(StepOutcome::Unsound(
+                "avatar_sat_refutation references an unknown branch root".into(),
+            ));
+        };
+        let branch_node = &dag.nodes[branch_idx];
+        if branch_node.inference_rule != Some("avatar_branch_refutation")
+            || branch_node.parents.len() != 1
+        {
+            return Some(StepOutcome::Unsound(
+                "avatar_sat_refutation branch root is not an AVATAR branch refutation".into(),
+            ));
+        }
+        let Some(&branch_parent_idx) = dag.by_name.get(branch_node.parents[0]) else {
+            return Some(StepOutcome::Unsound(
+                "avatar_sat_refutation branch has an unknown parent".into(),
+            ));
+        };
+        let Some(branch_parent) = lowered_formulas.get(&branch_parent_idx) else {
+            return Some(StepOutcome::Unknown(
+                "avatar_sat_refutation branch parent could not be lowered".into(),
+            ));
+        };
+        let Some(branch_conclusion) = lowered_formulas.get(&branch_idx) else {
+            return Some(StepOutcome::Unknown(
+                "avatar_sat_refutation branch could not be lowered".into(),
+            ));
+        };
+        if let Some(outcome) = validate_avatar_branch_step(
+            branch_node,
+            std::slice::from_ref(branch_parent),
+            branch_conclusion,
+            symbols,
+        ) && !matches!(outcome, StepOutcome::Sound)
+        {
+            return Some(outcome);
+        }
+        let context = branch_node
+            .formula
+            .annotations()
+            .and_then(|annotations| annotations.avatar_branch())?
+            .context
+            .iter()
+            .map(|name| parse_avatar_var_name(name))
+            .collect::<Option<Vec<_>>>()
+            .and_then(normalized_avatar_vars)?;
+
+        // A branch context is only justified when the branch derivation
+        // actually descends from a component clause belonging to one of the
+        // cited split nodes. Without this ancestry check, a forged branch can
+        // choose arbitrary SAT variables and make the final assignment
+        // coverage test pass without proving that those variables occur in a
+        // first-order branch at all.
+        let mut component_contexts = std::collections::HashSet::new();
+        let mut pending = vec![branch_parent_idx];
+        let mut visited = std::collections::HashSet::new();
+        while let Some(current) = pending.pop() {
+            if !visited.insert(current) {
+                continue;
+            }
+            let current_node = &dag.nodes[current];
+            if current_node.inference_rule == Some("avatar_component_clause") {
+                let Some(annotation) = current_node
+                    .formula
+                    .annotations()
+                    .and_then(|annotations| annotations.avatar_component())
+                else {
+                    return Some(StepOutcome::Unknown(
+                        "avatar component ancestor lacks branch metadata".into(),
+                    ));
+                };
+                if !cited_split_names.contains(annotation.split_parent) {
+                    return Some(StepOutcome::Unsound(
+                        "avatar_sat_refutation branch descends from an uncited split".into(),
+                    ));
+                }
+                let Some(formula) = lowered_formulas.get(&current) else {
+                    return Some(StepOutcome::Unknown(
+                        "avatar component ancestor could not be lowered".into(),
+                    ));
+                };
+                let Some(literals) = formula_clause_literals(formula) else {
+                    return Some(StepOutcome::Unknown(
+                        "avatar component ancestor is not a supported clause".into(),
+                    ));
+                };
+                let (ordinary, negative, positive) = split_avatar_literals(&literals, symbols);
+                if !positive.is_empty() || ordinary.is_empty() {
+                    return Some(StepOutcome::Unsound(
+                        "avatar component ancestor has invalid SAT markers".into(),
+                    ));
+                }
+                let Some(component_context) = normalized_avatar_vars(negative) else {
+                    return Some(StepOutcome::Unsound(
+                        "avatar component ancestor has duplicate SAT markers".into(),
+                    ));
+                };
+                component_contexts.insert(component_context);
+            }
+            for parent_name in &current_node.parents {
+                let Some(&parent_idx) = dag.by_name.get(parent_name) else {
+                    return Some(StepOutcome::Unsound(
+                        "avatar branch ancestry references an unknown parent".into(),
+                    ));
+                };
+                pending.push(parent_idx);
             }
         }
-        _ => false,
+        if !component_contexts.contains(&context) {
+            return Some(StepOutcome::Unsound(
+                "avatar_sat_refutation branch context is not justified by a component clause"
+                    .into(),
+            ));
+        }
+        branch_contexts.push(context);
     }
+
+    let mut variables = std::collections::HashSet::new();
+    for shape in &split_shapes {
+        variables.extend(shape.inherited_vars.iter().copied());
+        variables.extend(shape.branch_vars.iter().copied());
+    }
+    for context in &branch_contexts {
+        variables.extend(context.iter().copied());
+    }
+    let mut variables: Vec<_> = variables.into_iter().collect();
+    variables.sort_unstable();
+    if variables.len() > 20 {
+        return Some(StepOutcome::Unknown(
+            "avatar_sat_refutation exceeds competition SAT verification limit".into(),
+        ));
+    }
+    let positions: std::collections::HashMap<_, _> = variables
+        .iter()
+        .enumerate()
+        .map(|(index, variable)| (*variable, index))
+        .collect();
+    let assignments = 1usize << variables.len();
+    let mut seen_contexts = std::collections::HashSet::new();
+    for context in &branch_contexts {
+        if !seen_contexts.insert(context.clone()) {
+            return Some(StepOutcome::Unsound(
+                "avatar_sat_refutation contains duplicate branch contexts".into(),
+            ));
+        }
+    }
+    for mask in 0..assignments {
+        let split_constraints_hold = split_shapes.iter().all(|shape| {
+            let inherited_true = shape
+                .inherited_vars
+                .iter()
+                .all(|variable| mask & (1usize << positions[variable]) != 0);
+            !inherited_true
+                || shape
+                    .branch_vars
+                    .iter()
+                    .any(|variable| mask & (1usize << positions[variable]) != 0)
+        });
+        if !split_constraints_hold {
+            continue;
+        }
+        let covered = branch_contexts.iter().any(|context| {
+            context
+                .iter()
+                .all(|variable| mask & (1usize << positions[variable]) != 0)
+        });
+        if !covered {
+            return Some(StepOutcome::Unsound(
+                "avatar_sat_refutation leaves a satisfiable SAT assignment unrefuted".into(),
+            ));
+        }
+    }
+    Some(StepOutcome::Sound)
 }
 
 fn try_verify_avatar_step(
     rule: &str,
+    node: &dag::Node<'_>,
+    dag: &dag::Dag<'_>,
     premises: &[mrs_core::Formula],
     conclusion: &mrs_core::Formula,
+    lowered_formulas: &std::collections::HashMap<usize, mrs_core::Formula>,
+    symbols: &mrs_core::SymbolTable,
 ) -> Option<StepOutcome> {
     let mut conclusion = conclusion;
     while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = conclusion
@@ -1259,82 +1863,40 @@ fn try_verify_avatar_step(
                 return Some(StepOutcome::Sound);
             }
         }
-    } else if rule == "avatar_component_clause" && premises.len() == 1 {
-        let mut parent = &premises[0];
-        while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = parent
-        {
-            parent = inner;
-        }
-
-        // 1. Collect all positive split variable IDs in the parent clause
-        let mut parent_pos_spls = std::collections::HashSet::new();
-        if let mrs_core::Formula::Or(pcs) = parent {
-            for pc in pcs {
-                if let mrs_core::Formula::Atom(mrs_core::Atom::Pred(pp, pargs)) = pc
-                    && pargs.is_empty()
-                {
-                    parent_pos_spls.insert(*pp);
-                }
-            }
-        } else if let mrs_core::Formula::Atom(mrs_core::Atom::Pred(pp, pargs)) = parent
-            && pargs.is_empty()
-        {
-            parent_pos_spls.insert(*pp);
-        }
-
-        // 2. Check if the conclusion has any negated split variable that is positive in the parent
-        let mut found = false;
-        if let mrs_core::Formula::Or(cs) = conclusion {
-            for c in cs {
-                if let mrs_core::Formula::Neg(inner) = c
-                    && let mrs_core::Formula::Atom(mrs_core::Atom::Pred(p, args)) = &**inner
-                    && args.is_empty()
-                    && parent_pos_spls.contains(p)
-                {
-                    found = true;
-                    break;
-                }
-            }
-        } else if let mrs_core::Formula::Neg(inner) = conclusion
-            && let mrs_core::Formula::Atom(mrs_core::Atom::Pred(p, args)) = &**inner
-            && args.is_empty()
-            && parent_pos_spls.contains(p)
-        {
-            found = true;
-        }
-
-        if found {
-            return Some(StepOutcome::Sound);
-        }
+    } else if rule == "avatar_component_clause" {
+        return validate_avatar_component_step(node, dag, lowered_formulas, symbols);
     } else if rule == "avatar_split_clause" {
-        let mut ok = true;
-        if let mrs_core::Formula::Or(cs) = conclusion {
-            for c in cs {
-                if !is_split_literal(c) {
-                    ok = false;
-                    break;
-                }
-            }
-        } else if !is_split_literal(conclusion) {
-            ok = false;
+        // Vampire also uses this rule name for a legacy SAT-conversion step
+        // whose parents include definition clauses and whose annotation has
+        // no explicit `avatar_split(...)` metadata. It must go through the
+        // ordinary ATP/definition checks, never through the MRS-specific
+        // one-parent certificate validator.
+        node.formula
+            .annotations()
+            .and_then(|annotations| annotations.avatar_split())?;
+        if node.parents.len() != 1 {
+            return Some(StepOutcome::Unsound(
+                "avatar_split_clause must have one parent".into(),
+            ));
         }
-        if ok {
-            return Some(StepOutcome::Sound);
+        let Some(&parent_idx) = dag.by_name.get(node.parents[0]) else {
+            return Some(StepOutcome::Unsound(
+                "avatar_split_clause references an unknown parent".into(),
+            ));
+        };
+        let Some(parent) = lowered_formulas.get(&parent_idx) else {
+            return Some(StepOutcome::Unknown(
+                "avatar_split_clause parent could not be lowered".into(),
+            ));
+        };
+        match validate_avatar_split_shape(node, parent, conclusion, symbols) {
+            Ok(_) => return Some(StepOutcome::Sound),
+            Err(outcome) => return Some(outcome),
         }
     } else if rule == "avatar_branch_refutation" {
-        return Some(StepOutcome::Sound);
-    } else if rule == "avatar_sat_refutation"
-        && let Some(outcome) =
-            crate::checks::propositional_sat::try_propositional(premises, conclusion)
-    {
-        match outcome {
-            crate::checks::propositional_sat::PropOutcome::Sound => {
-                return Some(StepOutcome::Sound);
-            }
-            crate::checks::propositional_sat::PropOutcome::Unsound => {
-                return Some(StepOutcome::Unsound("propositional countermodel".into()));
-            }
-        }
+        return validate_avatar_branch_step(node, premises, conclusion, symbols);
+    } else if rule == "avatar_sat_refutation" {
+        return validate_avatar_sat_step(node, dag, lowered_formulas, symbols);
     }
     None
 }
@@ -1443,8 +2005,15 @@ fn prepare_atp_step<'p>(
 
     if !strict
         && let Some(rule) = node.inference_rule
-        && let Some(outcome) =
-            try_verify_avatar_step(rule, &premises[0..node.parents.len()], &conclusion)
+        && let Some(outcome) = try_verify_avatar_step(
+            rule,
+            node,
+            dag,
+            &premises[0..node.parents.len()],
+            &conclusion,
+            lowered_formulas,
+            symbols,
+        )
     {
         return Prepared::Resolved(outcome);
     }
@@ -2088,5 +2657,76 @@ mod budget_tests {
             step_budget(deadline, Duration::from_secs(8), 8, 1000, false),
             Duration::from_secs(1)
         );
+    }
+}
+
+#[cfg(test)]
+mod avatar_validation_tests {
+    use super::*;
+    use crate::load::load_text;
+    use std::path::Path;
+
+    fn settings() -> Settings {
+        Settings {
+            total_budget: Duration::from_secs(5),
+            per_step_budget: Duration::from_secs(1),
+            workers: 1,
+            strict: false,
+            verbose: false,
+        }
+    }
+
+    #[test]
+    fn competition_mode_accepts_valid_explicit_avatar_certificate() {
+        let problem = "fof(top, axiom, p | q).\n\
+                       fof(np, axiom, ~p).\n\
+                       fof(nq, axiom, ~q).";
+        let proof = "fof(top, axiom, p | q, file('problem.p', top)).\
+                     fof(np, axiom, ~p, file('problem.p', np)).\
+                     fof(nq, axiom, ~q, file('problem.p', nq)).\
+                     fof(split, plain, spl0_1 | spl0_2,\
+                         inference(avatar_split_clause,\
+                           [status(esa),\
+                            avatar_split([branch(0, spl0_1, [0]),\
+                                         branch(1, spl0_2, [1])], [])],\
+                           [top])).\
+                     fof(comp_p, plain, p | ~spl0_1,\
+                         inference(avatar_component_clause,\
+                           [status(esa), avatar_component(split, 0, spl0_1)],\
+                           [split])).\
+                     fof(comp_q, plain, q | ~spl0_2,\
+                         inference(avatar_component_clause,\
+                           [status(esa), avatar_component(split, 1, spl0_2)],\
+                           [split])).\
+                     fof(empty_p, plain, ~spl0_1,\
+                         inference(resolution, [status(thm)], [comp_p, np])).\
+                     fof(empty_q, plain, ~spl0_2,\
+                         inference(resolution, [status(thm)], [comp_q, nq])).\
+                     fof(branch_p, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(esa), avatar_context([spl0_1])], [empty_p])).\
+                     fof(branch_q, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(esa), avatar_context([spl0_2])], [empty_q])).\
+                     fof(bot, plain, $false,\
+                         inference(avatar_sat_refutation,\
+                           [status(thm),\
+                            avatar_sat_refutation([split], [branch_p, branch_q])],\
+                           [split, branch_p, branch_q])).";
+        let job = load_text(problem.to_string(), proof.to_string(), Path::new("."))
+            .expect("load valid AVATAR proof");
+        assert_eq!(verify(&job, &settings()), Verdict::VerifiedGood);
+    }
+
+    #[test]
+    fn competition_mode_rejects_forged_avatar_branch_refutation() {
+        let problem = "fof(p, axiom, p).";
+        let proof = "fof(p, axiom, p, file('problem.p', p)).\
+                     fof(branch, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(esa), avatar_context([spl0_1])], [p])).";
+        let job = load_text(problem.to_string(), proof.to_string(), Path::new("."))
+            .expect("load forged AVATAR proof");
+        assert!(matches!(verify(&job, &settings()), Verdict::VerifiedBad(_)));
     }
 }

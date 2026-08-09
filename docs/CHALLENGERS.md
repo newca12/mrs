@@ -5,7 +5,10 @@ From a strategic engineering perspective, the question of *when* to benchmark ag
 - **Definition laundering (−10 penalty):** The `introduced(definition)` structural check in `crates/mrs-proover/src/checks/introduced_definition.rs` now enforces strict `is_naming_clause` validation on the formula body, not just symbol freshness. All six `evil-proofs/exploits/evil_definition_*` cases are caught.
 - **Conservative Unknown returns:** `vampire_skolemisation.rs` now returns `StepOutcome::Unsound` (not `Unknown`) on arity drops and shape violations, securing `+2` points instead of `0`.
 
-The main remaining gap before benchmarking is **AC-equivalence matching** in `axiom_leaf.rs` — without it, valid proofs where E or Vampire reorders disjuncts (`p | q` → `q | p`) silently score `0` instead of `+1`.
+The former AC-equivalence gap in `axiom_leaf.rs` is fixed when the linked
+problem explicitly declares the relevant commutativity/associativity axioms.
+The matcher remains conservative for arbitrary function symbols and preserves
+quantifier kind and scope, so it does not trade soundness for extra coverage.
 
 ## Current Competitive Position
 
@@ -13,7 +16,7 @@ The main remaining gap before benchmarking is **AC-equivalence matching** in `ax
 |----------|--------|
 | Definition laundering (`−10` risk) | ✅ **Fixed** |
 | Over-conservative Unknown returns (`+2` leakage) | ✅ **Fixed** for Vampire Skolemization |
-| AC-equivalence in leaf matching (`+1` leakage) | ❌ **Not fixed** — see `TODO_PROOVER.md` |
+| AC-equivalence in leaf matching (`+1` leakage) | ✅ **Fixed conservatively** |
 | Recursive/cyclic definition chain | ❌ **Not implemented** |
 | E-prover Skolemization variable leakage | ❌ **Possibly vulnerable** |
 
@@ -33,7 +36,6 @@ The main remaining gap before benchmarking is **AC-equivalence matching** in `ax
 
 ## Recommended Path Forward
 
-1. **Fix AC-equivalence in `axiom_leaf.rs`** — this is the last structural gap leaking easy `+1` points on every valid proof where an ATP reorders a conjunction.
-2. **Install Nörgler** as an external baseline once step 1 is done. It is the easiest modern tool to compile and gives a wall-clock reference against `mrs-proover`.
-3. **Address recursive/cyclic definition chains** — an adversary could launder a contradiction through `p ⟺ ¬q` then `q ⟺ p`. The verifier needs a well-foundedness check across all introduced symbols.
-4. **Benchmark against GDV** once Nörgler comparison is clean. GDV is the gold standard for final pre-competition scoring.
+1. **Install Nörgler** as an external baseline. It is the easiest modern tool to compile and gives a wall-clock reference against `mrs-proover`.
+2. **Address recursive/cyclic definition chains** — an adversary could launder a contradiction through `p ⟺ ¬q` then `q ⟺ p`. The verifier needs a well-foundedness check across all introduced symbols.
+3. **Benchmark against GDV** once Nörgler comparison is clean. GDV is the gold standard for final pre-competition scoring.
