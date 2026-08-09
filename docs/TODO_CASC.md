@@ -37,13 +37,13 @@ This document tracks what remains to be built in `mrs` (the prover) to maximise 
 - **Problem**: The Limited Resource Strategy (LRS) pruning algorithm calculates its passive queue target size using real wall-clock elapsed time (`start.elapsed()`). Under SMT thread contention or heavy CPU sharing, iteration times inflate, causing the prover to estimate a much smaller number of remaining iterations. This leads to overly aggressive passive clause pruning, permanently discarding proof-relevant clauses and causing search paths to non-deterministically transition from `Refutation` to `GaveUp`.
 - **Proposed Mitigations**:
   - **Thread-specific CPU Time (Linux)**: Query thread-local CPU time (`libc::CLOCK_THREAD_CPUTIME_ID`) instead of wall-clock time to ignore context switches and pipeline contention.
-  - **Deterministic Virtual Time**: Base the pruning threshold on a deterministic proxy for time (e.g., constant loop iteration rates, or a ratio of generated-to-processed clauses).
+  - **Deterministic Virtual Time**: `SearchConfig::lrs_policy` now supports an opt-in `FixedIterations` budget for deterministic experiments. Set `MRS_LRS_FIXED_ITERATIONS=<N>` to apply it to a portfolio run. The default remains wall-clock based until coverage benchmarks justify changing competition behavior.
 
 #### 2. Deterministic Clause Sharing (RwLock Crosstalk)
 - **Problem**: Parallel strategies share derived unit equalities via a shared `RwLock<Vec<Clause>>`. Because threads poll and import these clauses asynchronously on every iteration, CPU scheduling fluctuations change the exact iteration at which a thread learns a new unit, leading to divergent, non-reproducible search paths.
 - **Proposed Mitigations**:
-  - **Interval-based Importing**: Poll and import shared units only at deterministic boundaries (e.g., when `iteration` is a multiple of 500).
-  - **Logical Epochs**: Assign logical generations to shared clauses and only import clauses from epochs a thread has logically reached.
+  - **Interval-based Importing**: Implemented. Shared units are published with logical epochs and imported only at fixed `SearchConfig::shared_pool_poll_interval` boundaries (default 500 iterations). Set `MRS_SHARED_POOL_INTERVAL=0` to disable sharing or use another interval for experiments.
+  - **Logical Epochs**: Implemented. Imports are stable-key sorted and deduplicated per search state.
 
 ### Implemented: AVATAR proof self-containedness and incomplete splitting citations
 

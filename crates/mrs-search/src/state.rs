@@ -72,9 +72,9 @@ pub struct SearchState {
     /// up in the final extracted proof with an empty/unjustified parent
     /// list (previously stamped `inference(shared, [status(thm)], [])`,
     /// which fails GDV-style structural leaf/parent checks).
-    pub shared_pool: Option<Arc<std::sync::RwLock<Vec<Vec<Clause>>>>>,
-    /// Number of clauses already consumed from the shared pool.
-    pub shared_pool_read: usize,
+    pub shared_pool: Option<Arc<std::sync::RwLock<Vec<crate::SharedClauseChain>>>>,
+    /// Stable keys already imported from the shared pool.
+    pub shared_pool_seen: HashSet<String>,
     /// Directory to log ML feature vectors and labels to.
     pub log_ml_data: Option<String>,
     /// Whether to log in CSV format instead of wincode.
@@ -250,7 +250,7 @@ impl SearchState {
             children: HashMap::default(),
             stop_flag: None,
             shared_pool: None,
-            shared_pool_read: 0,
+            shared_pool_seen: HashSet::default(),
             log_ml_data,
             ml_log_csv,
             #[cfg(feature = "ml-guidance")]

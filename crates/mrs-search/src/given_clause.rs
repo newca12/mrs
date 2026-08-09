@@ -10,9 +10,9 @@
 //! - All clauses are processed (saturation)
 //! - A time or clause limit is exceeded
 
-use crate::{HashMap, HashSet};
+use crate::{HashMap, HashSet, LrsPolicy, SharedClauseChain};
 use std::sync::atomic::Ordering;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use mrs_calculus::demodulation;
 use mrs_calculus::equality;
@@ -26,6 +26,7 @@ use mrs_core::clause::{
     AvatarSatTrace, Clause as LegacyClause, ClauseCertificate, ClauseId, ClauseSource,
     avatar_sat_trace_digest,
 };
+use mrs_core::display::DisplayWithSymbols;
 use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermId, TermNode};
 use mrs_index::fvi::FeatureVector;
 use mrs_proof::extract::extract_proof_ids;
@@ -50,6 +51,77 @@ fn build_shared_chain(state: &SearchState, head_id: ClauseId) -> Vec<LegacyClaus
         .filter_map(|id| state.clause_store.get(id))
         .map(|c| state.term_bank.clause_to_legacy(c))
         .collect()
+}
+
+fn shared_chain_key(chain: &[LegacyClause], symbols: &mrs_core::SymbolTable) -> String {
+    chain
+        .last()
+        .map(|clause| format!("{}", clause.display(symbols)))
+        .unwrap_or_default()
+}
+
+fn lrs_target_size(
+    policy: LrsPolicy,
+    iteration: u64,
+    elapsed: Duration,
+    time_limit: Duration,
+) -> usize {
+    let remaining_iterations = match policy {
+        LrsPolicy::WallClock => {
+            let avg_nanos = (elapsed.as_nanos() / iteration.max(1) as u128).max(1);
+            let remaining_nanos = time_limit.saturating_sub(elapsed).as_nanos();
+            (remaining_nanos / avg_nanos) as u64
+        }
+        LrsPolicy::FixedIterations { budget } => budget.saturating_sub(iteration),
+    };
+    remaining_iterations.max(2000) as usize
+}
+
+fn should_poll_shared_pool(iteration: u64, interval: u64) -> bool {
+    interval > 0 && iteration > 0 && iteration.is_multiple_of(interval)
+}
+
+fn ready_shared_chains(
+    pool: &[SharedClauseChain],
+    seen: &HashSet<String>,
+    epoch: u64,
+) -> Vec<SharedClauseChain> {
+    let mut ready = pool
+        .iter()
+        .filter(|entry| entry.epoch <= epoch && !seen.contains(&entry.key))
+        .cloned()
+        .collect::<Vec<_>>();
+    ready.sort_by(|left, right| left.key.cmp(&right.key));
+    ready.dedup_by(|left, right| left.key == right.key);
+    ready
+}
+
+fn publish_shared_chain(state: &SearchState, given: &IdClause, iteration: u64, interval: u64) {
+    if interval == 0 || !is_unit_positive_equality_id(given) || !given.avatar.is_empty() {
+        return;
+    }
+    let Some(pool_lock) = &state.shared_pool else {
+        return;
+    };
+    let Ok(mut pool) = pool_lock.write() else {
+        return;
+    };
+    if pool.len() >= SHARED_POOL_CAP {
+        return;
+    }
+    let chain = build_shared_chain(state, given.id);
+    if chain.is_empty() {
+        return;
+    }
+    let key = shared_chain_key(&chain, &state.symbols);
+    if pool.iter().any(|entry| entry.key == key) {
+        return;
+    }
+    pool.push(SharedClauseChain {
+        epoch: iteration / interval,
+        key,
+        chain,
+    });
 }
 
 /// After the SAT model changes, move clauses between active and dormant sets to
@@ -741,15 +813,20 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
     loop {
         // Ingest shared clauses (each entry is a full ancestor chain: input
         // clauses first, the shared unit-equality clause last).
-        if let Some(pool_lock) = &state.shared_pool {
-            let mut to_add: Vec<Vec<LegacyClause>> = Vec::new();
-            if let Ok(pool) = pool_lock.read()
-                && state.shared_pool_read < pool.len()
-            {
-                to_add.extend_from_slice(&pool[state.shared_pool_read..]);
-                state.shared_pool_read = pool.len();
+        if should_poll_shared_pool(iteration, config.shared_pool_poll_interval)
+            && let Some(pool_lock) = &state.shared_pool
+        {
+            let mut to_add: Vec<SharedClauseChain> = Vec::new();
+            if let Ok(pool) = pool_lock.read() {
+                to_add = ready_shared_chains(
+                    &pool,
+                    &state.shared_pool_seen,
+                    iteration / config.shared_pool_poll_interval,
+                );
             }
-            for chain in to_add {
+            for entry in to_add {
+                state.shared_pool_seen.insert(entry.key.clone());
+                let chain = entry.chain;
                 // Remap every clause ID in the chain to a fresh local ID,
                 // and rewrite `Inference` parent references accordingly,
                 // so the spliced-in subtree is fully self-consistent
@@ -807,13 +884,8 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
         // --- Limited Resource Strategy (LRS) Periodic Pruning ---
         if iteration.is_multiple_of(100) && iteration >= 100 {
             let elapsed = start.elapsed();
-            let remaining_time = config.time_limit.saturating_sub(elapsed);
-
-            let avg_nanos = (elapsed.as_nanos() / iteration as u128).max(1) as u64;
-            let remaining_nanos = remaining_time.as_nanos() as u64;
-
-            let remaining_iterations = remaining_nanos / avg_nanos;
-            let target_size = (remaining_iterations as usize).max(2000);
+            let target_size =
+                lrs_target_size(config.lrs_policy, iteration, elapsed, config.time_limit);
 
             if state.unprocessed.active_count() > target_size.saturating_add(1000) {
                 let discarded = state.unprocessed.prune(target_size);
@@ -1203,17 +1275,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
         state.processed.insert(given.clone(), &state.term_bank);
         state.stats.processed += 1;
 
-        if is_unit_positive_equality_id(&given)
-            && given.avatar.is_empty()
-            && let Some(pool_lock) = &state.shared_pool
-            && let Ok(mut pool) = pool_lock.write()
-            && pool.len() < SHARED_POOL_CAP
-        {
-            let chain = build_shared_chain(state, given.id);
-            if !chain.is_empty() {
-                pool.push(chain);
-            }
-        }
+        publish_shared_chain(state, &given, iteration, config.shared_pool_poll_interval);
 
         if is_unit_positive_equality_id(&given)
             && let IdAtom::Eq(l, r) = &given.literals[0].atom
@@ -1362,17 +1424,12 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 for clause in next_processed {
                     state.processed.insert(clause.clone(), &state.term_bank);
 
-                    if is_unit_positive_equality_id(&clause)
-                        && clause.avatar.is_empty()
-                        && let Some(pool_lock) = &state.shared_pool
-                        && let Ok(mut pool) = pool_lock.write()
-                        && pool.len() < SHARED_POOL_CAP
-                    {
-                        let chain = build_shared_chain(state, clause.id);
-                        if !chain.is_empty() {
-                            pool.push(chain);
-                        }
-                    }
+                    publish_shared_chain(
+                        state,
+                        &clause,
+                        iteration,
+                        config.shared_pool_poll_interval,
+                    );
 
                     if time_ok
                         && is_unit_positive_equality_id(&clause)
@@ -1731,6 +1788,64 @@ mod tests {
     use crate::TermOrdering;
     use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource};
     use mrs_core::{Atom, Literal, SymbolTable, Term};
+
+    #[test]
+    fn fixed_lrs_target_is_independent_of_elapsed_time() {
+        assert_eq!(
+            lrs_target_size(
+                LrsPolicy::FixedIterations { budget: 10_000 },
+                2_000,
+                Duration::from_millis(1),
+                Duration::from_secs(1),
+            ),
+            8_000
+        );
+        assert_eq!(
+            lrs_target_size(
+                LrsPolicy::FixedIterations { budget: 10_000 },
+                2_000,
+                Duration::from_secs(20),
+                Duration::from_millis(1),
+            ),
+            8_000
+        );
+        assert_eq!(
+            lrs_target_size(
+                LrsPolicy::FixedIterations { budget: 1_000 },
+                2_000,
+                Duration::ZERO,
+                Duration::ZERO,
+            ),
+            2_000
+        );
+    }
+
+    #[test]
+    fn shared_pool_polling_uses_fixed_epochs() {
+        assert!(!should_poll_shared_pool(0, 500));
+        assert!(!should_poll_shared_pool(499, 500));
+        assert!(should_poll_shared_pool(500, 500));
+        assert!(!should_poll_shared_pool(501, 500));
+        assert!(!should_poll_shared_pool(500, 0));
+    }
+
+    #[test]
+    fn shared_pool_ready_entries_are_sorted_and_epoch_gated() {
+        let chain = |epoch: u64, key: &str| SharedClauseChain {
+            epoch,
+            key: key.into(),
+            chain: Vec::new(),
+        };
+        let pool = vec![chain(2, "z"), chain(1, "b"), chain(1, "a"), chain(1, "a")];
+        let ready = ready_shared_chains(&pool, &HashSet::default(), 1);
+        assert_eq!(
+            ready
+                .iter()
+                .map(|entry| entry.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+    }
 
     fn input_clause(
         id_gen: &mut ClauseIdGen,

@@ -45,7 +45,7 @@ pub mod weight;
 
 use std::time::Duration;
 
-use mrs_core::clause::ClauseId;
+use mrs_core::clause::{Clause, ClauseId};
 
 pub use mrs_calculus::literal_selection::LiteralSelection;
 pub use mrs_calculus::ordering::TermOrdering;
@@ -172,6 +172,30 @@ pub enum SearchResult {
     GaveUp,
 }
 
+/// Policy used by the Limited Resource Strategy (LRS) passive-queue pruner.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LrsPolicy {
+    /// Estimate remaining iterations from wall-clock throughput.
+    #[default]
+    WallClock,
+    /// Use a fixed logical iteration budget, independent of CPU scheduling.
+    FixedIterations {
+        /// Total logical iterations available to the search.
+        budget: u64,
+    },
+}
+
+/// A proof-preserving unit-equality chain shared between portfolio workers.
+#[derive(Clone, Debug)]
+pub struct SharedClauseChain {
+    /// Logical epoch in which the chain was published.
+    pub epoch: u64,
+    /// Stable content key used for deterministic ordering and deduplication.
+    pub key: String,
+    /// Ancestor chain, with the shared unit equality last.
+    pub chain: Vec<Clause>,
+}
+
 /// How clause weights are computed for the passive-queue priority heaps.
 ///
 /// All variants are sums over all symbol occurrences in all literals; they
@@ -280,6 +304,11 @@ pub struct SearchConfig {
     pub sine_tolerance: Option<f64>,
     /// SInE depth limit.
     pub sine_depth_limit: Option<usize>,
+    /// LRS target calculation policy.
+    pub lrs_policy: LrsPolicy,
+    /// Number of given-clause iterations between shared-pool polls.
+    /// `0` disables cross-strategy clause sharing.
+    pub shared_pool_poll_interval: u64,
 }
 
 impl Default for SearchConfig {
@@ -298,6 +327,8 @@ impl Default for SearchConfig {
             ordered_inferences: true,
             sine_tolerance: None,
             sine_depth_limit: None,
+            lrs_policy: LrsPolicy::WallClock,
+            shared_pool_poll_interval: 500,
         }
     }
 }

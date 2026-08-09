@@ -27,7 +27,10 @@ use crate::fvo::try_fvo_refutation;
 use crate::given_clause::search;
 use crate::instgen::is_epr;
 use crate::state::SearchState;
-use crate::{LiteralSelection, SearchConfig, SearchResult, SelectionStrategy, TermOrdering};
+use crate::{
+    LiteralSelection, SearchConfig, SearchResult, SelectionStrategy, SharedClauseChain,
+    TermOrdering,
+};
 
 /// A strategy schedule: a sequence of (config, time_slice) pairs.
 ///
@@ -551,6 +554,16 @@ pub fn run_schedule(
     let mut actual_configs = Vec::new();
     for (search_config, _) in &schedule.strategies {
         let mut actual_config = search_config.clone();
+        if let Ok(value) = std::env::var("MRS_LRS_FIXED_ITERATIONS")
+            && let Ok(budget) = value.parse::<u64>()
+        {
+            actual_config.lrs_policy = crate::LrsPolicy::FixedIterations { budget };
+        }
+        if let Ok(value) = std::env::var("MRS_SHARED_POOL_INTERVAL")
+            && let Ok(interval) = value.parse::<u64>()
+        {
+            actual_config.shared_pool_poll_interval = interval;
+        }
         if apply_max_neg
             && matches!(
                 actual_config.literal_selection,
@@ -645,7 +658,7 @@ pub fn run_schedule(
     // thread constructs its own SearchState from the cloned clause data, but
     // we share a pool of globally discovered unit equalities via an RwLock.
     let stop_flag = Arc::new(AtomicBool::new(false));
-    let shared_pool = Arc::new(std::sync::RwLock::new(Vec::new()));
+    let shared_pool = Arc::new(std::sync::RwLock::new(Vec::<SharedClauseChain>::new()));
     let (tx, rx) = mpsc::channel::<(usize, SearchResult, crate::SearchStats, u64)>();
 
     // Default to the *physical* core count, matching the default that
