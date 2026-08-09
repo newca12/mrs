@@ -787,10 +787,17 @@ fn main() {
             println!("{}", tstp_proof);
             println!("{}", szs_output_end("Proof", problem_name));
         }
+    }
 
-        print_statistics(status, start.elapsed(), &final_report);
-    } else if emit_extras && !proof_certified {
-        print_statistics(status, start.elapsed(), &final_report);
+    if emit_extras {
+        print_statistics(
+            status,
+            start.elapsed(),
+            &final_report,
+            &result,
+            self_check,
+            proof_certified,
+        );
     }
 }
 
@@ -809,7 +816,14 @@ fn peak_memory_mb() -> Option<u64> {
 }
 
 /// Prints a Vampire-style statistics block to stdout.
-fn print_statistics(status: SzsStatus, elapsed: Duration, report: &mrs_search::ScheduleReport) {
+fn print_statistics(
+    status: SzsStatus,
+    elapsed: Duration,
+    report: &mrs_search::ScheduleReport,
+    search_result: &SearchResult,
+    self_check: bool,
+    proof_certified: bool,
+) {
     let termination_reason = match status {
         SzsStatus::Theorem | SzsStatus::Unsatisfiable => "Refutation",
         SzsStatus::CounterSatisfiable | SzsStatus::Satisfiable => "Saturation",
@@ -830,12 +844,21 @@ fn print_statistics(status: SzsStatus, elapsed: Duration, report: &mrs_search::S
     // classify unsolved problems without re-parsing stdout.
     // Format: "% SZS detail <key=value> ..."
     // Always emitted (even on success) so casc.sh can parse it uniformly.
-    let result_name = match status {
-        SzsStatus::Theorem | SzsStatus::Unsatisfiable => "Refutation",
-        SzsStatus::CounterSatisfiable | SzsStatus::Satisfiable => "Saturation",
-        SzsStatus::GaveUp => "GaveUp",
-        SzsStatus::Timeout | SzsStatus::ResourceOut => "Timeout",
-        SzsStatus::Unknown | SzsStatus::Error => "Error",
+    let search_result_name = match search_result {
+        SearchResult::Refutation(..) => "Refutation",
+        SearchResult::Saturated => "Saturation",
+        SearchResult::GaveUp => "GaveUp",
+        SearchResult::Timeout => "Timeout",
     };
-    eprintln!("% SZS detail {}", report.telemetry_detail(result_name));
+
+    let mut detail_str = report.telemetry_detail(search_result_name);
+    if self_check {
+        let self_check_status = if matches!(search_result, SearchResult::Refutation(..)) {
+            if proof_certified { "Certified" } else { "Rejected" }
+        } else {
+            "Unchecked"
+        };
+        detail_str = format!("{} self_check={}", detail_str, self_check_status);
+    }
+    eprintln!("% SZS detail {}", detail_str);
 }
