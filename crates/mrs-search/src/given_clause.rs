@@ -55,9 +55,10 @@ fn build_shared_chain(state: &SearchState, head_id: ClauseId) -> Vec<LegacyClaus
 
 fn shared_chain_key(chain: &[LegacyClause], symbols: &mrs_core::SymbolTable) -> String {
     chain
-        .last()
+        .iter()
         .map(|clause| format!("{}", clause.display(symbols)))
-        .unwrap_or_default()
+        .collect::<Vec<_>>()
+        .join(" -> ")
 }
 
 fn lrs_target_size(
