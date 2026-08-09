@@ -439,7 +439,8 @@ mod tests {
         );
 
         let output = format_tstp(&[leaf, nnf_step], &syms);
-        assert!(output.contains("fof(c0, axiom, p(a), file('input', 'ax1'))."));
+        let path = problem_path();
+        assert!(output.contains(&format!("fof(c0, axiom, p(a), file('{path}', 'ax1')).")));
         assert!(output.contains(
             "fof(c1, plain, p(a), inference(fof_nnf_transformation, [status(thm)], [c0]))."
         ));
