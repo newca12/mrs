@@ -15,6 +15,11 @@ A robust, zero-copy TPTP (Thousands of Problems for Theorem Provers) parser for 
 - **THF** - Typed Higher-order Form
 - **NXF/NHF** - Non-classical extensions (modal, temporal, epistemic)
 
+### TPTP Version Compatibility
+
+`mrs-tptp` implements a single, high-performance, permissive parser supporting a superset of all TPTP language standards up to **TPTP v9.x.x** (including classical CNF/FOF, typed TFF/TCF/THF, TXF/FOOL extensions, and non-classical NXF/NHF). Because the TPTP BNF is designed to be backwards-compatible, older problem files from earlier TPTP releases (e.g. v3.x.x through v8.x.x) are parsed natively without any configuration.
+
+
 ## Installation
 
 Add this to your `Cargo.toml`:
