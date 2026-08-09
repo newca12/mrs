@@ -31,7 +31,19 @@ This document tracks what remains to be built in `mrs` (the prover) to maximise 
 
 ## Remaining Work (ordered by expected CASC impact)
 
-(No remaining high-ROI features currently planned before CASC submission. The prover is feature-complete.)
+### High Priority: Mitigate Portfolio Run Jitter & Score Variance
+
+#### 1. Deterministic LRS Pruning (Wall-Clock Sensitivity)
+- **Problem**: The Limited Resource Strategy (LRS) pruning algorithm calculates its passive queue target size using real wall-clock elapsed time (`start.elapsed()`). Under SMT thread contention or heavy CPU sharing, iteration times inflate, causing the prover to estimate a much smaller number of remaining iterations. This leads to overly aggressive passive clause pruning, permanently discarding proof-relevant clauses and causing search paths to non-deterministically transition from `Refutation` to `GaveUp`.
+- **Proposed Mitigations**:
+  - **Thread-specific CPU Time (Linux)**: Query thread-local CPU time (`libc::CLOCK_THREAD_CPUTIME_ID`) instead of wall-clock time to ignore context switches and pipeline contention.
+  - **Deterministic Virtual Time**: Base the pruning threshold on a deterministic proxy for time (e.g., constant loop iteration rates, or a ratio of generated-to-processed clauses).
+
+#### 2. Deterministic Clause Sharing (RwLock Crosstalk)
+- **Problem**: Parallel strategies share derived unit equalities via a shared `RwLock<Vec<Clause>>`. Because threads poll and import these clauses asynchronously on every iteration, CPU scheduling fluctuations change the exact iteration at which a thread learns a new unit, leading to divergent, non-reproducible search paths.
+- **Proposed Mitigations**:
+  - **Interval-based Importing**: Poll and import shared units only at deterministic boundaries (e.g., when `iteration` is a multiple of 500).
+  - **Logical Epochs**: Assign logical generations to shared clauses and only import clauses from epochs a thread has logically reached.
 
 ### Implemented: AVATAR proof self-containedness and incomplete splitting citations
 
