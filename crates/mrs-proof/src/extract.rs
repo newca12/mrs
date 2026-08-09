@@ -256,9 +256,7 @@ mod tests {
                 parents: vec![ClauseId(2)].into(),
             },
         );
-        c3.certificate = Some(ClauseCertificate::AvatarBranchRefutation {
-            context: vec![1],
-        });
+        c3.certificate = Some(ClauseCertificate::AvatarBranchRefutation { context: vec![1] });
         store.insert(ClauseId(3), c3);
 
         let mut c4 = Clause::new(

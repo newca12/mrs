@@ -191,8 +191,10 @@ pub fn check_leaf<'p>(
 
     if alpha_equiv(&proof_f, &prob_f)
         || crate::checks::definition_folding::canon_eq_free(&proof_f, &prob_f, Some(ctx.symbols))
-        || crate::checks::propositional_sat::try_propositional(&[prob_f.clone()], &proof_f)
-            == Some(crate::checks::propositional_sat::PropOutcome::Sound)
+        || crate::checks::propositional_sat::try_propositional(
+            std::slice::from_ref(&prob_f),
+            &proof_f,
+        ) == Some(crate::checks::propositional_sat::PropOutcome::Sound)
         || ac_alpha_equiv(&proof_f, &prob_f, Some(ctx.symbols))
     {
         StepOutcome::Sound
@@ -241,11 +243,7 @@ fn collect_ac_leaves<'a>(
     }
 }
 
-fn ac_term_equiv(
-    t1: &mrs_core::Term,
-    t2: &mrs_core::Term,
-    symbols: Option<&SymbolTable>,
-) -> bool {
+fn ac_term_equiv(t1: &mrs_core::Term, t2: &mrs_core::Term, symbols: Option<&SymbolTable>) -> bool {
     match (t1, t2) {
         (mrs_core::Term::Var(v1), mrs_core::Term::Var(v2)) => v1 == v2,
         (mrs_core::Term::App(f1, args1), mrs_core::Term::App(f2, args2)) => {
@@ -311,9 +309,7 @@ fn ac_alpha_equiv(
     match (b1, b2) {
         (mrs_core::Formula::True, mrs_core::Formula::True) => true,
         (mrs_core::Formula::False, mrs_core::Formula::False) => true,
-        (mrs_core::Formula::Neg(n1), mrs_core::Formula::Neg(n2)) => {
-            ac_alpha_equiv(n1, n2, symbols)
-        }
+        (mrs_core::Formula::Neg(n1), mrs_core::Formula::Neg(n2)) => ac_alpha_equiv(n1, n2, symbols),
         (mrs_core::Formula::Atom(a1), mrs_core::Formula::Atom(a2)) => match (a1, a2) {
             (mrs_core::Atom::Pred(p1, args1), mrs_core::Atom::Pred(p2, args2)) => {
                 p1 == p2

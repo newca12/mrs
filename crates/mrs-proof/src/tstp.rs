@@ -347,6 +347,23 @@ mod tests {
         let mut syms = SymbolTable::new();
         let p = syms.intern("p");
 
+        let parent0 = Clause::new(
+            ClauseId(0),
+            vec![],
+            ClauseSource::Input {
+                name: "ax1".into(),
+                role: "axiom".into(),
+            },
+        );
+        let parent1 = Clause::new(
+            ClauseId(1),
+            vec![],
+            ClauseSource::Input {
+                name: "ax2".into(),
+                role: "axiom".into(),
+            },
+        );
+
         let c = Clause::new(
             ClauseId(5),
             vec![Literal::pos(Atom::prop(p))],
@@ -356,7 +373,7 @@ mod tests {
             },
         );
 
-        let output = format_tstp(&[c], &syms);
+        let output = format_tstp(&[parent0, parent1, c], &syms);
         assert!(output.contains("inference(resolution, [status(thm)], [c0, c1])"));
         assert!(output.contains("cnf(c5, plain,"));
     }
@@ -364,6 +381,23 @@ mod tests {
     #[test]
     fn format_empty_clause() {
         let syms = SymbolTable::new();
+
+        let parent3 = Clause::new(
+            ClauseId(3),
+            vec![],
+            ClauseSource::Input {
+                name: "ax1".into(),
+                role: "axiom".into(),
+            },
+        );
+        let parent7 = Clause::new(
+            ClauseId(7),
+            vec![],
+            ClauseSource::Input {
+                name: "ax2".into(),
+                role: "axiom".into(),
+            },
+        );
 
         let c = Clause::new(
             ClauseId(10),
@@ -374,7 +408,7 @@ mod tests {
             },
         );
 
-        let output = format_tstp(&[c], &syms);
+        let output = format_tstp(&[parent3, parent7, c], &syms);
         assert!(output.contains("$false"));
         assert!(output.contains("inference(resolution, [status(thm)], [c3, c7])"));
     }
@@ -420,6 +454,14 @@ mod tests {
         let mut syms = SymbolTable::new();
         let p = syms.intern("p");
 
+        let parent1 = Clause::new_formula_step(
+            ClauseId(1),
+            Formula::atom(Atom::prop(p)),
+            ClauseSource::Input {
+                name: "ax1".into(),
+                role: "axiom".into(),
+            },
+        );
         let skolem_step = Clause::new_formula_step(
             ClauseId(2),
             Formula::atom(Atom::prop(p)),
@@ -437,7 +479,7 @@ mod tests {
             },
         );
 
-        let output = format_tstp(&[skolem_step, neg_conj_step], &syms);
+        let output = format_tstp(&[parent1, skolem_step, neg_conj_step], &syms);
         assert!(output.contains("inference(skolemisation, [status(esa)], [c1])"));
         assert!(output.contains("inference(negated_conjecture, [status(cth)], [c2])"));
         // The skolemisation step is a generic derived formula: role `plain`.
@@ -497,6 +539,15 @@ mod tests {
         let mut syms = SymbolTable::new();
         let p = syms.intern("p");
 
+        let parent2 = Clause::new(
+            ClauseId(2),
+            vec![],
+            ClauseSource::Input {
+                name: "ax1".into(),
+                role: "axiom".into(),
+            },
+        );
+
         let final_clause = Clause::new(
             ClauseId(4),
             vec![Literal::pos(Atom::prop(p))],
@@ -506,7 +557,7 @@ mod tests {
             },
         );
 
-        let output = format_tstp(&[final_clause], &syms);
+        let output = format_tstp(&[parent2, final_clause], &syms);
         assert!(
             output
                 .contains("cnf(c4, plain, p, inference(cnf_transformation, [status(thm)], [c2])).")
@@ -612,7 +663,12 @@ mod tests {
         );
 
         let output = format_tstp(
-            &[split_clause, component_clause, branch_refutation, sat_refutation],
+            &[
+                split_clause,
+                component_clause,
+                branch_refutation,
+                sat_refutation,
+            ],
             &symbols,
         );
         assert!(output.contains("inference(avatar_split_clause, [status(esa)"));
