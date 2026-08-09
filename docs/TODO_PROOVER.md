@@ -57,8 +57,7 @@ The scoring is highly asymmetric. A single `−10` requires 10 correct `+1` veri
 **Files:** `crates/mrs-proover/src/verify.rs`, `crates/mrs-proover/src/atp/external.rs`
 
 - **Resolved Problem 1 (CPU over-subscription)**: `MrsAtp::check_step` now passes `Some(1)` to `run_schedule`. The verifier keeps parallelism across independent proof steps, while each in-process MRS query runs its two-strategy KBO/LPO schedule sequentially.
-- **Resolved portion of Problem 2 (shared timing pressure)**: the search scheduler now polls shared unit-equality chains at fixed iteration epochs, sorts them by stable content key, and deduplicates imports. This removes asynchronous pool-observation order as a source of variation. `MRS_SHARED_POOL_INTERVAL` controls the experimental interval.
-- **Remaining Problem 2 (LRS policy)**: the default LRS policy still uses wall-clock throughput because search deadlines are wall-clock competition limits. `SearchConfig::lrs_policy` now provides an opt-in `FixedIterations` mode for deterministic experiments and unit tests, enabled by `MRS_LRS_FIXED_ITERATIONS=<N>`; replacing the default requires benchmark evidence because it changes resource allocation and may affect solved coverage.
+- **Problem 2 (LRS pruning instability)**: wall-clock-sensitive LRS pruning can still vary under CPU contention. A deterministic policy remains to be designed and benchmarked without changing competition deadline semantics.
 
 ### Basic E/Vampire Structural Parsing for CASC Dataset Hardening — **more `+2` points**
 **Files:** Various `crates/mrs-proover/src/checks/`
