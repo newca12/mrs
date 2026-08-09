@@ -53,6 +53,15 @@ The scoring is highly asymmetric. A single `−10` requires 10 correct `+1` veri
 
 ## Remaining Work
 
+### High Priority: Mitigate Parallel verification CPU Over-subscription & Non-Determinism
+**Files:** `crates/mrs-proover/src/verify.rs`, `crates/mrs-proover/src/atp/external.rs`
+
+- **Problem 1 (Severe CPU Over-subscription)**: `mrs-proover` spawns a thread pool of size `settings.workers` (default 8) to verify different proof steps in parallel. However, for steps requiring the in-process `mrs` ATP, `MrsAtp::check_step` calls `mrs_search::strategy::run_schedule` passing `None` as the workers limit. This defaults inside `run_schedule` to spawning *another* `num_cpus::get_physical()` (8) threads per step. On an 8-core machine verifying 8 steps in parallel, this results in up to 64 active threads competing intensely for the 8 physical cores, causing extreme context-switching overhead and SMT cache thrashing.
+- **Problem 2 (LRS Pruning Instability)**: Due to the extreme over-subscription and timing skew described in Problem 1, the wall-clock-sensitive LRS (Limited Resource Strategy) pruning inside the `mrs-search` Given-Clause loop randomly discards critical clauses on some runs but not on others. This leads to non-deterministic `AtpVerdict::Unknown` vs `AtpVerdict::Sound` results on identical proof files across runs.
+- **Proposed Mitigations**:
+  - **Force Single-Threaded Step Search**: Explicitly pass `Some(1)` as `workers` to `run_schedule` inside `MrsAtp::check_step`. Since `mrs-proover` is already parallelizing at the step level across 8 cores, individual in-process ATP step checks must run strictly sequentially to prevent core over-subscription.
+  - **Deterministic LRS Pruning**: Incorporate the thread-local CPU time (`libc::CLOCK_THREAD_CPUTIME_ID`) or virtual instruction/iteration-count timer in the Given-Clause loop to insulate LRS pruning from CPU scheduling noise.
+
 ### Basic E/Vampire Structural Parsing for CASC Dataset Hardening — **more `+2` points**
 **Files:** Various `crates/mrs-proover/src/checks/`
 
