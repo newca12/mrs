@@ -32,7 +32,7 @@ if [[ -x "${VAMPIRE}" ]]; then
     ARGS+=(--vampire "${VAMPIRE}")
 fi
 
-WALLCLOCK="${STAREXEC_WALLCLOCK_LIMIT:-30}"
+WALLCLOCK="${2:-${STAREXEC_WALLCLOCK_LIMIT:-30}}"
 # Enforce a minimum of 1s. Critically, this must never evaluate to 0: GNU
 # `timeout 0s <cmd>` disables the timeout entirely (runs the command
 # unbounded) rather than killing it immediately, which would silently

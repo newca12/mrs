@@ -38,7 +38,7 @@ if [[ -z "${TPTP:-}" && -d "${SCRIPT_DIR}/TPTP" ]]; then
     export TPTP="${SCRIPT_DIR}/TPTP"
 fi
 
-WALLCLOCK="${STAREXEC_WALLCLOCK_LIMIT:-240}"
+WALLCLOCK="${2:-${STAREXEC_WALLCLOCK_LIMIT:-240}}"
 SOFT_TIME=$(( WALLCLOCK > 5 ? WALLCLOCK - 5 : WALLCLOCK ))
 
 # Raise the stack limit for the parsing/clausification phase (mrs_tptp's
