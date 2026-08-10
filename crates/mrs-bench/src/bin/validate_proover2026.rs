@@ -144,8 +144,8 @@ fn validate_metadata(path: &Path) -> Result<(), String> {
         "maximum_score = 150",
         "manifest = \"manifest.tsv\"",
         "checksums = \"SHA256SUMS\"",
-        "normalizer = \"normalize_proover2026 v1 (mrs-bench 0.2.2)\"",
-        "proover_version = \"0.2.2\"",
+        "normalizer = \"normalize_proover2026 v1 (mrs-bench 0.2.3)\"",
+        "proover_version = \"0.2.3\"",
     ] {
         if !text.lines().any(|line| line.trim() == required) {
             return Err(format!("metadata missing `{required}`"));

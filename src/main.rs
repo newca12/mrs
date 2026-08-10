@@ -781,12 +781,13 @@ fn main() {
     #[cfg(not(feature = "proover"))]
     let emit_extras = true;
 
-    if emit_extras && proof_certified {
-        if let SearchResult::Refutation(_, tstp_proof) = &result {
-            println!("{}", szs_output_start("Proof", problem_name));
-            println!("{}", tstp_proof);
-            println!("{}", szs_output_end("Proof", problem_name));
-        }
+    if emit_extras
+        && proof_certified
+        && let SearchResult::Refutation(_, tstp_proof) = &result
+    {
+        println!("{}", szs_output_start("Proof", problem_name));
+        println!("{}", tstp_proof);
+        println!("{}", szs_output_end("Proof", problem_name));
     }
 
     if emit_extras {
@@ -854,7 +855,11 @@ fn print_statistics(
     let mut detail_str = report.telemetry_detail(search_result_name);
     if self_check {
         let self_check_status = if matches!(search_result, SearchResult::Refutation(..)) {
-            if proof_certified { "Certified" } else { "Rejected" }
+            if proof_certified {
+                "Certified"
+            } else {
+                "Rejected"
+            }
         } else {
             "Unchecked"
         };

@@ -25,7 +25,7 @@ cargo build --release -p mrs -p mrs-proover
 # 2. Run the codex tool to process the problems directory
 cargo run --release -p mrs-codex -- /home/user/EDLA/git/mrs/problems \
   --db codex.db \
-  --system mrs-0.2.1 \
+  --system mrs-0.2.3 \
   --timeout 30 \
   --cmd "./target/release/mrs {file}" \
   --verify-mode competition
@@ -36,7 +36,7 @@ For a kernel-only audit:
 ```bash
 cargo run --release -p mrs-codex -- /home/user/EDLA/git/mrs/problems \
   --db codex-kernel.db \
-  --system mrs-0.2.2 \
+  --system mrs-0.2.3 \
   --cmd "./target/release/mrs {file}" \
   --verify-mode kernel
 ```
