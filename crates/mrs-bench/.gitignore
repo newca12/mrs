@@ -8,6 +8,8 @@ results/
 
 # Competitor binaries
 systems/*/bin/
+systems/mrs/mrs
+systems/mrs-proover/mrs-proover
 
 # Generated reference lookup table (run systems/reference/fetch_answers.sh to populate)
 systems/reference/answers.tsv
