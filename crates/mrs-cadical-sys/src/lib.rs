@@ -52,6 +52,11 @@ unsafe extern "C" {
     pub fn mrs_cadical_version() -> *const c_char;
     pub fn mrs_cadical_init() -> *mut MrsCaDiCaL;
     pub fn mrs_cadical_release(solver: *mut MrsCaDiCaL);
+    pub fn mrs_cadical_set_terminate(
+        solver: *mut MrsCaDiCaL,
+        state: *mut c_void,
+        terminate: Option<unsafe extern "C" fn(*mut c_void) -> c_int>,
+    );
     pub fn mrs_cadical_add_clause(solver: *mut MrsCaDiCaL, clause: *const c_int, len: usize);
     pub fn mrs_cadical_assume(solver: *mut MrsCaDiCaL, lit: c_int);
     pub fn mrs_cadical_add_constraint(solver: *mut MrsCaDiCaL, clause: *const c_int, len: usize);

@@ -5,11 +5,19 @@
 #include <cstddef>
 #include <cstdint>
 
+struct TerminateCallback final : CaDiCaL::Terminator {
+  void *state = nullptr;
+  int (*function)(void *) = nullptr;
+
+  bool terminate() override { return function && function(state); }
+};
+
 extern "C" {
 
 struct MrsCaDiCaL {
   CaDiCaL::Solver *solver;
   void *tracer;
+  TerminateCallback terminator;
 };
 
 struct TraceCallbacks {
@@ -170,6 +178,7 @@ MrsCaDiCaL *mrs_cadical_init() {
 void mrs_cadical_release(MrsCaDiCaL *wrapper) {
   if (!wrapper)
     return;
+  wrapper->solver->disconnect_terminator();
   if (wrapper->tracer) {
     auto *tracer = static_cast<CallbackTracer *>(wrapper->tracer);
     wrapper->solver->disconnect_proof_tracer(
@@ -178,6 +187,19 @@ void mrs_cadical_release(MrsCaDiCaL *wrapper) {
   }
   delete wrapper->solver;
   delete wrapper;
+}
+
+void mrs_cadical_set_terminate(
+    MrsCaDiCaL *wrapper, void *state,
+    int (*terminate)(void *)) {
+  if (!valid(wrapper))
+    return;
+  wrapper->terminator.state = state;
+  wrapper->terminator.function = terminate;
+  if (terminate)
+    wrapper->solver->connect_terminator(&wrapper->terminator);
+  else
+    wrapper->solver->disconnect_terminator();
 }
 
 void mrs_cadical_add_clause(MrsCaDiCaL *wrapper, const int *clause, size_t len) {

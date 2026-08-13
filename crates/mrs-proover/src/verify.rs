@@ -242,6 +242,7 @@ pub fn verify_with_telemetry(
             &mut symbols,
             &mut sk_reg,
             &lowered_formulas,
+            started + settings.total_budget,
         ) {
             Prepared::Resolved(oc) => outcomes.push(Some(oc)),
             Prepared::NeedsAtp(step) => {
@@ -492,6 +493,7 @@ fn is_premise_role(r: FormulaRole) -> bool {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_node_prepare<'p>(
     dag: &Dag<'p>,
     idx: usize,
@@ -500,6 +502,7 @@ fn check_node_prepare<'p>(
     symbols: &mut SymbolTable,
     sk_reg: &mut skolemize::SkolemRegistry,
     lowered_formulas: &std::collections::HashMap<usize, mrs_core::Formula>,
+    deadline: Instant,
 ) -> Prepared {
     let node = &dag.nodes[idx];
 
@@ -690,7 +693,7 @@ fn check_node_prepare<'p>(
 
     // Other plain/thm/cth steps → prepare an ATP query for Pass 2.
     //
-    prepare_atp_step(dag, idx, strict, symbols, lowered_formulas)
+    prepare_atp_step(dag, idx, strict, symbols, lowered_formulas, deadline)
 }
 
 /// Decide a step via the ATP, keeping the prepare/finish split internal.
@@ -716,7 +719,14 @@ fn delegate_to_atp<'p>(
         };
         lowered_formulas.insert(i, f);
     }
-    match prepare_atp_step(dag, idx, false, symbols, &lowered_formulas) {
+    match prepare_atp_step(
+        dag,
+        idx,
+        false,
+        symbols,
+        &lowered_formulas,
+        Instant::now() + budget,
+    ) {
         Prepared::Resolved(oc) => oc,
         Prepared::NeedsAtp(step) => finish_atp(atp, symbols, &step, budget),
     }
@@ -1659,6 +1669,7 @@ fn validate_avatar_sat_step(
     dag: &dag::Dag<'_>,
     lowered_formulas: &std::collections::HashMap<usize, mrs_core::Formula>,
     symbols: &mrs_core::SymbolTable,
+    deadline: Instant,
 ) -> Option<StepOutcome> {
     if !matches!(
         lowered_formulas.get(&dag.by_name[node.name])?,
@@ -1863,19 +1874,27 @@ fn validate_avatar_sat_step(
     for context in &branch_contexts {
         variables.extend(context.iter().copied());
     }
-    let mut variables: Vec<_> = variables.into_iter().collect();
-    variables.sort_unstable();
     if variables.len() > 20 {
         return Some(StepOutcome::Unknown(
             "avatar_sat_refutation exceeds competition SAT verification limit".into(),
         ));
     }
-    let positions: std::collections::HashMap<_, _> = variables
-        .iter()
-        .enumerate()
-        .map(|(index, variable)| (*variable, index))
-        .collect();
-    let assignments = 1usize << variables.len();
+
+    let mut solver = mrs_cadical::Solver::new();
+
+    // 1. Add all split constraints to the SAT solver
+    for shape in &split_shapes {
+        let mut clause = Vec::with_capacity(shape.branch_vars.len() + shape.inherited_vars.len());
+        for &var in &shape.branch_vars {
+            clause.push(var as i32);
+        }
+        for &var in &shape.inherited_vars {
+            clause.push(-(var as i32));
+        }
+        solver.add_clause(&clause);
+    }
+
+    // 2. Add all branch refutations to the SAT solver
     let mut seen_contexts = std::collections::HashSet::new();
     for context in &branch_contexts {
         if !seen_contexts.insert(context.clone()) {
@@ -1883,36 +1902,26 @@ fn validate_avatar_sat_step(
                 "avatar_sat_refutation contains duplicate branch contexts".into(),
             ));
         }
-    }
-    for mask in 0..assignments {
-        let split_constraints_hold = split_shapes.iter().all(|shape| {
-            let inherited_true = shape
-                .inherited_vars
-                .iter()
-                .all(|variable| mask & (1usize << positions[variable]) != 0);
-            !inherited_true
-                || shape
-                    .branch_vars
-                    .iter()
-                    .any(|variable| mask & (1usize << positions[variable]) != 0)
-        });
-        if !split_constraints_hold {
-            continue;
+        let mut clause = Vec::with_capacity(context.len());
+        for &var in context {
+            clause.push(-(var as i32));
         }
-        let covered = branch_contexts.iter().any(|context| {
-            context
-                .iter()
-                .all(|variable| mask & (1usize << positions[variable]) != 0)
-        });
-        if !covered {
-            return Some(StepOutcome::Unsound(
-                "avatar_sat_refutation leaves a satisfiable SAT assignment unrefuted".into(),
-            ));
-        }
+        solver.add_clause(&clause);
     }
-    Some(StepOutcome::Sound)
+
+    // 3. Solve the SAT problem to check if it is unsatisfiable (refuted)
+    match solver.solve_until(deadline) {
+        mrs_cadical::SolveResult::Unsat => Some(StepOutcome::Sound),
+        mrs_cadical::SolveResult::Unknown => Some(StepOutcome::Unknown(
+            "avatar_sat_refutation SAT verification deadline exceeded".into(),
+        )),
+        _ => Some(StepOutcome::Unsound(
+            "avatar_sat_refutation leaves a satisfiable SAT assignment unrefuted".into(),
+        )),
+    }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn try_verify_avatar_step(
     rule: &str,
     node: &dag::Node<'_>,
@@ -1921,6 +1930,7 @@ fn try_verify_avatar_step(
     conclusion: &mrs_core::Formula,
     lowered_formulas: &std::collections::HashMap<usize, mrs_core::Formula>,
     symbols: &mrs_core::SymbolTable,
+    deadline: Instant,
 ) -> Option<StepOutcome> {
     let mut conclusion = conclusion;
     while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = conclusion
@@ -1988,7 +1998,7 @@ fn try_verify_avatar_step(
     } else if rule == "avatar_branch_refutation" {
         return validate_avatar_branch_step(node, premises, conclusion, symbols);
     } else if rule == "avatar_sat_refutation" {
-        return validate_avatar_sat_step(node, dag, lowered_formulas, symbols);
+        return validate_avatar_sat_step(node, dag, lowered_formulas, symbols, deadline);
     }
     None
 }
@@ -2003,6 +2013,7 @@ fn prepare_atp_step<'p>(
     strict: bool,
     symbols: &mut SymbolTable,
     lowered_formulas: &std::collections::HashMap<usize, mrs_core::Formula>,
+    deadline: Instant,
 ) -> Prepared {
     let node = &dag.nodes[idx];
     // SZS status routing. An `esa` step asserts *equisatisfiability*, not
@@ -2105,6 +2116,7 @@ fn prepare_atp_step<'p>(
             &conclusion,
             lowered_formulas,
             symbols,
+            deadline,
         )
     {
         return Prepared::Resolved(outcome);
@@ -2908,5 +2920,113 @@ mod avatar_validation_tests {
         let job = load_text(problem.to_string(), proof.to_string(), Path::new("."))
             .expect("load forged AVATAR proof");
         assert!(matches!(verify(&job, &settings()), Verdict::VerifiedBad(_)));
+    }
+
+    #[test]
+    fn competition_mode_bounds_large_avatar_sat_certificates() {
+        use std::fmt::Write;
+
+        const BRANCHES: usize = 21;
+        let mut problem = String::from("fof(top, axiom, ");
+        for index in 0..BRANCHES {
+            if index > 0 {
+                problem.push_str(" | ");
+            }
+            write!(problem, "p{index}").unwrap();
+        }
+        problem.push_str(").\n");
+        for index in 0..BRANCHES {
+            writeln!(problem, "fof(np{index}, axiom, ~p{index}).").unwrap();
+        }
+
+        let mut proof = String::new();
+        proof.push_str("fof(top, axiom, ");
+        for index in 0..BRANCHES {
+            if index > 0 {
+                proof.push_str(" | ");
+            }
+            write!(proof, "p{index}").unwrap();
+        }
+        proof.push_str(", file('problem.p', top)).\n");
+        for index in 0..BRANCHES {
+            writeln!(
+                proof,
+                "fof(np{index}, axiom, ~p{index}, file('problem.p', np{index}))."
+            )
+            .unwrap();
+        }
+
+        proof.push_str("fof(split, plain, ");
+        for index in 0..BRANCHES {
+            if index > 0 {
+                proof.push_str(" | ");
+            }
+            write!(proof, "spl0_{}", index + 1).unwrap();
+        }
+        proof.push_str(", inference(avatar_split_clause, [status(esa), avatar_split([");
+        for index in 0..BRANCHES {
+            if index > 0 {
+                proof.push_str(", ");
+            }
+            write!(
+                proof,
+                "branch({0}, spl0_{1}, [{2}])",
+                index,
+                index + 1,
+                index
+            )
+            .unwrap();
+        }
+        proof.push_str("], [])], [top])).\n");
+
+        for index in 0..BRANCHES {
+            writeln!(
+                proof,
+                "fof(comp{0}, plain, p{0} | ~spl0_{1}, inference(avatar_component_clause, [status(esa), avatar_component(split, {0}, spl0_{1})], [split])).",
+                index,
+                index + 1
+            )
+            .unwrap();
+            writeln!(
+                proof,
+                "fof(empty{0}, plain, ~spl0_{1}, inference(resolution, [status(thm)], [comp{0}, np{0}])).",
+                index,
+                index + 1
+            )
+            .unwrap();
+            writeln!(
+                proof,
+                "fof(branch{0}, plain, $false, inference(avatar_branch_refutation, [status(esa), avatar_context([spl0_{1}])], [empty{0}])).",
+                index,
+                index + 1
+            )
+            .unwrap();
+        }
+
+        proof.push_str(
+            "fof(bot, plain, $false, inference(avatar_sat_refutation, [status(thm), avatar_sat_refutation([split], [",
+        );
+        for index in 0..BRANCHES {
+            if index > 0 {
+                proof.push_str(", ");
+            }
+            write!(proof, "branch{index}").unwrap();
+        }
+        proof.push_str("])], [split, ");
+        for index in 0..BRANCHES {
+            if index > 0 {
+                proof.push_str(", ");
+            }
+            write!(proof, "branch{index}").unwrap();
+        }
+        proof.push_str("])).\n");
+
+        let job =
+            load_text(problem, proof, Path::new(".")).expect("large AVATAR proof should load");
+        let verdict = verify(&job, &settings());
+        assert!(
+            matches!(verdict, Verdict::Unknown(ref reason) if reason.contains("SAT verification limit")),
+            "large AVATAR certificates must fail closed at the bounded limit: {verdict:?}"
+        );
     }
 }

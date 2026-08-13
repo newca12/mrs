@@ -24,6 +24,12 @@ pub struct AvatarContext {
     /// Exact clauses submitted to the SAT solver, in insertion order.
     /// This manifest is replayed by proof-mode CaDiCaL after search.
     pub sat_manifest: Vec<Vec<i32>>,
+    /// Clause IDs for the split constraints in `sat_manifest`.
+    ///
+    /// Branch-exclusion clauses are also present in `sat_manifest`, so the
+    /// split IDs are tracked separately instead of reconstructing them by
+    /// scanning the mutable clause store during proof export.
+    pub sat_split_ids: Vec<mrs_core::clause::ClauseId>,
 }
 
 impl AvatarContext {
@@ -34,6 +40,7 @@ impl AvatarContext {
             next_var: 1, // cadical variables start from 1
             current_model: HashSet::default(),
             sat_manifest: Vec::new(),
+            sat_split_ids: Vec::new(),
         }
     }
 
@@ -174,6 +181,7 @@ impl AvatarContext {
         }
 
         self.add_sat_clause(sat_clause);
+        self.sat_split_ids.push(split_id);
 
         Some(split_clauses)
     }
@@ -352,6 +360,7 @@ impl AvatarContext {
         }
 
         self.add_sat_clause(sat_clause);
+        self.sat_split_ids.push(split_id);
         Some(split_clauses)
     }
 }
@@ -676,5 +685,6 @@ mod tests {
             vars1, vars2,
             "alpha-equivalent clauses must reuse the same AVATAR variables"
         );
+        assert_eq!(ctx.sat_split_ids.len(), 2);
     }
 }

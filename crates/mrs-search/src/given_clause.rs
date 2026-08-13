@@ -302,6 +302,11 @@ fn avatar_refute_branch(
 
 fn avatar_certificate_parents(state: &crate::state::SearchState) -> Vec<ClauseId> {
     let mut relevant = HashSet::default();
+    for &id in &state.avatar.sat_split_ids {
+        if state.clause_store.contains_key(&id) {
+            relevant.insert(id);
+        }
+    }
     for branch_root in &state.branch_empty_ids {
         for ancestor in extract_proof_ids(*branch_root, &state.clause_store) {
             if matches!(

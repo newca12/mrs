@@ -6,8 +6,9 @@
 
 #![allow(unsafe_op_in_unsafe_fn)]
 
-use std::ffi::{CStr, CString, NulError};
+use std::ffi::{CStr, CString, NulError, c_int, c_void};
 use std::ptr::NonNull;
+use std::time::Instant;
 
 use mrs_cadical_sys as sys;
 
@@ -554,6 +555,30 @@ impl Solver {
         }
     }
 
+    /// Solve until `deadline`, returning `Unknown` when the terminator fires.
+    ///
+    /// CaDiCaL checks its terminator at regular points inside CDCL search, so
+    /// this bounds solver time without polling from a second thread or
+    /// accessing the solver concurrently.
+    pub fn solve_until(&mut self, deadline: Instant) -> SolveResult {
+        if Instant::now() >= deadline {
+            return SolveResult::Unknown;
+        }
+        let mut state = DeadlineState { deadline };
+        unsafe {
+            sys::mrs_cadical_set_terminate(
+                self.raw.as_ptr(),
+                (&mut state as *mut DeadlineState).cast::<c_void>(),
+                Some(deadline_terminate),
+            );
+        }
+        let result = self.solve();
+        unsafe {
+            sys::mrs_cadical_set_terminate(self.raw.as_ptr(), std::ptr::null_mut(), None);
+        }
+        result
+    }
+
     pub fn status(&self) -> SolveResult {
         match unsafe { sys::mrs_cadical_status(self.raw.as_ptr()) } {
             10 => SolveResult::Sat,
@@ -714,6 +739,15 @@ impl Solver {
             events: state.events,
         })
     }
+}
+
+struct DeadlineState {
+    deadline: Instant,
+}
+
+unsafe extern "C" fn deadline_terminate(state: *mut c_void) -> c_int {
+    let state = unsafe { &*(state.cast::<DeadlineState>()) };
+    (Instant::now() >= state.deadline) as c_int
 }
 
 impl Default for Solver {
@@ -946,6 +980,46 @@ mod tests {
         solver.add_clause([1]);
         solver.add_clause([-1]);
         assert_eq!(solver.solve(), SolveResult::Unsat);
+    }
+
+    #[test]
+    fn solve_until_honors_expired_deadline() {
+        let mut solver = Solver::new();
+        solver.add_clause([1]);
+        solver.add_clause([-1]);
+        assert_eq!(
+            solver.solve_until(Instant::now() - std::time::Duration::from_secs(1)),
+            SolveResult::Unknown
+        );
+    }
+
+    #[test]
+    fn solve_until_interrupts_search() {
+        let mut solver = Solver::new();
+        // Pigeonhole(12, 11) is unsatisfiable but not a unit contradiction;
+        // the short future deadline exercises CaDiCaL's callback terminator.
+        const PIGEONS: i32 = 12;
+        const HOLES: i32 = 11;
+        let var = |p: i32, h: i32| p * HOLES + h + 1;
+        for p in 0..PIGEONS {
+            solver.add_clause((0..HOLES).map(|h| var(p, h)).collect::<Vec<_>>());
+            for h1 in 0..HOLES {
+                for h2 in h1 + 1..HOLES {
+                    solver.add_clause([-var(p, h1), -var(p, h2)]);
+                }
+            }
+        }
+        for h in 0..HOLES {
+            for p1 in 0..PIGEONS {
+                for p2 in p1 + 1..PIGEONS {
+                    solver.add_clause([-var(p1, h), -var(p2, h)]);
+                }
+            }
+        }
+        assert_eq!(
+            solver.solve_until(Instant::now() + std::time::Duration::from_millis(1)),
+            SolveResult::Unknown
+        );
     }
 
     #[test]
