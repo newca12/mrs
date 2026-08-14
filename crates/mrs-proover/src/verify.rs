@@ -1439,11 +1439,14 @@ fn validate_avatar_split_shape(
         split_avatar_literals(&parent_literals, symbols);
     let (split_ordinary, split_negative, split_positive) =
         split_avatar_literals(&split_literals, symbols);
+    let mut distinct_split_positive = split_positive.clone();
+    distinct_split_positive.sort_unstable();
+    distinct_split_positive.dedup();
     if parent_ordinary.len() < 2
         || !parent_positive.is_empty()
         || !split_ordinary.is_empty()
         || split_positive.len() < 2
-        || normalized_avatar_vars(split_positive.clone()).is_none()
+        || distinct_split_positive.len() != split_positive.len()
         || normalized_avatar_vars(parent_negative.clone())
             != normalized_avatar_vars(split_negative.clone())
     {

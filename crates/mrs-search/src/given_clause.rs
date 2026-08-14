@@ -232,22 +232,28 @@ fn update_model(state: &mut SearchState) {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AvatarBranchResult {
+    Sat,
+    Unsat,
+    Unknown,
+}
+
 /// Add the negation of an AVATAR clause's assumptions to the SAT solver and
-/// check satisfiability. Returns `true` if a new model was found (clause
-/// is now dormant), `false` if UNSAT (full refutation).
+/// check satisfiability.
 fn avatar_refute_branch(
     state: &mut SearchState,
     cid: mrs_core::clause::ClauseId,
     avatar: &[u32],
     ordering: &crate::TermOrdering,
-) -> bool {
+) -> AvatarBranchResult {
     if state.search_deadline.is_some_and(|d| Instant::now() >= d)
         || state
             .stop_flag
             .as_ref()
             .is_some_and(|f| f.load(Ordering::Relaxed))
     {
-        return true;
+        return AvatarBranchResult::Unknown;
     }
     let sat_clause: Vec<i32> = avatar.iter().map(|&a| -(a as i32)).collect();
     state.avatar.add_sat_clause(sat_clause);
@@ -265,12 +271,15 @@ fn avatar_refute_branch(
                 )
             })
     }) {
-        if matches!(state.avatar.solver.solve(), mrs_cadical::SolveResult::Sat) {
-            update_model(state);
-            sync_active_dormant(state, ordering);
-            return true;
-        }
-        return false;
+        return match state.avatar.solver.solve() {
+            mrs_cadical::SolveResult::Sat => {
+                update_model(state);
+                sync_active_dormant(state, ordering);
+                AvatarBranchResult::Sat
+            }
+            mrs_cadical::SolveResult::Unsat => AvatarBranchResult::Unsat,
+            mrs_cadical::SolveResult::Unknown => AvatarBranchResult::Unknown,
+        };
     }
 
     // The first-order empty clause is a branch refutation even when the SAT
@@ -291,12 +300,14 @@ fn avatar_refute_branch(
     state.register_clause(&branch_root);
     state.branch_empty_ids.push(branch_root.id);
 
-    if matches!(state.avatar.solver.solve(), mrs_cadical::SolveResult::Sat) {
-        update_model(state);
-        sync_active_dormant(state, ordering);
-        true
-    } else {
-        false
+    match state.avatar.solver.solve() {
+        mrs_cadical::SolveResult::Sat => {
+            update_model(state);
+            sync_active_dormant(state, ordering);
+            AvatarBranchResult::Sat
+        }
+        mrs_cadical::SolveResult::Unsat => AvatarBranchResult::Unsat,
+        mrs_cadical::SolveResult::Unknown => AvatarBranchResult::Unknown,
     }
 }
 
@@ -651,51 +662,60 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 }
             }
             let (final_id, tstp_proof) = if config.use_avatar {
-                let mut legacy_store: std::collections::HashMap<_, _> = state
+                let is_pure_fol = state
                     .clause_store
-                    .iter()
-                    .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
-                    .collect();
-
-                let parents = avatar_certificate_parents(state);
-                if parents.is_empty() {
-                    return SearchResult::Refutation(
-                        empty_id,
-                        extract_and_format_proof(empty_id, state),
-                    );
-                }
-                let final_id = state.id_gen.next();
-                let split_nodes = avatar_certificate_split_ids(state);
-                let branch_roots = avatar_certificate_branch_ids(state);
-                let mut final_false_clause = mrs_core::clause::Clause::new(
-                    final_id,
-                    vec![],
-                    mrs_core::clause::ClauseSource::Inference {
-                        rule: "avatar_sat_refutation",
-                        parents: parents.into(),
-                    },
-                );
-                final_false_clause.certificate = Some(ClauseCertificate::AvatarSatRefutation {
-                    sat_trace: avatar_sat_trace(
-                        state,
-                        &split_nodes,
-                        &branch_roots,
-                        config.emit_avatar_trace,
-                    ),
-                    split_nodes,
-                    branch_roots,
-                });
-                legacy_store.insert(final_id, final_false_clause);
-
-                let mut final_proof = mrs_proof::extract::extract_proof(final_id, &legacy_store);
-                final_proof.sort_unstable_by_key(|c| c.id.0);
-
-                let tstp = if state.symbols.is_empty() {
-                    String::new()
+                    .get(&empty_id)
+                    .is_some_and(|c| c.avatar.is_empty());
+                if is_pure_fol {
+                    (empty_id, extract_and_format_proof(empty_id, state))
                 } else {
-                    mrs_proof::tstp::format_tstp(&final_proof, &state.symbols)
-                };
-                (final_id, tstp)
+                    let mut legacy_store: std::collections::HashMap<_, _> = state
+                        .clause_store
+                        .iter()
+                        .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
+                        .collect();
+
+                    let parents = avatar_certificate_parents(state);
+                    if parents.is_empty() {
+                        return SearchResult::Refutation(
+                            empty_id,
+                            extract_and_format_proof(empty_id, state),
+                        );
+                    }
+                    let final_id = state.id_gen.next();
+                    let split_nodes = avatar_certificate_split_ids(state);
+                    let branch_roots = avatar_certificate_branch_ids(state);
+                    let mut final_false_clause = mrs_core::clause::Clause::new(
+                        final_id,
+                        vec![],
+                        mrs_core::clause::ClauseSource::Inference {
+                            rule: "avatar_sat_refutation",
+                            parents: parents.into(),
+                        },
+                    );
+                    final_false_clause.certificate = Some(ClauseCertificate::AvatarSatRefutation {
+                        sat_trace: avatar_sat_trace(
+                            state,
+                            &split_nodes,
+                            &branch_roots,
+                            config.emit_avatar_trace,
+                        ),
+                        split_nodes,
+                        branch_roots,
+                    });
+                    legacy_store.insert(final_id, final_false_clause);
+
+                    let mut final_proof =
+                        mrs_proof::extract::extract_proof(final_id, &legacy_store);
+                    final_proof.sort_unstable_by_key(|c| c.id.0);
+
+                    let tstp = if state.symbols.is_empty() {
+                        String::new()
+                    } else {
+                        mrs_proof::tstp::format_tstp(&final_proof, &state.symbols)
+                    };
+                    (final_id, tstp)
+                }
             } else {
                 (empty_id, extract_and_format_proof(empty_id, state))
             };
@@ -792,13 +812,15 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
     // Initial SAT sync
     if config.use_avatar {
         state.avatar.current_model.clear();
-        if matches!(state.avatar.solver.solve(), mrs_cadical::SolveResult::Sat) {
-            update_model(state);
-        } else {
-            if std::env::var("TRACE_SEARCH").is_ok() {
-                eprintln!("[TRACE] return site 1 (line 437) called with id = 0");
+        match state.avatar.solver.solve() {
+            mrs_cadical::SolveResult::Sat => update_model(state),
+            mrs_cadical::SolveResult::Unsat => {
+                if std::env::var("TRACE_SEARCH").is_ok() {
+                    eprintln!("[TRACE] return site 1 (line 437) called with id = 0");
+                }
+                return SearchResult::Refutation(mrs_core::clause::ClauseId(0), String::new());
             }
-            return SearchResult::Refutation(mrs_core::clause::ClauseId(0), String::new());
+            mrs_cadical::SolveResult::Unknown => return SearchResult::Timeout,
         }
     }
 
@@ -818,14 +840,17 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
             } else {
                 let avatar = clause.avatar.clone();
                 let cid = clause.id;
-                if !avatar_refute_branch(state, cid, &avatar, &ordering) {
-                    if std::env::var("TRACE_SEARCH").is_ok() {
-                        eprintln!(
-                            "[TRACE] return site 3 (line 452) called with id = {}",
-                            cid.0
-                        );
+                match avatar_refute_branch(state, cid, &avatar, &ordering) {
+                    AvatarBranchResult::Unsat => {
+                        if std::env::var("TRACE_SEARCH").is_ok() {
+                            eprintln!(
+                                "[TRACE] return site 3 (line 452) called with id = {}",
+                                cid.0
+                            );
+                        }
+                        return SearchResult::Refutation(cid, String::new());
                     }
-                    return SearchResult::Refutation(cid, String::new());
+                    AvatarBranchResult::Sat | AvatarBranchResult::Unknown => {}
                 }
             }
         }
@@ -1016,7 +1041,10 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         id.0, avatar
                     );
                 }
-                if !avatar_refute_branch(state, id, &avatar, &ordering) {
+                if matches!(
+                    avatar_refute_branch(state, id, &avatar, &ordering),
+                    AvatarBranchResult::Unsat
+                ) {
                     if std::env::var("TRACE_AVATAR").is_ok() {
                         eprintln!(
                             "[AVATAR] empty given {}: avatar_refute_branch returned false → Refutation",
@@ -1489,7 +1517,10 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 }
                 let avatar = empty.avatar.clone();
                 let id = empty.id;
-                if !avatar_refute_branch(state, id, &avatar, &ordering) {
+                if matches!(
+                    avatar_refute_branch(state, id, &avatar, &ordering),
+                    AvatarBranchResult::Unsat
+                ) {
                     if std::env::var("TRACE_SEARCH").is_ok() {
                         eprintln!(
                             "[TRACE] return site 7 (line 1131) called with id = {}",
@@ -1568,20 +1599,27 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         given.id.0
                     );
                 }
-                if matches!(state.avatar.solver.solve(), mrs_cadical::SolveResult::Sat) {
-                    update_model(state);
-                    sync_active_dormant(state, &ordering);
-                } else {
-                    if trace_avatar {
-                        eprintln!(
-                            "[AVATAR] model_violated path: SAT UNSAT → Refutation(given={})",
-                            given.id.0
+                match state.avatar.solver.solve() {
+                    mrs_cadical::SolveResult::Sat => {
+                        update_model(state);
+                        sync_active_dormant(state, &ordering);
+                    }
+                    mrs_cadical::SolveResult::Unsat => {
+                        if trace_avatar {
+                            eprintln!(
+                                "[AVATAR] model_violated path: SAT UNSAT → Refutation(given={})",
+                                given.id.0
+                            );
+                        }
+                        if std::env::var("TRACE_SEARCH").is_ok() {
+                            eprintln!("[TRACE] return site 8 (line 1217) called with id = 0");
+                        }
+                        return SearchResult::Refutation(
+                            mrs_core::clause::ClauseId(0),
+                            String::new(),
                         );
                     }
-                    if std::env::var("TRACE_SEARCH").is_ok() {
-                        eprintln!("[TRACE] return site 8 (line 1217) called with id = 0");
-                    }
-                    return SearchResult::Refutation(mrs_core::clause::ClauseId(0), String::new());
+                    mrs_cadical::SolveResult::Unknown => return SearchResult::Timeout,
                 }
             }
         }
@@ -1623,7 +1661,10 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                             id.0, avatar
                         );
                     }
-                    if !avatar_refute_branch(state, id, &avatar, &ordering) {
+                    if matches!(
+                        avatar_refute_branch(state, id, &avatar, &ordering),
+                        AvatarBranchResult::Unsat
+                    ) {
                         if trace_avatar {
                             eprintln!(
                                 "[AVATAR] avatar_refute_branch returned false → SAT UNSAT → Refutation({})",
@@ -1671,7 +1712,10 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     }
                     let avatar = clause.avatar.clone();
                     let id = clause.id;
-                    if !avatar_refute_branch(state, id, &avatar, &ordering) {
+                    if matches!(
+                        avatar_refute_branch(state, id, &avatar, &ordering),
+                        AvatarBranchResult::Unsat
+                    ) {
                         if std::env::var("TRACE_SEARCH").is_ok() {
                             eprintln!(
                                 "[TRACE] return site 12 (line 1298) called with id = {}",
@@ -1706,7 +1750,10 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     }
                     let avatar = empty.avatar.clone();
                     let id = empty.id;
-                    if !avatar_refute_branch(state, id, &avatar, &ordering) {
+                    if matches!(
+                        avatar_refute_branch(state, id, &avatar, &ordering),
+                        AvatarBranchResult::Unsat
+                    ) {
                         if std::env::var("TRACE_SEARCH").is_ok() {
                             eprintln!(
                                 "[TRACE] return site 14 (line 1321) called with id = {}",

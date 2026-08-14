@@ -132,6 +132,7 @@ impl AvatarContext {
         let split_id = id_gen.next();
         let mut split_clauses = Vec::new();
         let mut sat_clause = Vec::new();
+        let mut used_vars = HashSet::default();
 
         for (i, lits) in parts.into_iter().enumerate() {
             // For each part, canonicalize the component by renaming variables
@@ -141,14 +142,17 @@ impl AvatarContext {
             // and prunes redundant case splits.
             let comp_str = canonical_component_key(&lits);
 
-            let var = if let Some(&v) = self.component_vars.get(&comp_str) {
+            let var = if let Some(&v) = self.component_vars.get(&comp_str)
+                && !used_vars.contains(&v)
+            {
                 v
             } else {
                 let v = self.next_var;
                 self.next_var += 1;
-                self.component_vars.insert(comp_str, v);
+                self.component_vars.entry(comp_str).or_insert(v);
                 v
             };
+            used_vars.insert(var);
 
             sat_clause.push(var as i32);
 
@@ -275,20 +279,24 @@ impl AvatarContext {
         let mut split_clauses = Vec::new();
         let mut sat_clause = Vec::new();
         let mut split_lits = Vec::new();
+        let mut used_vars = HashSet::default();
 
         // 1. Generate split component variable IDs and construct the parent split clause
         for entries in &parts {
             let lits: Vec<IdLiteral> = entries.iter().map(|(_, lit)| lit.clone()).collect();
             let comp_str = canonical_component_key_id(&lits, bank);
 
-            let var = if let Some(&v) = self.component_vars.get(&comp_str) {
+            let var = if let Some(&v) = self.component_vars.get(&comp_str)
+                && !used_vars.contains(&v)
+            {
                 v
             } else {
                 let v = self.next_var;
                 self.next_var += 1;
-                self.component_vars.insert(comp_str, v);
+                self.component_vars.entry(comp_str).or_insert(v);
                 v
             };
+            used_vars.insert(var);
 
             sat_clause.push(var as i32);
 
@@ -686,5 +694,34 @@ mod tests {
             "alpha-equivalent clauses must reuse the same AVATAR variables"
         );
         assert_eq!(ctx.sat_split_ids.len(), 2);
+    }
+
+    #[test]
+    fn split_clause_uses_distinct_sat_vars_within_one_split() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let mut ctx = AvatarContext::new();
+        let mut id_gen = mrs_core::clause::ClauseIdGen::new();
+        let clause = Clause::new(
+            id_gen.next(),
+            vec![
+                Literal::pos(Atom::pred(p, vec![Term::var(0)])),
+                Literal::pos(Atom::pred(p, vec![Term::var(5)])),
+            ],
+            mrs_core::clause::ClauseSource::Input {
+                name: "duplicate-shape".into(),
+                role: "axiom".into(),
+            },
+        );
+
+        let components = ctx
+            .split_clause(&clause, &mut id_gen)
+            .expect("split expected");
+        let vars = components
+            .iter()
+            .filter_map(|component| component.avatar.last().copied())
+            .collect::<Vec<_>>();
+        assert_eq!(vars.len(), 2);
+        assert_ne!(vars[0], vars[1]);
     }
 }
