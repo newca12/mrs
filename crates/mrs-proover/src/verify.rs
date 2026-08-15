@@ -1147,7 +1147,24 @@ fn unify_lists(
     Some(subst)
 }
 
+fn dedup_lits(lits: &[mrs_core::Formula]) -> Vec<mrs_core::Formula> {
+    let mut unique = Vec::new();
+    for literal in lits {
+        if !unique
+            .iter()
+            .any(|existing| mrs_core::alpha::alpha_equiv(literal, existing))
+        {
+            unique.push(literal.clone());
+        }
+    }
+    unique
+}
+
 fn clause_equiv(lits1: &[mrs_core::Formula], lits2: &[mrs_core::Formula]) -> bool {
+    // Clauses are sets of literals semantically: repeated literals do not
+    // change the clause, but distinct literals must remain distinct.
+    let lits1 = dedup_lits(lits1);
+    let lits2 = dedup_lits(lits2);
     if lits1.len() != lits2.len() {
         return false;
     }
@@ -1181,7 +1198,7 @@ fn clause_equiv(lits1: &[mrs_core::Formula], lits2: &[mrs_core::Formula]) -> boo
     }
     let mut used = vec![false; lits2.len()];
     let mut map = std::collections::HashMap::new();
-    match_lits(0, lits1, lits2, &mut used, &mut map)
+    match_lits(0, &lits1, &lits2, &mut used, &mut map)
 }
 
 fn try_factoring_step(p1: &mrs_core::Formula, concl: &mrs_core::Formula) -> bool {
@@ -1439,14 +1456,10 @@ fn validate_avatar_split_shape(
         split_avatar_literals(&parent_literals, symbols);
     let (split_ordinary, split_negative, split_positive) =
         split_avatar_literals(&split_literals, symbols);
-    let mut distinct_split_positive = split_positive.clone();
-    distinct_split_positive.sort_unstable();
-    distinct_split_positive.dedup();
     if parent_ordinary.len() < 2
         || !parent_positive.is_empty()
         || !split_ordinary.is_empty()
         || split_positive.len() < 2
-        || distinct_split_positive.len() != split_positive.len()
         || normalized_avatar_vars(parent_negative.clone())
             != normalized_avatar_vars(split_negative.clone())
     {
@@ -1519,6 +1532,35 @@ fn validate_avatar_split_shape(
         return Err(StepOutcome::Unsound(
             "avatar_split_clause does not cover every parent literal".into(),
         ));
+    }
+
+    // SAT-variable reuse is sound only when the corresponding component
+    // clauses are alpha-equivalent. Otherwise `(S | S)` strengthens the
+    // original split and can make a forged refutation appear complete.
+    for left in 0..branch_vars.len() {
+        for right in left + 1..branch_vars.len() {
+            if branch_vars[left] != branch_vars[right] {
+                continue;
+            }
+            let left_literals = component_indices[left]
+                .as_ref()
+                .expect("covered component has indices")
+                .iter()
+                .map(|index| parent_ordinary[*index].clone())
+                .collect::<Vec<_>>();
+            let right_literals = component_indices[right]
+                .as_ref()
+                .expect("covered component has indices")
+                .iter()
+                .map(|index| parent_ordinary[*index].clone())
+                .collect::<Vec<_>>();
+            if !clause_equiv(&left_literals, &right_literals) {
+                return Err(StepOutcome::Unsound(
+                    "avatar_split_clause reuses a SAT variable for non-equivalent components"
+                        .into(),
+                ));
+            }
+        }
     }
 
     Ok(AvatarSplitShape {
@@ -1805,7 +1847,7 @@ fn validate_avatar_sat_step(
         // choose arbitrary SAT variables and make the final assignment
         // coverage test pass without proving that those variables occur in a
         // first-order branch at all.
-        let mut component_contexts = std::collections::HashSet::new();
+        let mut ancestor_vars = std::collections::HashSet::new();
         let mut pending = vec![branch_parent_idx];
         let mut visited = std::collections::HashSet::new();
         while let Some(current) = pending.pop() {
@@ -1849,7 +1891,7 @@ fn validate_avatar_sat_step(
                         "avatar component ancestor has duplicate SAT markers".into(),
                     ));
                 };
-                component_contexts.insert(component_context);
+                ancestor_vars.extend(component_context.iter().copied());
             }
             for parent_name in &current_node.parents {
                 let Some(&parent_idx) = dag.by_name.get(parent_name) else {
@@ -1860,7 +1902,7 @@ fn validate_avatar_sat_step(
                 pending.push(parent_idx);
             }
         }
-        if !component_contexts.contains(&context) {
+        if !context.iter().all(|var| ancestor_vars.contains(var)) {
             return Some(StepOutcome::Unsound(
                 "avatar_sat_refutation branch context is not justified by a component clause"
                     .into(),
@@ -2914,6 +2956,131 @@ mod avatar_validation_tests {
     }
 
     #[test]
+    fn competition_mode_accepts_alpha_equivalent_duplicate_avatar_variable() {
+        let problem = "fof(top, axiom, p(X) | p(Y)).\n\
+                       fof(np, axiom, ~p(a)).";
+        let proof = "fof(top, axiom, p(X) | p(Y), file('problem.p', top)).\
+                     fof(np, axiom, ~p(a), file('problem.p', np)).\
+                     fof(split, plain, spl0_1 | spl0_1,\
+                         inference(avatar_split_clause,\
+                           [status(esa),\
+                            avatar_split([branch(0, spl0_1, [0]),\
+                                         branch(1, spl0_1, [1])], [])],\
+                           [top])).\
+                     fof(comp_x, plain, p(X) | ~spl0_1,\
+                         inference(avatar_component_clause,\
+                           [status(esa), avatar_component(split, 0, spl0_1)],\
+                           [split])).\
+                     fof(comp_y, plain, p(Y) | ~spl0_1,\
+                         inference(avatar_component_clause,\
+                           [status(esa), avatar_component(split, 1, spl0_1)],\
+                           [split])).\
+                     fof(empty, plain, ~spl0_1,\
+                         inference(resolution, [status(thm)], [comp_x, np])).\
+                     fof(branch, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(esa), avatar_context([spl0_1])], [empty])).\
+                     fof(bot, plain, $false,\
+                         inference(avatar_sat_refutation,\
+                           [status(thm),\
+                            avatar_sat_refutation([split], [branch])],\
+                           [split, branch])).";
+        let job = load_text(problem.to_string(), proof.to_string(), Path::new("."))
+            .expect("load alpha-equivalent AVATAR proof");
+        assert_eq!(verify(&job, &settings()), Verdict::VerifiedGood);
+    }
+
+    #[test]
+    fn competition_mode_accepts_duplicate_literals_in_avatar_component() {
+        let problem = "fof(top, axiom, p | p).\n\
+                       fof(np, axiom, ~p).";
+        let proof = "fof(top, axiom, p | p, file('problem.p', top)).\
+                     fof(np, axiom, ~p, file('problem.p', np)).\
+                     fof(split, plain, spl0_1 | spl0_2,\
+                         inference(avatar_split_clause,\
+                           [status(esa),\
+                            avatar_split([branch(0, spl0_1, [0]),\
+                                         branch(1, spl0_2, [1])], [])],\
+                           [top])).\
+                     fof(comp_left, plain, p | p | ~spl0_1,\
+                         inference(avatar_component_clause,\
+                           [status(esa), avatar_component(split, 0, spl0_1)],\
+                           [split])).\
+                     fof(comp_right, plain, p | ~spl0_2,\
+                         inference(avatar_component_clause,\
+                           [status(esa), avatar_component(split, 1, spl0_2)],\
+                           [split])).\
+                     fof(left_once, plain, p | ~spl0_1,\
+                         inference(resolution, [status(thm)], [comp_left, np])).\
+                     fof(empty_left, plain, ~spl0_1,\
+                         inference(resolution, [status(thm)], [left_once, np])).\
+                     fof(empty_right, plain, ~spl0_2,\
+                         inference(resolution, [status(thm)], [comp_right, np])).\
+                     fof(branch_left, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(esa), avatar_context([spl0_1])], [empty_left])).\
+                     fof(branch_right, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(esa), avatar_context([spl0_2])], [empty_right])).\
+                     fof(bot, plain, $false,\
+                         inference(avatar_sat_refutation,\
+                           [status(thm),\
+                            avatar_sat_refutation([split], [branch_left, branch_right])],\
+                           [split, branch_left, branch_right])).";
+        let job = load_text(problem.to_string(), proof.to_string(), Path::new("."))
+            .expect("load duplicate-literal AVATAR proof");
+        assert_eq!(verify(&job, &settings()), Verdict::VerifiedGood);
+    }
+
+    #[test]
+    fn competition_mode_accepts_union_avatar_branch_context() {
+        let problem = "fof(top, axiom, p | ~p).\n\
+                       fof(pos, axiom, p).\n\
+                       fof(neg, axiom, ~p).";
+        let proof = "fof(top, axiom, p | ~p, file('problem.p', top)).\
+                     fof(pos, axiom, p, file('problem.p', pos)).\
+                     fof(neg, axiom, ~p, file('problem.p', neg)).\
+                     fof(split, plain, spl0_1 | spl0_2,\
+                         inference(avatar_split_clause,\
+                           [status(esa),\
+                            avatar_split([branch(0, spl0_1, [0]),\
+                                         branch(1, spl0_2, [1])], [])],\
+                           [top])).\
+                     fof(comp_pos, plain, p | ~spl0_1,\
+                         inference(avatar_component_clause,\
+                           [status(esa), avatar_component(split, 0, spl0_1)],\
+                           [split])).\
+                     fof(comp_neg, plain, ~p | ~spl0_2,\
+                         inference(avatar_component_clause,\
+                           [status(esa), avatar_component(split, 1, spl0_2)],\
+                           [split])).\
+                     fof(empty_pos, plain, ~spl0_1,\
+                         inference(resolution, [status(thm)], [comp_pos, neg])).\
+                     fof(empty_neg, plain, ~spl0_2,\
+                         inference(resolution, [status(thm)], [comp_neg, pos])).\
+                     fof(union, plain, ~spl0_1 | ~spl0_2,\
+                         inference(resolution, [status(thm)], [comp_pos, comp_neg])).\
+                     fof(branch_pos, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(esa), avatar_context([spl0_1])], [empty_pos])).\
+                     fof(branch_neg, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(esa), avatar_context([spl0_2])], [empty_neg])).\
+                     fof(branch_union, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(esa), avatar_context([spl0_1, spl0_2])], [union])).\
+                     fof(bot, plain, $false,\
+                         inference(avatar_sat_refutation,\
+                           [status(thm),\
+                            avatar_sat_refutation([split],\
+                                                   [branch_pos, branch_neg, branch_union])],\
+                           [split, branch_pos, branch_neg, branch_union])).";
+        let job = load_text(problem.to_string(), proof.to_string(), Path::new("."))
+            .expect("load union-context AVATAR proof");
+        assert_eq!(verify(&job, &settings()), Verdict::VerifiedGood);
+    }
+
+    #[test]
     fn competition_mode_rejects_forged_avatar_branch_refutation() {
         let problem = "fof(p, axiom, p).";
         let proof = "fof(p, axiom, p, file('problem.p', p)).\
@@ -2923,6 +3090,30 @@ mod avatar_validation_tests {
         let job = load_text(problem.to_string(), proof.to_string(), Path::new("."))
             .expect("load forged AVATAR proof");
         assert!(matches!(verify(&job, &settings()), Verdict::VerifiedBad(_)));
+    }
+
+    #[test]
+    fn competition_mode_rejects_non_equivalent_duplicate_avatar_variable() {
+        let problem = "fof(top, axiom, p | q).";
+        let proof = "fof(top, axiom, p | q, file('problem.p', top)).\
+                     fof(split, plain, spl0_1 | spl0_1,\
+                         inference(avatar_split_clause,\
+                           [status(esa),\
+                            avatar_split([branch(0, spl0_1, [0]),\
+                                         branch(1, spl0_1, [1])], [])],\
+                           [top])).\
+                     fof(bot, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(esa), avatar_context([spl0_1])], [split])).";
+        let job = load_text(problem.to_string(), proof.to_string(), Path::new("."))
+            .expect("load forged duplicate-variable AVATAR proof");
+        assert!(matches!(
+            verify(&job, &settings()),
+            Verdict::VerifiedBad(reason)
+                if reason.contains(
+                    "avatar_split_clause reuses a SAT variable for non-equivalent components"
+                )
+        ));
     }
 
     #[test]
