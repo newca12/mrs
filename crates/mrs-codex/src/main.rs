@@ -373,6 +373,16 @@ fn get_or_create_id(
     Ok(id)
 }
 
+fn fetch_all_results_problems(conn: &Connection) -> SqliteResult<HashSet<String>> {
+    let mut stmt = conn.prepare("SELECT DISTINCT problem_name FROM results")?;
+    let problem_names = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut names = HashSet::new();
+    for name in problem_names {
+        names.insert(name?);
+    }
+    Ok(names)
+}
+
 fn fetch_completed_problems(
     conn: &Connection,
     system_id: i64,
@@ -668,6 +678,9 @@ fn main() {
         fetch_completed_problems(&conn, system_id, parameter_id, hardware_id, args.timeout)
             .expect("Failed to fetch completed problems");
 
+    let allowed_problems =
+        fetch_all_results_problems(&conn).expect("Failed to fetch allowed problems");
+
     // We don't need the connection anymore in the main thread
     drop(conn);
 
@@ -675,6 +688,12 @@ fn main() {
         "Found {} already completed problems for this configuration.",
         completed_problems.len()
     );
+    if !allowed_problems.is_empty() {
+        println!(
+            "Database contains {} total target problems; restricting scan only to them.",
+            allowed_problems.len()
+        );
+    }
     println!("Proof verification mode: {:?}", args.verify_mode);
     println!("Scanning {} for .p files...", args.folder.display());
 
@@ -689,6 +708,10 @@ fn main() {
                 .strip_prefix(&args.folder)
                 .unwrap_or(entry.path());
             let problem_name = relative_path.to_string_lossy().to_string();
+
+            if !allowed_problems.is_empty() && !allowed_problems.contains(&problem_name) {
+                continue;
+            }
 
             if !completed_problems.contains(&problem_name) {
                 pending_files.push((problem_name, entry.path().to_path_buf()));
