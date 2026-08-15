@@ -714,6 +714,7 @@ fn main() {
     });
     let pool = ThreadPoolBuilder::new()
         .num_threads(num_threads)
+        .stack_size(64 * 1024 * 1024) // 64 MiB stack size (prevents parsing stack overflow)
         .build()
         .expect("Failed to build rayon thread pool");
 
