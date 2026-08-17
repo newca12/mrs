@@ -132,13 +132,11 @@ impl SearchState {
         ml_log_csv: bool,
         weight_fn: crate::ClauseWeightFn,
     ) -> Self {
-        let mut local_symbols = (*symbols).clone();
-        if use_avatar {
-            for i in 1..=50000 {
-                local_symbols.intern(&format!("spl0_{}", i));
-            }
-        }
-        let symbols = Arc::new(local_symbols);
+        // AVATAR marker symbols are interned lazily when a split actually
+        // allocates the corresponding SAT variable.  Keeping this Arc allows
+        // strategy states to share the immutable input table until the first
+        // marker is needed; `Arc::make_mut` then gives that state its own copy.
+        let mut symbols = symbols;
 
         let mut term_bank = TermBank::new();
         let mut clause_store: HashMap<ClauseId, IdClause> = HashMap::default();
@@ -193,7 +191,7 @@ impl SearchState {
                     &mut id_gen,
                     &term_bank,
                     &mut clause_store,
-                    &symbols,
+                    Arc::make_mut(&mut symbols),
                 ) {
                     for split in splits {
                         let sw = crate::weight::clause_weight_fn(
@@ -453,14 +451,32 @@ impl SearchState {
     }
 }
 
-#[cfg(all(test, feature = "ml-guidance"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use mrs_calculus::ordering::SymbolConfig;
     use mrs_core::SymbolTable;
+    #[cfg(feature = "ml-guidance")]
     use mrs_core::clause::{Clause, ClauseSource};
+    #[cfg(feature = "ml-guidance")]
     use std::time::Instant;
 
+    #[test]
+    fn avatar_symbols_are_not_preinterned() {
+        let symbols = Arc::new(SymbolTable::new());
+        let state = SearchState::new(
+            vec![],
+            ClauseIdGen::new(),
+            Arc::new(SymbolConfig::default()),
+            symbols,
+            true,
+        );
+
+        assert_eq!(state.symbols.len(), 0);
+        assert!(state.symbols.resolve_name("spl0_1").is_none());
+    }
+
+    #[cfg(feature = "ml-guidance")]
     #[test]
     fn benchmark_scoring_overhead() {
         let mut symbols = SymbolTable::new();

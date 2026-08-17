@@ -49,6 +49,27 @@ impl AvatarContext {
         self.sat_manifest.push(clause);
     }
 
+    /// Allocate a SAT variable for a component, reusing an equivalent
+    /// component's variable when it is not already used in this split.
+    ///
+    /// CaDiCaL literals use signed `i32` values, so refuse allocations beyond
+    /// the representable positive-variable range instead of overflowing.
+    fn component_var(&mut self, key: String, used_vars: &HashSet<u32>) -> Option<u32> {
+        if let Some(&var) = self.component_vars.get(&key)
+            && !used_vars.contains(&var)
+        {
+            return Some(var);
+        }
+
+        let var = self.next_var;
+        if var > i32::MAX as u32 {
+            return None;
+        }
+        self.next_var = var.checked_add(1)?;
+        self.component_vars.entry(key).or_insert(var);
+        Some(var)
+    }
+
     /// Splits a clause into variable-disjoint components.
     /// If the clause cannot be split (only 1 component), returns None.
     pub fn split_clause(
@@ -142,16 +163,7 @@ impl AvatarContext {
             // and prunes redundant case splits.
             let comp_str = canonical_component_key(&lits);
 
-            let var = if let Some(&v) = self.component_vars.get(&comp_str)
-                && !used_vars.contains(&v)
-            {
-                v
-            } else {
-                let v = self.next_var;
-                self.next_var += 1;
-                self.component_vars.entry(comp_str).or_insert(v);
-                v
-            };
+            let var = self.component_var(comp_str, &used_vars)?;
             used_vars.insert(var);
 
             sat_clause.push(var as i32);
@@ -208,7 +220,7 @@ impl AvatarContext {
         id_gen: &mut ClauseIdGen,
         bank: &TermBank,
         clause_store: &mut HashMap<mrs_core::clause::ClauseId, IdClause>,
-        symbols: &SymbolTable,
+        symbols: &mut SymbolTable,
     ) -> Option<Vec<IdClause>> {
         if clause.literals.len() <= 1 {
             return None;
@@ -286,24 +298,13 @@ impl AvatarContext {
             let lits: Vec<IdLiteral> = entries.iter().map(|(_, lit)| lit.clone()).collect();
             let comp_str = canonical_component_key_id(&lits, bank);
 
-            let var = if let Some(&v) = self.component_vars.get(&comp_str)
-                && !used_vars.contains(&v)
-            {
-                v
-            } else {
-                let v = self.next_var;
-                self.next_var += 1;
-                self.component_vars.entry(comp_str).or_insert(v);
-                v
-            };
+            let var = self.component_var(comp_str, &used_vars)?;
             used_vars.insert(var);
 
             sat_clause.push(var as i32);
 
             let sym_name = format!("spl0_{}", var);
-            let sym_id = symbols
-                .resolve_name(&sym_name)
-                .expect("spl0 symbol must exist");
+            let sym_id = symbols.intern(&sym_name);
             let atom = IdAtom::Pred(sym_id, SmallVec::new());
             let lit = IdLiteral {
                 positive: true,
@@ -723,5 +724,43 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(vars.len(), 2);
         assert_ne!(vars[0], vars[1]);
+    }
+
+    #[test]
+    fn split_clause_id_lazily_interns_high_avatar_symbols() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let q = symbols.intern("q");
+        let mut bank = TermBank::new();
+        let mut id_gen = mrs_core::clause::ClauseIdGen::new();
+        let clause = Clause::new(
+            id_gen.next(),
+            vec![
+                Literal::pos(Atom::pred(p, vec![Term::var(0)])),
+                Literal::pos(Atom::pred(q, vec![Term::var(1)])),
+            ],
+            mrs_core::clause::ClauseSource::Input {
+                name: "high-avatar-variable".into(),
+                role: "axiom".into(),
+            },
+        );
+        let id_clause = bank.clause_from_legacy(&clause);
+        let mut clause_store = HashMap::default();
+        let mut ctx = AvatarContext::new();
+        ctx.next_var = 50_001;
+
+        let components = ctx
+            .split_clause_id(
+                &id_clause,
+                &mut id_gen,
+                &bank,
+                &mut clause_store,
+                &mut symbols,
+            )
+            .expect("high AVATAR variables should be allocated lazily");
+
+        assert_eq!(components.len(), 2);
+        assert!(symbols.resolve_name("spl0_50001").is_some());
+        assert!(symbols.resolve_name("spl0_50002").is_some());
     }
 }

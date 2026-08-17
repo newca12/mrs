@@ -1543,7 +1543,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     &mut state.id_gen,
                     &state.term_bank,
                     &mut state.clause_store,
-                    &state.symbols,
+                    std::sync::Arc::make_mut(&mut state.symbols),
                 ) {
                     if trace_avatar {
                         eprintln!(
@@ -2004,7 +2004,7 @@ mod tests {
             vec![c1, c2],
             id_gen,
             std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
-            std::sync::Arc::new(mrs_core::SymbolTable::new()),
+            std::sync::Arc::new(syms),
             true,
         );
         let config = SearchConfig::default();
@@ -2052,7 +2052,7 @@ mod tests {
             vec![c1, c2, c3],
             id_gen,
             std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
-            std::sync::Arc::new(mrs_core::SymbolTable::new()),
+            std::sync::Arc::new(syms),
             true,
         );
         let config = SearchConfig::default();
@@ -2169,7 +2169,7 @@ mod tests {
             clauses.clone(),
             id_gen.clone(),
             std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
-            std::sync::Arc::new(mrs_core::SymbolTable::new()),
+            std::sync::Arc::new(syms.clone()),
             true,
         );
         let config = SearchConfig {
@@ -2316,7 +2316,7 @@ mod tests {
             clauses,
             id_gen,
             std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
-            std::sync::Arc::new(mrs_core::SymbolTable::new()),
+            std::sync::Arc::new(syms),
             true,
         );
         let config = SearchConfig {
@@ -2394,7 +2394,7 @@ mod tests {
             vec![c1, c2, c3],
             id_gen,
             std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
-            std::sync::Arc::new(mrs_core::SymbolTable::new()),
+            std::sync::Arc::new(syms),
             true,
         );
         let config = SearchConfig {
