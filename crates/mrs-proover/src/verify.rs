@@ -2227,7 +2227,7 @@ fn prepare_atp_step<'p>(
         }
     }
 
-    if formula_max_depth(&conclusion) > 25 {
+    if formula_max_depth(&conclusion) > 200 {
         return Prepared::Resolved(StepOutcome::Unknown(
             "deep term step ignored under fast budget".into(),
         ));
