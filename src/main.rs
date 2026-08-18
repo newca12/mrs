@@ -291,6 +291,28 @@ fn main() {
         }
     }
 
+    let has_logical_formulas = problem.formulas.iter().any(|f| {
+        match f {
+            mrs_tptp::AnnotatedFormula::FOF(_) => true,
+            mrs_tptp::AnnotatedFormula::CNF(_) => true,
+            mrs_tptp::AnnotatedFormula::TFF(tff) => {
+                !matches!(tff.formula, mrs_tptp::TFFStatement::Typing(_))
+            }
+            mrs_tptp::AnnotatedFormula::TCF(_) => true,
+            _ => true, // THF, TPI are logical
+        }
+    });
+
+    if has_logical_formulas
+        && lowered.axioms.is_empty()
+        && lowered.conjectures.is_empty()
+        && lowered.cnf_clauses.is_empty()
+    {
+        info!("% Warning: No supported logical formulas could be lowered");
+        println!("{}", szs_status_line(SzsStatus::GaveUp, problem_name));
+        process::exit(0);
+    }
+
     let has_conjecture = !lowered.conjectures.is_empty();
 
     // SInE is now performed per portfolio strategy in parallel (with threshold tuning),
