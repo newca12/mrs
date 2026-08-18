@@ -1919,7 +1919,7 @@ fn validate_avatar_sat_step(
     for context in &branch_contexts {
         variables.extend(context.iter().copied());
     }
-    if variables.len() > 20 {
+    if variables.len() > 200 {
         return Some(StepOutcome::Unknown(
             "avatar_sat_refutation exceeds competition SAT verification limit".into(),
         ));
@@ -3120,7 +3120,7 @@ mod avatar_validation_tests {
     fn competition_mode_bounds_large_avatar_sat_certificates() {
         use std::fmt::Write;
 
-        const BRANCHES: usize = 21;
+        const BRANCHES: usize = 201;
         let mut problem = String::from("fof(top, axiom, ");
         for index in 0..BRANCHES {
             if index > 0 {
