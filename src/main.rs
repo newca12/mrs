@@ -291,17 +291,18 @@ fn main() {
         }
     }
 
-    let has_logical_formulas = problem.formulas.iter().any(|f| {
-        match f {
-            mrs_tptp::AnnotatedFormula::FOF(_) => true,
-            mrs_tptp::AnnotatedFormula::CNF(_) => true,
-            mrs_tptp::AnnotatedFormula::TFF(tff) => {
-                !matches!(tff.formula, mrs_tptp::TFFStatement::Typing(_))
+    let has_logical_formulas = !problem.includes.is_empty()
+        || problem.formulas.iter().any(|f| {
+            match f {
+                mrs_tptp::AnnotatedFormula::FOF(_) => true,
+                mrs_tptp::AnnotatedFormula::CNF(_) => true,
+                mrs_tptp::AnnotatedFormula::TFF(tff) => {
+                    !matches!(tff.formula, mrs_tptp::TFFStatement::Typing(_))
+                }
+                mrs_tptp::AnnotatedFormula::TCF(_) => true,
+                _ => true, // THF, TPI are logical
             }
-            mrs_tptp::AnnotatedFormula::TCF(_) => true,
-            _ => true, // THF, TPI are logical
-        }
-    });
+        });
 
     if has_logical_formulas
         && lowered.axioms.is_empty()

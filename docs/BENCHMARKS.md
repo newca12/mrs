@@ -296,6 +296,474 @@ TODO — strategy sweeps (Step 1 of portfolio re-tuning):
    1 ./crates/mrs-bench/run_all_greedy_sweeps.sh master_run.csv > final_cacs30_portfolios.txt
 
 
+[done]
+[www@server99 mrs]$ crates/mrs-bench/casc.sh --edition casc-j13 --divisions fne,feq,ueq --systems vampire --jobs 2 --casc-times
+CASC-J13 Results — 2026-08-14 06:18  (800 problems × 1 systems)
+===============================================================
+
+Division  Problems    vampire
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        90   22.078
+FEQ            300       252    4.755
+UEQ            400       332   13.225
+------------------  --------------------
+TOTAL          800       674   11.240
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+50038 Aug 13 23:42 /DATA/ai/mrs/crates/mrs-bench/results/casc-j13/20260813_193044/run.csv
+
+[done]
+[PPROD:user@server97:/DATA/ai/user/mrs]$ numactl --physcpubind=0,2,4,6,8,10,12,14 --membind=0 crates/mrs-bench/casc.sh --edition casc-j13 --divisions fne,feq,ueq --systems vampire --jobs 1 --casc-times
+CASC-J13 Results — 2026-08-13 16:57  (800 problems × 1 systems)
+===============================================================
+
+Division  Problems    vampire
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        90   21.803
+FEQ            300       251    3.980
+UEQ            400       333   12.723
+------------------  --------------------
+TOTAL          800       674   10.680
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+50033 Aug 13 17:17 /DATA/ai/user/mrs/crates/mrs-bench/results/casc-j13/20260813_090132/run.csv
+
+[done]
+[PPROD:user@server97:/DATA/ai/user/mrs]$ crates/mrs-bench/casc.sh --edition casc-j13 --divisions fne,feq,ueq --systems vampire --jobs 2 --casc-times
+CASC-J13 Results — 2026-08-13 06:54  (800 problems × 1 systems)
+===============================================================
+
+Division  Problems    vampire
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        90   21.754
+FEQ            300       253    4.940
+UEQ            400       331   13.082
+------------------  --------------------
+TOTAL          800       674   11.184
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+50027 Aug 12 22:45 /DATA/ai/user/mrs/crates/mrs-bench/results/casc-j13/20260812_183400/run.csv
+
+commit 8988837437da7dbf05e867ae9a26bb5d1eb2e1e3
+[www@server99 mrs]$ cargo run --release -p mrs-codex -- $TPTP/Problems  --db codex_casc_remaining.db   --system mrs-0.2.3   --timeout 300   --jobs 4 --cmd "env MRS_WORKERS=8 ./crates/mrs-bench/systems/mrs/invoke.sh {file} {timeout}" > codex_casc_remaining_89888374.out 2> codex_casc_remaining_89888374.err
+
+commit 810f1ff7a8da03dc243667a4d6fc68e4bf6999ae
+[ongoing] ISSUE idle process
+[www@server99 mrs]$ export TPTP=/DATA/ai/TPTP-v9.3.0/
+[www@server99 mrs]$ cargo run --release -p mrs-codex -- $TPTP/Problems  --db codex_casc_remaining.db   --system mrs-0.2.3   --timeout 300   --jobs 2   --cmd "env MRS_WORKERS=8 ./crates/mrs-bench/systems/mrs/invoke.sh {file} {timeout}" > codex_casc_remaining.out 2> codex_casc_remaining.err
+
+
+commit 613e2ffa3c01e99db6f3ca2fe278e8fd10711b3b
+
+[abort] ISSUE idle process
+[www@server99 mrs]$ export TPTP=/DATA/ai/TPTP-v9.3.0/
+[www@server99 mrs]$ cargo run --release -p mrs-codex -- $TPTP/Problems  --db codex_casc_remaining.db   --system mrs-0.2.3   --timeout 300   --jobs 2   --cmd "env MRS_WORKERS=8 ./crates/mrs-bench/systems/mrs/invoke.sh {file} {timeout}" > codex_casc_remaining.out 2> codex_casc_remaining.err
+
+[ended] ISSUE idle process
+[www@server99 mrs]$ cargo run --release -p mrs-codex -- $TPTP/Problems  --db codex_casc_remaining.db   --system mrs-0.2.3   --timeout 300   --jobs 4   --cmd "./target/release/mrs --workers 8 --time {timeout} {file}" > codex_casc_remaining.out 2> codex_casc_remaining.err
+
+commit 1f352f04c91925b76c36ba668a9ad24bed2d0885
+
+
+[done] without TPTP
+[root@server02 mrs]# MRS_WORKERS=8 numactl --interleave=all crates/mrs-bench/casc.sh --edition casc-j13 --divisions feq --systems mrs-starexec --jobs 1 --casc-times
+CASC-J13 Results — 2026-08-13 17:04  (300 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs-starexec
+                      Solved  Avg (s)
+------------------  --------------------
+FEQ            300        60   14.783
+------------------  --------------------
+TOTAL          300        60   14.783
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+61104 Aug 12 21:28 /mnt/sda1/mrs/crates/mrs-bench/results/casc-j13/20260812_091556/run.csv
+
+[done] unset TPTP
+[PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 numactl --physcpubind=0,2,4,6,8,10,12,14 --membind=0 crates/mrs-bench/casc.sh --edition casc-j13 --divisions fne --systems mrs-starexec --jobs 1 --casc-times
+CASC-J13 Results — 2026-08-12 15:56  (100 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs-starexec
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        26   14.255
+--------------------------------------                                                                                                                                                                         TOTAL          100        26   14.255
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+25465 Aug 12 12:52 /DATA/ai/user/mrs/crates/mrs-bench/results/casc-j13/20260812_091429/run.csv
+
+[done]
+[root@server03 mrs]# MRS_WORKERS=8 numactl --interleave=all crates/mrs-bench/casc.sh --edition casc-30 --divisions eps --systems mrs-starexec --jobs 1 --casc-times
+CASC-30 Results — 2026-08-12 16:10  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs-starexec
+                      Solved  Avg (s)
+------------------  --------------------
+EPS            100        42    8.978
+------------------  --------------------
+TOTAL          100        42    8.978
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+[done]
+[root@server03 mrs]# MRS_WORKERS=8 numactl --interleave=all crates/mrs-bench/casc.sh --edition casc-j13 --divisions fne --systems mrs-starexec --jobs 1 --casc-times
+CASC-J13 Results — 2026-08-12 06:47  (100 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs-starexec
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        26   15.614
+------------------  --------------------
+TOTAL          100        26   15.614
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+25085 Aug 11 23:16 /mnt/sdd/mrs/crates/mrs-bench/results/casc-j13/20260811_193339/run.csv
+
+[done] with TPTP
+[root@server02 mrs]# MRS_WORKERS=8 numactl --interleave=all crates/mrs-bench/casc.sh --edition casc-j13 --divisions feq --systems mrs-starexec --jobs 1 --casc-times
+CASC-J13 Results — 2026-08-12 07:15  (300 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs-starexec
+                      Solved  Avg (s)
+------------------  --------------------
+FEQ            300        62   16.352
+------------------  --------------------
+TOTAL          300        62   16.352
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+[done] unset TPTP
+[root@server04 mrs]# MRS_WORKERS=8 numactl --interleave=all crates/mrs-bench/casc.sh --edition casc-j13 --divisions ueq --systems mrs-starexec --jobs 1 --casc-times
+CASC-J13 Results — 2026-08-12 16:07  (400 problems × 1 systems)
+===============================================================                                                                                                                                                  
+Division  Problems    mrs-starexec
+                      Solved  Avg (s)
+------------------  --------------------
+UEQ            400        60   28.990
+------------------  --------------------
+TOTAL          400        60   28.990
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+[ongoing]
+[www@server99 mrs]$ ./cpuset_sweep > cpuset_sweep_nocanary.log 2> cpuset_sweep_nocanary.err
+
+[done] canary
+[www@server99 mrs]$ ./cpuset_sweep > cpuset_sweep.log 2> cpuset_sweep.err
+
+[done]
+[PPROD:user@server97:/DATA/ai/user/mrs]$ numactl --physcpubind=0,2,4,6,8,10,12,14 --membind=0 ./target/release/mrs-codex $TPTP/Problems --db codex_cat1.db --system mrs-0.2.3 --timeout 300 --cmd "./target/release/mrs {file}" --verify-mode competition
+
+commit 14b56cff8f2541f15ebecf0965766065bfa390ee v0.2.3
+
+[done]
+[www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --edition casc-30 --divisions ueq --systems mrs-starexec --jobs 2 --casc-times
+CASC-30 Results — 2026-08-11 12:23  (300 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs-starexec
+                      Solved  Avg (s)
+------------------  --------------------
+UEQ            300        76   51.556
+------------------  --------------------
+TOTAL          300        76   51.556
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+83629 Aug 10 20:49 /DATA/ai/mrs/crates/mrs-bench/results/casc-30/20260810_125113/run.csv
+
+[done]
+target-cpu=x86-64
+[root@server99 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --edition casc-30 --divisions eps --systems mrs-starexec --jobs 2 --casc-times
+CASC-30 Results — 2026-08-10 10:48  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs-starexec
+                      Solved  Avg (s)
+------------------  --------------------
+EPS            100        43    9.392
+------------------  --------------------
+TOTAL          100        43    9.392
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+25265 Aug 10 12:40 /DATA/ai/mrs/crates/mrs-bench/results/casc-30/20260810_113951/run.csv
+
+
+commit 7e69de89a2dd29adad9972f86e0b5c93b6745636 
+
+[done]
+[PPROD:user@server97:/DATA/ai/user/mrs]$ crates/mrs-bench/casc.sh --edition casc-j13 --divisions ueq --systems mrs-starexec --jobs 4 --casc-times
+target-cpu=x86-64
+CASC-J13 Results — 2026-08-10 14:53  (400 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs-starexec
+                      Solved  Avg (s)
+------------------  --------------------
+UEQ            400        65   41.361
+------------------  --------------------
+TOTAL          400        65   41.361
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+[done]
+target-cpu=x86-64
+[PPROD:user@server97:/DATA/ai/user/mrs]$ crates/mrs-bench/casc.sh --edition casc-j13 --divisions fne --systems mrs-starexec --jobs 4 --casc-times
+CASC-J13 Results — 2026-08-10 10:19  (100 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs-starexec
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        25   16.880
+------------------  --------------------
+TOTAL          100        25   16.880
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+[done]
+target-cpu=native
+[PPROD:user@server97:/DATA/ai/user/mrs]$ crates/mrs-bench/casc.sh --edition casc-j13 --divisions fne --systems mrs-starexec --jobs 4 --casc-times
+CASC-J13 Results — 2026-08-10 09:11  (100 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs-starexec
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        27   22.074
+------------------  --------------------
+TOTAL          100        27   22.074
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+25669 Aug 10 10:48 /DATA/ai/user/mrs/crates/mrs-bench/results/casc-j13/20260810_095259/run.csv
+
+[done] no telemetry wrong binary in crates/mrs-bench/systems/mrs, probably the previous one
+target-cpu=native
+[PPROD:user@server97:/DATA/ai/user/mrs]$ crates/mrs-bench/casc.sh --edition casc-j13 --divisions fne --systems mrs-starexec --jobs 4 --casc-times
+CASC-J13 Results — 2026-08-10 07:50  (100 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs-starexec
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        22    9.993
+------------------  --------------------
+TOTAL          100        22    9.993
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+17936 Aug 10 09:47 /DATA/ai/user/mrs/crates/mrs-bench/results/casc-j13/20260810_084757/run.csv
+
+[done]
+target-cpu=x86-64
+[root@server99 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --edition casc-30 --divisions eps --systems mrs-starexec --jobs 2 --casc-times
+CASC-30 Results — 2026-08-10 09:32  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs-starexec
+                      Solved  Avg (s)
+------------------  --------------------
+EPS            100        43    9.570
+------------------  --------------------
+TOTAL          100        43    9.570
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+25270 Aug 10 11:03 /DATA/ai/mrs/crates/mrs-bench/results/casc-30/20260810_100230/run.csv
+
+[done]
+target-cpu=native
+[root@server99 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --edition casc-30 --divisions eps --systems mrs-starexec --jobs 2 --casc-times
+CASC-30 Results — 2026-08-10 07:56  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs-starexec
+                      Solved  Avg (s)
+------------------  --------------------
+EPS            100        43   10.520
+------------------  --------------------
+TOTAL          100        43   10.520
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+25052 Aug 10 09:40 /DATA/ai/mrs/crates/mrs-bench/results/casc-30/20260810_083954/run.csv
+
+[[done]
+target-cpu=x86-64
+[root@server03 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --edition casc-30 --divisions eps --systems mrs-starexec --jobs 1 --casc-times
+CASC-30 Results — 2026-08-11 17:09  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs-starexec
+                      Solved  Avg (s)
+------------------  --------------------
+EPS            100        43   11.044
+------------------  --------------------
+TOTAL          100        43   11.044
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+[[done] no telemetry wrong binary in crates/mrs-bench/systems/mrs, probably the previous one]
+target-cpu=x86-64
+[root@server03 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --edition casc-30 --divisions eps --systems mrs-starexec --jobs 1 --casc-times
+CASC-30 Results — 2026-08-11 17:10  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs-starexec
+                      Solved  Avg (s)
+------------------  --------------------
+EPS            100        42    8.663
+------------------  --------------------
+TOTAL          100        42    8.663
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+[done]
+target-cpu=native
+[root@server04 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --edition casc-30 --divisions eps --systems mrs-starexec --jobs 1 --casc-times
+CASC-30 Results — 2026-08-10 08:04  (100 problems × 1 systems)
+==============================================================
+Division  Problems    mrs-starexec
+                      Solved  Avg (s)
+------------------  --------------------
+EPS            100        42    8.855
+------------------  --------------------
+TOTAL          100        42    8.855
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+24854 Aug 10 10:00 /mnt/sdd1/mrs/crates/mrs-bench/results/casc-30/20260810_075819/run.csv
+
+commit 15957cf0b25eb4c4c0a6811399552aeeec689175
+
+[done] server99
+  MRS_WORKERS=1 \
+  crates/mrs-bench/casc.sh \
+    --edition casc-j13 \
+    --systems mrs \
+    --divisions fne,feq,ueq \
+    --casc-times \
+    --jobs 16 \
+    --output "crates/mrs-bench/results/casc-j13-workers-${workers}-$(date +%Y%m%d-%H%M%S)"
+    Output:      crates/mrs-bench/results/casc-j13-workers--20260806-145513
+
+[done] server99
+  MRS_WORKERS=2 \
+  crates/mrs-bench/casc.sh \
+    --edition casc-j13 \
+    --systems mrs \
+    --divisions fne,feq,ueq \
+    --casc-times \
+    --jobs 8 \
+    --output "crates/mrs-bench/results/casc-j13-workers-${workers}-$(date +%Y%m%d-%H%M%S)"
+    crates/mrs-bench/results/casc-j13-workers--20260806-182727/run.csv
+
+[done] server99
+  MRS_WORKERS=4 \
+  crates/mrs-bench/casc.sh \
+    --edition casc-j13 \
+    --systems mrs \
+    --divisions fne,feq,ueq \
+    --casc-times \
+    --jobs 4 \
+    --output "crates/mrs-bench/results/casc-j13-workers-${workers}-$(date +%Y%m%d-%H%M%S)"
+   132857 Aug  7 18:54 crates/mrs-bench/results/casc-j13-workers--20260807-103146/run.csv
+
+  [done] server99
+  MRS_WORKERS=8 \
+  crates/mrs-bench/casc.sh \
+    --edition casc-j13 \
+    --systems mrs \
+    --divisions fne,feq,ueq \
+    --casc-times \
+    --jobs 2 \
+    --output "crates/mrs-bench/results/casc-j13-workers-${workers}-$(date +%Y%m%d-%H%M%S)"
+  crates/mrs-bench/results/casc-j13-workers--20260807-195229
+  124726 Aug  8 12:28 crates/mrs-bench/results/casc-j13-workers--20260807-195229/run.csv
+
 commit 18e2cbec7a6899edd811839f84e5f4b20e569759
 
 [ongoing]
@@ -367,7 +835,7 @@ REFERENCE VIOLATIONS — none detected.
 123972 Aug  6 08:49 /DATA/ai/mrs/crates/mrs-bench/results/casc-j13-baseline-20260805/run.csv
 
 [ongoing]
-[PPROD:fr22192@server97:/DATA/ai/user/mrs]$  export RUST_MIN_STACK=67108864 
+[PPROD:user@server97:/DATA/ai/user/mrs]$  export RUST_MIN_STACK=67108864 
 for workers in 1 2 4 8; do
   MRS_WORKERS="$workers" \
   crates/mrs-bench/casc.sh \
@@ -448,7 +916,7 @@ DISAGREEMENTS — none detected.
 POLARITY VIOLATIONS — none detected.
 
 REFERENCE VIOLATIONS — none detected.
-191887 Aug  4 19:42 /DATA/ai/fr22192/mrs/crates/mrs-bench/results/casc-30/20260803_141834/run.csv
+191887 Aug  4 19:42 /DATA/ai/user/mrs/crates/mrs-bench/results/casc-30/20260803_141834/run.csv
 
 [done]
 [PPROD:user@server97:/DATA/ai/user/mrs]$ crates/mrs-bench/casc.sh --edition casc-30 --divisions eps --systems mrs-starexec --jobs 8 --casc-times
@@ -467,7 +935,7 @@ DISAGREEMENTS — none detected.
 POLARITY VIOLATIONS — none detected.
 
 REFERENCE VIOLATIONS — none detected.
-18090 Aug  3 14:05 /DATA/ai/fr22192/mrs/crates/mrs-bench/results/casc-30/20260803_134843/run.csv
+18090 Aug  3 14:05 /DATA/ai/user/mrs/crates/mrs-bench/results/casc-30/20260803_134843/run.csv
 
 [done]
 [PPROD:user@server97:/DATA/ai/user/mrs]$ crates/mrs-bench/casc.sh --edition casc-30 --divisions fne --systems mrs-starexec --jobs 8 --casc-times
@@ -486,12 +954,12 @@ DISAGREEMENTS — none detected.
 POLARITY VIOLATIONS — none detected.
 
 REFERENCE VIOLATIONS — none detected.
-16921 Aug  3 13:29 /DATA/ai/fr22192/mrs/crates/mrs-bench/results/casc-30/20260803_125324/run.csv
+16921 Aug  3 13:29 /DATA/ai/user/mrs/crates/mrs-bench/results/casc-30/20260803_125324/run.csv
 
 commit 3e95f1a11a446d3d53265831339e4fefbf49d39a (HEAD -> fix/fof-formula-memory-bloat
 
 [ongoing]
-[PPROD:fr22192@dlpnb5211:/DATA/DISK1/BENCH/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions eps,fne,epu,ueq,icu,feq --casc-times --jobs 1
+[PPROD:user@server11:/DATA/DISK1/BENCH/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions eps,fne,epu,ueq,icu,feq --casc-times --jobs 1
 eps 43 fne 43 epu 16 ueq partial 47/111
 20260717_183541/run.csv
 
