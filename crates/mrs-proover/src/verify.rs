@@ -2750,6 +2750,29 @@ mod esa_guard_tests {
             "thm refutation must stay Unsound"
         );
     }
+
+    #[test]
+    fn unrelated_problem_axioms_cannot_replace_missing_parents() {
+        let problem = "fof(axp, axiom, p(a)).\nfof(axn, axiom, ~p(a)).";
+        let proof = "fof(axp, axiom, p(a), file('problem.p', axp)).\
+                     fof(axn, axiom, ~p(a), file('problem.p', axn)).\
+                     fof(fake, plain, p(a), inference(custom, [status(thm)], [])).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [fake, axn])).";
+        let job = crate::load::load_text(
+            problem.to_owned(),
+            proof.to_owned(),
+            std::path::Path::new("."),
+        )
+        .expect("load malformed proof");
+        let settings = Settings {
+            total_budget: Duration::from_secs(3),
+            per_step_budget: Duration::from_secs(1),
+            workers: 1,
+            strict: false,
+            verbose: false,
+        };
+        assert!(matches!(verify(&job, &settings), Verdict::Unknown(_)));
+    }
 }
 
 #[cfg(test)]
