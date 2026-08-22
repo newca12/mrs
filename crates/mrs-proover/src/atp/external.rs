@@ -261,6 +261,7 @@ impl Atp for MrsAtp {
                         selection: mrs_search::SelectionStrategy::AgeWeight(5),
                         literal_selection: mrs_search::LiteralSelection::AllNegative,
                         ordering: mrs_search::TermOrdering::KBO,
+                        use_avatar: false,
                         ..mrs_search::SearchConfig::default()
                     },
                     half_budget,
@@ -271,6 +272,7 @@ impl Atp for MrsAtp {
                         selection: mrs_search::SelectionStrategy::AgeWeight(5),
                         literal_selection: mrs_search::LiteralSelection::AllNegative,
                         ordering: mrs_search::TermOrdering::LPO,
+                        use_avatar: false,
                         ..mrs_search::SearchConfig::default()
                     },
                     half_budget,
