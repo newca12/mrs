@@ -221,12 +221,12 @@ fn include_directive<'a>(input: &mut &'a str) -> PResult<Include<'a>> {
 /// Parse an annotated formula
 fn annotated_formula<'a>(input: &mut &'a str) -> PResult<AnnotatedFormula<'a>> {
     alt((
-        thf_annotated.map(AnnotatedFormula::THF),
-        tff_annotated.map(AnnotatedFormula::TFF),
-        tcf_annotated.map(AnnotatedFormula::TCF),
-        fof_annotated.map(AnnotatedFormula::FOF),
-        cnf_annotated.map(AnnotatedFormula::CNF),
-        tpi_annotated.map(AnnotatedFormula::TPI),
+        thf_annotated.map(Box::new).map(AnnotatedFormula::THF),
+        tff_annotated.map(Box::new).map(AnnotatedFormula::TFF),
+        tcf_annotated.map(Box::new).map(AnnotatedFormula::TCF),
+        fof_annotated.map(Box::new).map(AnnotatedFormula::FOF),
+        cnf_annotated.map(Box::new).map(AnnotatedFormula::CNF),
+        tpi_annotated.map(Box::new).map(AnnotatedFormula::TPI),
     ))
     .context(StrContext::Label("annotated_formula"))
     .parse_next(input)

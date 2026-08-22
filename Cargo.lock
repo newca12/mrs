@@ -3671,7 +3671,7 @@ version = "0.2.3"
 
 [[package]]
 name = "mrs-tptp"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "pretty_assertions",
  "rayon",

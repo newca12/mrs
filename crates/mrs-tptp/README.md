@@ -26,7 +26,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-mrs-tptp = "0.1"
+mrs-tptp = "0.3"
 ```
 
 ## Quick Start
@@ -195,7 +195,7 @@ Enable cooperative cancellation of long-running parses. Useful for timeout suppo
 
 ```toml
 [dependencies]
-mrs-tptp = { version = "0.1", features = ["cancellation"] }
+mrs-tptp = { version = "0.3", features = ["cancellation"] }
 ```
 
 ```rust
