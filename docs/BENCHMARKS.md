@@ -86,11 +86,11 @@ REFERENCE VIOLATIONS — none detected.
 
 # Status
 
-Current best-known static-portfolio (`casc_*`, no ML) results for `mrs`
-HEAD, 8 workers, CASC times (`--casc-times`). **These numbers are
-aggregated from separate per-division `crates/mrs-bench/casc.sh` runs
-across several recent uncontaminated commits and machines — not a single clean
-full-matrix run.** Exact source per division:
+Representative historical static-portfolio (`casc_*`, no ML) measurements for
+`mrs`, using 8 workers and CASC times (`--casc-times`). **These numbers are
+aggregated from separate per-division `crates/mrs-bench/casc.sh` runs across
+several commits and machines — not a single clean full-matrix run and not a
+measurement of the current `HEAD`.** Exact source per division:
 
 | Division | Problems | mrs solved | Avg (s) | Source commit | Date |
 |----------|---------:|-----------:|--------:|----------------|------|
@@ -103,15 +103,12 @@ full-matrix run.** Exact source per division:
 | **TOTAL**|   **1101** |    **245** |       — | | |
 
 
-FNE and EPS solved-counts fluctuate ±1-3 across repeated runs on
-different machines (observed ranges: FNE 43-45, EPS 39-43) — treat any
-single number above as representative, not exact. All divisions sound
-(0 polarity/reference violations) in every run cited above; static
-`casc_*` schedules are unaffected by the ML branches under active
-development (`crates/mrs-search/src/strategy/named.rs` and
-`crates/mrs-bench/systems/mrs/invoke.sh` are unchanged since
-`55986ce`), so these numbers remain the current valid baseline
-regardless of ML work landing on top.
+FNE and EPS solved-counts fluctuate ±1-3 across repeated runs on different
+machines (observed ranges: FNE 43-45, EPS 39-43) — treat any single number
+above as representative, not exact. All divisions were reported sound (0
+polarity/reference violations) in every run cited above. The source commits
+predate subsequent portfolio and verifier changes, so re-run the relevant
+division before treating these figures as a current baseline.
 
 † **EPS is not yet Canary-Suite-verified for the static `mrs` system.**
 Every other row above traces to a run explicitly tagged `[done] OK` under
@@ -258,6 +255,50 @@ Append-only log of CASC and ProoVer benchmark runs, newest first. Each entry
 records the mrs commit and the exact command used.
 
 
+## ProoVer 2026 PRV Corpus — 2026-08-22
+
+Recorded local evaluation at commit `bcc9918` (`fix(proover): disable avatar in MrsAtp step checks`) using a 30-second per-proof budget and 8 workers:
+
+### 1. Competition Mode (Full ATP Verification Ladder)
+
+```text
+./target/release/score_proover2026 \
+  ./crates/mrs-bench/proover-corpus/Proover2026 \
+  --competition \
+  --proover ./target/release/mrs-proover \
+  --time 30 \
+  --workers 8
+
+score=148 good=60 bad=39 unknown=1 false_rejection=0 unsound=0
+```
+
+The corpus contains 50 valid proofs, 10 locally sound evil mutations, and 40
+ordinary evil proofs. This run verified all 50 valid proofs, gave all 10
+locally sound mutations a permitted scoring verdict, rejected 39 ordinary evil
+proofs, and left `PRV067+1` as the one neutral `Unknown`. This is a recorded
+local reproduction of a 148/150 result, not an official CASC-J13 score or a
+claim of cross-machine stability.
+
+### 2. Strict Mode (Independent `mrs-proof-kernel` Only)
+
+```text
+./target/release/score_proover2026 \
+  ./crates/mrs-bench/proover-corpus/Proover2026 \
+  --kernel \
+  --proover ./target/release/mrs-proover \
+  --time 30 \
+  --workers 8
+
+score=61 good=16 bad=59 unknown=25 false_rejection=26 unsound=0
+```
+
+The kernel-only run bypasses all external and in-process ATPs. It structurally
+verified 16 proofs, left 25 inconclusive, and falsely rejected 26 valid proofs
+in this configuration (`false_rejection=26`). It produced zero unsound passes,
+but the result is structural coverage data, not perfect verification.
+
+---
+
 ## ProoVer 2026 PRV Corpus — 2026-08-04
 
 Commit `0e10c0d` (`fix: harden ProoVer provenance checks`), 100-problem
@@ -277,23 +318,6 @@ score=148 good=60 bad=39 unknown=1 false_rejection=0 unsound=0
 The result is 50 valid proofs verified, 39 ordinary evil proofs rejected, 10
 locally sound evil mutations accepted under the corpus scoring rule, and one
 ordinary evil proof left `Unknown`.
-
-
-TODO — strategy sweeps (Step 1 of portfolio re-tuning):
-    Dual 4108 — accurate coverage:
-    ./crates/mrs-bench/run_strategy_sweep.sh --divisions fne --casc-times --jobs 16
-    Dual E5-2407:
-    ./crates/mrs-bench/run_strategy_sweep.sh --divisions fne --casc-times --jobs 8
-
-   1     cat run_A.csv > master_run.csv
-   2     tail -n +2 run_B.csv >> master_run.csv
-   3     tail -n +2 run_C.csv >> master_run.csv
-   4     tail -n +2 run_D.csv >> master_run.csv
-
-  Step 3: Generate the Portfolios
-  Now, on Server A, run the greedy solver on the combined master_run.csv:
-
-   1 ./crates/mrs-bench/run_all_greedy_sweeps.sh master_run.csv > final_cacs30_portfolios.txt
 
 
 [done]
