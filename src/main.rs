@@ -5,6 +5,7 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+mod analyze;
 mod include;
 mod lowering;
 mod sine;
@@ -38,6 +39,7 @@ fn main() {
     let mut ml_prune_ratio: Option<f32> = None;
     let mut self_check = false;
     let mut include_root: Option<PathBuf> = None;
+    let mut stats_mode = false;
     #[cfg(feature = "ml")]
     let mut ml_premise_weights: Option<String> = None;
 
@@ -112,6 +114,9 @@ fn main() {
             "--auto-schedule" => {
                 auto_schedule = true;
             }
+            "--stats" | "--info" | "--analyze" => {
+                stats_mode = true;
+            }
             "--self-check" => {
                 self_check = true;
             }
@@ -179,7 +184,7 @@ fn main() {
             _ => {
                 if path.is_some() {
                     eprintln!(
-                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--self-check] [--include-root DIR] <file.p>"
+                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--self-check] [--stats] [--include-root DIR] <file.p>"
                     );
                     process::exit(1);
                 }
@@ -189,7 +194,7 @@ fn main() {
     }
     let Some(path) = path else {
         eprintln!(
-            "Usage: mrs [--time <seconds>] [--schedule NAME] [--self-check] [--include-root DIR] <file.p>"
+            "Usage: mrs [--time <seconds>] [--schedule NAME] [--self-check] [--stats] [--include-root DIR] <file.p>"
         );
         eprintln!("  An automated theorem prover for TPTP problems.");
         eprintln!(
@@ -407,6 +412,11 @@ fn main() {
         );
         provenance.extend(steps);
         all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(0)));
+    }
+
+    if stats_mode {
+        analyze::analyze_and_print(&path, &problem, &lowered.symbols, &all_clauses);
+        process::exit(0);
     }
 
     #[cfg(feature = "ml")]

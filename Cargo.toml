@@ -53,6 +53,7 @@ exclude = ["evil-proofs/", "benchmarks/", "docs/", "problems/", "models/", "Proo
 
 [dependencies]
 mrs-core = { workspace = true }
+rustc-hash = { workspace = true }
 mrs-szs = { workspace = true }
 mrs-tptp = { workspace = true }
 mrs-unify = { workspace = true }
