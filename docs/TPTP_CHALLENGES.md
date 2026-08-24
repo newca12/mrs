@@ -21,8 +21,7 @@ that the underlying TPTP problem is false.
 * **Status in prior local reports:** `Unknown`; not independently reproduced
   here because no corresponding proof artifact is tracked in this repository
 * **Technical Reason:**
-  These problems have large axiomatizations and can produce large proof-step
-  queries. In the competition verifier, independent ATP-bound steps are
+  While these problems have a moderate clause count (e.g., 146 clauses for SET102-7.p), they utilize highly complex, dense set-theory axiomatizations (with deeply nested functions/predicates and deep terms) that generate extremely large and complex proof-step queries. In the competition verifier, independent ATP-bound steps are
   prepared serially and checked in parallel; each query receives a share of the
   overall budget, subject to the configured per-step cap. The cited `Unknown`
   status should be treated as configuration-specific unless reproduced with a
