@@ -1188,10 +1188,32 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 .any(|l| l.positive && matches!(&l.atom, IdAtom::Eq(_, _)));
 
             if given_has_pos_eq {
-                let mut processed_clauses: Vec<IdClause> =
-                    state.processed.iter().cloned().collect();
-                processed_clauses.sort_unstable_by_key(|c| c.id);
-                for active in &processed_clauses {
+                let mut candidate_targets = Vec::new();
+                let mut seen_ids = HashSet::default();
+                for lit in &given.literals {
+                    if lit.positive
+                        && let IdAtom::Eq(l, r) = &lit.atom
+                    {
+                        for side in [*l, *r] {
+                            if !matches!(
+                                state.term_bank.get(side),
+                                mrs_core::term_bank::TermNode::Var(_)
+                            ) {
+                                for tgt in state
+                                    .processed
+                                    .get_superposition_targets(side, &state.term_bank)
+                                {
+                                    if seen_ids.insert(tgt.id) {
+                                        candidate_targets.push(tgt);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                candidate_targets.sort_unstable_by_key(|c| c.id);
+
+                for active in &candidate_targets {
                     if config.sos_depth < u32::MAX
                         && given.distance >= config.sos_depth
                         && active.distance >= config.sos_depth
@@ -1255,8 +1277,45 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
 
             // (2) Processed clause as equation source, given as target
             {
-                let eq_clauses = state.processed.get_positive_equality_clauses();
-                for active in eq_clauses {
+                let mut candidate_sources = Vec::new();
+                let mut seen_ids = HashSet::default();
+                for &lit_idx in &given_sel {
+                    if let Some(lit) = given.literals.get(lit_idx) {
+                        match &lit.atom {
+                            IdAtom::Pred(_, args) => {
+                                for &arg in args {
+                                    for u in state.term_bank.non_variable_subterms(arg) {
+                                        for src in state
+                                            .processed
+                                            .get_superposition_sources(u, &state.term_bank)
+                                        {
+                                            if seen_ids.insert(src.id) {
+                                                candidate_sources.push(src);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            IdAtom::Eq(l, r) => {
+                                for &side in &[l, r] {
+                                    for u in state.term_bank.non_variable_subterms(*side) {
+                                        for src in state
+                                            .processed
+                                            .get_superposition_sources(u, &state.term_bank)
+                                        {
+                                            if seen_ids.insert(src.id) {
+                                                candidate_sources.push(src);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                candidate_sources.sort_unstable_by_key(|c| c.id);
+
+                for active in &candidate_sources {
                     if config.sos_depth < u32::MAX
                         && given.distance >= config.sos_depth
                         && active.distance >= config.sos_depth
@@ -1264,7 +1323,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         continue;
                     }
                     let sp = superposition::superpose_selected_id(
-                        &active,
+                        active,
                         &given,
                         &mut state.term_bank,
                         &ordering,
