@@ -195,6 +195,21 @@ impl LiteralIndex {
         res
     }
 
+    /// Returns clauses in the index that could potentially BE subsumption-resolved by `simplifier_fv` (cloned).
+    pub fn get_backward_subsumption_resolution_candidates(
+        &self,
+        simplifier_fv: &FeatureVector,
+    ) -> Vec<IdClause> {
+        let mut res: Vec<IdClause> = self
+            .fvs
+            .iter()
+            .filter(|(_, fv)| simplifier_fv.can_subsumption_resolve(fv))
+            .filter_map(|(id, _)| self.clauses.get(id).cloned())
+            .collect();
+        res.sort_unstable_by_key(|c| c.id);
+        res
+    }
+
     /// Returns a reference to a specific clause by ID.
     pub fn get(&self, id: ClauseId) -> Option<&IdClause> {
         self.clauses.get(&id)
@@ -241,5 +256,63 @@ impl LiteralIndex {
 impl Default for LiteralIndex {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mrs_core::SymbolTable;
+    use mrs_core::clause::{ClauseId, ClauseSource};
+    use mrs_core::term_bank::{IdAtom, IdLiteral, TermBank};
+    use smallvec::smallvec;
+
+    #[test]
+    fn test_literal_index_subsumption_resolution_candidates() {
+        let mut index = LiteralIndex::new();
+        let mut bank = TermBank::new();
+        let mut syms = SymbolTable::new();
+
+        let p_sym = syms.intern("p");
+        let q_sym = syms.intern("q");
+        let a_sym = syms.intern("a");
+        let a = bank.intern_app(a_sym, smallvec![]);
+
+        let p_a = IdLiteral {
+            positive: true,
+            atom: IdAtom::Pred(p_sym, smallvec![a]),
+        };
+        let not_q_a = IdLiteral {
+            positive: false,
+            atom: IdAtom::Pred(q_sym, smallvec![a]),
+        };
+
+        let c1 = IdClause::new(
+            ClauseId(1),
+            vec![p_a.clone(), not_q_a.clone()],
+            ClauseSource::Inference {
+                rule: "input",
+                parents: vec![].into(),
+            },
+        );
+        index.insert(c1, &bank);
+
+        let q_a = IdLiteral {
+            positive: true,
+            atom: IdAtom::Pred(q_sym, smallvec![a]),
+        };
+        let c2 = IdClause::new(
+            ClauseId(2),
+            vec![q_a],
+            ClauseSource::Inference {
+                rule: "input",
+                parents: vec![].into(),
+            },
+        );
+
+        let c2_fv = FeatureVector::from_id_clause(&c2, &bank);
+        let backward_candidates = index.get_backward_subsumption_resolution_candidates(&c2_fv);
+        assert_eq!(backward_candidates.len(), 1);
+        assert_eq!(backward_candidates[0].id, ClauseId(1));
     }
 }

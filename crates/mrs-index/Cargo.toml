@@ -10,3 +10,4 @@ rust-version.workspace = true
 [dependencies]
 mrs-core = { workspace = true }
 rustc-hash = { workspace = true }
+smallvec = { workspace = true }

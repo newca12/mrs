@@ -4918,14 +4918,14 @@ fn verify_subsumption_resolution(
             "subsumption_resolution must have a target and an active parent".into(),
         );
     }
-    let Some(target) = clause_from_formula(&parents[0], limits) else {
+    let Some(c0) = clause_from_formula(&parents[0], limits) else {
         return KernelVerdict::Inconclusive(
-            "subsumption_resolution target is not a supported clause".into(),
+            "subsumption_resolution parent 0 is not a supported clause".into(),
         );
     };
-    let Some(active) = clause_from_formula(&parents[1], limits) else {
+    let Some(c1) = clause_from_formula(&parents[1], limits) else {
         return KernelVerdict::Inconclusive(
-            "subsumption_resolution active parent is not a supported clause".into(),
+            "subsumption_resolution parent 1 is not a supported clause".into(),
         );
     };
     let Some(goal) = clause_from_formula(conclusion, limits) else {
@@ -4933,39 +4933,41 @@ fn verify_subsumption_resolution(
             "subsumption_resolution conclusion is not a supported clause".into(),
         );
     };
-    if active.is_empty() || active.len() > target.len() {
-        return KernelVerdict::Rejected(
-            "subsumption_resolution active parent cannot subsume the target".into(),
-        );
-    }
 
-    let mut matching_steps = 0;
-    for removed_idx in 0..target.len() {
-        let mut modified_target = target.clone();
-        modified_target[removed_idx].positive = !modified_target[removed_idx].positive;
-        match clause_subsumes(
-            &active,
-            &modified_target,
-            &mut matching_steps,
-            limits.max_subsumption_steps,
-        ) {
-            Ok(false) => continue,
-            Err(()) => {
-                return KernelVerdict::Inconclusive(
-                    "subsumption_resolution exceeded strict matching-step limit".into(),
-                );
-            }
-            Ok(true) => {}
+    // Try both orderings: (target=c0, active=c1) and (target=c1, active=c0)
+    for (target, active) in [(&c0, &c1), (&c1, &c0)] {
+        if active.is_empty() || active.len() > target.len() {
+            continue;
         }
 
-        let expected: Vec<Literal> = target
-            .iter()
-            .enumerate()
-            .filter(|(idx, _)| *idx != removed_idx)
-            .map(|(_, literal)| literal.clone())
-            .collect();
-        if clause_alpha_equiv(&expected, &goal) {
-            return KernelVerdict::Certified;
+        let mut matching_steps = 0;
+        for removed_idx in 0..target.len() {
+            let mut modified_target = target.clone();
+            modified_target[removed_idx].positive = !modified_target[removed_idx].positive;
+            match clause_subsumes(
+                active,
+                &modified_target,
+                &mut matching_steps,
+                limits.max_subsumption_steps,
+            ) {
+                Ok(false) => continue,
+                Err(()) => {
+                    return KernelVerdict::Inconclusive(
+                        "subsumption_resolution exceeded strict matching-step limit".into(),
+                    );
+                }
+                Ok(true) => {}
+            }
+
+            let expected: Vec<Literal> = target
+                .iter()
+                .enumerate()
+                .filter(|(idx, _)| *idx != removed_idx)
+                .map(|(_, literal)| literal.clone())
+                .collect();
+            if clause_alpha_equiv(&expected, &goal) {
+                return KernelVerdict::Certified;
+            }
         }
     }
 
@@ -6330,7 +6332,8 @@ fn decode_hex(value: &str) -> Option<Vec<u8>> {
     }
     let bytes = value.as_bytes();
     let mut output = Vec::with_capacity(bytes.len() / 2);
-    for pair in bytes.chunks_exact(2) {
+    let (chunks, _) = bytes.as_chunks::<2>();
+    for pair in chunks {
         let high = hex_digit(pair[0])?;
         let low = hex_digit(pair[1])?;
         output.push((high << 4) | low);
