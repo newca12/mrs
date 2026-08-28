@@ -425,7 +425,9 @@ fn verify_strict_with_source_internal(
             "resolution" => verify_resolution(&parents, conclusion, limits),
             "subsumption_resolution" => verify_subsumption_resolution(&parents, conclusion, limits),
             "factoring" => verify_factoring(&parents, conclusion, limits),
-            "equality_resolution" => verify_equality_resolution(&parents, conclusion, limits),
+            "equality_resolution" | "destructive_equality_resolution" => {
+                verify_equality_resolution(&parents, conclusion, limits)
+            }
             "equality_factoring" => verify_equality_factoring(&parents, conclusion, limits),
             "condensation" => verify_condensation(&parents, conclusion, limits),
             "demodulation" => verify_demodulation(&parents, conclusion, limits),
@@ -639,6 +641,7 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "subsumption_resolution"
         | "factoring"
         | "equality_resolution"
+        | "destructive_equality_resolution"
         | "equality_factoring"
         | "condensation"
         | "demodulation"
@@ -6330,7 +6333,8 @@ fn decode_hex(value: &str) -> Option<Vec<u8>> {
     }
     let bytes = value.as_bytes();
     let mut output = Vec::with_capacity(bytes.len() / 2);
-    for pair in bytes.chunks_exact(2) {
+    let (chunks, _) = bytes.as_chunks::<2>();
+    for pair in chunks {
         let high = hex_digit(pair[0])?;
         let low = hex_digit(pair[1])?;
         output.push((high << 4) | low);

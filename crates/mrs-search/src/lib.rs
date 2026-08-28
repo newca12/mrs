@@ -33,6 +33,7 @@ pub(crate) use rustc_hash::FxHashSet as HashSet;
 
 pub mod avatar;
 pub mod cwa;
+pub mod der;
 pub mod fvo;
 pub mod given_clause;
 pub mod instgen;
