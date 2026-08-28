@@ -3580,6 +3580,7 @@ name = "mrs-cnf"
 version = "0.2.3"
 dependencies = [
  "mrs-core",
+ "smallvec",
 ]
 
 [[package]]
@@ -3656,6 +3657,7 @@ dependencies = [
  "burn",
  "mrs-cadical",
  "mrs-calculus",
+ "mrs-cnf",
  "mrs-core",
  "mrs-index",
  "mrs-proof",

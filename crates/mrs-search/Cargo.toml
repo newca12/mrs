@@ -13,6 +13,7 @@ ml-guidance = ["mrs-core/ml", "dep:rand", "dep:wincode", "dep:burn", "burn?/ndar
 
 [dependencies]
 mrs-core = { workspace = true }
+mrs-cnf = { workspace = true }
 mrs-calculus = { workspace = true }
 mrs-index = { workspace = true }
 mrs-proof = { workspace = true }

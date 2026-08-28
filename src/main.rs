@@ -40,6 +40,7 @@ fn main() {
     let mut self_check = false;
     let mut include_root: Option<PathBuf> = None;
     let mut stats_mode = false;
+    let mut goal_transform: Option<mrs_cnf::GoalTransformMode> = None;
     #[cfg(feature = "ml")]
     let mut ml_premise_weights: Option<String> = None;
 
@@ -169,6 +170,30 @@ fn main() {
                     let _ = val;
                 }
             }
+            "--goal-transform" => {
+                let val = args.next().unwrap_or_else(|| {
+                    eprintln!(
+                        "Error: --goal-transform requires a mode (recursive, maximal, or none)"
+                    );
+                    process::exit(1);
+                });
+                match val.as_str() {
+                    "recursive" | "all" => {
+                        goal_transform = Some(mrs_cnf::GoalTransformMode::RecursiveSubterms)
+                    }
+                    "maximal" | "top" => {
+                        goal_transform = Some(mrs_cnf::GoalTransformMode::MaximalSubterms)
+                    }
+                    "none" | "off" => goal_transform = None,
+                    _ => {
+                        eprintln!(
+                            "Error: unknown --goal-transform mode {:?} (expected: recursive, maximal, none)",
+                            val
+                        );
+                        process::exit(1);
+                    }
+                }
+            }
             // Deprecated alias: --fast is now --schedule fast.
             "--fast" => {
                 schedule_name = Some("fast".to_string());
@@ -184,7 +209,7 @@ fn main() {
             _ => {
                 if path.is_some() {
                     eprintln!(
-                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--self-check] [--stats] [--include-root DIR] <file.p>"
+                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--goal-transform MODE] [--self-check] [--stats] [--include-root DIR] <file.p>"
                     );
                     process::exit(1);
                 }
@@ -194,7 +219,7 @@ fn main() {
     }
     let Some(path) = path else {
         eprintln!(
-            "Usage: mrs [--time <seconds>] [--schedule NAME] [--self-check] [--stats] [--include-root DIR] <file.p>"
+            "Usage: mrs [--time <seconds>] [--schedule NAME] [--goal-transform MODE] [--self-check] [--stats] [--include-root DIR] <file.p>"
         );
         eprintln!("  An automated theorem prover for TPTP problems.");
         eprintln!(
@@ -605,6 +630,11 @@ fn main() {
         if self_check {
             for (config, _) in &mut schedule.strategies {
                 config.emit_avatar_trace = true;
+            }
+        }
+        if let Some(gt) = goal_transform {
+            for (config, _) in &mut schedule.strategies {
+                config.goal_transformation = Some(gt);
             }
         }
 

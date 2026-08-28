@@ -222,8 +222,8 @@ impl SearchState {
         // loop would otherwise misread as the empty clause (a refutation).
         for clause in provenance {
             debug_assert!(
-                clause.formula.is_some(),
-                "provenance clauses must have formula: Some(_); real clauses belong in initial_clauses"
+                clause.formula.is_some() || !clause.literals.is_empty(),
+                "provenance clauses must have formula: Some(_) or non-empty literals"
             );
             let id_clause = term_bank.clause_from_legacy(&clause);
             clause_store.insert(id_clause.id, id_clause);

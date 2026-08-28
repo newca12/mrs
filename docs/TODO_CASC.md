@@ -26,6 +26,7 @@ This document tracks what remains to be built in `mrs` (the prover) to maximise 
 | Machine-Learning Guided Clause Selection | HEAD |
 | SInE Threshold Tuning | HEAD |
 | SIMD-optimized Feature Vector Index | HEAD |
+| Twee-Style Goal-Directed Preprocessing for UEQ | HEAD |
 
 ---
 
@@ -74,13 +75,6 @@ Consider generalizing this into an actual coverage-tracking script (grep
 and report which narrow, soundness-sensitive code paths fired zero times)
 so a *silent* coverage gap becomes a *visible* audit signal, instead of
 only being found by manual code review after the fact.
-
-### Medium Priority: Twee-Style Goal-Directed Preprocessing Transformation for UEQ
-- **Problem**: In the Unit Equality (UEQ) division, standard superposition/completion is primarily a top-down forward search from axioms, which can generate millions of irrelevant equations before reaching the goal $s \approx t$.
-- **Proposed Solution**: Implement Nicholas Smallbone's Goal-Directed Transformation \cite{Sma21} as a modular preprocessing pass inside `mrs-cnf`. The transformation introduces a new goal-directed binary relation and rewrites axioms/goals structurally prior to search. This compiles goal-orientation directly into the equational problem itself, allowing our standard `casc_ueq` superposition loop to run natively with high goal-directedness.
-- **Why it is highly beneficial**:
-  - **Zero Search Loop Overhead**: The transformation is performed purely as a **preprocessing pass** (AST in $\rightarrow$ AST out) before the given-clause loop starts. This means our core superposition engine and indexing structures (`STree`/`DTree`) get goal-directedness completely "for free" without adding any complex runtime checks or slowing down the given-clause iterations.
-  - **Synergy with Portfolio Strategy**: In our parallel scheduler, we can run the transformed version of the problem in one thread, and the standard un-transformed version in another. Since they explore complementary search spaces, this is a prime candidate for a massive portfolio coverage gain.
 
 ---
 
