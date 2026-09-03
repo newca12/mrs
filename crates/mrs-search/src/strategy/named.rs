@@ -30,7 +30,7 @@
 
 use std::time::Duration;
 
-use crate::{LiteralSelection, SearchConfig, SelectionStrategy, TermOrdering};
+use crate::{LiteralSelection, QueueType, SearchConfig, SelectionStrategy, TermOrdering};
 
 use super::StrategySchedule;
 
@@ -38,7 +38,7 @@ use super::StrategySchedule;
 /// `--help` output.
 pub const ALL: &[&str] = &[
     "casc", "casc_feq", "casc_fne", "casc_ueq", "casc_epr", "casc_eps", "casc_epu", "casc_icu",
-    "fast", "mini", "ml", "ml_feq", "ml_fne", "ml_ueq", "ml_epr",
+    "fast", "mini", "ml", "ml_feq", "ml_fne", "ml_ueq", "ml_epr", "mq",
 ];
 
 /// Look up a schedule by name. Returns `None` if the name is unknown.
@@ -58,6 +58,7 @@ pub fn by_name(name: &str, total_time: Duration, workers: usize) -> Option<Strat
         "ml_fne" => Some(ml_fne(total_time, workers)),
         "ml_ueq" => Some(ml_ueq(total_time, workers)),
         "ml_epr" => Some(ml_epr(total_time, workers)),
+        "mq" => Some(mq(total_time, workers)),
         _ => None,
     };
     if let Some(s) = &mut schedule {
@@ -543,6 +544,149 @@ pub fn casc_icu(total_time: Duration, workers: usize) -> StrategySchedule {
     schedule
 }
 
+/// A multi-queue portfolio leveraging prioritized unit, Horn, SOS, and goal-directed queues.
+/// Distributes diverse multi-queue configurations across the worker threads.
+pub fn mq(total_time: Duration, workers: usize) -> StrategySchedule {
+    let workers = workers.max(1);
+    let t_part = Duration::from_millis((total_time.as_millis() / workers as u128) as u64);
+    let t_last = total_time.saturating_sub(t_part * (workers as u32 - 1));
+
+    let archetypes = [
+        // 0: Balanced multi-queue
+        (
+            SelectionStrategy::MultiQueue(vec![
+                (QueueType::Age, 1),
+                (QueueType::Weight, 4),
+                (QueueType::Unit, 2),
+                (QueueType::Goal, 2),
+            ]),
+            LiteralSelection::AllNegative,
+            TermOrdering::KBO,
+            None,
+            true,
+            true,
+        ),
+        // 1: Unit & Horn priority (no AVATAR)
+        (
+            SelectionStrategy::MultiQueue(vec![
+                (QueueType::Age, 1),
+                (QueueType::Weight, 3),
+                (QueueType::Unit, 3),
+                (QueueType::Horn, 3),
+            ]),
+            LiteralSelection::AllNegative,
+            TermOrdering::KBO,
+            None,
+            false,
+            false,
+        ),
+        // 2: Goal & SOS directed
+        (
+            SelectionStrategy::MultiQueue(vec![
+                (QueueType::Age, 1),
+                (QueueType::Weight, 3),
+                (QueueType::Goal, 3),
+                (QueueType::Sos, 3),
+            ]),
+            LiteralSelection::AllNegative,
+            TermOrdering::KBO,
+            None,
+            true,
+            false,
+        ),
+        // 3: Fast unit equational demodulation (LPO)
+        (
+            SelectionStrategy::MultiQueue(vec![
+                (QueueType::Age, 1),
+                (QueueType::Weight, 4),
+                (QueueType::Unit, 4),
+            ]),
+            LiteralSelection::All,
+            TermOrdering::LPO,
+            None,
+            false,
+            false,
+        ),
+        // 4: ConjSymbolBoost multi-queue
+        (
+            SelectionStrategy::MultiQueue(vec![
+                (QueueType::Age, 1),
+                (QueueType::Weight, 4),
+                (QueueType::Unit, 2),
+                (QueueType::Goal, 2),
+            ]),
+            LiteralSelection::AllNegative,
+            TermOrdering::KBO,
+            Some(crate::ClauseWeightFn::ConjSymbolBoost),
+            true,
+            false,
+        ),
+        // 5: Horn heuristic multi-queue (no AVATAR)
+        (
+            SelectionStrategy::MultiQueue(vec![
+                (QueueType::Age, 1),
+                (QueueType::Weight, 3),
+                (QueueType::Horn, 4),
+                (QueueType::Unit, 2),
+            ]),
+            LiteralSelection::AllNegative,
+            TermOrdering::KBO,
+            Some(crate::ClauseWeightFn::HornHeuristic),
+            false,
+            false,
+        ),
+        // 6: Aggressive goal-directed (LPO)
+        (
+            SelectionStrategy::MultiQueue(vec![
+                (QueueType::Age, 1),
+                (QueueType::Goal, 5),
+                (QueueType::Unit, 3),
+            ]),
+            LiteralSelection::AllNegative,
+            TermOrdering::LPO,
+            None,
+            true,
+            false,
+        ),
+        // 7: Deep chain multi-queue (no AVATAR, unbounded weight)
+        (
+            SelectionStrategy::MultiQueue(vec![
+                (QueueType::Age, 1),
+                (QueueType::Weight, 5),
+                (QueueType::Unit, 2),
+            ]),
+            LiteralSelection::AllNegative,
+            TermOrdering::KBO,
+            None,
+            false,
+            false,
+        ),
+    ];
+
+    let mut strategies = Vec::new();
+    for i in 0..workers {
+        let t = if i == workers - 1 { t_last } else { t_part };
+        let (selection, literal_selection, ordering, weight_fn, use_avatar, max_w) =
+            &archetypes[i % archetypes.len()];
+        let mut cfg = SearchConfig {
+            time_limit: t,
+            selection: selection.clone(),
+            literal_selection: literal_selection.clone(),
+            ordering: ordering.clone(),
+            use_avatar: *use_avatar,
+            ..SearchConfig::default()
+        };
+        if let Some(wf) = weight_fn {
+            cfg.weight_fn = wf.clone();
+        }
+        if !*max_w {
+            cfg.max_term_weight = None;
+        }
+        strategies.push((cfg, t));
+    }
+    StrategySchedule { strategies }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -582,7 +726,7 @@ mod tests {
         let t = Duration::from_secs(8);
         for name in [
             "casc_fne", "casc_feq", "casc_ueq", "casc_epr", "casc_eps", "casc_epu", "casc_icu",
-            "ml_fne", "ml_ueq", "ml_epr",
+            "ml_fne", "ml_ueq", "ml_epr", "mq",
         ] {
             let s = by_name(name, t, 8).unwrap();
             assert_eq!(s.strategies.len(), 8, "{name} should have 8 strategies");
