@@ -2225,6 +2225,29 @@ fn verify_instantiation(
             "instantiate exceeded strict formula-size limit".into(),
         );
     }
+    // Clausal multiset matching: if both parent and conclusion are clauses of the same length,
+    // verify that conclusion is a substitution instance of parent modulo literal permutation.
+    if let (Some(parent_clause), Some(conclusion_clause)) = (
+        clause_from_formula(&parents[0], limits),
+        clause_from_formula(conclusion, limits),
+    ) && parent_clause.len() == conclusion_clause.len()
+    {
+        let mut steps = 0;
+        match clause_subsumes(
+            &parent_clause,
+            &conclusion_clause,
+            &mut steps,
+            limits.max_subsumption_steps,
+        ) {
+            Ok(true) => return KernelVerdict::Certified,
+            Ok(false) => {}
+            Err(()) => {
+                return KernelVerdict::Inconclusive(
+                    "instantiate exceeded strict matching-step limit".into(),
+                );
+            }
+        }
+    }
     let (_, parent_body) = leading_forall_core(&parents[0]);
     let (_, target_body) = leading_forall_core(conclusion);
     let mut substitution = HashMap::new();
@@ -5013,6 +5036,15 @@ fn verify_resolution(
                 }
             }
             if clause_alpha_equiv(&resolvent, &goal) {
+                return KernelVerdict::Certified;
+            }
+            let mut deduplicated = Vec::with_capacity(resolvent.len());
+            for lit in &resolvent {
+                if !deduplicated.contains(lit) {
+                    deduplicated.push(lit.clone());
+                }
+            }
+            if deduplicated.len() != resolvent.len() && clause_alpha_equiv(&deduplicated, &goal) {
                 return KernelVerdict::Certified;
             }
         }
@@ -8518,6 +8550,31 @@ mod tests {
                      fof(i, plain, p(a, b), inference(instantiate, [status(thm)], [a])).\
                      fof(n, axiom, ~p(a, b), file('problem.p', n)).\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [i,n])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_permuted_clausal_instantiate() {
+        let problem = "cnf(a, axiom, ~p(X) | q(X)).\ncnf(n1, axiom, p(c)).\ncnf(n2, axiom, ~q(c)).";
+        let proof = "cnf(a, axiom, ~p(X) | q(X), file('problem.p', a)).\
+                     cnf(i, plain, q(c) | ~p(c), inference(instantiate, [status(thm)], [a])).\
+                     cnf(n1, axiom, p(c), file('problem.p', n1)).\
+                     cnf(n2, axiom, ~q(c), file('problem.p', n2)).\
+                     cnf(r1, plain, ~p(c), inference(resolution, [status(thm)], [i, n2])).\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [r1, n1])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_resolution_with_duplicate_condensation() {
+        let problem = "cnf(c1, axiom, ~r | q).\ncnf(c2, axiom, q | p | r).\ncnf(c3, axiom, ~q).\ncnf(c4, axiom, ~p).";
+        let proof = "cnf(c1, axiom, ~r | q, file('problem.p', c1)).\
+                     cnf(c2, axiom, q | p | r, file('problem.p', c2)).\
+                     cnf(c3, axiom, ~q, file('problem.p', c3)).\
+                     cnf(c4, axiom, ~p, file('problem.p', c4)).\
+                     cnf(c5, plain, q | p, inference(resolution, [status(thm)], [c1, c2])).\
+                     cnf(c6, plain, p, inference(resolution, [status(thm)], [c5, c3])).\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [c6, c4])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
     }
 
