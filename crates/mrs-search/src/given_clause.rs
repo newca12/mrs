@@ -1351,6 +1351,77 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
             state.dormant_unprocessed.remove(&id);
         }
 
+        // Backward Subsumption Resolution: simplify processed clauses using `given`
+        let mut backward_sr_simplified = Vec::new();
+        {
+            let candidates = state
+                .processed
+                .get_backward_subsumption_resolution_candidates(&given_fv);
+            for p in candidates {
+                if given.avatar_is_subset_of(&p)
+                    && let Some(removed_idx) =
+                        subsumption::subsumption_resolution_id(&given, &p, &mut state.term_bank)
+                {
+                    let mut new_lits = p.literals.clone();
+                    new_lits.remove(removed_idx);
+                    let simplified = IdClause::new_avatar(
+                        state.id_gen.next(),
+                        new_lits,
+                        ClauseSource::Inference {
+                            rule: "subsumption_resolution",
+                            parents: vec![p.id, given.id].into(),
+                        },
+                        p.avatar.clone(),
+                    );
+                    backward_sr_simplified.push((p.id, simplified));
+                }
+            }
+        }
+
+        for (old_id, simplified) in backward_sr_simplified {
+            state.stats.backward_deleted += 1;
+            state.processed.remove(old_id, &state.term_bank);
+            state.unprocessed.remove(old_id);
+            state.dormant_processed.remove(&old_id);
+            state.dormant_unprocessed.remove(&old_id);
+
+            state.register_clause(&simplified);
+            if simplified.is_empty() {
+                if simplified.avatar.is_empty() || !config.use_avatar {
+                    if std::env::var("TRACE_SEARCH").is_ok() {
+                        eprintln!(
+                            "[TRACE] return site 4b (backward SR empty) called with id = {}",
+                            simplified.id.0
+                        );
+                    }
+                    return SearchResult::Refutation(simplified.id, String::new());
+                }
+                let avatar = simplified.avatar.clone();
+                let cid = simplified.id;
+                if matches!(
+                    avatar_refute_branch(state, cid, &avatar, &ordering),
+                    AvatarBranchResult::Unsat
+                ) {
+                    if std::env::var("TRACE_SEARCH").is_ok() {
+                        eprintln!(
+                            "[TRACE] return site 4c (backward SR avatar refutation) called with id = {}",
+                            cid.0
+                        );
+                    }
+                    return SearchResult::Refutation(cid, String::new());
+                }
+            } else {
+                #[cfg(feature = "ml-guidance")]
+                let score = state.get_ml_score(&simplified);
+                #[cfg(not(feature = "ml-guidance"))]
+                let score = None;
+                let w = state.compute_weight(&simplified);
+                state
+                    .unprocessed
+                    .push(&simplified, &state.term_bank, w, score);
+            }
+        }
+
         // Add given to processed set (indexed)
         state.register_clause(&given.clone());
         state.processed.insert(given.clone(), &state.term_bank);
@@ -1870,8 +1941,72 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     continue;
                 }
 
+                // Forward Subsumption Resolution: simplify clause using processed clauses
+                let mut clause_fv = FeatureVector::from_id_clause(&clause, &state.term_bank);
+                let mut clause = clause;
+                loop {
+                    let candidates = state
+                        .processed
+                        .get_subsumption_resolution_candidates(&clause_fv);
+                    let mut changed = false;
+                    for p in candidates {
+                        if p.avatar_is_subset_of(&clause)
+                            && let Some(removed_idx) = subsumption::subsumption_resolution_id(
+                                &p,
+                                &clause,
+                                &mut state.term_bank,
+                            )
+                        {
+                            let mut new_lits = clause.literals.clone();
+                            new_lits.remove(removed_idx);
+                            clause = IdClause::new_avatar(
+                                state.id_gen.next(),
+                                new_lits,
+                                ClauseSource::Inference {
+                                    rule: "subsumption_resolution",
+                                    parents: vec![clause.id, p.id].into(),
+                                },
+                                clause.avatar.clone(),
+                            );
+                            state.register_clause(&clause);
+                            clause_fv = FeatureVector::from_id_clause(&clause, &state.term_bank);
+                            changed = true;
+                            break;
+                        }
+                    }
+                    if !changed || clause.is_empty() {
+                        break;
+                    }
+                }
+
+                if clause.is_empty() {
+                    if clause.avatar.is_empty() || !config.use_avatar {
+                        if std::env::var("TRACE_SEARCH").is_ok() {
+                            eprintln!(
+                                "[TRACE] return site 12 (forward SR empty) called with id = {}",
+                                clause.id.0
+                            );
+                        }
+                        return SearchResult::Refutation(clause.id, String::new());
+                    }
+                    let avatar = clause.avatar.clone();
+                    let id = clause.id;
+                    if matches!(
+                        avatar_refute_branch(state, id, &avatar, &ordering),
+                        AvatarBranchResult::Unsat
+                    ) {
+                        if std::env::var("TRACE_SEARCH").is_ok() {
+                            eprintln!(
+                                "[TRACE] return site 13 (forward SR avatar refutation) called with id = {}",
+                                id.0
+                            );
+                        }
+                        return SearchResult::Refutation(id, String::new());
+                    }
+                    continue;
+                }
+
                 // Forward subsumption: skip if subsumed by a processed clause
-                let clause_fv = FeatureVector::from_id_clause(&clause, &state.term_bank);
                 {
                     let candidates = state.processed.get_subsumption_candidates(&clause_fv);
                     if candidates.iter().any(|p| {
