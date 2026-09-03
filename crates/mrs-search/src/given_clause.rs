@@ -1090,6 +1090,35 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
             }
         };
 
+        // Destructive Equality Resolution (DER)
+        let given = if let Some((simplified, steps)) =
+            crate::der::destructive_equality_resolution_id(
+                &given,
+                &mut state.term_bank,
+                &mut state.id_gen,
+            ) {
+            state.register_clause(&given);
+            for s in &steps {
+                state.register_clause(s);
+            }
+            if simplified.is_empty() {
+                if simplified.avatar.is_empty() || !config.use_avatar {
+                    return SearchResult::Refutation(simplified.id, String::new());
+                }
+                let avatar = simplified.avatar.clone();
+                let id = simplified.id;
+                if matches!(
+                    avatar_refute_branch(state, id, &avatar, &ordering),
+                    AvatarBranchResult::Unsat
+                ) {
+                    return SearchResult::Refutation(id, String::new());
+                }
+            }
+            simplified
+        } else {
+            given
+        };
+
         // Condensation
         let given = if let Some(condensed) =
             subsumption::condense_id(&given, &mut state.term_bank, &mut state.id_gen)
@@ -1771,6 +1800,52 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
 
                 // AC Normalization
                 let clause = state.ac_normalize_clause(clause, &ac_syms);
+
+                // Destructive Equality Resolution (DER)
+                let clause = if let Some((simplified, steps)) =
+                    crate::der::destructive_equality_resolution_id(
+                        &clause,
+                        &mut state.term_bank,
+                        &mut state.id_gen,
+                    ) {
+                    state.register_clause(&clause);
+                    for s in &steps {
+                        state.register_clause(s);
+                    }
+                    if simplified.is_empty() {
+                        if simplified.avatar.is_empty() || !config.use_avatar {
+                            if std::env::var("TRACE_SEARCH").is_ok() {
+                                eprintln!(
+                                    "[TRACE] return site 10 (line DER) called with id = {}",
+                                    simplified.id.0
+                                );
+                            }
+                            return SearchResult::Refutation(simplified.id, String::new());
+                        }
+                        let avatar = simplified.avatar.clone();
+                        let id = simplified.id;
+                        if matches!(
+                            avatar_refute_branch(state, id, &avatar, &ordering),
+                            AvatarBranchResult::Unsat
+                        ) {
+                            if std::env::var("TRACE_SEARCH").is_ok() {
+                                eprintln!(
+                                    "[TRACE] return site 11 (line DER) called with id = {}",
+                                    id.0
+                                );
+                            }
+                            return SearchResult::Refutation(id, String::new());
+                        }
+                        continue;
+                    }
+                    simplified
+                } else {
+                    clause
+                };
+
+                if clause.is_tautology() {
+                    continue;
+                }
 
                 // Condensation
                 let clause = if let Some(condensed) =

@@ -244,6 +244,73 @@ impl TermBank {
         }
     }
 
+    /// Recursively substitutes occurrences of `target_var` with `replacement` in `term`.
+    pub fn substitute_var(
+        &mut self,
+        term: TermId,
+        target_var: VarId,
+        replacement: TermId,
+    ) -> TermId {
+        match self.get(term).clone() {
+            TermNode::Var(v) if v == target_var => replacement,
+            TermNode::Var(_) => term,
+            TermNode::App(sym, args) => {
+                let mut changed = false;
+                let new_args: SmallVec<[TermId; 4]> = args
+                    .iter()
+                    .map(|&arg| {
+                        let new_arg = self.substitute_var(arg, target_var, replacement);
+                        if new_arg != arg {
+                            changed = true;
+                        }
+                        new_arg
+                    })
+                    .collect();
+                if changed {
+                    self.intern_app(sym, new_args)
+                } else {
+                    term
+                }
+            }
+        }
+    }
+
+    /// Substitutes occurrences of `target_var` with `replacement` in `atom`.
+    pub fn substitute_var_atom(
+        &mut self,
+        atom: &IdAtom,
+        target_var: VarId,
+        replacement: TermId,
+    ) -> IdAtom {
+        match atom {
+            IdAtom::Eq(l, r) => {
+                let new_l = self.substitute_var(*l, target_var, replacement);
+                let new_r = self.substitute_var(*r, target_var, replacement);
+                IdAtom::Eq(new_l, new_r)
+            }
+            IdAtom::Pred(sym, args) => {
+                let new_args: SmallVec<[TermId; 4]> = args
+                    .iter()
+                    .map(|&arg| self.substitute_var(arg, target_var, replacement))
+                    .collect();
+                IdAtom::Pred(*sym, new_args)
+            }
+        }
+    }
+
+    /// Substitutes occurrences of `target_var` with `replacement` in `lit`.
+    pub fn substitute_var_literal(
+        &mut self,
+        lit: &IdLiteral,
+        target_var: VarId,
+        replacement: TermId,
+    ) -> IdLiteral {
+        IdLiteral {
+            positive: lit.positive,
+            atom: self.substitute_var_atom(&lit.atom, target_var, replacement),
+        }
+    }
+
     pub fn subterm_at(&self, term: TermId, pos: &[usize]) -> Option<TermId> {
         if pos.is_empty() {
             return Some(term);

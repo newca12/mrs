@@ -57,6 +57,99 @@ pub fn equality_resolve(clause: &Clause, id_gen: &mut ClauseIdGen) -> Vec<Clause
     results
 }
 
+/// Destructive Equality Resolution (DER / eager variable elimination).
+///
+/// Simplifies a clause by iteratively eliminating negative equality literals of the form:
+/// 1. `s ≠ s` (trivial inequality reflexivity resolution), and
+/// 2. `X ≠ t` or `t ≠ X` where `X` is a variable not occurring in `t` (by applying `{X ↦ t}`).
+///
+/// Returns `Some((final_clause, intermediate_steps))` if at least one simplification
+/// occurred, or `None` if no DER step applied.
+pub fn destructive_equality_resolve(
+    clause: &Clause,
+    id_gen: &mut ClauseIdGen,
+) -> Option<(Clause, Vec<Clause>)> {
+    let mut current = clause.clone();
+    let mut steps = Vec::new();
+    loop {
+        let mut simplified_step = false;
+        for (i, lit) in current.literals.iter().enumerate() {
+            if lit.is_positive() {
+                continue;
+            }
+            let (s, t) = match &lit.atom {
+                Atom::Eq(s, t) => (s, t),
+                _ => continue,
+            };
+            if s == t {
+                let new_lits: Vec<Literal> = current
+                    .literals
+                    .iter()
+                    .enumerate()
+                    .filter(|&(k, _)| k != i)
+                    .map(|(_, l)| l.clone())
+                    .collect();
+                let next = Clause::new_avatar(
+                    id_gen.next(),
+                    new_lits,
+                    ClauseSource::Inference {
+                        rule: "equality_resolution",
+                        parents: vec![current.id].into(),
+                    },
+                    current.avatar.clone(),
+                );
+                steps.push(next.clone());
+                current = next;
+                simplified_step = true;
+                break;
+            }
+            let subst = match (s, t) {
+                (mrs_core::Term::Var(x), other) if !other.contains_var(*x) => {
+                    let mut s_map = mrs_core::subst::Substitution::new();
+                    s_map.bind(*x, other.clone());
+                    Some(s_map)
+                }
+                (other, mrs_core::Term::Var(x)) if !other.contains_var(*x) => {
+                    let mut s_map = mrs_core::subst::Substitution::new();
+                    s_map.bind(*x, other.clone());
+                    Some(s_map)
+                }
+                _ => None,
+            };
+            if let Some(sigma) = subst {
+                let new_lits: Vec<Literal> = current
+                    .literals
+                    .iter()
+                    .enumerate()
+                    .filter(|&(k, _)| k != i)
+                    .map(|(_, l)| sigma.apply_literal(l))
+                    .collect();
+                let next = Clause::new_avatar(
+                    id_gen.next(),
+                    new_lits,
+                    ClauseSource::Inference {
+                        rule: "equality_resolution",
+                        parents: vec![current.id].into(),
+                    },
+                    current.avatar.clone(),
+                );
+                steps.push(next.clone());
+                current = next;
+                simplified_step = true;
+                break;
+            }
+        }
+        if !simplified_step {
+            break;
+        }
+    }
+    if steps.is_empty() {
+        None
+    } else {
+        Some((current, steps))
+    }
+}
+
 /// Equality Factoring: from `s = t ∨ s' = t' ∨ C`,
 /// derive `σ(s = t ∨ t ≠ t' ∨ C)` where `σ = mgu(s, s')`.
 ///
@@ -438,5 +531,68 @@ mod tests {
                 .any(|lit| lit.is_negative() && matches!(&lit.atom, Atom::Eq(_, _)))
         });
         assert!(has_diseq, "should contain a disequality literal");
+    }
+
+    #[test]
+    fn destructive_equality_resolution_variable_elimination() {
+        // Clause: X != f(a) | p(X)
+        // DER eliminates X != f(a) by substituting X -> f(a), yielding p(f(a))
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("f");
+        let a = syms.intern("a");
+        let p = syms.intern("p");
+        let x = 0;
+        let mut id_gen = ClauseIdGen::new();
+
+        let fa = Term::app(f, vec![Term::constant(a)]);
+        let clause = input_clause(
+            &mut id_gen,
+            vec![
+                Literal::neg(Atom::eq(Term::Var(x), fa.clone())),
+                Literal::pos(Atom::pred(p, vec![Term::Var(x)])),
+            ],
+            "c1",
+        );
+
+        let res = destructive_equality_resolve(&clause, &mut id_gen);
+        assert!(res.is_some());
+        let (final_clause, steps) = res.unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(final_clause.literals.len(), 1);
+        assert_eq!(
+            final_clause.literals[0],
+            Literal::pos(Atom::pred(p, vec![fa]))
+        );
+    }
+
+    #[test]
+    fn destructive_equality_resolution_trivial_inequality() {
+        // Clause: f(X) != f(X) | q(X)
+        // DER eliminates trivial inequality, yielding q(X)
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("f");
+        let q = syms.intern("q");
+        let x = 0;
+        let mut id_gen = ClauseIdGen::new();
+
+        let fx = Term::app(f, vec![Term::Var(x)]);
+        let clause = input_clause(
+            &mut id_gen,
+            vec![
+                Literal::neg(Atom::eq(fx.clone(), fx)),
+                Literal::pos(Atom::pred(q, vec![Term::Var(x)])),
+            ],
+            "c1",
+        );
+
+        let res = destructive_equality_resolve(&clause, &mut id_gen);
+        assert!(res.is_some());
+        let (final_clause, steps) = res.unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(final_clause.literals.len(), 1);
+        assert_eq!(
+            final_clause.literals[0],
+            Literal::pos(Atom::pred(q, vec![Term::Var(x)]))
+        );
     }
 }
