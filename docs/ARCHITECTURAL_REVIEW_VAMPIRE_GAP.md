@@ -224,6 +224,7 @@ Following this initial review, dedicated branches were created, verified, and me
 | **Leap 3A**: `feat/multi-queue-selection` | ✅ Merged | `3ec3228` | 8-way priority multi-queue (Unit, Horn, GoalDistance, SOS) |
 | **Leap 3B**: `feat/dynamic-precedence` | ✅ Merged | `379baa5` | Dynamic symbol analysis for orthogonal portfolio precedences |
 | **Leap 4A**: `feat/free-var-skolemization` | ✅ Merged | `3c66465` | Free-variable filtered Skolemization to eliminate redundant arity |
-| **Leap 4B**: `feat/polarity-definitional-cnf` | ⏳ Pending | — | Polarity-aware half-definitions and biconditional expansion fix |
+| **Leap 4B**: `feat/polarity-definitional-cnf` | ✅ Merged | `722b669` | Polarity-aware half-definitions and biconditional expansion fix |
 | **Leap 4C**: `feat/bce-pure-literals` | ⏳ Pending | — | Blocked Clause Elimination & Pure Literal Elimination |
+| **Leap 4D**: Relational Goal-Distance Guidance | ✅ Merged | `6f807a7` | Multi-hop bipartite symbol-clause reachability graph & conjecture boost |
 | **Leap 5**: `feat/instgen-epr` | ⏳ Pending | — | Propositional abstraction and SAT-guided MGU instantiation |
