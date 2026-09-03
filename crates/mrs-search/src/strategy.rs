@@ -484,6 +484,31 @@ pub fn run_schedule(
     ml: MlOptions,
     workers: Option<usize>,
 ) -> (SearchResult, crate::ScheduleReport) {
+    // 0. Clause preprocessing: Tautology Elimination, Pure Literal Elimination (PLE),
+    // and First-Order Blocked Clause Elimination (BCE).
+    let no_bce = std::env::var("MRS_NO_BCE").is_ok();
+    let no_ple = std::env::var("MRS_NO_PLE").is_ok();
+    let prep_config = crate::preprocessing::PreprocessingConfig {
+        enable_bce: !no_bce,
+        enable_ple: !no_ple,
+        ..Default::default()
+    };
+    let (preprocessed_clauses, prep_stats) =
+        crate::preprocessing::preprocess_clauses(clauses, &prep_config);
+    if (std::env::var("TRACE_SEARCH").is_ok() || std::env::var("TRACE_BCE").is_ok())
+        && prep_stats.total_removed > 0
+    {
+        eprintln!(
+            "[BCE] Preprocessing eliminated {} clauses (tautology: {}, pure: {}, blocked: {}), remaining: {}",
+            prep_stats.total_removed,
+            prep_stats.tautologies_removed,
+            prep_stats.pure_clauses_removed,
+            prep_stats.blocked_clauses_removed,
+            preprocessed_clauses.len()
+        );
+    }
+    let clauses = &preprocessed_clauses[..];
+
     // 1. Compute default symbol configuration for pre-passes.
     let default_config = crate::symbol_config::compute_symbol_config(
         clauses,

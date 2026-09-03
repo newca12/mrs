@@ -21,7 +21,8 @@ This document provides the exact Git commits, checkout/build instructions, targe
 | 11 | `feat/dynamic-precedence` | `379baa5` | **FEQ** (FOF with Equality) | **UEQ**, **FNE**, **EPR** | Problem-specific dynamic KBO/LPO precedence and symbol weighting schemes |
 | 12 | `feat/free-var-skolemization` | `3c66465` | **FNE** (FOF No Equality) | **FEQ** (FOF with Equality) | Free-variable filtered Skolemization to eliminate redundant Skolem arity |
 | 13 | `feat/polarity-definitional-cnf` | `722b669` | **FNE** (FOF No Equality) | **FEQ**, **EPR** | Polarity-aware Plaisted-Greenbaum renaming & linear equivalence CNF |
-| 14 | `integrate/casc-next` (Goal Distance Guidance) | `HEAD` | **FNE** (FOF No Equality) | **FEQ**, **EPR** | Multi-hop bipartite symbol-clause reachability graph & graded conjecture weight boost |
+| 14 | `integrate/casc-next` (Goal Distance Guidance) | `6f807a7` | **FNE** (FOF No Equality) | **FEQ**, **EPR** | Multi-hop bipartite symbol-clause reachability graph & graded conjecture weight boost |
+| 15 | `integrate/casc-next` (Blocked Clause & Pure Literal Elimination) | `HEAD` | **FNE** (FOF No Equality) | **FEQ**, **EPR** | First-order Blocked Clause Elimination (BCE), Pure Literal Elimination (PLE), and Tautology Elimination in CNF preprocessing |
 
 ---
 
@@ -264,7 +265,7 @@ This document provides the exact Git commits, checkout/build instructions, targe
 
 ### 14. Non-Equational Relational Goal Distance Guidance & Multi-Hop Conjecture Weight Boost
 * **Branch**: `integrate/casc-next`
-* **Commit**: `HEAD` (on `integrate/casc-next`)
+* **Commit**: `6f807a7` (on `integrate/casc-next`)
 * **Build & Checkout**:
   ```bash
   git checkout integrate/casc-next
@@ -277,3 +278,22 @@ This document provides the exact Git commits, checkout/build instructions, targe
   ```bash
   ./crates/mrs-bench/casc.sh --systems mrs --divisions fne,feq,epr --time 30 --jobs 4 --output results/goal-distance-eval
   ```
+
+---
+
+### 15. First-Order Blocked Clause Elimination (BCE) & Pure Literal Elimination (PLE)
+* **Branch**: `integrate/casc-next`
+* **Commit**: `HEAD` (on `integrate/casc-next`)
+* **Build & Checkout**:
+  ```bash
+  git checkout integrate/casc-next
+  nix develop -c cargo build --release
+  ```
+* **Target Division**: **FNE** (`--schedule casc_fne`), **FEQ** (`--schedule casc_feq`), and **EPR** (`--schedule casc_epr`).
+* **Why**: Preprocessing eliminates redundant clauses before search starts. Tautology elimination removes trivial validities ($s = s$ and $L \lor \neg L$). Pure Literal Elimination (PLE) detects predicates occurring with only one polarity across all clauses; axiom clauses containing such predicates can never derive the empty clause $\Box$ and are removed, cascading across rounds. First-Order Blocked Clause Elimination (BCE, Kiesl et al. 2016) eliminates clauses where a literal $L \in C$ produces only tautological resolvents with every possible partner clause in the active set. Conjectures and negated conjectures are strictly protected to preserve refutational completeness and proof certificates.
+* **Problem Domains**: Knowledge bases, relational ontologies, large axiomatizations with unneeded theories or definition artifacts: `SYN`, `SET`, `KRS`, `MGT`, `SWV`, `NLP`.
+* **Benchmark Command**:
+  ```bash
+  ./crates/mrs-bench/casc.sh --systems mrs --divisions fne,feq,epr --time 30 --jobs 4 --output results/bce-ple-eval
+  ```
+

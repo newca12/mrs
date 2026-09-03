@@ -204,12 +204,21 @@ fn main() {
                 }
                 process::exit(0);
             }
+            "--no-bce" => unsafe {
+                std::env::set_var("MRS_NO_BCE", "1");
+            },
+            "--no-ple" => unsafe {
+                std::env::set_var("MRS_NO_PLE", "1");
+            },
+            "--trace-bce" => unsafe {
+                std::env::set_var("TRACE_BCE", "1");
+            },
             #[cfg(feature = "proover")]
             "--quiet" => quiet = true,
             _ => {
                 if path.is_some() {
                     eprintln!(
-                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--goal-transform MODE] [--self-check] [--stats] [--include-root DIR] <file.p>"
+                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--goal-transform MODE] [--no-bce] [--no-ple] [--self-check] [--stats] [--include-root DIR] <file.p>"
                     );
                     process::exit(1);
                 }
@@ -219,7 +228,7 @@ fn main() {
     }
     let Some(path) = path else {
         eprintln!(
-            "Usage: mrs [--time <seconds>] [--schedule NAME] [--goal-transform MODE] [--self-check] [--stats] [--include-root DIR] <file.p>"
+            "Usage: mrs [--time <seconds>] [--schedule NAME] [--goal-transform MODE] [--no-bce] [--no-ple] [--self-check] [--stats] [--include-root DIR] <file.p>"
         );
         eprintln!("  An automated theorem prover for TPTP problems.");
         eprintln!(

@@ -3662,6 +3662,7 @@ dependencies = [
  "mrs-core",
  "mrs-index",
  "mrs-proof",
+ "mrs-unify",
  "num_cpus",
  "rand 0.10.2",
  "rustc-hash 2.1.3",

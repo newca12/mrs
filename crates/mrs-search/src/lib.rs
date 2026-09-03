@@ -38,6 +38,7 @@ pub mod fvo;
 pub mod given_clause;
 pub mod goal_distance;
 pub mod instgen;
+pub mod preprocessing;
 pub mod select;
 pub mod sine;
 pub mod state;
@@ -55,6 +56,7 @@ pub use goal_distance::GoalDistanceMap;
 pub use mrs_calculus::literal_selection::LiteralSelection;
 pub use mrs_calculus::ordering::TermOrdering;
 pub use mrs_cnf::goal_transform::GoalTransformMode;
+pub use preprocessing::{PreprocessingConfig, PreprocessingStats, preprocess_clauses};
 pub use select::{QueueType, SelectionStrategy};
 pub use symbol_config::{PrecedenceScheme, SymbolWeightScheme, compute_symbol_config};
 
