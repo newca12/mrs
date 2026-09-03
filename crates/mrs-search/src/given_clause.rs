@@ -1504,7 +1504,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
         }
 
         // Backward demodulation: if given is a unit positive equality,
-        // rewrite all processed clauses using it. Iterate until fixpoint.
+        // rewrite processed clauses using it in-place. Iterate until fixpoint.
         if is_unit_positive_equality_id(&given) {
             let mut new_units: Vec<IdClause> = vec![given.clone()];
             let mut backward_demod_empty: Vec<IdClause> = Vec::new();
@@ -1537,20 +1537,45 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     }
                 }
 
-                let all_processed = state.processed.drain();
-                state.demod_index = mrs_index::stree::STreeId::new();
-                let mut next_processed = Vec::new();
+                let mut candidate_ids: HashSet<ClauseId> = HashSet::default();
+                for u in &new_units {
+                    if let IdAtom::Eq(l, r) = &u.literals[0].atom {
+                        use mrs_calculus::ordering::TermComparison;
+                        let from = if ordering.compare_id(*l, *r, &state.term_bank)
+                            == TermComparison::Greater
+                        {
+                            *l
+                        } else if ordering.compare_id(*r, *l, &state.term_bank)
+                            == TermComparison::Greater
+                        {
+                            *r
+                        } else {
+                            continue;
+                        };
+                        for target in state
+                            .processed
+                            .get_superposition_targets(from, &state.term_bank)
+                        {
+                            if target.id != u.id {
+                                candidate_ids.insert(target.id);
+                            }
+                        }
+                    }
+                }
+
                 let mut created_units = Vec::new();
 
-                for proc in all_processed {
+                for cid in candidate_ids {
                     if start.elapsed() >= config.time_limit {
-                        next_processed.push(proc);
-                        continue;
+                        break;
                     }
+                    let Some(proc) = state.processed.get(cid).cloned() else {
+                        continue;
+                    };
                     if new_units.iter().any(|u| u.id == proc.id) {
-                        next_processed.push(proc);
                         continue;
                     }
+
                     if let Some(simplified) = demodulation::demodulate_id(
                         &proc,
                         &mut state.term_bank,
@@ -1561,43 +1586,45 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     ) {
                         state.register_clause(&proc);
 
-                        // Build index from already-processed units for chained rewriting
-                        let mut all_units_index: mrs_index::stree::STreeId<(
-                            TermId,
-                            TermId,
-                            mrs_core::clause::ClauseId,
-                        )> = mrs_index::stree::STreeId::new();
-                        for c in &next_processed {
-                            if is_unit_positive_equality_id(c)
-                                && let IdAtom::Eq(l, r) = &c.literals[0].atom
-                            {
-                                use mrs_calculus::ordering::TermComparison;
-                                if ordering.compare_id(*l, *r, &state.term_bank)
-                                    == TermComparison::Greater
-                                {
-                                    all_units_index.insert(*l, &state.term_bank, (*l, *r, c.id));
-                                } else if ordering.compare_id(*r, *l, &state.term_bank)
-                                    == TermComparison::Greater
-                                {
-                                    all_units_index.insert(*r, &state.term_bank, (*r, *l, c.id));
-                                }
-                            }
-                        }
-
-                        let simplified = if !all_units_index.is_empty()
-                            && let Some(further) = demodulation::demodulate_id(
-                                &simplified,
-                                &mut state.term_bank,
-                                &all_units_index,
-                                &state.clause_store,
-                                &mut state.id_gen,
-                                &ac_syms,
-                            ) {
+                        // Chain further rewriting using existing active unit equalities in demod_index
+                        let simplified = if let Some(further) = demodulation::demodulate_id(
+                            &simplified,
+                            &mut state.term_bank,
+                            &state.demod_index,
+                            &state.clause_store,
+                            &mut state.id_gen,
+                            &ac_syms,
+                        ) {
                             state.register_clause(&simplified);
                             further
                         } else {
                             simplified
                         };
+
+                        // Remove old clause from processed and demod_index
+                        state.processed.remove(proc.id, &state.term_bank);
+                        state.stats.backward_deleted += 1;
+                        state.dormant_processed.remove(&proc.id);
+                        state.dormant_unprocessed.remove(&proc.id);
+
+                        if is_unit_positive_equality_id(&proc)
+                            && let IdAtom::Eq(l, r) = &proc.literals[0].atom
+                        {
+                            use mrs_calculus::ordering::TermComparison;
+                            if ordering.compare_id(*l, *r, &state.term_bank)
+                                == TermComparison::Greater
+                            {
+                                state
+                                    .demod_index
+                                    .remove(*l, &state.term_bank, &(*l, *r, proc.id));
+                            } else if ordering.compare_id(*r, *l, &state.term_bank)
+                                == TermComparison::Greater
+                            {
+                                state
+                                    .demod_index
+                                    .remove(*r, &state.term_bank, &(*r, *l, proc.id));
+                            }
+                        }
 
                         if simplified.is_empty() {
                             state.register_clause(&simplified.clone());
@@ -1621,43 +1648,36 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         }
                         if !simplified.is_tautology() {
                             if is_unit_positive_equality_id(&simplified) {
+                                if let IdAtom::Eq(l, r) = &simplified.literals[0].atom {
+                                    use mrs_calculus::ordering::TermComparison;
+                                    if ordering.compare_id(*l, *r, &state.term_bank)
+                                        == TermComparison::Greater
+                                    {
+                                        state.demod_index.insert(
+                                            *l,
+                                            &state.term_bank,
+                                            (*l, *r, simplified.id),
+                                        );
+                                    } else if ordering.compare_id(*r, *l, &state.term_bank)
+                                        == TermComparison::Greater
+                                    {
+                                        state.demod_index.insert(
+                                            *r,
+                                            &state.term_bank,
+                                            (*r, *l, simplified.id),
+                                        );
+                                    }
+                                }
                                 created_units.push(simplified.clone());
                             }
                             state.register_clause(&simplified.clone());
-                            next_processed.push(simplified);
-                        }
-                    } else {
-                        next_processed.push(proc);
-                    }
-                }
-
-                let time_ok = start.elapsed() < config.time_limit;
-                for clause in next_processed {
-                    state.processed.insert(clause.clone(), &state.term_bank);
-
-                    publish_shared_chain_counted(
-                        state,
-                        &clause,
-                        iteration,
-                        config.shared_pool_poll_interval,
-                    );
-
-                    if time_ok
-                        && is_unit_positive_equality_id(&clause)
-                        && let IdAtom::Eq(l, r) = &clause.literals[0].atom
-                    {
-                        use mrs_calculus::ordering::TermComparison;
-                        if ordering.compare_id(*l, *r, &state.term_bank) == TermComparison::Greater
-                        {
-                            state
-                                .demod_index
-                                .insert(*l, &state.term_bank, (*l, *r, clause.id));
-                        } else if ordering.compare_id(*r, *l, &state.term_bank)
-                            == TermComparison::Greater
-                        {
-                            state
-                                .demod_index
-                                .insert(*r, &state.term_bank, (*r, *l, clause.id));
+                            state.processed.insert(simplified.clone(), &state.term_bank);
+                            publish_shared_chain_counted(
+                                state,
+                                &simplified,
+                                iteration,
+                                config.shared_pool_poll_interval,
+                            );
                         }
                     }
                 }
@@ -2676,6 +2696,69 @@ mod tests {
             matches!(result, SearchResult::Refutation(..)),
             "ordered_inferences must not cause premature saturation on \
              unsatisfiable all-positive EPR clauses (got {result:?})"
+        );
+    }
+
+    #[test]
+    fn in_place_backward_demodulation_rewrites_processed_clause() {
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("f");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let c = syms.intern("c");
+        let mut id_gen = ClauseIdGen::new();
+
+        // c1: f(a) != b
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::eq(
+                Term::app(f, vec![Term::constant(a)]),
+                Term::constant(b),
+            ))],
+            "ax1",
+            "axiom",
+        );
+        // c2: a = c
+        let c2 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::eq(Term::constant(a), Term::constant(c)))],
+            "ax2",
+            "axiom",
+        );
+        // c3: f(c) = b
+        let c3 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::eq(
+                Term::app(f, vec![Term::constant(c)]),
+                Term::constant(b),
+            ))],
+            "ax3",
+            "axiom",
+        );
+
+        let mut ordering_cfg = mrs_calculus::ordering::SymbolConfig::default();
+        let max_idx = f.index().max(a.index()).max(b.index()).max(c.index()) as usize;
+        ordering_cfg.weights = vec![1; max_idx + 1];
+        ordering_cfg.weights[a.index() as usize] = 3;
+        ordering_cfg.weights[c.index() as usize] = 1;
+
+        let mut state = crate::state::SearchState::new(
+            vec![c1, c2, c3],
+            id_gen,
+            std::sync::Arc::new(ordering_cfg),
+            std::sync::Arc::new(syms),
+            true,
+        );
+        let config = SearchConfig {
+            ordering: TermOrdering::KBO,
+            selection: crate::SelectionStrategy::Fifo,
+            literal_selection: crate::LiteralSelection::All,
+            ..SearchConfig::default()
+        };
+        let result = search(&mut state, &config);
+        assert!(
+            matches!(result, SearchResult::Refutation(..)),
+            "in-place backward demodulation should refute f(a)!=b, a=c, f(c)=b (got {result:?})"
         );
     }
 }
