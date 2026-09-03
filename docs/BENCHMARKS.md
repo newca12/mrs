@@ -86,11 +86,11 @@ REFERENCE VIOLATIONS — none detected.
 
 # Status
 
-Current best-known static-portfolio (`casc_*`, no ML) results for `mrs`
-HEAD, 8 workers, CASC times (`--casc-times`). **These numbers are
-aggregated from separate per-division `crates/mrs-bench/casc.sh` runs
-across several recent uncontaminated commits and machines — not a single clean
-full-matrix run.** Exact source per division:
+Representative historical static-portfolio (`casc_*`, no ML) measurements for
+`mrs`, using 8 workers and CASC times (`--casc-times`). **These numbers are
+aggregated from separate per-division `crates/mrs-bench/casc.sh` runs across
+several commits and machines — not a single clean full-matrix run and not a
+measurement of the current `HEAD`.** Exact source per division:
 
 | Division | Problems | mrs solved | Avg (s) | Source commit | Date |
 |----------|---------:|-----------:|--------:|----------------|------|
@@ -103,15 +103,12 @@ full-matrix run.** Exact source per division:
 | **TOTAL**|   **1101** |    **245** |       — | | |
 
 
-FNE and EPS solved-counts fluctuate ±1-3 across repeated runs on
-different machines (observed ranges: FNE 43-45, EPS 39-43) — treat any
-single number above as representative, not exact. All divisions sound
-(0 polarity/reference violations) in every run cited above; static
-`casc_*` schedules are unaffected by the ML branches under active
-development (`crates/mrs-search/src/strategy/named.rs` and
-`crates/mrs-bench/systems/mrs/invoke.sh` are unchanged since
-`55986ce`), so these numbers remain the current valid baseline
-regardless of ML work landing on top.
+FNE and EPS solved-counts fluctuate ±1-3 across repeated runs on different
+machines (observed ranges: FNE 43-45, EPS 39-43) — treat any single number
+above as representative, not exact. All divisions were reported sound (0
+polarity/reference violations) in every run cited above. The source commits
+predate subsequent portfolio and verifier changes, so re-run the relevant
+division before treating these figures as a current baseline.
 
 † **EPS is not yet Canary-Suite-verified for the static `mrs` system.**
 Every other row above traces to a run explicitly tagged `[done] OK` under
@@ -258,6 +255,50 @@ Append-only log of CASC and ProoVer benchmark runs, newest first. Each entry
 records the mrs commit and the exact command used.
 
 
+## ProoVer 2026 PRV Corpus — 2026-08-22
+
+Recorded local evaluation at commit `bcc9918` (`fix(proover): disable avatar in MrsAtp step checks`) using a 30-second per-proof budget and 8 workers:
+
+### 1. Competition Mode (Full ATP Verification Ladder)
+
+```text
+./target/release/score_proover2026 \
+  ./crates/mrs-bench/proover-corpus/Proover2026 \
+  --competition \
+  --proover ./target/release/mrs-proover \
+  --time 30 \
+  --workers 8
+
+score=148 good=60 bad=39 unknown=1 false_rejection=0 unsound=0
+```
+
+The corpus contains 50 valid proofs, 10 locally sound evil mutations, and 40
+ordinary evil proofs. This run verified all 50 valid proofs, gave all 10
+locally sound mutations a permitted scoring verdict, rejected 39 ordinary evil
+proofs, and left `PRV067+1` as the one neutral `Unknown`. This is a recorded
+local reproduction of a 148/150 result, not an official CASC-J13 score or a
+claim of cross-machine stability.
+
+### 2. Strict Mode (Independent `mrs-proof-kernel` Only)
+
+```text
+./target/release/score_proover2026 \
+  ./crates/mrs-bench/proover-corpus/Proover2026 \
+  --kernel \
+  --proover ./target/release/mrs-proover \
+  --time 30 \
+  --workers 8
+
+score=61 good=16 bad=59 unknown=25 false_rejection=26 unsound=0
+```
+
+The kernel-only run bypasses all external and in-process ATPs. It structurally
+verified 16 proofs, left 25 inconclusive, and falsely rejected 26 valid proofs
+in this configuration (`false_rejection=26`). It produced zero unsound passes,
+but the result is structural coverage data, not perfect verification.
+
+---
+
 ## ProoVer 2026 PRV Corpus — 2026-08-04
 
 Commit `0e10c0d` (`fix: harden ProoVer provenance checks`), 100-problem
@@ -277,23 +318,6 @@ score=148 good=60 bad=39 unknown=1 false_rejection=0 unsound=0
 The result is 50 valid proofs verified, 39 ordinary evil proofs rejected, 10
 locally sound evil mutations accepted under the corpus scoring rule, and one
 ordinary evil proof left `Unknown`.
-
-
-TODO — strategy sweeps (Step 1 of portfolio re-tuning):
-    Dual 4108 — accurate coverage:
-    ./crates/mrs-bench/run_strategy_sweep.sh --divisions fne --casc-times --jobs 16
-    Dual E5-2407:
-    ./crates/mrs-bench/run_strategy_sweep.sh --divisions fne --casc-times --jobs 8
-
-   1     cat run_A.csv > master_run.csv
-   2     tail -n +2 run_B.csv >> master_run.csv
-   3     tail -n +2 run_C.csv >> master_run.csv
-   4     tail -n +2 run_D.csv >> master_run.csv
-
-  Step 3: Generate the Portfolios
-  Now, on Server A, run the greedy solver on the combined master_run.csv:
-
-   1 ./crates/mrs-bench/run_all_greedy_sweeps.sh master_run.csv > final_cacs30_portfolios.txt
 
 
 [done]
@@ -359,7 +383,147 @@ POLARITY VIOLATIONS — none detected.
 REFERENCE VIOLATIONS — none detected.
 50027 Aug 12 22:45 /DATA/ai/user/mrs/crates/mrs-bench/results/casc-j13/20260812_183400/run.csv
 
+===================================================================
+===================================================================
+
+commit 9738467d6d1dc3190f663bea94f4f628d7f1d7a9 (HEAD -> feat/destructive-equality-resolution
+
+[ongoing]
+[www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh   --edition casc-30  --systems mrs --divisions feq,fne,epu,eps  --casc-times --jobs 1 --output crates/mrs-bench/results/casc-30-W8J1-$(date +%Y%m%d)
+/DATA/ai/mrs/crates/mrs-bench/results/casc-30
+
+[done]
+[www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh   --edition casc-j13  --systems mrs   --divisions feq,fne  --casc-times   --jobs 1   --output crates/mrs-bench/results/casc-j13-W8J1-$(date +%Y%m%d)
+Running `target/debug/bench_report /DATA/ai/mrs/crates/mrs-bench/results/casc-j13-W8J1-20260901/run.csv`
+CASC-J13 Results — 2026-09-02 07:41  (400 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs
+                 Solved  Avg (s)
+------------------  --------------------
+FEQ            300        68   17.304
+FNE            100        32   34.309
+------------------  --------------------
+TOTAL          400       100   22.745
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+
+commit 658b5c7f9a02f34bc709608f06d81877d033492d (HEAD -> feat/kernel-equational-definitions
+
+[done]
+[www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh   --edition casc-j13   --systems mrs   --divisions ueq  --casc-times   --jobs 1   --output crates/mrs-bench/results/casc-j13-W8J1-$(date +%Y%m%d)
+     Running `target/debug/bench_report /DATA/ai/mrs/crates/mrs-bench/results/casc-j13-W8J1-20260831/run.csv`
+CASC-J13 Results — 2026-09-02 07:44  (400 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+UEQ            400        65   15.657
+------------------  --------------------
+TOTAL          400        65   15.657
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+[done]
+[www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh   --edition casc-30   --systems mrs   --divisions ueq  --casc-times   --jobs 1   --output crates/mrs-bench/results/casc-30-W8J1-$(date +%Y%m%d)
+Running `target/debug/bench_report /DATA/ai/mrs/crates/mrs-bench/results/casc-30-W8J1-20260830/run.csv`
+CASC-30 Results — 2026-09-02 08:11  (300 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                 Solved  Avg (s)
+------------------  --------------------
+UEQ            300        52   24.345
+------------------  --------------------
+TOTAL          300        52   24.345
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+commit f13912c763c8c22309fbc7bc2fc6126cad1eb55f
+
+[ongoing] 994/13011
+export RUST_MIN_STACK=67108864
+[root@server01 mrs]# ./crates/mrs-bench/run_codex_sweep.sh "$TPTP" codex_cat_filtered_sweep_f13912c763_01-03.db 300 1
+
+[ongoing] 1039/13011
+export RUST_MIN_STACK=67108864
+[root@server02 mrs]# ./crates/mrs-bench/run_codex_sweep.sh "$TPTP" codex_cat_filtered_sweep_f13912c763_04-06.db 300 1
+
+[ongoing] 1035/13011
+export RUST_MIN_STACK=67108864
+[root@server03 mrs]# ./crates/mrs-bench/run_codex_sweep.sh "$TPTP" codex_cat_filtered_sweep_f13912c763_07-09.db 300 1
+
+[ongoing] 1295/13011
+export RUST_MIN_STACK=67108864
+[root@server04 mrs]# ./crates/mrs-bench/run_codex_sweep.sh "$TPTP" codex_cat_filtered_sweep_f13912c763_10-12.db 300 1
+
+[ongoing] 2078/13011
+export RUST_MIN_STACK=67108864
+[PPROD:user@server97:/DATA/ai/user/mrs]$ ./crates/mrs-bench/run_codex_sweep.sh "$TPTP" codex_cat_filtered_sweep_f13912c763_13-15.db 300 1
+
+
+[done]
+[www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh   --edition casc-30   --systems mrs   --divisions fne,eps,ueq,epu,icu,feq  --casc-times   --jobs 1   --output crates/mrs-bench/results/casc-30-W8J1-$(date +%Y%m%d)
+Running `target/debug/bench_report /DATA/ai/mrs/crates/mrs-bench/results/casc-30-W8J1-20260828/run.csv`
+CASC-30 Results — 2026-09-02 08:14  (1101 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs
+                 Solved  Avg (s)
+------------------  --------------------
+FNE            100        44   36.363
+EPS            100        43   10.595
+UEQ            300        74   58.646
+EPU            100        16    7.656
+ICU            101         2  150.291
+FEQ            400        90   21.873
+------------------  --------------------
+TOTAL         1101       269   32.665
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+[done]
+[www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh   --edition casc-j13   --systems mrs   --divisions fne,feq,ueq   --casc-times   --jobs 1   --output crates/mrs-bench/results/casc-j13-W8J1-$(date +%Y%m%d)
+Running `target/debug/bench_report /DATA/ai/mrs/crates/mrs-bench/results/casc-j13-W8J1-20260826/run.csv`
+CASC-J13 Results — 2026-09-02 08:15  (800 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs
+                 Solved  Avg (s)
+------------------  --------------------
+FNE            100        33   35.573
+FEQ            300        64   17.603
+UEQ            400        70   37.753
+------------------  --------------------
+TOTAL          800       167   29.600
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
 commit 8988837437da7dbf05e867ae9a26bb5d1eb2e1e3
+
+[done] check also why not always 4 mrs process running
 [www@server99 mrs]$ cargo run --release -p mrs-codex -- $TPTP/Problems  --db codex_casc_remaining.db   --system mrs-0.2.3   --timeout 300   --jobs 4 --cmd "env MRS_WORKERS=8 ./crates/mrs-bench/systems/mrs/invoke.sh {file} {timeout}" > codex_casc_remaining_89888374.out 2> codex_casc_remaining_89888374.err
 
 commit 810f1ff7a8da03dc243667a4d6fc68e4bf6999ae
