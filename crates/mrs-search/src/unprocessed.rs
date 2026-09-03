@@ -12,6 +12,7 @@ struct WeightWrapper {
     id: ClauseId,
     weight: u32,
     distance: u32,
+    goal_distance: u8,
 }
 
 impl PartialEq for WeightWrapper {
@@ -87,6 +88,9 @@ impl UnprocessedSet {
     /// `weight` is the precomputed clause weight (using the strategy's chosen
     /// weight function).  The caller is responsible for computing it.
     ///
+    /// `goal_distance` is the relational distance to the conjecture in the
+    /// symbol-reachability bipartite graph and derivation DAG.
+    ///
     /// `ml_score` is the raw logit from the ML clause classifier; it only
     /// affects the ML priority queue (`ml-guidance` feature). In the default
     /// build the parameter is ignored and costs nothing.
@@ -95,16 +99,23 @@ impl UnprocessedSet {
         clause: &IdClause,
         _bank: &TermBank,
         weight: u32,
+        goal_distance: Option<u8>,
         ml_score: Option<f32>,
     ) {
         #[cfg(not(feature = "ml-guidance"))]
         let _ = ml_score;
         let id = clause.id;
 
-        let goal_weight = if clause.distance < 100 {
-            weight + (clause.distance * 2)
+        let eff_goal_dist = goal_distance.unwrap_or(if clause.distance < 100 {
+            clause.distance as u8
         } else {
-            weight + 1000 // heavy penalty for pure axioms
+            100
+        });
+
+        let goal_weight = if eff_goal_dist < 100 {
+            weight.saturating_add((eff_goal_dist as u32).saturating_mul(2))
+        } else {
+            weight.saturating_add(1000) // heavy penalty for pure axioms
         };
 
         self.active_ids.insert(id);
@@ -113,17 +124,20 @@ impl UnprocessedSet {
             id,
             weight,
             distance: clause.distance,
+            goal_distance: eff_goal_dist,
         });
         self.goal_queue.push(WeightWrapper {
             id,
             weight: goal_weight,
             distance: clause.distance,
+            goal_distance: eff_goal_dist,
         });
         if clause.literals.len() == 1 {
             self.unit_queue.push(WeightWrapper {
                 id,
                 weight,
                 distance: clause.distance,
+                goal_distance: eff_goal_dist,
             });
         }
         if clause.literals.iter().filter(|lit| lit.positive).count() <= 1 {
@@ -131,6 +145,7 @@ impl UnprocessedSet {
                 id,
                 weight,
                 distance: clause.distance,
+                goal_distance: eff_goal_dist,
             });
         }
         if clause.distance < 100 {
@@ -138,6 +153,7 @@ impl UnprocessedSet {
                 id,
                 weight,
                 distance: clause.distance,
+                goal_distance: eff_goal_dist,
             });
         }
         #[cfg(feature = "ml-guidance")]
@@ -157,6 +173,7 @@ impl UnprocessedSet {
                 id,
                 weight: ml_priority,
                 distance: clause.distance,
+                goal_distance: eff_goal_dist,
             });
         }
     }
@@ -360,8 +377,9 @@ impl UnprocessedSet {
         let goal_wrappers: Vec<WeightWrapper> = kept
             .iter()
             .map(|w| {
-                let goal_weight = if w.distance < 100 {
-                    w.weight.saturating_add(w.distance.saturating_mul(2))
+                let goal_weight = if w.goal_distance < 100 {
+                    w.weight
+                        .saturating_add((w.goal_distance as u32).saturating_mul(2))
                 } else {
                     w.weight.saturating_add(1000)
                 };
@@ -369,6 +387,7 @@ impl UnprocessedSet {
                     id: w.id,
                     weight: goal_weight,
                     distance: w.distance,
+                    goal_distance: w.goal_distance,
                 }
             })
             .collect();
@@ -429,11 +448,11 @@ mod tests {
         // c2 -> wt 5
         // c3 -> wt 100
         // c4 -> wt 20
-        set.push(&clauses[0], &bank, 10, None);
-        set.push(&clauses[1], &bank, 50, None);
-        set.push(&clauses[2], &bank, 5, None);
-        set.push(&clauses[3], &bank, 100, None);
-        set.push(&clauses[4], &bank, 20, None);
+        set.push(&clauses[0], &bank, 10, None, None);
+        set.push(&clauses[1], &bank, 50, None, None);
+        set.push(&clauses[2], &bank, 5, None, None);
+        set.push(&clauses[3], &bank, 100, None, None);
+        set.push(&clauses[4], &bank, 20, None, None);
 
         assert_eq!(set.active_count(), 5);
 
@@ -457,6 +476,46 @@ mod tests {
         assert_eq!(set.pop_weight(), Some(clauses[0].id));
         assert_eq!(set.pop_weight(), Some(clauses[4].id));
         assert_eq!(set.pop_weight(), None);
+    }
+
+    #[test]
+    fn test_goal_queue_with_goal_distance() {
+        let config = Arc::new(SymbolConfig::default());
+        let mut set = UnprocessedSet::new(config);
+        let mut bank = TermBank::new();
+
+        let mut make_clause = |id: u64, dist: u32| {
+            let legacy = Clause {
+                id: ClauseId(id),
+                literals: vec![].into(),
+                source: ClauseSource::Input {
+                    name: "test".into(),
+                    role: "axiom".into(),
+                },
+                avatar: vec![],
+                distance: dist,
+                formula: None,
+                certificate: None,
+            };
+            bank.clause_from_legacy(&legacy)
+        };
+
+        let c_pure_ax = make_clause(1, 100);
+        let c_hop1_ax = make_clause(2, 100);
+        let c_hop2_ax = make_clause(3, 100);
+
+        // c_pure_ax: weight 10, goal_dist None (100) -> goal_weight = 1010
+        // c_hop1_ax: weight 20, goal_dist Some(1) -> goal_weight = 20 + 2 = 22
+        // c_hop2_ax: weight 15, goal_dist Some(2) -> goal_weight = 15 + 4 = 19
+        set.push(&c_pure_ax, &bank, 10, None, None);
+        set.push(&c_hop1_ax, &bank, 20, Some(1), None);
+        set.push(&c_hop2_ax, &bank, 15, Some(2), None);
+
+        // pop_goal_directed should return c_hop2_ax (19), then c_hop1_ax (22), then c_pure_ax (1010)
+        assert_eq!(set.pop_goal_directed(), Some(c_hop2_ax.id));
+        assert_eq!(set.pop_goal_directed(), Some(c_hop1_ax.id));
+        assert_eq!(set.pop_goal_directed(), Some(c_pure_ax.id));
+        assert_eq!(set.pop_goal_directed(), None);
     }
 
     #[test]
@@ -492,9 +551,9 @@ mod tests {
 
         // Push three clauses with different ML scores.
         // Higher score (logit) means more relevant, selected first (lower priority value in heap).
-        set.push(&c1, &bank, 10, Some(-1.5)); // Low score
-        set.push(&c2, &bank, 10, Some(2.0)); // High score (best)
-        set.push(&c3, &bank, 10, Some(0.0)); // Medium score
+        set.push(&c1, &bank, 10, None, Some(-1.5)); // Low score
+        set.push(&c2, &bank, 10, None, Some(2.0)); // High score (best)
+        set.push(&c3, &bank, 10, None, Some(0.0)); // Medium score
 
         // We expect pop_ml() to return c2 first, then c3, then c1.
         assert_eq!(set.pop_ml(), Some(c2.id));

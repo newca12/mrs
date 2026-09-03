@@ -90,8 +90,10 @@ pub struct SearchState {
     /// Weight function used for passive-queue priority.  Copied from `SearchConfig`
     /// at `new_with_ml` time so every call site can access it cheaply.
     pub weight_fn: crate::ClauseWeightFn,
+    /// Relational goal distance map for multi-hop conjecture guidance.
+    pub goal_map: Arc<crate::goal_distance::GoalDistanceMap>,
     /// Symbols that appear in any goal-connected clause (distance < 100).
-    /// Used by the `ConjSymbolBoost` weight function.
+    /// Kept for backwards compatibility and fast membership lookup.
     pub goal_symbols: rustc_hash::FxHashSet<mrs_core::SymbolId>,
 }
 
@@ -144,46 +146,17 @@ impl SearchState {
         let mut avatar = AvatarContext::new();
         let mut id_gen = id_gen;
 
-        // Pre-compute goal symbols from conjecture-connected input clauses.
-        let goal_symbols = {
-            let mut syms: rustc_hash::FxHashSet<mrs_core::SymbolId> =
-                rustc_hash::FxHashSet::default();
-            for c in initial_clauses.iter().filter(|c| c.distance < 100) {
-                for lit in &c.literals {
-                    match &lit.atom {
-                        mrs_core::formula::Atom::Pred(s, args) => {
-                            syms.insert(*s);
-                            let mut stack: Vec<&mrs_core::term::Term> = args.iter().collect();
-                            while let Some(t) = stack.pop() {
-                                if let mrs_core::term::Term::App(f, a) = t {
-                                    syms.insert(*f);
-                                    stack.extend(a.iter());
-                                }
-                            }
-                        }
-                        mrs_core::formula::Atom::Eq(l, r) => {
-                            let mut stack = vec![l, r];
-                            while let Some(t) = stack.pop() {
-                                if let mrs_core::term::Term::App(f, a) = t {
-                                    syms.insert(*f);
-                                    stack.extend(a.iter());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            syms
-        };
+        // Pre-compute relational goal-distance reachability map from input clauses.
+        let goal_map = Arc::new(crate::goal_distance::GoalDistanceMap::compute(
+            &initial_clauses,
+        ));
+        let goal_symbols = goal_map.conjecture_symbols().clone();
 
         for clause in initial_clauses {
             let id_clause = term_bank.clause_from_legacy(&clause);
+            let goal_dist = goal_map.clause_goal_distance(&id_clause, &term_bank);
             let w = crate::weight::clause_weight_fn(
-                &id_clause,
-                &term_bank,
-                &config,
-                &weight_fn,
-                &goal_symbols,
+                &id_clause, &term_bank, &config, &weight_fn, &goal_map,
             );
             if use_avatar {
                 if let Some(splits) = avatar.split_clause_id(
@@ -195,22 +168,19 @@ impl SearchState {
                 ) {
                     for split in splits {
                         let sw = crate::weight::clause_weight_fn(
-                            &split,
-                            &term_bank,
-                            &config,
-                            &weight_fn,
-                            &goal_symbols,
+                            &split, &term_bank, &config, &weight_fn, &goal_map,
                         );
+                        let s_goal_dist = goal_map.clause_goal_distance(&split, &term_bank);
                         clause_store.insert(split.id, split.clone());
-                        unprocessed.push(&split, &term_bank, sw, None);
+                        unprocessed.push(&split, &term_bank, sw, Some(s_goal_dist), None);
                     }
                 } else {
                     clause_store.insert(id_clause.id, id_clause.clone());
-                    unprocessed.push(&id_clause, &term_bank, w, None);
+                    unprocessed.push(&id_clause, &term_bank, w, Some(goal_dist), None);
                 }
             } else {
                 clause_store.insert(id_clause.id, id_clause.clone());
-                unprocessed.push(&id_clause, &term_bank, w, None);
+                unprocessed.push(&id_clause, &term_bank, w, Some(goal_dist), None);
             }
         }
 
@@ -257,6 +227,7 @@ impl SearchState {
             scores: HashMap::default(),
             stats: crate::SearchStats::default(),
             weight_fn,
+            goal_map,
             goal_symbols,
         }
     }
@@ -268,8 +239,15 @@ impl SearchState {
             &self.term_bank,
             &self.config,
             &self.weight_fn,
-            &self.goal_symbols,
+            &self.goal_map,
         )
+    }
+
+    /// Enqueues a clause into `unprocessed` using its computed weight and relational goal distance.
+    pub fn push_unprocessed(&mut self, clause: &IdClause, weight: u32, score: Option<f32>) {
+        let goal_dist = self.goal_map.clause_goal_distance(clause, &self.term_bank);
+        self.unprocessed
+            .push(clause, &self.term_bank, weight, Some(goal_dist), score);
     }
 
     /// Computes and caches the ML score for a clause.
@@ -446,7 +424,7 @@ impl SearchState {
             let score = self.get_ml_score(&clause);
             #[cfg(not(feature = "ml-guidance"))]
             let score = None;
-            self.unprocessed.push(&clause, &self.term_bank, w, score);
+            self.push_unprocessed(&clause, w, score);
         }
     }
 }

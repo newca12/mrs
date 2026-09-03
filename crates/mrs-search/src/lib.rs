@@ -36,6 +36,7 @@ pub mod cwa;
 pub mod der;
 pub mod fvo;
 pub mod given_clause;
+pub mod goal_distance;
 pub mod instgen;
 pub mod select;
 pub mod sine;
@@ -48,6 +49,8 @@ pub mod weight;
 use std::time::Duration;
 
 use mrs_core::clause::{Clause, ClauseId};
+
+pub use goal_distance::GoalDistanceMap;
 
 pub use mrs_calculus::literal_selection::LiteralSelection;
 pub use mrs_calculus::ordering::TermOrdering;
@@ -317,6 +320,9 @@ pub enum ClauseWeightFn {
     /// `ConjSymbolBoost` rewards goal-symbol overlap, `SymbolWeight` penalises
     /// rare symbols regardless of whether they appear in the conjecture.
     SymbolWeight,
+    /// Goal distance: scales the clause weight by its distance from the conjecture
+    /// in the symbol reachability graph and derivation DAG.
+    GoalDistance,
 }
 
 /// Configuration for the search engine.

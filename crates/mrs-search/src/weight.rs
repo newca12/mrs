@@ -138,19 +138,18 @@ fn term_weight_id(term: TermId, bank: &TermBank, config: &SymbolConfig) -> u32 {
 // ── Alternative weight functions ────────────────────────────────────────────
 
 use crate::ClauseWeightFn;
-use rustc_hash::FxHashSet;
 
 /// Dispatch: compute the weight of an `IdClause` using the chosen weight function.
 ///
-/// `goal_symbols` is the set of `SymbolId`s that appear in any clause with
-/// `distance < 100` (i.e. goal-connected clauses).  It is only consulted by
-/// `ConjSymbolBoost`; pass an empty set for the other variants.
+/// `goal_map` maps symbols to their relational distance from the conjecture.
+/// It is consulted by `ConjSymbolBoost` and `GoalDistance`; pass an empty map
+/// for the other variants.
 pub fn clause_weight_fn(
     clause: &IdClause,
     bank: &TermBank,
     config: &SymbolConfig,
     weight_fn: &ClauseWeightFn,
-    goal_symbols: &FxHashSet<mrs_core::SymbolId>,
+    goal_map: &crate::goal_distance::GoalDistanceMap,
 ) -> u32 {
     match weight_fn {
         ClauseWeightFn::Standard => clause_weight_id(clause, bank, config),
@@ -160,10 +159,9 @@ pub fn clause_weight_fn(
         ClauseWeightFn::HornPenalty => clause_weight_horn(clause, bank, config),
         ClauseWeightFn::HornHeuristic => clause_weight_horn_heuristic(clause, bank, config),
         ClauseWeightFn::HornHeuristicExp => clause_weight_horn_heuristic_exp(clause, bank, config),
-        ClauseWeightFn::ConjSymbolBoost => {
-            clause_weight_conj_boost(clause, bank, config, goal_symbols)
-        }
+        ClauseWeightFn::ConjSymbolBoost => clause_weight_conj_boost(clause, bank, config, goal_map),
         ClauseWeightFn::SymbolWeight => clause_weight_symbol(clause, bank, config),
+        ClauseWeightFn::GoalDistance => clause_weight_goal_distance(clause, bank, config, goal_map),
     }
 }
 
@@ -223,22 +221,26 @@ pub fn clause_weight_horn(clause: &IdClause, bank: &TermBank, config: &SymbolCon
     }
 }
 
-/// Conjecture-symbol-boost variant: symbols shared with the negated conjecture
-/// closure cost 1; symbols not appearing in any goal-connected clause cost 3.
+/// Conjecture-symbol-boost variant: symbols are weighted according to their
+/// shortest relational path to the goal:
+/// - Distance 0 (conjecture symbols): cost 1
+/// - Distance 1 (1-hop neighbors): base symbol weight
+/// - Distance 2: 2x base symbol weight
+/// - Distance 3+ / unreachable: 3x base symbol weight
 pub fn clause_weight_conj_boost(
     clause: &IdClause,
     bank: &TermBank,
     config: &SymbolConfig,
-    goal_symbols: &FxHashSet<mrs_core::SymbolId>,
+    goal_map: &crate::goal_distance::GoalDistanceMap,
 ) -> u32 {
-    if goal_symbols.is_empty() {
+    if !goal_map.has_conjecture() {
         // Fall back to standard when no goal symbol information is available.
         return clause_weight_id(clause, bank, config);
     }
     clause
         .literals
         .iter()
-        .map(|lit| literal_weight_conj_boost(lit, bank, config, goal_symbols))
+        .map(|lit| literal_weight_conj_boost(lit, bank, config, goal_map))
         .sum()
 }
 
@@ -246,24 +248,26 @@ fn literal_weight_conj_boost(
     lit: &IdLiteral,
     bank: &TermBank,
     config: &SymbolConfig,
-    goal_symbols: &FxHashSet<mrs_core::SymbolId>,
+    goal_map: &crate::goal_distance::GoalDistanceMap,
 ) -> u32 {
     match &lit.atom {
         IdAtom::Pred(sym, args) => {
-            let sym_w = if goal_symbols.contains(sym) {
-                1
-            } else {
-                config.symbol_weight(*sym).saturating_mul(3)
+            let base_w = config.symbol_weight(*sym);
+            let sym_w = match goal_map.symbol_distance(*sym) {
+                Some(0) => 1,
+                Some(1) => base_w,
+                Some(2) => base_w.saturating_mul(2),
+                _ => base_w.saturating_mul(3),
             };
             sym_w
                 + args
                     .iter()
-                    .map(|&a| term_weight_conj_boost(a, bank, config, goal_symbols))
+                    .map(|&a| term_weight_conj_boost(a, bank, config, goal_map))
                     .sum::<u32>()
         }
         IdAtom::Eq(l, r) => {
-            term_weight_conj_boost(*l, bank, config, goal_symbols)
-                + term_weight_conj_boost(*r, bank, config, goal_symbols)
+            term_weight_conj_boost(*l, bank, config, goal_map)
+                + term_weight_conj_boost(*r, bank, config, goal_map)
         }
     }
 }
@@ -272,7 +276,7 @@ fn term_weight_conj_boost(
     term: TermId,
     bank: &TermBank,
     config: &SymbolConfig,
-    goal_symbols: &FxHashSet<mrs_core::SymbolId>,
+    goal_map: &crate::goal_distance::GoalDistanceMap,
 ) -> u32 {
     let mut stack: Vec<TermId> = vec![term];
     let mut weight: u32 = 0;
@@ -282,10 +286,12 @@ fn term_weight_conj_boost(
                 weight = weight.saturating_add(config.w0);
             }
             TermNode::App(sym, args) => {
-                let sym_w = if goal_symbols.contains(sym) {
-                    1
-                } else {
-                    config.symbol_weight(*sym).saturating_mul(3)
+                let base_w = config.symbol_weight(*sym);
+                let sym_w = match goal_map.symbol_distance(*sym) {
+                    Some(0) => 1,
+                    Some(1) => base_w,
+                    Some(2) => base_w.saturating_mul(2),
+                    _ => base_w.saturating_mul(3),
                 };
                 weight = weight.saturating_add(sym_w);
                 stack.extend_from_slice(args);
@@ -293,6 +299,29 @@ fn term_weight_conj_boost(
         }
     }
     weight
+}
+
+/// Goal-distance-weighted variant: scales the base clause weight by its distance
+/// from the goal in the symbol-reachability graph and derivation DAG.
+pub fn clause_weight_goal_distance(
+    clause: &IdClause,
+    bank: &TermBank,
+    config: &SymbolConfig,
+    goal_map: &crate::goal_distance::GoalDistanceMap,
+) -> u32 {
+    if !goal_map.has_conjecture() {
+        return clause_weight_id(clause, bank, config);
+    }
+    let base_w = clause_weight_conj_boost(clause, bank, config, goal_map);
+    let dist = goal_map.clause_goal_distance(clause, bank);
+    let mult = match dist {
+        0 => 2, // 1.0x (conjecture)
+        1 => 3, // 1.5x (direct neighbor axiom)
+        2 => 4, // 2.0x (2-hop axiom)
+        3 => 5, // 2.5x
+        _ => 6, // 3.0x (distant / disconnected)
+    };
+    base_w.saturating_mul(mult) / 2
 }
 
 // ── Quadratic Function Depth Penalty ────────────────────────────────────────
@@ -698,5 +727,101 @@ mod tests {
         let c4 = make_clause(vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))]);
         let id_c4 = bank.clause_from_legacy(&c4);
         assert_eq!(clause_weight_symbol(&id_c4, &bank, &custom_config), 6);
+    }
+
+    #[test]
+    fn test_goal_distance_weight_fn() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let mut bank = TermBank::new();
+        let config = SymbolConfig::default();
+
+        // Conj: ~p(a)
+        let conj = Clause {
+            id: mrs_core::clause::ClauseId(1),
+            literals: [Literal::neg(Atom::pred(p, vec![Term::constant(a)]))]
+                .as_slice()
+                .into(),
+            source: mrs_core::clause::ClauseSource::Input {
+                name: "c".into(),
+                role: "conjecture".into(),
+            },
+            avatar: vec![],
+            distance: 0,
+            formula: None,
+            certificate: None,
+        };
+
+        // Ax1: p(X) | ~q(X)  (shares p -> dist 1, q gets dist 1)
+        let ax1 = Clause {
+            id: mrs_core::clause::ClauseId(2),
+            literals: [
+                Literal::pos(Atom::pred(p, vec![Term::var(0)])),
+                Literal::neg(Atom::pred(q, vec![Term::var(0)])),
+            ]
+            .as_slice()
+            .into(),
+            source: mrs_core::clause::ClauseSource::Input {
+                name: "ax1".into(),
+                role: "axiom".into(),
+            },
+            avatar: vec![],
+            distance: 100,
+            formula: None,
+            certificate: None,
+        };
+
+        // Ax2: q(b)  (shares q -> dist 2, b gets dist 2)
+        let ax2 = Clause {
+            id: mrs_core::clause::ClauseId(3),
+            literals: [Literal::pos(Atom::pred(q, vec![Term::constant(b)]))]
+                .as_slice()
+                .into(),
+            source: mrs_core::clause::ClauseSource::Input {
+                name: "ax2".into(),
+                role: "axiom".into(),
+            },
+            avatar: vec![],
+            distance: 100,
+            formula: None,
+            certificate: None,
+        };
+
+        let map = crate::goal_distance::GoalDistanceMap::compute(&[
+            conj.clone(),
+            ax1.clone(),
+            ax2.clone(),
+        ]);
+
+        let id_conj = bank.clause_from_legacy(&conj);
+        let id_ax1 = bank.clause_from_legacy(&ax1);
+        let id_ax2 = bank.clause_from_legacy(&ax2);
+
+        // In conj: p (dist 0 -> cost 1), a (dist 0 -> cost 1). Total conj_boost = 2.
+        assert_eq!(clause_weight_conj_boost(&id_conj, &bank, &config, &map), 2);
+        // Goal distance for conj = 0 -> mult = 2 -> 2 * 2 / 2 = 2.
+        assert_eq!(
+            clause_weight_goal_distance(&id_conj, &bank, &config, &map),
+            2
+        );
+
+        // In ax1: p (dist 0 -> 1), X (var -> 1), q (dist 1 -> base 1), X (var -> 1). Total = 4.
+        assert_eq!(clause_weight_conj_boost(&id_ax1, &bank, &config, &map), 4);
+        // Goal dist for ax1 = 1 -> mult = 3 -> 4 * 3 / 2 = 6.
+        assert_eq!(
+            clause_weight_goal_distance(&id_ax1, &bank, &config, &map),
+            6
+        );
+
+        // In ax2: q (dist 1 -> base 1), b (dist 2 -> 2*base = 2). Total = 3.
+        assert_eq!(clause_weight_conj_boost(&id_ax2, &bank, &config, &map), 3);
+        // Goal dist for ax2 = 2 -> mult = 4 -> 3 * 4 / 2 = 6.
+        assert_eq!(
+            clause_weight_goal_distance(&id_ax2, &bank, &config, &map),
+            6
+        );
     }
 }

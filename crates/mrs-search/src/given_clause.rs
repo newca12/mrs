@@ -201,7 +201,7 @@ fn sync_active_dormant(state: &mut SearchState, ordering: &crate::TermOrdering) 
         #[cfg(not(feature = "ml-guidance"))]
         let score = None;
         let w = state.compute_weight(&p);
-        state.unprocessed.push(&p, &state.term_bank, w, score);
+        state.push_unprocessed(&p, w, score);
     }
 
     // 4. Dormant Unprocessed -> Unprocessed
@@ -218,7 +218,7 @@ fn sync_active_dormant(state: &mut SearchState, ordering: &crate::TermOrdering) 
         #[cfg(not(feature = "ml-guidance"))]
         let score = None;
         let w = state.compute_weight(&u);
-        state.unprocessed.push(&u, &state.term_bank, w, score);
+        state.push_unprocessed(&u, w, score);
     }
 }
 
@@ -922,9 +922,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         #[cfg(not(feature = "ml-guidance"))]
                         let score = None;
                         let w = state.compute_weight(&id_clause);
-                        state
-                            .unprocessed
-                            .push(&id_clause, &state.term_bank, w, score);
+                        state.push_unprocessed(&id_clause, w, score);
                     }
                 }
             }
@@ -1475,9 +1473,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 #[cfg(not(feature = "ml-guidance"))]
                 let score = None;
                 let w = state.compute_weight(&simplified);
-                state
-                    .unprocessed
-                    .push(&simplified, &state.term_bank, w, score);
+                state.push_unprocessed(&simplified, w, score);
             }
         }
 
@@ -2102,7 +2098,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 #[cfg(not(feature = "ml-guidance"))]
                 let score = None;
                 let w = state.compute_weight(&clause);
-                state.unprocessed.push(&clause, &state.term_bank, w, score);
+                state.push_unprocessed(&clause, w, score);
                 state.stats.generated += 1;
             }
         }

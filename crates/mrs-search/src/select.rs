@@ -182,7 +182,7 @@ mod tests {
             bank,
             &mrs_calculus::ordering::SymbolConfig::default(),
         );
-        unproc.push(&c, bank, w, None);
+        unproc.push(&c, bank, w, None, None);
     }
 
     #[test]

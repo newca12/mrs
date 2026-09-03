@@ -21,6 +21,7 @@ This document provides the exact Git commits, checkout/build instructions, targe
 | 11 | `feat/dynamic-precedence` | `379baa5` | **FEQ** (FOF with Equality) | **UEQ**, **FNE**, **EPR** | Problem-specific dynamic KBO/LPO precedence and symbol weighting schemes |
 | 12 | `feat/free-var-skolemization` | `3c66465` | **FNE** (FOF No Equality) | **FEQ** (FOF with Equality) | Free-variable filtered Skolemization to eliminate redundant Skolem arity |
 | 13 | `feat/polarity-definitional-cnf` | `722b669` | **FNE** (FOF No Equality) | **FEQ**, **EPR** | Polarity-aware Plaisted-Greenbaum renaming & linear equivalence CNF |
+| 14 | `integrate/casc-next` (Goal Distance Guidance) | `HEAD` | **FNE** (FOF No Equality) | **FEQ**, **EPR** | Multi-hop bipartite symbol-clause reachability graph & graded conjecture weight boost |
 
 ---
 
@@ -259,4 +260,20 @@ This document provides the exact Git commits, checkout/build instructions, targe
   ./crates/mrs-bench/casc.sh --systems mrs --divisions fne,feq,epr --time 30 --jobs 4 --output results/polarity-cnf-eval
   ```
 
+---
 
+### 14. Non-Equational Relational Goal Distance Guidance & Multi-Hop Conjecture Weight Boost
+* **Branch**: `integrate/casc-next`
+* **Commit**: `HEAD` (on `integrate/casc-next`)
+* **Build & Checkout**:
+  ```bash
+  git checkout integrate/casc-next
+  nix develop -c cargo build --release
+  ```
+* **Target Division**: **FNE** (`--schedule casc_fne`), **FEQ** (`--schedule casc_feq`), and **EPR** (`--schedule casc_epr`).
+* **Why**: Large first-order axiomatizations often drown the prover in millions of goal-irrelevant deductions because pure axiom-axiom inferences wander away from the conjecture. Relational Goal Distance guidance builds a multi-hop reachability graph across the bipartite symbol-clause graph at problem startup (distance 0 = conjecture symbols; distance 1 = symbols in axioms sharing a conjecture symbol; distance 2 = 2-hop symbols, up to radius 5). Weights clauses and active queues (`goal_queue`) by relational distance, allowing 1-hop and 2-hop neighbor axioms to be prioritized right from iteration 0 and penalizing goal-disconnected derivations.
+* **Problem Domains**: Large axiom libraries, relational puzzles, non-equational reasoning: `SYN`, `SET`, `PUZ`, `MGT`, `NLP`, `SWV`.
+* **Benchmark Command**:
+  ```bash
+  ./crates/mrs-bench/casc.sh --systems mrs --divisions fne,feq,epr --time 30 --jobs 4 --output results/goal-distance-eval
+  ```
