@@ -14,11 +14,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use mrs_calculus::ordering::SymbolConfig;
 use mrs_core::SymbolTable;
 use mrs_core::clause::{Clause, ClauseIdGen};
-use mrs_core::symbol::SymbolId;
-use mrs_core::term::Term;
 use mrs_proof::extract::extract_proof;
 use mrs_proof::tstp::format_tstp;
 
@@ -139,6 +136,7 @@ impl StrategySchedule {
                         // No AVATAR: avoids overhead and incorrect dormancy on chain proofs.
                         use_avatar: false,
                         unit_only_resolution: false,
+                        precedence_scheme: crate::PrecedenceScheme::ArityMin,
                         ..SearchConfig::default()
                     },
                     t2,
@@ -150,6 +148,7 @@ impl StrategySchedule {
                         selection: SelectionStrategy::SmallestFirst,
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::KBO,
+                        symbol_weight_scheme: crate::SymbolWeightScheme::Arity,
                         ..SearchConfig::default()
                     },
                     t3,
@@ -161,6 +160,7 @@ impl StrategySchedule {
                         selection: SelectionStrategy::AgeWeight(8),
                         literal_selection: LiteralSelection::MaxNegativeOrMaxPositive,
                         ordering: TermOrdering::KBO,
+                        precedence_scheme: crate::PrecedenceScheme::ArityMax,
                         ..SearchConfig::default()
                     },
                     t4,
@@ -172,6 +172,7 @@ impl StrategySchedule {
                         selection: SelectionStrategy::AgeWeight(5),
                         literal_selection: LiteralSelection::All,
                         ordering: TermOrdering::KBO,
+                        precedence_scheme: crate::PrecedenceScheme::Freq,
                         ..SearchConfig::default()
                     },
                     t5,
@@ -193,6 +194,7 @@ impl StrategySchedule {
                         // the SAT model, blocking key resolutions in FNE-style problems.
                         use_avatar: false,
                         unit_only_resolution: false,
+                        symbol_weight_scheme: crate::SymbolWeightScheme::InvFreq,
                         ..SearchConfig::default()
                     },
                     t6,
@@ -216,6 +218,8 @@ impl StrategySchedule {
                         selection: SelectionStrategy::GoalDirected(10),
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::LPO,
+                        precedence_scheme: crate::PrecedenceScheme::GoalBoost,
+                        symbol_weight_scheme: crate::SymbolWeightScheme::ConjectureBonus,
                         ..SearchConfig::default()
                     },
                     t8,
@@ -227,6 +231,7 @@ impl StrategySchedule {
                         selection: SelectionStrategy::SmallestFirst,
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::LPO,
+                        precedence_scheme: crate::PrecedenceScheme::ArityMin,
                         ..SearchConfig::default()
                     },
                     t9,
@@ -244,6 +249,8 @@ impl StrategySchedule {
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::KBO,
                         sos_depth: 100,
+                        precedence_scheme: crate::PrecedenceScheme::GoalBoost,
+                        symbol_weight_scheme: crate::SymbolWeightScheme::ConjectureBonus,
                         ..SearchConfig::default()
                     },
                     t10,
@@ -259,6 +266,7 @@ impl StrategySchedule {
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::KBO,
                         weight_fn: crate::ClauseWeightFn::ConjSymbolBoost,
+                        precedence_scheme: crate::PrecedenceScheme::GoalBoost,
                         ..SearchConfig::default()
                     },
                     t11,
@@ -279,6 +287,8 @@ impl StrategySchedule {
                         max_term_weight: None,
                         use_avatar: false,
                         unit_only_resolution: false,
+                        precedence_scheme: crate::PrecedenceScheme::ArityMin,
+                        symbol_weight_scheme: crate::SymbolWeightScheme::Arity,
                         ..SearchConfig::default()
                     },
                     t12,
@@ -296,6 +306,8 @@ impl StrategySchedule {
                         ordering: TermOrdering::KBO,
                         weight_fn: crate::ClauseWeightFn::FunctionWeightPenalty,
                         sos_depth: 100,
+                        precedence_scheme: crate::PrecedenceScheme::ArityMax,
+                        symbol_weight_scheme: crate::SymbolWeightScheme::InvFreq,
                         ..SearchConfig::default()
                     },
                     t13,
@@ -313,6 +325,8 @@ impl StrategySchedule {
                         max_term_weight: Some(100),
                         use_avatar: false,
                         unit_only_resolution: false,
+                        precedence_scheme: crate::PrecedenceScheme::GoalBoost,
+                        symbol_weight_scheme: crate::SymbolWeightScheme::ConjectureBonus,
                         ..SearchConfig::default()
                     },
                     t14,
@@ -333,6 +347,8 @@ impl StrategySchedule {
                         max_term_weight: None,
                         use_avatar: false,
                         unit_only_resolution: false,
+                        precedence_scheme: crate::PrecedenceScheme::InvFreq,
+                        symbol_weight_scheme: crate::SymbolWeightScheme::Arity,
                         ..SearchConfig::default()
                     },
                     t15,
@@ -468,72 +484,12 @@ pub fn run_schedule(
     ml: MlOptions,
     workers: Option<usize>,
 ) -> (SearchResult, crate::ScheduleReport) {
-    // 1. Analyze problem for symbol frequencies to configure KBO/LPO and weights.
-    let mut sym_counts: HashMap<SymbolId, u32> = HashMap::default();
-    for clause in clauses {
-        for lit in &clause.literals {
-            match &lit.atom {
-                mrs_core::formula::Atom::Pred(p, args) => {
-                    *sym_counts.entry(*p).or_insert(0) += 1;
-                    let mut stack: Vec<&Term> = args.iter().collect();
-                    while let Some(t) = stack.pop() {
-                        if let Term::App(f, nested_args) = t {
-                            *sym_counts.entry(*f).or_insert(0) += 1;
-                            stack.extend(nested_args.iter());
-                        }
-                    }
-                }
-                mrs_core::formula::Atom::Eq(l, r) => {
-                    let mut stack = vec![l, r];
-                    while let Some(t) = stack.pop() {
-                        if let Term::App(f, nested_args) = t {
-                            *sym_counts.entry(*f).or_insert(0) += 1;
-                            stack.extend(nested_args.iter());
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let mut syms_by_freq: Vec<(SymbolId, u32)> = sym_counts.into_iter().collect();
-    syms_by_freq.sort_unstable_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0))); // lowest count first (rarest)
-
-    // Rare symbols get HIGHER precedence to eliminate them quickly.
-    let mut precedence = vec![
-        0;
-        syms_by_freq
-            .iter()
-            .map(|&(s, _)| s.index() as usize)
-            .max()
-            .unwrap_or(0)
-            + 1
-    ];
-    for (i, &(sym, _)) in syms_by_freq.iter().rev().enumerate() {
-        precedence[sym.index() as usize] = (syms_by_freq.len() - i) as u32;
-    }
-
-    // Config: dynamic weights and precedence driven by rarity
-    let mut weights = vec![
-        1;
-        syms_by_freq
-            .iter()
-            .map(|&(s, _)| s.index() as usize)
-            .max()
-            .unwrap_or(0)
-            + 1
-    ];
-    for (sym, _) in &syms_by_freq {
-        // We could use arity or other heuristics, but for now we just make non-variable symbols weigh 2
-        // KBO typically requires w(f) >= w0, and w(c) >= w0 for constants
-        weights[sym.index() as usize] = 2;
-    }
-
-    let config = Arc::new(SymbolConfig {
-        precedence,
-        weights,
-        w0: 1,
-    });
+    // 1. Compute default symbol configuration for pre-passes.
+    let default_config = crate::symbol_config::compute_symbol_config(
+        clauses,
+        crate::PrecedenceScheme::InvFreq,
+        crate::SymbolWeightScheme::Uniform,
+    );
 
     let mut has_eq = false;
     for clause in clauses {
@@ -572,9 +528,14 @@ pub fn run_schedule(
         {
             actual_config.literal_selection = LiteralSelection::MaxNegative;
         }
+        let sym_config = crate::symbol_config::compute_symbol_config(
+            clauses,
+            search_config.precedence_scheme,
+            search_config.symbol_weight_scheme,
+        );
         actual_config.ordering = match search_config.ordering {
-            TermOrdering::KBO => TermOrdering::CustomKBO(config.clone()),
-            TermOrdering::LPO => TermOrdering::CustomLPO(config.clone()),
+            TermOrdering::KBO => TermOrdering::CustomKBO(sym_config),
+            TermOrdering::LPO => TermOrdering::CustomLPO(sym_config),
             ref other => other.clone(),
         };
         actual_configs.push(actual_config);
@@ -639,7 +600,7 @@ pub fn run_schedule(
                 provenance,
                 &mut cwa_id_gen,
                 symbols_arc.clone(),
-                config.clone(),
+                default_config.clone(),
             )
         {
             return (
@@ -728,7 +689,7 @@ pub fn run_schedule(
             let clauses_for_thread = clauses_owned.clone();
             let provenance_for_thread = provenance.to_vec();
             let id_gen_thread = id_gen.clone();
-            let config_thread = Arc::clone(&config);
+            let config_thread = Arc::clone(&default_config);
             let symbols_thread = symbols_arc.clone();
             let actual_configs_ref = &actual_configs;
 
@@ -816,11 +777,15 @@ pub fn run_schedule(
                         }
                     }
 
+                    let thread_sym_config = match &sc.ordering {
+                        TermOrdering::CustomKBO(cfg) | TermOrdering::CustomLPO(cfg) => cfg.clone(),
+                        _ => config_thread.clone(),
+                    };
                     let mut state = SearchState::new_with_ml(
                         thread_clauses,
                         thread_provenance,
                         thread_id_gen,
-                        config_thread.clone(),
+                        thread_sym_config,
                         Arc::new(thread_symbols),
                         sc.use_avatar,
                         log_ml_data_thread.clone(),

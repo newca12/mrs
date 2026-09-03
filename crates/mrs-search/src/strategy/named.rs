@@ -682,6 +682,41 @@ pub fn mq(total_time: Duration, workers: usize) -> StrategySchedule {
         if !*max_w {
             cfg.max_term_weight = None;
         }
+        match i % archetypes.len() {
+            0 => {
+                cfg.precedence_scheme = crate::PrecedenceScheme::InvFreq;
+                cfg.symbol_weight_scheme = crate::SymbolWeightScheme::Uniform;
+            }
+            1 => {
+                cfg.precedence_scheme = crate::PrecedenceScheme::ArityMin;
+                cfg.symbol_weight_scheme = crate::SymbolWeightScheme::Arity;
+            }
+            2 => {
+                cfg.precedence_scheme = crate::PrecedenceScheme::GoalBoost;
+                cfg.symbol_weight_scheme = crate::SymbolWeightScheme::ConjectureBonus;
+            }
+            3 => {
+                cfg.precedence_scheme = crate::PrecedenceScheme::InvFreq;
+                cfg.symbol_weight_scheme = crate::SymbolWeightScheme::Uniform;
+            }
+            4 => {
+                cfg.precedence_scheme = crate::PrecedenceScheme::GoalBoost;
+                cfg.symbol_weight_scheme = crate::SymbolWeightScheme::Uniform;
+            }
+            5 => {
+                cfg.precedence_scheme = crate::PrecedenceScheme::ArityMin;
+                cfg.symbol_weight_scheme = crate::SymbolWeightScheme::Arity;
+            }
+            6 => {
+                cfg.precedence_scheme = crate::PrecedenceScheme::GoalBoost;
+                cfg.symbol_weight_scheme = crate::SymbolWeightScheme::ConjectureBonus;
+            }
+            7 => {
+                cfg.precedence_scheme = crate::PrecedenceScheme::ArityMax;
+                cfg.symbol_weight_scheme = crate::SymbolWeightScheme::InvFreq;
+            }
+            _ => {}
+        }
         strategies.push((cfg, t));
     }
     StrategySchedule { strategies }
