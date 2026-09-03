@@ -41,6 +41,7 @@ pub mod select;
 pub mod sine;
 pub mod state;
 pub mod strategy;
+pub mod symbol_config;
 pub mod unprocessed;
 pub mod weight;
 
@@ -52,6 +53,7 @@ pub use mrs_calculus::literal_selection::LiteralSelection;
 pub use mrs_calculus::ordering::TermOrdering;
 pub use mrs_cnf::goal_transform::GoalTransformMode;
 pub use select::{QueueType, SelectionStrategy};
+pub use symbol_config::{PrecedenceScheme, SymbolWeightScheme, compute_symbol_config};
 
 /// Per-strategy counters for failure diagnosis and throughput analysis.
 ///
@@ -379,6 +381,10 @@ pub struct SearchConfig {
     /// Number of given-clause iterations between shared-pool polls.
     /// `0` disables cross-strategy clause sharing.
     pub shared_pool_poll_interval: u64,
+    /// Scheme used to compute problem-specific symbol precedence for reduction orderings.
+    pub precedence_scheme: PrecedenceScheme,
+    /// Scheme used to compute symbol weights for reduction orderings (KBO).
+    pub symbol_weight_scheme: SymbolWeightScheme,
 }
 
 impl Default for SearchConfig {
@@ -400,6 +406,8 @@ impl Default for SearchConfig {
             goal_transformation: None,
             lrs_policy: LrsPolicy::WallClock,
             shared_pool_poll_interval: 500,
+            precedence_scheme: PrecedenceScheme::InvFreq,
+            symbol_weight_scheme: SymbolWeightScheme::Uniform,
         }
     }
 }
