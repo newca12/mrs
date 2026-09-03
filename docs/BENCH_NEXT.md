@@ -297,3 +297,22 @@ This document provides the exact Git commits, checkout/build instructions, targe
   ./crates/mrs-bench/casc.sh --systems mrs --divisions fne,feq,epr --time 30 --jobs 4 --output results/bce-ple-eval
   ```
 
+---
+
+### 16. SAT-Guided InstGen Loop for EPR Problems
+* **Branch**: `integrate/casc-next`
+* **Commit**: `06d6831` (on `integrate/casc-next`)
+* **Build & Checkout**:
+  ```bash
+  git checkout integrate/casc-next
+  nix develop -c cargo build --release
+  ```
+* **Target Division**: **EPR** (`--schedule casc_epr`), **EPS** (Essentially Propositional Satisfiable), and **EPU** (Essentially Propositional Unsatisfiable).
+* **Why**: The naive Herbrand expansion (`preprocess_epr`) suffered from exponential combinatorial explosion on clauses with $\ge 6$ variables ($c^v$ instances causing OOM). The lazy InstGen loop abstracts first-order clauses into propositional DIMACS representations using canonical variable mapping ($\bot$) and invokes incremental CaDiCaL (`mrs_cadical::Solver`). If CaDiCaL returns UNSAT, an exact propositional BFS refutation extracts a valid TSTP resolution DAG (`instantiation` and `resolution` steps) in milliseconds; if CaDiCaL finds a model, complementary satisfied literals are checked for Robinson MGU unification. New MGU instances are lazily added until refutation or until no candidate pairs unify (in which case the propositional model lifts to a sound first-order model $\to$ `Satisfiable`/`CounterSatisfiable`).
+* **Problem Domains**: Bernays-Schönfinkel / EPR problems, finite-domain relational specs, puzzle formalizations: `PUZ`, `SYN`, `SWV`, `NLP`, `CSR`.
+* **Benchmark Command**:
+  ```bash
+  ./crates/mrs-bench/casc.sh --systems mrs --divisions epr,eps,epu --time 30 --jobs 4 --output results/instgen-epr-eval
+  ```
+
+

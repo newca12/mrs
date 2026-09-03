@@ -226,5 +226,4 @@ Following this initial review, dedicated branches were created, verified, and me
 | **Leap 4A**: `feat/free-var-skolemization` | ✅ Merged | `3c66465` | Free-variable filtered Skolemization to eliminate redundant arity |
 | **Leap 4B**: `feat/polarity-definitional-cnf` | ✅ Merged | `722b669` | Polarity-aware half-definitions and biconditional expansion fix |
 | **Leap 4C**: Blocked Clause Elimination & PLE | ✅ Merged | `eca8405` | First-order BCE, cascading PLE, and tautology elimination |
-| **Leap 4D**: Relational Goal-Distance Guidance | ✅ Merged | `6f807a7` | Multi-hop bipartite symbol-clause reachability graph & conjecture boost |
-| **Leap 5**: `feat/instgen-epr` | ⏳ Pending | — | Propositional abstraction and SAT-guided MGU instantiation |
+| **Leap 5**: SAT-Guided InstGen for EPR | ✅ Merged | `06d6831` | Propositional abstraction, CaDiCaL model guidance, lazy MGU instantiation, TSTP DAG extraction |

@@ -684,7 +684,32 @@ pub fn try_instgen_epr(
                     }
 
                     if let Some(eid) = empty_id {
-                        let tstp = format_tstp(&fof_proof, &symbols_local);
+                        let mut clause_store: HashMap<ClauseId, Clause> = HashMap::default();
+                        for c in provenance {
+                            clause_store.insert(c.id, c.clone());
+                        }
+                        for c in &all_clauses {
+                            clause_store.insert(c.id, c.clone());
+                        }
+
+                        let mut full_proof_ids: HashSet<ClauseId> = HashSet::default();
+                        let mut queue: Vec<Clause> = fof_proof.clone();
+                        let mut complete_proof: Vec<Clause> = Vec::new();
+
+                        while let Some(c) = queue.pop() {
+                            if full_proof_ids.insert(c.id) {
+                                if let ClauseSource::Inference { parents, .. } = &c.source {
+                                    for &p in parents.iter() {
+                                        if !full_proof_ids.contains(&p) {
+                                            queue.extend(clause_store.get(&p).cloned());
+                                        }
+                                    }
+                                }
+                                complete_proof.push(c);
+                            }
+                        }
+
+                        let tstp = format_tstp(&complete_proof, &symbols_local);
                         return Some(SearchResult::Refutation(eid, tstp));
                     }
                 }
