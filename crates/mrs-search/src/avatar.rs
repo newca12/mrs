@@ -403,17 +403,84 @@ fn collect_vars(term: &Term, vars: &mut HashSet<VarId>) {
     }
 }
 
+fn term_shape_key(term: &Term, s: &mut String) {
+    match term {
+        Term::Var(_) => s.push('V'),
+        Term::App(sym, args) => {
+            s.push('F');
+            push_u32(s, sym.index());
+            if !args.is_empty() {
+                s.push('(');
+                for (i, a) in args.iter().enumerate() {
+                    if i > 0 {
+                        s.push(',');
+                    }
+                    term_shape_key(a, s);
+                }
+                s.push(')');
+            }
+        }
+    }
+}
+
+fn literal_shape_key(lit: &Literal) -> String {
+    let mut s = String::new();
+    if lit.is_negative() {
+        s.push('~');
+    } else {
+        s.push('+');
+    }
+    match &lit.atom {
+        Atom::Pred(sym, args) => {
+            s.push('P');
+            push_u32(&mut s, sym.index());
+            if !args.is_empty() {
+                s.push('(');
+                for (i, a) in args.iter().enumerate() {
+                    if i > 0 {
+                        s.push(',');
+                    }
+                    term_shape_key(a, &mut s);
+                }
+                s.push(')');
+            }
+        }
+        Atom::Eq(l, r) => {
+            s.push_str("Eq(");
+            let mut sl = String::new();
+            term_shape_key(l, &mut sl);
+            let mut sr = String::new();
+            term_shape_key(r, &mut sr);
+            if sl <= sr {
+                s.push_str(&sl);
+                s.push(',');
+                s.push_str(&sr);
+            } else {
+                s.push_str(&sr);
+                s.push(',');
+                s.push_str(&sl);
+            }
+            s.push(')');
+        }
+    }
+    s
+}
+
 /// Returns a canonical string key for a set of literals that is invariant
-/// under variable renaming.  Variables are assigned fresh names V0, V1, …
-/// in the order they are first encountered during a left-to-right, DFS
-/// traversal of the literals.  This means two alpha-equivalent components
-/// produce the same key, enabling the SAT solver to share AVATAR variables.
+/// under variable renaming, literal permutation, and equality symmetry.
 fn canonical_component_key(lits: &[Literal]) -> String {
+    let mut indexed_lits: Vec<(usize, &Literal, String)> = lits
+        .iter()
+        .enumerate()
+        .map(|(i, lit)| (i, lit, literal_shape_key(lit)))
+        .collect();
+    indexed_lits.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.0.cmp(&b.0)));
+
     let mut var_map: HashMap<VarId, u32> = HashMap::default();
     let mut next: u32 = 0;
     let mut s = String::new();
-    for (i, lit) in lits.iter().enumerate() {
-        if i > 0 {
+    for (idx, (_, lit, _)) in indexed_lits.into_iter().enumerate() {
+        if idx > 0 {
             s.push('|');
         }
         if lit.is_negative() {
@@ -436,9 +503,19 @@ fn canonical_component_key(lits: &[Literal]) -> String {
             }
             Atom::Eq(l, r) => {
                 s.push_str("Eq(");
-                write_term_canonical(l, &mut s, &mut var_map, &mut next);
-                s.push(',');
-                write_term_canonical(r, &mut s, &mut var_map, &mut next);
+                let mut sl = String::new();
+                term_shape_key(l, &mut sl);
+                let mut sr = String::new();
+                term_shape_key(r, &mut sr);
+                if sl <= sr {
+                    write_term_canonical(l, &mut s, &mut var_map, &mut next);
+                    s.push(',');
+                    write_term_canonical(r, &mut s, &mut var_map, &mut next);
+                } else {
+                    write_term_canonical(r, &mut s, &mut var_map, &mut next);
+                    s.push(',');
+                    write_term_canonical(l, &mut s, &mut var_map, &mut next);
+                }
                 s.push(')');
             }
         }
@@ -526,14 +603,84 @@ fn id_collect_vars(term: mrs_core::term_bank::TermId, bank: &TermBank, vars: &mu
     }
 }
 
+fn id_term_shape_key(term: mrs_core::term_bank::TermId, bank: &TermBank, s: &mut String) {
+    match bank.get(term) {
+        TermNode::Var(_) => s.push('V'),
+        TermNode::App(sym, args) => {
+            s.push('F');
+            push_u32(s, sym.index());
+            if !args.is_empty() {
+                s.push('(');
+                for (i, &a) in args.iter().enumerate() {
+                    if i > 0 {
+                        s.push(',');
+                    }
+                    id_term_shape_key(a, bank, s);
+                }
+                s.push(')');
+            }
+        }
+    }
+}
+
+fn id_literal_shape_key(lit: &IdLiteral, bank: &TermBank) -> String {
+    let mut s = String::new();
+    if lit.positive {
+        s.push('+');
+    } else {
+        s.push('~');
+    }
+    match &lit.atom {
+        IdAtom::Pred(sym, args) => {
+            s.push('P');
+            push_u32(&mut s, sym.index());
+            if !args.is_empty() {
+                s.push('(');
+                for (i, &a) in args.iter().enumerate() {
+                    if i > 0 {
+                        s.push(',');
+                    }
+                    id_term_shape_key(a, bank, &mut s);
+                }
+                s.push(')');
+            }
+        }
+        IdAtom::Eq(l, r) => {
+            s.push_str("Eq(");
+            let mut sl = String::new();
+            id_term_shape_key(*l, bank, &mut sl);
+            let mut sr = String::new();
+            id_term_shape_key(*r, bank, &mut sr);
+            if sl <= sr {
+                s.push_str(&sl);
+                s.push(',');
+                s.push_str(&sr);
+            } else {
+                s.push_str(&sr);
+                s.push(',');
+                s.push_str(&sl);
+            }
+            s.push(')');
+        }
+    }
+    s
+}
+
 /// Returns a canonical string key for a set of `IdLiteral`s, invariant
-/// under variable renaming (same algorithm as `canonical_component_key`).
+/// under variable renaming, literal permutation, and equality symmetry.
 fn canonical_component_key_id(lits: &[IdLiteral], bank: &TermBank) -> String {
+    let mut indexed_lits: Vec<(usize, &IdLiteral, String)> = lits
+        .iter()
+        .enumerate()
+        .map(|(i, lit)| (i, lit, id_literal_shape_key(lit, bank)))
+        .collect();
+    indexed_lits.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.0.cmp(&b.0)));
+
     let mut var_map: HashMap<VarId, u32> = HashMap::default();
     let mut next: u32 = 0;
     let mut s = String::new();
-    for (i, lit) in lits.iter().enumerate() {
-        if i > 0 {
+    for (idx, (_, lit, _)) in indexed_lits.into_iter().enumerate() {
+        if idx > 0 {
             s.push('|');
         }
         if !lit.positive {
@@ -556,9 +703,19 @@ fn canonical_component_key_id(lits: &[IdLiteral], bank: &TermBank) -> String {
             }
             IdAtom::Eq(l, r) => {
                 s.push_str("Eq(");
-                write_id_term_canonical(*l, bank, &mut s, &mut var_map, &mut next);
-                s.push(',');
-                write_id_term_canonical(*r, bank, &mut s, &mut var_map, &mut next);
+                let mut sl = String::new();
+                id_term_shape_key(*l, bank, &mut sl);
+                let mut sr = String::new();
+                id_term_shape_key(*r, bank, &mut sr);
+                if sl <= sr {
+                    write_id_term_canonical(*l, bank, &mut s, &mut var_map, &mut next);
+                    s.push(',');
+                    write_id_term_canonical(*r, bank, &mut s, &mut var_map, &mut next);
+                } else {
+                    write_id_term_canonical(*r, bank, &mut s, &mut var_map, &mut next);
+                    s.push(',');
+                    write_id_term_canonical(*l, bank, &mut s, &mut var_map, &mut next);
+                }
                 s.push(')');
             }
         }
@@ -762,5 +919,89 @@ mod tests {
         assert_eq!(components.len(), 2);
         assert!(symbols.resolve_name("spl0_50001").is_some());
         assert!(symbols.resolve_name("spl0_50002").is_some());
+    }
+
+    #[test]
+    fn canonical_key_literal_permutation_invariant() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+
+        let lits_pq = vec![
+            Literal::pos(Atom::pred(p, vec![Term::var(0)])),
+            Literal::pos(Atom::pred(q, vec![Term::var(0)])),
+        ];
+        let lits_qp = vec![
+            Literal::pos(Atom::pred(q, vec![Term::var(1)])),
+            Literal::pos(Atom::pred(p, vec![Term::var(1)])),
+        ];
+        assert_eq!(
+            canonical_component_key(&lits_pq),
+            canonical_component_key(&lits_qp),
+            "permuted multi-literal components must produce the same canonical key"
+        );
+    }
+
+    #[test]
+    fn canonical_key_equality_symmetry_invariant() {
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("f");
+
+        let lits_lr = vec![Literal::pos(Atom::eq(
+            Term::app(f, vec![Term::var(0)]),
+            Term::var(1),
+        ))];
+        let lits_rl = vec![Literal::pos(Atom::eq(
+            Term::var(5),
+            Term::app(f, vec![Term::var(6)]),
+        ))];
+        assert_eq!(
+            canonical_component_key(&lits_lr),
+            canonical_component_key(&lits_rl),
+            "symmetric equalities must produce the same canonical key"
+        );
+    }
+
+    #[test]
+    fn split_clause_shares_var_for_permuted_multi_literal_components() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+        let r = syms.intern("r");
+        let s = syms.intern("s");
+        let mut ctx = AvatarContext::new();
+        let mut id_gen = mrs_core::clause::ClauseIdGen::new();
+
+        // Clause 1: (p(X0) | q(X0)) | r(Y0)
+        let c1 = Clause::new(
+            id_gen.next(),
+            vec![
+                Literal::pos(Atom::pred(p, vec![Term::var(0)])),
+                Literal::pos(Atom::pred(q, vec![Term::var(0)])),
+                Literal::pos(Atom::pred(r, vec![Term::var(1)])),
+            ],
+            mrs_core::clause::ClauseSource::Input {
+                name: "c1".into(),
+                role: "axiom".into(),
+            },
+        );
+        // Clause 2: (q(X5) | p(X5)) | s(Y5)
+        let c2 = Clause::new(
+            id_gen.next(),
+            vec![
+                Literal::pos(Atom::pred(q, vec![Term::var(5)])),
+                Literal::pos(Atom::pred(p, vec![Term::var(5)])),
+                Literal::pos(Atom::pred(s, vec![Term::var(6)])),
+            ],
+            mrs_core::clause::ClauseSource::Input {
+                name: "c2".into(),
+                role: "axiom".into(),
+            },
+        );
+
+        let splits1 = ctx.split_clause(&c1, &mut id_gen).expect("c1 must split");
+        let splits2 = ctx.split_clause(&c2, &mut id_gen).expect("c2 must split");
+
+        assert_eq!(splits1[0].avatar.last(), splits2[0].avatar.last());
     }
 }
