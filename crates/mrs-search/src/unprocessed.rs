@@ -50,6 +50,12 @@ pub struct UnprocessedSet {
     weight_queue: BinaryHeap<WeightWrapper>,
     /// Priority queue ordered by distance to conjecture + weight.
     goal_queue: BinaryHeap<WeightWrapper>,
+    /// Priority queue for unit clauses (1 literal), lightest first.
+    unit_queue: BinaryHeap<WeightWrapper>,
+    /// Priority queue for Horn clauses (<= 1 positive literal), lightest first.
+    horn_queue: BinaryHeap<WeightWrapper>,
+    /// Priority queue for Set-of-Support clauses (distance < 100), lightest first.
+    sos_queue: BinaryHeap<WeightWrapper>,
     /// Priority queue ordered by ML-guided score + weight.
     #[cfg(feature = "ml-guidance")]
     ml_queue: BinaryHeap<WeightWrapper>,
@@ -67,6 +73,9 @@ impl UnprocessedSet {
             age_queue: VecDeque::new(),
             weight_queue: BinaryHeap::new(),
             goal_queue: BinaryHeap::new(),
+            unit_queue: BinaryHeap::new(),
+            horn_queue: BinaryHeap::new(),
+            sos_queue: BinaryHeap::new(),
             #[cfg(feature = "ml-guidance")]
             ml_queue: BinaryHeap::new(),
             config,
@@ -110,6 +119,27 @@ impl UnprocessedSet {
             weight: goal_weight,
             distance: clause.distance,
         });
+        if clause.literals.len() == 1 {
+            self.unit_queue.push(WeightWrapper {
+                id,
+                weight,
+                distance: clause.distance,
+            });
+        }
+        if clause.literals.iter().filter(|lit| lit.positive).count() <= 1 {
+            self.horn_queue.push(WeightWrapper {
+                id,
+                weight,
+                distance: clause.distance,
+            });
+        }
+        if clause.distance < 100 {
+            self.sos_queue.push(WeightWrapper {
+                id,
+                weight,
+                distance: clause.distance,
+            });
+        }
         #[cfg(feature = "ml-guidance")]
         {
             // ML priority = α * norm(weight) + (1 - α) * (1 - σ(score))
@@ -207,6 +237,36 @@ impl UnprocessedSet {
     /// Pops the clause with the lowest distance-penalized weight.
     pub fn pop_goal_directed(&mut self) -> Option<ClauseId> {
         while let Some(wrapper) = self.goal_queue.pop() {
+            if self.active_ids.remove(&wrapper.id) {
+                return Some(wrapper.id);
+            }
+        }
+        None
+    }
+
+    /// Pops the lightest unit clause (1 literal) from the set, returning its ID.
+    pub fn pop_unit(&mut self) -> Option<ClauseId> {
+        while let Some(wrapper) = self.unit_queue.pop() {
+            if self.active_ids.remove(&wrapper.id) {
+                return Some(wrapper.id);
+            }
+        }
+        None
+    }
+
+    /// Pops the lightest Horn clause (<= 1 positive literal) from the set, returning its ID.
+    pub fn pop_horn(&mut self) -> Option<ClauseId> {
+        while let Some(wrapper) = self.horn_queue.pop() {
+            if self.active_ids.remove(&wrapper.id) {
+                return Some(wrapper.id);
+            }
+        }
+        None
+    }
+
+    /// Pops the lightest Set-of-Support clause (distance < 100) from the dedicated SOS queue, returning its ID.
+    pub fn pop_sos(&mut self) -> Option<ClauseId> {
+        while let Some(wrapper) = self.sos_queue.pop() {
             if self.active_ids.remove(&wrapper.id) {
                 return Some(wrapper.id);
             }
@@ -326,6 +386,11 @@ impl UnprocessedSet {
             }
             self.ml_queue = BinaryHeap::from(kept_ml);
         }
+
+        // 8. Filter unit, horn, and sos queues in-place
+        self.unit_queue.retain(|w| self.active_ids.contains(&w.id));
+        self.horn_queue.retain(|w| self.active_ids.contains(&w.id));
+        self.sos_queue.retain(|w| self.active_ids.contains(&w.id));
 
         num_discarded
     }

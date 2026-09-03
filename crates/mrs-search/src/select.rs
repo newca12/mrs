@@ -10,6 +10,23 @@
 use crate::unprocessed::UnprocessedSet;
 use mrs_core::clause::ClauseId;
 
+/// Individual priority queue types available for multi-queue selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum QueueType {
+    /// Age (FIFO) - oldest clause first.
+    Age,
+    /// Lightest clause by symbol weight.
+    Weight,
+    /// Goal-directed: distance-penalized weight.
+    Goal,
+    /// Unit clauses: 1-literal clauses (ordered by weight).
+    Unit,
+    /// Horn clauses: at most 1 positive literal (ordered by weight).
+    Horn,
+    /// Set-of-Support: derived from conjecture (distance < 100, ordered by weight).
+    Sos,
+}
+
 /// A clause selection strategy.
 #[derive(Clone, Debug)]
 pub enum SelectionStrategy {
@@ -23,6 +40,8 @@ pub enum SelectionStrategy {
     GoalDirected(u32),
     /// Alternate: every `ratio`-th pick is by age (FIFO), rest by ML-guided score blended with weight using `alpha`.
     MlGuided { ratio: u32, alpha: f32 },
+    /// Multi-queue given-clause selection interleaving multiple priority queues with specified frequencies.
+    MultiQueue(Vec<(QueueType, u32)>),
 }
 
 /// Selects and removes a clause ID from the unprocessed set.
@@ -86,6 +105,43 @@ pub fn select(
                     // degrade gracefully to plain weight-based selection.
                     pop_weight(unprocessed)
                 }
+            }
+        }
+
+        SelectionStrategy::MultiQueue(queues) => {
+            let total_weight: u32 = queues.iter().map(|(_, w)| *w).sum();
+            if total_weight == 0 {
+                return unprocessed.pop_age();
+            }
+            let mut step = (iteration % (total_weight as u64)) as u32;
+            let mut chosen = QueueType::Weight;
+            for (q_type, w) in queues {
+                if step < *w {
+                    chosen = *q_type;
+                    break;
+                }
+                step -= *w;
+            }
+
+            match chosen {
+                QueueType::Age => unprocessed.pop_age().or_else(|| pop_weight(unprocessed)),
+                QueueType::Weight => pop_weight(unprocessed).or_else(|| unprocessed.pop_age()),
+                QueueType::Goal => unprocessed
+                    .pop_goal_directed()
+                    .or_else(|| pop_weight(unprocessed))
+                    .or_else(|| unprocessed.pop_age()),
+                QueueType::Unit => unprocessed
+                    .pop_unit()
+                    .or_else(|| pop_weight(unprocessed))
+                    .or_else(|| unprocessed.pop_age()),
+                QueueType::Horn => unprocessed
+                    .pop_horn()
+                    .or_else(|| pop_weight(unprocessed))
+                    .or_else(|| unprocessed.pop_age()),
+                QueueType::Sos => unprocessed
+                    .pop_sos()
+                    .or_else(|| pop_weight(unprocessed))
+                    .or_else(|| unprocessed.pop_age()),
             }
         }
     }
@@ -179,5 +235,36 @@ mod tests {
             mrs_calculus::ordering::SymbolConfig::default(),
         ));
         assert!(select(&mut unproc, &SelectionStrategy::Fifo, 0, u32::MAX).is_none());
+    }
+
+    #[test]
+    fn multi_queue_interleaves_and_falls_back() {
+        let mut bank = TermBank::new();
+        let mut unproc = UnprocessedSet::new(std::sync::Arc::new(
+            mrs_calculus::ordering::SymbolConfig::default(),
+        ));
+        // Clause 0: 3 literals (weight high, not unit)
+        push_clause(0, 3, &mut bank, &mut unproc);
+        // Clause 1: 1 literal (unit, lightest)
+        push_clause(1, 1, &mut bank, &mut unproc);
+        // Clause 2: 2 literals (medium)
+        push_clause(2, 2, &mut bank, &mut unproc);
+
+        // Schedule: 1 Age, 2 Unit -> total 3.
+        // iter 0: Age -> picks Clause 0 (oldest)
+        // iter 1: Unit -> picks Clause 1 (unit)
+        // iter 2: Unit -> unit queue empty -> falls back to Weight -> picks Clause 2
+        let strat = SelectionStrategy::MultiQueue(vec![(QueueType::Age, 1), (QueueType::Unit, 2)]);
+
+        let s0 = select(&mut unproc, &strat, 0, u32::MAX).unwrap();
+        assert_eq!(s0, ClauseId(0));
+
+        let s1 = select(&mut unproc, &strat, 1, u32::MAX).unwrap();
+        assert_eq!(s1, ClauseId(1));
+
+        let s2 = select(&mut unproc, &strat, 2, u32::MAX).unwrap();
+        assert_eq!(s2, ClauseId(2));
+
+        assert!(select(&mut unproc, &strat, 3, u32::MAX).is_none());
     }
 }

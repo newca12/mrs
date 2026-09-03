@@ -51,7 +51,7 @@ use mrs_core::clause::{Clause, ClauseId};
 pub use mrs_calculus::literal_selection::LiteralSelection;
 pub use mrs_calculus::ordering::TermOrdering;
 pub use mrs_cnf::goal_transform::GoalTransformMode;
-pub use select::SelectionStrategy;
+pub use select::{QueueType, SelectionStrategy};
 
 /// Per-strategy counters for failure diagnosis and throughput analysis.
 ///
