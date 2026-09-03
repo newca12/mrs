@@ -20,6 +20,7 @@ This document provides the exact Git commits, checkout/build instructions, targe
 | 10 | `feat/multi-queue-selection` | `3ec3228` | **FNE** (FOF No Equality) | **FEQ**, **UEQ**, **EPR** | Multi-queue given-clause loop with dedicated Unit and Horn selection queues |
 | 11 | `feat/dynamic-precedence` | `379baa5` | **FEQ** (FOF with Equality) | **UEQ**, **FNE**, **EPR** | Problem-specific dynamic KBO/LPO precedence and symbol weighting schemes |
 | 12 | `feat/free-var-skolemization` | `3c66465` | **FNE** (FOF No Equality) | **FEQ** (FOF with Equality) | Free-variable filtered Skolemization to eliminate redundant Skolem arity |
+| 13 | `feat/polarity-definitional-cnf` | `722b669` | **FNE** (FOF No Equality) | **FEQ**, **EPR** | Polarity-aware Plaisted-Greenbaum renaming & linear equivalence CNF |
 
 ---
 
@@ -239,4 +240,23 @@ This document provides the exact Git commits, checkout/build instructions, targe
   ```bash
   ./crates/mrs-bench/casc.sh --systems mrs --divisions fne,feq --time 30 --jobs 4 --output results/filtered-skolem-eval
   ```
+
+---
+
+### 13. Polarity-Aware Definitional Renaming & Biconditional Expansion Fix
+* **Branch**: `feat/polarity-definitional-cnf`
+* **Commit**: `722b669528d22bb48c46c3fb8c8b4b74aa68d2c0` (`722b669`)
+* **Build & Checkout**:
+  ```bash
+  git checkout feat/polarity-definitional-cnf # or git checkout 722b669
+  nix develop -c cargo build --release
+  ```
+* **Target Division**: **FNE** (`--schedule casc_fne`), **FEQ** (`--schedule casc_feq`), and **EPR** (`--schedule casc_epr`).
+* **Why**: Solves the exponential $O(2^n)$ clause and term blowup caused by naive recursive NNF expansion on nested equivalences (`<=>`). Replaces complex equivalence subformulas bottom-up with fresh definition predicates, introduces polarity-aware half-definitions (Plaisted-Greenbaum), and applies a configurable distributive threshold ($\rho=8$) so small disjunctions distribute directly without unnecessary Tseitin symbols. Full provenance and transitive parent tracking are preserved for strict verification.
+* **Problem Domains**: Pelletier equivalence problems (`pel12.p`), equivalence-heavy benchmarks in `SYN`, `SET`, `KRS`, hardware and protocol verification in `HWV`, `SWV`.
+* **Benchmark Command**:
+  ```bash
+  ./crates/mrs-bench/casc.sh --systems mrs --divisions fne,feq,epr --time 30 --jobs 4 --output results/polarity-cnf-eval
+  ```
+
 
