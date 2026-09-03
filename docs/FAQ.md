@@ -61,7 +61,7 @@ It cannot verify satisfiable runs (EPS) because satisfiability is proven by cons
 This question represents the boundary between **Generating a Proof (Search)** and **Verifying a Proof (Checking)**, as well as the division of labor in mathematical logic.
 
 #### A. $NP$-Hard Search (MRS) vs. $P$-Time Verification (Inca)
-Finding a proof requires searching through an infinite, chaotic tree of possible logical inferences. A first-order prover (like MRS, Vampire, or E) spends 99.9% of its resources on **search heuristics, term indexing (STree, AC-indexing), and clause selection** just to find the needle in the haystack. 
+Finding a proof requires searching through an infinite, chaotic tree of possible logical inferences. A first-order prover (like MRS, Vampire, or E) spends 99.9% of its resources on **search heuristics, term indexing (STree, AC-indexing), and clause selection** just to find the needle in the haystack.
 
 Checking a proof (Inca or `mrs-proover`), however, is extremely cheap. Once the prover outputs the exact DAG of steps, a verifier can check it in linear ($P$-time) complexity. Z3 or Inca cannot find first-order proofs on their own in these infinite domains, but they can easily verify them once they are found.
 
@@ -95,7 +95,7 @@ Without the advanced first-order calculi of provers like MRS, Z3 will instantly 
 > are unrelated to what mrs is actually entered for at CASC-J13. Following
 > the `PRO013+3.p` soundness incident (see `docs/BENCHMARKS.md` and the
 > CWA/subst fixes in `crates/mrs-search/src/cwa.rs` /
-> `crates/mrs-core/src/subst.rs`), verification effort
+> `crates/mrs-search/src/subst.rs`), verification effort
 > (`run_soundness_audit.sh` + the `mrs-proover`/`mrs-codex` independent-proof
 > audit) is concentrated on **FNE + FEQ + UEQ**, matching the actual `FOF
 > UEQ` entry.
@@ -114,3 +114,31 @@ At the official CASC-30 competition, **Vampire 5.0** made history by winning **a
 | **ICU** | Intuitionistic First-order logic | **Vampire 5.0** | **⚪ N/A AT CASC-J13** (no such division this year). Experimental harness and benchmark fixtures remain in the tree from the CASC-30 era. |
 
 By specializing strictly in FOF and UEQ for CASC-J13 — matching the actual entrant registration — MRS avoids the architectural bloat of SMT/Higher-order engines, allowing us to build the highest possible throughput and search space density in pure classical first-order reasoning.
+
+---
+
+## 6. Determinism, CPU Contention, and Deep-Term Safeguards
+
+### Q: Why do some proofs (like `ALG032+1.p` or `NUM283-1.005.p`) verify perfectly on fast CPUs but fail or time out on slower, non-AVX remote servers?
+
+This behavior highlights three subtle but critical aspects of the prover and verifier architecture: **wall-clock pruning feedback loops**, **term-depth verifier safeguards**, and **SAT variable limit constraints**.
+
+#### A. The "Slow CPU / Wall-Clock LRS" Pruning Trap
+By default, the Limited Resource Strategy (LRS) prunes the passive queue every 100 given-clause iterations based on remaining wall-clock budget (`LrsPolicy::WallClock`):
+* **On Fast CPUs (e.g. Core i7/i3):** Iterations are fast, so LRS estimates a generous remaining budget and does not prune the critical clauses needed to reach a short refutation proof.
+* **On Slower CPUs (e.g. older 2012 Xeons like E5-2407):** Iterations run significantly slower due to much lower single-core instruction-level parallelism (IPC).
+* **The Fallout:** When running a heavy first-order search like Strategy 2 (`S2` / `use_avatar: false`), which requires exactly **229 given-clause iterations** on `ALG032+1.p`:
+  1. At iteration 100 on the slow Xeon, the elapsed time is very high, causing the calculated average nanoseconds per iteration (`avg_nanos`) to spike.
+  2. LRS estimates a tiny remaining iteration budget and aggressively prunes the passive queue down to its minimum size of 2,000, **deleting the critical clauses needed to reach the proof at iteration 229**.
+  3. Denied these critical clauses, the prover is forced into an infinite search of deeply nested, heavy terms. Because Strategy 2 has `max_term_weight: None`, term-tower growth is unrestricted, making unification exponentially slower and causing a **300-second (5-minute) timeout** where a fast CPU would solve it immediately in ~9–11 seconds.
+* **The Deterministic Solution:** To make sweeps completely independent of hardware speed, scheduling, or CPU load, opt-in to a logical LRS budget:
+  ```bash
+  export MRS_LRS_FIXED_ITERATIONS=100000
+  ```
+
+#### B. Deep-Term Successor Nesting in Number Theory (`NUM` / `NUN`)
+In the `NUM` domain, arithmetic is represented algebraically using successor notation (e.g. `s(s(s(...s(0)...)))`). Proofs for these problems generate terms with nesting depths exceeding 100+ levels (e.g. `NUM283-1.005.p` has a step with **154** nested successor applications).
+* To prevent external ATPs from hanging during proof-step validation, `mrs-proover` enforces a hardcoded safeguard threshold (`formula_max_depth`), which was raised from `25` to **`200`** in `v0.2.3` to cleanly verify these deep successor arithmetic proofs as `VerifiedGood`.
+
+#### C. SAT/AVATAR Variable Verification Limits
+For complex AVATAR branch refutations, the verifier reconstructs and solves the SAT splits in CaDiCaL. `mrs-proover` originally capped the maximum allowed SAT variables per refutation step to `20` to prevent verifier hangs. This limit was raised to **`200`** in `v0.2.3` to allow complex algebra and set-theory proofs (which frequently reach 40–150 variables) to verify successfully without a soundness penalty.

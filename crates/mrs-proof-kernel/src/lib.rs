@@ -429,6 +429,7 @@ fn verify_strict_with_source_internal(
             "equality_factoring" => verify_equality_factoring(&parents, conclusion, limits),
             "condensation" => verify_condensation(&parents, conclusion, limits),
             "demodulation" => verify_demodulation(&parents, conclusion, limits),
+            "goal_transformation" => verify_goal_transformation(&parents, conclusion, limits),
             "superposition" => verify_superposition(&parents, conclusion, limits),
             "paramodulation" => verify_paramodulation(&parents, conclusion, limits),
             "split_component" => verify_split_component(
@@ -642,6 +643,7 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "equality_factoring"
         | "condensation"
         | "demodulation"
+        | "goal_transformation"
         | "avatar_sat_refutation"
         | "superposition"
         | "paramodulation" => Some("thm"),
@@ -815,59 +817,164 @@ fn verify_definition(
             node.name
         ));
     }
-    let Some(fof) = node.formula.as_fof() else {
-        return KernelVerdict::Inconclusive("definition is not FOF".into());
-    };
-    let FOFStatement::Logical(formula) = &fof.formula else {
-        return KernelVerdict::Inconclusive("definition sequent is unsupported".into());
-    };
-    let body = strip_forall_fof(formula);
-    let FOFFormula::Binary {
-        left,
-        connective: BinaryConnective::Iff,
-        right,
-    } = body
-    else {
-        return KernelVerdict::Rejected(format!(
-            "definition `{}` is not a biconditional",
-            node.name
-        ));
-    };
-    let (head, rhs) = if let Some(head) = definition_head(left, declared) {
-        (head, right.as_ref())
-    } else if let Some(head) = definition_head(right, declared) {
-        (head, left.as_ref())
+    if let Some(fof) = node.formula.as_fof() {
+        let FOFStatement::Logical(formula) = &fof.formula else {
+            return KernelVerdict::Inconclusive("definition sequent is unsupported".into());
+        };
+        let body = strip_forall_fof(formula);
+        match body {
+            FOFFormula::Binary {
+                left,
+                connective: BinaryConnective::Iff,
+                right,
+            } => {
+                let (head, rhs) = if let Some(head) = definition_head(left, declared) {
+                    (head, right.as_ref())
+                } else if let Some(head) = definition_head(right, declared) {
+                    (head, left.as_ref())
+                } else {
+                    return KernelVerdict::Rejected(format!(
+                        "definition `{}` does not define `{declared}`",
+                        node.name
+                    ));
+                };
+                if formula_contains_predicate(rhs, declared) {
+                    return KernelVerdict::Rejected(format!(
+                        "definition `{}` is recursive",
+                        node.name
+                    ));
+                }
+                if head
+                    .iter()
+                    .any(|term| !matches!(term, FOFTerm::Variable(_)))
+                {
+                    return KernelVerdict::Rejected(format!(
+                        "definition `{}` has a non-variable predicate head",
+                        node.name
+                    ));
+                }
+                let mut free = HashSet::new();
+                collect_free_variable_names(rhs, &mut free);
+                let mut head_vars = HashSet::new();
+                for term in head {
+                    collect_term_variable_names(term, &mut head_vars);
+                }
+                if !free.is_subset(&head_vars) {
+                    return KernelVerdict::Rejected(format!(
+                        "definition `{}` leaves free variables outside its head",
+                        node.name
+                    ));
+                }
+                KernelVerdict::Certified
+            }
+            FOFFormula::Equality(left, right) => {
+                verify_equational_definition(node.name, left, right, declared)
+            }
+            _ => KernelVerdict::Rejected(format!(
+                "definition `{}` is not a biconditional or equality",
+                node.name
+            )),
+        }
+    } else if let Some(cnf) = node.formula.as_cnf() {
+        let CNFStatement::Logical(cnf_formula) = &cnf.formula;
+        let literals = match cnf_formula {
+            CNFFormula::Disjunction(lits) => lits.as_slice(),
+            CNFFormula::Parens(inner) => match inner.as_ref() {
+                CNFFormula::Disjunction(lits) => lits.as_slice(),
+                _ => return KernelVerdict::Inconclusive("unsupported CNF definition shape".into()),
+            },
+        };
+        if literals.len() != 1 {
+            return KernelVerdict::Rejected(format!(
+                "CNF definition `{}` must be a unit clause",
+                node.name
+            ));
+        }
+        match &literals[0] {
+            CNFLiteral::Equality(left, right) => {
+                verify_equational_definition(node.name, left, right, declared)
+            }
+            _ => KernelVerdict::Rejected(format!(
+                "CNF definition `{}` must be a positive equality",
+                node.name
+            )),
+        }
+    } else {
+        KernelVerdict::Inconclusive("definition is neither FOF nor CNF".into())
+    }
+}
+
+fn verify_equational_definition(
+    node_name: &str,
+    left: &FOFTerm<'_>,
+    right: &FOFTerm<'_>,
+    declared: &str,
+) -> KernelVerdict {
+    let (head_args, rhs) = if let Some(args) = fof_term_args_for_symbol(left, declared) {
+        (args, right)
+    } else if let Some(args) = fof_term_args_for_symbol(right, declared) {
+        (args, left)
     } else {
         return KernelVerdict::Rejected(format!(
-            "definition `{}` does not define `{declared}`",
-            node.name
+            "definition `{node_name}` does not define `{declared}`"
         ));
     };
-    if formula_contains_predicate(rhs, declared) {
-        return KernelVerdict::Rejected(format!("definition `{}` is recursive", node.name));
+
+    if term_contains_symbol(rhs, declared) {
+        return KernelVerdict::Rejected(format!("definition `{node_name}` is recursive"));
     }
-    if head
-        .iter()
-        .any(|term| !matches!(term, FOFTerm::Variable(_)))
-    {
-        return KernelVerdict::Rejected(format!(
-            "definition `{}` has a non-variable predicate head",
-            node.name
-        ));
-    }
-    let mut free = HashSet::new();
-    collect_free_variable_names(rhs, &mut free);
+
     let mut head_vars = HashSet::new();
-    for term in head {
-        collect_term_variable_names(term, &mut head_vars);
+    for term in head_args {
+        match term {
+            FOFTerm::Variable(v) => {
+                if !head_vars.insert((*v).to_string()) {
+                    return KernelVerdict::Rejected(format!(
+                        "definition `{node_name}` has duplicate variable `{v}` in head"
+                    ));
+                }
+            }
+            _ => {
+                return KernelVerdict::Rejected(format!(
+                    "definition `{node_name}` has a non-variable function argument in head"
+                ));
+            }
+        }
     }
-    if !free.is_subset(&head_vars) {
+
+    let mut rhs_vars = HashSet::new();
+    collect_term_variable_names(rhs, &mut rhs_vars);
+    if !rhs_vars.is_subset(&head_vars) {
         return KernelVerdict::Rejected(format!(
-            "definition `{}` leaves free variables outside its head",
-            node.name
+            "definition `{node_name}` leaves free variables outside its head"
         ));
     }
+
     KernelVerdict::Certified
+}
+
+fn term_contains_symbol(term: &FOFTerm<'_>, symbol: &str) -> bool {
+    match term {
+        FOFTerm::Function(name, args) => {
+            name.as_str() == symbol || args.iter().any(|arg| term_contains_symbol(arg, symbol))
+        }
+        FOFTerm::DefinedFunction(name, args) => {
+            format!("${}", name.0) == symbol
+                || args.iter().any(|arg| term_contains_symbol(arg, symbol))
+        }
+        FOFTerm::SystemFunction(name, args) => {
+            format!("$${}", name.0) == symbol
+                || args.iter().any(|arg| term_contains_symbol(arg, symbol))
+        }
+        FOFTerm::Variable(_) | FOFTerm::Number(_) | FOFTerm::DistinctObject(_) => false,
+    }
+}
+
+fn fof_term_args_for_symbol<'a>(term: &'a FOFTerm<'a>, symbol: &str) -> Option<&'a [FOFTerm<'a>]> {
+    match term {
+        FOFTerm::Function(name, args) if name.as_str() == symbol => Some(args.as_slice()),
+        _ => None,
+    }
 }
 
 fn formula_contains_predicate(formula: &FOFFormula<'_>, symbol: &str) -> bool {
@@ -1900,18 +2007,19 @@ fn topo_sort<'a>(
             children[parent_idx].push(idx);
         }
     }
-    let mut ready: Vec<usize> = indegree
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, &degree)| (degree == 0).then_some(idx))
-        .collect();
+    let mut ready = std::collections::BinaryHeap::new();
+    for (idx, &degree) in indegree.iter().enumerate() {
+        if degree == 0 {
+            ready.push(std::cmp::Reverse(idx));
+        }
+    }
     let mut order = Vec::with_capacity(nodes.len());
-    while let Some(idx) = ready.pop() {
+    while let Some(std::cmp::Reverse(idx)) = ready.pop() {
         order.push(idx);
         for &child in &children[idx] {
             indegree[child] -= 1;
             if indegree[child] == 0 {
-                ready.push(child);
+                ready.push(std::cmp::Reverse(child));
             }
         }
     }
@@ -5433,10 +5541,12 @@ fn verify_demodulation(
         }
         let left_vars = term_var_set(left);
         let right_vars = term_var_set(right);
-        if right_vars.is_subset(&left_vars) {
+        let left_weight = term_weight(left);
+        let right_weight = term_weight(right);
+        if right_vars.is_subset(&left_vars) && left_weight >= right_weight {
             rules.push((left.clone(), right.clone()));
         }
-        if left_vars.is_subset(&right_vars) {
+        if left_vars.is_subset(&right_vars) && right_weight >= left_weight {
             rules.push((right.clone(), left.clone()));
         }
     }
@@ -5479,6 +5589,20 @@ fn verify_demodulation(
             );
         }
     }
+}
+
+fn verify_goal_transformation(
+    parents: &[Formula],
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if parents.is_empty() {
+        return KernelVerdict::Rejected("goal_transformation requires at least one parent".into());
+    }
+    if parents.len() == 1 {
+        return verify_alpha_identity(parents, conclusion);
+    }
+    verify_demodulation(parents, conclusion, limits)
 }
 
 fn verify_superposition(
@@ -7325,10 +7449,36 @@ fn atom_alpha_equiv(
                     .all(|(left, right)| term_alpha_equiv(left, right, mapping, reverse))
         }
         (Atom::Eq(left_l, left_r), Atom::Eq(right_l, right_r)) => {
-            term_alpha_equiv(left_l, right_l, mapping, reverse)
-                && term_alpha_equiv(left_r, right_r, mapping, reverse)
+            let mut direct_mapping = mapping.clone();
+            let mut direct_reverse = reverse.clone();
+            if term_alpha_equiv(left_l, right_l, &mut direct_mapping, &mut direct_reverse)
+                && term_alpha_equiv(left_r, right_r, &mut direct_mapping, &mut direct_reverse)
+            {
+                *mapping = direct_mapping;
+                *reverse = direct_reverse;
+                true
+            } else {
+                let mut flip_mapping = mapping.clone();
+                let mut flip_reverse = reverse.clone();
+                if term_alpha_equiv(left_l, right_r, &mut flip_mapping, &mut flip_reverse)
+                    && term_alpha_equiv(left_r, right_l, &mut flip_mapping, &mut flip_reverse)
+                {
+                    *mapping = flip_mapping;
+                    *reverse = flip_reverse;
+                    true
+                } else {
+                    false
+                }
+            }
         }
         _ => false,
+    }
+}
+
+fn term_weight(term: &Term) -> usize {
+    match term {
+        Term::Var(_) => 1,
+        Term::App(_, args) => 1 + args.iter().map(term_weight).sum::<usize>(),
     }
 }
 

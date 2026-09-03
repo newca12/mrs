@@ -146,17 +146,17 @@ pub struct Comment<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum AnnotatedFormula<'a> {
     /// `thf(name, role, formula [, annotations]).`
-    THF(THFAnnotated<'a>),
+    THF(Box<THFAnnotated<'a>>),
     /// `tff(name, role, formula [, annotations]).`
-    TFF(TFFAnnotated<'a>),
+    TFF(Box<TFFAnnotated<'a>>),
     /// `fof(name, role, formula [, annotations]).`
-    FOF(FOFAnnotated<'a>),
+    FOF(Box<FOFAnnotated<'a>>),
     /// `tcf(name, role, formula [, annotations]).`
-    TCF(TCFAnnotated<'a>),
+    TCF(Box<TCFAnnotated<'a>>),
     /// `cnf(name, role, formula [, annotations]).`
-    CNF(CNFAnnotated<'a>),
+    CNF(Box<CNFAnnotated<'a>>),
     /// `tpi(name, role, formula [, annotations]).`
-    TPI(TPIAnnotated<'a>),
+    TPI(Box<TPIAnnotated<'a>>),
 }
 
 impl<'a> AnnotatedFormula<'a> {
@@ -200,7 +200,7 @@ impl<'a> AnnotatedFormula<'a> {
     /// a different dialect.
     pub fn as_fof(&self) -> Option<&FOFAnnotated<'a>> {
         if let AnnotatedFormula::FOF(f) = self {
-            Some(f)
+            Some(&**f)
         } else {
             None
         }
@@ -209,7 +209,7 @@ impl<'a> AnnotatedFormula<'a> {
     /// Return a reference to the inner [`TFFAnnotated`], or `None`.
     pub fn as_tff(&self) -> Option<&TFFAnnotated<'a>> {
         if let AnnotatedFormula::TFF(f) = self {
-            Some(f)
+            Some(&**f)
         } else {
             None
         }
@@ -218,7 +218,7 @@ impl<'a> AnnotatedFormula<'a> {
     /// Return a reference to the inner [`THFAnnotated`], or `None`.
     pub fn as_thf(&self) -> Option<&THFAnnotated<'a>> {
         if let AnnotatedFormula::THF(f) = self {
-            Some(f)
+            Some(&**f)
         } else {
             None
         }
@@ -227,7 +227,7 @@ impl<'a> AnnotatedFormula<'a> {
     /// Return a reference to the inner [`CNFAnnotated`], or `None`.
     pub fn as_cnf(&self) -> Option<&CNFAnnotated<'a>> {
         if let AnnotatedFormula::CNF(f) = self {
-            Some(f)
+            Some(&**f)
         } else {
             None
         }
@@ -236,7 +236,7 @@ impl<'a> AnnotatedFormula<'a> {
     /// Return a reference to the inner [`TCFAnnotated`], or `None`.
     pub fn as_tcf(&self) -> Option<&TCFAnnotated<'a>> {
         if let AnnotatedFormula::TCF(f) = self {
-            Some(f)
+            Some(&**f)
         } else {
             None
         }
@@ -245,7 +245,7 @@ impl<'a> AnnotatedFormula<'a> {
     /// Return a reference to the inner [`TPIAnnotated`], or `None`.
     pub fn as_tpi(&self) -> Option<&TPIAnnotated<'a>> {
         if let AnnotatedFormula::TPI(f) = self {
-            Some(f)
+            Some(&**f)
         } else {
             None
         }

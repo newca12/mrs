@@ -3533,6 +3533,7 @@ dependencies = [
  "mrs-tptp",
  "mrs-unify",
  "num_cpus",
+ "rustc-hash 2.1.3",
  "wincode",
 ]
 
@@ -3579,6 +3580,7 @@ name = "mrs-cnf"
 version = "0.2.3"
 dependencies = [
  "mrs-core",
+ "smallvec",
 ]
 
 [[package]]
@@ -3655,6 +3657,7 @@ dependencies = [
  "burn",
  "mrs-cadical",
  "mrs-calculus",
+ "mrs-cnf",
  "mrs-core",
  "mrs-index",
  "mrs-proof",
@@ -3671,7 +3674,7 @@ version = "0.2.3"
 
 [[package]]
 name = "mrs-tptp"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "pretty_assertions",
  "rayon",

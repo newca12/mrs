@@ -98,16 +98,20 @@ A discriminated union of all TPTP dialect formulas:
 
 ```rust
 pub enum AnnotatedFormula<'a> {
-    THF(THFAnnotated<'a>),
-    TFF(TFFAnnotated<'a>),
-    FOF(FOFAnnotated<'a>),
-    TCF(TCFAnnotated<'a>),
-    CNF(CNFAnnotated<'a>),
-    TPI(TPIAnnotated<'a>),
+    THF(Box<THFAnnotated<'a>>),
+    TFF(Box<TFFAnnotated<'a>>),
+    FOF(Box<FOFAnnotated<'a>>),
+    TCF(Box<TCFAnnotated<'a>>),
+    CNF(Box<CNFAnnotated<'a>>),
+    TPI(Box<TPIAnnotated<'a>>),
 }
 ```
 
-Each variant contains:
+Each variant stores its payload in a `Box`, keeping the top-level enum compact
+when a problem mixes dialects.  Construct a variant with `Box::new`; borrowed
+pattern matches continue to expose the annotated fields through dereferencing.
+
+Each boxed payload contains:
 - `name: Name<'a>` - Formula identifier
 - `role: FormulaRole` - Semantic role (axiom, conjecture, etc.)
 - `formula: XXXStatement<'a>` - The actual formula content

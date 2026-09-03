@@ -49,6 +49,7 @@ use mrs_core::clause::{Clause, ClauseId};
 
 pub use mrs_calculus::literal_selection::LiteralSelection;
 pub use mrs_calculus::ordering::TermOrdering;
+pub use mrs_cnf::goal_transform::GoalTransformMode;
 pub use select::SelectionStrategy;
 
 /// Per-strategy counters for failure diagnosis and throughput analysis.
@@ -372,6 +373,8 @@ pub struct SearchConfig {
     pub sine_depth_limit: Option<usize>,
     /// LRS target calculation policy.
     pub lrs_policy: LrsPolicy,
+    /// Optional Twee-style goal-directed preprocessing transformation.
+    pub goal_transformation: Option<GoalTransformMode>,
     /// Number of given-clause iterations between shared-pool polls.
     /// `0` disables cross-strategy clause sharing.
     pub shared_pool_poll_interval: u64,
@@ -393,6 +396,7 @@ impl Default for SearchConfig {
             ordered_inferences: true,
             sine_tolerance: None,
             sine_depth_limit: None,
+            goal_transformation: None,
             lrs_policy: LrsPolicy::WallClock,
             shared_pool_poll_interval: 500,
         }

@@ -471,13 +471,23 @@ pub fn casc_feq(total_time: Duration, workers: usize) -> StrategySchedule {
 }
 
 /// A purely static schedule optimized for UEQ (Unit Equality).
-/// Tunes the portfolio according to CASC-30 priority sweeps.
+/// Tunes the portfolio according to CASC-30 priority sweeps, interleaved
+/// with Twee-style goal-directed subterm flattening on complementary workers.
 pub fn casc_ueq(total_time: Duration, workers: usize) -> StrategySchedule {
-    build_casc_schedule(
+    let mut schedule = build_casc_schedule(
         total_time,
         workers,
         &[11, 4, 2, 8, 14, 1, 15, 3, 5, 6, 7, 9, 10, 12, 13],
-    )
+    );
+    for (i, (cfg, _)) in schedule.strategies.iter_mut().enumerate() {
+        cfg.goal_transformation = match i % 3 {
+            0 => None,
+            1 => Some(crate::GoalTransformMode::RecursiveSubterms),
+            2 => Some(crate::GoalTransformMode::MaximalSubterms),
+            _ => unreachable!(),
+        };
+    }
+    schedule
 }
 
 /// A schedule optimized for EPR Unsatisfiable (EPU).
@@ -514,13 +524,23 @@ pub fn casc_epr(total_time: Duration, workers: usize) -> StrategySchedule {
 }
 
 /// A purely static schedule optimized for ICU (Intensional Unit Equality).
-/// Tunes the portfolio according to CASC-30 priority sweeps.
+/// Tunes the portfolio according to CASC-30 priority sweeps, interleaved
+/// with Twee-style goal-directed subterm flattening on complementary workers.
 pub fn casc_icu(total_time: Duration, workers: usize) -> StrategySchedule {
-    build_casc_schedule(
+    let mut schedule = build_casc_schedule(
         total_time,
         workers,
         &[12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15],
-    )
+    );
+    for (i, (cfg, _)) in schedule.strategies.iter_mut().enumerate() {
+        cfg.goal_transformation = match i % 3 {
+            0 => None,
+            1 => Some(crate::GoalTransformMode::RecursiveSubterms),
+            2 => Some(crate::GoalTransformMode::MaximalSubterms),
+            _ => unreachable!(),
+        };
+    }
+    schedule
 }
 
 #[cfg(test)]

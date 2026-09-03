@@ -1919,7 +1919,7 @@ fn validate_avatar_sat_step(
     for context in &branch_contexts {
         variables.extend(context.iter().copied());
     }
-    if variables.len() > 20 {
+    if variables.len() > 200 {
         return Some(StepOutcome::Unknown(
             "avatar_sat_refutation exceeds competition SAT verification limit".into(),
         ));
@@ -2227,7 +2227,7 @@ fn prepare_atp_step<'p>(
         }
     }
 
-    if formula_max_depth(&conclusion) > 25 {
+    if formula_max_depth(&conclusion) > 200 {
         return Prepared::Resolved(StepOutcome::Unknown(
             "deep term step ignored under fast budget".into(),
         ));
@@ -2750,6 +2750,29 @@ mod esa_guard_tests {
             "thm refutation must stay Unsound"
         );
     }
+
+    #[test]
+    fn unrelated_problem_axioms_cannot_replace_missing_parents() {
+        let problem = "fof(axp, axiom, p(a)).\nfof(axn, axiom, ~p(a)).";
+        let proof = "fof(axp, axiom, p(a), file('problem.p', axp)).\
+                     fof(axn, axiom, ~p(a), file('problem.p', axn)).\
+                     fof(fake, plain, p(a), inference(custom, [status(thm)], [])).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [fake, axn])).";
+        let job = crate::load::load_text(
+            problem.to_owned(),
+            proof.to_owned(),
+            std::path::Path::new("."),
+        )
+        .expect("load malformed proof");
+        let settings = Settings {
+            total_budget: Duration::from_secs(3),
+            per_step_budget: Duration::from_secs(1),
+            workers: 1,
+            strict: false,
+            verbose: false,
+        };
+        assert!(matches!(verify(&job, &settings), Verdict::Unknown(_)));
+    }
 }
 
 #[cfg(test)]
@@ -3120,7 +3143,7 @@ mod avatar_validation_tests {
     fn competition_mode_bounds_large_avatar_sat_certificates() {
         use std::fmt::Write;
 
-        const BRANCHES: usize = 21;
+        const BRANCHES: usize = 201;
         let mut problem = String::from("fof(top, axiom, ");
         for index in 0..BRANCHES {
             if index > 0 {

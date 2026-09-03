@@ -799,12 +799,29 @@ pub fn run_schedule(
                         ml_pruned = thread_clauses.len() < before_len;
                     }
 
+                    let mut thread_provenance = provenance_for_thread.clone();
+                    let mut thread_symbols = (*symbols_thread).clone();
+                    let mut thread_id_gen = id_gen_thread.clone();
+
+                    if let Some(mode) = sc.goal_transformation {
+                        let res = mrs_cnf::goal_transform::transform_goal_clauses(
+                            &thread_clauses,
+                            &mut thread_symbols,
+                            &mut thread_id_gen,
+                            mode,
+                        );
+                        if res.transformed {
+                            thread_clauses = res.clauses;
+                            thread_provenance.extend(res.provenance);
+                        }
+                    }
+
                     let mut state = SearchState::new_with_ml(
                         thread_clauses,
-                        provenance_for_thread.clone(),
-                        id_gen_thread.clone(),
+                        thread_provenance,
+                        thread_id_gen,
                         config_thread.clone(),
-                        symbols_thread.clone(),
+                        Arc::new(thread_symbols),
                         sc.use_avatar,
                         log_ml_data_thread.clone(),
                         ml.log_csv,

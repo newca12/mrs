@@ -26,6 +26,7 @@ This document tracks what remains to be built in `mrs` (the prover) to maximise 
 | Machine-Learning Guided Clause Selection | HEAD |
 | SInE Threshold Tuning | HEAD |
 | SIMD-optimized Feature Vector Index | HEAD |
+| Twee-Style Goal-Directed Preprocessing for UEQ | HEAD |
 
 ---
 

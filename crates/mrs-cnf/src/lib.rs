@@ -38,10 +38,13 @@
 pub mod cnf;
 pub mod definitional;
 pub mod flatten;
+pub mod goal_transform;
 pub mod miniscope;
 pub mod nnf;
 pub mod simplify;
 pub mod skolem;
+
+pub use goal_transform::{GoalTransformMode, GoalTransformResult, transform_goal_clauses};
 
 use mrs_core::clause::{Clause, ClauseId, ClauseIdGen, ClauseSource};
 use mrs_core::{Formula, SymbolTable};
