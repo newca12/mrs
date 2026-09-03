@@ -113,8 +113,16 @@ pub fn clausify_with_provenance(
     let leaf_id = leaf_id_override.unwrap_or_else(|| id_gen.next());
     let leaf_step = Clause::new_formula_step(leaf_id, formula.clone(), leaf_source);
 
+    // Step 0b: Rename complex biconditionals to prevent exponential blowup in NNF
+    let (preprocessed_formula, bicond_defs) = definitional::rename_complex_equivalences(
+        formula,
+        symbols,
+        &format!("{name}_iff"),
+        definitional::DEFAULT_RENAMING_THRESHOLD,
+    );
+
     // Step 1: Convert to NNF
-    let nnf_formula = nnf::to_nnf(formula);
+    let nnf_formula = nnf::to_nnf(&preprocessed_formula);
     let nnf_id = id_gen.next();
     let nnf_step = Clause::new_formula_step(
         nnf_id,
@@ -150,7 +158,7 @@ pub fn clausify_with_provenance(
     // Step 5: Convert to CNF
     // Use definitional CNF if the formula has And-under-Or (blowup risk),
     // otherwise use simple distributive CNF (no extra definition symbols).
-    let (cnf_formula, definitions) = if has_and_under_or(&stripped) {
+    let (cnf_formula, mut definitions) = if has_and_under_or(&stripped) {
         definitional::to_cnf_definitional_with_defs(&stripped, symbols, name)
     } else {
         (cnf::to_cnf(&stripped), Vec::new())
@@ -163,18 +171,87 @@ pub fn clausify_with_provenance(
     // `to_cnf_definitional_with_defs`'s doc comment for why citing only the
     // Skolemization step as a clause's parent does not work once that
     // clause mentions one of these fresh symbols.
-    //
-    // Pass 1: allocate every definition's ClauseId up front (before building
-    // any biconditional formula) so that Pass 2 below can resolve *nested*
-    // definitions -- e.g. a doubly-nested And-under-Or names the inner
-    // conjunction `def_i` and the outer one `def_j`, where `def_j`'s own
-    // biconditional body mentions `def_i`. Bottom-up naming means `def_i`
-    // always appears earlier in `definitions` than `def_j`, but resolving
-    // that in one combined pass would make the fix fragile against any
-    // future change to that ordering, so the two passes are kept separate
-    // and order-independent here.
     let mut def_id_by_symbol: std::collections::HashMap<mrs_core::SymbolId, ClauseId> =
         std::collections::HashMap::new();
+    let mut def_provenance = Vec::with_capacity(definitions.len() + bicond_defs.len());
+    let mut def_deps: std::collections::HashMap<mrs_core::SymbolId, Vec<mrs_core::SymbolId>> =
+        std::collections::HashMap::new();
+    let mut bicond_def_clauses = Vec::new();
+
+    // Pass 1 for biconditional definitions: allocate ClauseIds up front
+    for def in &bicond_defs {
+        let def_sym = match &def.head {
+            mrs_core::Atom::Pred(sym, _) => *sym,
+            mrs_core::Atom::Eq(..) => unreachable!(),
+        };
+        def_id_by_symbol.insert(def_sym, id_gen.next());
+    }
+
+    // Pass 2 for biconditional definitions: build biconditionals & clausify
+    for (i, def) in bicond_defs.iter().enumerate() {
+        let def_sym = match &def.head {
+            mrs_core::Atom::Pred(sym, _) => *sym,
+            mrs_core::Atom::Eq(..) => unreachable!(),
+        };
+        let def_id = def_id_by_symbol[&def_sym];
+
+        let mut referenced: std::collections::HashSet<mrs_core::SymbolId> =
+            std::collections::HashSet::new();
+        collect_pred_symbols(&def.rhs, &mut referenced);
+        let deps: Vec<mrs_core::SymbolId> =
+            referenced.into_iter().filter(|s| *s != def_sym).collect();
+        if !deps.is_empty() {
+            def_deps.insert(def_sym, deps);
+        }
+
+        let biconditional = Formula::iff(Formula::atom(def.head.clone()), def.rhs.clone());
+        let mut free_vars: Vec<_> = biconditional.free_vars().into_iter().collect();
+        free_vars.sort_unstable();
+        let closed_biconditional = free_vars
+            .into_iter()
+            .rev()
+            .fold(biconditional, |body, v| Formula::forall(v, body));
+        def_provenance.push(Clause::new_formula_step(
+            def_id,
+            closed_biconditional,
+            ClauseSource::Introduced { symbol: def_sym },
+        ));
+
+        // Clausify directional formula according to polarity (Plaisted-Greenbaum)
+        let formula_to_clausify =
+            definitional::definition_clauses_formula(&def.head, &def.rhs, def.polarity);
+        let mut cl_free_vars: Vec<_> = formula_to_clausify.free_vars().into_iter().collect();
+        cl_free_vars.sort_unstable();
+        let closed_cl_formula = cl_free_vars
+            .into_iter()
+            .rev()
+            .fold(formula_to_clausify, |body, v| Formula::forall(v, body));
+
+        let def_nnf = nnf::to_nnf(&closed_cl_formula);
+        let def_mini = miniscope::miniscope(&def_nnf);
+        let def_skolem = skolem::skolemize(&def_mini, symbols, &format!("{name}_def_{i}"));
+        let def_stripped = strip_forall(&def_skolem);
+        let (def_cnf, def_inner_defs) = if has_and_under_or(&def_stripped) {
+            definitional::to_cnf_definitional_with_defs_thresh(
+                &def_stripped,
+                symbols,
+                &format!("{name}_def_{i}"),
+                definitional::DEFAULT_RENAMING_THRESHOLD,
+            )
+        } else {
+            (cnf::to_cnf(&def_stripped), Vec::new())
+        };
+        definitions.extend(def_inner_defs);
+
+        let def_source = ClauseSource::Inference {
+            rule: "cnf_transformation",
+            parents: vec![def_id].into(),
+        };
+        let def_clauses = flatten::extract_clauses(&def_cnf, id_gen, &def_source);
+        bicond_def_clauses.extend(def_clauses);
+    }
+
+    // Pass 1 for Tseitin definitions: allocate every definition's ClauseId up front
     for (def_atom, _) in &definitions {
         let def_sym = match def_atom {
             mrs_core::Atom::Pred(sym, _) => *sym,
@@ -182,23 +259,12 @@ pub fn clausify_with_provenance(
                 unreachable!("definitional CNF only introduces fresh predicate symbols")
             }
         };
-        def_id_by_symbol.insert(def_sym, id_gen.next());
+        def_id_by_symbol
+            .entry(def_sym)
+            .or_insert_with(|| id_gen.next());
     }
 
-    // Pass 2: build each definition's biconditional and, critically, record
-    // which *other* definition symbols (if any) its own body mentions --
-    // this is the nested-Tseytin dependency graph that Step 6b needs to
-    // transitively cite. Without this, a clause that only directly mentions
-    // the outermost nested definition (e.g. `def_j`) would cite only
-    // `def_j`'s introduction step, omitting `def_i`'s -- leaving the printed
-    // proof referencing `def_i` without ever justifying it, which is exactly
-    // the bug that produced a false `VerifiedBad` from mrs-proover's ATP
-    // ladder on SWC351+1.p (nested `def_ax5_0`/`def_ax5_1`): the search
-    // itself is unaffected (both definitions' real clauses are always part
-    // of `cnf_formula` regardless), but the *citation* was incomplete.
-    let mut def_provenance = Vec::with_capacity(definitions.len());
-    let mut def_deps: std::collections::HashMap<mrs_core::SymbolId, Vec<mrs_core::SymbolId>> =
-        std::collections::HashMap::new();
+    // Pass 2 for Tseitin definitions: build each definition's biconditional and record dependencies
     for (def_atom, conjuncts) in &definitions {
         let def_sym = match def_atom {
             mrs_core::Atom::Pred(sym, _) => *sym,
@@ -227,12 +293,6 @@ pub fn clausify_with_provenance(
             Formula::and(conjuncts.clone())
         };
         let biconditional = Formula::iff(Formula::atom(def_atom.clone()), rhs);
-        // The definitional-CNF pass runs after `strip_forall`, so the
-        // biconditional's variables (shared with the enclosing clause) are
-        // free here. FOF requires closed formulas, so re-close with
-        // explicit universal quantifiers before citing it as its own step
-        // (confirmed against a real GDV build: an unquantified variable is
-        // a hard parse error, not just a soundness nit).
         let mut free_vars: Vec<_> = biconditional.free_vars().into_iter().collect();
         free_vars.sort_unstable();
         let closed_biconditional = free_vars
@@ -252,6 +312,7 @@ pub fn clausify_with_provenance(
         parents: vec![skolem_id].into(),
     };
     let mut clauses = flatten::extract_clauses(&cnf_formula, id_gen, &cnf_source);
+    clauses.extend(bicond_def_clauses);
 
     // Step 6b: any clause that actually mentions one of the fresh
     // definitional predicates also needs that definition's introduction
@@ -714,6 +775,65 @@ mod provenance_tests {
                     assert_eq!(*rule, "cnf_transformation");
                 }
                 other => panic!("expected Inference, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn biconditional_renaming_clausification_provenance() {
+        let mut syms = SymbolTable::new();
+        let p = Formula::atom(Atom::prop(syms.intern("p")));
+        let q = Formula::atom(Atom::prop(syms.intern("q")));
+        let r = Formula::atom(Atom::prop(syms.intern("r")));
+        let s = Formula::atom(Atom::prop(syms.intern("s")));
+
+        // ((p <=> q) <=> r) <=> s: nested equivalences with blowup potential
+        let formula = Formula::iff(Formula::iff(Formula::iff(p, q), r), s);
+
+        let mut id_gen = ClauseIdGen::new();
+        let leaf_source = ClauseSource::Input {
+            name: "pel12_ax".to_string(),
+            role: "axiom".to_string(),
+        };
+        let (provenance, clauses) = clausify_with_provenance(
+            &formula,
+            &mut syms,
+            &mut id_gen,
+            "pel12_ax",
+            leaf_source,
+            None,
+        );
+
+        // Verify that introduced definition steps exist in provenance
+        let def_steps: Vec<_> = provenance
+            .iter()
+            .filter(|c| matches!(c.source, ClauseSource::Introduced { .. }))
+            .collect();
+        assert!(
+            !def_steps.is_empty(),
+            "expected at least one definition step from biconditional renaming"
+        );
+
+        // Verify all clauses have valid cnf_transformation inferences citing skolem or def IDs
+        let def_ids: std::collections::HashSet<_> = def_steps.iter().map(|c| c.id).collect();
+        for c in &clauses {
+            let ClauseSource::Inference { rule, parents } = &c.source else {
+                panic!("expected Inference source");
+            };
+            assert_eq!(*rule, "cnf_transformation");
+            assert!(
+                !parents.is_empty(),
+                "each clause must cite at least one parent"
+            );
+            // If the clause mentions a definition predicate, it must cite that definition
+            let mentions_def = c.literals.iter().any(
+                |lit| matches!(lit.atom, Atom::Pred(s, _) if syms.resolve(s).starts_with("def_")),
+            );
+            if mentions_def {
+                assert!(
+                    parents.iter().any(|p| def_ids.contains(p)),
+                    "clause mentioning definition predicate must cite the definition step"
+                );
             }
         }
     }

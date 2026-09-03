@@ -10,11 +10,296 @@
 //!
 //! In first-order logic, the definition predicate takes the free variables
 //! of the named subformula as arguments, ensuring correctness.
+//!
+//! This module also provides:
+//! - Polarity tracking ([`Polarity`]) for generating directional half-definitions
+//!   (Plaisted-Greenbaum) or full biconditionals.
+//! - Clause count estimation ([`estimate_clause_count`]).
+//! - Configurable thresholding ([`DEFAULT_RENAMING_THRESHOLD`]).
+//! - Bottom-up renaming of complex equivalences ([`rename_complex_equivalences`])
+//!   to eliminate $2^k$ exponential blowup on formulas with nested biconditionals.
 
 use std::collections::BTreeSet;
 
 use mrs_core::term::VarId;
 use mrs_core::{Atom, Formula, SymbolTable, Term};
+
+/// Polarity of a subformula occurrence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Polarity {
+    /// Positive polarity (+): under an even number of negations.
+    Positive,
+    /// Negative polarity (-): under an odd number of negations.
+    Negative,
+    /// Both polarities (0): under equivalence or XOR.
+    Both,
+}
+
+impl Polarity {
+    /// Invert polarity (under negation or LHS of implication).
+    #[inline]
+    #[must_use]
+    pub fn invert(self) -> Self {
+        match self {
+            Polarity::Positive => Polarity::Negative,
+            Polarity::Negative => Polarity::Positive,
+            Polarity::Both => Polarity::Both,
+        }
+    }
+}
+
+/// An introduced definition representing `∀X_1...X_n. (head <=> rhs)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntroducedDefinition {
+    /// The fresh definition predicate atom: `def_i(X_1, ..., X_n)`
+    pub head: Atom,
+    /// The right-hand side formula defined by the head
+    pub rhs: Formula,
+    /// Polarity of the occurrence(s) being defined
+    pub polarity: Polarity,
+}
+
+/// Default renaming threshold: disjunctions with estimated distributive clause count
+/// greater than this threshold will introduce Tseitin definitions.
+pub const DEFAULT_RENAMING_THRESHOLD: usize = 8;
+
+/// Estimates the number of clauses produced by distributive CNF conversion of `formula`.
+#[must_use]
+pub fn estimate_clause_count(formula: &Formula) -> usize {
+    match formula {
+        Formula::And(cs) => cs
+            .iter()
+            .map(estimate_clause_count)
+            .fold(0usize, |acc, c| acc.saturating_add(c)),
+        Formula::Or(ds) => ds
+            .iter()
+            .map(estimate_clause_count)
+            .fold(1usize, |acc, d| acc.saturating_mul(d)),
+        Formula::Atom(_) | Formula::True | Formula::False => 1,
+        Formula::Neg(inner) => estimate_neg_clause_count(inner),
+        Formula::Implies(a, b) => {
+            let na = estimate_neg_clause_count(a);
+            let nb = estimate_clause_count(b);
+            na.saturating_mul(nb)
+        }
+        Formula::Iff(a, b) => {
+            let c1 = estimate_neg_clause_count(a).saturating_mul(estimate_clause_count(b));
+            let c2 = estimate_clause_count(a).saturating_mul(estimate_neg_clause_count(b));
+            c1.saturating_add(c2)
+        }
+        Formula::Forall(_, body) | Formula::Exists(_, body) => estimate_clause_count(body),
+    }
+}
+
+/// Estimates the number of clauses produced by distributive CNF conversion of `¬formula`.
+#[must_use]
+pub fn estimate_neg_clause_count(formula: &Formula) -> usize {
+    match formula {
+        Formula::And(cs) => cs
+            .iter()
+            .map(estimate_neg_clause_count)
+            .fold(1usize, |acc, c| acc.saturating_mul(c)),
+        Formula::Or(ds) => ds
+            .iter()
+            .map(estimate_neg_clause_count)
+            .fold(0usize, |acc, d| acc.saturating_add(d)),
+        Formula::Atom(_) | Formula::True | Formula::False => 1,
+        Formula::Neg(inner) => estimate_clause_count(inner),
+        Formula::Implies(a, b) => {
+            let ca = estimate_clause_count(a);
+            let nb = estimate_neg_clause_count(b);
+            ca.saturating_add(nb)
+        }
+        Formula::Iff(a, b) => {
+            let c1 = estimate_clause_count(a).saturating_mul(estimate_clause_count(b));
+            let c2 = estimate_neg_clause_count(a).saturating_mul(estimate_neg_clause_count(b));
+            c1.saturating_add(c2)
+        }
+        Formula::Forall(_, body) | Formula::Exists(_, body) => estimate_neg_clause_count(body),
+    }
+}
+
+fn estimate_clause_count_or(disjuncts: &[Formula]) -> usize {
+    disjuncts
+        .iter()
+        .map(estimate_clause_count)
+        .fold(1usize, |acc, d| acc.saturating_mul(d))
+}
+
+/// Builds the formula whose clauses are required by an introduced definition
+/// according to its polarity (Plaisted-Greenbaum directional definitions).
+///
+/// - `Polarity::Positive`: emits `~def | rhs` (satisfies `def => rhs`).
+/// - `Polarity::Negative`: emits `~rhs | def` (satisfies `rhs => def`).
+/// - `Polarity::Both`: emits `def <=> rhs`.
+#[must_use]
+pub fn definition_clauses_formula(head: &Atom, rhs: &Formula, polarity: Polarity) -> Formula {
+    let head_formula = Formula::atom(head.clone());
+    match polarity {
+        Polarity::Positive => Formula::or(vec![Formula::neg(head_formula), rhs.clone()]),
+        Polarity::Negative => Formula::or(vec![Formula::neg(rhs.clone()), head_formula]),
+        Polarity::Both => Formula::iff(head_formula, rhs.clone()),
+    }
+}
+
+/// Helper to check if a formula is a literal (atom, negated atom, true, or false).
+#[must_use]
+pub fn is_literal_formula(formula: &Formula) -> bool {
+    match formula {
+        Formula::Atom(_) | Formula::True | Formula::False => true,
+        Formula::Neg(inner) => matches!(inner.as_ref(), Formula::Atom(_)),
+        _ => false,
+    }
+}
+
+/// Checks if a formula contains an equivalence anywhere in its subformulas.
+#[must_use]
+pub fn has_iff(formula: &Formula) -> bool {
+    match formula {
+        Formula::Iff(_, _) => true,
+        Formula::Neg(inner) | Formula::Forall(_, inner) | Formula::Exists(_, inner) => {
+            has_iff(inner)
+        }
+        Formula::And(parts) | Formula::Or(parts) => parts.iter().any(has_iff),
+        Formula::Implies(a, b) => has_iff(a) || has_iff(b),
+        Formula::Atom(_) | Formula::True | Formula::False => false,
+    }
+}
+
+/// Checks if a formula contains quantifiers anywhere in its subformulas.
+#[must_use]
+pub fn has_quantifiers(formula: &Formula) -> bool {
+    match formula {
+        Formula::Forall(_, _) | Formula::Exists(_, _) => true,
+        Formula::Neg(inner) => has_quantifiers(inner),
+        Formula::And(parts) | Formula::Or(parts) => parts.iter().any(has_quantifiers),
+        Formula::Implies(a, b) | Formula::Iff(a, b) => has_quantifiers(a) || has_quantifiers(b),
+        Formula::Atom(_) | Formula::True | Formula::False => false,
+    }
+}
+
+fn needs_biconditional_naming(f: &Formula, other: &Formula, threshold: usize) -> bool {
+    if is_literal_formula(f) {
+        return false;
+    }
+    if has_iff(f) || has_quantifiers(f) || !is_literal_formula(other) {
+        return true;
+    }
+    estimate_clause_count(&Formula::iff(f.clone(), other.clone())) > threshold
+}
+
+/// Traverses `formula` and renames complex subformulas under `Formula::Iff` (biconditionals)
+/// using fresh definition predicates. This eliminates exponential blowup on formulas with
+/// nested or complex equivalences (such as `(((A <=> B) <=> C) <=> D)`).
+///
+/// Returns the preprocessed formula (where complex equivalence arguments have been replaced
+/// by atomic definition predicates) and a list of introduced definitions.
+pub fn rename_complex_equivalences(
+    formula: &Formula,
+    symbols: &mut SymbolTable,
+    prefix: &str,
+    threshold: usize,
+) -> (Formula, Vec<IntroducedDefinition>) {
+    let mut ctx = BicondCtx {
+        symbols,
+        prefix: prefix.to_string(),
+        counter: 0,
+        definitions: Vec::new(),
+    };
+    let renamed = ctx.traverse(formula, threshold);
+    (renamed, ctx.definitions)
+}
+
+struct BicondCtx<'a> {
+    symbols: &'a mut SymbolTable,
+    prefix: String,
+    counter: usize,
+    definitions: Vec<IntroducedDefinition>,
+}
+
+impl BicondCtx<'_> {
+    fn traverse(&mut self, formula: &Formula, threshold: usize) -> Formula {
+        match formula {
+            Formula::Atom(_) | Formula::True | Formula::False => formula.clone(),
+            Formula::Neg(inner) => {
+                let inner_renamed = self.traverse(inner, threshold);
+                Formula::neg(inner_renamed)
+            }
+            Formula::And(cs) => {
+                let cs_renamed = cs.iter().map(|c| self.traverse(c, threshold)).collect();
+                Formula::And(cs_renamed)
+            }
+            Formula::Or(ds) => {
+                let ds_renamed = ds.iter().map(|d| self.traverse(d, threshold)).collect();
+                Formula::Or(ds_renamed)
+            }
+            Formula::Implies(a, b) => {
+                let a_renamed = self.traverse(a, threshold);
+                let b_renamed = self.traverse(b, threshold);
+                Formula::implies(a_renamed, b_renamed)
+            }
+            Formula::Forall(v, body) => {
+                let body_renamed = self.traverse(body, threshold);
+                Formula::forall(*v, body_renamed)
+            }
+            Formula::Exists(v, body) => {
+                let body_renamed = self.traverse(body, threshold);
+                Formula::exists(*v, body_renamed)
+            }
+            Formula::Iff(a, b) => {
+                let a_renamed = self.traverse(a, threshold);
+                let b_renamed = self.traverse(b, threshold);
+
+                let a_needs = needs_biconditional_naming(&a_renamed, &b_renamed, threshold);
+                let b_needs = needs_biconditional_naming(&b_renamed, &a_renamed, threshold);
+
+                let a_final = if a_needs {
+                    self.introduce_definition(a_renamed, Polarity::Both)
+                } else {
+                    a_renamed
+                };
+
+                let b_final = if b_needs {
+                    self.introduce_definition(b_renamed, Polarity::Both)
+                } else {
+                    b_renamed
+                };
+
+                Formula::iff(a_final, b_final)
+            }
+        }
+    }
+
+    fn introduce_definition(&mut self, formula: Formula, polarity: Polarity) -> Formula {
+        let mut free_vars: Vec<VarId> = formula.free_vars().into_iter().collect();
+        free_vars.sort_unstable();
+
+        let sanitized_prefix: String = self
+            .prefix
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let name = format!("def_{}_{}", sanitized_prefix, self.counter);
+        self.counter += 1;
+        let sym = self.symbols.intern(&name);
+        let args: Vec<Term> = free_vars.iter().map(|&v| Term::var(v)).collect();
+        let def_atom = Atom::pred(sym, args);
+
+        self.definitions.push(IntroducedDefinition {
+            head: def_atom.clone(),
+            rhs: formula,
+            polarity,
+        });
+
+        Formula::atom(def_atom)
+    }
+}
 
 /// Converts a quantifier-free NNF formula to CNF using definitional naming.
 ///
@@ -34,32 +319,28 @@ pub fn to_cnf_definitional(formula: &Formula, symbols: &mut SymbolTable, prefix:
 
 /// Like [`to_cnf_definitional`], but also returns the introduced definitions
 /// (each fresh predicate atom together with the conjuncts it names).
-///
-/// A proof that uses one of the resulting clauses needs to justify the
-/// fresh `def_...` predicate's meaning somehow: citing only the pre-CNF
-/// parent formula as `inference(cnf_transformation, [status(thm)], [...])`
-/// does not work, because that parent formula never mentions the fresh
-/// symbol at all, so no ATP can prove the child follows from it alone
-/// (confirmed against a real GDV build: it reports a genuine
-/// `CounterSatisfiable` countermodel, not just a timeout). The fix mirrors
-/// the "introduced(definition)" convention used by E/Vampire (see
-/// `mrs-proover`'s `checks::introduced_definition` module, which already
-/// has to recognize both of their conventions when verifying *other*
-/// systems' proofs): the caller should emit each definition's full
-/// biconditional (`def_atom <=> (conjunct1 & ... & conjunctK)`) as its own
-/// `introduced(definition)` step with no parents (sound by construction,
-/// since the symbol is fresh — a conservative extension), then cite that
-/// step as an *additional* parent for every final clause that actually
-/// mentions the definition's predicate symbol.
 pub fn to_cnf_definitional_with_defs(
     formula: &Formula,
     symbols: &mut SymbolTable,
     prefix: &str,
 ) -> (Formula, Vec<(Atom, Vec<Formula>)>) {
+    to_cnf_definitional_with_defs_thresh(formula, symbols, prefix, 1)
+}
+
+/// Like [`to_cnf_definitional_with_defs`], but with a custom threshold $\rho$.
+/// Disjunctions with estimated distributive clause count $\le \rho$ are distributed
+/// directly rather than introducing Tseitin definitions.
+pub fn to_cnf_definitional_with_defs_thresh(
+    formula: &Formula,
+    symbols: &mut SymbolTable,
+    prefix: &str,
+    threshold: usize,
+) -> (Formula, Vec<(Atom, Vec<Formula>)>) {
     let mut ctx = DefCtx {
         symbols,
         prefix: prefix.to_string(),
         counter: 0,
+        threshold,
         definitions: Vec::new(),
     };
 
@@ -79,8 +360,10 @@ pub fn to_cnf_definitional_with_defs(
         }
     }
 
-    // Add the renamed formula's conjuncts
-    match renamed {
+    // If threshold > 1, renamed may still contain some small And-under-Or
+    // disjunctions that were intentionally kept. Convert to pure CNF via distribution.
+    let cnf_renamed = crate::cnf::to_cnf(&renamed);
+    match cnf_renamed {
         Formula::And(cs) => all_conjuncts.extend(cs),
         other => all_conjuncts.push(other),
     }
@@ -98,6 +381,7 @@ struct DefCtx<'a> {
     symbols: &'a mut SymbolTable,
     prefix: String,
     counter: usize,
+    threshold: usize,
     /// Collected definitions: (definition_atom, conjuncts_of_named_formula)
     definitions: Vec<(Atom, Vec<Formula>)>,
 }
@@ -119,6 +403,13 @@ impl DefCtx<'_> {
                 let has_and = children.iter().any(|d| matches!(d, Formula::And(_)));
                 if !has_and {
                     return Formula::Or(children);
+                }
+
+                if self.threshold > 1 {
+                    let est = estimate_clause_count_or(&children);
+                    if est <= self.threshold {
+                        return Formula::Or(children);
+                    }
                 }
 
                 // Name each And child, leave others unchanged
@@ -401,6 +692,151 @@ mod tests {
         assert!(
             display.contains("def_def_cond_conseq_axiom_3____17___1__0"),
             "Should contain sanitized definition name, got: {display}"
+        );
+    }
+
+    #[test]
+    fn threshold_avoids_unnecessary_definitions() {
+        let mut syms = SymbolTable::new();
+        // p ∨ (q ∧ r): distributive CNF gives 2 clauses: (p ∨ q) ∧ (p ∨ r).
+        let f = Formula::or(vec![
+            atom(&mut syms, "p"),
+            Formula::and(vec![atom(&mut syms, "q"), atom(&mut syms, "r")]),
+        ]);
+
+        // With threshold = 1: names (q ∧ r) -> 1 definition, 3 clauses
+        let (cnf_th1, defs_th1) = to_cnf_definitional_with_defs_thresh(&f, &mut syms, "t", 1);
+        assert_eq!(defs_th1.len(), 1);
+        if let Formula::And(cs) = &cnf_th1 {
+            assert_eq!(cs.len(), 3);
+        } else {
+            panic!("Expected And, got: {}", fmt(&cnf_th1, &syms));
+        }
+
+        // With threshold = 8: est_clause_count is 2 <= 8 -> 0 definitions, 2 clauses directly distributed
+        let (cnf_th8, defs_th8) = to_cnf_definitional_with_defs_thresh(&f, &mut syms, "t", 8);
+        assert_eq!(defs_th8.len(), 0);
+        if let Formula::And(cs) = &cnf_th8 {
+            assert_eq!(cs.len(), 2);
+        } else {
+            panic!("Expected And, got: {}", fmt(&cnf_th8, &syms));
+        }
+    }
+
+    #[test]
+    fn threshold_still_names_when_exceeded() {
+        let mut syms = SymbolTable::new();
+        // (a ∧ b ∧ c) ∨ (d ∧ e ∧ f): distributive CNF produces 3 * 3 = 9 clauses.
+        let f = Formula::or(vec![
+            Formula::and(vec![
+                atom(&mut syms, "a"),
+                atom(&mut syms, "b"),
+                atom(&mut syms, "c"),
+            ]),
+            Formula::and(vec![
+                atom(&mut syms, "d"),
+                atom(&mut syms, "e"),
+                atom(&mut syms, "f"),
+            ]),
+        ]);
+
+        // With threshold = 8: 9 > 8 -> names both conjunctions
+        let (cnf, defs) = to_cnf_definitional_with_defs_thresh(&f, &mut syms, "t", 8);
+        assert_eq!(defs.len(), 2);
+        // Each def gives 3 clauses, plus main def0 ∨ def1 = 7 clauses
+        if let Formula::And(cs) = &cnf {
+            assert_eq!(cs.len(), 7);
+        } else {
+            panic!("Expected And, got: {}", fmt(&cnf, &syms));
+        }
+    }
+
+    #[test]
+    fn rename_complex_equivalences_prevents_exponential_blowup() {
+        let mut syms = SymbolTable::new();
+        // Construct a chain of 10 nested biconditionals:
+        // p0 <=> (p1 <=> (p2 <=> ... <=> p10))
+        let mut f = atom(&mut syms, "p10");
+        for i in (0..10).rev() {
+            let p_i = atom(&mut syms, &format!("p{i}"));
+            f = Formula::iff(p_i, f);
+        }
+
+        // Without renaming, to_nnf on 10 nested biconditionals would blow up to 2^10 = 1024 leaves.
+        // With renaming:
+        let (renamed, defs) =
+            rename_complex_equivalences(&f, &mut syms, "t", DEFAULT_RENAMING_THRESHOLD);
+        // Exactly 9 definitions introduced (one for each nested Iff rhs)
+        assert_eq!(defs.len(), 9);
+        // Each definition has Polarity::Both
+        for def in &defs {
+            assert_eq!(def.polarity, Polarity::Both);
+        }
+
+        // In the renamed formula, no nested Iff exists
+        if let Formula::Iff(_, right) = &renamed {
+            assert!(
+                matches!(right.as_ref(), Formula::Atom(_)),
+                "Nested Iff was successfully replaced by atom"
+            );
+        } else {
+            panic!("Expected Iff, got: {}", fmt(&renamed, &syms));
+        }
+    }
+
+    #[test]
+    fn polarity_directional_formulas() {
+        let mut syms = SymbolTable::new();
+        let head = Atom::prop(syms.intern("def0"));
+        let rhs = Formula::and(vec![atom(&mut syms, "p"), atom(&mut syms, "q")]);
+
+        // Positive polarity: ~def0 | (p & q)
+        let pos = definition_clauses_formula(&head, &rhs, Polarity::Positive);
+        assert_eq!(fmt(&pos, &syms), "(~(def0) | (p & q))");
+
+        // Negative polarity: ~(p & q) | def0
+        let neg = definition_clauses_formula(&head, &rhs, Polarity::Negative);
+        assert_eq!(fmt(&neg, &syms), "(~((p & q)) | def0)");
+
+        // Both polarities: def0 <=> (p & q)
+        let both = definition_clauses_formula(&head, &rhs, Polarity::Both);
+        assert_eq!(fmt(&both, &syms), "(def0 <=> (p & q))");
+    }
+
+    #[test]
+    fn estimate_clause_count_accuracy() {
+        let mut syms = SymbolTable::new();
+        let p = atom(&mut syms, "p");
+        let q = atom(&mut syms, "q");
+        let r = atom(&mut syms, "r");
+
+        // Single literal -> 1
+        assert_eq!(estimate_clause_count(&p), 1);
+        // p & q -> 1 + 1 = 2
+        assert_eq!(
+            estimate_clause_count(&Formula::and(vec![p.clone(), q.clone()])),
+            2
+        );
+        // p | q -> 1 * 1 = 1
+        assert_eq!(
+            estimate_clause_count(&Formula::or(vec![p.clone(), q.clone()])),
+            1
+        );
+        // (p & q) | r -> 2 * 1 = 2
+        let p_and_q = Formula::and(vec![p.clone(), q.clone()]);
+        assert_eq!(
+            estimate_clause_count(&Formula::or(vec![p_and_q.clone(), r.clone()])),
+            2
+        );
+        // (p & q) | (r & s) -> 2 * 2 = 4
+        assert_eq!(
+            estimate_clause_count(&Formula::or(vec![p_and_q.clone(), p_and_q.clone()])),
+            4
+        );
+        // p <=> q -> (~p | q) & (p | ~q) -> 1 + 1 = 2
+        assert_eq!(
+            estimate_clause_count(&Formula::iff(p.clone(), q.clone())),
+            2
         );
     }
 }
