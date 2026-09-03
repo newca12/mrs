@@ -16,7 +16,7 @@ use mrs_core::clause::ClauseId;
 use mrs_core::symbol::SymbolId;
 use mrs_core::term_bank::{IdAtom, IdClause, TermBank, TermId};
 
-use crate::fvi::FeatureVector;
+use crate::fvi::{FeatureVector, FeatureVectorTree};
 
 /// Key for the literal index: a predicate symbol with a polarity.
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Debug)]
@@ -34,8 +34,10 @@ struct LitKey {
 pub struct LiteralIndex {
     /// `IdClause`s stored in the index.
     clauses: HashMap<ClauseId, IdClause>,
-    /// Feature vectors for stored clauses (used for subsumption filtering).
-    fvs: Vec<(ClauseId, FeatureVector)>,
+    /// Feature vector tree for stored clauses (hierarchical Schulz 2002 subsumption trie).
+    fvt: FeatureVectorTree,
+    /// Maps clause ID to its feature vector for fast O(1) removal.
+    fv_map: HashMap<ClauseId, FeatureVector>,
     /// Maps (predicate, polarity) -> STree of clause IDs.
     pred_index: HashMap<LitKey, crate::stree::STreeId<ClauseId>>,
     /// Clause IDs that contain at least one positive equality.
@@ -53,7 +55,8 @@ impl LiteralIndex {
     pub fn new() -> Self {
         LiteralIndex {
             clauses: HashMap::default(),
-            fvs: Vec::new(),
+            fvt: FeatureVectorTree::new(),
+            fv_map: HashMap::default(),
             pred_index: HashMap::default(),
             pos_eq_clauses: HashSet::default(),
             neg_eq_clauses: HashSet::default(),
@@ -65,8 +68,9 @@ impl LiteralIndex {
     /// Inserts an `IdClause` into the index.
     pub fn insert(&mut self, clause: IdClause, bank: &TermBank) {
         let id = clause.id;
-        self.fvs
-            .push((id, FeatureVector::from_id_clause(&clause, bank)));
+        let fv = FeatureVector::from_id_clause(&clause, bank);
+        self.fvt.insert(id, fv);
+        self.fv_map.insert(id, fv);
 
         for lit in &clause.literals {
             match &lit.atom {
@@ -110,8 +114,8 @@ impl LiteralIndex {
 
     /// Removes a clause from the index by ID. Returns the removed clause if found.
     pub fn remove(&mut self, id: ClauseId, bank: &TermBank) -> Option<IdClause> {
-        if let Some(pos) = self.fvs.iter().position(|(i, _)| *i == id) {
-            self.fvs.swap_remove(pos);
+        if let Some(fv) = self.fv_map.remove(&id) {
+            self.fvt.remove(id, &fv);
         }
         if let Some(clause) = self.clauses.remove(&id) {
             for lit in &clause.literals {
@@ -198,11 +202,11 @@ impl LiteralIndex {
 
     /// Returns clauses that could potentially subsume the target (cloned).
     pub fn get_subsumption_candidates(&self, target_fv: &FeatureVector) -> Vec<IdClause> {
-        let mut res: Vec<IdClause> = self
-            .fvs
-            .iter()
-            .filter(|(_, fv)| fv.can_subsume(target_fv))
-            .filter_map(|(id, _)| self.clauses.get(id).cloned())
+        let mut candidate_ids = Vec::new();
+        self.fvt.query_subsumers(target_fv, &mut candidate_ids);
+        let mut res: Vec<IdClause> = candidate_ids
+            .into_iter()
+            .filter_map(|id| self.clauses.get(&id).cloned())
             .collect();
         res.sort_unstable_by_key(|c| c.id);
         res
@@ -210,11 +214,11 @@ impl LiteralIndex {
 
     /// Returns clauses that could potentially BE subsumed by the given clause (cloned).
     pub fn get_subsumed_candidates(&self, subsumer_fv: &FeatureVector) -> Vec<IdClause> {
-        let mut res: Vec<IdClause> = self
-            .fvs
-            .iter()
-            .filter(|(_, fv)| subsumer_fv.can_subsume(fv))
-            .filter_map(|(id, _)| self.clauses.get(id).cloned())
+        let mut candidate_ids = Vec::new();
+        self.fvt.query_subsumed(subsumer_fv, &mut candidate_ids);
+        let mut res: Vec<IdClause> = candidate_ids
+            .into_iter()
+            .filter_map(|id| self.clauses.get(&id).cloned())
             .collect();
         res.sort_unstable_by_key(|c| c.id);
         res
@@ -225,11 +229,12 @@ impl LiteralIndex {
         &self,
         target_fv: &FeatureVector,
     ) -> Vec<IdClause> {
-        let mut res: Vec<IdClause> = self
-            .fvs
-            .iter()
-            .filter(|(_, fv)| fv.can_subsumption_resolve(target_fv))
-            .filter_map(|(id, _)| self.clauses.get(id).cloned())
+        let mut candidate_ids = Vec::new();
+        self.fvt
+            .query_subsumption_resolution(target_fv, &mut candidate_ids);
+        let mut res: Vec<IdClause> = candidate_ids
+            .into_iter()
+            .filter_map(|id| self.clauses.get(&id).cloned())
             .collect();
         res.sort_unstable_by_key(|c| c.id);
         res
@@ -240,11 +245,12 @@ impl LiteralIndex {
         &self,
         simplifier_fv: &FeatureVector,
     ) -> Vec<IdClause> {
-        let mut res: Vec<IdClause> = self
-            .fvs
-            .iter()
-            .filter(|(_, fv)| simplifier_fv.can_subsumption_resolve(fv))
-            .filter_map(|(id, _)| self.clauses.get(id).cloned())
+        let mut candidate_ids = Vec::new();
+        self.fvt
+            .query_backward_subsumption_resolution(simplifier_fv, &mut candidate_ids);
+        let mut res: Vec<IdClause> = candidate_ids
+            .into_iter()
+            .filter_map(|id| self.clauses.get(&id).cloned())
             .collect();
         res.sort_unstable_by_key(|c| c.id);
         res
@@ -303,7 +309,8 @@ impl LiteralIndex {
         self.neg_eq_clauses.clear();
         self.pos_eq_lhs_index = crate::stree::STreeId::new();
         self.subterm_index = crate::stree::STreeId::new();
-        self.fvs.clear();
+        self.fvt.clear();
+        self.fv_map.clear();
         self.clauses.drain().map(|(_, c)| c).collect()
     }
 
@@ -436,5 +443,72 @@ mod tests {
         let sources = index.get_superposition_sources(f_a, &bank);
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].id, ClauseId(1));
+    }
+
+    #[test]
+    fn test_literal_index_subsumption_candidates() {
+        let mut index = LiteralIndex::new();
+        let mut bank = TermBank::new();
+        let mut syms = SymbolTable::new();
+
+        let p_sym = syms.intern("p");
+        let q_sym = syms.intern("q");
+        let a_sym = syms.intern("a");
+        let b_sym = syms.intern("b");
+
+        let a = bank.intern_app(a_sym, smallvec![]);
+        let b = bank.intern_app(b_sym, smallvec![]);
+
+        // C1: p(a)  (1 literal, 1 pos, 0 neg)
+        let c1 = IdClause::new(
+            ClauseId(1),
+            vec![IdLiteral {
+                positive: true,
+                atom: IdAtom::Pred(p_sym, smallvec![a]),
+            }],
+            ClauseSource::Inference {
+                rule: "input",
+                parents: vec![].into(),
+            },
+        );
+
+        // C2: p(a) | q(b)  (2 literals, 2 pos, 0 neg)
+        let c2 = IdClause::new(
+            ClauseId(2),
+            vec![
+                IdLiteral {
+                    positive: true,
+                    atom: IdAtom::Pred(p_sym, smallvec![a]),
+                },
+                IdLiteral {
+                    positive: true,
+                    atom: IdAtom::Pred(q_sym, smallvec![b]),
+                },
+            ],
+            ClauseSource::Inference {
+                rule: "input",
+                parents: vec![].into(),
+            },
+        );
+
+        index.insert(c1.clone(), &bank);
+        index.insert(c2.clone(), &bank);
+
+        let c1_fv = FeatureVector::from_id_clause(&c1, &bank);
+        let c2_fv = FeatureVector::from_id_clause(&c2, &bank);
+
+        // C1 can subsume C2:
+        // When checking subsumers of C2, C1 should be found:
+        let subsumers_of_c2 = index.get_subsumption_candidates(&c2_fv);
+        assert!(subsumers_of_c2.iter().any(|c| c.id == ClauseId(1)));
+
+        // When checking what C1 can subsume, C2 should be found:
+        let subsumed_by_c1 = index.get_subsumed_candidates(&c1_fv);
+        assert!(subsumed_by_c1.iter().any(|c| c.id == ClauseId(2)));
+
+        // Removal test
+        index.remove(ClauseId(1), &bank);
+        let subsumers_after = index.get_subsumption_candidates(&c2_fv);
+        assert!(!subsumers_after.iter().any(|c| c.id == ClauseId(1)));
     }
 }
