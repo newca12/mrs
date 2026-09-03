@@ -318,6 +318,8 @@ struct AtpStep {
     esa: bool,
     /// Inference-rule name, for diagnostic messages only.
     rule: Option<String>,
+    /// Whether the proof DAG contains AVATAR splitting steps (which may have incomplete branch exports).
+    has_avatar_context: bool,
 }
 
 /// Outcome of preparing a step in Pass 1.
@@ -2240,6 +2242,13 @@ fn prepare_atp_step<'p>(
         parents_len: node.parents.len(),
         esa,
         rule: node.inference_rule.map(str::to_owned),
+        has_avatar_context: dag.nodes.iter().any(|n| {
+            if let Some(r) = n.inference_rule {
+                r.starts_with("avatar_") || r == "split_component"
+            } else {
+                false
+            }
+        }),
     })
 }
 
@@ -2343,10 +2352,10 @@ fn finish_atp(
                         | "equality_resolution"
                 )
             );
-            if is_core_inference {
+            if is_core_inference && step.has_avatar_context {
                 StepOutcome::Unknown(
-                    "core inference step refuted: likely a proof-export or AVATAR splitting gap rather than a soundness bug"
-                        .into()
+                    "core inference step refuted in AVATAR context: likely an incomplete proof-export or splitting gap rather than a soundness bug"
+                        .into(),
                 )
             } else {
                 StepOutcome::Unsound(format!(

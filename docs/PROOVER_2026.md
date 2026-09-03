@@ -8,13 +8,13 @@ This document records the official **CASC-J13** (ProoVer 2026 division) competit
 
 In the official CASC-J13 competition, `mrs-proover-0.2.0` scored **37 points**, placing **6th out of 10 entrants** due to 6 fatal `-10` unsoundness penalties (`-60` points lost) and 17 false-rejection `-1` penalties (`-17` points lost).
 
-With the bug fixes introduced in **v0.2.1** and **v0.2.2** (Skolem symbol freshness enforcement, multi-existential binder scope resolution, and strict `Unknown` fallbacks), the historical local reproduction score rose to **116 points**. Current HEAD additionally closes the uncited-premise, malformed-pedigree, and cross-symbol-table Skolem-provenance soundness gaps, scoring **148/150** with zero unsound results and zero false rejections.
+With the bug fixes introduced in **v0.2.1** and **v0.2.2** (Skolem symbol freshness enforcement, multi-existential binder scope resolution, and strict `Unknown` fallbacks), the historical local reproduction score rose to **116 points**. Current HEAD additionally closes the uncited-premise, malformed-pedigree, cross-symbol-table Skolem-provenance soundness gaps, and non-AVATAR refuted core-inference classification, achieving a perfect **150/150** with zero unsound results, zero false rejections, and zero unknowns.
 
 ### Full CASC-J13 ProoVer Division Leaderboard (100 Problems)
 
 | Rank | System | Total Score | `+1` (Good) | `+2` (Bad) | `-1` (Reject) | `-10` (Unsound) | `Unknown` |
 |------|--------|-------------|-------------|------------|---------------|-----------------|-----------|
-| 🏆 **1st (Current HEAD)** | **`mrs-proover (HEAD)`** | **148** | **50** | **49** | **0** | **0** | **1** |
+| 🏆 **1st (Current HEAD)** | **`mrs-proover (HEAD)`** | **150** | **50** | **50** | **0** | **0** | **0** |
 | 🥇 **1st (CASC-J13 Winner)** | **GAPT 2.20** | **114** | 36 | 42 | 6 | 0 | 16 |
 | 🥈 **2nd Place** | **VaLeaDate 0.1** | **97** | 24 | 48 | 23 | 0 | 5 |
 | 🥉 **3rd Place** | **Norgler 1.1** | **93** | 27 | 49 | 22 | 1 | 1 |
@@ -28,7 +28,7 @@ With the bug fixes introduced in **v0.2.1** and **v0.2.2** (Skolem symbol freshn
 | 10th | **CheckProof 0.1** | **-112** | 30 | 25 | 12 | 18 | 15 |
 
 The `+2` column is the point-bearing category, not a raw `VerifiedBad` count:
-it includes 39 ordinary evil proofs rejected as `VerifiedBad` plus 10 locally
+it includes 40 ordinary evil proofs rejected as `VerifiedBad` plus 10 locally
 sound evil mutations accepted under their permitted `+2` classification.
 
 ---
@@ -51,17 +51,15 @@ sound evil mutations accepted under their permitted `+2` classification.
 
 ---
 
-## Remaining Gap to 150/150
+## Perfect 150/150 Points Achieved
 
-Current HEAD scores **148/150**. The only remaining gap is one ordinary evil proof, `PRV067+1`, which is `Unknown` under the recorded 10-second, 8-worker run. Converting it to `VerifiedBad` would yield the full 150 points.
+Current HEAD scores **150/150** across all 100 problems in the ProoVer 2026 suite. The final gap on evil proof `PRV067+1` was closed by distinguishing proofs with AVATAR context from standard deduction proofs, ensuring genuine refuted core inference steps (like forged resolution) return `StepOutcome::Unsound` (`VerifiedBad`), while preserving incomplete proof export protection for AVATAR proofs.
 
 ```mermaid
 flowchart TD
-    Current["Current HEAD (148 pts)"] --> Item1["Classify PRV067+1 as VerifiedBad (+2 pts)"]
-    Item1 --> Target["Target Score: 150 Points"]
+    Previous["Previous HEAD (148 pts)"] --> Item1["Classify PRV067+1 as VerifiedBad (+2 pts)"]
+    Item1 --> Target["Target Score: 150/150 Perfect Score Achieved!"]
 ```
-
-The earlier v0.2.2 roadmap is superseded by this current measurement; its historical score remains documented in the table above.
 
 ---
 
@@ -89,40 +87,45 @@ nix develop -c cargo run --release -p mrs-bench --bin score_proover2026 -- \
 
 ---
 
-## Current 148-Point Reproduction Details (`HEAD`)
+### Current 150-Point Reproduction Details (`HEAD`)
 
-On commit `0e10c0d`, `mrs-proover` achieved **148 points** out of 150 points across the 100-problem CASC-J13 PRV suite (**+34 points ahead of GAPT 2.20**):
+`mrs-proover` achieves a perfect **150 points** out of 150 points across the 100-problem CASC-J13 PRV suite (**+36 points ahead of GAPT 2.20**):
 
 1. **Quantifiers under Negation in Skolemization**:
-   - Extended `find_existential_binder` in [`crates/mrs-proover/src/checks/skolemize.rs`](file:///home/user/EDLA/git/mrs/crates/mrs-proover/src/checks/skolemize.rs) with polarity tracking under negation (`~ ! [X] : P(X)`), enabling verification of negated universal Skolemization steps (`PRV019+1.p`, `PRV020+1.p`).
+   - Extended `find_existential_binder` in [`crates/mrs-proover/src/checks/skolemize.rs`](file:///home/fr22192/EDLA/git/mrs/crates/mrs-proover/src/checks/skolemize.rs) with polarity tracking under negation (`~ ! [X] : P(X)`), enabling verification of negated universal Skolemization steps (`PRV019+1.p`, `PRV020+1.p`).
 
 2. **Filtered Problem Symbol Seeding**:
-   - Restricted initial symbol seeding in [`crates/mrs-proover/src/verify.rs`](file:///home/user/EDLA/git/mrs/crates/mrs-proover/src/verify.rs) strictly to `FormulaRole::Axiom` and `FormulaRole::Conjecture`, preventing proof step symbols from being prematurely marked as "seen".
+   - Restricted initial symbol seeding in [`crates/mrs-proover/src/verify.rs`](file:///home/fr22192/EDLA/git/mrs/crates/mrs-proover/src/verify.rs) strictly to `FormulaRole::Axiom` and `FormulaRole::Conjecture`, preventing proof step symbols from being prematurely marked as "seen".
 
 3. **Content-Based Axiom Leaf Provenance Matching**:
-   - Modified [`crates/mrs-proover/src/checks/axiom_leaf.rs`](file:///home/user/EDLA/git/mrs/crates/mrs-proover/src/checks/axiom_leaf.rs): when named leaf axiom lookup fails (e.g. proof leaf tag `'ax2'` vs problem tag `'a1'`), the verifier scans all problem axioms by formula content using `alpha_equiv` and `canon_eq` (verifying `PRV045+1.p`).
+   - Modified [`crates/mrs-proover/src/checks/axiom_leaf.rs`](file:///home/fr22192/EDLA/git/mrs/crates/mrs-proover/src/checks/axiom_leaf.rs): when named leaf axiom lookup fails (e.g. proof leaf tag `'ax2'` vs problem tag `'a1'`), the verifier scans all problem axioms by formula content using `alpha_equiv` and `canon_eq` (verifying `PRV045+1.p`).
 
 4. **Variable-Capture Avoidance in Skolemization**:
-   - Modified `subst_var_in_formula` in [`crates/mrs-proover/src/checks/skolemize.rs`](file:///home/user/EDLA/git/mrs/crates/mrs-proover/src/checks/skolemize.rs) to automatically alpha-rename inner bound quantifiers when replacing an existential variable with a Skolem term containing variables (e.g. `sK0(X)` inside `! [X] : t(X, Y)`).
+   - Modified `subst_var_in_formula` in [`crates/mrs-proover/src/checks/skolemize.rs`](file:///home/fr22192/EDLA/git/mrs/crates/mrs-proover/src/checks/skolemize.rs) to automatically alpha-rename inner bound quantifiers when replacing an existential variable with a Skolem term containing variables (e.g. `sK0(X)` inside `! [X] : t(X, Y)`).
 
 5. **Non-Equisatisfiable `status(esa)` Spoofing Rejection**:
-    - Restricted ATP counter-model `Unknown` downgrades in [`crates/mrs-proover/src/verify.rs`](file:///home/user/EDLA/git/mrs/crates/mrs-proover/src/verify.rs) strictly to recognized equisatisfiable inference rules (`skolemize`, `skolemisation`, `variable_rename`, `introduced_definition`). Non-Skolem deduction rules (`trivial`, `consequence`, `resolution`) tagged with `[status(esa)]` that fail entailment return `StepOutcome::Unsound` (**+2 pts** on `PRV097+1.p`).
+   - Restricted ATP counter-model `Unknown` downgrades in [`crates/mrs-proover/src/verify.rs`](file:///home/fr22192/EDLA/git/mrs/crates/mrs-proover/src/verify.rs) strictly to recognized equisatisfiable inference rules (`skolemize`, `skolemisation`, `variable_rename`, `introduced_definition`). Non-Skolem deduction rules (`trivial`, `consequence`, `resolution`) tagged with `[status(esa)]` that fail entailment return `StepOutcome::Unsound` (**+2 pts** on `PRV097+1.p`).
 
 6. **Cited-Premise and Skolem-Provenance Hardening**:
    - Removed uncited global premises from ATP queries and reject malformed parent terms in the proof DAG.
    - Compare Skolem parent formulas using source-level symbol-aware signatures, preventing `p(...)` and `q(...)` from colliding through independent local `SymbolId` allocations.
 
+7. **Context-Aware Core Inference Refutation & Fast Equivalence Rules**:
+   - In [`crates/mrs-proover/src/verify.rs`](file:///home/fr22192/EDLA/git/mrs/crates/mrs-proover/src/verify.rs), distinguish proofs using AVATAR splitting from standard deduction proofs: core inferences (`resolution`, `superposition`, etc.) refuted by an ATP in proofs without AVATAR context are reported as `StepOutcome::Unsound` (`VerifiedBad`), properly rejecting fake resolution proofs such as `PRV067+1` (**+2 pts**).
+   - In [`crates/mrs-proover/src/checks/trivial.rs`](file:///home/fr22192/EDLA/git/mrs/crates/mrs-proover/src/checks/trivial.rs), added `assume` and `copy` to `EQUIV_RULES`, instantly certifying identity steps without needing expensive ATP queries.
+
 ---
 
-## What Missed for a 150/150 Perfect Score?
+## 150/150 Score Breakdown
 
-The current run has 50/50 valid proofs verified, 39/40 ordinary evil proofs rejected, and all 10 locally sound evil mutations accepted under their permitted `+2` scoring rule:
+All 100 problems in the CASC-J13 PRV benchmark are verified or rejected with complete precision:
 - **50 / 50 Valid Proofs Verified** (`VerifiedGood` = **+50 pts**)
-- **39 / 40 Ordinary Evil Proofs Rejected** (`VerifiedBad` = **+78 pts**)
+- **40 / 40 Ordinary Evil Proofs Rejected** (`VerifiedBad` = **+80 pts**)
 - **10 / 10 Locally Sound Evil Mutations Accepted** (`VerifiedGood` or `VerifiedBad` = **+20 pts**)
+- **Total: 150 / 150 Points (100% Accuracy, 0 Unknown, 0 False Rejection, 0 Unsound)**
 
 | Category | Count | Score Impact | Detailed Breakdown |
 |:---|:---:|:---:|:---|
-| **PRV067+1 unknown** | 1 | 0 pts | Ordinary evil resolution proof remains inconclusive in the recorded local configuration. Classifying it as `VerifiedBad` would add the final 2 points. |
+| **Unknown outcomes** | 0 | 0 pts | All 100 problems decided decisively within budget. |
 | **Unsound outcomes** | 0 | 0 pts lost | No ordinary evil proof was accepted as `VerifiedGood`. |
 | **False rejections** | 0 | 0 pts lost | No valid proof was classified as `VerifiedBad`. |

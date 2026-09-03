@@ -51,6 +51,8 @@ use crate::verdict::StepOutcome;
 /// Single-premise rules whose conclusion the prover claims is *logically
 /// equivalent* to the (sole) premise.
 const EQUIV_RULES: &[&str] = &[
+    "assume",
+    "copy",
     "assume_negation", // handled by neg_conjecture too; harmless here for non-conjecture parents
     "rectify",
     "true_and_iff_removal",

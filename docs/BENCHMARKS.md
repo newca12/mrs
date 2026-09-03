@@ -388,9 +388,27 @@ REFERENCE VIOLATIONS — none detected.
 
 commit 9738467d6d1dc3190f663bea94f4f628d7f1d7a9 (HEAD -> feat/destructive-equality-resolution
 
-[ongoing]
+[done]
 [www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh   --edition casc-30  --systems mrs --divisions feq,fne,epu,eps  --casc-times --jobs 1 --output crates/mrs-bench/results/casc-30-W8J1-$(date +%Y%m%d)
-/DATA/ai/mrs/crates/mrs-bench/results/casc-30
+     Running `target/debug/bench_report /DATA/ai/mrs/crates/mrs-bench/results/casc-30-W8J1-20260902/run.csv`
+CASC-30 Results — 2026-09-03 15:40  (700 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+FEQ            400       104   29.486
+FNE            100        44   35.721
+EPU            100        18   17.805
+EPS            100        43   10.584
+------------------  --------------------
+TOTAL          700       209   25.904
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
 
 [done]
 [www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh   --edition casc-j13  --systems mrs   --divisions feq,fne  --casc-times   --jobs 1   --output crates/mrs-bench/results/casc-j13-W8J1-$(date +%Y%m%d)
