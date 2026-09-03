@@ -422,6 +422,25 @@ impl TermBank {
         }
     }
 
+    /// Collects all non-variable subterms rooted at `term`.
+    pub fn non_variable_subterms(&self, term: TermId) -> Vec<TermId> {
+        let mut subterms = Vec::new();
+        self.collect_non_var_subterms(term, &mut subterms);
+        subterms
+    }
+
+    fn collect_non_var_subterms(&self, term: TermId, out: &mut Vec<TermId>) {
+        match self.get(term) {
+            TermNode::Var(_) => {}
+            TermNode::App(_, args) => {
+                out.push(term);
+                for &arg in args.iter() {
+                    self.collect_non_var_subterms(arg, out);
+                }
+            }
+        }
+    }
+
     /// Converts an interned `TermId` back into a legacy, deeply-allocated `Term`.
     pub fn to_legacy(&self, id: TermId) -> Term {
         match self.get(id) {

@@ -14,7 +14,7 @@ use crate::{HashMap, HashSet};
 
 use mrs_core::clause::ClauseId;
 use mrs_core::symbol::SymbolId;
-use mrs_core::term_bank::{IdAtom, IdClause, TermBank};
+use mrs_core::term_bank::{IdAtom, IdClause, TermBank, TermId};
 
 use crate::fvi::FeatureVector;
 
@@ -42,6 +42,10 @@ pub struct LiteralIndex {
     pos_eq_clauses: HashSet<ClauseId>,
     /// Clause IDs that contain at least one negative equality.
     neg_eq_clauses: HashSet<ClauseId>,
+    /// Index of non-variable positive equality LHS/RHS terms -> clause IDs.
+    pos_eq_lhs_index: crate::stree::STreeId<ClauseId>,
+    /// Index of all non-variable subterms -> clause IDs.
+    subterm_index: crate::stree::STreeId<ClauseId>,
 }
 
 impl LiteralIndex {
@@ -53,6 +57,8 @@ impl LiteralIndex {
             pred_index: HashMap::default(),
             pos_eq_clauses: HashSet::default(),
             neg_eq_clauses: HashSet::default(),
+            pos_eq_lhs_index: crate::stree::STreeId::new(),
+            subterm_index: crate::stree::STreeId::new(),
         }
     }
 
@@ -64,7 +70,7 @@ impl LiteralIndex {
 
         for lit in &clause.literals {
             match &lit.atom {
-                IdAtom::Pred(sym, _args) => {
+                IdAtom::Pred(sym, args) => {
                     self.pred_index
                         .entry(LitKey {
                             pred: *sym,
@@ -72,12 +78,29 @@ impl LiteralIndex {
                         })
                         .or_default()
                         .insert_atom(&lit.atom, bank, id);
+                    for &arg in args {
+                        for subterm in bank.non_variable_subterms(arg) {
+                            self.subterm_index.insert(subterm, bank, id);
+                        }
+                    }
                 }
-                IdAtom::Eq(_, _) => {
+                IdAtom::Eq(l, r) => {
                     if lit.positive {
                         self.pos_eq_clauses.insert(id);
+                        if !matches!(bank.get(*l), mrs_core::term_bank::TermNode::Var(_)) {
+                            self.pos_eq_lhs_index.insert(*l, bank, id);
+                        }
+                        if !matches!(bank.get(*r), mrs_core::term_bank::TermNode::Var(_)) {
+                            self.pos_eq_lhs_index.insert(*r, bank, id);
+                        }
                     } else {
                         self.neg_eq_clauses.insert(id);
+                    }
+                    for subterm in bank.non_variable_subterms(*l) {
+                        self.subterm_index.insert(subterm, bank, id);
+                    }
+                    for subterm in bank.non_variable_subterms(*r) {
+                        self.subterm_index.insert(subterm, bank, id);
                     }
                 }
             }
@@ -93,19 +116,36 @@ impl LiteralIndex {
         if let Some(clause) = self.clauses.remove(&id) {
             for lit in &clause.literals {
                 match &lit.atom {
-                    IdAtom::Pred(sym, _args) => {
+                    IdAtom::Pred(sym, args) => {
                         if let Some(tree) = self.pred_index.get_mut(&LitKey {
                             pred: *sym,
                             positive: lit.positive,
                         }) {
                             tree.remove_atom(&lit.atom, bank, &id);
                         }
+                        for &arg in args {
+                            for subterm in bank.non_variable_subterms(arg) {
+                                self.subterm_index.remove(subterm, bank, &id);
+                            }
+                        }
                     }
-                    IdAtom::Eq(_, _) => {
+                    IdAtom::Eq(l, r) => {
                         if lit.positive {
                             self.pos_eq_clauses.remove(&id);
+                            if !matches!(bank.get(*l), mrs_core::term_bank::TermNode::Var(_)) {
+                                self.pos_eq_lhs_index.remove(*l, bank, &id);
+                            }
+                            if !matches!(bank.get(*r), mrs_core::term_bank::TermNode::Var(_)) {
+                                self.pos_eq_lhs_index.remove(*r, bank, &id);
+                            }
                         } else {
                             self.neg_eq_clauses.remove(&id);
+                        }
+                        for subterm in bank.non_variable_subterms(*l) {
+                            self.subterm_index.remove(subterm, bank, &id);
+                        }
+                        for subterm in bank.non_variable_subterms(*r) {
+                            self.subterm_index.remove(subterm, bank, &id);
                         }
                     }
                 }
@@ -230,11 +270,39 @@ impl LiteralIndex {
         self.clauses.is_empty()
     }
 
+    /// Returns candidate target clauses that contain at least one non-variable subterm
+    /// unifiable with `term` (e.g. for superposition from an equality side `term` into active clauses).
+    pub fn get_superposition_targets(&self, term: TermId, bank: &TermBank) -> Vec<IdClause> {
+        let mut ids = self.subterm_index.get_unifications(term, bank);
+        ids.sort_unstable();
+        ids.dedup();
+        ids.into_iter()
+            .filter_map(|id| self.clauses.get(&id).cloned())
+            .collect()
+    }
+
+    /// Returns candidate equation clauses that contain a positive equality whose LHS or RHS
+    /// is unifiable with `query_subterm` (e.g. for superposition from active positive equalities into `query_subterm`).
+    pub fn get_superposition_sources(
+        &self,
+        query_subterm: TermId,
+        bank: &TermBank,
+    ) -> Vec<IdClause> {
+        let mut ids = self.pos_eq_lhs_index.get_unifications(query_subterm, bank);
+        ids.sort_unstable();
+        ids.dedup();
+        ids.into_iter()
+            .filter_map(|id| self.clauses.get(&id).cloned())
+            .collect()
+    }
+
     /// Drains all clauses from the index, returning them as a Vec.
     pub fn drain(&mut self) -> Vec<IdClause> {
         self.pred_index.clear();
         self.pos_eq_clauses.clear();
         self.neg_eq_clauses.clear();
+        self.pos_eq_lhs_index = crate::stree::STreeId::new();
+        self.subterm_index = crate::stree::STreeId::new();
         self.fvs.clear();
         self.clauses.drain().map(|(_, c)| c).collect()
     }
@@ -314,5 +382,59 @@ mod tests {
         let backward_candidates = index.get_backward_subsumption_resolution_candidates(&c2_fv);
         assert_eq!(backward_candidates.len(), 1);
         assert_eq!(backward_candidates[0].id, ClauseId(1));
+    }
+
+    #[test]
+    fn test_literal_index_superposition() {
+        let mut index = LiteralIndex::new();
+        let mut bank = TermBank::new();
+        let mut syms = SymbolTable::new();
+
+        let f_sym = syms.intern("f");
+        let a_sym = syms.intern("a");
+        let b_sym = syms.intern("b");
+
+        let a = bank.intern_app(a_sym, smallvec![]);
+        let b = bank.intern_app(b_sym, smallvec![]);
+        let f_a = bank.intern_app(f_sym, smallvec![a]);
+
+        // C1: f(a) = b
+        let c1 = IdClause::new(
+            ClauseId(1),
+            vec![IdLiteral {
+                positive: true,
+                atom: IdAtom::Eq(f_a, b),
+            }],
+            ClauseSource::Inference {
+                rule: "input",
+                parents: vec![].into(),
+            },
+        );
+
+        // C2: p(f(a))
+        let p_sym = syms.intern("p");
+        let c2 = IdClause::new(
+            ClauseId(2),
+            vec![IdLiteral {
+                positive: true,
+                atom: IdAtom::Pred(p_sym, smallvec![f_a]),
+            }],
+            ClauseSource::Inference {
+                rule: "input",
+                parents: vec![].into(),
+            },
+        );
+
+        index.insert(c1, &bank);
+        index.insert(c2, &bank);
+
+        // Query targets for f(a) -> should find C2 (and C1)
+        let targets = index.get_superposition_targets(f_a, &bank);
+        assert!(targets.iter().any(|c| c.id == ClauseId(2)));
+
+        // Query sources for f(a) -> should find C1
+        let sources = index.get_superposition_sources(f_a, &bank);
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].id, ClauseId(1));
     }
 }
