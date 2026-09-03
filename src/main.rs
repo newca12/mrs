@@ -213,12 +213,18 @@ fn main() {
             "--trace-bce" => unsafe {
                 std::env::set_var("TRACE_BCE", "1");
             },
+            "--no-instgen" => unsafe {
+                std::env::set_var("MRS_NO_INSTGEN", "1");
+            },
+            "--trace-instgen" => unsafe {
+                std::env::set_var("TRACE_INSTGEN", "1");
+            },
             #[cfg(feature = "proover")]
             "--quiet" => quiet = true,
             _ => {
                 if path.is_some() {
                     eprintln!(
-                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--goal-transform MODE] [--no-bce] [--no-ple] [--self-check] [--stats] [--include-root DIR] <file.p>"
+                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--goal-transform MODE] [--no-bce] [--no-ple] [--no-instgen] [--self-check] [--stats] [--include-root DIR] <file.p>"
                     );
                     process::exit(1);
                 }

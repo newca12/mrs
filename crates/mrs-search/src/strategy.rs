@@ -22,7 +22,7 @@ use mrs_proof::tstp::format_tstp;
 use crate::cwa::try_componentwise_refute;
 use crate::fvo::try_fvo_refutation;
 use crate::given_clause::search;
-use crate::instgen::is_epr;
+use crate::instgen::{is_epr, is_pure_relational_epr, try_instgen_epr};
 use crate::state::SearchState;
 use crate::{
     LiteralSelection, SearchConfig, SearchResult, SelectionStrategy, SharedClauseChain,
@@ -590,6 +590,30 @@ pub fn run_schedule(
         let mut fvo_id_gen = id_gen.clone();
         if let Some(result) =
             try_fvo_refutation(&clauses_owned, provenance, &mut fvo_id_gen, symbols)
+        {
+            return (
+                result,
+                crate::ScheduleReport {
+                    workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                    ..crate::ScheduleReport::default()
+                },
+            );
+        }
+    }
+
+    // InstGen pre-pass for EPR:
+    // For pure relational EPR problems (all terms are variables or constants, no
+    // function symbols with arity >= 1, no equality), the InstGen loop combines
+    // propositional SAT solving (via CaDiCaL) with first-order MGU instantiation.
+    // It decides both Satisfiability (EPS) and Unsatisfiability (EPU) lazily
+    // without combinatorial explosion.
+    if is_problem_epr
+        && std::env::var("MRS_NO_INSTGEN").is_err()
+        && is_pure_relational_epr(&clauses_owned)
+    {
+        let mut instgen_id_gen = id_gen.clone();
+        if let Some(result) =
+            try_instgen_epr(&clauses_owned, provenance, &mut instgen_id_gen, symbols)
         {
             return (
                 result,
