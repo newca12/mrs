@@ -22,7 +22,7 @@ This document provides the exact Git commits, checkout/build instructions, targe
 | 12 | `feat/free-var-skolemization` | `3c66465` | **FNE** (FOF No Equality) | **FEQ** (FOF with Equality) | Free-variable filtered Skolemization to eliminate redundant Skolem arity |
 | 13 | `feat/polarity-definitional-cnf` | `722b669` | **FNE** (FOF No Equality) | **FEQ**, **EPR** | Polarity-aware Plaisted-Greenbaum renaming & linear equivalence CNF |
 | 14 | `integrate/casc-next` (Goal Distance Guidance) | `6f807a7` | **FNE** (FOF No Equality) | **FEQ**, **EPR** | Multi-hop bipartite symbol-clause reachability graph & graded conjecture weight boost |
-| 15 | `integrate/casc-next` (Blocked Clause & Pure Literal Elimination) | `HEAD` | **FNE** (FOF No Equality) | **FEQ**, **EPR** | First-order Blocked Clause Elimination (BCE), Pure Literal Elimination (PLE), and Tautology Elimination in CNF preprocessing |
+| 15 | `integrate/casc-next` (Blocked Clause & Pure Literal Elimination) | `eca8405` | **FNE** (FOF No Equality) | **FEQ**, **EPR** | First-order Blocked Clause Elimination (BCE), Pure Literal Elimination (PLE), and Tautology Elimination in CNF preprocessing |
 
 ---
 
@@ -283,7 +283,7 @@ This document provides the exact Git commits, checkout/build instructions, targe
 
 ### 15. First-Order Blocked Clause Elimination (BCE) & Pure Literal Elimination (PLE)
 * **Branch**: `integrate/casc-next`
-* **Commit**: `HEAD` (on `integrate/casc-next`)
+* **Commit**: `eca8405` (on `integrate/casc-next`)
 * **Build & Checkout**:
   ```bash
   git checkout integrate/casc-next
