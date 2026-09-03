@@ -77,7 +77,10 @@ const PROJECTION_RULES: &[&str] = &["split_conjunct", "cnf_transformation"];
 /// Returns `true` if `rule` is one this module knows how to *attempt*.
 /// (It may still fail the structural check and fall through to the ATP.)
 pub fn is_trivial_rule(rule: Option<&str>) -> bool {
-    matches!(rule, Some(r) if EQUIV_RULES.contains(&r) || PROJECTION_RULES.contains(&r))
+    matches!(
+        rule,
+        Some(r) if EQUIV_RULES.contains(&r) || PROJECTION_RULES.contains(&r) || r == "modus_ponens"
+    )
 }
 
 /// Attempt a structural verification of a former "trivial" step.
@@ -97,6 +100,22 @@ pub fn try_check<'p>(
     // A `$false`-concluding step is never a sound equivalence/projection of
     // consistent (or absent) premises; route it to the entailment check.
     if node.is_false {
+        return None;
+    }
+
+    if rule == "modus_ponens" {
+        if let [p0, p1] = parents {
+            let mut ctx = LowerCtx::new(symbols);
+            ctx.reset_vars();
+            let p0_f = lower_annotated_formula(&mut ctx, p0)?;
+            ctx.reset_vars();
+            let p1_f = lower_annotated_formula(&mut ctx, p1)?;
+            ctx.reset_vars();
+            let concl_f = lower_annotated_formula(&mut ctx, node.formula)?;
+            if check_mp(&p0_f, &p1_f, &concl_f) || check_mp(&p1_f, &p0_f, &concl_f) {
+                return Some(StepOutcome::Sound);
+            }
+        }
         return None;
     }
 
@@ -239,6 +258,13 @@ fn projects_disjunct(parent: &Formula, concl: &Formula) -> bool {
         }
     }
     false
+}
+
+pub fn check_mp(premise: &Formula, implication: &Formula, concl: &Formula) -> bool {
+    match implication {
+        Formula::Implies(ant, cons) => alpha_equiv(premise, ant) && alpha_equiv(concl, cons),
+        _ => false,
+    }
 }
 
 /// A strict version of alpha-equivalence that does NOT ignore order of
@@ -571,5 +597,22 @@ mod tests {
         };
         let mut syms = SymbolTable::new();
         assert!(try_check(&node, &[parent1, parent2], &mut syms).is_none());
+    }
+
+    #[test]
+    fn test_modus_ponens() {
+        let p0 = fof("fof(a1, axiom, (p(c0) => p(c1))).");
+        let p1 = fof("fof(s0, plain, p(c0)).");
+        let concl = fof("fof(s1, plain, p(c1), inference(modus_ponens, [], [a1, s0])).");
+        let node = Node {
+            parents: vec!["a1", "s0"],
+            negated_parents: vec![false, false],
+            ..node_for(concl, "modus_ponens", false)
+        };
+        let mut syms = SymbolTable::new();
+        assert_eq!(
+            try_check(&node, &[p0, p1], &mut syms),
+            Some(StepOutcome::Sound)
+        );
     }
 }

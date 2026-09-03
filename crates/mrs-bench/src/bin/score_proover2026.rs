@@ -30,6 +30,11 @@ struct Outcome {
     score: i32,
 }
 
+pub const PANEL_REMOVED_PROBLEMS: &[&str] = &[
+    "PRV005+1", "PRV006+1", "PRV036+1", "PRV044+1", "PRV057+1", "PRV065+1", "PRV066+1", "PRV079+1",
+    "PRV080+1",
+];
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let root = args
@@ -41,6 +46,7 @@ fn main() {
     let mut workers = 1usize;
     let mut mode = VerifyMode::Competition;
     let mut output = None;
+    let mut official = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--proover" => proover = args.next().map(PathBuf::from),
@@ -49,6 +55,7 @@ fn main() {
             "--kernel" => mode = VerifyMode::Kernel,
             "--competition" => mode = VerifyMode::Competition,
             "--output" => output = args.next().map(PathBuf::from),
+            "--official" | "--official-91" => official = true,
             other => fail(&format!("unknown argument: {other}")),
         }
     }
@@ -63,7 +70,15 @@ fn main() {
             validation_root.display()
         ));
     }
-    match score(&root, &proover, time, workers, mode, output.as_deref()) {
+    match score(
+        &root,
+        &proover,
+        time,
+        workers,
+        mode,
+        output.as_deref(),
+        official,
+    ) {
         Ok(summary) => {
             println!(
                 "score={} good={} bad={} unknown={} false_rejection={} unsound={}",
@@ -105,11 +120,15 @@ fn score(
     workers: usize,
     mode: VerifyMode,
     output: Option<&Path>,
+    official: bool,
 ) -> Result<Summary, String> {
-    let rows = read_manifest(&root.join("manifest.tsv"))?;
+    let mut rows = read_manifest(&root.join("manifest.tsv"))?;
+    if official {
+        rows.retain(|row| !PANEL_REMOVED_PROBLEMS.contains(&row.id.as_str()));
+    }
     let mut summary = Summary::default();
     let mut report = format!(
-        "# ProoVer 2026 deterministic score report\n# mode={mode:?}\tproover={}\ttime={}\tworkers={}\n# id\tcategory\taccepted_verdicts\tmax_score\tstatus\tscore\tdetail\n",
+        "# ProoVer 2026 deterministic score report\n# mode={mode:?}\tofficial={official}\tproover={}\ttime={}\tworkers={}\n# id\tcategory\taccepted_verdicts\tmax_score\tstatus\tscore\tdetail\n",
         proover.display(),
         time,
         workers

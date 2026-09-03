@@ -674,6 +674,21 @@ fn check_node_prepare<'p>(
         // Fall through to ATP if the structural check could not apply.
     }
 
+    if node.inference_rule == Some("modus_ponens")
+        && !node.is_false
+        && let [p0_name, p1_name] = node.parents.as_slice()
+        && let (Some(&p0_idx), Some(&p1_idx), Some(concl_f)) = (
+            dag.by_name.get(p0_name),
+            dag.by_name.get(p1_name),
+            lowered_formulas.get(&idx),
+        )
+        && let (Some(p0_f), Some(p1_f)) =
+            (lowered_formulas.get(&p0_idx), lowered_formulas.get(&p1_idx))
+        && (trivial::check_mp(p0_f, p1_f, concl_f) || trivial::check_mp(p1_f, p0_f, concl_f))
+    {
+        return Prepared::Resolved(StepOutcome::Sound);
+    }
+
     // Former `TRIVIAL_RULES`: instead of trusting the rule *name*, attempt a
     // structural verification (NNF-canonical equivalence for rewriting rules,
     // conjunct projection for `split_conjunct`). The check accepts only on a
