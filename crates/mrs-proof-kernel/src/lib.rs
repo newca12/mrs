@@ -397,7 +397,7 @@ fn verify_strict_with_source_internal(
             "weaken" => verify_weakening(&parents, conclusion, limits),
             "reflexivity" => verify_reflexivity(&parents, conclusion),
             "transitivity" => verify_transitivity(&parents, conclusion, limits),
-            "instantiate" => verify_instantiation(&parents, conclusion, limits),
+            "instantiate" | "instantiation" => verify_instantiation(&parents, conclusion, limits),
             "existential_gen" => verify_existential_generation(&parents, conclusion, limits),
             "conjunction" => verify_conjunction(&parents, conclusion, limits),
             "split_conjunct" => verify_split_conjunct(&parents, conclusion, limits),
@@ -634,6 +634,7 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "reflexivity"
         | "transitivity"
         | "instantiate"
+        | "instantiation"
         | "existential_gen"
         | "conjunction"
         | "split_conjunct"
