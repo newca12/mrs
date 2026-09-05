@@ -314,5 +314,3 @@ This document provides the exact Git commits, checkout/build instructions, targe
   ```bash
   ./crates/mrs-bench/casc.sh --systems mrs --divisions epr,eps,epu --time 30 --jobs 4 --output results/instgen-epr-eval
   ```
-
-

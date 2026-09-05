@@ -415,7 +415,7 @@ mod tests {
         .with_distance(0);
 
         let res = transform_goal_clauses(
-            &[goal_clause.clone()],
+            std::slice::from_ref(&goal_clause),
             &mut symbols,
             &mut id_gen,
             GoalTransformMode::RecursiveSubterms,
@@ -548,7 +548,7 @@ mod tests {
         );
 
         let res = transform_goal_clauses(
-            &[ax.clone()],
+            std::slice::from_ref(&ax),
             &mut symbols,
             &mut id_gen,
             GoalTransformMode::RecursiveSubterms,
@@ -578,7 +578,7 @@ mod tests {
         .with_distance(0);
 
         let res = transform_goal_clauses(
-            &[goal.clone()],
+            std::slice::from_ref(&goal),
             &mut symbols,
             &mut id_gen,
             GoalTransformMode::RecursiveSubterms,

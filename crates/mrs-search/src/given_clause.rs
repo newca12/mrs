@@ -2017,6 +2017,12 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 }
 
                 // Forward Subsumption Resolution: simplify clause using processed clauses
+                // Register the pre-simplification clause before creating a
+                // destructive child. The child cites this clause as its
+                // primary parent, and proof extraction must be able to walk
+                // that edge even when the clause never enters the passive
+                // queue unchanged.
+                state.register_clause(&clause);
                 let mut clause_fv = FeatureVector::from_id_clause(&clause, &state.term_bank);
                 let mut clause = clause;
                 loop {

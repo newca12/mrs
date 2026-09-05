@@ -398,6 +398,9 @@ fn verify_strict_with_source_internal(
             "reflexivity" => verify_reflexivity(&parents, conclusion),
             "transitivity" => verify_transitivity(&parents, conclusion, limits),
             "instantiate" | "instantiation" => verify_instantiation(&parents, conclusion, limits),
+            "definition_renaming" => {
+                verify_definition_renaming(&parents, conclusion, &dag, &parent_indices, limits)
+            }
             "existential_gen" => verify_existential_generation(&parents, conclusion, limits),
             "conjunction" => verify_conjunction(&parents, conclusion, limits),
             "split_conjunct" => verify_split_conjunct(&parents, conclusion, limits),
@@ -562,16 +565,10 @@ fn verify_strict_with_source_internal(
                 let Some(parent_context) = branch_contexts.get(parent_idx) else {
                     continue;
                 };
-                if let Some(existing) = &context {
-                    if existing != parent_context {
-                        return KernelVerdict::Rejected(format!(
-                            "node `{}` combines incompatible case-split branches",
-                            node.name
-                        ));
-                    }
-                } else {
-                    context = Some(parent_context.clone());
-                }
+                context = Some(match context {
+                    Some(existing) => merge_branch_contexts(&existing, parent_context),
+                    None => parent_context.clone(),
+                });
             }
             if let Some(context) = context {
                 branch_contexts.insert(idx, context);
@@ -585,6 +582,23 @@ fn verify_strict_with_source_internal(
     }
 
     KernelVerdict::Certified
+}
+
+fn merge_branch_contexts(left: &BranchContext, right: &BranchContext) -> BranchContext {
+    let mut assumptions = left.assumptions.clone();
+    for assumption in &right.assumptions {
+        if !assumptions.contains(assumption) {
+            assumptions.push(assumption.clone());
+        }
+    }
+    let mut sat_context = left.sat_context.clone();
+    sat_context.extend(right.sat_context.iter().copied());
+    sat_context.sort_unstable();
+    sat_context.dedup();
+    BranchContext {
+        assumptions,
+        sat_context,
+    }
 }
 
 fn expected_status(rule: &str) -> Option<&'static str> {
@@ -635,6 +649,7 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "transitivity"
         | "instantiate"
         | "instantiation"
+        | "definition_renaming"
         | "existential_gen"
         | "conjunction"
         | "split_conjunct"
@@ -1596,6 +1611,23 @@ fn match_core_formula(
             match_core_formula(pattern_left, target_left, mapping)
                 && match_core_formula(pattern_right, target_right, mapping)
         }
+        (Formula::Forall(pattern_var, pattern_body), Formula::Forall(target_var, target_body))
+        | (Formula::Exists(pattern_var, pattern_body), Formula::Exists(target_var, target_body)) => {
+            // Bound variables are alpha-equivalent, not substitution
+            // variables. Temporarily record their correspondence while
+            // matching the body and restore any outer mapping afterwards.
+            let previous = mapping.insert(*pattern_var, Term::Var(*target_var));
+            let matched = match_core_formula(pattern_body, target_body, mapping);
+            match previous {
+                Some(term) => {
+                    mapping.insert(*pattern_var, term);
+                }
+                None => {
+                    mapping.remove(pattern_var);
+                }
+            }
+            matched
+        }
         (Formula::True, Formula::True) | (Formula::False, Formula::False) => true,
         _ => false,
     }
@@ -2276,6 +2308,61 @@ fn verify_instantiation(
         KernelVerdict::Certified
     } else {
         KernelVerdict::Rejected("instantiate conclusion is not a parent instance".into())
+    }
+}
+
+fn verify_definition_renaming(
+    parents: &[Formula],
+    conclusion: &Formula,
+    dag: &Dag<'_>,
+    parent_indices: &[usize],
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if parents.len() < 2 {
+        return KernelVerdict::Rejected(
+            "definition_renaming requires the source and definition parents".into(),
+        );
+    }
+    if parents
+        .iter()
+        .any(|formula| formula_size(formula) > limits.max_formula_nodes)
+        || formula_size(conclusion) > limits.max_formula_nodes
+    {
+        return KernelVerdict::Inconclusive(
+            "definition_renaming exceeded strict formula-size limit".into(),
+        );
+    }
+
+    let source = &parents[0];
+    let mut definitions = Vec::with_capacity(parents.len() - 1);
+    for (definition, parent_idx) in parents[1..].iter().zip(&parent_indices[1..]) {
+        if !dag.nodes[*parent_idx]
+            .formula
+            .annotations()
+            .is_some_and(is_introduced_definition)
+        {
+            return KernelVerdict::Rejected(
+                "definition_renaming parents must be introduced definitions".into(),
+            );
+        }
+        let Some(definition) = core_definition(definition) else {
+            return KernelVerdict::Inconclusive(
+                "definition_renaming parent is not a supported definition".into(),
+            );
+        };
+        definitions.push(definition);
+    }
+    let Some(expected) = replace_definition_subformulas(source, &definitions, limits) else {
+        return KernelVerdict::Inconclusive(
+            "definition_renaming exceeded strict matching-step limit".into(),
+        );
+    };
+    if alpha_equiv(&expected, conclusion) {
+        KernelVerdict::Certified
+    } else {
+        KernelVerdict::Rejected(
+            "definition_renaming conclusion is not the source with definitions replaced".into(),
+        )
     }
 }
 
@@ -5044,7 +5131,15 @@ fn verify_resolution(
                     deduplicated.push(lit.clone());
                 }
             }
-            if deduplicated.len() != resolvent.len() && clause_alpha_equiv(&deduplicated, &goal) {
+            let mut deduplicated_goal = Vec::with_capacity(goal.len());
+            for lit in &goal {
+                if !deduplicated_goal.contains(lit) {
+                    deduplicated_goal.push(lit.clone());
+                }
+            }
+            if deduplicated.len() != resolvent.len()
+                && clause_alpha_equiv(&deduplicated, &deduplicated_goal)
+            {
                 return KernelVerdict::Certified;
             }
         }
@@ -5067,14 +5162,14 @@ fn verify_subsumption_resolution(
             "subsumption_resolution parent 0 is not a supported clause".into(),
         );
     };
-    let Some(c1) = clause_from_formula(&parents[1], limits) else {
-        return KernelVerdict::Inconclusive(
-            "subsumption_resolution parent 1 is not a supported clause".into(),
-        );
-    };
     let Some(goal) = clause_from_formula(conclusion, limits) else {
         return KernelVerdict::Inconclusive(
             "subsumption_resolution conclusion is not a supported clause".into(),
+        );
+    };
+    let Some(c1) = clause_from_formula(&parents[1], limits) else {
+        return KernelVerdict::Inconclusive(
+            "subsumption_resolution parent 1 is not a supported clause".into(),
         );
     };
 
@@ -8361,6 +8456,48 @@ mod tests {
                      cnf(derived, plain, q(a), inference(resolution, [status(thm)], [clause, fact])).\n\
                      cnf(bot, plain, $false, inference(subsumption_resolution, [status(thm)], [derived, neg])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_definition_renaming_before_nnf() {
+        let problem = "fof(goal, conjecture, ~((p => q) <=> r)).\n\
+                       fof(posr, axiom, r).\n\
+                       fof(negr, axiom, ~r).";
+        let proof = "fof(goal, conjecture, ~((p => q) <=> r), file('problem.p', goal)).\
+                     fof(posr, axiom, r, file('problem.p', posr)).\
+                     fof(negr, axiom, ~r, file('problem.p', negr)).\
+                     fof(d, definition, (d0 <=> (p => q)), introduced(definition, [new_symbols(definition, [d0])])).\
+                     fof(r, plain, ~(d0 <=> r), inference(definition_renaming, [status(thm)], [goal,d])).\
+                     fof(n, plain, ((d0 | r) & (~d0 | ~r)), inference(fof_nnf_transformation, [status(thm)], [r])).\
+                     fof(sk, plain, ((d0 | r) & (~d0 | ~r)), inference(skolemisation, [status(esa)], [n])).\
+                     cnf(p, plain, d0 | r, inference(cnf_transformation, [status(thm)], [sk])).\
+                     cnf(np, plain, ~d0 | ~r, inference(cnf_transformation, [status(thm)], [sk])).\
+                     cnf(d0, plain, d0, inference(resolution, [status(thm)], [p,negr])).\
+                     cnf(nd0, plain, ~d0, inference(resolution, [status(thm)], [np,posr])).\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [d0,nd0])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn definition_renaming_respects_equivalence_matching_limit() {
+        let problem =
+            parse_tptp("fof(goal, conjecture, ~((p => q) <=> r)).").expect("problem parses");
+        let proof = parse_tptp(
+            "fof(goal, conjecture, ~((p => q) <=> r), file('problem.p', goal)).\
+             fof(d, definition, (d0 <=> (p => q)), introduced(definition, [new_symbols(definition, [d0])])).\
+             fof(r, plain, ~(d0 <=> r), inference(definition_renaming, [status(thm)], [goal,d])).\
+             fof(n, plain, ((d0 | r) & (~d0 | ~r)), inference(fof_nnf_transformation, [status(thm)], [r])).\
+             fof(bot, plain, $false, inference(consequence, [status(thm)], [n])).",
+        )
+        .expect("proof parses");
+        let limits = VerificationLimits {
+            max_rewrite_steps: 0,
+            ..VerificationLimits::default()
+        };
+        assert!(matches!(
+            verify_strict(&problem, &proof, limits),
+            KernelVerdict::Inconclusive(_)
+        ));
     }
 
     #[test]

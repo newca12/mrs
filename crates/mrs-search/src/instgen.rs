@@ -269,7 +269,9 @@ impl PropAbstraction {
         Self::default()
     }
 
-    /// Abstract a term to a constant SymbolId: variables become `bot_sym`.
+    /// Abstract a term to a constant SymbolId. Variables are represented by a
+    /// distinguished placeholder, while compound terms are rejected because
+    /// this abstraction is only used for the pure relational EPR fragment.
     pub fn abstract_term(t: &Term, bot_sym: SymbolId) -> SymbolId {
         match t {
             Term::Var(_) => bot_sym,
@@ -298,7 +300,9 @@ impl PropAbstraction {
     }
 
     /// Abstract a clause to a propositional clause `PC`.
-    /// Returns `None` if the clause is a tautology (contains both `v` and `-v`).
+    /// Returns `None` when the clause contains an unsupported atom type.
+    /// Complementary literals after abstraction are retained: that can be a
+    /// first-order non-tautology when the original variables differ.
     pub fn abstract_clause(&mut self, clause: &Clause, bot_sym: SymbolId) -> Option<PC> {
         let mut pc = Vec::with_capacity(clause.literals.len());
         for lit in &clause.literals {
@@ -308,11 +312,6 @@ impl PropAbstraction {
         }
         pc.sort_unstable();
         pc.dedup();
-        for &l in &pc {
-            if l > 0 && pc.binary_search(&-l).is_ok() {
-                return None; // Tautology
-            }
-        }
         Some(pc)
     }
 }
@@ -718,12 +717,16 @@ pub fn try_instgen_epr(
                 if trace {
                     eprintln!("[InstGen] Running given-clause proof extraction fallback...");
                 }
-                let mut state = crate::state::SearchState::new(
+                let mut state = crate::state::SearchState::new_with_ml(
                     all_clauses.clone(),
+                    provenance.to_vec(),
                     id_gen.clone(),
                     std::sync::Arc::new(SymbolConfig::default()),
                     std::sync::Arc::new(symbols_local.clone()),
                     false,
+                    None,
+                    false,
+                    crate::ClauseWeightFn::Standard,
                 );
                 let config = SearchConfig {
                     time_limit: Duration::from_secs(2),
@@ -1215,6 +1218,42 @@ mod tests {
             matches!(res, Some(SearchResult::Saturated)),
             "Expected Saturated (Satisfiable), got {:?}",
             res
+        );
+    }
+
+    #[test]
+    fn instgen_does_not_drop_variable_tautology_instances() {
+        // C1: p(X) | ~p(Y) is not a first-order tautology: with p(a) true
+        // and p(b) false, its instance p(b) | ~p(a) is false.
+        // Its one-constant abstraction is nevertheless propositional-tautologous.
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let mut id_gen = ClauseIdGen::new();
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![
+                Literal::pos(Atom::pred(p, vec![Term::var(0)])),
+                Literal::neg(Atom::pred(p, vec![Term::var(1)])),
+            ],
+            "c1",
+        );
+        let c2 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            "c2",
+        );
+        let c3 = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::pred(p, vec![Term::constant(b)]))],
+            "c3",
+        );
+
+        let res = try_instgen_epr(&[c1, c2, c3], &[], &mut id_gen, &syms);
+        assert!(
+            matches!(res, Some(SearchResult::Refutation(..))),
+            "variable-tautology clauses must not make an unsatisfiable EPR set look satisfiable: {res:?}"
         );
     }
 
