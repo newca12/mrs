@@ -200,7 +200,7 @@ graph TD
   - Query CaDiCaL for a propositional model.
   - If satisfiable, inspect pairs of literals in clauses satisfied by the model that share complementary unifiable atoms.
   - If a complementary pair unifies with MGU $\sigma$, add the two instances $C_1\sigma$ and $C_2\sigma$ to the clause set.
-  - If no unifiable pairs exist, the propositional model lifts to a first-order model ($\rightarrow$ `Satisfiable`).
+  - A no-unifiable-pairs model is conclusive only for a fully ground clause set; variable-bearing cases fail closed as incomplete rather than claiming `Satisfiable`.
   - If CaDiCaL returns UNSAT, the problem is refuted ($\rightarrow$ `Unsatisfiable`).
 
 ---

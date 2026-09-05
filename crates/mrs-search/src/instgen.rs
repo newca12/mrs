@@ -518,7 +518,9 @@ fn dfs_topo(
 /// Tries to decide an EPR problem using lazy SAT-guided InstGen.
 ///
 /// Returns `Some(SearchResult::Refutation(..))` if unsatisfiable,
-/// `Some(SearchResult::Saturated)` if satisfiable,
+/// `Some(SearchResult::Saturated)` if the ground SAT model is conclusive,
+/// `Some(SearchResult::GaveUp)` if the abstraction is inconclusive for a
+/// variable-bearing clause set,
 /// or `None` if the budget/heuristics expire without a conclusive result.
 pub fn try_instgen_epr(
     clauses: &[Clause],
@@ -548,6 +550,7 @@ pub fn try_instgen_epr(
     let mut solver = Solver::new();
 
     let mut all_clauses: Vec<Clause> = clauses.to_vec();
+    let has_variables = clauses.iter().any(|clause| !clause.free_vars().is_empty());
     let mut seen_clauses: HashSet<Vec<Literal>> = HashSet::default();
     for c in clauses {
         seen_clauses.insert(canonicalize_clause(&c.literals));
@@ -864,13 +867,19 @@ pub fn try_instgen_epr(
                 }
 
                 if new_instances.is_empty() {
-                    // No candidate pair can be unified -> the propositional model lifts
-                    // to a first-order Herbrand model!
+                    // The abstraction maps every variable position to one
+                    // placeholder atom. That model is exact for a ground
+                    // clause set, but it is not a first-order model for
+                    // universally quantified clauses: distinct constants and
+                    // variable positions may have been collapsed together.
+                    // Do not turn that incomplete check into a satisfiability
+                    // claim; a refutation remains sound, while the caller
+                    // reports GaveUp for the unresolved variable-bearing case.
+                    if has_variables {
+                        return Some(SearchResult::GaveUp);
+                    }
                     if trace {
-                        eprintln!(
-                            "[InstGen] Round {}: SAT model verified with 0 unifiable pairs -> Satisfiable!",
-                            round
-                        );
+                        eprintln!("[InstGen] Round {}: ground SAT model verified", round);
                     }
                     return Some(SearchResult::Saturated);
                 }
@@ -1149,7 +1158,8 @@ mod tests {
     fn instgen_satisfiable_finite_model() {
         // C1: p(X, X)
         // C2: ~p(a, b) where a != b
-        // Unification fails -> SAT model lifts to FO model!
+        // Unification fails, but the variable-bearing abstraction is not a
+        // sufficient model certificate. InstGen must fail closed here.
         let mut syms = SymbolTable::new();
         let p = syms.intern("p");
         let a = syms.intern("a");
@@ -1175,8 +1185,34 @@ mod tests {
 
         let res = try_instgen_epr(&[c1, c2], &[], &mut id_gen, &syms);
         assert!(
+            matches!(res, Some(SearchResult::GaveUp)),
+            "Expected GaveUp for an incomplete variable-bearing model check, got {:?}",
+            res
+        );
+    }
+
+    #[test]
+    fn instgen_ground_satisfiable_model() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            "c1",
+        );
+        let c2 = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::pred(q, vec![Term::constant(a)]))],
+            "c2",
+        );
+
+        let res = try_instgen_epr(&[c1, c2], &[], &mut id_gen, &syms);
+        assert!(
             matches!(res, Some(SearchResult::Saturated)),
-            "Expected Saturated (Satisfiable), got {:?}",
+            "Expected Saturated for a ground satisfiable set, got {:?}",
             res
         );
     }
@@ -1186,7 +1222,8 @@ mod tests {
         // C1: p(X) | q(X)
         // C2: ~p(a)
         // C3: ~q(b)
-        // where a != b. Model: p(b) = true, q(a) = true. Satisfiable!
+        // where a != b. The abstraction is not a complete first-order model
+        // certificate while variables remain, so this path must fail closed.
         let mut syms = SymbolTable::new();
         let p = syms.intern("p");
         let q = syms.intern("q");
@@ -1215,8 +1252,8 @@ mod tests {
 
         let res = try_instgen_epr(&[c1, c2, c3], &[], &mut id_gen, &syms);
         assert!(
-            matches!(res, Some(SearchResult::Saturated)),
-            "Expected Saturated (Satisfiable), got {:?}",
+            matches!(res, Some(SearchResult::GaveUp)),
+            "Expected GaveUp for an incomplete variable-bearing model check, got {:?}",
             res
         );
     }
