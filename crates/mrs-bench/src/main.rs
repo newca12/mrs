@@ -8,7 +8,7 @@
 //!     polarity violations (wrong SZS polarity for a known division type).
 //!
 //! CSV schema (produced by crates/mrs-bench/casc.sh):
-//!     edition,division,problem,system,szs_status,expected,verdict,wall_time_s
+//!     edition,division,problem,system,szs_status,expected,verdict,wall_time_s,peak_memory_mb,failure_detail
 //!
 //! (Columns are looked up by name, so additions are non-breaking.)
 //!

@@ -29,7 +29,7 @@
 #   <output>/run.csv    — one row per (problem, system)
 #   <output>/run.log    — harness stderr
 #
-# CSV schema: edition,division,problem,system,szs_status,expected,verdict,wall_time_s,failure_detail
+# CSV schema: edition,division,problem,system,szs_status,expected,verdict,wall_time_s,peak_memory_mb,failure_detail
 #   verdict ∈ {ok, ko, unknown}
 #     ok      — system status agrees with the reference answer
 #     ko      — system status disagrees with the reference answer
@@ -196,7 +196,7 @@ if [[ ! -f "${ANSWERS}" ]]; then
 fi
 
 CSV="${OUTPUT}/run.csv"
-echo "edition,division,problem,system,szs_status,expected,verdict,wall_time_s,failure_detail" > "${CSV}"
+echo "edition,division,problem,system,szs_status,expected,verdict,wall_time_s,peak_memory_mb,failure_detail" > "${CSV}"
 
 JOBS_FILE="${OUTPUT}/.jobs"
 > "${JOBS_FILE}"
@@ -251,7 +251,7 @@ echo "[casc] Total jobs:  ${total_problems}" >&2
 # Arguments: div  problem  prob_path  sys  time_limit
 #
 # Emits one CSV row:
-#   edition,division,problem,system,szs_status,expected,verdict,wall_time_s,failure_detail
+#   edition,division,problem,system,szs_status,expected,verdict,wall_time_s,peak_memory_mb,failure_detail
 #
 # `verdict` compares the system's SZS status against the reference
 # answer for `problem` (from systems/reference/answers.tsv):
@@ -297,6 +297,16 @@ run_one() {
         fi
     fi
 
+    # Extract MRS's reported peak virtual memory from stdout. MRS currently
+    # formats this as "% Peak memory usage: N MB" from /proc/self/status.
+    local peak_memory_mb=""
+    peak_memory_mb=$(awk '
+        $1 == "%" && $2 == "Peak" && $3 == "memory" && $4 == "usage:" && $6 == "MB" {
+            print $5
+            exit
+        }
+    ' "${tmp}" 2>/dev/null || true)
+
     # Extract structured failure detail from stderr ("% SZS detail ...").
     # Stores the key=value portion; empty string if not present.
     local failure_detail=""
@@ -325,9 +335,9 @@ run_one() {
         fi
     fi
 
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
         "${EDITION}" "${div}" "${problem}" "${sys}" \
-        "${szs}" "${expected}" "${verdict}" "${wall_s}" "${failure_detail}"
+        "${szs}" "${expected}" "${verdict}" "${wall_s}" "${peak_memory_mb}" "${failure_detail}"
 }
 
 # Map an SZS status to a coarse provability class so different
