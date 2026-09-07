@@ -94,9 +94,8 @@ download_and_extract "Problems"
 download_and_extract "Axioms"
 
 # Generate division list files dynamically if they are not already present or empty
-local lists_present=0
+lists_present=0
 if [[ -d "${DEST}/lists" ]]; then
-    local list_count
     list_count=$(find -L "${DEST}/lists" -maxdepth 1 -name "*.list" 2>/dev/null | wc -l)
     if [[ "${list_count}" -gt 0 ]]; then
         lists_present=1
