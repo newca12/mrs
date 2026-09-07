@@ -290,8 +290,10 @@ run_one() {
     szs=$(grep -m1 '% SZS status' "${tmp}" 2>/dev/null | awk '{print $4}' || true)
 
     if [[ -z "${szs}" ]]; then
-        if [[ ${exit_code} -eq 124 ]]; then
+        if [[ ${exit_code} -eq 124 || ${exit_code} -eq 137 ]]; then
             szs="Timeout"
+        elif [[ ${exit_code} -ne 0 ]]; then
+            szs="Error"
         else
             szs="GaveUp"
         fi
@@ -311,6 +313,16 @@ run_one() {
     # Stores the key=value portion; empty string if not present.
     local failure_detail=""
     failure_detail=$(grep -m1 '% SZS detail' "${tmp_err}" 2>/dev/null | sed 's/^% SZS detail //' || true)
+
+    if [[ -z "${failure_detail}" && ${exit_code} -ne 0 && ${exit_code} -ne 124 && ${exit_code} -ne 137 ]]; then
+        if grep -q "panicked at" "${tmp_err}" 2>/dev/null; then
+            local panic_msg
+            panic_msg=$(grep "panicked at" "${tmp_err}" 2>/dev/null | head -n 1)
+            failure_detail="panic: $(echo "${panic_msg}" | tr -d ',\r\n' | xargs)"
+        else
+            failure_detail="exit_code=${exit_code}"
+        fi
+    fi
 
     rm -f "${tmp}" "${tmp_err}"
 
