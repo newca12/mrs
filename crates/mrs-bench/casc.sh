@@ -289,9 +289,23 @@ run_one() {
     # mrs:     "% SZS status Theorem for ..."
     szs=$(grep -m1 '% SZS status' "${tmp}" 2>/dev/null | awk '{print $4}' || true)
 
+    # Extract structured failure detail from stderr ("% SZS detail ...").
+    # Stores the key=value portion; empty string if not present.
+    local failure_detail=""
+    failure_detail=$(grep -m1 '% SZS detail' "${tmp_err}" 2>/dev/null | sed 's/^% SZS detail //' || true)
+
     if [[ -z "${szs}" ]]; then
-        if [[ ${exit_code} -eq 124 || ${exit_code} -eq 137 ]]; then
+        if [[ ${exit_code} -eq 124 ]]; then
             szs="Timeout"
+        elif [[ ${exit_code} -eq 137 ]]; then
+            # Distinguish SIGKILL from timeout vs. early OS OOM Killer.
+            # If killed early before the timeout limit was reached, it's an OS OOM
+            if (( $(echo "${wall_s} < ${tlimit}" | bc -l) )); then
+                szs="Error"
+                failure_detail="OOM: Process killed by OS OOM Killer (SIGKILL)"
+            else
+                szs="Timeout"
+            fi
         elif [[ ${exit_code} -ne 0 ]]; then
             szs="Error"
         else
@@ -309,16 +323,16 @@ run_one() {
         }
     ' "${tmp}" 2>/dev/null || true)
 
-    # Extract structured failure detail from stderr ("% SZS detail ...").
-    # Stores the key=value portion; empty string if not present.
-    local failure_detail=""
-    failure_detail=$(grep -m1 '% SZS detail' "${tmp_err}" 2>/dev/null | sed 's/^% SZS detail //' || true)
-
-    if [[ -z "${failure_detail}" && ${exit_code} -ne 0 && ${exit_code} -ne 124 && ${exit_code} -ne 137 ]]; then
-        if grep -q "panicked at" "${tmp_err}" 2>/dev/null; then
+    if [[ -z "${failure_detail}" && ${exit_code} -ne 0 && ${exit_code} -ne 124 ]]; then
+        if grep -qE "memory allocation.*failed" "${tmp_err}" 2>/dev/null; then
+            failure_detail="OOM: Rust memory allocation failed"
+            szs="Error"
+        elif grep -q "panicked at" "${tmp_err}" 2>/dev/null; then
             local panic_msg
             panic_msg=$(grep "panicked at" "${tmp_err}" 2>/dev/null | head -n 1)
             failure_detail="panic: $(echo "${panic_msg}" | tr -d ',\r\n' | xargs)"
+        elif [[ ${exit_code} -eq 137 && "${szs}" == "Error" ]]; then
+            failure_detail="OOM: Process killed by OS OOM Killer (SIGKILL)"
         else
             failure_detail="exit_code=${exit_code}"
         fi
