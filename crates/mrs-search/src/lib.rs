@@ -25,7 +25,7 @@
 //! let mut state = SearchState::new(vec![], id_gen, config_arc, symbols_arc, true);
 //! let config = SearchConfig::default();
 //! let result = search(&mut state, &config);
-//! assert!(matches!(result, SearchResult::Saturated));
+//! assert!(matches!(result, SearchResult::Saturated(..)));
 //! ```
 
 pub(crate) use rustc_hash::FxHashMap as HashMap;
@@ -150,7 +150,7 @@ impl ScheduleReport {
         let saturated = self
             .strategies
             .iter()
-            .filter(|s| matches!(s.result, SearchResult::Saturated))
+            .filter(|s| matches!(s.result, SearchResult::Saturated(..)))
             .count();
 
         format!(
@@ -215,7 +215,7 @@ impl ScheduleReport {
         let n_saturated = self
             .strategies
             .iter()
-            .filter(|s| matches!(s.result, SearchResult::Saturated))
+            .filter(|s| matches!(s.result, SearchResult::Saturated(..)))
             .count();
 
         Some(format!(
@@ -234,13 +234,88 @@ impl ScheduleReport {
     }
 }
 
+/// Detailed reason why a search strategy or run is refutationally incomplete and cannot claim
+/// `SearchResult::Saturated`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IncompletenessReason {
+    /// Max term weight cap is set and generated clauses were discarded.
+    MaxTermWeightDiscarded {
+        /// The max term weight cap configured.
+        cap: u32,
+        /// The number of generated clauses discarded because they exceeded the cap.
+        discarded: u64,
+    },
+    /// Set-of-Support (SOS) depth restriction is active.
+    SosRestricted(u32),
+    /// Unit-only resolution restriction is active.
+    UnitOnlyResolution,
+    /// SInE axiom filtering dropped input axioms.
+    SineFiltered,
+    /// ML premise pruning discarded input axioms.
+    MlPremisePruned,
+    /// Non-standard clause weight function can alter simplification order.
+    NonStandardWeightFn,
+    /// Incomplete literal selection strategy.
+    IncompleteLiteralSelection,
+    /// Passive queue pruned by LRS (Limited Resource Strategy).
+    LrsDiscarded(u64),
+    /// Unsound or incomplete model abstraction.
+    IncompleteModelAbstraction,
+}
+
+/// High-level justification for why a saturation result is sound.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaturationReason {
+    /// Purely ground clause set saturated without contradictions.
+    Ground,
+    /// Unpruned saturation under standard complete first-order superposition/resolution calculus.
+    FirstOrderSuperposition,
+    /// Verified finite Herbrand model.
+    FiniteModel,
+}
+
+/// A witness certifying that a saturation result was derived by a sound and refutationally
+/// complete calculus/search configuration without pruning or incomplete heuristics.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompletenessWitness {
+    reason: SaturationReason,
+}
+
+impl CompletenessWitness {
+    /// Create a witness for a verified ground saturation.
+    pub fn ground() -> Self {
+        Self {
+            reason: SaturationReason::Ground,
+        }
+    }
+
+    /// Create a witness for first-order superposition saturation under a complete configuration.
+    pub fn first_order_superposition() -> Self {
+        Self {
+            reason: SaturationReason::FirstOrderSuperposition,
+        }
+    }
+
+    /// Create a witness for a verified finite model.
+    pub fn finite_model() -> Self {
+        Self {
+            reason: SaturationReason::FiniteModel,
+        }
+    }
+
+    /// The specific justification category for this completeness witness.
+    pub fn reason(&self) -> SaturationReason {
+        self.reason
+    }
+}
+
 /// Result of a proof search.
 #[derive(Clone, Debug)]
 pub enum SearchResult {
     /// A refutation was found. Contains the ID of the empty clause and the proof TSTP string.
     Refutation(ClauseId, String),
-    /// All clauses were processed without finding a contradiction.
-    Saturated,
+    /// All clauses were processed without finding a contradiction, certified by a CompletenessWitness.
+    Saturated(CompletenessWitness),
     /// The time limit was exceeded.
     Timeout,
     /// The search gave up (e.g. saturated with an incomplete strategy).
@@ -395,6 +470,54 @@ pub struct SearchConfig {
     pub symbol_weight_scheme: SymbolWeightScheme,
 }
 
+impl SearchConfig {
+    /// Checks whether this configuration together with the current search state is refutationally
+    /// complete and capable of producing a sound `CompletenessWitness`.
+    ///
+    /// If any incomplete pruning, heuristic filtering, or non-standard ordering is active,
+    /// returns `Err(IncompletenessReason)`.
+    pub fn check_completeness(
+        &self,
+        weight_discarded: u64,
+        lrs_discarded: u64,
+        ml_pruned: bool,
+    ) -> Result<CompletenessWitness, IncompletenessReason> {
+        if let Some(cap) = self.max_term_weight
+            && weight_discarded > 0
+        {
+            return Err(IncompletenessReason::MaxTermWeightDiscarded {
+                cap,
+                discarded: weight_discarded,
+            });
+        }
+        if self.sos_depth < u32::MAX {
+            return Err(IncompletenessReason::SosRestricted(self.sos_depth));
+        }
+        if self.unit_only_resolution {
+            return Err(IncompletenessReason::UnitOnlyResolution);
+        }
+        if self.sine_tolerance.is_some() {
+            return Err(IncompletenessReason::SineFiltered);
+        }
+        if ml_pruned {
+            return Err(IncompletenessReason::MlPremisePruned);
+        }
+        if self.weight_fn != ClauseWeightFn::Standard {
+            return Err(IncompletenessReason::NonStandardWeightFn);
+        }
+        if matches!(
+            self.literal_selection,
+            LiteralSelection::MaxNegativeOrMaxPositive
+        ) {
+            return Err(IncompletenessReason::IncompleteLiteralSelection);
+        }
+        if lrs_discarded > 0 {
+            return Err(IncompletenessReason::LrsDiscarded(lrs_discarded));
+        }
+        Ok(CompletenessWitness::first_order_superposition())
+    }
+}
+
 impl Default for SearchConfig {
     fn default() -> Self {
         Self {
@@ -417,5 +540,138 @@ impl Default for SearchConfig {
             precedence_scheme: PrecedenceScheme::InvFreq,
             symbol_weight_scheme: SymbolWeightScheme::Uniform,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_check_completeness_clean_configuration() {
+        let config = SearchConfig {
+            max_term_weight: None,
+            ..SearchConfig::default()
+        };
+        let witness = config.check_completeness(0, 0, false);
+        assert!(witness.is_ok());
+        assert_eq!(
+            witness.unwrap().reason(),
+            SaturationReason::FirstOrderSuperposition
+        );
+    }
+
+    #[test]
+    fn test_check_completeness_max_term_weight() {
+        let config = SearchConfig {
+            max_term_weight: Some(100),
+            ..SearchConfig::default()
+        };
+        // Zero discarded: not incomplete
+        assert!(config.check_completeness(0, 0, false).is_ok());
+
+        // Clauses discarded: incomplete
+        let res = config.check_completeness(3, 0, false);
+        assert_eq!(
+            res,
+            Err(IncompletenessReason::MaxTermWeightDiscarded {
+                cap: 100,
+                discarded: 3
+            })
+        );
+    }
+
+    #[test]
+    fn test_check_completeness_sos_restricted() {
+        let config = SearchConfig {
+            sos_depth: 5,
+            ..SearchConfig::default()
+        };
+        assert_eq!(
+            config.check_completeness(0, 0, false),
+            Err(IncompletenessReason::SosRestricted(5))
+        );
+    }
+
+    #[test]
+    fn test_check_completeness_unit_only_resolution() {
+        let config = SearchConfig {
+            unit_only_resolution: true,
+            ..SearchConfig::default()
+        };
+        assert_eq!(
+            config.check_completeness(0, 0, false),
+            Err(IncompletenessReason::UnitOnlyResolution)
+        );
+    }
+
+    #[test]
+    fn test_check_completeness_sine_filtered() {
+        let config = SearchConfig {
+            sine_tolerance: Some(1.2),
+            ..SearchConfig::default()
+        };
+        assert_eq!(
+            config.check_completeness(0, 0, false),
+            Err(IncompletenessReason::SineFiltered)
+        );
+    }
+
+    #[test]
+    fn test_check_completeness_ml_pruned() {
+        let config = SearchConfig::default();
+        assert_eq!(
+            config.check_completeness(0, 0, true),
+            Err(IncompletenessReason::MlPremisePruned)
+        );
+    }
+
+    #[test]
+    fn test_check_completeness_non_standard_weight_fn() {
+        let config = SearchConfig {
+            weight_fn: ClauseWeightFn::HornHeuristic,
+            ..SearchConfig::default()
+        };
+        assert_eq!(
+            config.check_completeness(0, 0, false),
+            Err(IncompletenessReason::NonStandardWeightFn)
+        );
+    }
+
+    #[test]
+    fn test_check_completeness_incomplete_literal_selection() {
+        let config = SearchConfig {
+            literal_selection: LiteralSelection::MaxNegativeOrMaxPositive,
+            ..SearchConfig::default()
+        };
+        assert_eq!(
+            config.check_completeness(0, 0, false),
+            Err(IncompletenessReason::IncompleteLiteralSelection)
+        );
+    }
+
+    #[test]
+    fn test_check_completeness_lrs_discarded() {
+        let config = SearchConfig::default();
+        assert_eq!(
+            config.check_completeness(0, 42, false),
+            Err(IncompletenessReason::LrsDiscarded(42))
+        );
+    }
+
+    #[test]
+    fn test_witness_constructors() {
+        assert_eq!(
+            CompletenessWitness::ground().reason(),
+            SaturationReason::Ground
+        );
+        assert_eq!(
+            CompletenessWitness::first_order_superposition().reason(),
+            SaturationReason::FirstOrderSuperposition
+        );
+        assert_eq!(
+            CompletenessWitness::finite_model().reason(),
+            SaturationReason::FiniteModel
+        );
     }
 }

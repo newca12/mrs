@@ -689,11 +689,11 @@ fn main() {
                     SzsStatus::Unsatisfiable
                 }
             }
-            SearchResult::Saturated => {
+            SearchResult::Saturated(_witness) => {
                 // Sound even with --ml-prune: pruning is per-worker and any
                 // worker that actually dropped axioms has its Saturated
-                // demoted to GaveUp inside run_schedule, so a Saturated here
-                // always comes from a complete, unpruned strategy.
+                // demoted to GaveUp inside check_completeness, so a Saturated here
+                // always comes from a complete, unpruned strategy with a CompletenessWitness.
                 if has_conjecture {
                     SzsStatus::CounterSatisfiable
                 } else {
@@ -925,12 +925,15 @@ fn print_statistics(
     // Always emitted (even on success) so casc.sh can parse it uniformly.
     let search_result_name = match search_result {
         SearchResult::Refutation(..) => "Refutation",
-        SearchResult::Saturated => "Saturation",
+        SearchResult::Saturated(..) => "Saturation",
         SearchResult::GaveUp => "GaveUp",
         SearchResult::Timeout => "Timeout",
     };
 
     let mut detail_str = report.telemetry_detail(search_result_name);
+    if let SearchResult::Saturated(witness) = &search_result {
+        detail_str = format!("{} saturation_witness={:?}", detail_str, witness.reason());
+    }
     if self_check {
         let self_check_status = if matches!(search_result, SearchResult::Refutation(..)) {
             if proof_certified {

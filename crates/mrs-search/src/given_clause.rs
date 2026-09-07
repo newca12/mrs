@@ -2113,19 +2113,24 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
         state.stats.iterations += 1;
     }
 
-    // If LRS discarded any clauses, the passive queue may be empty because
-    // LRS pruned proof-relevant clauses — not because no proof exists.
-    // An empty queue after LRS activity is NOT a genuine saturation;
-    // return GaveUp (incomplete) to prevent the portfolio stop-flag from
-    // firing and producing a false CounterSatisfiable verdict.
-    if state.stats.lrs_discarded > 0 {
-        return SearchResult::GaveUp;
-    }
-
-    // If the literal selection is incomplete, return GaveUp rather than Saturated.
-    match config.literal_selection {
-        crate::LiteralSelection::MaxNegativeOrMaxPositive => SearchResult::GaveUp,
-        _ => SearchResult::Saturated,
+    // Verify that the search configuration and runtime state form a sound and refutationally
+    // complete calculus before claiming genuine saturation. If any pruning or incomplete
+    // heuristics were active, fail closed to GaveUp.
+    match config.check_completeness(
+        state.stats.weight_discarded,
+        state.stats.lrs_discarded,
+        state.ml_premise_pruned,
+    ) {
+        Ok(witness) => SearchResult::Saturated(witness),
+        Err(reason) => {
+            if std::env::var("TRACE_SEARCH").is_ok() {
+                eprintln!(
+                    "[TRACE] saturation demoted to GaveUp due to incompleteness: {:?}",
+                    reason
+                );
+            }
+            SearchResult::GaveUp
+        }
     }
 }
 
@@ -2382,7 +2387,77 @@ mod tests {
         );
         let config = SearchConfig::default();
         let result = search(&mut state, &config);
-        assert!(matches!(result, SearchResult::Saturated));
+        assert!(matches!(result, SearchResult::Saturated(..)));
+    }
+
+    #[test]
+    fn saturates_with_sos_returns_gave_up() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            "ax1",
+            "axiom",
+        );
+
+        let mut state = crate::state::SearchState::new(
+            vec![c1],
+            id_gen,
+            std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+            std::sync::Arc::new(mrs_core::SymbolTable::new()),
+            true,
+        );
+        let config = SearchConfig {
+            sos_depth: 2,
+            ..SearchConfig::default()
+        };
+        let result = search(&mut state, &config);
+        assert!(
+            matches!(result, SearchResult::GaveUp),
+            "Expected GaveUp for SOS incomplete configuration, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn saturates_with_non_standard_weight_returns_gave_up() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            "ax1",
+            "axiom",
+        );
+
+        let mut state = crate::state::SearchState::new_with_ml(
+            vec![c1],
+            Vec::new(),
+            id_gen,
+            std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+            std::sync::Arc::new(mrs_core::SymbolTable::new()),
+            true,
+            None,
+            false,
+            crate::ClauseWeightFn::HornHeuristic,
+        );
+        let config = SearchConfig {
+            weight_fn: crate::ClauseWeightFn::HornHeuristic,
+            ..SearchConfig::default()
+        };
+        let result = search(&mut state, &config);
+        assert!(
+            matches!(result, SearchResult::GaveUp),
+            "Expected GaveUp for non-standard weight fn, got {:?}",
+            result
+        );
     }
 
     #[test]

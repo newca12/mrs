@@ -881,7 +881,7 @@ pub fn try_instgen_epr(
                     if trace {
                         eprintln!("[InstGen] Round {}: ground SAT model verified", round);
                     }
-                    return Some(SearchResult::Saturated);
+                    return Some(SearchResult::Saturated(crate::CompletenessWitness::ground()));
                 }
 
                 if trace {
@@ -1211,7 +1211,7 @@ mod tests {
 
         let res = try_instgen_epr(&[c1, c2], &[], &mut id_gen, &syms);
         assert!(
-            matches!(res, Some(SearchResult::Saturated)),
+            matches!(res, Some(SearchResult::Saturated(..))),
             "Expected Saturated for a ground satisfiable set, got {:?}",
             res
         );

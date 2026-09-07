@@ -841,6 +841,7 @@ pub fn run_schedule(
                         ml.log_csv,
                         sc.weight_fn.clone(),
                     );
+                    state.ml_premise_pruned = ml_pruned;
                     #[cfg(feature = "ml-guidance")]
                     {
                         state.ml_model = ml_model_thread.clone();
@@ -972,43 +973,24 @@ pub fn run_schedule(
                             };
                             SearchResult::Refutation(id, tstp)
                         }
-                        SearchResult::Saturated if sc.max_term_weight.is_some() => SearchResult::GaveUp,
-                        // SOS is refutationally incomplete: a strategy with sos_depth set
-                        // cannot distinguish "no proof exists" from "proof exists but is
-                        // unreachable under SOS restrictions".  Saturation from an
-                        // SOS-restricted strategy must therefore be GaveUp, not Saturated.
-                        // Without this, the stop flag fires and the entire portfolio is
-                        // killed, producing a false CounterSatisfiable on Theorem problems.
-                        SearchResult::Saturated if sc.sos_depth < u32::MAX => SearchResult::GaveUp,
-                        // Unit-only resolution is incomplete: a clause set may be
-                        // unsatisfiable yet require non-unit resolvents to find the proof.
-                        SearchResult::Saturated if sc.unit_only_resolution => SearchResult::GaveUp,
-                        // SInE filtering drops axioms; saturating on a subset of the problem
-                        // does not imply the full problem is satisfiable.
-                        SearchResult::Saturated if sc.sine_tolerance.is_some() => SearchResult::GaveUp,
-                        // Same for ML premise pruning: a worker that actually dropped
-                        // axioms cannot claim Saturated for the full problem.
-                        SearchResult::Saturated if ml_pruned => SearchResult::GaveUp,
-                        // Non-Standard weight functions affect the ORDER in which clauses
-                        // are selected, which in turn changes which clauses are generated
-                        // and which are simplified away.  This interaction between
-                        // ordering and simplification (forward subsumption, condensation)
-                        // can make saturation incomplete even when passive=0: a proof-
-                        // relevant clause may have been forward-subsumed earlier than it
-                        // would have been with Standard ordering.  Treat saturation from
-                        // any non-Standard weight strategy as GaveUp to avoid false
-                        // Satisfiable/CounterSatisfiable verdicts.
-                        SearchResult::Saturated
-                            if sc.weight_fn != crate::ClauseWeightFn::Standard =>
-                        {
-                            SearchResult::GaveUp
+                        SearchResult::Saturated(witness) => {
+                            // Already certified sound by CompletenessWitness inside search.
+                            // Validate against worker config as defense-in-depth.
+                            match sc.check_completeness(
+                                state.stats.weight_discarded,
+                                state.stats.lrs_discarded,
+                                state.ml_premise_pruned,
+                            ) {
+                                Ok(_) => SearchResult::Saturated(witness),
+                                Err(_) => SearchResult::GaveUp,
+                            }
                         }
                         other => other,
                     };
 
                     if matches!(
                         result,
-                        SearchResult::Refutation(..) | SearchResult::Saturated
+                        SearchResult::Refutation(..) | SearchResult::Saturated(..)
                     ) {
                         stop.store(true, Ordering::Relaxed);
                     }
@@ -1041,7 +1023,7 @@ pub fn run_schedule(
                     best = res;
                     // Keep draining the channel so threads can finish cleanly.
                 }
-                SearchResult::Saturated => {
+                SearchResult::Saturated(..) => {
                     if !matches!(best, SearchResult::Refutation(..)) {
                         best = res;
                     }
@@ -1223,7 +1205,7 @@ mod tests {
         // After EPR preprocessing, a saturated ground search is demoted to
         // GaveUp (conservative: avoids outputting a wrong Satisfiable).
         assert!(
-            matches!(result, SearchResult::Saturated | SearchResult::GaveUp),
+            matches!(result, SearchResult::Saturated(..) | SearchResult::GaveUp),
             "expected Saturated or GaveUp, got {result:?}"
         );
     }

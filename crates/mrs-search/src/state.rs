@@ -95,6 +95,8 @@ pub struct SearchState {
     /// Symbols that appear in any goal-connected clause (distance < 100).
     /// Kept for backwards compatibility and fast membership lookup.
     pub goal_symbols: rustc_hash::FxHashSet<mrs_core::SymbolId>,
+    /// Whether input axioms were pruned by ML premise selection for this worker.
+    pub ml_premise_pruned: bool,
 }
 
 impl SearchState {
@@ -229,6 +231,7 @@ impl SearchState {
             weight_fn,
             goal_map,
             goal_symbols,
+            ml_premise_pruned: false,
         }
     }
 

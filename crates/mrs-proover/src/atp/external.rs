@@ -299,7 +299,7 @@ impl Atp for MrsAtp {
 
         match result {
             SearchResult::Refutation(..) => AtpVerdict::Sound,
-            SearchResult::Saturated => AtpVerdict::Unknown,
+            SearchResult::Saturated(..) => AtpVerdict::Unknown,
             SearchResult::Timeout => AtpVerdict::Unknown,
             SearchResult::GaveUp => AtpVerdict::Unknown,
         }

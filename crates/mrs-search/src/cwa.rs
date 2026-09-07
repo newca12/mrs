@@ -355,7 +355,7 @@ pub fn try_componentwise_refute(
         if std::env::var("TRACE_CWA").is_ok() {
             let outcome = match &result {
                 SearchResult::Refutation(..) => "Refutation",
-                SearchResult::Saturated => "Saturated",
+                SearchResult::Saturated(..) => "Saturated",
                 SearchResult::Timeout => "Timeout",
                 SearchResult::GaveUp => "GaveUp",
             };
