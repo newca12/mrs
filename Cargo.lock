@@ -3542,6 +3542,7 @@ name = "mrs-bench"
 version = "0.2.3"
 dependencies = [
  "mrs-core",
+ "mrs-szs",
  "mrs-tptp",
  "rayon",
  "sha2",

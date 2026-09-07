@@ -11,6 +11,7 @@ description = "CASC benchmark harness and report tool for mrs"
 [dependencies]
 rayon = "1.12.0"
 mrs-core = { workspace = true }
+mrs-szs = { workspace = true }
 mrs-tptp = { workspace = true }
 sha2 = { workspace = true }
 tempfile = "3.27.0"
@@ -48,3 +49,7 @@ path = "src/bin/release_gate.rs"
 [[bin]]
 name = "repeat_search"
 path = "src/bin/repeat_search.rs"
+
+[[bin]]
+name = "dual_run_sanity_check"
+path = "src/bin/dual_run_sanity_check.rs"

@@ -21,6 +21,8 @@
 #   --time-DIV    <secs>         Override time limit for a specific division, e.g.
 #                                --time-feq 120  --time-ueq 240
 #                                (takes precedence over both --time and --casc-times)
+#   --sanity-check               Run dual_run_sanity_check on division canaries
+#                                before starting benchmark; aborts if any invariant fails.
 #   --jobs        <N>            Parallel jobs (default: 1)
 #   --output      <dir>          Output directory
 #                                (default: crates/mrs-bench/results/<edition>/TIMESTAMP)
@@ -49,6 +51,7 @@ TIME_LIMIT=120      # global fallback (seconds)
 JOBS=1
 OUTPUT=""
 USE_CASC_TIMES=0    # 0 = use TIME_LIMIT for all; 1 = use CASC-30 official times
+RUN_SANITY_CHECK=0  # 1 = run pre-flight dual_run_sanity_check on canaries
 
 # Official CASC-30 wall-clock time limits per division (seconds).
 # SLH is CPU-time limited but we approximate with wall clock here.
@@ -90,6 +93,7 @@ while [[ $# -gt 0 ]]; do
         --divisions)  DIVISIONS="$2";  shift 2 ;;
         --time)       TIME_LIMIT="$2"; shift 2 ;;
         --casc-times) USE_CASC_TIMES=1; shift ;;
+        --sanity-check) RUN_SANITY_CHECK=1; shift ;;
         --jobs)       JOBS="$2";       shift 2 ;;
         --output)     OUTPUT="$2";     shift 2 ;;
         --time-*)
@@ -145,6 +149,13 @@ PROBLEMS_ROOT="${PROBLEMS_DIR}"
 # Set TPTP so %include directives resolve (can be overridden by caller)
 if [[ -z "${TPTP:-}" ]]; then
     export TPTP="${PROBLEMS_DIR}"
+fi
+
+# ---------- optional pre-flight dual-run canary sanity check ----------
+if [[ "${RUN_SANITY_CHECK}" -eq 1 ]]; then
+    echo "Running pre-flight canary dual-run sanity check..."
+    "${SCRIPT_DIR}/dual_run_sanity_check.sh" --canaries --time 5
+    echo "Pre-flight sanity check passed."
 fi
 
 # ---------- discover systems ----------
