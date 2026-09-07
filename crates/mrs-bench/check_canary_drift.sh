@@ -34,6 +34,18 @@ canaries_found=0
 is_contaminated=0
 reasons=()
 
+# Determine failure_detail column index dynamically from header, defaulting to 9
+header=$(head -n 1 "${CSV}")
+details_col=9
+if [[ "${header}" == *"failure_detail"* ]]; then
+    detected_col=$(awk -F',' '{for(i=1;i<=NF;i++) if($i=="failure_detail") {print i; exit}}' <<< "${header}")
+    if [[ -n "${detected_col}" ]]; then
+        details_col="${detected_col}"
+    fi
+elif (( $(awk -F',' '{print NF}' <<< "${header}") >= 10 )); then
+    details_col=10
+fi
+
 # Helper function to extract a value from the details string
 # Example: extract_val "lrs_discarded=123" "lrs_discarded"
 extract_val() {
@@ -62,7 +74,7 @@ if [[ -n "${eps_line}" ]]; then
     
     szs=$(echo "${eps_line}" | cut -d',' -f5)
     time_s=$(echo "${eps_line}" | cut -d',' -f8)
-    details=$(echo "${eps_line}" | cut -d',' -f9)
+    details=$(echo "${eps_line}" | cut -d',' -f"${details_col}")
     
     discarded=$(extract_val "${details}" "lrs_discarded")
     passive=$(extract_val "${details}" "passive")
@@ -85,7 +97,7 @@ if [[ -n "${fne_line}" ]]; then
     
     szs=$(echo "${fne_line}" | cut -d',' -f5)
     time_s=$(echo "${fne_line}" | cut -d',' -f8)
-    details=$(echo "${fne_line}" | cut -d',' -f9)
+    details=$(echo "${fne_line}" | cut -d',' -f"${details_col}")
     
     processed=$(extract_val "${details}" "processed")
     generated=$(extract_val "${details}" "generated")
@@ -108,7 +120,7 @@ if [[ -n "${feq_line}" ]]; then
     
     szs=$(echo "${feq_line}" | cut -d',' -f5)
     time_s=$(echo "${feq_line}" | cut -d',' -f8)
-    details=$(echo "${feq_line}" | cut -d',' -f9)
+    details=$(echo "${feq_line}" | cut -d',' -f"${details_col}")
     
     processed=$(extract_val "${details}" "processed")
     generated=$(extract_val "${details}" "generated")
@@ -131,7 +143,7 @@ if [[ -n "${ueq_line}" ]]; then
     
     szs=$(echo "${ueq_line}" | cut -d',' -f5)
     time_s=$(echo "${ueq_line}" | cut -d',' -f8)
-    details=$(echo "${ueq_line}" | cut -d',' -f9)
+    details=$(echo "${ueq_line}" | cut -d',' -f"${details_col}")
     
     processed=$(extract_val "${details}" "processed")
     generated=$(extract_val "${details}" "generated")
