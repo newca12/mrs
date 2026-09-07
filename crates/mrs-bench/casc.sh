@@ -264,15 +264,32 @@ echo "[casc] Total jobs:  ${total_problems}" >&2
 run_one() {
     local div="$1" problem="$2" prob_path="$3" sys="$4" tlimit="$5"
     local invoke="${SCRIPT_DIR}/systems/${sys}/invoke.sh"
-    local tmp tmp_err
+    local tmp tmp_err tmp_mem
     tmp="$(mktemp)"
     tmp_err="$(mktemp)"
+    tmp_mem="$(mktemp)"
 
     local start_ms end_ms wall_s szs exit_code
     start_ms=$(date +%s%3N)
+
+    # Locate GNU time binary
+    local time_bin=""
+    if which time &>/dev/null; then
+        time_bin=$(which time 2>/dev/null)
+    elif [[ -x "/usr/bin/time" ]]; then
+        time_bin="/usr/bin/time"
+    elif [[ -x "/run/current-system/sw/bin/time" ]]; then
+        time_bin="/run/current-system/sw/bin/time"
+    fi
+
     # Give the system tlimit seconds; add 10s grace for it to flush output.
-    timeout $(( tlimit + 10 )) "${invoke}" "${prob_path}" "${tlimit}" \
-        > "${tmp}" 2>"${tmp_err}"
+    if [[ -n "${time_bin}" ]]; then
+        "${time_bin}" -o "${tmp_mem}" -f "%M" timeout $(( tlimit + 10 )) "${invoke}" "${prob_path}" "${tlimit}" \
+            > "${tmp}" 2>"${tmp_err}"
+    else
+        timeout $(( tlimit + 10 )) "${invoke}" "${prob_path}" "${tlimit}" \
+            > "${tmp}" 2>"${tmp_err}"
+    fi
     exit_code=$?
     end_ms=$(date +%s%3N)
 
@@ -323,6 +340,16 @@ run_one() {
         }
     ' "${tmp}" 2>/dev/null || true)
 
+    # Fall back to GNU time Max RSS if self-reported memory is missing
+    if [[ -z "${peak_memory_mb}" && -f "${tmp_mem}" ]]; then
+        local raw_kb
+        raw_kb=$(tail -n 1 "${tmp_mem}" 2>/dev/null | awk '{print $1}' || echo "0")
+        # Ensure raw_kb is a valid integer before doing arithmetic
+        if [[ "${raw_kb}" =~ ^[0-9]+$ && "${raw_kb}" -gt 0 ]]; then
+            peak_memory_mb=$(( raw_kb / 1024 ))
+        fi
+    fi
+
     if [[ -z "${failure_detail}" && ${exit_code} -ne 0 && ${exit_code} -ne 124 ]]; then
         if grep -qE "memory allocation.*failed" "${tmp_err}" 2>/dev/null; then
             failure_detail="OOM: Rust memory allocation failed"
@@ -338,7 +365,7 @@ run_one() {
         fi
     fi
 
-    rm -f "${tmp}" "${tmp_err}"
+    rm -f "${tmp}" "${tmp_err}" "${tmp_mem}"
 
     # Look up reference answer and grade.
     local expected="" verdict="unknown"
