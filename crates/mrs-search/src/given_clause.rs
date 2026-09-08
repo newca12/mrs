@@ -21,13 +21,13 @@ use mrs_calculus::literal_selection::{restrict_to_maximal_id, selected_literals_
 use mrs_calculus::resolution;
 use mrs_calculus::subsumption;
 use mrs_calculus::superposition;
-use mrs_core::SymbolId;
 use mrs_core::clause::{
     AvatarSatTrace, Clause as LegacyClause, ClauseCertificate, ClauseId, ClauseSource,
     avatar_sat_trace_digest,
 };
 use mrs_core::display::DisplayWithSymbols;
 use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermId, TermNode};
+use mrs_core::{Atom, Formula, SymbolId, Term};
 use mrs_index::fvi::FeatureVector;
 use mrs_proof::extract::extract_proof_ids;
 
@@ -59,6 +59,72 @@ fn shared_chain_key(chain: &[LegacyClause], symbols: &mrs_core::SymbolTable) -> 
         .map(|clause| format!("{}", clause.display(symbols)))
         .collect::<Vec<_>>()
         .join(" -> ")
+}
+
+fn remap_symbol(symbol: &mut SymbolId, mapping: &[SymbolId]) -> bool {
+    let Some(mapped) = mapping.get(symbol.index() as usize) else {
+        return false;
+    };
+    *symbol = *mapped;
+    true
+}
+
+fn remap_term(term: &mut Term, mapping: &[SymbolId]) -> bool {
+    match term {
+        Term::Var(_) => true,
+        Term::App(symbol, args) => {
+            let mut valid = remap_symbol(symbol, mapping);
+            for arg in args {
+                valid &= remap_term(arg, mapping);
+            }
+            valid
+        }
+    }
+}
+
+fn remap_atom(atom: &mut Atom, mapping: &[SymbolId]) -> bool {
+    match atom {
+        Atom::Pred(symbol, args) => {
+            let mut valid = remap_symbol(symbol, mapping);
+            for arg in args {
+                valid &= remap_term(arg, mapping);
+            }
+            valid
+        }
+        Atom::Eq(left, right) => remap_term(left, mapping) & remap_term(right, mapping),
+    }
+}
+
+fn remap_formula(formula: &mut Formula, mapping: &[SymbolId]) -> bool {
+    match formula {
+        Formula::Atom(atom) => remap_atom(atom, mapping),
+        Formula::Neg(inner) => remap_formula(inner, mapping),
+        Formula::And(formulas) | Formula::Or(formulas) => formulas
+            .iter_mut()
+            .all(|formula| remap_formula(formula, mapping)),
+        Formula::Implies(left, right) | Formula::Iff(left, right) => {
+            remap_formula(left, mapping) & remap_formula(right, mapping)
+        }
+        Formula::Forall(_, body) | Formula::Exists(_, body) => remap_formula(body, mapping),
+        Formula::True | Formula::False => true,
+    }
+}
+
+/// Rebind every symbol in a shared legacy clause to the receiving worker's
+/// symbol table. Worker-local symbol IDs cannot cross the shared-pool boundary
+/// without this name-based remapping.
+fn remap_shared_clause_symbols(clause: &mut LegacyClause, mapping: &[SymbolId]) -> bool {
+    let mut valid = true;
+    for literal in &mut clause.literals {
+        valid &= remap_atom(&mut literal.atom, mapping);
+    }
+    if let ClauseSource::Introduced { symbol } = &mut clause.source {
+        valid &= remap_symbol(symbol, mapping);
+    }
+    if let Some(formula) = &mut clause.formula {
+        valid &= remap_formula(formula, mapping);
+    }
+    valid
 }
 
 fn lrs_target_size(
@@ -126,6 +192,7 @@ fn publish_shared_chain(
     pool.push(SharedClauseChain {
         epoch: iteration / interval,
         key,
+        symbol_names: state.symbols.iter_names().map(str::to_owned).collect(),
         chain,
     });
     true
@@ -873,9 +940,26 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 );
             }
             for entry in to_add {
-                state.shared_pool_seen.insert(entry.key.clone());
+                let symbol_map = {
+                    let symbols = std::sync::Arc::make_mut(&mut state.symbols);
+                    entry
+                        .symbol_names
+                        .iter()
+                        .map(|name| symbols.intern(name))
+                        .collect::<Vec<_>>()
+                };
+                let mut chain = entry.chain;
+                if !chain
+                    .iter_mut()
+                    .all(|clause| remap_shared_clause_symbols(clause, &symbol_map))
+                {
+                    // Do not retry malformed entries or partially insert them
+                    // into the receiving worker's proof store.
+                    state.shared_pool_seen.insert(entry.key);
+                    continue;
+                }
+                state.shared_pool_seen.insert(entry.key);
                 state.stats.shared_imported += 1;
-                let chain = entry.chain;
                 // Remap every clause ID in the chain to a fresh local ID,
                 // and rewrite `Inference` parent references accordingly,
                 // so the spliced-in subtree is fully self-consistent
@@ -2198,6 +2282,7 @@ mod tests {
         let chain = |epoch: u64, key: &str| SharedClauseChain {
             epoch,
             key: key.into(),
+            symbol_names: Vec::new(),
             chain: Vec::new(),
         };
         let pool = vec![chain(2, "z"), chain(1, "b"), chain(1, "a"), chain(1, "a")];
@@ -2215,8 +2300,9 @@ mod tests {
     fn search_imports_shared_chain_at_poll_epoch() {
         let mut symbols = SymbolTable::new();
         let p = symbols.intern("p");
-        let q = symbols.intern("q");
         let a = symbols.intern("a");
+        let mut publisher_symbols = symbols.clone();
+        let q = publisher_symbols.intern("q");
         let mut id_gen = ClauseIdGen::new();
         let initial = input_clause(
             &mut id_gen,
@@ -2242,6 +2328,7 @@ mod tests {
         state.shared_pool = Some(Arc::new(std::sync::RwLock::new(vec![SharedClauseChain {
             epoch: 0,
             key: "shared-chain".into(),
+            symbol_names: publisher_symbols.iter_names().map(str::to_owned).collect(),
             chain: vec![shared],
         }])));
         let config = SearchConfig {
@@ -2253,6 +2340,49 @@ mod tests {
         };
         let _ = search(&mut state, &config);
         assert_eq!(state.stats.shared_imported, 1);
+        assert!(state.symbols.resolve_name("q").is_some());
+    }
+
+    #[test]
+    fn shared_chain_symbols_are_remapped_into_receiver_table() {
+        let mut publisher_symbols = SymbolTable::new();
+        let publisher_goal = publisher_symbols.intern("goal_d0");
+        let publisher_base = publisher_symbols.intern("base");
+        let mut receiver_symbols = SymbolTable::new();
+        let receiver_base = receiver_symbols.intern("base");
+
+        let mut shared = Clause::new(
+            ClauseIdGen::new().next(),
+            vec![Literal::pos(Atom::Eq(
+                Term::constant(publisher_goal),
+                Term::constant(publisher_base),
+            ))],
+            ClauseSource::Introduced {
+                symbol: publisher_goal,
+            },
+        );
+        let symbol_map = publisher_symbols
+            .iter_names()
+            .map(|name| receiver_symbols.intern(name))
+            .collect::<Vec<_>>();
+
+        assert!(remap_shared_clause_symbols(&mut shared, &symbol_map));
+        let Atom::Eq(left, right) = &shared.literals[0].atom else {
+            panic!("expected an equality");
+        };
+        let Term::App(left_symbol, _) = left else {
+            panic!("expected a function application");
+        };
+        let Term::App(right_symbol, _) = right else {
+            panic!("expected a function application");
+        };
+        assert_eq!(receiver_symbols.resolve(*left_symbol), "goal_d0");
+        assert_eq!(receiver_symbols.resolve(*right_symbol), "base");
+        let ClauseSource::Introduced { symbol } = shared.source else {
+            panic!("expected an introduced clause");
+        };
+        assert_eq!(receiver_symbols.resolve(symbol), "goal_d0");
+        assert_eq!(receiver_base, *right_symbol);
     }
 
     fn input_clause(

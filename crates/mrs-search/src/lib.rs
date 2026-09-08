@@ -267,6 +267,9 @@ pub struct SharedClauseChain {
     pub epoch: u64,
     /// Stable content key used for deterministic ordering and deduplication.
     pub key: String,
+    /// Publisher symbol names in `SymbolId` index order.  Workers own private
+    /// symbol tables, so raw symbol IDs cannot be shared without this mapping.
+    pub symbol_names: Vec<String>,
     /// Ancestor chain, with the shared unit equality last.
     pub chain: Vec<Clause>,
 }

@@ -890,7 +890,12 @@ pub fn run_schedule(
 
                                     let label = if is_pos { 1.0 } else { 0.0 };
                                     let weight = crate::weight::clause_weight_id(clause, &state.term_bank, &state.config) as f32;
-                                    let feats = mrs_core::ml::features::extract(clause, &state.term_bank, symbols, weight);
+                                    let feats = mrs_core::ml::features::extract(
+                                        clause,
+                                        &state.term_bank,
+                                        state.symbols.as_ref(),
+                                        weight,
+                                    );
                                     all_samples.push(mrs_core::ml::sample::LabeledSample { label, feats });
                                 }
 
@@ -923,14 +928,23 @@ pub fn run_schedule(
                                         .collect();
 
                                     if !conjectures.is_empty() {
-                                        let ctx = mrs_core::ml::premise_selector::ConjectureContext::new(&conjectures, &state.term_bank, symbols);
+                                        let ctx = mrs_core::ml::premise_selector::ConjectureContext::new(
+                                            &conjectures,
+                                            &state.term_bank,
+                                            state.symbols.as_ref(),
+                                        );
                                         let mut premise_samples = Vec::new();
 
                                         for axiom in state.clause_store.values() {
                                             if matches!(axiom.source, mrs_core::clause::ClauseSource::Input { .. }) && axiom.distance != 0 {
                                                 let is_pos = pos_set.contains(&axiom.id);
                                                 let label = if is_pos { 1.0 } else { 0.0 };
-                                                let feats = mrs_core::ml::premise_selector::extract_premise_features(axiom, &ctx, &state.term_bank, symbols);
+                                                let feats = mrs_core::ml::premise_selector::extract_premise_features(
+                                                    axiom,
+                                                    &ctx,
+                                                    &state.term_bank,
+                                                    state.symbols.as_ref(),
+                                                );
                                                 premise_samples.push(mrs_core::ml::sample::PremiseSample { label, feats });
                                             }
                                         }
@@ -966,7 +980,7 @@ pub fn run_schedule(
                                     .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
                                     .collect();
                                 let proof = extract_proof(id, &legacy_store);
-                                format_tstp(&proof, symbols)
+                                format_tstp(&proof, state.symbols.as_ref())
                             } else {
                                 tstp_proof
                             };

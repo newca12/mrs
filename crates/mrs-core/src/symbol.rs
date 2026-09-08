@@ -94,6 +94,14 @@ impl SymbolTable {
     pub fn is_empty(&self) -> bool {
         self.names.is_empty()
     }
+
+    /// Iterates over interned names in their [`SymbolId`] index order.
+    ///
+    /// The order is stable for the lifetime of this table and is useful when
+    /// transferring symbol-bearing values to another symbol table.
+    pub fn iter_names(&self) -> impl Iterator<Item = &str> {
+        self.names.iter().map(|name| name.as_str())
+    }
 }
 
 impl Default for SymbolTable {
