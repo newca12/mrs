@@ -197,3 +197,40 @@ Understanding this generation process provides concrete guidance for `mrs` devel
    - Because benchmark problems use `include('Axioms/XYZ.ax')`, and competition suites ship randomized/pre-processed axiom files in `Axioms/`, running benchmarks without setting `$TPTP` to the local competition suite can lead to axiom drift. The canary suite and `check_canary_drift.sh` monitor processed clause counts to catch discrepancies early.
 4. **No Cheating on Headers**:
    - Prover components (or ML guidance pipelines) must never inspect file comments or headers, as all headers are stripped in official competition problems.
+
+---
+
+## 9. Direct Implications for the `mrs` Roadmap
+
+The discoveries above translate into actionable roadmap items across the solver engine, portfolio scheduling, and benchmarking infrastructure:
+
+### 1. Robustness Against `tptp4X` Permutations (Queue Tie-Breaking & Precedence)
+- **The Issue**: `tptp4X -c -t randomize` randomizes input formula order and swaps equality orientations. If two passive clauses have identical weights, falling back to arrival/parser order causes **permutation jitter**—a problem solvable in 2 seconds under Seed A might timeout under Seed B because an arbitrary tie-break delays a critical inference.
+- **Roadmap Action**:
+  - **Deterministic Structural Tie-Breaking**: Update [`unprocessed.rs`](file:///home/fr22192/EDLA/git/mrs/crates/mrs-search/src/unprocessed.rs) so that equal-weight clauses are tie-broken using invariant structural metrics (term depth, symbol rarity, variable count, conjectural distance) rather than input arrival order.
+  - **Syntax-Independent Precedence**: Ensure symbol precedence heuristics in [`strategy.rs`](file:///home/fr22192/EDLA/git/mrs/crates/mrs-search/src/strategy.rs) rely purely on semantic properties (arity, signature frequency, conjecture involvement) and never on encounter order in the problem file.
+
+### 2. Targeting the Rating Sweet Spot ($0.20 < \text{Rating} < 1.00$)
+- **The Issue**: Standard competition divisions contain **0% trivial problems** ($\text{Rating} \le 0.20$) and **0% unsolved problems** ($\text{Rating} = 1.00$). Points are won exclusively in the 0.40–0.90 difficulty band.
+- **Roadmap Action**:
+  - **Portfolio Time Allocation on 8 Cores**: In 240-second CASC divisions on 8 cores, running 16 shallow 15-second strategies fails on sweet-spot problems requiring deep saturation. The portfolio should allocate substantial time budgets (30–60s+ per strategy, or 8 concurrent strategies spanning the full 240s) using greedy set-cover data.
+  - **De-prioritize Speculative Long-Shots**: Reallocate engineering effort from hyper-aggressive, speculative heuristics (aimed at rating 1.00 problems) to core throughput engines (FVT subsumption trie, DISCOUNT loop) that reliably solve moderately hard theorems.
+
+### 3. Division Specialization: UEQ vs Satisfiability (FNN / FNQ)
+- **The Issue**:
+  - **UEQ Stability**: Unit Equality problems exhibit a **77.3% carryover** between CASC-30 and CASC-J13, and 100% conform to `CNF_UNS_RFO_PEQ_UEQ`.
+  - **Model Finding in FNN / FNQ**: CASC-J13 introduced dedicated divisions for non-theorems/satisfiability (`FNN` without equality, `FNQ` with equality).
+- **Roadmap Action**:
+  - **Fast-Track UEQ Pure Completion Engine**: Because UEQ contains no predicates, no non-unit clauses, and no splitting, a dedicated Knuth-Bendix Completion pipeline (Twee-style goal transformation, ground rewriting, zero AVATAR overhead) delivers guaranteed high returns.
+  - **Finite Model Finding / Saturation Detection**: To score points in FNN and FNQ, `mrs` must implement saturation detection (emitting `SZS Satisfiable` when the passive queue is exhausted after complete redundancy elimination) and explore finite model finding integration.
+
+### 4. SInE Preprocessing Gating (TPTP Standard vs Large Theories)
+- **The Issue**: CASC-30 featured massive axiom-selection divisions (`SLH` with 1,000 problems, `ICU` with 101 problems), but CASC-J13 omitted both, containing 100% standard TPTP problems with modest axiom sizes.
+- **Roadmap Action**:
+  - **Size-Gated SInE**: In standard TPTP divisions (FEQ, FNE), aggressive SInE axiom selection can accidentally prune necessary lemmas. SInE should be gated by axiom count ($|\text{axioms}| > 150$), running unpruned saturation on standard problems.
+
+### 5. Metamorphic Permutation Testing in the Benchmark Harness
+- **The Issue**: Benchmarking solely on raw problem files risks overfitting to a single arbitrary clause order or equality orientation.
+- **Roadmap Action**:
+  - **Multi-Seed Canary Validation**: Add a `--metamorphic-seeds` mode to [`crates/mrs-bench`](file:///home/fr22192/EDLA/git/mrs/crates/mrs-bench) that applies `tptp4X -c -t randomize:<seed>` across multiple seeds on canary problems. Any solve-time variance or failure immediately highlights permutation brittleness before competition deployment.
+
