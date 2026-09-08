@@ -386,6 +386,115 @@ REFERENCE VIOLATIONS — none detected.
 ===================================================================
 ===================================================================
 
+commit 181929ae1ea647c30cf91ea92219d69f23d7e9f3 (HEAD -> fix/integrate-casc-next-review, origin/fix/integrate-casc-next-review)
+
+[www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh   --edition casc-30  --systems mrs --divisions fne,feq,epu,eps,ueq,icu  --casc-times --jobs 2 --output crates/mrs-bench/results/casc-30-W8J2-$(date +%Y%m%d)
+
+commit dbf462d82d3ff24d13ce38090dab10f278765836 (HEAD -> fix/integrate-casc-next-review, origin/fix/integrate-casc-next-review)
+
+[done]
+[www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh   --edition casc-30  --systems mrs --divisions fne,feq,epu,eps,ueq,icu  --casc-times --jobs 1 --output crates/mrs-bench/results/casc-30-W8J1-$(date +%Y%m%d)
+Running `target/debug/bench_report /DATA/ai/mrs/crates/mrs-bench/results/casc-30-W8J1-20260907/run.csv`
+CASC-30 Results — 2026-09-08 17:10  (993 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        43   23.628
+FEQ            400       102   21.605
+EPU            100        18   12.707
+EPS            100        17   22.893
+UEQ            300       129    7.559
+------------------  --------------------
+TOTAL         1000       309   15.623
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+
+commit 4d2f610ad61279e848bd6ffcb59ff62094acb0a9 (HEAD -> fix/integrate-casc-next-review, origin/fix/integrate-casc-next-review)
+
+[done]
+[www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh   --edition casc-j13 --systems mrs --divisions fne,feq,ueq  --casc-times --jobs 1 --output crates/mrs-bench/results/casc-j13-W8J1-$(date +%Y%m%d)
+
+     Running `target/debug/bench_report /DATA/ai/mrs/crates/mrs-bench/results/casc-j13-W8J1-20260906/run.csv`
+CASC-J13 Results — 2026-09-07 10:41  (800 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        35   12.184
+FEQ            300        69   22.174
+UEQ            400       167    7.176
+------------------  --------------------
+TOTAL          800       271   11.642
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+commit 835077e8c628078f9385b2740aea744c4c50031d (HEAD -> integrate/casc-next
+
+[done]
+[www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh   --edition casc-j13 --systems mrs --divisions fne,feq,ueq  --casc-times --jobs 1 --output crates/mrs-bench/results/casc-j13-W8J1-$(date +%Y%m%d)
+/DATA/ai/mrs/crates/mrs-bench/results/casc-j13-W8J1-20260905/run.csv
+     Running `target/debug/bench_report /DATA/ai/mrs/crates/mrs-bench/results/casc-j13-W8J1-20260905/run.csv`
+CASC-J13 Results — 2026-09-06 12:38  (800 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        40   14.938
+FEQ            300        69   21.857
+UEQ            400       168    7.122
+------------------  --------------------
+TOTAL          800       277   11.921
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — 4 SOUNDNESS ERROR(S) vs reference answers:
+  FNE     NLP260+1                        mrs=CounterSatisfiable but expected Theorem  ⚠ UNSOUND
+  FNE     NLP261+1                        mrs=CounterSatisfiable but expected Theorem  ⚠ UNSOUND
+  FNE     NLP262+1                        mrs=CounterSatisfiable but expected Theorem  ⚠ UNSOUND
+  FNE     PRD001+1                        mrs=CounterSatisfiable but expected Theorem  ⚠ UNSOUND
+
+[done]
+     Running `target/debug/bench_report /DATA/ai/mrs/crates/mrs-bench/results/casc-30-W8J1-20260903/run.csv`
+CASC-30 Results — 2026-09-05 13:28  (1101 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        46   22.429
+FEQ            400       102   23.024
+EPU            100        18   12.627
+EPS            100        48    8.268
+UEQ            300       128    7.189
+ICU            101         2   67.921
+------------------  --------------------
+TOTAL         1101       344   14.711
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — 3 SOUNDNESS ERROR(S) vs reference answers:
+  FNE     NLP260+1                        mrs=CounterSatisfiable but expected Theorem  ⚠ UNSOUND
+  FNE     NLP261+1                        mrs=CounterSatisfiable but expected Theorem  ⚠ UNSOUND
+  FNE     NLP262+1                        mrs=CounterSatisfiable but expected Theorem  ⚠ UNSOUND
+
+
 commit 9738467d6d1dc3190f663bea94f4f628d7f1d7a9 (HEAD -> feat/destructive-equality-resolution
 
 [done]
