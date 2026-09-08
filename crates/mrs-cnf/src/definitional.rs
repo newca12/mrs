@@ -356,7 +356,13 @@ pub fn to_cnf_definitional_with_defs_thresh(
         for conj in conjuncts {
             let neg_def = Formula::neg(Formula::atom(def_atom.clone()));
             let clause = Formula::or(vec![neg_def, conj.clone()]);
-            all_conjuncts.push(clause);
+            // A thresholded nested And-under-Or may remain inside `conj`.
+            // Normalize each definition clause independently before combining
+            // it with the already-normalized main formula.
+            match crate::cnf::to_cnf(&clause) {
+                Formula::And(cs) => all_conjuncts.extend(cs),
+                other => all_conjuncts.push(other),
+            }
         }
     }
 
@@ -545,6 +551,28 @@ fn collect_vars_term(term: &Term, vars: &mut BTreeSet<VarId>) {
 mod tests {
     use super::*;
     use mrs_core::display::DisplayWithSymbols;
+
+    fn assert_cnf(formula: &Formula) {
+        match formula {
+            Formula::And(conjuncts) => {
+                for conjunct in conjuncts {
+                    assert_cnf(conjunct);
+                }
+            }
+            Formula::Or(disjuncts) => {
+                for disjunct in disjuncts {
+                    assert!(
+                        is_literal_formula(disjunct),
+                        "non-literal disjunct in CNF: {disjunct:?}"
+                    );
+                }
+            }
+            other => assert!(
+                is_literal_formula(other),
+                "non-literal formula in CNF: {other:?}"
+            ),
+        }
+    }
 
     fn fmt(f: &Formula, syms: &SymbolTable) -> String {
         format!("{}", f.display(syms))
@@ -749,6 +777,48 @@ mod tests {
         } else {
             panic!("Expected And, got: {}", fmt(&cnf, &syms));
         }
+    }
+
+    #[test]
+    fn thresholded_definition_clauses_are_fully_cnf_normalized() {
+        let mut syms = SymbolTable::new();
+        let p = atom(&mut syms, "p");
+        let q = atom(&mut syms, "q");
+        let r = atom(&mut syms, "r");
+        let s = atom(&mut syms, "s");
+        let t = atom(&mut syms, "t");
+        let u = atom(&mut syms, "u");
+        let v = atom(&mut syms, "v");
+        let w = atom(&mut syms, "w");
+        let x = atom(&mut syms, "x");
+        let y = atom(&mut syms, "y");
+        let z = atom(&mut syms, "z");
+
+        // The inner `r | (s & t)` is below the threshold and remains while
+        // the outer conjunction is named. Its generated definition clause
+        // must still be distributed before clause extraction.
+        let formula = Formula::or(vec![
+            Formula::and(vec![q, Formula::or(vec![r, Formula::and(vec![s, t])])]),
+            Formula::and(vec![p, u, v]),
+            Formula::and(vec![w, x, y, z]),
+        ]);
+
+        let (cnf, definitions) =
+            to_cnf_definitional_with_defs_thresh(&formula, &mut syms, "thresholded", 8);
+
+        assert!(!definitions.is_empty());
+        assert_cnf(&cnf);
+
+        let mut id_gen = mrs_core::clause::ClauseIdGen::new();
+        let clauses = crate::flatten::extract_clauses(
+            &cnf,
+            &mut id_gen,
+            &mrs_core::clause::ClauseSource::Input {
+                name: "thresholded".into(),
+                role: "axiom".into(),
+            },
+        );
+        assert!(!clauses.is_empty());
     }
 
     #[test]
