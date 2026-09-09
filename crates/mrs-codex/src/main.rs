@@ -427,6 +427,19 @@ fn init_db(conn: &Connection) -> SqliteResult<()> {
         [],
     )?;
 
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_problem_profiles_archetype ON problem_profiles(archetype)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_problem_profiles_division ON problem_profiles(casc_division)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_problem_profiles_domain ON problem_profiles(domain)",
+        [],
+    );
+
     Ok(())
 }
 
@@ -533,19 +546,128 @@ fn fetch_profiled_problems(conn: &Connection) -> SqliteResult<HashSet<String>> {
     Ok(names)
 }
 
+fn extract_domain_from_name(name: &str) -> String {
+    if let Some((dir, _)) = name.split_once('/')
+        && dir.len() >= 3
+        && dir.chars().take(3).all(|c| c.is_ascii_alphabetic())
+    {
+        return dir[0..3].to_uppercase();
+    }
+    let base = Path::new(name)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(name);
+    if base.len() >= 3 && base.chars().take(3).all(|c| c.is_ascii_alphabetic()) {
+        base[0..3].to_uppercase()
+    } else {
+        "UNK".to_string()
+    }
+}
+
+fn parse_headers_from_str(content: &str) -> (Option<String>, Option<f32>) {
+    let mut status = None;
+    let mut rating = None;
+
+    for line in content.lines().take(120) {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('%') {
+            if !trimmed.is_empty() {
+                break;
+            }
+            continue;
+        }
+
+        let without_pct = trimmed.trim_start_matches('%').trim();
+        if without_pct.starts_with("Status")
+            && let Some((_, val)) = without_pct.split_once(':')
+            && let Some(token) = val.split_whitespace().next()
+            && !token.is_empty()
+        {
+            status = Some(token.to_string());
+        } else if without_pct.starts_with("Rating")
+            && let Some((_, val)) = without_pct.split_once(':')
+            && let Some(token) = val.split_whitespace().next()
+            && let Ok(r) = token.parse::<f32>()
+        {
+            rating = Some(r);
+        }
+    }
+
+    (status, rating)
+}
+
 fn extract_problem_profile_from_file(
     path: &Path,
-    _problem_name: &str,
+    problem_name: &str,
+    tptp_root: Option<&Path>,
 ) -> Option<mrs_core::ProblemProfile> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let problem = mrs_tptp::parse_tptp(&content).ok()?;
+    let file_size = std::fs::metadata(path).ok().map(|m| m.len()).unwrap_or(0);
+    if file_size > 20 * 1024 * 1024 {
+        let content_prefix = std::fs::read_to_string(path).unwrap_or_default();
+        let (header_status, header_rating) = parse_headers_from_str(&content_prefix);
+        let domain = extract_domain_from_name(problem_name);
+        let mut profile = mrs_core::ProblemProfile::empty(
+            problem_name,
+            domain,
+            "FOF".to_string(),
+            header_status,
+            header_rating,
+        );
+        profile.is_large_theory = true;
+        profile.archetype = mrs_core::ProblemArchetype::LargeTheory;
+        profile.casc_division = "FEQ".to_string();
+        profile.recommended_schedule = "casc_feq".to_string();
+        profile.recommended_engine = "SuperpositionPortfolio".to_string();
+        profile.recommended_sine = true;
+        return Some(profile);
+    }
+
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+    let problem = match mrs_tptp::parse_tptp(&content) {
+        Ok(p) => p,
+        Err(_) => {
+            let (header_status, header_rating) = parse_headers_from_str(&content);
+            let domain = extract_domain_from_name(problem_name);
+            let profile = mrs_core::ProblemProfile::empty(
+                problem_name,
+                domain,
+                "Unknown".to_string(),
+                header_status,
+                header_rating,
+            );
+            return Some(profile);
+        }
+    };
     let mut lowered = mrs::lowering::lower_problem(&problem);
     if !problem.includes.is_empty() {
         let base_dir = path.parent().unwrap_or(Path::new("."));
-        let tptp_root = std::env::var("TPTP").ok().map(PathBuf::from);
-        let _ =
-            mrs::include::resolve_and_lower(&problem, &mut lowered, base_dir, tptp_root.as_deref());
+        let env_tptp = std::env::var("TPTP").ok().map(PathBuf::from);
+        let effective_tptp = tptp_root.or(env_tptp.as_deref());
+        let _ = mrs::include::resolve_and_lower(&problem, &mut lowered, base_dir, effective_tptp);
     }
+    if lowered.axioms.len() > 30_000 {
+        let (header_status, header_rating) = parse_headers_from_str(&content);
+        let domain = extract_domain_from_name(problem_name);
+        let mut profile = mrs_core::ProblemProfile::empty(
+            problem_name,
+            domain,
+            "FOF".to_string(),
+            header_status,
+            header_rating,
+        );
+        profile.num_axioms = lowered.axioms.len();
+        profile.is_large_theory = true;
+        profile.archetype = mrs_core::ProblemArchetype::LargeTheory;
+        profile.casc_division = "FEQ".to_string();
+        profile.recommended_schedule = "casc_feq".to_string();
+        profile.recommended_engine = "SuperpositionPortfolio".to_string();
+        profile.recommended_sine = true;
+        return Some(profile);
+    }
+
     let mut id_gen = lowered.id_gen.clone();
     let mut all_clauses = lowered.cnf_clauses;
     for f in lowered.axioms {
@@ -561,6 +683,9 @@ fn extract_problem_profile_from_file(
             None,
         );
         all_clauses.extend(clauses);
+        if all_clauses.len() > 50_000 {
+            break;
+        }
     }
     for f in lowered.conjectures {
         let negated = mrs_core::Formula::neg(f.formula.clone());
@@ -577,12 +702,14 @@ fn extract_problem_profile_from_file(
         );
         all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(0)));
     }
-    Some(mrs::analyze::analyze_problem(
+    let mut profile = mrs::analyze::analyze_problem(
         &path.to_string_lossy(),
         &problem,
         &lowered.symbols,
         &all_clauses,
-    ))
+    );
+    profile.problem_name = problem_name.to_string();
+    Some(profile)
 }
 
 fn get_or_create_id(
@@ -883,17 +1010,38 @@ fn run_profile_only(args: &Args) {
         profiled_problems.len(),
         args.db.display()
     );
-    println!("Scanning {} for .p files...", args.folder.display());
+
+    // Auto-detect TPTP root if not set
+    let detected_tptp = std::env::var("TPTP").ok().map(PathBuf::from).or_else(|| {
+        if args.folder.join("TPTP-v9.3.0").is_dir() {
+            Some(args.folder.join("TPTP-v9.3.0"))
+        } else if args.folder.join("../TPTP-v9.3.0").is_dir() {
+            Some(args.folder.join("../TPTP-v9.3.0"))
+        } else {
+            None
+        }
+    });
+
+    // Determine the base folder to scan
+    let base_folder = if args.folder.join("TPTP-v9.3.0/Problems").is_dir() {
+        args.folder.join("TPTP-v9.3.0/Problems")
+    } else if args.folder.join("Problems").is_dir() {
+        args.folder.join("Problems")
+    } else {
+        args.folder.clone()
+    };
+
+    println!("Scanning {} for .p files...", base_folder.display());
 
     let mut pending_files = Vec::new();
-    for entry in WalkDir::new(&args.folder)
+    for entry in WalkDir::new(&base_folder)
         .into_iter()
         .filter_map(|e| e.ok())
     {
         if entry.path().is_file() && entry.path().extension().is_some_and(|ext| ext == "p") {
             let relative_path = entry
                 .path()
-                .strip_prefix(&args.folder)
+                .strip_prefix(&base_folder)
                 .unwrap_or(entry.path());
             let problem_name = relative_path.to_string_lossy().to_string();
 
@@ -926,40 +1074,72 @@ fn run_profile_only(args: &Args) {
 
     let db_path = args.db.clone();
     let writer_handle = thread::spawn(move || {
-        let conn =
+        let mut conn =
             Connection::open(db_path).expect("Failed to open SQLite database in writer thread");
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
-             PRAGMA synchronous = NORMAL;",
+             PRAGMA synchronous = NORMAL;
+             PRAGMA cache_size = -64000;",
         )
         .expect("Failed to set PRAGMAs");
 
+        let batch_size: usize = 250;
+        let mut count: usize = 0;
+        let mut tx = conn.transaction().expect("Failed to start transaction");
+
         for profile in receiver {
-            if let Err(e) = save_problem_profile(&conn, &profile) {
+            if let Err(e) = save_problem_profile(&tx, &profile) {
                 eprintln!("Error saving profile for {}: {}", profile.problem_name, e);
             }
+            count += 1;
+            if count.is_multiple_of(batch_size) {
+                tx.commit().expect("Failed to commit batch transaction");
+                tx = conn
+                    .transaction()
+                    .expect("Failed to start next transaction");
+            }
         }
+        tx.commit().expect("Failed to commit final transaction");
     });
 
     let progress = Arc::new(AtomicUsize::new(0));
+    let start_time = Instant::now();
 
     pool.install(|| {
         pending_files
             .par_iter()
             .for_each(|(problem_name, file_path)| {
-                if let Some(profile) = extract_problem_profile_from_file(file_path, problem_name) {
-                    let arch = profile.archetype.as_str().to_string();
-                    let div = profile.casc_division.clone();
+                let profile_opt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    extract_problem_profile_from_file(
+                        file_path,
+                        problem_name,
+                        detected_tptp.as_deref(),
+                    )
+                }))
+                .unwrap_or(None);
+
+                if let Some(profile) = profile_opt {
                     sender
                         .send(profile)
                         .expect("Failed to send profile to writer thread");
-                    let current = progress.fetch_add(1, Ordering::Relaxed) + 1;
-                    println!(
-                        "[{:>5}/{}] Profiled {} -> Archetype: {}, Division: {}",
-                        current, total_pending, problem_name, arch, div
-                    );
                 } else {
                     eprintln!("Warning: Failed to extract profile for {}", problem_name);
+                }
+
+                let current = progress.fetch_add(1, Ordering::Relaxed) + 1;
+                if current.is_multiple_of(250) || current == total_pending {
+                    let elapsed = start_time.elapsed().as_secs_f64();
+                    let rate = current as f64 / elapsed.max(0.001);
+                    let remaining = total_pending.saturating_sub(current);
+                    let eta_secs = remaining as f64 / rate.max(0.001);
+                    println!(
+                        "[{:>5}/{}] ({:5.1}%) Profiled at {:.1} probs/s | ETA: {:.0}s",
+                        current,
+                        total_pending,
+                        (current as f64 / total_pending as f64) * 100.0,
+                        rate,
+                        eta_secs,
+                    );
                 }
             });
     });
@@ -969,7 +1149,8 @@ fn run_profile_only(args: &Args) {
         .join()
         .expect("Profile writer thread panicked");
     println!(
-        "Profiling complete. Saved profiles to {}.",
+        "Profiling complete in {:.2}s. Saved profiles to {}.",
+        start_time.elapsed().as_secs_f64(),
         args.db.display()
     );
 }
@@ -1112,7 +1293,7 @@ fn main() {
             .for_each(|(problem_name, file_path)| {
                 let content = std::fs::read_to_string(file_path).unwrap_or_default();
                 let status = extract_ground_truth_status(&content);
-                let profile = extract_problem_profile_from_file(file_path, problem_name);
+                let profile = extract_problem_profile_from_file(file_path, problem_name, None);
                 let division = if let Some(p) = &profile {
                     p.casc_division.clone()
                 } else {
@@ -1491,8 +1672,8 @@ mod tests {
         let mut file = tempfile::Builder::new().suffix(".p").tempfile().unwrap();
         file.write_all(content.as_bytes()).unwrap();
 
-        let profile =
-            extract_problem_profile_from_file(file.path(), "test.p").expect("profile extracted");
+        let profile = extract_problem_profile_from_file(file.path(), "test.p", None)
+            .expect("profile extracted");
         assert_eq!(
             profile.archetype,
             mrs_core::ProblemArchetype::PureUnitEquality

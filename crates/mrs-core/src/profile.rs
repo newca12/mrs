@@ -540,7 +540,7 @@ impl ProblemProfile {
         }
     }
 
-    fn empty(
+    pub fn empty(
         problem_name: &str,
         domain: String,
         dialect: String,
