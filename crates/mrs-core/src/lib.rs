@@ -19,6 +19,7 @@ pub(crate) use rustc_hash::FxHashSet as HashSet;
 pub mod clause;
 pub mod display;
 pub mod formula;
+pub mod profile;
 pub mod subst;
 pub mod symbol;
 pub mod term;
@@ -32,6 +33,7 @@ pub mod ml;
 
 pub use clause::{Clause, ClauseId, ClauseSource, Literal};
 pub use formula::{Atom, Formula};
+pub use profile::{InputMetadata, ProblemArchetype, ProblemProfile};
 pub use subst::Substitution;
 pub use symbol::{SymbolId, SymbolTable};
 pub use term::{Term, VarId};

@@ -34,6 +34,10 @@ pub struct LoweredProblem {
     pub cnf_clauses: Vec<Clause>,
     /// Clause ID generator, continues from IDs assigned to CNF clauses.
     pub id_gen: ClauseIdGen,
+    /// Number of supported input formulas with premise roles.
+    pub input_axioms_count: usize,
+    /// Number of supported input formulas with goal roles.
+    pub input_conjectures_count: usize,
 }
 
 /// A formula with its metadata from the TPTP input.
@@ -101,6 +105,8 @@ pub fn lower_problem(problem: &TPTPProblem<'_>) -> LoweredProblem {
     let mut conjectures = Vec::new();
     let mut cnf_clauses = Vec::new();
     let mut id_gen = ClauseIdGen::new();
+    let mut input_axioms_count = 0;
+    let mut input_conjectures_count = 0;
 
     for formula in &problem.formulas {
         let mut ctx = LowerCtx::new(&mut symbols);
@@ -123,6 +129,7 @@ pub fn lower_problem(problem: &TPTPProblem<'_>) -> LoweredProblem {
                         role: role.as_str().to_string(),
                         formula,
                     };
+                    record_input_role(role, &mut input_axioms_count, &mut input_conjectures_count);
                     if role == FormulaRole::Conjecture {
                         conjectures.push(lowered);
                     } else {
@@ -133,6 +140,11 @@ pub fn lower_problem(problem: &TPTPProblem<'_>) -> LoweredProblem {
             AnnotatedFormula::CNF(cnf) => {
                 // Lower CNF directly to clauses, bypassing clausification
                 if let Some(clause) = lower_cnf_to_clause(&mut symbols, &mut id_gen, cnf) {
+                    record_input_role(
+                        cnf.role,
+                        &mut input_axioms_count,
+                        &mut input_conjectures_count,
+                    );
                     cnf_clauses.push(clause);
                 }
             }
@@ -147,6 +159,11 @@ pub fn lower_problem(problem: &TPTPProblem<'_>) -> LoweredProblem {
                                 role: role.as_str().to_string(),
                                 formula,
                             };
+                            record_input_role(
+                                role,
+                                &mut input_axioms_count,
+                                &mut input_conjectures_count,
+                            );
                             if role == FormulaRole::Conjecture {
                                 conjectures.push(lowered);
                             } else {
@@ -167,6 +184,11 @@ pub fn lower_problem(problem: &TPTPProblem<'_>) -> LoweredProblem {
             }
             AnnotatedFormula::TCF(tcf) => {
                 if let Some(clause) = lower_tcf_to_clause(&mut symbols, &mut id_gen, tcf) {
+                    record_input_role(
+                        tcf.role,
+                        &mut input_axioms_count,
+                        &mut input_conjectures_count,
+                    );
                     cnf_clauses.push(clause);
                 }
             }
@@ -181,6 +203,8 @@ pub fn lower_problem(problem: &TPTPProblem<'_>) -> LoweredProblem {
         conjectures,
         cnf_clauses,
         id_gen,
+        input_axioms_count,
+        input_conjectures_count,
     }
 }
 
@@ -226,6 +250,11 @@ pub fn lower_into(
                         role: role.as_str().to_string(),
                         formula,
                     };
+                    record_input_role(
+                        role,
+                        &mut lowered.input_axioms_count,
+                        &mut lowered.input_conjectures_count,
+                    );
                     if role == FormulaRole::Conjecture {
                         lowered.conjectures.push(lf);
                     } else {
@@ -237,6 +266,11 @@ pub fn lower_into(
                 if let Some(clause) =
                     lower_cnf_to_clause(&mut lowered.symbols, &mut lowered.id_gen, cnf)
                 {
+                    record_input_role(
+                        cnf.role,
+                        &mut lowered.input_axioms_count,
+                        &mut lowered.input_conjectures_count,
+                    );
                     lowered.cnf_clauses.push(clause);
                 }
             }
@@ -251,6 +285,11 @@ pub fn lower_into(
                                 role: role.as_str().to_string(),
                                 formula,
                             };
+                            record_input_role(
+                                role,
+                                &mut lowered.input_axioms_count,
+                                &mut lowered.input_conjectures_count,
+                            );
                             if role == FormulaRole::Conjecture {
                                 lowered.conjectures.push(lf);
                             } else {
@@ -272,11 +311,28 @@ pub fn lower_into(
                 if let Some(clause) =
                     lower_tcf_to_clause(&mut lowered.symbols, &mut lowered.id_gen, tcf)
                 {
+                    record_input_role(
+                        tcf.role,
+                        &mut lowered.input_axioms_count,
+                        &mut lowered.input_conjectures_count,
+                    );
                     lowered.cnf_clauses.push(clause);
                 }
             }
             _ => {}
         }
+    }
+}
+
+fn record_input_role(
+    role: FormulaRole,
+    input_axioms_count: &mut usize,
+    input_conjectures_count: &mut usize,
+) {
+    if role.is_goal() {
+        *input_conjectures_count += 1;
+    } else if role.is_premise() {
+        *input_axioms_count += 1;
     }
 }
 
