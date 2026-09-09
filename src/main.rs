@@ -5,6 +5,7 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+#[allow(dead_code)]
 mod analyze;
 mod include;
 mod lowering;
@@ -459,12 +460,26 @@ fn main() {
     }
 
     if profile_json_mode {
-        analyze::analyze_and_print_json(&path, &problem, &lowered.symbols, &all_clauses);
+        analyze::analyze_and_print_json_with_counts(
+            &path,
+            &problem,
+            &lowered.symbols,
+            &all_clauses,
+            lowered.input_axioms_count,
+            lowered.input_conjectures_count,
+        );
         process::exit(0);
     }
 
     if stats_mode {
-        analyze::analyze_and_print(&path, &problem, &lowered.symbols, &all_clauses);
+        analyze::analyze_and_print_with_counts(
+            &path,
+            &problem,
+            &lowered.symbols,
+            &all_clauses,
+            lowered.input_axioms_count,
+            lowered.input_conjectures_count,
+        );
         process::exit(0);
     }
 

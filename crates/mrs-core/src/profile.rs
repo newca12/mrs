@@ -69,6 +69,10 @@ pub struct InputMetadata {
     pub file_size_bytes: Option<u64>,
     pub header_status: Option<String>,
     pub header_rating: Option<f32>,
+    /// Number of supported input formulas with premise roles.
+    pub input_axioms_count: Option<usize>,
+    /// Number of supported input formulas with goal roles.
+    pub input_conjectures_count: Option<usize>,
 }
 
 /// Comprehensive deep profile of a TPTP problem.
@@ -80,6 +84,8 @@ pub struct ProblemProfile {
     pub dialect: String,
     pub header_status: Option<String>,
     pub header_rating: Option<f32>,
+    /// Whether all input clauses were available during extraction.
+    pub profile_complete: bool,
 
     // ── Scale & Counts ────────────────────────────────────────────────────────
     pub num_clauses: usize,
@@ -180,6 +186,8 @@ impl ProblemProfile {
         let mut max_vars_per_clause = 0;
         let mut sum_vars_per_clause = 0;
 
+        let input_axioms_count = meta.and_then(|m| m.input_axioms_count);
+        let input_conjectures_count = meta.and_then(|m| m.input_conjectures_count);
         let mut num_axioms = 0;
         let mut num_conjectures = 0;
         let mut conjecture_clauses = 0;
@@ -224,10 +232,12 @@ impl ProblemProfile {
                         if *rule == "negated_conjecture"
                 );
             if is_conj {
-                num_conjectures += 1;
+                if input_conjectures_count.is_none() {
+                    num_conjectures += 1;
+                }
                 conjecture_clauses += 1;
                 conjecture_literals += clen;
-            } else {
+            } else if input_axioms_count.is_none() {
                 num_axioms += 1;
             }
 
@@ -265,6 +275,7 @@ impl ProblemProfile {
 
                 match &lit.atom {
                     Atom::Eq(l, r) => {
+                        is_fvo = false;
                         eq_literals += 1;
 
                         count_term_vars(l, &mut lit_var_counts);
@@ -363,6 +374,13 @@ impl ProblemProfile {
             let num_vars = clause_vars.len();
             max_vars_per_clause = max_vars_per_clause.max(num_vars);
             sum_vars_per_clause += num_vars;
+        }
+
+        if let Some(count) = input_axioms_count {
+            num_axioms = count;
+        }
+        if let Some(count) = input_conjectures_count {
+            num_conjectures = count;
         }
 
         let num_predicates = pred_arities.len();
@@ -486,6 +504,7 @@ impl ProblemProfile {
             dialect,
             header_status,
             header_rating,
+            profile_complete: true,
             num_clauses,
             num_literals,
             num_axioms,
@@ -553,6 +572,7 @@ impl ProblemProfile {
             dialect,
             header_status,
             header_rating,
+            profile_complete: true,
             num_clauses: 0,
             num_literals: 0,
             num_axioms: 0,
@@ -605,6 +625,20 @@ impl ProblemProfile {
             recommended_avatar: false,
             recommended_sine: false,
         }
+    }
+
+    /// Create a profile that contains identity metadata but not complete
+    /// clause statistics. Partial profiles must not be used for routing.
+    pub fn incomplete(
+        problem_name: &str,
+        domain: String,
+        dialect: String,
+        header_status: Option<String>,
+        header_rating: Option<f32>,
+    ) -> Self {
+        let mut profile = Self::empty(problem_name, domain, dialect, header_status, header_rating);
+        profile.profile_complete = false;
+        profile
     }
 }
 
@@ -1317,6 +1351,104 @@ mod tests {
         );
         assert_eq!(profile.casc_division, "EPR");
         assert_eq!(profile.recommended_engine, "InstGen");
+    }
+
+    #[test]
+    fn equality_is_not_fvo() {
+        let mut symbols = SymbolTable::new();
+        let f = symbols.intern("f");
+        let p = symbols.intern("p");
+        let x: VarId = 0;
+
+        let clause = Clause::new(
+            ClauseId(1),
+            smallvec![Literal {
+                positive: true,
+                atom: Atom::Eq(
+                    Term::App(f, vec![Term::Var(x)]),
+                    Term::App(f, vec![Term::Var(x)]),
+                ),
+            }],
+            ClauseSource::Input {
+                name: "eq".into(),
+                role: "axiom".into(),
+            },
+        );
+
+        let profile = ProblemProfile::extract("FOO001.p", None, &[clause], &symbols);
+        assert!(!profile.is_fvo);
+        assert_ne!(profile.archetype, ProblemArchetype::PropositionalSkeleton);
+
+        let predicate = Clause::new(
+            ClauseId(2),
+            smallvec![Literal {
+                positive: true,
+                atom: Atom::Pred(p, vec![Term::Var(x)]),
+            }],
+            ClauseSource::Input {
+                name: "p".into(),
+                role: "axiom".into(),
+            },
+        );
+        let profile = ProblemProfile::extract("FOO001.p", None, &[predicate], &symbols);
+        assert!(profile.is_fvo);
+    }
+
+    #[test]
+    fn non_premise_roles_are_not_counted_as_axioms() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let clause = Clause::new(
+            ClauseId(1),
+            smallvec![Literal {
+                positive: true,
+                atom: Atom::Pred(p, vec![]),
+            }],
+            ClauseSource::Input {
+                name: "type".into(),
+                role: "type".into(),
+            },
+        );
+        let metadata = InputMetadata {
+            input_axioms_count: Some(0),
+            input_conjectures_count: Some(0),
+            ..Default::default()
+        };
+        let profile = ProblemProfile::extract("FOO001.p", Some(&metadata), &[clause], &symbols);
+        assert_eq!(profile.num_axioms, 0);
+        assert_eq!(profile.num_conjectures, 0);
+    }
+
+    #[test]
+    fn formula_counts_are_not_clause_counts() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let x: VarId = 0;
+        let clauses = (0..3)
+            .map(|id| {
+                Clause::new(
+                    ClauseId(id),
+                    smallvec![Literal {
+                        positive: true,
+                        atom: Atom::Pred(p, vec![Term::Var(x)]),
+                    }],
+                    ClauseSource::Input {
+                        name: format!("c{id}"),
+                        role: "axiom".into(),
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let metadata = InputMetadata {
+            input_axioms_count: Some(1),
+            input_conjectures_count: Some(0),
+            ..Default::default()
+        };
+
+        let profile = ProblemProfile::extract("FOO001.p", Some(&metadata), &clauses, &symbols);
+        assert_eq!(profile.num_clauses, 3);
+        assert_eq!(profile.num_axioms, 1);
+        assert!(!profile.is_large_theory);
     }
 
     #[test]

@@ -11,6 +11,36 @@ pub fn analyze_problem(
     symbols: &SymbolTable,
     all_clauses: &[Clause],
 ) -> ProblemProfile {
+    let input_axioms_count = problem
+        .formulas
+        .iter()
+        .filter(|formula| formula.role().is_premise())
+        .count();
+    let input_conjectures_count = problem
+        .formulas
+        .iter()
+        .filter(|formula| formula.role().is_goal())
+        .count();
+
+    analyze_problem_with_counts(
+        path,
+        problem,
+        symbols,
+        all_clauses,
+        input_axioms_count,
+        input_conjectures_count,
+    )
+}
+
+/// Analyze a lowered problem with formula counts that include resolved files.
+pub fn analyze_problem_with_counts(
+    path: &str,
+    problem: &TPTPProblem<'_>,
+    symbols: &SymbolTable,
+    all_clauses: &[Clause],
+    input_axioms_count: usize,
+    input_conjectures_count: usize,
+) -> ProblemProfile {
     let name = if path == "-" {
         "stdin"
     } else {
@@ -59,6 +89,8 @@ pub fn analyze_problem(
         file_size_bytes,
         header_status,
         header_rating,
+        input_axioms_count: Some(input_axioms_count),
+        input_conjectures_count: Some(input_conjectures_count),
     };
 
     ProblemProfile::extract(name, Some(&meta), all_clauses, symbols)
@@ -75,6 +107,26 @@ pub fn analyze_and_print(
     println!("{}", profile);
 }
 
+/// Print a human-readable profile using formula counts from resolved includes.
+pub fn analyze_and_print_with_counts(
+    path: &str,
+    problem: &TPTPProblem<'_>,
+    symbols: &SymbolTable,
+    all_clauses: &[Clause],
+    input_axioms_count: usize,
+    input_conjectures_count: usize,
+) {
+    let profile = analyze_problem_with_counts(
+        path,
+        problem,
+        symbols,
+        all_clauses,
+        input_axioms_count,
+        input_conjectures_count,
+    );
+    println!("{}", profile);
+}
+
 /// Print machine-readable JSON problem profile.
 pub fn analyze_and_print_json(
     path: &str,
@@ -83,6 +135,29 @@ pub fn analyze_and_print_json(
     all_clauses: &[Clause],
 ) {
     let profile = analyze_problem(path, problem, symbols, all_clauses);
+    match serde_json::to_string_pretty(&profile) {
+        Ok(json) => println!("{}", json),
+        Err(e) => eprintln!("% Error serializing problem profile to JSON: {}", e),
+    }
+}
+
+/// Print JSON using formula counts from resolved includes.
+pub fn analyze_and_print_json_with_counts(
+    path: &str,
+    problem: &TPTPProblem<'_>,
+    symbols: &SymbolTable,
+    all_clauses: &[Clause],
+    input_axioms_count: usize,
+    input_conjectures_count: usize,
+) {
+    let profile = analyze_problem_with_counts(
+        path,
+        problem,
+        symbols,
+        all_clauses,
+        input_axioms_count,
+        input_conjectures_count,
+    );
     match serde_json::to_string_pretty(&profile) {
         Ok(json) => println!("{}", json),
         Err(e) => eprintln!("% Error serializing problem profile to JSON: {}", e),

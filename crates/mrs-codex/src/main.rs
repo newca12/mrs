@@ -8,7 +8,7 @@ use rayon::prelude::*;
 use regex::Regex;
 use rusqlite::{Connection, Result as SqliteResult, params};
 use std::collections::HashSet;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -422,10 +422,17 @@ fn init_db(conn: &Connection) -> SqliteResult<()> {
             conjecture_max_depth INTEGER,
             conjecture_symbol_overlap REAL,
             unique_conjecture_symbols TEXT,
+            profile_complete INTEGER NOT NULL DEFAULT 1,
             raw_profile_json TEXT
         )",
         [],
     )?;
+
+    // Schema migration for profiles created before completeness was tracked.
+    let _ = conn.execute(
+        "ALTER TABLE problem_profiles ADD COLUMN profile_complete INTEGER NOT NULL DEFAULT 1",
+        [],
+    );
 
     let _ = conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_problem_profiles_archetype ON problem_profiles(archetype)",
@@ -465,13 +472,13 @@ fn save_problem_profile(conn: &Connection, profile: &mrs_core::ProblemProfile) -
             has_ac_symbols, ac_symbols, has_identity_axiom, has_inverse_axiom,
             has_idempotence, has_conjecture, conjecture_clauses,
             conjecture_literals, conjecture_max_depth, conjecture_symbol_overlap,
-            unique_conjecture_symbols, raw_profile_json
+            unique_conjecture_symbols, profile_complete, raw_profile_json
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
             ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28,
             ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41,
             ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50, ?51, ?52, ?53, ?54,
-            ?55, ?56, ?57
+            ?55, ?56, ?57, ?58
         )",
         params![
             profile.problem_name,
@@ -530,6 +537,7 @@ fn save_problem_profile(conn: &Connection, profile: &mrs_core::ProblemProfile) -
             profile.conjecture_max_depth as i64,
             profile.conjecture_symbol_overlap as f64,
             uniq_conj_syms_json,
+            profile.profile_complete as i64,
             raw_json,
         ],
     )?;
@@ -537,13 +545,23 @@ fn save_problem_profile(conn: &Connection, profile: &mrs_core::ProblemProfile) -
 }
 
 fn fetch_profiled_problems(conn: &Connection) -> SqliteResult<HashSet<String>> {
-    let mut stmt = conn.prepare("SELECT problem_name FROM problem_profiles")?;
+    let mut stmt =
+        conn.prepare("SELECT problem_name FROM problem_profiles WHERE profile_complete = 1")?;
     let rows = stmt.query_map([], |row| row.get(0))?;
     let mut names = HashSet::new();
     for name in rows {
         names.insert(name?);
     }
     Ok(names)
+}
+
+fn read_header_prefix(path: &Path) -> String {
+    let Ok(file) = std::fs::File::open(path) else {
+        return String::new();
+    };
+    let mut prefix = String::new();
+    let _ = file.take(64 * 1024).read_to_string(&mut prefix);
+    prefix
 }
 
 fn extract_domain_from_name(name: &str) -> String {
@@ -603,22 +621,16 @@ fn extract_problem_profile_from_file(
 ) -> Option<mrs_core::ProblemProfile> {
     let file_size = std::fs::metadata(path).ok().map(|m| m.len()).unwrap_or(0);
     if file_size > 20 * 1024 * 1024 {
-        let content_prefix = std::fs::read_to_string(path).unwrap_or_default();
+        let content_prefix = read_header_prefix(path);
         let (header_status, header_rating) = parse_headers_from_str(&content_prefix);
         let domain = extract_domain_from_name(problem_name);
-        let mut profile = mrs_core::ProblemProfile::empty(
+        let profile = mrs_core::ProblemProfile::incomplete(
             problem_name,
             domain,
-            "FOF".to_string(),
+            "Unknown".to_string(),
             header_status,
             header_rating,
         );
-        profile.is_large_theory = true;
-        profile.archetype = mrs_core::ProblemArchetype::LargeTheory;
-        profile.casc_division = "FEQ".to_string();
-        profile.recommended_schedule = "casc_feq".to_string();
-        profile.recommended_engine = "SuperpositionPortfolio".to_string();
-        profile.recommended_sine = true;
         return Some(profile);
     }
 
@@ -631,7 +643,7 @@ fn extract_problem_profile_from_file(
         Err(_) => {
             let (header_status, header_rating) = parse_headers_from_str(&content);
             let domain = extract_domain_from_name(problem_name);
-            let profile = mrs_core::ProblemProfile::empty(
+            let profile = mrs_core::ProblemProfile::incomplete(
                 problem_name,
                 domain,
                 "Unknown".to_string(),
@@ -651,25 +663,37 @@ fn extract_problem_profile_from_file(
     if lowered.axioms.len() > 30_000 {
         let (header_status, header_rating) = parse_headers_from_str(&content);
         let domain = extract_domain_from_name(problem_name);
-        let mut profile = mrs_core::ProblemProfile::empty(
+        let mut profile = mrs_core::ProblemProfile::incomplete(
             problem_name,
             domain,
-            "FOF".to_string(),
+            "Unknown".to_string(),
             header_status,
             header_rating,
         );
-        profile.num_axioms = lowered.axioms.len();
+        profile.num_axioms = lowered.input_axioms_count;
+        profile.num_conjectures = lowered.input_conjectures_count;
         profile.is_large_theory = true;
         profile.archetype = mrs_core::ProblemArchetype::LargeTheory;
-        profile.casc_division = "FEQ".to_string();
-        profile.recommended_schedule = "casc_feq".to_string();
-        profile.recommended_engine = "SuperpositionPortfolio".to_string();
         profile.recommended_sine = true;
         return Some(profile);
     }
 
     let mut id_gen = lowered.id_gen.clone();
     let mut all_clauses = lowered.cnf_clauses;
+    if all_clauses.len() > 50_000 {
+        let domain = extract_domain_from_name(problem_name);
+        let (header_status, header_rating) = parse_headers_from_str(&content);
+        let mut profile = mrs_core::ProblemProfile::incomplete(
+            problem_name,
+            domain,
+            "Unknown".to_string(),
+            header_status,
+            header_rating,
+        );
+        profile.num_axioms = lowered.input_axioms_count;
+        profile.num_conjectures = lowered.input_conjectures_count;
+        return Some(profile);
+    }
     for f in lowered.axioms {
         let (_, clauses) = mrs_cnf::clausify_with_provenance(
             &f.formula,
@@ -684,7 +708,18 @@ fn extract_problem_profile_from_file(
         );
         all_clauses.extend(clauses);
         if all_clauses.len() > 50_000 {
-            break;
+            let domain = extract_domain_from_name(problem_name);
+            let (header_status, header_rating) = parse_headers_from_str(&content);
+            let mut profile = mrs_core::ProblemProfile::incomplete(
+                problem_name,
+                domain,
+                "FOF".to_string(),
+                header_status,
+                header_rating,
+            );
+            profile.num_axioms = lowered.input_axioms_count;
+            profile.num_conjectures = lowered.input_conjectures_count;
+            return Some(profile);
         }
     }
     for f in lowered.conjectures {
@@ -702,11 +737,13 @@ fn extract_problem_profile_from_file(
         );
         all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(0)));
     }
-    let mut profile = mrs::analyze::analyze_problem(
+    let mut profile = mrs::analyze::analyze_problem_with_counts(
         &path.to_string_lossy(),
         &problem,
         &lowered.symbols,
         &all_clauses,
+        lowered.input_axioms_count,
+        lowered.input_conjectures_count,
     );
     profile.problem_name = problem_name.to_string();
     Some(profile)
@@ -1294,13 +1331,9 @@ fn main() {
                 let content = std::fs::read_to_string(file_path).unwrap_or_default();
                 let status = extract_ground_truth_status(&content);
                 let profile = extract_problem_profile_from_file(file_path, problem_name, None);
-                let division = if let Some(p) = &profile {
-                    p.casc_division.clone()
-                } else {
-                    match mrs_tptp::parse_tptp(&content) {
-                        Ok(ast) => determine_division_from_ast(&ast, status.as_deref(), &content),
-                        Err(_) => "Other".to_string(),
-                    }
+                let division = match mrs_tptp::parse_tptp(&content) {
+                    Ok(ast) => determine_division_from_ast(&ast, status.as_deref(), &content),
+                    Err(_) => "Other".to_string(),
                 };
 
                 let cmd_args = parse_cmd_template(&args.cmd, file_path, args.timeout);
@@ -1588,6 +1621,7 @@ mod tests {
             dialect: "CNF".to_string(),
             header_status: Some("Unsatisfiable".to_string()),
             header_rating: Some(0.12),
+            profile_complete: true,
             num_clauses: 4,
             num_literals: 4,
             num_axioms: 3,
@@ -1681,5 +1715,39 @@ mod tests {
         assert_eq!(profile.casc_division, "UEQ");
         assert!(profile.is_ueq);
         assert_eq!(profile.num_clauses, 2);
+    }
+
+    #[test]
+    fn profile_only_preserves_status_aware_division() {
+        let content =
+            "% Status: Satisfiable\nfof(a1, axiom, p(f(a))). fof(c1, conjecture, ~p(f(b))).";
+        let mut file = tempfile::Builder::new().suffix(".p").tempfile().unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+        let ast = mrs_tptp::parse_tptp(content).unwrap();
+        let status = extract_ground_truth_status(content);
+        assert_eq!(
+            determine_division_from_ast(&ast, status.as_deref(), content),
+            "FNN"
+        );
+
+        let profile = extract_problem_profile_from_file(file.path(), "FOO001.p", None)
+            .expect("profile extracted");
+        assert!(profile.profile_complete);
+        assert_eq!(profile.casc_division, "FNE");
+    }
+
+    #[test]
+    fn oversized_profile_is_incomplete_without_reading_all_statistics() {
+        let mut file = tempfile::Builder::new().suffix(".p").tempfile().unwrap();
+        file.write_all(b"% Status: Theorem\n% Rating: 0.1\n")
+            .unwrap();
+        file.as_file_mut().set_len(20 * 1024 * 1024 + 1).unwrap();
+
+        let profile = extract_problem_profile_from_file(file.path(), "FOO001.p", None)
+            .expect("profile extracted");
+        assert!(!profile.profile_complete);
+        assert_eq!(profile.dialect, "Unknown");
+        assert_eq!(profile.casc_division, "Unknown");
+        assert_eq!(profile.header_status.as_deref(), Some("Theorem"));
     }
 }
