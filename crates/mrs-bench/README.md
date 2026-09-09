@@ -7,6 +7,8 @@ CASC benchmark harness and report tool for `mrs`.
 | Path | Purpose |
 |------|---------|
 | `casc.sh` | Run a full benchmark: invoke each system on each problem, collect SZS status and wall time, write `results/<edition>/*/run.csv` |
+| `cooperative_portfolio_sweep.sh` | Measure an explicit multi-worker portfolio with shared equality-clause exchange enabled (or disabled with `MRS_SHARED_POOL_INTERVAL=0`) |
+| `cooperative_portfolio_search.sh` | Run one-swap local search over portfolios using cooperative solved-count coverage |
 | `setup.sh` | Download and extract the CASC problem and axiom archives from tptp.org |
 | `systems/` | Per-system `invoke.sh` scripts (add a new directory here to register a competitor) |
 | `problems/` | Extracted TPTP problems and axioms (gitignored, populated by `setup.sh`) |
@@ -50,6 +52,32 @@ Reads a `run.csv` produced by `casc.sh` and prints:
 - Per-division solved count and average solve time per system
 - Cross-system disagreements (contradictory SZS answers — soundness flag)
 - Polarity violations (wrong SZS polarity for a known-polarity division)
+
+## Portfolio Coverage
+
+`run_strategy_sweep.sh` and `run_codex_sweep.sh` measure individual strategies
+with one worker. Their union/set-cover output is diagnostic only: it does not
+model the cross-strategy unit-equality pool used by `casc_*` schedules.
+
+Measure the actual cooperative portfolio instead:
+
+```bash
+MRS_WORKERS=8 \
+crates/mrs-bench/cooperative_portfolio_sweep.sh \
+  casc-30 feq 11,12,1,6,10,8,14,4 30 4 \
+  results/cooperative-feq
+
+# Control run with sharing disabled:
+MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=0 \
+crates/mrs-bench/cooperative_portfolio_sweep.sh \
+  casc-30 feq 11,12,1,6,10,8,14,4 30 4 \
+  results/cooperative-feq-no-sharing
+```
+
+The cooperative result is the portfolio-selection objective. Compare the
+shared and no-sharing runs to quantify cooperation separately from strategy
+diversity. `failure_detail` records `strategy_ids`, `shared_published`, and
+`shared_imported` telemetry for each problem.
 
 ## Adding a new system
 

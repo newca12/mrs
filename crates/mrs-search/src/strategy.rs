@@ -109,7 +109,7 @@ impl StrategySchedule {
             .saturating_sub(t13)
             .saturating_sub(t14);
 
-        StrategySchedule {
+        let mut schedule = StrategySchedule {
             strategies: vec![
                 // ── KBO strategies ──────────────────────────────────────────
                 // s1: balanced exploration
@@ -374,7 +374,11 @@ impl StrategySchedule {
                     Duration::ZERO,
                 ),
             ],
+        };
+        for (idx, (config, _)) in schedule.strategies.iter_mut().enumerate() {
+            config.strategy_id = idx + 1;
         }
+        schedule
     }
 
     /// Automatically applies parallel SInE threshold tuning across the portfolio strategies.
@@ -1046,6 +1050,10 @@ pub fn run_schedule(
         for (idx, res, stats, elapsed_ms) in rx.into_iter() {
             report.strategies.push(crate::StrategyReport {
                 strategy_idx: idx,
+                strategy_id: actual_configs
+                    .get(idx)
+                    .map(|config| config.strategy_id)
+                    .unwrap_or_default(),
                 result: res.clone(),
                 stats,
                 elapsed_ms,

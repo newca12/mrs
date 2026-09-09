@@ -26,6 +26,7 @@ const FIELDS: &[&str] = &[
     "weight_discarded",
     "lrs_discarded",
     "fwd_subsumed",
+    "strategy_ids",
     "shared_published",
     "shared_imported",
 ];
@@ -36,6 +37,8 @@ struct Args {
     time: u64,
     workers: usize,
     schedule: Option<String>,
+    strategy: Option<usize>,
+    portfolio: Option<String>,
     lrs_fixed: Option<u64>,
     shared_interval: Option<u64>,
     mrs: PathBuf,
@@ -68,6 +71,8 @@ fn parse_args() -> io::Result<Args> {
     let mut time = 10;
     let mut workers = 1;
     let mut schedule = None;
+    let mut strategy = None;
+    let mut portfolio = None;
     let mut lrs_fixed = None;
     let mut shared_interval = None;
     let mut mrs = PathBuf::from("target/release/mrs");
@@ -87,6 +92,21 @@ fn parse_args() -> io::Result<Args> {
             "--time" => time = parse_positive(&value("--time", &mut args)?, "--time")? as u64,
             "--workers" => workers = parse_positive(&value("--workers", &mut args)?, "--workers")?,
             "--schedule" => schedule = Some(value("--schedule", &mut args)?),
+            "--strategy" => {
+                let parsed = value("--strategy", &mut args)?
+                    .parse::<usize>()
+                    .map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "invalid --strategy")
+                    })?;
+                if !(1..=15).contains(&parsed) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--strategy must be in 1..15",
+                    ));
+                }
+                strategy = Some(parsed);
+            }
+            "--portfolio" => portfolio = Some(value("--portfolio", &mut args)?),
             "--lrs-fixed" => {
                 lrs_fixed = Some(parse_nonnegative(
                     &value("--lrs-fixed", &mut args)?,
@@ -103,7 +123,7 @@ fn parse_args() -> io::Result<Args> {
             "-h" | "--help" => {
                 println!(
                     "repeat_search --problem FILE [--runs N] [--time SECS] [--workers N] \
-                     [--schedule NAME] [--lrs-fixed N] [--shared-pool-interval N] [--mrs PATH]"
+                     [--schedule NAME] [--strategy N|--portfolio IDS] [--lrs-fixed N] [--shared-pool-interval N] [--mrs PATH]"
                 );
                 std::process::exit(0);
             }
@@ -137,6 +157,8 @@ fn parse_args() -> io::Result<Args> {
         time,
         workers,
         schedule,
+        strategy,
+        portfolio,
         lrs_fixed,
         shared_interval,
         mrs,
@@ -177,6 +199,12 @@ fn run_once(args: &Args) -> io::Result<(String, String, i32)> {
         .arg(args.workers.to_string());
     if let Some(schedule) = &args.schedule {
         command.arg("--schedule").arg(schedule);
+    }
+    if let Some(strategy) = args.strategy {
+        command.arg("--strategy").arg(strategy.to_string());
+    }
+    if let Some(portfolio) = &args.portfolio {
+        command.arg("--portfolio").arg(portfolio);
     }
     command
         .arg(&args.problem)

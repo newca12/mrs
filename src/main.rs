@@ -36,6 +36,8 @@ fn main() {
     let mut ml_weights: Option<String> = None;
     let mut workers: Option<usize> = None;
     let mut auto_schedule = false;
+    let mut exact_strategy: Option<usize> = None;
+    let mut portfolio: Option<Vec<usize>> = None;
     let mut ml_prune_ratio: Option<f32> = None;
     let mut self_check = false;
     let mut include_root: Option<PathBuf> = None;
@@ -80,6 +82,40 @@ fn main() {
                     process::exit(1);
                 }
                 workers = Some(parsed);
+            }
+            "--strategy" => {
+                let val = args.next().unwrap_or_else(|| {
+                    eprintln!("Error: --strategy requires an ID in the range 1..15");
+                    process::exit(1);
+                });
+                let parsed = val.parse().unwrap_or_else(|_| {
+                    eprintln!("Error: --strategy requires an integer, got {:?}", val);
+                    process::exit(1);
+                });
+                if !(1..=15).contains(&parsed) {
+                    eprintln!("Error: --strategy requires an ID in the range 1..15");
+                    process::exit(1);
+                }
+                exact_strategy = Some(parsed);
+            }
+            "--portfolio" => {
+                let val = args.next().unwrap_or_else(|| {
+                    eprintln!("Error: --portfolio requires comma-separated strategy IDs");
+                    process::exit(1);
+                });
+                let ids = val
+                    .split(',')
+                    .map(|id| id.parse::<usize>())
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap_or_else(|_| {
+                        eprintln!("Error: --portfolio contains a non-integer strategy ID");
+                        process::exit(1);
+                    });
+                if ids.is_empty() || ids.iter().any(|id| !(1..=15).contains(id)) {
+                    eprintln!("Error: --portfolio strategy IDs must be in the range 1..15");
+                    process::exit(1);
+                }
+                portfolio = Some(ids);
             }
             "--schedule" => {
                 let val = args.next().unwrap_or_else(|| {
@@ -224,7 +260,7 @@ fn main() {
             _ => {
                 if path.is_some() {
                     eprintln!(
-                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--goal-transform MODE] [--no-bce] [--no-ple] [--no-instgen] [--self-check] [--stats] [--include-root DIR] <file.p>"
+                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--goal-transform MODE] [--no-bce] [--no-ple] [--no-instgen] [--self-check] [--stats] [--include-root DIR] <file.p>"
                     );
                     process::exit(1);
                 }
@@ -234,7 +270,7 @@ fn main() {
     }
     let Some(path) = path else {
         eprintln!(
-            "Usage: mrs [--time <seconds>] [--schedule NAME] [--goal-transform MODE] [--no-bce] [--no-ple] [--self-check] [--stats] [--include-root DIR] <file.p>"
+            "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--goal-transform MODE] [--no-bce] [--no-ple] [--self-check] [--stats] [--include-root DIR] <file.p>"
         );
         eprintln!("  An automated theorem prover for TPTP problems.");
         eprintln!(
@@ -626,21 +662,62 @@ fn main() {
         let actual_workers = workers.unwrap_or_else(|| num_cpus::get_physical().max(1));
 
         let search_budget = total_budget - elapsed;
-        let mut schedule = match schedule_name.as_deref() {
-            None => StrategySchedule::default_schedule(search_budget, actual_workers),
-            Some(name) => {
-                match mrs_search::strategy::named::by_name(name, search_budget, actual_workers) {
+        if exact_strategy.is_some() && portfolio.is_some() {
+            eprintln!("Error: --strategy and --portfolio are mutually exclusive");
+            process::exit(1);
+        }
+        let selected_schedule = schedule_name.as_deref().unwrap_or("casc");
+        let mut schedule = match (exact_strategy, portfolio.as_deref()) {
+            (Some(id), None) => {
+                match mrs_search::strategy::named::single_strategy(
+                    selected_schedule,
+                    search_budget,
+                    id,
+                ) {
                     Some(s) => s,
                     None => {
                         eprintln!(
-                            "Error: unknown schedule {:?} (known: {})",
-                            name,
-                            mrs_search::strategy::named::ALL.join(", "),
+                            "Error: --strategy requires a CASC division schedule (casc, casc_feq, casc_fne, casc_ueq, casc_epr, casc_eps, casc_epu, or casc_icu)"
                         );
                         process::exit(1);
                     }
                 }
             }
+            (None, Some(ids)) => {
+                match mrs_search::strategy::named::with_portfolio(
+                    selected_schedule,
+                    search_budget,
+                    actual_workers,
+                    ids,
+                ) {
+                    Some(s) => s,
+                    None => {
+                        eprintln!(
+                            "Error: --portfolio requires a CASC division schedule and strategy IDs in 1..15"
+                        );
+                        process::exit(1);
+                    }
+                }
+            }
+            (None, None) if schedule_name.is_none() => {
+                StrategySchedule::default_schedule(search_budget, actual_workers)
+            }
+            (None, None) => match mrs_search::strategy::named::by_name(
+                selected_schedule,
+                search_budget,
+                actual_workers,
+            ) {
+                Some(s) => s,
+                None => {
+                    eprintln!(
+                        "Error: unknown schedule {:?} (known: {})",
+                        selected_schedule,
+                        mrs_search::strategy::named::ALL.join(", "),
+                    );
+                    process::exit(1);
+                }
+            },
+            (Some(_), Some(_)) => unreachable!(),
         };
         if self_check {
             for (config, _) in &mut schedule.strategies {

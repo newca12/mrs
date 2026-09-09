@@ -29,7 +29,7 @@ DIVISION=$(basename $(dirname "$PROBLEM"))
 DIV_LOWER="${DIVISION,,}"
 
 # Select the appropriate static schedule
-SCHEDULE="casc_${DIV_LOWER}"
+SCHEDULE="${MRS_SCHEDULE:-casc_${DIV_LOWER}}"
 
 # Map CASC division names to available named schedules.
 # EPS (satisfiable) and EPU (unsatisfiable) now have dedicated data-driven
@@ -73,4 +73,9 @@ ulimit -s unlimited 2>/dev/null || true
 # counted against RSS until used).
 export RUST_MIN_STACK=67108864
 
-exec "${BINARY}" --time "${SOFT_TIME}" --workers "${MRS_WORKERS:-8}" --schedule "${SCHEDULE}" "${PROBLEM}"
+ARGS=(--time "${SOFT_TIME}" --workers "${MRS_WORKERS:-8}" --schedule "${SCHEDULE}")
+if [[ -n "${MRS_PORTFOLIO:-}" ]]; then
+    ARGS+=(--portfolio "${MRS_PORTFOLIO}")
+fi
+
+exec "${BINARY}" "${ARGS[@]}" "${PROBLEM}"

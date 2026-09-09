@@ -2,14 +2,16 @@
 # crates/mrs-bench/run_strategy_sweep.sh
 #
 # Run all mrs strategies (s01–s15) as independent "systems" on a set of
-# CASC problems and produce a single run.csv for greedy_set_cover.
+# CASC problems and produce a diagnostic solo-coverage run.csv.  This is useful
+# for strategy profiling, but it does not model the cooperative shared-pool
+# portfolio used by competition runs.
 #
 # This is the first step in the per-division portfolio optimisation workflow:
 #
 #   Step 1 — Generate per-strategy coverage data (this script):
 #     ./crates/mrs-bench/run_strategy_sweep.sh --divisions fne --time 30
 #
-#   Step 2 — Find the K most complementary strategies per division:
+#   Step 2 — Optional solo diagnostic set cover (not final portfolio scoring):
 #     ./target/release/greedy_set_cover results/.../run.csv 8 --division fne
 #
 #   Step 3 — Compare with the generic casc portfolio:

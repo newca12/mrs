@@ -389,6 +389,27 @@ REFERENCE VIOLATIONS — none detected.
 commit 181929ae1ea647c30cf91ea92219d69f23d7e9f3 (HEAD -> fix/integrate-casc-next-review, origin/fix/integrate-casc-next-review)
 
 [www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh   --edition casc-30  --systems mrs --divisions fne,feq,epu,eps,ueq,icu  --casc-times --jobs 2 --output crates/mrs-bench/results/casc-30-W8J2-$(date +%Y%m%d)
+     Running `target/debug/bench_report /DATA/ai/mrs/crates/mrs-bench/results/casc-30-W8J2-20260908/run.csv`
+CASC-30 Results — 2026-09-09 16:26  (1039 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        43   26.548
+FEQ            400       112   23.087
+EPU            100        18   12.797
+EPS            100        17   22.541
+UEQ            300       222   11.933
+ICU             39         7   79.992
+------------------  --------------------
+TOTAL         1039       419   18.019
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
 
 commit dbf462d82d3ff24d13ce38090dab10f278765836 (HEAD -> fix/integrate-casc-next-review, origin/fix/integrate-casc-next-review)
 

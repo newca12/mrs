@@ -10,7 +10,7 @@ or another explicitly requested tool, instead.
 ## 1. NixOS WSL Development Environment (SOTA)
 The host environment is **NixOS running inside Windows Subsystem for Linux (WSL)**.
 - Traditional FHS assumptions do NOT apply. Files and libraries are versioned under `/nix/store/` instead of `/lib` or `/usr/include`.
-- This project uses **Nix Flakes** (`flake.nix`) and **direnv** (`.envrc`) to declare its development dependencies (including Rust compiler stable 1.97.0, cargo, clippy, rustfmt, rust-analyzer, pkg-config, git, and cargo-nextest).
+- This project uses **Nix Flakes** (`flake.nix`) and **direnv** (`.envrc`) to declare its development dependencies (including Rust compiler stable 1.98.1, cargo, clippy, rustfmt, rust-analyzer, pkg-config, git, and cargo-nextest).
 
 ### Execution Rule (Critical)
 Because your native agent `bash` or terminal execution tool starts in a raw shell that does not automatically load `direnv`, **you must wrap any compilation, testing, or development command in the Nix environment.**
@@ -123,6 +123,8 @@ nix develop -c cargo run --release -- --list-schedules
 |------|---------|-------------|
 | `--time <seconds>` | `30` | Wall-clock time limit |
 | `--workers <N>` | physical cores | Max parallel search threads. **Reproducibility note:** with `N>1` (the default), strategies run concurrently and share a pool of derived unit equalities (see "Architecture notes" below), so per-run telemetry (`processed`/`generated`/`lrs_discarded`) and even the pass/fail outcome on borderline problems are not bit-reproducible — sibling-thread timing and CPU contention both feed into the wall-clock-sensitive LRS pruning heuristic. Use `--workers 1` for a fully deterministic, sequential single-strategy run (no clause-pool cross-talk, no contention) when diagnosing or reproducing a specific strategy's behavior. |
+| `--strategy <N>` | — | Run exact base strategy `N` (1–15) from the selected CASC division schedule for the full budget; diagnostic solo coverage only. |
+| `--portfolio <IDs>` | — | Run an explicit cooperative portfolio, e.g. `11,12,1,6,10,8,14,4`; one ID is required per worker and shared equality exchange remains enabled. |
 | `--schedule <name>` | `casc` | Strategy schedule; see registry below |
 | `--auto-schedule` | — | Rule-based division detection (EPR/UEQ/FNE/FEQ) picks the matching `casc_*` portfolio; an explicit `--schedule` wins. Replaces the retired ML schedule classifier (`--ml-schedule` is a deprecated alias). |
 | `--list-schedules` | — | Print known schedule names and exit |
@@ -138,7 +140,7 @@ Named schedules live in `mrs_search::strategy::named` (`crates/mrs-search/src/st
 | Name | Strategies | Use case |
 |------|------------|----------|
 | `casc` (aliases `default`, `casc_feq`) | 16-strategy portfolio (15 active + 1 diagnostic) | CASC competition; default behavior |
-| `casc_fne` / `casc_feq` / `casc_ueq` / `casc_epr` / `casc_eps` / `casc_epu` / `casc_icu` | one strategy per worker (scales with `--workers`); data-driven from CASC-30 greedy set-cover | division-tuned portfolios; see §"CASC Hardware & --casc Decision Rule" for how to optimise |
+| `casc_fne` / `casc_feq` / `casc_ueq` / `casc_epr` / `casc_eps` / `casc_epu` / `casc_icu` | one strategy per worker (scales with `--workers`); candidate orders informed by solo sweeps and validated cooperatively | division-tuned portfolios; see §"CASC Hardware & --casc Decision Rule" for how to optimise |
 | `fast` | 1 KBO `AgeWeight(5)+AllNegative` | Sub-second ATP queries (e.g. `mrs-proover` backend) |
 | `mini` | 3-strategy compact portfolio | 1–5 s budgets |
 | `ml` (alias `ml_feq`), `ml_fne`, `ml_ueq`, `ml_epr` | ML-guided variants | require `ml-guidance` build + `--ml-weights`; degrade to weight-based selection otherwise |
@@ -242,7 +244,7 @@ current generic schedule and the data-driven optimal portfolio.
 
 ### Workflow: Per-Division Portfolio Optimisation
 
-**Step 1 — Generate per-strategy coverage data (run once per TPTP release):**
+**Step 1 — Generate optional solo diagnostic coverage data (run once per TPTP release):**
 
 ```bash
 # Run every mrs strategy solo on one division (30 s per problem, 4 parallel jobs).
@@ -253,8 +255,11 @@ export TPTP=/path/to/TPTP-v9.x.x
 ```
 
 This produces `run.csv` where each `system` column is `mrs-s01..mrs-s15`.
+These runs measure individual strategies with one worker and no cross-strategy
+shared equality pool. Their set-cover output is diagnostic only, not the final
+cooperative portfolio objective.
 
-**Step 2 — Find optimal 8-strategy portfolio per division:**
+**Step 2 — Use solo set-cover only to generate candidate portfolios:**
 
 ```bash
 nix develop -c cargo run --release --bin greedy_set_cover -- results/sweep-fne-*/run.csv 8 --division fne
@@ -262,16 +267,27 @@ nix develop -c cargo run --release --bin greedy_set_cover -- results/sweep-fne-*
 nix develop -c cargo run --release --bin greedy_set_cover -- results/sweep-fne-*/run.csv 8 --division eps
 ```
 
-**Step 3 — Baseline comparison:**
+**Step 3 — Measure the actual cooperative portfolio:**
 
 ```bash
-# Run the current generic casc portfolio on the same problems:
-./crates/mrs-bench/casc.sh --systems mrs --divisions fne --time 30 --jobs 4 \
-    --output results/baseline-fne-$(date +%Y%m%d)
-# Compare solved counts between baseline and greedy-selected portfolio.
+# One mrs process per problem, eight workers, shared equality pool enabled.
+MRS_WORKERS=8 ./crates/mrs-bench/cooperative_portfolio_sweep.sh \
+    casc-30 fne 11,4,12,1,6,8,2,3 30 4 \
+    results/cooperative-fne-$(date +%Y%m%d)
+
+# Control: same portfolio with sharing disabled.
+MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=0 \
+./crates/mrs-bench/cooperative_portfolio_sweep.sh \
+    casc-30 fne 11,4,12,1,6,8,2,3 30 4 \
+    results/cooperative-fne-no-sharing-$(date +%Y%m%d)
 ```
 
-**Step 4 — Act on the results:**
+The cooperative result is the portfolio-selection objective. The difference
+between shared and no-sharing runs measures cooperation gain separately from
+strategy diversity. Use `cooperative_portfolio_search.sh` for one-swap local
+search over candidate portfolios.
+
+**Step 4 — Act on cooperative results:**
 
 - If greedy FNE portfolio = strategies `[s3, s7, s11, s1, s12, s6, s2, s10]` (example),
   replace the `casc_fne` loop-generated body in `named.rs` with those 8 explicit
@@ -282,11 +298,12 @@ nix develop -c cargo run --release --bin greedy_set_cover -- results/sweep-fne-*
 ### Current status
 
 The `casc_feq`, `casc_fne`, `casc_ueq`, `casc_epr`, `casc_eps`, `casc_epu`, and
-`casc_icu` schedules are **data-driven** — priority orders were derived from a
-greedy set-cover analysis over CASC-30 benchmark results (30 s per-strategy sweep).
-See `docs/DIVISIONS.md` for the full coverage numbers and `greedy_all.res` for
-the raw output. Re-run the workflow above after each new TPTP release or
-major portfolio change.
+`casc_icu` schedules have candidate priority orders derived from solo
+strategy-sweep data. Solo coverage is diagnostic only because the normal
+portfolio shares derived unit equalities through a cross-strategy pool. Use
+`cooperative_portfolio_sweep.sh` and `cooperative_portfolio_search.sh` to
+validate or replace these orders against the actual 8-worker objective. See
+`docs/DIVISIONS.md` for the workflow and telemetry details.
 
 ---
 

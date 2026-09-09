@@ -93,6 +93,9 @@ pub struct SearchStats {
 pub struct StrategyReport {
     /// Zero-based strategy index within the schedule.
     pub strategy_idx: usize,
+    /// Base strategy ID (1-based) when this schedule came from the named CASC
+    /// portfolio; zero for ad-hoc schedules that do not assign one.
+    pub strategy_id: usize,
     /// The result of this strategy's search.
     pub result: SearchResult,
     /// Counters collected during the search.
@@ -154,11 +157,24 @@ impl ScheduleReport {
             .count();
 
         format!(
-            "strategies={} workers={} result={} elapsed_ms={} timeout={} saturated={} \
+            "strategies={} workers={} strategy_ids={} result={} elapsed_ms={} timeout={} saturated={} \
              processed={} generated={} passive={} weight_discarded={} lrs_discarded={} \
              fwd_subsumed={} shared_published={} shared_imported={}",
             self.strategies.len(),
             self.workers,
+            {
+                let mut strategy_ids = self
+                    .strategies
+                    .iter()
+                    .map(|s| (s.strategy_idx, s.strategy_id))
+                    .collect::<Vec<_>>();
+                strategy_ids.sort_unstable_by_key(|(slot, _)| *slot);
+                strategy_ids
+                    .into_iter()
+                    .map(|(slot, id)| format!("{slot}:{id}"))
+                    .collect::<Vec<_>>()
+                    .join(";")
+            },
             result,
             self.elapsed_ms,
             timeout,
@@ -333,6 +349,8 @@ pub enum ClauseWeightFn {
 /// Configuration for the search engine.
 #[derive(Clone, Debug)]
 pub struct SearchConfig {
+    /// Base strategy identity for benchmark telemetry; zero means ad hoc.
+    pub strategy_id: usize,
     /// Maximum wall-clock time for the search.
     pub time_limit: Duration,
     /// Clause selection strategy.
@@ -401,6 +419,7 @@ pub struct SearchConfig {
 impl Default for SearchConfig {
     fn default() -> Self {
         Self {
+            strategy_id: 0,
             time_limit: Duration::from_secs(5),
             selection: SelectionStrategy::AgeWeight(5),
             literal_selection: LiteralSelection::AllNegative,

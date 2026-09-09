@@ -26,38 +26,57 @@ CASC division from the problem file path and selects the matching schedule:
 ## 2. Data-Driven Portfolio Construction
 
 Each division schedule is constructed by `build_casc_schedule` in
-`crates/mrs-search/src/strategy/named.rs`.  The function takes:
+`crates/mrs-search/src/strategy/named.rs`. The function takes:
 - The total time budget and number of workers
 - A **priority order array** listing strategy indices (1-indexed, 1–15) in
   the order they should be allocated to parallel worker slots
 
 This replaces the previous loop-generated schedules (which varied parameters
-via modular arithmetic) with **data-driven portfolios** derived from greedy
-set-cover analysis over CASC-30 benchmark results.
+via modular arithmetic) with **data-driven portfolios** derived from benchmark
+results.
+
+The historical greedy set-cover inputs are **solo-strategy diagnostics**. They
+measure `--strategy N` with one worker and therefore do not include
+cross-strategy unit-equality sharing. They must not be interpreted as the final
+cooperative portfolio objective.
 
 ### How to regenerate (after a new TPTP release or benchmark run):
 
 ```bash
-# Step 1: run all 15 strategies solo across all divisions
+# Step 1: optional diagnostic solo coverage across all divisions
 export TPTP=/path/to/TPTP-v9.x.x
 ./crates/mrs-bench/run_strategy_sweep.sh \
     --divisions fne,feq,ueq,eps,epu,icu --time 30 --jobs 4 \
     --output results/sweep-$(date +%Y%m%d)
 
-# Step 2: run the sweep optimizer
+# Step 2: optional diagnostic solo set-cover
 ./crates/mrs-bench/run_all_greedy_sweeps.sh results/sweep-*/run.csv \
     > greedy_all.res
 
-# Step 3: read the 8-core portfolios per division and update named.rs
+# Step 3: measure the actual cooperative portfolio with shared clauses
+# The eight IDs must match MRS_WORKERS. This launches one 8-worker mrs
+# process per problem, as competition runs do.
+./crates/mrs-bench/cooperative_portfolio_sweep.sh \
+    casc-30 fne 11,4,12,1,6,8,2,3 30 4 \
+    results/cooperative-fne
+
+# Control: isolate the contribution from cross-strategy sharing.
+MRS_SHARED_POOL_INTERVAL=0 \
+./crates/mrs-bench/cooperative_portfolio_sweep.sh \
+    casc-30 fne 11,4,12,1,6,8,2,3 30 4 \
+    results/cooperative-fne-no-sharing
+
+# Step 4: use cooperative results, not solo set-cover alone, to update named.rs
 ```
 
 ---
 
 ## 3. Current Data-Driven Priority Orders (CASC-30)
 
-Based on a 30 s per-strategy sweep over the CASC-30 problem set:
+Based on historical 30 s per-strategy solo sweeps over the CASC-30 problem set;
+these figures are diagnostic and are not cooperative portfolio coverage:
 
-| Division | 8-core priority order | Unique coverage at 8 cores |
+| Division | 8-core candidate order | Solo union diagnostic coverage |
 |:---------|:----------------------|:---------------------------|
 | **FNE** | s11, s4, s12, s1, s6, s8, s2, s3 | 35 problems solved at 6 cores |
 | **FEQ** | s11, s12, s1, s6, s10, s8, s14, s4 | 90 problems solved at 8 cores |

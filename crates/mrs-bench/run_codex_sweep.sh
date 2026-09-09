@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # crates/mrs-bench/run_codex_sweep.sh
 #
-# Run a full strategy sweep (s01–s15) using mrs-codex to populate a database
-# with deterministic, single-worker coverage data for greedy set-cover.
+# Run a diagnostic solo-strategy sweep (s01–s15) using mrs-codex.  The output
+# is useful for measuring individual strategy coverage, but it is NOT a
+# cooperative portfolio measurement: every process uses one worker and cannot
+# exchange clauses with sibling strategies.
 #
 # Usage: ./crates/mrs-bench/run_codex_sweep.sh [TPTP_PATH] [DB_PATH] [TIMEOUT] [JOBS]
 
@@ -40,7 +42,7 @@ TIMEOUT="${3:-300}"
 JOBS="${4:-16}" # Default to 16 parallel files, each using 1 core (total 16 cores)
 
 echo "================================================================================"
-echo "Starting Strategy Sweep (s01–s15) via mrs-codex"
+echo "Starting solo Strategy Sweep (s01–s15) via mrs-codex"
 echo "TPTP Problems: ${PROBLEMS_DIR}"
 echo "TPTP Root:     ${TPTP_ROOT}"
 echo "Database:      ${DB_PATH}"
@@ -64,7 +66,7 @@ for i in $(seq 1 15); do
         --system "${STRAT_NAME}" \
         --timeout "${TIMEOUT}" \
         --jobs "${JOBS}" \
-        --cmd "env TPTP='${TPTP_ROOT}' MRS_SINGLE_STRATEGY=${i} '${MRS_BINARY}' --time {timeout} --workers 1 '{file}'" \
+        --cmd "env TPTP='${TPTP_ROOT}' '${MRS_BINARY}' --time {timeout} --workers 1 --auto-schedule --strategy ${i} '{file}'" \
         > "codex_sweep_${STRAT_NAME}.out" 2> "codex_sweep_${STRAT_NAME}.err"; then
             echo "Warning: Sweep for ${STRAT_NAME} exited with a non-zero status. Check codex_sweep_${STRAT_NAME}.err for details."
     fi
@@ -75,4 +77,5 @@ done
 echo "================================================================================"
 echo "Strategy Sweep Completed successfully!"
 echo "Database populated: ${DB_PATH}"
+echo "NOTE: this database measures solo strategies only; use cooperative_portfolio_sweep.sh for portfolio coverage."
 echo "================================================================================"
