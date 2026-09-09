@@ -52,7 +52,7 @@ struct Args {
     db: PathBuf,
 
     /// Name of the prover system (e.g., mrs-0.2.1)
-    #[arg(long)]
+    #[arg(long, default_value = "")]
     system: String,
 
     /// Description of the hardware (auto-detected if not provided)
@@ -65,7 +65,7 @@ struct Args {
 
     /// Command template. Must include {file}. Can optionally include {timeout}.
     /// Example: "vampire --mode casc --time_limit {timeout} {file}"
-    #[arg(long)]
+    #[arg(long, default_value = "")]
     cmd: String,
 
     /// Parameters string to store in the database (defaults to the cmd string if not provided)
@@ -79,6 +79,14 @@ struct Args {
     /// Proof verification policy: kernel, competition, or none
     #[arg(long, value_enum, default_value_t = VerifyMode::Competition)]
     verify_mode: VerifyMode,
+
+    /// Extract and store deep problem profiles only (does not run provers)
+    #[arg(long)]
+    profile_only: bool,
+
+    /// Overwrite existing problem profiles in codex database
+    #[arg(long)]
+    overwrite_profiles: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -102,6 +110,7 @@ struct RunResult {
     competition_time: Option<f64>,
     external_atp_validated: Option<String>,
     external_atp_time: Option<f64>,
+    profile: Option<mrs_core::ProblemProfile>,
 }
 
 fn extract_ground_truth_status(content: &str) -> Option<String> {
@@ -354,7 +363,226 @@ fn init_db(conn: &Connection) -> SqliteResult<()> {
             [],
         );
     }
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS problem_profiles (
+            problem_name TEXT PRIMARY KEY NOT NULL,
+            domain TEXT,
+            dialect TEXT,
+            header_status TEXT,
+            header_rating REAL,
+            archetype TEXT NOT NULL,
+            casc_division TEXT NOT NULL,
+            recommended_schedule TEXT,
+            recommended_engine TEXT,
+            recommended_avatar INTEGER,
+            recommended_sine INTEGER,
+            num_clauses INTEGER,
+            num_literals INTEGER,
+            num_axioms INTEGER,
+            num_conjectures INTEGER,
+            num_variables INTEGER,
+            avg_vars_per_clause REAL,
+            max_vars_per_clause INTEGER,
+            unit_ratio REAL,
+            horn_ratio REAL,
+            definite_ratio REAL,
+            goal_clause_ratio REAL,
+            ground_ratio REAL,
+            equality_literal_ratio REAL,
+            non_linear_var_ratio REAL,
+            max_clause_len INTEGER,
+            avg_clause_len REAL,
+            max_pos_literals INTEGER,
+            max_term_depth INTEGER,
+            avg_term_depth REAL,
+            max_term_size INTEGER,
+            avg_term_size REAL,
+            num_predicates INTEGER,
+            num_functions INTEGER,
+            num_constants INTEGER,
+            max_fun_arity INTEGER,
+            max_pred_arity INTEGER,
+            skolem_symbols_count INTEGER,
+            is_ueq INTEGER,
+            is_peq INTEGER,
+            is_fne INTEGER,
+            is_feq INTEGER,
+            is_epr INTEGER,
+            is_fvo INTEGER,
+            is_large_theory INTEGER,
+            has_ac_symbols INTEGER,
+            ac_symbols TEXT,
+            has_identity_axiom INTEGER,
+            has_inverse_axiom INTEGER,
+            has_idempotence INTEGER,
+            has_conjecture INTEGER,
+            conjecture_clauses INTEGER,
+            conjecture_literals INTEGER,
+            conjecture_max_depth INTEGER,
+            conjecture_symbol_overlap REAL,
+            unique_conjecture_symbols TEXT,
+            raw_profile_json TEXT
+        )",
+        [],
+    )?;
+
     Ok(())
+}
+
+fn save_problem_profile(conn: &Connection, profile: &mrs_core::ProblemProfile) -> SqliteResult<()> {
+    let ac_syms_json = serde_json::to_string(&profile.ac_symbols).unwrap_or_else(|_| "[]".into());
+    let uniq_conj_syms_json =
+        serde_json::to_string(&profile.unique_conjecture_symbols).unwrap_or_else(|_| "[]".into());
+    let raw_json = serde_json::to_string(profile).unwrap_or_else(|_| "{}".into());
+
+    conn.execute(
+        "INSERT OR REPLACE INTO problem_profiles (
+            problem_name, domain, dialect, header_status, header_rating,
+            archetype, casc_division, recommended_schedule, recommended_engine,
+            recommended_avatar, recommended_sine, num_clauses, num_literals,
+            num_axioms, num_conjectures, num_variables, avg_vars_per_clause,
+            max_vars_per_clause, unit_ratio, horn_ratio, definite_ratio,
+            goal_clause_ratio, ground_ratio, equality_literal_ratio,
+            non_linear_var_ratio, max_clause_len, avg_clause_len,
+            max_pos_literals, max_term_depth, avg_term_depth, max_term_size,
+            avg_term_size, num_predicates, num_functions, num_constants,
+            max_fun_arity, max_pred_arity, skolem_symbols_count, is_ueq,
+            is_peq, is_fne, is_feq, is_epr, is_fvo, is_large_theory,
+            has_ac_symbols, ac_symbols, has_identity_axiom, has_inverse_axiom,
+            has_idempotence, has_conjecture, conjecture_clauses,
+            conjecture_literals, conjecture_max_depth, conjecture_symbol_overlap,
+            unique_conjecture_symbols, raw_profile_json
+        ) VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+            ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28,
+            ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41,
+            ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50, ?51, ?52, ?53, ?54,
+            ?55, ?56, ?57
+        )",
+        params![
+            profile.problem_name,
+            profile.domain,
+            profile.dialect,
+            profile.header_status,
+            profile.header_rating,
+            profile.archetype.as_str(),
+            profile.casc_division,
+            profile.recommended_schedule,
+            profile.recommended_engine,
+            profile.recommended_avatar as i64,
+            profile.recommended_sine as i64,
+            profile.num_clauses as i64,
+            profile.num_literals as i64,
+            profile.num_axioms as i64,
+            profile.num_conjectures as i64,
+            profile.num_variables as i64,
+            profile.avg_vars_per_clause as f64,
+            profile.max_vars_per_clause as i64,
+            profile.unit_ratio as f64,
+            profile.horn_ratio as f64,
+            profile.definite_ratio as f64,
+            profile.goal_clause_ratio as f64,
+            profile.ground_ratio as f64,
+            profile.equality_literal_ratio as f64,
+            profile.non_linear_var_ratio as f64,
+            profile.max_clause_len as i64,
+            profile.avg_clause_len as f64,
+            profile.max_pos_literals as i64,
+            profile.max_term_depth as i64,
+            profile.avg_term_depth as f64,
+            profile.max_term_size as i64,
+            profile.avg_term_size as f64,
+            profile.num_predicates as i64,
+            profile.num_functions as i64,
+            profile.num_constants as i64,
+            profile.max_fun_arity as i64,
+            profile.max_pred_arity as i64,
+            profile.skolem_symbols_count as i64,
+            profile.is_ueq as i64,
+            profile.is_peq as i64,
+            profile.is_fne as i64,
+            profile.is_feq as i64,
+            profile.is_epr as i64,
+            profile.is_fvo as i64,
+            profile.is_large_theory as i64,
+            profile.has_ac_symbols as i64,
+            ac_syms_json,
+            profile.has_identity_axiom as i64,
+            profile.has_inverse_axiom as i64,
+            profile.has_idempotence as i64,
+            profile.has_conjecture as i64,
+            profile.conjecture_clauses as i64,
+            profile.conjecture_literals as i64,
+            profile.conjecture_max_depth as i64,
+            profile.conjecture_symbol_overlap as f64,
+            uniq_conj_syms_json,
+            raw_json,
+        ],
+    )?;
+    Ok(())
+}
+
+fn fetch_profiled_problems(conn: &Connection) -> SqliteResult<HashSet<String>> {
+    let mut stmt = conn.prepare("SELECT problem_name FROM problem_profiles")?;
+    let rows = stmt.query_map([], |row| row.get(0))?;
+    let mut names = HashSet::new();
+    for name in rows {
+        names.insert(name?);
+    }
+    Ok(names)
+}
+
+fn extract_problem_profile_from_file(
+    path: &Path,
+    _problem_name: &str,
+) -> Option<mrs_core::ProblemProfile> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let problem = mrs_tptp::parse_tptp(&content).ok()?;
+    let mut lowered = mrs::lowering::lower_problem(&problem);
+    if !problem.includes.is_empty() {
+        let base_dir = path.parent().unwrap_or(Path::new("."));
+        let tptp_root = std::env::var("TPTP").ok().map(PathBuf::from);
+        let _ =
+            mrs::include::resolve_and_lower(&problem, &mut lowered, base_dir, tptp_root.as_deref());
+    }
+    let mut id_gen = lowered.id_gen.clone();
+    let mut all_clauses = lowered.cnf_clauses;
+    for f in lowered.axioms {
+        let (_, clauses) = mrs_cnf::clausify_with_provenance(
+            &f.formula,
+            &mut lowered.symbols,
+            &mut id_gen,
+            &f.name,
+            mrs_core::clause::ClauseSource::Input {
+                name: f.name.clone(),
+                role: f.role.clone(),
+            },
+            None,
+        );
+        all_clauses.extend(clauses);
+    }
+    for f in lowered.conjectures {
+        let negated = mrs_core::Formula::neg(f.formula.clone());
+        let (_, clauses) = mrs_cnf::clausify_with_provenance(
+            &negated,
+            &mut lowered.symbols,
+            &mut id_gen,
+            &f.name,
+            mrs_core::clause::ClauseSource::Inference {
+                rule: "negated_conjecture",
+                parents: vec![mrs_core::clause::ClauseId(0)].into(),
+            },
+            None,
+        );
+        all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(0)));
+    }
+    Some(mrs::analyze::analyze_problem(
+        &path.to_string_lossy(),
+        &problem,
+        &lowered.symbols,
+        &all_clauses,
+    ))
 }
 
 fn get_or_create_id(
@@ -599,6 +827,12 @@ fn writer_thread(db_path: PathBuf, receiver: Receiver<RunResult>) {
     .expect("Failed to set PRAGMAs");
 
     for result in receiver {
+        if let Some(profile) = &result.profile
+            && let Err(e) = save_problem_profile(&conn, profile)
+        {
+            eprintln!("Error saving profile for {}: {}", result.problem_name, e);
+        }
+
         let res = conn.execute(
             "INSERT OR REPLACE INTO results 
              (problem_name, division, system_id, hardware_id, parameter_id, timeout, time_to_solve, status, proover_validated, starexec_validated, time_to_verify,
@@ -633,6 +867,113 @@ fn writer_thread(db_path: PathBuf, receiver: Receiver<RunResult>) {
     }
 }
 
+fn run_profile_only(args: &Args) {
+    let conn = Connection::open(&args.db).expect("Failed to open SQLite database");
+    init_db(&conn).expect("Failed to initialize database schema");
+
+    let profiled_problems = if args.overwrite_profiles {
+        HashSet::new()
+    } else {
+        fetch_profiled_problems(&conn).expect("Failed to fetch profiled problems")
+    };
+    drop(conn);
+
+    println!(
+        "Found {} already profiled problems in {}.",
+        profiled_problems.len(),
+        args.db.display()
+    );
+    println!("Scanning {} for .p files...", args.folder.display());
+
+    let mut pending_files = Vec::new();
+    for entry in WalkDir::new(&args.folder)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if entry.path().is_file() && entry.path().extension().is_some_and(|ext| ext == "p") {
+            let relative_path = entry
+                .path()
+                .strip_prefix(&args.folder)
+                .unwrap_or(entry.path());
+            let problem_name = relative_path.to_string_lossy().to_string();
+
+            if !profiled_problems.contains(&problem_name) {
+                pending_files.push((problem_name, entry.path().to_path_buf()));
+            }
+        }
+    }
+
+    pending_files.sort_by(|a, b| a.0.cmp(&b.0));
+    let total_pending = pending_files.len();
+    println!("Found {} files to profile.", total_pending);
+    if total_pending == 0 {
+        println!("All files are already profiled.");
+        return;
+    }
+
+    let num_threads = args.jobs.unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    });
+    let pool = ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .stack_size(64 * 1024 * 1024)
+        .build()
+        .expect("Failed to build rayon thread pool");
+
+    let (sender, receiver) = unbounded::<mrs_core::ProblemProfile>();
+
+    let db_path = args.db.clone();
+    let writer_handle = thread::spawn(move || {
+        let conn =
+            Connection::open(db_path).expect("Failed to open SQLite database in writer thread");
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;",
+        )
+        .expect("Failed to set PRAGMAs");
+
+        for profile in receiver {
+            if let Err(e) = save_problem_profile(&conn, &profile) {
+                eprintln!("Error saving profile for {}: {}", profile.problem_name, e);
+            }
+        }
+    });
+
+    let progress = Arc::new(AtomicUsize::new(0));
+
+    pool.install(|| {
+        pending_files
+            .par_iter()
+            .for_each(|(problem_name, file_path)| {
+                if let Some(profile) = extract_problem_profile_from_file(file_path, problem_name) {
+                    let arch = profile.archetype.as_str().to_string();
+                    let div = profile.casc_division.clone();
+                    sender
+                        .send(profile)
+                        .expect("Failed to send profile to writer thread");
+                    let current = progress.fetch_add(1, Ordering::Relaxed) + 1;
+                    println!(
+                        "[{:>5}/{}] Profiled {} -> Archetype: {}, Division: {}",
+                        current, total_pending, problem_name, arch, div
+                    );
+                } else {
+                    eprintln!("Warning: Failed to extract profile for {}", problem_name);
+                }
+            });
+    });
+
+    drop(sender);
+    writer_handle
+        .join()
+        .expect("Profile writer thread panicked");
+    println!(
+        "Profiling complete. Saved profiles to {}.",
+        args.db.display()
+    );
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -646,6 +987,21 @@ fn main() {
             "Error: Directory '{}' does not exist.",
             args.folder.display()
         );
+        std::process::exit(1);
+    }
+
+    if args.profile_only {
+        run_profile_only(&args);
+        return;
+    }
+
+    if args.system.is_empty() {
+        eprintln!("Error: --system is required when running benchmarks.");
+        std::process::exit(1);
+    }
+
+    if args.cmd.is_empty() {
+        eprintln!("Error: --cmd is required when running benchmarks.");
         std::process::exit(1);
     }
 
@@ -756,9 +1112,14 @@ fn main() {
             .for_each(|(problem_name, file_path)| {
                 let content = std::fs::read_to_string(file_path).unwrap_or_default();
                 let status = extract_ground_truth_status(&content);
-                let division = match mrs_tptp::parse_tptp(&content) {
-                    Ok(ast) => determine_division_from_ast(&ast, status.as_deref(), &content),
-                    Err(_) => "Other".to_string(),
+                let profile = extract_problem_profile_from_file(file_path, problem_name);
+                let division = if let Some(p) = &profile {
+                    p.casc_division.clone()
+                } else {
+                    match mrs_tptp::parse_tptp(&content) {
+                        Ok(ast) => determine_division_from_ast(&ast, status.as_deref(), &content),
+                        Err(_) => "Other".to_string(),
+                    }
                 };
 
                 let cmd_args = parse_cmd_template(&args.cmd, file_path, args.timeout);
@@ -896,6 +1257,7 @@ fn main() {
                     competition_time,
                     external_atp_validated,
                     external_atp_time,
+                    profile,
                 };
 
                 sender
@@ -1023,5 +1385,120 @@ mod tests {
         let ast = mrs_tptp::parse_tptp(content_fnq).unwrap();
         let div = determine_division_from_ast(&ast, Some("CounterSatisfiable"), content_fnq);
         assert_eq!(div, "FNQ");
+    }
+
+    #[test]
+    fn test_profile_only_args_parse() {
+        let args = Args::try_parse_from(["mrs-codex", "problems", "--profile-only"])
+            .expect("profile-only arguments parse");
+        assert!(args.profile_only);
+        assert_eq!(args.system, "");
+        assert_eq!(args.cmd, "");
+    }
+
+    #[test]
+    fn test_problem_profiles_schema_and_save() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        let profile = mrs_core::ProblemProfile {
+            problem_name: "GRP001-1.p".to_string(),
+            domain: "GRP".to_string(),
+            dialect: "CNF".to_string(),
+            header_status: Some("Unsatisfiable".to_string()),
+            header_rating: Some(0.12),
+            num_clauses: 4,
+            num_literals: 4,
+            num_axioms: 3,
+            num_conjectures: 1,
+            num_variables: 3,
+            avg_vars_per_clause: 1.5,
+            max_vars_per_clause: 3,
+            unit_ratio: 1.0,
+            horn_ratio: 1.0,
+            definite_ratio: 0.75,
+            goal_clause_ratio: 0.25,
+            ground_ratio: 0.25,
+            equality_literal_ratio: 1.0,
+            non_linear_var_ratio: 0.5,
+            max_clause_len: 1,
+            avg_clause_len: 1.0,
+            max_pos_literals: 1,
+            max_term_depth: 3,
+            avg_term_depth: 2.1,
+            max_term_size: 5,
+            avg_term_size: 3.2,
+            num_predicates: 1,
+            num_functions: 2,
+            num_constants: 1,
+            max_fun_arity: 2,
+            max_pred_arity: 2,
+            skolem_symbols_count: 0,
+            is_ueq: true,
+            is_peq: true,
+            is_fne: false,
+            is_feq: false,
+            is_epr: false,
+            is_fvo: false,
+            is_large_theory: false,
+            has_ac_symbols: true,
+            ac_symbols: vec!["multiply".to_string()],
+            has_identity_axiom: true,
+            has_inverse_axiom: true,
+            has_idempotence: false,
+            has_conjecture: true,
+            conjecture_clauses: 1,
+            conjecture_literals: 1,
+            conjecture_max_depth: 2,
+            conjecture_symbol_overlap: 1.0,
+            unique_conjecture_symbols: vec![],
+            archetype: mrs_core::ProblemArchetype::PureUnitEquality,
+            casc_division: "UEQ".to_string(),
+            recommended_schedule: "casc_ueq".to_string(),
+            recommended_engine: "Superposition".to_string(),
+            recommended_avatar: false,
+            recommended_sine: false,
+        };
+
+        save_problem_profile(&conn, &profile).unwrap();
+
+        // Query back from DB
+        let mut stmt = conn
+            .prepare("SELECT problem_name, archetype, casc_division, is_ueq, has_ac_symbols FROM problem_profiles WHERE problem_name = ?1")
+            .unwrap();
+        let row = stmt
+            .query_row(params!["GRP001-1.p"], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            })
+            .unwrap();
+
+        assert_eq!(row.0, "GRP001-1.p");
+        assert_eq!(row.1, "PureUnitEquality");
+        assert_eq!(row.2, "UEQ");
+        assert_eq!(row.3, 1);
+        assert_eq!(row.4, 1);
+    }
+
+    #[test]
+    fn test_extract_problem_profile_from_file() {
+        let content = "cnf(comm, axiom, multiply(X, Y) = multiply(Y, X)).\ncnf(goal, negated_conjecture, multiply(a, b) != multiply(b, a)).";
+        let mut file = tempfile::Builder::new().suffix(".p").tempfile().unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+
+        let profile =
+            extract_problem_profile_from_file(file.path(), "test.p").expect("profile extracted");
+        assert_eq!(
+            profile.archetype,
+            mrs_core::ProblemArchetype::PureUnitEquality
+        );
+        assert_eq!(profile.casc_division, "UEQ");
+        assert!(profile.is_ueq);
+        assert_eq!(profile.num_clauses, 2);
     }
 }

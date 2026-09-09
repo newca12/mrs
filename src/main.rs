@@ -40,6 +40,7 @@ fn main() {
     let mut self_check = false;
     let mut include_root: Option<PathBuf> = None;
     let mut stats_mode = false;
+    let mut profile_json_mode = false;
     let mut goal_transform: Option<mrs_cnf::GoalTransformMode> = None;
     #[cfg(feature = "ml")]
     let mut ml_premise_weights: Option<String> = None;
@@ -115,8 +116,11 @@ fn main() {
             "--auto-schedule" => {
                 auto_schedule = true;
             }
-            "--stats" | "--info" | "--analyze" => {
+            "--stats" | "--info" | "--analyze" | "--profile" => {
                 stats_mode = true;
+            }
+            "--profile-json" => {
+                profile_json_mode = true;
             }
             "--self-check" => {
                 self_check = true;
@@ -224,7 +228,7 @@ fn main() {
             _ => {
                 if path.is_some() {
                     eprintln!(
-                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--goal-transform MODE] [--no-bce] [--no-ple] [--no-instgen] [--self-check] [--stats] [--include-root DIR] <file.p>"
+                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--goal-transform MODE] [--no-bce] [--no-ple] [--no-instgen] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"
                     );
                     process::exit(1);
                 }
@@ -234,7 +238,7 @@ fn main() {
     }
     let Some(path) = path else {
         eprintln!(
-            "Usage: mrs [--time <seconds>] [--schedule NAME] [--goal-transform MODE] [--no-bce] [--no-ple] [--self-check] [--stats] [--include-root DIR] <file.p>"
+            "Usage: mrs [--time <seconds>] [--schedule NAME] [--goal-transform MODE] [--no-bce] [--no-ple] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"
         );
         eprintln!("  An automated theorem prover for TPTP problems.");
         eprintln!(
@@ -452,6 +456,11 @@ fn main() {
         );
         provenance.extend(steps);
         all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(0)));
+    }
+
+    if profile_json_mode {
+        analyze::analyze_and_print_json(&path, &problem, &lowered.symbols, &all_clauses);
+        process::exit(0);
     }
 
     if stats_mode {
