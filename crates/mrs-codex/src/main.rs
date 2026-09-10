@@ -1115,6 +1115,59 @@ fn extract_szs_status(output: &str) -> Option<String> {
     None
 }
 
+/// Extracts structured failure information (panic, allocator OOM, OS OOM Killer, or exit code).
+fn extract_failure_detail(
+    stdout: &str,
+    stderr: &str,
+    status: &std::process::ExitStatus,
+    timeout_hit: bool,
+) -> Option<String> {
+    // 1. Structured SZS detail
+    for line in stderr.lines().chain(stdout.lines()) {
+        let trimmed = line.trim();
+        if let Some(detail) = trimmed.strip_prefix("% SZS detail ") {
+            return Some(detail.trim().to_string());
+        }
+    }
+
+    if status.success() {
+        return None;
+    }
+
+    // 2. Rust allocator OOM
+    if stderr.contains("memory allocation") && stderr.contains("failed") {
+        return Some("OOM: Rust memory allocation failed".to_string());
+    }
+
+    // 3. Rust panic message
+    if let Some(panic_line) = stderr.lines().find(|l| l.contains("panicked at")) {
+        return Some(format!("panic: {}", panic_line.trim()));
+    }
+
+    // 4. OS OOM Killer (SIGKILL / exit 137) before timeout limit
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if !timeout_hit && (status.signal() == Some(9) || status.code() == Some(137)) {
+            return Some("OOM: Process killed by OS OOM Killer (SIGKILL)".to_string());
+        }
+    }
+
+    // 5. Exit code or signal fallback
+    if let Some(code) = status.code() {
+        Some(format!("exit_code={}", code))
+    } else {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            if let Some(sig) = status.signal() {
+                return Some(format!("signal={}", sig));
+            }
+        }
+        Some("abnormal_termination".to_string())
+    }
+}
+
 /// Verifies a TSTP proof (given as `stdout` from a prover run) using
 /// `mrs-proover --only-mrs`, restricted to the `mrs` ATP fallback.
 /// Returns "VerifiedGood", "VerifiedBad", or "Unknown".
@@ -2045,6 +2098,7 @@ fn main() {
                 let start_time = Instant::now();
 
                 let mut status_str = "Error".to_string();
+                let mut failure_detail: Option<String> = None;
                 let mut time_to_solve = None;
                 let mut proover_validated: Option<String> = None;
                 let mut starexec_validated: Option<String> = None;
@@ -2062,7 +2116,7 @@ fn main() {
                     Ok(mut child) => {
                         let timeout_duration = Duration::from_secs(args.timeout);
                         match child.wait_timeout(timeout_duration) {
-                            Ok(Some(status)) => {
+                            Ok(Some(_status)) => {
                                 // Process exited before timeout
                                 let elapsed = start_time.elapsed().as_secs_f64();
                                 time_to_solve = Some(elapsed);
@@ -2071,6 +2125,13 @@ fn main() {
                                 if let Ok(output) = child.wait_with_output() {
                                     let stdout = String::from_utf8_lossy(&output.stdout);
                                     let stderr = String::from_utf8_lossy(&output.stderr);
+
+                                    failure_detail = extract_failure_detail(
+                                        &stdout,
+                                        &stderr,
+                                        &output.status,
+                                        false,
+                                    );
 
                                     if let Some(szs) = extract_szs_status(&stdout)
                                         .or_else(|| extract_szs_status(&stderr))
@@ -2115,12 +2176,10 @@ fn main() {
                                                 VerifyMode::None => {}
                                             }
                                         }
+                                    } else if output.status.success() {
+                                        status_str = "SuccessNoSZS".to_string();
                                     } else {
-                                        if status.success() {
-                                            status_str = "SuccessNoSZS".to_string();
-                                        } else {
-                                            status_str = "Error".to_string();
-                                        }
+                                        status_str = "Error".to_string();
                                     }
                                 }
                             }
@@ -2135,12 +2194,14 @@ fn main() {
                             Err(e) => {
                                 // Error waiting for process
                                 eprintln!("Error waiting for process: {}", e);
+                                failure_detail = Some(format!("WaitError: {}", e));
                             }
                         }
                     }
                     Err(e) => {
                         eprintln!("Failed to spawn prover for {}: {}", problem_name, e);
                         status_str = "SpawnError".to_string();
+                        failure_detail = Some(format!("SpawnError: {}", e));
                     }
                 }
 
@@ -2165,7 +2226,7 @@ fn main() {
                     expected: None,
                     verdict: None,
                     peak_memory_mb: None,
-                    failure_detail: None,
+                    failure_detail: failure_detail.clone(),
                     proover_validated: proover_validated.clone(),
                     starexec_validated: starexec_validated.clone(),
                     time_to_verify,
@@ -2206,9 +2267,20 @@ fn main() {
                     VerifyMode::None => String::new(),
                 };
 
+                let detail_disp = failure_detail
+                    .as_deref()
+                    .map(|d| format!(" | Detail: {}", d))
+                    .unwrap_or_default();
+
                 println!(
-                    "[{}/{}] Problem: {} | Status: {} | Time: {}{}",
-                    current, total_pending, problem_name, status_str, time_disp, val_disp
+                    "[{}/{}] Problem: {} | Status: {} | Time: {}{}{}",
+                    current,
+                    total_pending,
+                    problem_name,
+                    status_str,
+                    time_disp,
+                    val_disp,
+                    detail_disp
                 );
             });
     });
@@ -2633,5 +2705,55 @@ casc-30,UEQ,GRP001-1.p,mrs,Unsatisfiable,Unsatisfiable,CORRECT,0.12,\n";
         let agt_rows: Vec<_> = rows.iter().filter(|r| r.5 == "AGT/AGT005+1.p").collect();
         assert_eq!(agt_rows.len(), 2);
         assert_eq!(agt_rows[0].2, 240); // FEQ timeout from log
+    }
+
+    #[test]
+    fn test_extract_failure_detail() {
+        use std::process::Command;
+
+        let status_err = Command::new("sh")
+            .args(["-c", "exit 42"])
+            .status()
+            .expect("sh failed");
+        let status_ok = Command::new("sh")
+            .args(["-c", "exit 0"])
+            .status()
+            .expect("sh failed");
+
+        // 1. Success returns None when no SZS detail
+        assert_eq!(extract_failure_detail("", "", &status_ok, false), None);
+
+        // 2. SZS detail takes priority even on success
+        assert_eq!(
+            extract_failure_detail(
+                "",
+                "% SZS detail clause_weight_overflow\n",
+                &status_ok,
+                false
+            ),
+            Some("clause_weight_overflow".to_string())
+        );
+
+        // 3. Rust allocator OOM
+        let oom_stderr = "fatal runtime error: memory allocation of 1000000000 bytes failed\n";
+        assert_eq!(
+            extract_failure_detail("", oom_stderr, &status_err, false),
+            Some("OOM: Rust memory allocation failed".to_string())
+        );
+
+        // 4. Panic
+        let panic_stderr = "thread 'main' panicked at 'assertion failed', src/main.rs:10:5\n";
+        assert_eq!(
+            extract_failure_detail("", panic_stderr, &status_err, false),
+            Some(
+                "panic: thread 'main' panicked at 'assertion failed', src/main.rs:10:5".to_string()
+            )
+        );
+
+        // 5. Exit code fallback
+        assert_eq!(
+            extract_failure_detail("", "", &status_err, false),
+            Some("exit_code=42".to_string())
+        );
     }
 }
