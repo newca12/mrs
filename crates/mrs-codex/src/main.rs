@@ -8,7 +8,7 @@ use rayon::prelude::*;
 use regex::Regex;
 use rusqlite::{Connection, Result as SqliteResult, params};
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -647,6 +647,16 @@ fn fetch_profiled_problems(conn: &Connection) -> SqliteResult<HashSet<String>> {
     Ok(names)
 }
 
+fn delete_existing_codex_schema(conn: &Connection) -> SqliteResult<()> {
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS results;
+         DROP TABLE IF EXISTS problem_profiles;
+         DROP TABLE IF EXISTS systems;
+         DROP TABLE IF EXISTS hardware;
+         DROP TABLE IF EXISTS parameters;",
+    )
+}
+
 fn read_header_prefix(path: &Path) -> String {
     let Ok(file) = std::fs::File::open(path) else {
         return String::new();
@@ -693,6 +703,16 @@ fn canonical_tptp_name(raw_name: &str) -> String {
         }
     }
     with_ext
+}
+
+/// Namespaces a path when it belongs to a non-default corpus. The historical
+/// default TPTP corpus keeps its existing keys for database compatibility.
+fn scoped_problem_name(corpus: &str, is_competition: bool, relative_name: &str) -> String {
+    if is_competition || corpus != "tptp" {
+        format!("{corpus}/{relative_name}")
+    } else {
+        relative_name.to_string()
+    }
 }
 
 /// Detects whether a folder is a CASC competition folder (e.g. casc-30, casc-j13) or general TPTP,
@@ -834,29 +854,41 @@ fn find_competition_problems_dir(
     cli_dir: Option<&Path>,
     log_tptp: Option<&Path>,
 ) -> Option<PathBuf> {
+    fn normalize_root(root: PathBuf) -> PathBuf {
+        let has_divisions = |path: &Path| {
+            [
+                "FNE", "FEQ", "FNN", "FNQ", "UEQ", "EPR", "EPS", "EPU", "TNE", "TEQ",
+            ]
+            .iter()
+            .any(|division| path.join(division).is_dir())
+        };
+        let nested = root.join("Problems");
+        if has_divisions(&nested) { nested } else { root }
+    }
+
     if let Some(dir) = cli_dir
         && dir.is_dir()
     {
-        return Some(dir.to_path_buf());
+        return Some(normalize_root(dir.to_path_buf()));
     }
     if let Some(dir) = log_tptp
         && dir.is_dir()
     {
-        return Some(dir.to_path_buf());
+        return Some(normalize_root(dir.to_path_buf()));
     }
-    let candidates = [
-        format!("crates/mrs-bench/problems/{}", edition),
-        format!("../mrs-bench/problems/{}", edition),
-        format!("problems/{}", edition),
-        format!(
-            "/home/fr22192/EDLA/git/mrs/crates/mrs-bench/problems/{}",
-            edition
-        ),
+    let mut candidates = vec![
+        PathBuf::from(format!("crates/mrs-bench/problems/{edition}")),
+        PathBuf::from(format!("../mrs-bench/problems/{edition}")),
+        PathBuf::from(format!("problems/{edition}")),
     ];
-    for c in &candidates {
-        let p = PathBuf::from(c);
+    if let Ok(exe) = std::env::current_exe() {
+        for ancestor in exe.ancestors() {
+            candidates.push(ancestor.join("crates/mrs-bench/problems").join(edition));
+        }
+    }
+    for p in candidates {
         if p.is_dir() {
-            return Some(p);
+            return Some(normalize_root(p));
         }
     }
     None
@@ -1071,9 +1103,12 @@ fn get_or_create_id(
     Ok(id)
 }
 
-fn fetch_all_results_problems(conn: &Connection) -> SqliteResult<HashSet<String>> {
-    let mut stmt = conn.prepare("SELECT DISTINCT problem_name FROM results")?;
-    let problem_names = stmt.query_map([], |row| row.get::<_, String>(0))?;
+fn fetch_all_results_problems_for_corpus(
+    conn: &Connection,
+    corpus: &str,
+) -> SqliteResult<HashSet<String>> {
+    let mut stmt = conn.prepare("SELECT DISTINCT problem_name FROM results WHERE corpus = ?1")?;
+    let problem_names = stmt.query_map(params![corpus], |row| row.get::<_, String>(0))?;
     let mut names = HashSet::new();
     for name in problem_names {
         names.insert(name?);
@@ -1081,24 +1116,23 @@ fn fetch_all_results_problems(conn: &Connection) -> SqliteResult<HashSet<String>
     Ok(names)
 }
 
-fn fetch_completed_problems(
+fn fetch_completed_problems_for_corpus(
     conn: &Connection,
     system_id: i64,
     parameter_id: i64,
     hardware_id: i64,
     timeout: u64,
+    corpus: &str,
 ) -> SqliteResult<HashSet<String>> {
     let mut stmt = conn.prepare(
-        "SELECT problem_name FROM results 
-         WHERE system_id = ?1 AND parameter_id = ?2 
-         AND hardware_id = ?3 AND timeout = ?4",
+        "SELECT problem_name FROM results
+         WHERE system_id = ?1 AND parameter_id = ?2
+         AND hardware_id = ?3 AND timeout = ?4 AND corpus = ?5",
     )?;
-
     let problem_names = stmt.query_map(
-        params![system_id, parameter_id, hardware_id, timeout as i64],
+        params![system_id, parameter_id, hardware_id, timeout as i64, corpus],
         |row| row.get::<_, String>(0),
     )?;
-
     let mut completed = HashSet::new();
     for name in problem_names {
         completed.insert(name?);
@@ -1166,6 +1200,10 @@ fn extract_failure_detail(
         }
         Some("abnormal_termination".to_string())
     }
+}
+
+fn timeout_failure_detail(timeout: u64) -> String {
+    format!("timeout_after={timeout}s")
 }
 
 /// Verifies a TSTP proof (given as `stdout` from a prover run) using
@@ -1452,11 +1490,8 @@ fn run_profile_only(args: &Args) {
                 .path()
                 .strip_prefix(&base_folder)
                 .unwrap_or(entry.path());
-            let problem_name = if is_competition {
-                format!("{}/{}", corpus, relative_path.to_string_lossy())
-            } else {
-                relative_path.to_string_lossy().to_string()
-            };
+            let problem_name =
+                scoped_problem_name(&corpus, is_competition, &relative_path.to_string_lossy());
 
             if !profiled_problems.contains(&problem_name) {
                 pending_files.push((problem_name, entry.path().to_path_buf()));
@@ -1591,17 +1626,18 @@ fn run_import_casc(args: &Args, import_path: &Path) {
     println!("Importing CASC results from '{}'...", csv_path.display());
     let (log_edition, log_time_limits, log_tptp) = parse_companion_run_log(&log_path);
 
-    let csv_content = std::fs::read_to_string(&csv_path).expect("Failed to read CSV file");
-    let mut lines = csv_content.lines();
+    let csv_file = std::fs::File::open(&csv_path).expect("Failed to read CSV file");
+    let mut lines = BufReader::new(csv_file).lines();
     let header_line = match lines.next() {
-        Some(h) => h,
+        Some(Ok(line)) => line,
+        Some(Err(error)) => panic!("Failed to read CSV header: {error}"),
         None => {
             eprintln!("CSV file is empty.");
             return;
         }
     };
 
-    let headers: Vec<String> = parse_csv_line(header_line)
+    let headers: Vec<String> = parse_csv_line(&header_line)
         .into_iter()
         .map(|s| s.to_ascii_lowercase())
         .collect();
@@ -1650,32 +1686,35 @@ fn run_import_casc(args: &Args, import_path: &Path) {
     }
 
     let conn = Connection::open(&args.db).expect("Failed to open SQLite database");
+    if args.overwrite_profiles {
+        delete_existing_codex_schema(&conn).expect("Failed to reset Codex database schema");
+    }
     init_db(&conn).expect("Failed to initialize database");
-
-    // Cache hardware ID
-    let hardware_desc = args.hardware.clone().unwrap_or_else(detect_hardware);
-    let hardware_id = get_or_create_id(&conn, "hardware", "description", &hardware_desc)
-        .expect("Failed to get hardware ID");
 
     // Cache existing profiles
     let profiled_problems = fetch_profiled_problems(&conn).unwrap_or_default();
     drop(conn);
+    let mut problems_to_profile: HashMap<String, (String, String, PathBuf)> = HashMap::new();
 
-    struct ParsedCascRow {
-        edition: String,
-        division: String,
-        problem: String,
-        system: String,
-        szs_status: String,
-        expected: Option<String>,
-        verdict: Option<String>,
-        wall_time_s: Option<f64>,
-        peak_memory_mb: Option<f64>,
-        failure_detail: Option<String>,
-    }
+    let mut conn = Connection::open(&args.db).expect("Failed to open SQLite database for writing");
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA synchronous = NORMAL;
+         PRAGMA foreign_keys = ON;
+         PRAGMA cache_size = -64000;",
+    )
+    .expect("Failed to set PRAGMAs");
+    let hardware_desc = args.hardware.clone().unwrap_or_else(detect_hardware);
+    let hardware_id = get_or_create_id(&conn, "hardware", "description", &hardware_desc)
+        .expect("Failed to get hardware ID");
+    let mut system_id_map: HashMap<String, i64> = HashMap::new();
+    let mut param_id_map: HashMap<String, i64> = HashMap::new();
+    let tx = conn.transaction().expect("Failed to begin transaction");
+    let mut inserted_results = 0usize;
 
-    let mut rows = Vec::new();
+    let mut parsed_rows = 0usize;
     for line in lines {
+        let line = line.expect("Failed to read CASC CSV row");
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -1709,119 +1748,73 @@ fn run_import_casc(args: &Args, import_path: &Path) {
         let peak_memory_mb = get(idx_peak_mem).and_then(|s| s.parse::<f64>().ok());
         let failure_detail = get(idx_failure);
 
-        rows.push(ParsedCascRow {
-            edition,
-            division,
-            problem,
-            system,
-            szs_status,
-            expected,
-            verdict,
-            wall_time_s,
-            peak_memory_mb,
-            failure_detail,
-        });
-    }
+        parsed_rows += 1;
 
-    println!("Parsed {} run records from CSV.", rows.len());
-
-    // Connect and insert results
-    let mut conn = Connection::open(&args.db).expect("Failed to open SQLite database for writing");
-    conn.execute_batch(
-        "PRAGMA journal_mode = WAL;
-         PRAGMA synchronous = NORMAL;
-         PRAGMA foreign_keys = ON;
-         PRAGMA cache_size = -64000;",
-    )
-    .expect("Failed to set PRAGMAs");
-
-    let mut system_id_map: HashMap<String, i64> = HashMap::new();
-    let mut param_id_map: HashMap<String, i64> = HashMap::new();
-
-    // Map unique problems to extract profiles for
-    let mut problems_to_profile: HashMap<String, (String, String, PathBuf)> = HashMap::new();
-
-    let tx = conn.transaction().expect("Failed to begin transaction");
-    let mut inserted_results = 0;
-
-    for row in &rows {
-        let sys_id = match system_id_map.get(&row.system) {
+        let system_id = match system_id_map.get(&system) {
             Some(&id) => id,
             None => {
-                let id = get_or_create_id(&tx, "systems", "name", &row.system)
+                let id = get_or_create_id(&tx, "systems", "name", &system)
                     .expect("Failed to get system ID");
-                system_id_map.insert(row.system.clone(), id);
+                system_id_map.insert(system.clone(), id);
                 id
             }
         };
-
-        let param_cmd = format!(
-            "casc.sh --edition {} --division {}",
-            row.edition, row.division
-        );
-        let param_id = match param_id_map.get(&param_cmd) {
+        let param_cmd = format!("casc.sh --edition {edition} --division {division}");
+        let parameter_id = match param_id_map.get(&param_cmd) {
             Some(&id) => id,
             None => {
                 let id = get_or_create_id(&tx, "parameters", "command_template", &param_cmd)
-                    .expect("Failed to get param ID");
-                param_id_map.insert(param_cmd.clone(), id);
+                    .expect("Failed to get parameter ID");
+                param_id_map.insert(param_cmd, id);
                 id
             }
         };
-
-        let div_lower = row.division.to_ascii_lowercase();
+        let div_lower = division.to_ascii_lowercase();
         let timeout = log_time_limits
             .get(&div_lower)
             .copied()
-            .unwrap_or_else(|| default_casc_timeout(&row.division, &row.edition));
-
-        let filename = if row.problem.ends_with(".p") {
-            row.problem.clone()
+            .unwrap_or_else(|| default_casc_timeout(&division, &edition));
+        let filename = if problem.ends_with(".p") {
+            problem.clone()
         } else {
-            format!("{}.p", row.problem)
+            format!("{problem}.p")
         };
-
-        // Strict isolation: Problem name in competition results is always prefixed by edition and division
-        let problem_name = format!("{}/{}/{}", row.edition, row.division, filename);
+        let problem_name = scoped_problem_name(&edition, true, &format!("{division}/{filename}"));
         let canonical_name = canonical_tptp_name(&filename);
-        let is_competition = 1i64;
-        let corpus = row.edition.clone();
-
         tx.execute(
-            "INSERT OR REPLACE INTO results 
-             (problem_name, division, system_id, hardware_id, parameter_id, timeout, time_to_solve, status,
-              corpus, canonical_name, is_competition, expected, verdict, peak_memory_mb, failure_detail)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            "INSERT OR REPLACE INTO results
+             (problem_name, division, system_id, hardware_id, parameter_id, timeout,
+              time_to_solve, status, corpus, canonical_name, is_competition,
+              expected, verdict, peak_memory_mb, failure_detail)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1, ?11, ?12, ?13, ?14)",
             params![
                 problem_name,
-                row.division,
-                sys_id,
+                division,
+                system_id,
                 hardware_id,
-                param_id,
+                parameter_id,
                 timeout as i64,
-                row.wall_time_s,
-                row.szs_status,
-                corpus,
+                wall_time_s,
+                szs_status,
+                edition,
                 canonical_name,
-                is_competition,
-                row.expected,
-                row.verdict,
-                row.peak_memory_mb,
-                row.failure_detail,
+                expected,
+                verdict,
+                peak_memory_mb,
+                failure_detail,
             ],
         )
         .expect("Failed to insert run result");
-
         inserted_results += 1;
 
         if !args.skip_profiles
             && !profiled_problems.contains(&problem_name)
             && let Some(comp_dir) = &competition_problems_dir
         {
-            let prob_path = comp_dir.join(&row.division).join(&filename);
+            let prob_path = comp_dir.join(&division).join(&filename);
             if prob_path.is_file() {
-                problems_to_profile.entry(problem_name.clone()).or_insert((
-                    corpus,
+                problems_to_profile.entry(problem_name).or_insert((
+                    edition,
                     canonical_name,
                     prob_path,
                 ));
@@ -1830,10 +1823,7 @@ fn run_import_casc(args: &Args, import_path: &Path) {
     }
 
     tx.commit().expect("Failed to commit results transaction");
-    println!(
-        "Successfully inserted/updated {} results.",
-        inserted_results
-    );
+    println!("Parsed {parsed_rows} run records and inserted/updated {inserted_results} results.");
 
     // Profile any unprofiled competition problems in parallel
     if !problems_to_profile.is_empty() {
@@ -1978,6 +1968,8 @@ fn main() {
         args.verify_mode.as_str()
     );
     let hardware = args.hardware.unwrap_or_else(detect_hardware);
+    let (corpus, is_competition, detected_tptp) =
+        detect_corpus_and_competition(folder, args.corpus.as_deref());
 
     let conn = Connection::open(&args.db).expect("Failed to open SQLite database");
     init_db(&conn).expect("Failed to initialize database schema");
@@ -1989,12 +1981,18 @@ fn main() {
     let hardware_id = get_or_create_id(&conn, "hardware", "description", &hardware)
         .expect("Failed to get/create hardware ID");
 
-    let completed_problems =
-        fetch_completed_problems(&conn, system_id, parameter_id, hardware_id, args.timeout)
-            .expect("Failed to fetch completed problems");
+    let completed_problems = fetch_completed_problems_for_corpus(
+        &conn,
+        system_id,
+        parameter_id,
+        hardware_id,
+        args.timeout,
+        &corpus,
+    )
+    .expect("Failed to fetch completed problems");
 
-    let allowed_problems =
-        fetch_all_results_problems(&conn).expect("Failed to fetch allowed problems");
+    let allowed_problems = fetch_all_results_problems_for_corpus(&conn, &corpus)
+        .expect("Failed to fetch allowed problems");
 
     // We don't need the connection anymore in the main thread
     drop(conn);
@@ -2012,18 +2010,12 @@ fn main() {
     println!("Proof verification mode: {:?}", args.verify_mode);
     println!("Scanning {} for .p files...", folder.display());
 
-    let (corpus, is_competition, detected_tptp) =
-        detect_corpus_and_competition(folder, args.corpus.as_deref());
-
     let mut pending_files = Vec::new();
     for entry in WalkDir::new(folder).into_iter().filter_map(|e| e.ok()) {
         if entry.path().is_file() && entry.path().extension().is_some_and(|ext| ext == "p") {
             let relative_path = entry.path().strip_prefix(folder).unwrap_or(entry.path());
-            let problem_name = if is_competition {
-                format!("{}/{}", corpus, relative_path.to_string_lossy())
-            } else {
-                relative_path.to_string_lossy().to_string()
-            };
+            let problem_name =
+                scoped_problem_name(&corpus, is_competition, &relative_path.to_string_lossy());
 
             if !allowed_problems.is_empty() && !allowed_problems.contains(&problem_name) {
                 continue;
@@ -2190,6 +2182,7 @@ fn main() {
                                 let _ = child.wait();
                                 status_str = "Timeout".to_string();
                                 time_to_solve = Some(args.timeout as f64);
+                                failure_detail = Some(timeout_failure_detail(args.timeout));
                             }
                             Err(e) => {
                                 // Error waiting for process
@@ -2557,6 +2550,31 @@ mod tests {
     }
 
     #[test]
+    fn test_scoped_problem_name_namespaces_non_tptp_corpora() {
+        assert_eq!(
+            scoped_problem_name("tptp", false, "AGT/AGT005+1.p"),
+            "AGT/AGT005+1.p"
+        );
+        assert_eq!(
+            scoped_problem_name("custom", false, "AGT/AGT005+1.p"),
+            "custom/AGT/AGT005+1.p"
+        );
+        assert_eq!(
+            scoped_problem_name("casc-30", true, "FEQ/AGT005+1.p"),
+            "casc-30/FEQ/AGT005+1.p"
+        );
+    }
+
+    #[test]
+    fn test_nested_competition_root_is_normalized() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("Problems/FEQ")).unwrap();
+        let root = find_competition_problems_dir("casc-30", Some(temp.path()), None)
+            .expect("nested root detected");
+        assert_eq!(root, temp.path().join("Problems"));
+    }
+
+    #[test]
     fn test_no_conflation_between_competition_and_general_tptp() {
         let conn = Connection::open_in_memory().unwrap();
         init_db(&conn).unwrap();
@@ -2755,5 +2773,10 @@ casc-30,UEQ,GRP001-1.p,mrs,Unsatisfiable,Unsatisfiable,CORRECT,0.12,\n";
             extract_failure_detail("", "", &status_err, false),
             Some("exit_code=42".to_string())
         );
+    }
+
+    #[test]
+    fn timeout_detail_is_stable() {
+        assert_eq!(timeout_failure_detail(30), "timeout_after=30s");
     }
 }
