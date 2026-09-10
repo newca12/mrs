@@ -7,8 +7,8 @@ use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
 use regex::Regex;
 use rusqlite::{Connection, Result as SqliteResult, params};
-use std::collections::HashSet;
-use std::io::{Read, Write};
+use std::collections::{HashMap, HashSet};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -44,12 +44,28 @@ impl VerifyMode {
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Directory containing TPTP files
-    folder: PathBuf,
+    /// Directory containing TPTP files (required for benchmarking or folder profiling)
+    folder: Option<PathBuf>,
 
     /// Path to the SQLite database file
     #[arg(long, default_value = "codex.db")]
     db: PathBuf,
+
+    /// Ingest CASC benchmark results from a run.csv file or results directory
+    #[arg(long)]
+    import_casc: Option<PathBuf>,
+
+    /// Path to the competition problems root directory (default: auto-detected under crates/mrs-bench/problems/<edition>)
+    #[arg(long)]
+    problems_dir: Option<PathBuf>,
+
+    /// Explicit corpus name (e.g. casc-30, casc-j13, tptp-v9.3.0). Auto-detected if omitted.
+    #[arg(long)]
+    corpus: Option<String>,
+
+    /// Skip extracting problem profiles during CASC import (imports run results only)
+    #[arg(long)]
+    skip_profiles: bool,
 
     /// Name of the prover system (e.g., mrs-0.2.1)
     #[arg(long, default_value = "")]
@@ -99,6 +115,13 @@ struct RunResult {
     timeout: u64,
     time_to_solve: Option<f64>,
     status: String,
+    corpus: String,
+    canonical_name: String,
+    is_competition: bool,
+    expected: Option<String>,
+    verdict: Option<String>,
+    peak_memory_mb: Option<f64>,
+    failure_detail: Option<String>,
     proover_validated: Option<String>,
     starexec_validated: Option<String>,
     time_to_verify: Option<f64>,
@@ -326,6 +349,13 @@ fn init_db(conn: &Connection) -> SqliteResult<()> {
             timeout INTEGER NOT NULL,
             time_to_solve REAL,
             status TEXT NOT NULL,
+            corpus TEXT NOT NULL DEFAULT 'tptp',
+            canonical_name TEXT,
+            is_competition INTEGER NOT NULL DEFAULT 0,
+            expected TEXT,
+            verdict TEXT,
+            peak_memory_mb REAL,
+            failure_detail TEXT,
             proover_validated TEXT,
             starexec_validated TEXT,
             time_to_verify REAL,
@@ -346,6 +376,19 @@ fn init_db(conn: &Connection) -> SqliteResult<()> {
     )?;
     // Schema migrations for already-existing databases
     let _ = conn.execute("ALTER TABLE results ADD COLUMN division TEXT", []);
+    let _ = conn.execute(
+        "ALTER TABLE results ADD COLUMN corpus TEXT DEFAULT 'tptp'",
+        [],
+    );
+    let _ = conn.execute("ALTER TABLE results ADD COLUMN canonical_name TEXT", []);
+    let _ = conn.execute(
+        "ALTER TABLE results ADD COLUMN is_competition INTEGER DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute("ALTER TABLE results ADD COLUMN expected TEXT", []);
+    let _ = conn.execute("ALTER TABLE results ADD COLUMN verdict TEXT", []);
+    let _ = conn.execute("ALTER TABLE results ADD COLUMN peak_memory_mb REAL", []);
+    let _ = conn.execute("ALTER TABLE results ADD COLUMN failure_detail TEXT", []);
     let _ = conn.execute("ALTER TABLE results ADD COLUMN starexec_validated TEXT", []);
     let _ = conn.execute("ALTER TABLE results ADD COLUMN time_to_verify REAL", []);
     for (name, sql_type) in [
@@ -423,14 +466,29 @@ fn init_db(conn: &Connection) -> SqliteResult<()> {
             conjecture_symbol_overlap REAL,
             unique_conjecture_symbols TEXT,
             profile_complete INTEGER NOT NULL DEFAULT 1,
-            raw_profile_json TEXT
+            raw_profile_json TEXT,
+            corpus TEXT NOT NULL DEFAULT 'tptp',
+            canonical_name TEXT,
+            is_competition INTEGER NOT NULL DEFAULT 0
         )",
         [],
     )?;
 
-    // Schema migration for profiles created before completeness was tracked.
+    // Schema migration for profiles created before completeness or isolation was tracked.
     let _ = conn.execute(
         "ALTER TABLE problem_profiles ADD COLUMN profile_complete INTEGER NOT NULL DEFAULT 1",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE problem_profiles ADD COLUMN corpus TEXT DEFAULT 'tptp'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE problem_profiles ADD COLUMN canonical_name TEXT",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE problem_profiles ADD COLUMN is_competition INTEGER DEFAULT 0",
         [],
     );
 
@@ -446,11 +504,41 @@ fn init_db(conn: &Connection) -> SqliteResult<()> {
         "CREATE INDEX IF NOT EXISTS idx_problem_profiles_domain ON problem_profiles(domain)",
         [],
     );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_problem_profiles_corpus ON problem_profiles(corpus)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_problem_profiles_canonical ON problem_profiles(canonical_name)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_problem_profiles_is_competition ON problem_profiles(is_competition)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_results_corpus ON results(corpus)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_results_canonical ON results(canonical_name)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_results_is_competition ON results(is_competition)",
+        [],
+    );
 
     Ok(())
 }
 
-fn save_problem_profile(conn: &Connection, profile: &mrs_core::ProblemProfile) -> SqliteResult<()> {
+fn save_problem_profile(
+    conn: &Connection,
+    profile: &mrs_core::ProblemProfile,
+    corpus: &str,
+    canonical_name: &str,
+    is_competition: bool,
+) -> SqliteResult<()> {
     let ac_syms_json = serde_json::to_string(&profile.ac_symbols).unwrap_or_else(|_| "[]".into());
     let uniq_conj_syms_json =
         serde_json::to_string(&profile.unique_conjecture_symbols).unwrap_or_else(|_| "[]".into());
@@ -472,13 +560,14 @@ fn save_problem_profile(conn: &Connection, profile: &mrs_core::ProblemProfile) -
             has_ac_symbols, ac_symbols, has_identity_axiom, has_inverse_axiom,
             has_idempotence, has_conjecture, conjecture_clauses,
             conjecture_literals, conjecture_max_depth, conjecture_symbol_overlap,
-            unique_conjecture_symbols, profile_complete, raw_profile_json
+            unique_conjecture_symbols, profile_complete, raw_profile_json,
+            corpus, canonical_name, is_competition
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
             ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28,
             ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41,
             ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50, ?51, ?52, ?53, ?54,
-            ?55, ?56, ?57, ?58
+            ?55, ?56, ?57, ?58, ?59, ?60, ?61
         )",
         params![
             profile.problem_name,
@@ -539,6 +628,9 @@ fn save_problem_profile(conn: &Connection, profile: &mrs_core::ProblemProfile) -
             uniq_conj_syms_json,
             profile.profile_complete as i64,
             raw_json,
+            corpus,
+            canonical_name,
+            is_competition as i64,
         ],
     )?;
     Ok(())
@@ -555,6 +647,16 @@ fn fetch_profiled_problems(conn: &Connection) -> SqliteResult<HashSet<String>> {
     Ok(names)
 }
 
+fn delete_existing_codex_schema(conn: &Connection) -> SqliteResult<()> {
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS results;
+         DROP TABLE IF EXISTS problem_profiles;
+         DROP TABLE IF EXISTS systems;
+         DROP TABLE IF EXISTS hardware;
+         DROP TABLE IF EXISTS parameters;",
+    )
+}
+
 fn read_header_prefix(path: &Path) -> String {
     let Ok(file) = std::fs::File::open(path) else {
         return String::new();
@@ -565,21 +667,231 @@ fn read_header_prefix(path: &Path) -> String {
 }
 
 fn extract_domain_from_name(name: &str) -> String {
+    let base = Path::new(name)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(name);
+    if base.len() >= 3 && base.chars().take(3).all(|c| c.is_ascii_alphabetic()) {
+        return base[0..3].to_uppercase();
+    }
     if let Some((dir, _)) = name.split_once('/')
         && dir.len() >= 3
         && dir.chars().take(3).all(|c| c.is_ascii_alphabetic())
     {
         return dir[0..3].to_uppercase();
     }
-    let base = Path::new(name)
+    "UNK".to_string()
+}
+
+/// Normalizes any TPTP problem identifier to its canonical "DOMAIN/NAME.p" representation.
+/// E.g.: "AGT005+1.p" -> "AGT/AGT005+1.p", "casc-30/FEQ/AGT005+1.p" -> "AGT/AGT005+1.p",
+/// "GRP123-4.004" -> "GRP/GRP123-4.004.p".
+fn canonical_tptp_name(raw_name: &str) -> String {
+    let filename = Path::new(raw_name)
         .file_name()
         .and_then(|s| s.to_str())
-        .unwrap_or(name);
-    if base.len() >= 3 && base.chars().take(3).all(|c| c.is_ascii_alphabetic()) {
-        base[0..3].to_uppercase()
+        .unwrap_or(raw_name);
+    let with_ext = if filename.ends_with(".p") {
+        filename.to_string()
     } else {
-        "UNK".to_string()
+        format!("{}.p", filename)
+    };
+    if with_ext.len() >= 3 {
+        let prefix = &with_ext[..3];
+        if prefix.chars().all(|c| c.is_ascii_alphabetic()) {
+            return format!("{}/{}", prefix.to_ascii_uppercase(), with_ext);
+        }
     }
+    with_ext
+}
+
+/// Namespaces a path when it belongs to a non-default corpus. The historical
+/// default TPTP corpus keeps its existing keys for database compatibility.
+fn scoped_problem_name(corpus: &str, is_competition: bool, relative_name: &str) -> String {
+    if is_competition || corpus != "tptp" {
+        format!("{corpus}/{relative_name}")
+    } else {
+        relative_name.to_string()
+    }
+}
+
+/// Detects whether a folder is a CASC competition folder (e.g. casc-30, casc-j13) or general TPTP,
+/// returning (corpus_name, is_competition, detected_tptp_root).
+fn detect_corpus_and_competition(
+    folder: &Path,
+    explicit_corpus: Option<&str>,
+) -> (String, bool, PathBuf) {
+    if let Some(c) = explicit_corpus {
+        let is_comp = c.to_ascii_lowercase().starts_with("casc");
+        let detected_tptp = if folder.join("Axioms").is_dir() {
+            folder.to_path_buf()
+        } else if folder.join("TPTP-v9.3.0").is_dir() {
+            folder.join("TPTP-v9.3.0")
+        } else {
+            folder.to_path_buf()
+        };
+        return (c.to_string(), is_comp, detected_tptp);
+    }
+
+    let folder_str = folder.to_string_lossy().to_ascii_lowercase();
+    let file_name = folder
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    let is_casc_folder = file_name.starts_with("casc-")
+        || file_name.starts_with("casc_")
+        || folder_str.contains("/problems/casc-")
+        || folder_str.contains("/problems/casc_");
+
+    if is_casc_folder {
+        let edition = if let Some(pos) = folder_str.rfind("casc-") {
+            let sub = &folder_str[pos..];
+            sub.split('/').next().unwrap_or("casc")
+        } else if let Some(pos) = folder_str.rfind("casc_") {
+            let sub = &folder_str[pos..];
+            sub.split('/').next().unwrap_or("casc")
+        } else {
+            &file_name
+        };
+        (edition.to_string(), true, folder.to_path_buf())
+    } else {
+        let detected_tptp = if folder.join("TPTP-v9.3.0").is_dir() {
+            folder.join("TPTP-v9.3.0")
+        } else if folder.join("../TPTP-v9.3.0").is_dir() {
+            folder.join("../TPTP-v9.3.0")
+        } else {
+            folder.to_path_buf()
+        };
+        ("tptp".to_string(), false, detected_tptp)
+    }
+}
+
+/// Simple CSV line splitter handling quoted strings with commas and escaped quotes.
+fn parse_csv_line(line: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut chars = line.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '"' {
+            if in_quotes && chars.peek() == Some(&'"') {
+                chars.next();
+                current.push('"');
+            } else {
+                in_quotes = !in_quotes;
+            }
+        } else if c == ',' && !in_quotes {
+            fields.push(current.trim().to_string());
+            current = String::new();
+        } else {
+            current.push(c);
+        }
+    }
+    fields.push(current.trim().to_string());
+    fields
+}
+
+/// Parses a companion run.log file to extract edition, division time limits, and TPTP root.
+fn parse_companion_run_log(
+    log_path: &Path,
+) -> (
+    Option<String>,
+    std::collections::HashMap<String, u64>,
+    Option<PathBuf>,
+) {
+    let mut edition = None;
+    let mut time_limits = std::collections::HashMap::new();
+    let mut tptp_root = None;
+
+    if let Ok(content) = std::fs::read_to_string(log_path) {
+        for line in content.lines() {
+            let line = line.trim();
+            if let Some(val) = line.strip_prefix("[casc] Edition:").map(|s| s.trim()) {
+                edition = Some(val.to_string());
+            } else if let Some(val) = line.strip_prefix("[casc] TPTP:").map(|s| s.trim()) {
+                tptp_root = Some(PathBuf::from(val));
+            } else if let Some(val) = line.strip_prefix("[casc] Time limits:").map(|s| s.trim()) {
+                for part in val.split(',') {
+                    if let Some((div, time_str)) = part.trim().split_once('=') {
+                        let clean_time = time_str.trim_end_matches('s').trim();
+                        if let Ok(secs) = clean_time.parse::<u64>() {
+                            time_limits.insert(div.trim().to_ascii_lowercase(), secs);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    (edition, time_limits, tptp_root)
+}
+
+/// Standard CASC division timeouts (seconds).
+fn default_casc_timeout(division: &str, edition: &str) -> u64 {
+    let div = division.to_ascii_lowercase();
+    let is_j13 = edition.to_ascii_lowercase().contains("j13");
+    match div.as_str() {
+        "fne" | "feq" | "ueq" | "tne" | "teq" | "fnn" | "fnq" => {
+            if is_j13 {
+                180
+            } else {
+                240
+            }
+        }
+        "eps" | "epu" | "tfi" | "tfe" | "tfn" => 120,
+        "icu" => 480,
+        "slh" => 15,
+        _ => 120,
+    }
+}
+
+/// Locates the competition problem directory containing division subdirectories and Axioms/.
+fn find_competition_problems_dir(
+    edition: &str,
+    cli_dir: Option<&Path>,
+    log_tptp: Option<&Path>,
+) -> Option<PathBuf> {
+    fn normalize_root(root: PathBuf) -> PathBuf {
+        let has_divisions = |path: &Path| {
+            [
+                "FNE", "FEQ", "FNN", "FNQ", "UEQ", "EPR", "EPS", "EPU", "TNE", "TEQ",
+            ]
+            .iter()
+            .any(|division| path.join(division).is_dir())
+        };
+        let nested = root.join("Problems");
+        if has_divisions(&nested) { nested } else { root }
+    }
+
+    if let Some(dir) = cli_dir
+        && dir.is_dir()
+    {
+        return Some(normalize_root(dir.to_path_buf()));
+    }
+    if let Some(dir) = log_tptp
+        && dir.is_dir()
+    {
+        return Some(normalize_root(dir.to_path_buf()));
+    }
+    let mut candidates = vec![
+        PathBuf::from(format!("crates/mrs-bench/problems/{edition}")),
+        PathBuf::from(format!("../mrs-bench/problems/{edition}")),
+        PathBuf::from(format!("problems/{edition}")),
+    ];
+    if let Ok(exe) = std::env::current_exe() {
+        for ancestor in exe.ancestors() {
+            candidates.push(ancestor.join("crates/mrs-bench/problems").join(edition));
+        }
+    }
+    for p in candidates {
+        if p.is_dir() {
+            return Some(normalize_root(p));
+        }
+    }
+    None
 }
 
 fn parse_headers_from_str(content: &str) -> (Option<String>, Option<f32>) {
@@ -656,9 +968,35 @@ fn extract_problem_profile_from_file(
     let mut lowered = mrs::lowering::lower_problem(&problem);
     if !problem.includes.is_empty() {
         let base_dir = path.parent().unwrap_or(Path::new("."));
+        // Priority for include resolution:
+        // 1. Explicit tptp_root (if provided)
+        // 2. An ancestor of base_dir that contains an Axioms/ subdirectory (ensures sliced CASC or local axioms are used)
+        // 3. Fallback to $TPTP environment variable only if no local Axioms/ directory exists
+        let local_ancestor_root = {
+            let mut cur = base_dir.to_path_buf();
+            let mut found = None;
+            loop {
+                if cur.join("Axioms").is_dir() {
+                    found = Some(cur);
+                    break;
+                }
+                if !cur.pop() {
+                    break;
+                }
+            }
+            found
+        };
         let env_tptp = std::env::var("TPTP").ok().map(PathBuf::from);
-        let effective_tptp = tptp_root.or(env_tptp.as_deref());
-        let _ = mrs::include::resolve_and_lower(&problem, &mut lowered, base_dir, effective_tptp);
+        let effective_tptp = tptp_root
+            .map(Path::to_path_buf)
+            .or(local_ancestor_root)
+            .or(env_tptp);
+        let _ = mrs::include::resolve_and_lower(
+            &problem,
+            &mut lowered,
+            base_dir,
+            effective_tptp.as_deref(),
+        );
     }
     if lowered.axioms.len() > 30_000 {
         let (header_status, header_rating) = parse_headers_from_str(&content);
@@ -765,9 +1103,12 @@ fn get_or_create_id(
     Ok(id)
 }
 
-fn fetch_all_results_problems(conn: &Connection) -> SqliteResult<HashSet<String>> {
-    let mut stmt = conn.prepare("SELECT DISTINCT problem_name FROM results")?;
-    let problem_names = stmt.query_map([], |row| row.get::<_, String>(0))?;
+fn fetch_all_results_problems_for_corpus(
+    conn: &Connection,
+    corpus: &str,
+) -> SqliteResult<HashSet<String>> {
+    let mut stmt = conn.prepare("SELECT DISTINCT problem_name FROM results WHERE corpus = ?1")?;
+    let problem_names = stmt.query_map(params![corpus], |row| row.get::<_, String>(0))?;
     let mut names = HashSet::new();
     for name in problem_names {
         names.insert(name?);
@@ -775,24 +1116,23 @@ fn fetch_all_results_problems(conn: &Connection) -> SqliteResult<HashSet<String>
     Ok(names)
 }
 
-fn fetch_completed_problems(
+fn fetch_completed_problems_for_corpus(
     conn: &Connection,
     system_id: i64,
     parameter_id: i64,
     hardware_id: i64,
     timeout: u64,
+    corpus: &str,
 ) -> SqliteResult<HashSet<String>> {
     let mut stmt = conn.prepare(
-        "SELECT problem_name FROM results 
-         WHERE system_id = ?1 AND parameter_id = ?2 
-         AND hardware_id = ?3 AND timeout = ?4",
+        "SELECT problem_name FROM results
+         WHERE system_id = ?1 AND parameter_id = ?2
+         AND hardware_id = ?3 AND timeout = ?4 AND corpus = ?5",
     )?;
-
     let problem_names = stmt.query_map(
-        params![system_id, parameter_id, hardware_id, timeout as i64],
+        params![system_id, parameter_id, hardware_id, timeout as i64, corpus],
         |row| row.get::<_, String>(0),
     )?;
-
     let mut completed = HashSet::new();
     for name in problem_names {
         completed.insert(name?);
@@ -807,6 +1147,63 @@ fn extract_szs_status(output: &str) -> Option<String> {
         return Some(caps.get(1).unwrap().as_str().to_string());
     }
     None
+}
+
+/// Extracts structured failure information (panic, allocator OOM, OS OOM Killer, or exit code).
+fn extract_failure_detail(
+    stdout: &str,
+    stderr: &str,
+    status: &std::process::ExitStatus,
+    timeout_hit: bool,
+) -> Option<String> {
+    // 1. Structured SZS detail
+    for line in stderr.lines().chain(stdout.lines()) {
+        let trimmed = line.trim();
+        if let Some(detail) = trimmed.strip_prefix("% SZS detail ") {
+            return Some(detail.trim().to_string());
+        }
+    }
+
+    if status.success() {
+        return None;
+    }
+
+    // 2. Rust allocator OOM
+    if stderr.contains("memory allocation") && stderr.contains("failed") {
+        return Some("OOM: Rust memory allocation failed".to_string());
+    }
+
+    // 3. Rust panic message
+    if let Some(panic_line) = stderr.lines().find(|l| l.contains("panicked at")) {
+        return Some(format!("panic: {}", panic_line.trim()));
+    }
+
+    // 4. OS OOM Killer (SIGKILL / exit 137) before timeout limit
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if !timeout_hit && (status.signal() == Some(9) || status.code() == Some(137)) {
+            return Some("OOM: Process killed by OS OOM Killer (SIGKILL)".to_string());
+        }
+    }
+
+    // 5. Exit code or signal fallback
+    if let Some(code) = status.code() {
+        Some(format!("exit_code={}", code))
+    } else {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            if let Some(sig) = status.signal() {
+                return Some(format!("signal={}", sig));
+            }
+        }
+        Some("abnormal_termination".to_string())
+    }
+}
+
+fn timeout_failure_detail(timeout: u64) -> String {
+    format!("timeout_after={timeout}s")
 }
 
 /// Verifies a TSTP proof (given as `stdout` from a prover run) using
@@ -992,16 +1389,24 @@ fn writer_thread(db_path: PathBuf, receiver: Receiver<RunResult>) {
 
     for result in receiver {
         if let Some(profile) = &result.profile
-            && let Err(e) = save_problem_profile(&conn, profile)
+            && let Err(e) = save_problem_profile(
+                &conn,
+                profile,
+                &result.corpus,
+                &result.canonical_name,
+                result.is_competition,
+            )
         {
             eprintln!("Error saving profile for {}: {}", result.problem_name, e);
         }
 
         let res = conn.execute(
             "INSERT OR REPLACE INTO results 
-             (problem_name, division, system_id, hardware_id, parameter_id, timeout, time_to_solve, status, proover_validated, starexec_validated, time_to_verify,
+             (problem_name, division, system_id, hardware_id, parameter_id, timeout, time_to_solve, status,
+              corpus, canonical_name, is_competition, expected, verdict, peak_memory_mb, failure_detail,
+              proover_validated, starexec_validated, time_to_verify,
               kernel_validated, kernel_time, mrs_validated, mrs_verify_time, competition_validated, competition_time, external_atp_validated, external_atp_time)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
             params![
                 result.problem_name,
                 result.division,
@@ -1011,6 +1416,13 @@ fn writer_thread(db_path: PathBuf, receiver: Receiver<RunResult>) {
                 result.timeout as i64,
                 result.time_to_solve,
                 result.status,
+                result.corpus,
+                result.canonical_name,
+                result.is_competition as i64,
+                result.expected,
+                result.verdict,
+                result.peak_memory_mb,
+                result.failure_detail,
                 result.proover_validated,
                 result.starexec_validated,
                 result.time_to_verify,
@@ -1026,12 +1438,16 @@ fn writer_thread(db_path: PathBuf, receiver: Receiver<RunResult>) {
         );
 
         if let Err(e) = res {
-            eprintln!("Error saving result for {}: {}", result.problem_name, e);
+            eprintln!("Error inserting result for {}: {}", result.problem_name, e);
         }
     }
 }
 
 fn run_profile_only(args: &Args) {
+    let folder = args
+        .folder
+        .as_ref()
+        .expect("Folder is required for profiling");
     let conn = Connection::open(&args.db).expect("Failed to open SQLite database");
     init_db(&conn).expect("Failed to initialize database schema");
 
@@ -1048,24 +1464,18 @@ fn run_profile_only(args: &Args) {
         args.db.display()
     );
 
-    // Auto-detect TPTP root if not set
-    let detected_tptp = std::env::var("TPTP").ok().map(PathBuf::from).or_else(|| {
-        if args.folder.join("TPTP-v9.3.0").is_dir() {
-            Some(args.folder.join("TPTP-v9.3.0"))
-        } else if args.folder.join("../TPTP-v9.3.0").is_dir() {
-            Some(args.folder.join("../TPTP-v9.3.0"))
-        } else {
-            None
-        }
-    });
+    let (corpus, is_competition, detected_tptp) =
+        detect_corpus_and_competition(folder, args.corpus.as_deref());
 
     // Determine the base folder to scan
-    let base_folder = if args.folder.join("TPTP-v9.3.0/Problems").is_dir() {
-        args.folder.join("TPTP-v9.3.0/Problems")
-    } else if args.folder.join("Problems").is_dir() {
-        args.folder.join("Problems")
+    let base_folder = if is_competition {
+        folder.clone()
+    } else if folder.join("TPTP-v9.3.0/Problems").is_dir() {
+        folder.join("TPTP-v9.3.0/Problems")
+    } else if folder.join("Problems").is_dir() {
+        folder.join("Problems")
     } else {
-        args.folder.clone()
+        folder.clone()
     };
 
     println!("Scanning {} for .p files...", base_folder.display());
@@ -1080,7 +1490,8 @@ fn run_profile_only(args: &Args) {
                 .path()
                 .strip_prefix(&base_folder)
                 .unwrap_or(entry.path());
-            let problem_name = relative_path.to_string_lossy().to_string();
+            let problem_name =
+                scoped_problem_name(&corpus, is_competition, &relative_path.to_string_lossy());
 
             if !profiled_problems.contains(&problem_name) {
                 pending_files.push((problem_name, entry.path().to_path_buf()));
@@ -1107,7 +1518,7 @@ fn run_profile_only(args: &Args) {
         .build()
         .expect("Failed to build rayon thread pool");
 
-    let (sender, receiver) = unbounded::<mrs_core::ProblemProfile>();
+    let (sender, receiver) = unbounded::<(mrs_core::ProblemProfile, String, String, bool)>();
 
     let db_path = args.db.clone();
     let writer_handle = thread::spawn(move || {
@@ -1124,8 +1535,9 @@ fn run_profile_only(args: &Args) {
         let mut count: usize = 0;
         let mut tx = conn.transaction().expect("Failed to start transaction");
 
-        for profile in receiver {
-            if let Err(e) = save_problem_profile(&tx, &profile) {
+        for (profile, p_corpus, p_canonical, p_is_comp) in receiver {
+            if let Err(e) = save_problem_profile(&tx, &profile, &p_corpus, &p_canonical, p_is_comp)
+            {
                 eprintln!("Error saving profile for {}: {}", profile.problem_name, e);
             }
             count += 1;
@@ -1147,17 +1559,19 @@ fn run_profile_only(args: &Args) {
             .par_iter()
             .for_each(|(problem_name, file_path)| {
                 let profile_opt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    extract_problem_profile_from_file(
-                        file_path,
-                        problem_name,
-                        detected_tptp.as_deref(),
-                    )
+                    extract_problem_profile_from_file(file_path, problem_name, Some(&detected_tptp))
                 }))
                 .unwrap_or(None);
 
-                if let Some(profile) = profile_opt {
+                if let Some(mut profile) = profile_opt {
+                    profile.problem_name = problem_name.clone();
+                    let filename = file_path
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(problem_name);
+                    let canon_name = canonical_tptp_name(filename);
                     sender
-                        .send(profile)
+                        .send((profile, corpus.clone(), canon_name, is_competition))
                         .expect("Failed to send profile to writer thread");
                 } else {
                     eprintln!("Warning: Failed to extract profile for {}", problem_name);
@@ -1192,6 +1606,313 @@ fn run_profile_only(args: &Args) {
     );
 }
 
+/// Imports CASC competition results from a run.csv file (or directory containing run.csv) into the database.
+fn run_import_casc(args: &Args, import_path: &Path) {
+    let (csv_path, log_path) = if import_path.is_dir() {
+        (import_path.join("run.csv"), import_path.join("run.log"))
+    } else {
+        let parent = import_path.parent().unwrap_or(Path::new("."));
+        (import_path.to_path_buf(), parent.join("run.log"))
+    };
+
+    if !csv_path.exists() {
+        eprintln!(
+            "Error: CASC results CSV '{}' not found.",
+            csv_path.display()
+        );
+        std::process::exit(1);
+    }
+
+    println!("Importing CASC results from '{}'...", csv_path.display());
+    let (log_edition, log_time_limits, log_tptp) = parse_companion_run_log(&log_path);
+
+    let csv_file = std::fs::File::open(&csv_path).expect("Failed to read CSV file");
+    let mut lines = BufReader::new(csv_file).lines();
+    let header_line = match lines.next() {
+        Some(Ok(line)) => line,
+        Some(Err(error)) => panic!("Failed to read CSV header: {error}"),
+        None => {
+            eprintln!("CSV file is empty.");
+            return;
+        }
+    };
+
+    let headers: Vec<String> = parse_csv_line(&header_line)
+        .into_iter()
+        .map(|s| s.to_ascii_lowercase())
+        .collect();
+
+    let col_idx = |name: &str| -> Option<usize> { headers.iter().position(|h| h == name) };
+
+    let idx_edition = col_idx("edition");
+    let idx_division = col_idx("division").or_else(|| col_idx("div"));
+    let idx_problem = col_idx("problem");
+    let idx_system = col_idx("system");
+    let idx_status = col_idx("szs_status").or_else(|| col_idx("status"));
+    let idx_expected = col_idx("expected");
+    let idx_verdict = col_idx("verdict");
+    let idx_wall_time = col_idx("wall_time_s")
+        .or_else(|| col_idx("wall_time"))
+        .or_else(|| col_idx("time"));
+    let idx_peak_mem = col_idx("peak_memory_mb").or_else(|| col_idx("memory_mb"));
+    let idx_failure = col_idx("failure_detail").or_else(|| col_idx("failure"));
+
+    if idx_problem.is_none() || idx_system.is_none() || idx_status.is_none() {
+        eprintln!(
+            "Error: CSV missing required columns (problem, system, szs_status). Found headers: {:?}",
+            headers
+        );
+        std::process::exit(1);
+    }
+
+    let default_edition = log_edition
+        .as_deref()
+        .or(args.corpus.as_deref())
+        .unwrap_or("casc");
+
+    let competition_problems_dir = find_competition_problems_dir(
+        default_edition,
+        args.problems_dir.as_deref(),
+        log_tptp.as_deref(),
+    );
+
+    if let Some(dir) = &competition_problems_dir {
+        println!("Using competition problems directory: {}", dir.display());
+    } else if !args.skip_profiles {
+        println!(
+            "Note: Competition problems directory for edition '{}' not found. Profile extraction will be skipped unless files are found.",
+            default_edition
+        );
+    }
+
+    let conn = Connection::open(&args.db).expect("Failed to open SQLite database");
+    if args.overwrite_profiles {
+        delete_existing_codex_schema(&conn).expect("Failed to reset Codex database schema");
+    }
+    init_db(&conn).expect("Failed to initialize database");
+
+    // Cache existing profiles
+    let profiled_problems = fetch_profiled_problems(&conn).unwrap_or_default();
+    drop(conn);
+    let mut problems_to_profile: HashMap<String, (String, String, PathBuf)> = HashMap::new();
+
+    let mut conn = Connection::open(&args.db).expect("Failed to open SQLite database for writing");
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA synchronous = NORMAL;
+         PRAGMA foreign_keys = ON;
+         PRAGMA cache_size = -64000;",
+    )
+    .expect("Failed to set PRAGMAs");
+    let hardware_desc = args.hardware.clone().unwrap_or_else(detect_hardware);
+    let hardware_id = get_or_create_id(&conn, "hardware", "description", &hardware_desc)
+        .expect("Failed to get hardware ID");
+    let mut system_id_map: HashMap<String, i64> = HashMap::new();
+    let mut param_id_map: HashMap<String, i64> = HashMap::new();
+    let tx = conn.transaction().expect("Failed to begin transaction");
+    let mut inserted_results = 0usize;
+
+    let mut parsed_rows = 0usize;
+    for line in lines {
+        let line = line.expect("Failed to read CASC CSV row");
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let fields = parse_csv_line(line);
+        let get = |opt_idx: Option<usize>| -> Option<String> {
+            opt_idx
+                .and_then(|i| fields.get(i).cloned())
+                .filter(|s| !s.is_empty())
+        };
+
+        let edition = get(idx_edition).unwrap_or_else(|| default_edition.to_string());
+        let division = get(idx_division)
+            .unwrap_or_else(|| "Other".to_string())
+            .to_ascii_uppercase();
+        let problem = match get(idx_problem) {
+            Some(p) => p,
+            None => continue,
+        };
+        let system = match get(idx_system) {
+            Some(s) => s,
+            None => continue,
+        };
+        let szs_status = match get(idx_status) {
+            Some(st) => st,
+            None => continue,
+        };
+        let expected = get(idx_expected);
+        let verdict = get(idx_verdict);
+        let wall_time_s = get(idx_wall_time).and_then(|s| s.parse::<f64>().ok());
+        let peak_memory_mb = get(idx_peak_mem).and_then(|s| s.parse::<f64>().ok());
+        let failure_detail = get(idx_failure);
+
+        parsed_rows += 1;
+
+        let system_id = match system_id_map.get(&system) {
+            Some(&id) => id,
+            None => {
+                let id = get_or_create_id(&tx, "systems", "name", &system)
+                    .expect("Failed to get system ID");
+                system_id_map.insert(system.clone(), id);
+                id
+            }
+        };
+        let param_cmd = format!("casc.sh --edition {edition} --division {division}");
+        let parameter_id = match param_id_map.get(&param_cmd) {
+            Some(&id) => id,
+            None => {
+                let id = get_or_create_id(&tx, "parameters", "command_template", &param_cmd)
+                    .expect("Failed to get parameter ID");
+                param_id_map.insert(param_cmd, id);
+                id
+            }
+        };
+        let div_lower = division.to_ascii_lowercase();
+        let timeout = log_time_limits
+            .get(&div_lower)
+            .copied()
+            .unwrap_or_else(|| default_casc_timeout(&division, &edition));
+        let filename = if problem.ends_with(".p") {
+            problem.clone()
+        } else {
+            format!("{problem}.p")
+        };
+        let problem_name = scoped_problem_name(&edition, true, &format!("{division}/{filename}"));
+        let canonical_name = canonical_tptp_name(&filename);
+        tx.execute(
+            "INSERT OR REPLACE INTO results
+             (problem_name, division, system_id, hardware_id, parameter_id, timeout,
+              time_to_solve, status, corpus, canonical_name, is_competition,
+              expected, verdict, peak_memory_mb, failure_detail)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1, ?11, ?12, ?13, ?14)",
+            params![
+                problem_name,
+                division,
+                system_id,
+                hardware_id,
+                parameter_id,
+                timeout as i64,
+                wall_time_s,
+                szs_status,
+                edition,
+                canonical_name,
+                expected,
+                verdict,
+                peak_memory_mb,
+                failure_detail,
+            ],
+        )
+        .expect("Failed to insert run result");
+        inserted_results += 1;
+
+        if !args.skip_profiles
+            && !profiled_problems.contains(&problem_name)
+            && let Some(comp_dir) = &competition_problems_dir
+        {
+            let prob_path = comp_dir.join(&division).join(&filename);
+            if prob_path.is_file() {
+                problems_to_profile.entry(problem_name).or_insert((
+                    edition,
+                    canonical_name,
+                    prob_path,
+                ));
+            }
+        }
+    }
+
+    tx.commit().expect("Failed to commit results transaction");
+    println!("Parsed {parsed_rows} run records and inserted/updated {inserted_results} results.");
+
+    // Profile any unprofiled competition problems in parallel
+    if !problems_to_profile.is_empty() {
+        println!(
+            "Extracting profiles for {} new competition problems...",
+            problems_to_profile.len()
+        );
+        let pending: Vec<(String, String, String, PathBuf)> = problems_to_profile
+            .into_iter()
+            .map(|(pname, (corpus, cname, path))| (pname, corpus, cname, path))
+            .collect();
+
+        let num_threads = args.jobs.unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+        });
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .stack_size(64 * 1024 * 1024)
+            .build()
+            .expect("Failed to build rayon thread pool");
+
+        let (sender, receiver) = unbounded::<(mrs_core::ProblemProfile, String, String, bool)>();
+        let db_path = args.db.clone();
+        let writer_handle = thread::spawn(move || {
+            let mut conn =
+                Connection::open(db_path).expect("Failed to open SQLite database for profiles");
+            conn.execute_batch(
+                "PRAGMA journal_mode = WAL;
+                 PRAGMA synchronous = NORMAL;
+                 PRAGMA cache_size = -64000;",
+            )
+            .expect("Failed to set PRAGMAs");
+
+            let batch_size: usize = 250;
+            let mut count: usize = 0;
+            let mut tx = conn.transaction().expect("Failed to start transaction");
+
+            for (profile, corpus, cname, is_comp) in receiver {
+                if let Err(e) = save_problem_profile(&tx, &profile, &corpus, &cname, is_comp) {
+                    eprintln!("Error saving profile for {}: {}", profile.problem_name, e);
+                }
+                count += 1;
+                if count.is_multiple_of(batch_size) {
+                    tx.commit().expect("Failed to commit batch transaction");
+                    tx = conn
+                        .transaction()
+                        .expect("Failed to start next transaction");
+                }
+            }
+            tx.commit()
+                .expect("Failed to commit final profile transaction");
+        });
+
+        let tptp_root_for_profile = competition_problems_dir.clone();
+        pool.install(|| {
+            pending
+                .par_iter()
+                .for_each(|(pname, corpus, cname, file_path)| {
+                    let profile_opt =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            extract_problem_profile_from_file(
+                                file_path,
+                                pname,
+                                tptp_root_for_profile.as_deref(),
+                            )
+                        }))
+                        .unwrap_or(None);
+
+                    if let Some(mut profile) = profile_opt {
+                        profile.problem_name = pname.to_string();
+                        sender
+                            .send((profile, corpus.to_string(), cname.to_string(), true))
+                            .expect("Failed to send profile to writer");
+                    } else {
+                        eprintln!("Warning: Failed to extract profile for {}", pname);
+                    }
+                });
+        });
+
+        drop(sender);
+        writer_handle
+            .join()
+            .expect("Profile writer thread panicked");
+        println!("Profile extraction complete.");
+    }
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -1200,11 +1921,21 @@ fn main() {
         std::process::exit(1);
     }
 
-    if !args.folder.exists() {
-        eprintln!(
-            "Error: Directory '{}' does not exist.",
-            args.folder.display()
-        );
+    if let Some(import_path) = &args.import_casc {
+        run_import_casc(&args, import_path);
+        return;
+    }
+
+    let folder = match &args.folder {
+        Some(f) => f,
+        None => {
+            eprintln!("Error: <folder> or --import-casc is required.");
+            std::process::exit(1);
+        }
+    };
+
+    if !folder.exists() {
+        eprintln!("Error: Directory '{}' does not exist.", folder.display());
         std::process::exit(1);
     }
 
@@ -1237,6 +1968,8 @@ fn main() {
         args.verify_mode.as_str()
     );
     let hardware = args.hardware.unwrap_or_else(detect_hardware);
+    let (corpus, is_competition, detected_tptp) =
+        detect_corpus_and_competition(folder, args.corpus.as_deref());
 
     let conn = Connection::open(&args.db).expect("Failed to open SQLite database");
     init_db(&conn).expect("Failed to initialize database schema");
@@ -1248,12 +1981,18 @@ fn main() {
     let hardware_id = get_or_create_id(&conn, "hardware", "description", &hardware)
         .expect("Failed to get/create hardware ID");
 
-    let completed_problems =
-        fetch_completed_problems(&conn, system_id, parameter_id, hardware_id, args.timeout)
-            .expect("Failed to fetch completed problems");
+    let completed_problems = fetch_completed_problems_for_corpus(
+        &conn,
+        system_id,
+        parameter_id,
+        hardware_id,
+        args.timeout,
+        &corpus,
+    )
+    .expect("Failed to fetch completed problems");
 
-    let allowed_problems =
-        fetch_all_results_problems(&conn).expect("Failed to fetch allowed problems");
+    let allowed_problems = fetch_all_results_problems_for_corpus(&conn, &corpus)
+        .expect("Failed to fetch allowed problems");
 
     // We don't need the connection anymore in the main thread
     drop(conn);
@@ -1269,19 +2008,14 @@ fn main() {
         );
     }
     println!("Proof verification mode: {:?}", args.verify_mode);
-    println!("Scanning {} for .p files...", args.folder.display());
+    println!("Scanning {} for .p files...", folder.display());
 
     let mut pending_files = Vec::new();
-    for entry in WalkDir::new(&args.folder)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
+    for entry in WalkDir::new(folder).into_iter().filter_map(|e| e.ok()) {
         if entry.path().is_file() && entry.path().extension().is_some_and(|ext| ext == "p") {
-            let relative_path = entry
-                .path()
-                .strip_prefix(&args.folder)
-                .unwrap_or(entry.path());
-            let problem_name = relative_path.to_string_lossy().to_string();
+            let relative_path = entry.path().strip_prefix(folder).unwrap_or(entry.path());
+            let problem_name =
+                scoped_problem_name(&corpus, is_competition, &relative_path.to_string_lossy());
 
             if !allowed_problems.is_empty() && !allowed_problems.contains(&problem_name) {
                 continue;
@@ -1330,7 +2064,11 @@ fn main() {
             .for_each(|(problem_name, file_path)| {
                 let content = std::fs::read_to_string(file_path).unwrap_or_default();
                 let status = extract_ground_truth_status(&content);
-                let profile = extract_problem_profile_from_file(file_path, problem_name, None);
+                let profile = extract_problem_profile_from_file(
+                    file_path,
+                    problem_name,
+                    Some(&detected_tptp),
+                );
                 let division = match mrs_tptp::parse_tptp(&content) {
                     Ok(ast) => determine_division_from_ast(&ast, status.as_deref(), &content),
                     Err(_) => "Other".to_string(),
@@ -1352,6 +2090,7 @@ fn main() {
                 let start_time = Instant::now();
 
                 let mut status_str = "Error".to_string();
+                let mut failure_detail: Option<String> = None;
                 let mut time_to_solve = None;
                 let mut proover_validated: Option<String> = None;
                 let mut starexec_validated: Option<String> = None;
@@ -1369,7 +2108,7 @@ fn main() {
                     Ok(mut child) => {
                         let timeout_duration = Duration::from_secs(args.timeout);
                         match child.wait_timeout(timeout_duration) {
-                            Ok(Some(status)) => {
+                            Ok(Some(_status)) => {
                                 // Process exited before timeout
                                 let elapsed = start_time.elapsed().as_secs_f64();
                                 time_to_solve = Some(elapsed);
@@ -1378,6 +2117,13 @@ fn main() {
                                 if let Ok(output) = child.wait_with_output() {
                                     let stdout = String::from_utf8_lossy(&output.stdout);
                                     let stderr = String::from_utf8_lossy(&output.stderr);
+
+                                    failure_detail = extract_failure_detail(
+                                        &stdout,
+                                        &stderr,
+                                        &output.status,
+                                        false,
+                                    );
 
                                     if let Some(szs) = extract_szs_status(&stdout)
                                         .or_else(|| extract_szs_status(&stderr))
@@ -1422,12 +2168,10 @@ fn main() {
                                                 VerifyMode::None => {}
                                             }
                                         }
+                                    } else if output.status.success() {
+                                        status_str = "SuccessNoSZS".to_string();
                                     } else {
-                                        if status.success() {
-                                            status_str = "SuccessNoSZS".to_string();
-                                        } else {
-                                            status_str = "Error".to_string();
-                                        }
+                                        status_str = "Error".to_string();
                                     }
                                 }
                             }
@@ -1438,18 +2182,27 @@ fn main() {
                                 let _ = child.wait();
                                 status_str = "Timeout".to_string();
                                 time_to_solve = Some(args.timeout as f64);
+                                failure_detail = Some(timeout_failure_detail(args.timeout));
                             }
                             Err(e) => {
                                 // Error waiting for process
                                 eprintln!("Error waiting for process: {}", e);
+                                failure_detail = Some(format!("WaitError: {}", e));
                             }
                         }
                     }
                     Err(e) => {
                         eprintln!("Failed to spawn prover for {}: {}", problem_name, e);
                         status_str = "SpawnError".to_string();
+                        failure_detail = Some(format!("SpawnError: {}", e));
                     }
                 }
+
+                let filename = file_path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(problem_name);
+                let canonical_name = canonical_tptp_name(filename);
 
                 let result = RunResult {
                     problem_name: problem_name.clone(),
@@ -1460,12 +2213,19 @@ fn main() {
                     timeout: args.timeout,
                     time_to_solve,
                     status: status_str.clone(),
+                    corpus: corpus.clone(),
+                    canonical_name,
+                    is_competition,
+                    expected: None,
+                    verdict: None,
+                    peak_memory_mb: None,
+                    failure_detail: failure_detail.clone(),
                     proover_validated: proover_validated.clone(),
                     starexec_validated: starexec_validated.clone(),
                     time_to_verify,
                     kernel_validated,
                     kernel_time,
-                    mrs_validated,
+                    mrs_validated: mrs_validated.clone(),
                     mrs_verify_time,
                     competition_validated,
                     competition_time,
@@ -1487,27 +2247,33 @@ fn main() {
                     VerifyMode::Kernel => proover_validated
                         .as_deref()
                         .map(|status| {
-                            format!(
-                                " [Kernel: {status} (verify: {:.2}s)]",
-                                time_to_verify.unwrap_or(0.0)
-                            )
+                            format!(" | Kernel: {} ({:.2}s)", status, kernel_time.unwrap_or(0.0))
                         })
                         .unwrap_or_default(),
-                    VerifyMode::Competition => match (&proover_validated, &starexec_validated) {
-                        (Some(pv), Some(sv)) => format!(
-                            " [Proover: {}, StarExec: {} (verify: {:.2}s)]",
-                            pv,
-                            sv,
-                            time_to_verify.unwrap_or(0.0)
-                        ),
-                        _ => "".to_string(),
-                    },
+                    VerifyMode::Competition => format!(
+                        " | ProoVer: {} ({:.2}s) | StarExec: {} ({:.2}s)",
+                        mrs_validated.as_deref().unwrap_or("N/A"),
+                        mrs_verify_time.unwrap_or(0.0),
+                        starexec_validated.as_deref().unwrap_or("N/A"),
+                        external_atp_time.unwrap_or(0.0)
+                    ),
                     VerifyMode::None => String::new(),
                 };
 
+                let detail_disp = failure_detail
+                    .as_deref()
+                    .map(|d| format!(" | Detail: {}", d))
+                    .unwrap_or_default();
+
                 println!(
-                    "[{:>5}/{}] {} ... {} ({}){}",
-                    current, total_pending, problem_name, status_str, time_disp, val_disp
+                    "[{}/{}] Problem: {} | Status: {} | Time: {}{}{}",
+                    current,
+                    total_pending,
+                    problem_name,
+                    status_str,
+                    time_disp,
+                    val_disp,
+                    detail_disp
                 );
             });
     });
@@ -1517,7 +2283,7 @@ fn main() {
 
     writer_handle.join().expect("Writer thread panicked");
 
-    println!("Processing complete.");
+    println!("Benchmark completed successfully.");
 }
 
 #[cfg(test)]
@@ -1675,7 +2441,7 @@ mod tests {
             recommended_sine: false,
         };
 
-        save_problem_profile(&conn, &profile).unwrap();
+        save_problem_profile(&conn, &profile, "tptp", "GRP/GRP001-1.p", false).unwrap();
 
         // Query back from DB
         let mut stmt = conn
@@ -1749,5 +2515,268 @@ mod tests {
         assert_eq!(profile.dialect, "Unknown");
         assert_eq!(profile.casc_division, "Unknown");
         assert_eq!(profile.header_status.as_deref(), Some("Theorem"));
+    }
+
+    #[test]
+    fn test_canonical_tptp_name() {
+        assert_eq!(canonical_tptp_name("AGT005+1.p"), "AGT/AGT005+1.p");
+        assert_eq!(
+            canonical_tptp_name("casc-30/FEQ/AGT005+1.p"),
+            "AGT/AGT005+1.p"
+        );
+        assert_eq!(
+            canonical_tptp_name("Problems/GRP/GRP001-1.p"),
+            "GRP/GRP001-1.p"
+        );
+        assert_eq!(canonical_tptp_name("GRP123-4.004"), "GRP/GRP123-4.004.p");
+        assert_eq!(canonical_tptp_name("123.p"), "123.p");
+    }
+
+    #[test]
+    fn test_detect_corpus_and_competition() {
+        let p1 = Path::new("/home/user/mrs/crates/mrs-bench/problems/casc-30");
+        let (corpus1, is_comp1, _) = detect_corpus_and_competition(p1, None);
+        assert_eq!(corpus1, "casc-30");
+        assert!(is_comp1);
+
+        let p2 = Path::new("/home/user/TPTP-v9.3.0/Problems");
+        let (corpus2, is_comp2, _) = detect_corpus_and_competition(p2, None);
+        assert_eq!(corpus2, "tptp");
+        assert!(!is_comp2);
+
+        let (corpus3, is_comp3, _) = detect_corpus_and_competition(p2, Some("custom_corpus"));
+        assert_eq!(corpus3, "custom_corpus");
+        assert!(!is_comp3);
+    }
+
+    #[test]
+    fn test_scoped_problem_name_namespaces_non_tptp_corpora() {
+        assert_eq!(
+            scoped_problem_name("tptp", false, "AGT/AGT005+1.p"),
+            "AGT/AGT005+1.p"
+        );
+        assert_eq!(
+            scoped_problem_name("custom", false, "AGT/AGT005+1.p"),
+            "custom/AGT/AGT005+1.p"
+        );
+        assert_eq!(
+            scoped_problem_name("casc-30", true, "FEQ/AGT005+1.p"),
+            "casc-30/FEQ/AGT005+1.p"
+        );
+    }
+
+    #[test]
+    fn test_nested_competition_root_is_normalized() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("Problems/FEQ")).unwrap();
+        let root = find_competition_problems_dir("casc-30", Some(temp.path()), None)
+            .expect("nested root detected");
+        assert_eq!(root, temp.path().join("Problems"));
+    }
+
+    #[test]
+    fn test_no_conflation_between_competition_and_general_tptp() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        let mut tptp_profile = mrs_core::ProblemProfile::empty(
+            "AGT/AGT005+1.p",
+            "AGT".to_string(),
+            "FOF".to_string(),
+            Some("Theorem".to_string()),
+            Some(0.1),
+        );
+        tptp_profile.num_clauses = 646;
+
+        let mut casc_profile = mrs_core::ProblemProfile::empty(
+            "casc-30/FEQ/AGT005+1.p",
+            "AGT".to_string(),
+            "FOF".to_string(),
+            Some("Theorem".to_string()),
+            Some(0.1),
+        );
+        casc_profile.num_clauses = 20;
+
+        save_problem_profile(&conn, &tptp_profile, "tptp", "AGT/AGT005+1.p", false).unwrap();
+        save_problem_profile(&conn, &casc_profile, "casc-30", "AGT/AGT005+1.p", true).unwrap();
+
+        // 1. Verify both records exist without overwriting each other
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM problem_profiles", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+
+        // 2. Query master TPTP profile
+        let (tptp_name, tptp_clauses, tptp_is_comp, tptp_corpus): (String, i64, i64, String) = conn
+            .query_row(
+                "SELECT problem_name, num_clauses, is_competition, corpus FROM problem_profiles WHERE is_competition = 0",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(tptp_name, "AGT/AGT005+1.p");
+        assert_eq!(tptp_clauses, 646);
+        assert_eq!(tptp_is_comp, 0);
+        assert_eq!(tptp_corpus, "tptp");
+
+        // 3. Query competition profile
+        let (casc_name, casc_clauses, casc_is_comp, casc_corpus): (String, i64, i64, String) = conn
+            .query_row(
+                "SELECT problem_name, num_clauses, is_competition, corpus FROM problem_profiles WHERE is_competition = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(casc_name, "casc-30/FEQ/AGT005+1.p");
+        assert_eq!(casc_clauses, 20);
+        assert_eq!(casc_is_comp, 1);
+        assert_eq!(casc_corpus, "casc-30");
+
+        // 4. Query using shared canonical TPTP key
+        let canonical_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM problem_profiles WHERE canonical_name = 'AGT/AGT005+1.p'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(canonical_count, 2);
+    }
+
+    #[test]
+    fn test_import_casc_csv_and_isolation() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("test_casc.db");
+
+        // Create a mock run.csv and run.log
+        let csv_path = temp_dir.path().join("run.csv");
+        let log_path = temp_dir.path().join("run.log");
+
+        let csv_data = "edition,division,problem,system,szs_status,expected,verdict,wall_time_s,failure_detail\n\
+casc-30,FEQ,AGT005+1.p,vampire,Theorem,Theorem,CORRECT,1.23,\n\
+casc-30,FEQ,AGT005+1.p,mrs,Theorem,Theorem,CORRECT,0.05,\n\
+casc-30,UEQ,GRP001-1.p,mrs,Unsatisfiable,Unsatisfiable,CORRECT,0.12,\n";
+        std::fs::write(&csv_path, csv_data).unwrap();
+
+        let log_data = "[casc] Edition: casc-30\n\
+[casc] Time limits: eps=120s,epu=120s,feq=240s,fne=240s,ueq=240s\n\
+[casc] TPTP: /nonexistent/path\n";
+        std::fs::write(&log_path, log_data).unwrap();
+
+        let args = Args {
+            folder: None,
+            db: db_path.clone(),
+            system: "dummy".to_string(),
+            cmd: "dummy".to_string(),
+            params: None,
+            hardware: Some("Test Hardware".to_string()),
+            timeout: 300,
+            jobs: Some(1),
+            verify_mode: VerifyMode::None,
+            profile_only: false,
+            overwrite_profiles: false,
+            import_casc: Some(csv_path.clone()),
+            problems_dir: None,
+            corpus: None,
+            skip_profiles: true,
+        };
+
+        run_import_casc(&args, &csv_path);
+
+        let conn = Connection::open(&db_path).unwrap();
+
+        // Verify results table
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM results", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 3);
+
+        // Verify competition isolation in results
+        let mut stmt = conn
+            .prepare("SELECT problem_name, division, timeout, status, corpus, canonical_name, is_competition, time_to_solve FROM results ORDER BY system_id, problem_name")
+            .unwrap();
+
+        let rows: Vec<(String, String, i64, String, String, String, i64, f64)> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            })
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+
+        for r in &rows {
+            assert_eq!(r.4, "casc-30"); // corpus
+            assert_eq!(r.6, 1); // is_competition
+            assert!(r.0.starts_with("casc-30/")); // problem_name namespaced
+        }
+
+        // Check canonical names and division timeouts
+        let agt_rows: Vec<_> = rows.iter().filter(|r| r.5 == "AGT/AGT005+1.p").collect();
+        assert_eq!(agt_rows.len(), 2);
+        assert_eq!(agt_rows[0].2, 240); // FEQ timeout from log
+    }
+
+    #[test]
+    fn test_extract_failure_detail() {
+        use std::process::Command;
+
+        let status_err = Command::new("sh")
+            .args(["-c", "exit 42"])
+            .status()
+            .expect("sh failed");
+        let status_ok = Command::new("sh")
+            .args(["-c", "exit 0"])
+            .status()
+            .expect("sh failed");
+
+        // 1. Success returns None when no SZS detail
+        assert_eq!(extract_failure_detail("", "", &status_ok, false), None);
+
+        // 2. SZS detail takes priority even on success
+        assert_eq!(
+            extract_failure_detail(
+                "",
+                "% SZS detail clause_weight_overflow\n",
+                &status_ok,
+                false
+            ),
+            Some("clause_weight_overflow".to_string())
+        );
+
+        // 3. Rust allocator OOM
+        let oom_stderr = "fatal runtime error: memory allocation of 1000000000 bytes failed\n";
+        assert_eq!(
+            extract_failure_detail("", oom_stderr, &status_err, false),
+            Some("OOM: Rust memory allocation failed".to_string())
+        );
+
+        // 4. Panic
+        let panic_stderr = "thread 'main' panicked at 'assertion failed', src/main.rs:10:5\n";
+        assert_eq!(
+            extract_failure_detail("", panic_stderr, &status_err, false),
+            Some(
+                "panic: thread 'main' panicked at 'assertion failed', src/main.rs:10:5".to_string()
+            )
+        );
+
+        // 5. Exit code fallback
+        assert_eq!(
+            extract_failure_detail("", "", &status_err, false),
+            Some("exit_code=42".to_string())
+        );
+    }
+
+    #[test]
+    fn timeout_detail_is_stable() {
+        assert_eq!(timeout_failure_detail(30), "timeout_after=30s");
     }
 }
