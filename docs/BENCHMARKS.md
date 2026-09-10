@@ -386,6 +386,18 @@ REFERENCE VIOLATIONS — none detected.
 ===================================================================
 ===================================================================
 
+commit 4b72fdc54af60e074768506c7cdcc9b81d333aaa (HEAD -> main, origin/main, origin/HEAD)
+
+[ongoing]
+[PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=0 JOBS=2 crates/mrs-bench/cooperative_portfolio_sweep.sh casc-30 feq 11,12,1,6,10,8,14,4 240 1 "crates/mrs-bench/results/cooperative-feq-no-sharing-$(date +%Y%m%d_%H%M%S)"
+
+commit f0010b740ac3e4f6e1c0e43507f780bd5a38b1e8 (HEAD -> main, origin/main, origin/HEAD)
+
+[ongoing]
+[www@server99 mrs]$   crates/mrs-bench/cooperative_portfolio_sweep.sh \
+  casc-30 feq 11,12,1,6,10,8,14,4 240 1 \
+  "crates/mrs-bench/results/cooperative-feq-$(date +%Y%m%d_%H%M%S)"
+
 commit 181929ae1ea647c30cf91ea92219d69f23d7e9f3 (HEAD -> fix/integrate-casc-next-review, origin/fix/integrate-casc-next-review)
 
 [www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh   --edition casc-30  --systems mrs --divisions fne,feq,epu,eps,ueq,icu  --casc-times --jobs 2 --output crates/mrs-bench/results/casc-30-W8J2-$(date +%Y%m%d)
@@ -615,14 +627,17 @@ export RUST_MIN_STACK=67108864
 export RUST_MIN_STACK=67108864
 [root@server03 mrs]# ./crates/mrs-bench/run_codex_sweep.sh "$TPTP" codex_cat_filtered_sweep_f13912c763_07-09.db 300 1
 
-[ongoing] 1295/13011
+[partial] category 10 only
 export RUST_MIN_STACK=67108864
 [root@server04 mrs]# ./crates/mrs-bench/run_codex_sweep.sh "$TPTP" codex_cat_filtered_sweep_f13912c763_10-12.db 300 1
+cat codex_sweep_mrs-s10.out | grep -v GaveUp | grep -v Timeout  | wc -l
+131 / 13011
 
-[ongoing] 2078/13011
+[partial] category 13 only
 export RUST_MIN_STACK=67108864
 [PPROD:user@server97:/DATA/ai/user/mrs]$ ./crates/mrs-bench/run_codex_sweep.sh "$TPTP" codex_cat_filtered_sweep_f13912c763_13-15.db 300 1
-
+[PPROD:user@server97:/DATA/ai/fr22192/mrs]$ cat codex_sweep_mrs-s13.out | grep -v GaveUp | grep -v Timeout  | wc -l
+176 / 13011
 
 [done]
 [www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh   --edition casc-30   --systems mrs   --divisions fne,eps,ueq,epu,icu,feq  --casc-times   --jobs 1   --output crates/mrs-bench/results/casc-30-W8J1-$(date +%Y%m%d)

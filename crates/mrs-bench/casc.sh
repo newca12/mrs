@@ -214,16 +214,65 @@ JOBS_FILE="${OUTPUT}/.jobs"
 
 total_problems=0
 for div in "${DIVISION_LIST[@]}"; do
-    list="${LISTS_DIR}/${div}.list"
-    if [[ ! -f "${list}" ]]; then
-        echo "WARNING: no list file for division '${div}' at ${list}" >&2
+    div_lower="${div,,}"
+    div_upper="${div^^}"
+
+    # setup.sh normally writes lowercase lists, but remote benchmark archives
+    # are often copied without the generated lists directory. Accept either
+    # list casing and fall back to enumerating the corresponding problem
+    # directory so a missing auxiliary list cannot silently yield zero jobs.
+    list=""
+    for candidate in \
+        "${LISTS_DIR}/${div_lower}.list" \
+        "${LISTS_DIR}/${div_upper}.list" \
+        "${PROBLEMS_ROOT}/lists/${div_lower}.list" \
+        "${PROBLEMS_ROOT}/lists/${div_upper}.list"; do
+        if [[ -f "${candidate}" ]]; then
+            list="${candidate}"
+            break
+        fi
+    done
+
+    division_root=""
+    for candidate in \
+        "${PROBLEMS_ROOT}/${div_upper}" \
+        "${PROBLEMS_ROOT}/${div_lower}" \
+        "${PROBLEMS_ROOT}/Problems/${div_upper}" \
+        "${PROBLEMS_ROOT}/Problems/${div_lower}"; do
+        if [[ -d "${candidate}" ]]; then
+            division_root="${candidate}"
+            break
+        fi
+    done
+
+    if [[ -z "${list}" && -n "${division_root}" ]]; then
+        list="${OUTPUT}/.generated-${div_lower}.list"
+        shopt -s nullglob
+        problem_files=("${division_root}"/*.p)
+        shopt -u nullglob
+        if ((${#problem_files[@]} > 0)); then
+            for problem_path in "${problem_files[@]}"; do
+                basename "${problem_path}" .p
+            done | LC_ALL=C sort > "${list}"
+            echo "[casc] generated missing list for '${div}' from ${division_root}" >&2
+        fi
+    fi
+
+    # A pre-existing list may be present even when the archive uses a nested
+    # Problems/ directory. Resolve the problem root independently of list
+    # discovery so both paths work.
+    if [[ -z "${division_root}" ]]; then
+        division_root="${PROBLEMS_ROOT}/${div_upper}"
+    fi
+
+    if [[ -z "${list}" || ! -s "${list}" ]]; then
+        echo "WARNING: no list or problem directory for division '${div}' under ${PROBLEMS_ROOT}" >&2
         continue
     fi
     t="$(div_time "${div}")"
-    div_upper="${div^^}"
     while IFS= read -r problem || [[ -n "${problem}" ]]; do
         [[ -z "${problem}" ]] && continue
-        prob_path="${PROBLEMS_ROOT}/${div_upper}/${problem}.p"
+        prob_path="${division_root}/${problem}.p"
         for sys in "${SYSTEMS_LIST[@]}"; do
             # Fields: div  problem  prob_path  sys  time_limit
             printf '%s\t%s\t%s\t%s\t%s\n' \
