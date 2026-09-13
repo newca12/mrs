@@ -6201,10 +6201,11 @@ fn match_ac_terms(
     if index == left.len() {
         return true;
     }
-    for right_index in 0..right.len() {
-        if used[right_index] {
-            continue;
-        }
+    let mut candidates: Vec<_> = (0..right.len()).filter(|&index| !used[index]).collect();
+    candidates.sort_by_key(|&right_index| {
+        ac_match_priority(left[index], right[right_index], mapping, reverse)
+    });
+    for right_index in candidates {
         let mut next_mapping = mapping.clone();
         let mut next_reverse = reverse.clone();
         *steps += 1;
@@ -6239,6 +6240,22 @@ fn match_ac_terms(
         }
     }
     false
+}
+
+fn ac_match_priority(
+    left: &Term,
+    right: &Term,
+    mapping: &HashMap<VarId, VarId>,
+    reverse: &HashMap<VarId, VarId>,
+) -> u8 {
+    if left == right {
+        return 0;
+    }
+    match (left, right) {
+        (Term::Var(left), Term::Var(right)) if mapping.get(left) == Some(right) => 1,
+        (Term::Var(left), Term::Var(right)) if left == right && !reverse.contains_key(right) => 2,
+        _ => 3,
+    }
 }
 
 fn verify_goal_transformation(
@@ -9042,6 +9059,94 @@ mod tests {
         assert_eq!(
             verify_ac_superposition(
                 &[source, target, lub_assoc, lub_comm, glb_comm, glb_assoc],
+                &conclusion,
+                VerificationLimits::default(),
+            ),
+            KernelVerdict::Certified
+        );
+    }
+
+    #[test]
+    fn certifies_ac_normalization_with_reversed_equality() {
+        fn lower(input: &str, symbols: &mut SymbolTable) -> Formula {
+            let problem = parse_tptp(input).expect("formula parses");
+            lower_annotated(symbols, &problem.formulas[0], VerificationLimits::default())
+                .expect("formula lowers")
+        }
+
+        let mut symbols = SymbolTable::new();
+        let source = lower(
+            "cnf(source, axiom, least_upper_bound(X, greatest_lower_bound(X,Y)) = X).",
+            &mut symbols,
+        );
+        let conclusion = lower(
+            "cnf(conclusion, plain, X = least_upper_bound(X, greatest_lower_bound(X,Y))).",
+            &mut symbols,
+        );
+        let lub_assoc = lower(
+            "cnf(lub_assoc, axiom, least_upper_bound(least_upper_bound(X,Y),Z) = least_upper_bound(X,least_upper_bound(Y,Z))).",
+            &mut symbols,
+        );
+        let lub_comm = lower(
+            "cnf(lub_comm, axiom, least_upper_bound(X,Y) = least_upper_bound(Y,X)).",
+            &mut symbols,
+        );
+        let glb_comm = lower(
+            "cnf(glb_comm, axiom, greatest_lower_bound(X,Y) = greatest_lower_bound(Y,X)).",
+            &mut symbols,
+        );
+        let glb_assoc = lower(
+            "cnf(glb_assoc, axiom, greatest_lower_bound(greatest_lower_bound(X,Y),Z) = greatest_lower_bound(X,greatest_lower_bound(Y,Z))).",
+            &mut symbols,
+        );
+
+        assert_eq!(
+            verify_ac_normalization(
+                &[source, lub_assoc, lub_comm, glb_comm, glb_assoc],
+                &conclusion,
+                VerificationLimits::default(),
+            ),
+            KernelVerdict::Certified
+        );
+    }
+
+    #[test]
+    fn certifies_ac_normalization_with_nested_lub_glb_terms() {
+        fn lower(input: &str, symbols: &mut SymbolTable) -> Formula {
+            let problem = parse_tptp(input).expect("formula parses");
+            lower_annotated(symbols, &problem.formulas[0], VerificationLimits::default())
+                .expect("formula lowers")
+        }
+
+        let mut symbols = SymbolTable::new();
+        let source = lower(
+            "cnf(source, axiom, least_upper_bound(X, greatest_lower_bound(X,Y)) = X).",
+            &mut symbols,
+        );
+        let conclusion = lower(
+            "cnf(conclusion, plain, X = least_upper_bound(X, greatest_lower_bound(X,Y))).",
+            &mut symbols,
+        );
+        let lub_assoc = lower(
+            "cnf(lub_assoc, axiom, least_upper_bound(least_upper_bound(X,Y),Z) = least_upper_bound(X,least_upper_bound(Y,Z))).",
+            &mut symbols,
+        );
+        let lub_comm = lower(
+            "cnf(lub_comm, axiom, least_upper_bound(X,Y) = least_upper_bound(Y,X)).",
+            &mut symbols,
+        );
+        let glb_comm = lower(
+            "cnf(glb_comm, axiom, greatest_lower_bound(X,Y) = greatest_lower_bound(Y,X)).",
+            &mut symbols,
+        );
+        let glb_assoc = lower(
+            "cnf(glb_assoc, axiom, greatest_lower_bound(greatest_lower_bound(X,Y),Z) = greatest_lower_bound(X,greatest_lower_bound(Y,Z))).",
+            &mut symbols,
+        );
+
+        assert_eq!(
+            verify_ac_normalization(
+                &[source, lub_assoc, lub_comm, glb_comm, glb_assoc],
                 &conclusion,
                 VerificationLimits::default(),
             ),

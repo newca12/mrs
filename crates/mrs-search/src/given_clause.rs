@@ -146,52 +146,43 @@ fn isolate_shared_introduced_symbols(
     symbols: &mut mrs_core::SymbolTable,
     mapping: &mut [SymbolId],
 ) {
-    let mut colliding_indices: Vec<usize> = chain
-        .iter()
-        .filter_map(|clause| match &clause.source {
-            ClauseSource::Introduced { symbol } => Some(symbol.index() as usize),
-            _ => None,
-        })
-        .filter(|&index| {
-            symbol_names.get(index).is_some_and(|name| {
-                existing_names.contains(name)
-                    && !chain
-                        .iter()
-                        .filter(|clause| {
-                            matches!(
-                                clause.source,
-                                ClauseSource::Introduced { symbol }
-                                    if symbol.index() as usize == index
-                            )
-                        })
-                        .all(|clause| {
-                            definition_matches_existing(
-                                clause,
-                                mapping.get(index).copied(),
-                                existing_definitions,
-                                mapping,
-                            )
-                        })
-            })
-        })
-        .collect();
-    colliding_indices.sort_unstable();
-    colliding_indices.dedup();
-
     let mut fresh_counter = 0usize;
-    for index in colliding_indices {
-        let Some(name) = symbol_names.get(index) else {
-            continue;
-        };
-        let fresh_name = loop {
-            let candidate = format!("{name}__shared_{fresh_counter}");
-            fresh_counter += 1;
-            if symbols.resolve_name(&candidate).is_none() {
-                break candidate;
+    loop {
+        let mut renamed = false;
+        for clause in chain.iter() {
+            let ClauseSource::Introduced { symbol } = clause.source else {
+                continue;
+            };
+            let index = symbol.index() as usize;
+            let Some(name) = symbol_names.get(index) else {
+                continue;
+            };
+            let mapped_is_original = mapping.get(index).copied() == symbols.resolve_name(name);
+            let collides = mapped_is_original
+                && existing_names.contains(name)
+                && !definition_matches_existing(
+                    clause,
+                    mapping.get(index).copied(),
+                    existing_definitions,
+                    mapping,
+                );
+            if !collides {
+                continue;
             }
-        };
-        if let Some(mapped) = mapping.get_mut(index) {
-            *mapped = symbols.intern(&fresh_name);
+            let fresh_name = loop {
+                let candidate = format!("{name}__shared_{fresh_counter}");
+                fresh_counter += 1;
+                if symbols.resolve_name(&candidate).is_none() {
+                    break candidate;
+                }
+            };
+            if let Some(mapped) = mapping.get_mut(index) {
+                *mapped = symbols.intern(&fresh_name);
+                renamed = true;
+            }
+        }
+        if !renamed {
+            break;
         }
     }
 }
@@ -2709,6 +2700,70 @@ mod tests {
         };
         assert_eq!(symbol, mapping[publisher_goal.index() as usize]);
         assert_ne!(receiver_symbols.resolve(symbol), "goal_d0");
+    }
+
+    #[test]
+    fn conflicting_imported_definition_chain_isolated_transitively() {
+        let mut publisher_symbols = SymbolTable::new();
+        let goal0 = publisher_symbols.intern("goal_d0");
+        let goal1 = publisher_symbols.intern("goal_d1");
+        let base = publisher_symbols.intern("base");
+        let mut receiver_symbols = SymbolTable::new();
+        let receiver_goal0 = receiver_symbols.intern("goal_d0");
+        let receiver_goal1 = receiver_symbols.intern("goal_d1");
+        let receiver_base = receiver_symbols.intern("other_base");
+        let mut ids = ClauseIdGen::new();
+        let chain = vec![
+            Clause::new(
+                ids.next(),
+                vec![Literal::pos(Atom::eq(
+                    Term::constant(base),
+                    Term::constant(goal0),
+                ))],
+                ClauseSource::Introduced { symbol: goal0 },
+            ),
+            Clause::new(
+                ids.next(),
+                vec![Literal::pos(Atom::eq(
+                    Term::app(goal0, vec![]),
+                    Term::constant(goal1),
+                ))],
+                ClauseSource::Introduced { symbol: goal1 },
+            ),
+        ];
+        let symbol_names = publisher_symbols
+            .iter_names()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let mut mapping = symbol_names
+            .iter()
+            .map(|name| receiver_symbols.intern(name))
+            .collect::<Vec<_>>();
+        let existing_names = receiver_symbols.iter_names().map(str::to_owned).collect();
+        let existing_definitions = vec![(
+            ClauseId(99),
+            receiver_goal0,
+            Clause::new(
+                ClauseId(99),
+                vec![Literal::pos(Atom::eq(
+                    Term::constant(receiver_base),
+                    Term::constant(receiver_goal0),
+                ))],
+                ClauseSource::Introduced {
+                    symbol: receiver_goal0,
+                },
+            ),
+        )];
+        isolate_shared_introduced_symbols(
+            &chain,
+            &symbol_names,
+            &existing_names,
+            &existing_definitions,
+            &mut receiver_symbols,
+            &mut mapping,
+        );
+        assert_ne!(mapping[goal0.index() as usize], receiver_goal0);
+        assert_ne!(mapping[goal1.index() as usize], receiver_goal1);
     }
 
     fn input_clause(
