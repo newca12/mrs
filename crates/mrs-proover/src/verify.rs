@@ -774,7 +774,34 @@ fn shift_vars_formula(f: &mrs_core::Formula, shift: u32) -> mrs_core::Formula {
         mrs_core::Formula::Neg(inner) => {
             mrs_core::Formula::Neg(Box::new(shift_vars_formula(inner, shift)))
         }
-        _ => f.clone(),
+        mrs_core::Formula::And(cs) => {
+            mrs_core::Formula::And(cs.iter().map(|c| shift_vars_formula(c, shift)).collect())
+        }
+        mrs_core::Formula::Or(cs) => {
+            mrs_core::Formula::Or(cs.iter().map(|c| shift_vars_formula(c, shift)).collect())
+        }
+        mrs_core::Formula::Implies(l, r) => mrs_core::Formula::Implies(
+            Box::new(shift_vars_formula(l, shift)),
+            Box::new(shift_vars_formula(r, shift)),
+        ),
+        mrs_core::Formula::Iff(l, r) => mrs_core::Formula::Iff(
+            Box::new(shift_vars_formula(l, shift)),
+            Box::new(shift_vars_formula(r, shift)),
+        ),
+        // Quantified formulas are the common case for proof steps (every
+        // unit equality arrives as `Forall(.., Eq(..))`). The binder ID must
+        // shift together with its occurrences, otherwise shifting is a no-op
+        // and the rule's variables collide with the target's (e.g. COL002-5
+        // `c699`: rule `S(X0,X1,X2)` vs target `...X0...` fails occurs-check
+        // without the shift). Shifting uniformly preserves the
+        // alpha-equivalence class while freshening all IDs.
+        mrs_core::Formula::Forall(v, inner) => {
+            mrs_core::Formula::Forall(v + shift, Box::new(shift_vars_formula(inner, shift)))
+        }
+        mrs_core::Formula::Exists(v, inner) => {
+            mrs_core::Formula::Exists(v + shift, Box::new(shift_vars_formula(inner, shift)))
+        }
+        mrs_core::Formula::True | mrs_core::Formula::False => f.clone(),
     }
 }
 
@@ -949,23 +976,40 @@ fn collect_superposition_rewrites(
     }
 }
 
+/// Order-insensitive superposition fast-path.
+///
+/// `mrs` (like E/Vampire) does not guarantee which parent is the rewrite
+/// rule and which is the target: `given_clause.rs` tries both
+/// `given→active` and `active→given`, emitting `parents: [eq, target]` for
+/// whichever direction fired. The TPTP parent list therefore cannot be
+/// trusted for direction either (e.g. COL002-5 `c699 [c2, c0]` lists
+/// `[target, rule]`). Since `premises ⊨ concl` is symmetric in the
+/// premises, try both directions; each directed attempt remains a sound
+/// entailment check on its own.
+/// Single-premise (self-superposition) calls pass the same formula twice;
+/// the second attempt is redundant but harmless.
 fn try_superposition_step(
     p1: &mrs_core::Formula,
     p2: &mrs_core::Formula,
     concl: &mrs_core::Formula,
 ) -> bool {
+    try_directed_superposition_step(p1, p2, concl) || try_directed_superposition_step(p2, p1, concl)
+}
+
+fn try_directed_superposition_step(
+    rule: &mrs_core::Formula,
+    target: &mrs_core::Formula,
+    concl: &mrs_core::Formula,
+) -> bool {
     if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
-        eprintln!(
-            "[prop-sat-dbg] try_superposition_step called! p1 = {:?}",
-            p1
-        );
+        eprintln!("[prop-sat-dbg] try_superposition_step called! rule = {rule:?}");
     }
-    let p1_shifted = shift_vars_formula(p1, 1000);
+    let p1_shifted = shift_vars_formula(rule, 1000);
     let (l1, r1) = match extract_eq_sides(&p1_shifted) {
         Some(res) => res,
         None => return false,
     };
-    let (l2, r2) = match extract_eq_sides(p2) {
+    let (l2, r2) = match extract_eq_sides(target) {
         Some(res) => res,
         None => return false,
     };
@@ -2214,7 +2258,9 @@ fn prepare_atp_step<'p>(
         return Prepared::Resolved(outcome);
     }
 
-    // Fast-path: try to verify superposition structurally
+    // Fast-path: try to verify superposition structurally.
+    // `try_superposition_step` itself tries both parent orders, since the
+    // TPTP parent list does not reliably put the rule first (COL002-5 c699).
     if node.inference_rule == Some("superposition") && !premises.is_empty() {
         let p1 = &premises[0];
         let p2 = if premises.len() >= 2 {
@@ -3268,6 +3314,150 @@ mod avatar_validation_tests {
         assert!(
             matches!(verdict, Verdict::Unknown(ref reason) if reason.contains("SAT verification limit")),
             "large AVATAR certificates must fail closed at the bounded limit: {verdict:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod superposition_order_tests {
+    use super::*;
+    use mrs_core::{Atom, Formula, SymbolTable, Term};
+
+    /// Minimal analogue of COL002-5 `c699 [c2, c0]`:
+    /// rule `f(X) = g(X)` rewrites `h(f(a)) = b` into `h(g(a)) = b`.
+    /// The proof lists `[target, rule]`, so a direction-sensitive checker
+    /// that only tries `premises[0]` as the rule misses it.
+    fn rule_target_conclusion() -> (Formula, Formula, Formula) {
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("f");
+        let g = syms.intern("g");
+        let h = syms.intern("h");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        // Leak the table so the returned formulas' SymbolIds stay valid for
+        // the duration of the test without threading `syms` through.
+        // SymbolIds are only compared for equality inside the checker, and
+        // every interning here happens before any check runs, so the leaked
+        // table cannot observe later interning.
+        let _ = Box::leak(Box::new(syms));
+
+        let rule = Formula::forall(
+            0,
+            Formula::atom(Atom::eq(
+                Term::app(f, vec![Term::var(0)]),
+                Term::app(g, vec![Term::var(0)]),
+            )),
+        );
+        let target = Formula::atom(Atom::eq(
+            Term::app(h, vec![Term::app(f, vec![Term::constant(a)])]),
+            Term::constant(b),
+        ));
+        let conclusion = Formula::atom(Atom::eq(
+            Term::app(h, vec![Term::app(g, vec![Term::constant(a)])]),
+            Term::constant(b),
+        ));
+        (rule, target, conclusion)
+    }
+
+    #[test]
+    fn directed_check_is_order_sensitive() {
+        let (rule, target, conclusion) = rule_target_conclusion();
+        assert!(
+            try_directed_superposition_step(&rule, &target, &conclusion),
+            "rule→target must verify"
+        );
+        assert!(
+            !try_directed_superposition_step(&target, &rule, &conclusion),
+            "target→rule must miss (documents the old blind spot)"
+        );
+    }
+
+    #[test]
+    fn order_insensitive_check_accepts_both_parent_orders() {
+        let (rule, target, conclusion) = rule_target_conclusion();
+        assert!(
+            try_superposition_step(&rule, &target, &conclusion),
+            "[rule, target] order must verify"
+        );
+        assert!(
+            try_superposition_step(&target, &rule, &conclusion),
+            "[target, rule] order (COL002-5 c699 [c2, c0]) must verify"
+        );
+    }
+
+    #[test]
+    fn rejects_unrelated_conclusion_regardless_of_order() {
+        let (rule, target, _) = rule_target_conclusion();
+        let mut syms = SymbolTable::new();
+        let h = syms.intern("h");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let q = syms.intern("q");
+        let _ = Box::leak(Box::new(syms));
+        let bogus = Formula::atom(Atom::eq(
+            Term::app(h, vec![Term::app(q, vec![Term::constant(a)])]),
+            Term::constant(b),
+        ));
+        assert!(!try_superposition_step(&rule, &target, &bogus));
+        assert!(!try_superposition_step(&target, &rule, &bogus));
+    }
+
+    /// COL002-5 `c699` shape: both rule and target are quantified over the
+    /// same `VarId`, and the rule variable must unify with a term containing
+    /// that ID. Without freshening (`shift_vars_formula` recursing into
+    /// `Forall`), the occurs-check spuriously fails and a valid step is
+    /// missed however the parents are ordered.
+    #[test]
+    fn quantified_overlap_needs_freshening_in_both_orders() {
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("kf");
+        let g = syms.intern("kg");
+        let h = syms.intern("kh");
+        let c = syms.intern("kc");
+        let b = syms.intern("kb");
+        let _ = Box::leak(Box::new(syms));
+
+        // rule: ![X0]: f(X0) = g(X0)
+        let rule = Formula::forall(
+            0,
+            Formula::atom(Atom::eq(
+                Term::app(f, vec![Term::var(0)]),
+                Term::app(g, vec![Term::var(0)]),
+            )),
+        );
+        // target: ![X0]: h(f(c(X0))) = b — X0 must unify with c(X0).
+        let target = Formula::forall(
+            0,
+            Formula::atom(Atom::eq(
+                Term::app(
+                    h,
+                    vec![Term::app(f, vec![Term::app(c, vec![Term::var(0)])])],
+                ),
+                Term::constant(b),
+            )),
+        );
+        let conclusion = Formula::forall(
+            0,
+            Formula::atom(Atom::eq(
+                Term::app(
+                    h,
+                    vec![Term::app(g, vec![Term::app(c, vec![Term::var(0)])])],
+                ),
+                Term::constant(b),
+            )),
+        );
+
+        assert!(
+            try_directed_superposition_step(&rule, &target, &conclusion),
+            "freshened rule→target must verify despite shared VarId"
+        );
+        assert!(
+            try_superposition_step(&rule, &target, &conclusion),
+            "[rule, target] order must verify"
+        );
+        assert!(
+            try_superposition_step(&target, &rule, &conclusion),
+            "[target, rule] order must verify"
         );
     }
 }
