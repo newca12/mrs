@@ -56,8 +56,8 @@ use std::collections::{HashMap, HashSet};
 
 use mrs_tptp::ast::common::{AtomicWord, GeneralTerm, Quantifier};
 use mrs_tptp::{
-    AnnotatedFormula, Annotations, BinaryConnective, FOFAtomicFormula, FOFFormula, FOFStatement,
-    FOFTerm,
+    AnnotatedFormula, Annotations, BinaryConnective, CNFFormula, CNFLiteral, CNFStatement,
+    FOFAtomicFormula, FOFFormula, FOFStatement, FOFTerm,
 };
 
 use crate::checks::skolemize::SkolemRegistry;
@@ -158,6 +158,10 @@ pub fn is_predicate_definition_introduction(ann: Option<&Annotations<'_>>) -> bo
 /// The caller is responsible for invoking this only when
 /// [`is_introduced_definition`] returns true.
 pub fn check<'p>(step: &AnnotatedFormula<'p>, registry: &SkolemRegistry) -> StepOutcome {
+    if let Some(cnf) = step.as_cnf() {
+        return check_cnf(cnf, registry);
+    }
+
     // --- Vampire shape: annotation declares the new symbol(s) directly. ---
     let step_fof = match step.as_fof() {
         Some(f) => f,
@@ -326,6 +330,132 @@ pub fn check<'p>(step: &AnnotatedFormula<'p>, registry: &SkolemRegistry) -> Step
          do not capture all free variables of the body"
             .into(),
     )
+}
+
+/// Record symbols declared by a structurally sound introduced-definition step.
+///
+/// The verifier prepares proof nodes in topological order. Freshness checks
+/// therefore need successful earlier definitions to remain visible to later
+/// nodes, including a second CNF declaration of the same symbol.
+pub fn record_declared_symbols(step: &AnnotatedFormula<'_>, registry: &mut SkolemRegistry) {
+    let Some(annotations) = step.annotations() else {
+        return;
+    };
+    for symbol in declared_new_symbols(annotations) {
+        registry.seen_symbols.insert(symbol.to_owned());
+    }
+}
+
+fn check_cnf<'p>(step: &mrs_tptp::CNFAnnotated<'p>, registry: &SkolemRegistry) -> StepOutcome {
+    let declared = step
+        .annotations
+        .as_ref()
+        .map(declared_new_symbols)
+        .unwrap_or_default();
+    if declared.len() != 1 {
+        return StepOutcome::Unknown(
+            "CNF introduced(definition) lacks a single new_symbols declaration".into(),
+        );
+    }
+    let declared = declared[0];
+    if registry.seen_symbols.contains(declared) {
+        return StepOutcome::Unsound(format!(
+            "definition `{}` reuses existing symbol `{declared}`",
+            step.name
+        ));
+    }
+
+    let CNFStatement::Logical(formula) = &step.formula;
+    let literals = match formula {
+        CNFFormula::Disjunction(literals) => literals.as_slice(),
+        CNFFormula::Parens(inner) => match inner.as_ref() {
+            CNFFormula::Disjunction(literals) => literals.as_slice(),
+            _ => {
+                return StepOutcome::Unknown(
+                    "parenthesized CNF introduced(definition) is not a clause".into(),
+                );
+            }
+        },
+    };
+    if literals.len() != 1 {
+        return StepOutcome::Unknown(
+            "CNF introduced(definition) must contain one equality literal".into(),
+        );
+    }
+    let CNFLiteral::Equality(left, right) = &literals[0] else {
+        return StepOutcome::Unknown(
+            "CNF introduced(definition) must contain a positive equality".into(),
+        );
+    };
+    verify_cnf_equational_definition(step.name.as_str(), left, right, declared)
+}
+
+fn verify_cnf_equational_definition(
+    node_name: &str,
+    left: &FOFTerm<'_>,
+    right: &FOFTerm<'_>,
+    declared: &str,
+) -> StepOutcome {
+    let (head_args, rhs) = if let Some(args) = fof_term_args_for_symbol(left, declared) {
+        (args, right)
+    } else if let Some(args) = fof_term_args_for_symbol(right, declared) {
+        (args, left)
+    } else {
+        return StepOutcome::Unsound(format!(
+            "definition `{node_name}` does not define `{declared}`"
+        ));
+    };
+
+    if term_contains_symbol(rhs, declared) {
+        return StepOutcome::Unsound(format!("definition `{node_name}` is recursive"));
+    }
+
+    let mut head_vars = HashSet::new();
+    for term in head_args {
+        match term {
+            FOFTerm::Variable(variable) => {
+                if !head_vars.insert(*variable) {
+                    return StepOutcome::Unsound(format!(
+                        "definition `{node_name}` has duplicate variable `{variable}` in head"
+                    ));
+                }
+            }
+            _ => {
+                return StepOutcome::Unknown(format!(
+                    "definition `{node_name}` has a non-variable function argument in head"
+                ));
+            }
+        }
+    }
+
+    let mut rhs_vars = HashSet::new();
+    collect_term_vars(rhs, &mut rhs_vars);
+    if !rhs_vars.iter().all(|variable| head_vars.contains(variable)) {
+        return StepOutcome::Unsound(format!(
+            "definition `{node_name}` leaves free variables outside its head"
+        ));
+    }
+
+    StepOutcome::Sound
+}
+
+fn fof_term_args_for_symbol<'a>(term: &'a FOFTerm<'a>, symbol: &str) -> Option<&'a [FOFTerm<'a>]> {
+    match term {
+        FOFTerm::Function(name, args) if name.as_str() == symbol => Some(args.as_slice()),
+        _ => None,
+    }
+}
+
+fn term_contains_symbol(term: &FOFTerm<'_>, symbol: &str) -> bool {
+    match term {
+        FOFTerm::Function(name, args) => {
+            name.as_str() == symbol || args.iter().any(|arg| term_contains_symbol(arg, symbol))
+        }
+        FOFTerm::DefinedFunction(_, args) | FOFTerm::SystemFunction(_, args) => {
+            args.iter().any(|arg| term_contains_symbol(arg, symbol))
+        }
+        FOFTerm::Variable(_) | FOFTerm::Number(_) | FOFTerm::DistinctObject(_) => false,
+    }
 }
 
 /// Returns true if the formula is a valid naming clause: a disjunction of literals
@@ -1097,6 +1227,11 @@ mod tests {
         &problem.formulas[0]
     }
 
+    fn first_cnf<'p>(input: &'p str) -> &'p AnnotatedFormula<'p> {
+        let problem = Box::leak(Box::new(parse_tptp(input).expect("parse")));
+        &problem.formulas[0]
+    }
+
     #[test]
     fn detects_source_keyword() {
         let af = first_fof("fof(c1, plain, (p0 <=> q), introduced(definition)).");
@@ -1113,6 +1248,47 @@ mod tests {
         );
         let ann = af.annotations().unwrap();
         assert!(is_introduced_definition(ann));
+    }
+
+    #[test]
+    fn accepts_fresh_cnf_equational_definition() {
+        let af = first_cnf(
+            "cnf(c1, definition, f(X) = g(X), \
+             introduced(definition, [new_symbols(definition, [f])] )).",
+        );
+        let reg = SkolemRegistry::new();
+        assert!(matches!(check(af, &reg), StepOutcome::Sound));
+    }
+
+    #[test]
+    fn rejects_recursive_cnf_equational_definition() {
+        let af = first_cnf(
+            "cnf(c1, definition, f(X) = f(g(X)), \
+             introduced(definition, [new_symbols(definition, [f])] )).",
+        );
+        let reg = SkolemRegistry::new();
+        assert!(matches!(check(af, &reg), StepOutcome::Unsound(_)));
+    }
+
+    #[test]
+    fn rejects_reused_cnf_definition_symbol() {
+        let af = first_cnf(
+            "cnf(c1, definition, f(X) = g(X), \
+             introduced(definition, [new_symbols(definition, [f])] )).",
+        );
+        let mut reg = SkolemRegistry::new();
+        reg.record("f");
+        assert!(matches!(check(af, &reg), StepOutcome::Unsound(_)));
+    }
+
+    #[test]
+    fn rejects_non_unit_cnf_definition() {
+        let af = first_cnf(
+            "cnf(c1, definition, f(X) = g(X) | p(X), \
+             introduced(definition, [new_symbols(definition, [f])] )).",
+        );
+        let reg = SkolemRegistry::new();
+        assert!(matches!(check(af, &reg), StepOutcome::Unknown(_)));
     }
 
     #[test]

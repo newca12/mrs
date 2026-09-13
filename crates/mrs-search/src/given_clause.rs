@@ -142,7 +142,7 @@ fn isolate_shared_introduced_symbols(
     chain: &[LegacyClause],
     symbol_names: &[String],
     existing_names: &HashSet<String>,
-    existing_definitions: &[(SymbolId, LegacyClause)],
+    existing_definitions: &[(ClauseId, SymbolId, LegacyClause)],
     symbols: &mut mrs_core::SymbolTable,
     mapping: &mut [SymbolId],
 ) {
@@ -199,7 +199,7 @@ fn isolate_shared_introduced_symbols(
 fn definition_matches_existing(
     clause: &LegacyClause,
     mapped_symbol: Option<SymbolId>,
-    existing_definitions: &[(SymbolId, LegacyClause)],
+    existing_definitions: &[(ClauseId, SymbolId, LegacyClause)],
     mapping: &[SymbolId],
 ) -> bool {
     let Some(mapped_symbol) = mapped_symbol else {
@@ -209,7 +209,7 @@ fn definition_matches_existing(
     if !remap_shared_clause_symbols(&mut candidate, mapping) {
         return false;
     }
-    existing_definitions.iter().any(|(symbol, existing)| {
+    existing_definitions.iter().any(|(_, symbol, existing)| {
         *symbol == mapped_symbol && definitions_equivalent(&candidate, existing)
     })
 }
@@ -227,6 +227,19 @@ fn definitions_equivalent(left: &LegacyClause, right: &LegacyClause) -> bool {
         }
         _ => false,
     }
+}
+
+fn find_compatible_definition_id(
+    clause: &LegacyClause,
+    symbol: SymbolId,
+    definitions: &[(ClauseId, SymbolId, LegacyClause)],
+) -> Option<ClauseId> {
+    definitions
+        .iter()
+        .find(|(_, known_symbol, known_clause)| {
+            *known_symbol == symbol && definitions_equivalent(clause, known_clause)
+        })
+        .map(|(id, _, _)| *id)
 }
 
 fn lrs_target_size(
@@ -1048,7 +1061,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     .values()
                     .filter_map(|clause| match clause.source {
                         ClauseSource::Introduced { symbol } => {
-                            Some((symbol, state.term_bank.clause_to_legacy(clause)))
+                            Some((clause.id, symbol, state.term_bank.clause_to_legacy(clause)))
                         }
                         _ => None,
                     })
@@ -1079,6 +1092,28 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     state.shared_pool_seen.insert(entry.key);
                     continue;
                 }
+
+                // Deduplicate compatible introduced definitions across the
+                // imported chain itself as well as against definitions already
+                // present in this worker. Multiple workers can publish paths
+                // that introduce the same goal_d* definition; retaining both
+                // nodes would make a semantically identical proof fail the
+                // verifier's fresh-symbol invariant.
+                let mut known_definitions = existing_definitions;
+                let mut definition_reuse: HashMap<ClauseId, ClauseId> = HashMap::default();
+                for clause in &chain {
+                    let ClauseSource::Introduced { symbol } = clause.source else {
+                        continue;
+                    };
+                    if let Some(existing_id) =
+                        find_compatible_definition_id(clause, symbol, &known_definitions)
+                    {
+                        definition_reuse.insert(clause.id, existing_id);
+                    } else {
+                        known_definitions.push((clause.id, symbol, clause.clone()));
+                    }
+                }
+
                 state.shared_pool_seen.insert(entry.key);
                 state.stats.shared_imported += 1;
                 // Remap every clause ID in the chain to a fresh local ID,
@@ -1092,6 +1127,11 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 let mut head: Option<IdClause> = None;
                 for mut c in chain {
                     let old_id = c.id;
+                    if let Some(&existing_id) = definition_reuse.get(&old_id) {
+                        remap.insert(old_id, existing_id);
+                        head = state.clause_store.get(&existing_id).cloned();
+                        continue;
+                    }
                     let new_id = state.id_gen.next();
                     remap.insert(old_id, new_id);
                     c.id = new_id;
@@ -2545,7 +2585,7 @@ mod tests {
                 symbol: receiver_goal,
             },
         );
-        let existing_definitions = vec![(receiver_goal, existing_definition)];
+        let existing_definitions = vec![(ClauseId(99), receiver_goal, existing_definition)];
 
         isolate_shared_introduced_symbols(
             &chain,
@@ -2609,7 +2649,7 @@ mod tests {
                 symbol: receiver_goal,
             },
         );
-        let existing_definitions = vec![(receiver_goal, existing_definition)];
+        let existing_definitions = vec![(ClauseId(99), receiver_goal, existing_definition)];
 
         isolate_shared_introduced_symbols(
             &chain,

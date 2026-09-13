@@ -637,7 +637,11 @@ fn check_node_prepare<'p>(
         .annotations()
         .is_some_and(introduced_definition::is_introduced_definition)
     {
-        return Prepared::Resolved(introduced_definition::check(node.formula, sk_reg));
+        let outcome = introduced_definition::check(node.formula, sk_reg);
+        if outcome == StepOutcome::Sound {
+            introduced_definition::record_declared_symbols(node.formula, sk_reg);
+        }
+        return Prepared::Resolved(outcome);
     }
 
     // Vampire `skolemisation`: try the structural check before falling
