@@ -1,0 +1,230 @@
+# Study 1: Empirical Analysis of Problem Profiles and CASC Performance
+
+**Date:** September 11, 2026  
+**Database:** [`codex.db`](file:///home/fr22192/EDLA/git/mrs/codex.db), 13 MB SQLite snapshot  
+**Profile corpus:** CASC-30 (2,901 rows) and CASC-J13 (1,293 rows)  
+**Evaluated runs:** CASC-30 (1,039 rows) and CASC-J13 (800 rows), 8 internal workers, Intel Xeon Silver 4108, 125 GB RAM, RHEL 9.6
+
+This report is a reproducible descriptive analysis of the database snapshot. It separates benchmark result divisions from structural profile divisions, excludes incomplete profiles from structural aggregates, and treats causal explanations as hypotheses rather than established conclusions.
+
+## 1. Data Scope And Integrity
+
+### 1.1 Stored populations
+
+| Corpus | Profile rows | Complete profiles | Incomplete profiles | Result rows |
+|---|---:|---:|---:|---:|
+| `casc-30` | 2,901 | 2,849 | 52 | 1,039 |
+| `casc-j13` | 1,293 | 1,277 | 16 | 800 |
+| **Total** | **4,194** | **4,126** | **68** | **1,839** |
+
+The CASC-J13 rows in this database are a 1,293-row stored subset, not a claim that the full 1,350-problem edition is present. Structural analyses below use `profile_complete = 1`.
+
+### 1.2 Result/profile linkage
+
+All 1,839 result rows join to a profile using both `problem_name` and `corpus`. There are no orphan result rows in this snapshot. The SQLite schema declares foreign keys, but `PRAGMA foreign_keys` is connection-local and is `0` for a fresh read-only connection; “referential integrity” here means the observed data passes the joins, not that every client connection enforces constraints automatically.
+
+The result/profile divisions are not identical for every row. This is expected for EPR/EPS/EPU and for competition files whose syntactic profile does not fully encode the benchmark taxonomy. Result scorecards therefore use `results.division`; profile analyses use `problem_profiles.casc_division`.
+
+### 1.3 Telemetry coverage
+
+Of the 1,039 CASC-30 results:
+
+- 903 have a non-empty `failure_detail`.
+- 902 have the structured search telemetry fields (`processed`, `generated`, `passive`, `lrs_discarded`, `shared_published`, and `shared_imported`).
+- 136 are timeouts without a detail line because the external timeout killed the process before `mrs` flushed telemetry.
+- The only `Error` is `casc-30/ICU/CSI008+1.p`, killed by the OS OOM killer at 88,633 MB and 101.246 seconds.
+
+The newer CASC-J13 run contains 800 results, of which 728 have telemetry and 72 are external timeouts without a detail line. It has 364 definitive results: 107 `Theorem` and 257 `Unsatisfiable`; it has no errors or satisfiable verdicts.
+
+## 2. CASC-30 Result Scorecard
+
+“Solved” means a definitive SZS status: `Theorem`, `Unsatisfiable`, `CounterSatisfiable`, or `Satisfiable`. The 419 definitive results are 162 theorems, 240 unsatisfiable results, and 17 satisfiable results; they are not all refutations.
+
+| Division | Evaluated | Definitive | Rate | Avg time, definitive | Avg peak RAM, definitive | Avg peak RAM, all rows | GaveUp | Timeout | Error |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `UEQ` | 300 | **222** | **74.0%** | 11.9 s | 3,710.8 MB | 7,173.7 MB | 69 | 9 | 0 |
+| `FNE` | 100 | **43** | **43.0%** | 26.6 s | 4,948.1 MB | 13,160.2 MB | 51 | 6 | 0 |
+| `FEQ` | 400 | **112** | **28.0%** | 23.1 s | 4,210.8 MB | 13,784.1 MB | 254 | 34 | 0 |
+| `EPU` | 100 | **18** | **18.0%** | 12.8 s | 4,255.1 MB | 4,870.0 MB | 28 | 54 | 0 |
+| `EPS` | 100 | **17** | **17.0%** | 22.5 s | 3,284.2 MB | 5,022.3 MB | 63 | 20 | 0 |
+| `ICU` | 39 | **7** | **17.9%** | 80.0 s | 12,751.3 MB | 22,013.3 MB | 18 | 13 | 1 |
+| **Total** | **1,039** | **419** | **40.3%** | — | — | — | **483** | **136** | **1** |
+
+The reported “Avg peak RAM” distinction matters: the lower figures are averages over definitive rows only. Failed rows consume substantially more memory in FEQ, FNE, ICU, and UEQ.
+
+## 3. CASC-J13 Result Scorecard
+
+The updated database contains one 800-problem CASC-J13 run at 180 seconds per
+problem, using the same `mrs` system and eight internal workers:
+
+| Division | Evaluated | Definitive | Rate | Avg time, definitive | Avg peak RAM, definitive | Avg peak RAM, all rows | GaveUp | Timeout | Error |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `FNE` | 100 | **35** | **35.0%** | 12.848 s | 4,296.7 MB | 9,962.6 MB | 60 | 5 | 0 |
+| `FEQ` | 300 | **72** | **24.0%** | 22.843 s | 4,414.9 MB | 12,284.7 MB | 176 | 52 | 0 |
+| `UEQ` | 400 | **257** | **64.3%** | 10.997 s | 3,548.3 MB | 7,473.7 MB | 128 | 15 | 0 |
+| **Total** | **800** | **364** | **45.5%** | **13.518 s** | — | — | **364** | **72** | **0** |
+
+The total average is the mean time over the 364 definitive results, matching
+the benchmark report. Database verdicts contain 364 `ok` rows and 436
+`unknown` rows; there are no `ko` rows.
+
+## 4. UEQ Structural Analysis
+
+The 300 UEQ result rows contain 222 definitive results and 78 non-definitive results. Using complete profiles:
+
+| Outcome | Rows | Avg clauses | Avg axioms | Avg max term depth | Large-theory rate |
+|---|---:|---:|---:|---:|---:|
+| Definitive | 222 | 627.8 | 626.0 | 6.1 | 3.6% |
+| Non-definitive | 78 | 578.1 | 576.6 | 6.1 | 1.3% |
+
+Size is not strongly separated in this sample. Algebraic markers are more differentiated:
+
+| Metric | Definitive | Non-definitive |
+|---|---:|---:|
+| AC symbols present | 54.1% | 29.5% |
+| Identity axiom | 49.1% | 35.9% |
+| Inverse axiom | 39.6% | 21.8% |
+| Idempotence axiom | 8.1% | 0.0% |
+
+Domain rates from the result/profile join are:
+
+| Domain | Definitive / total | Rate |
+|---|---:|---:|
+| `ALG` | 2 / 5 | 40.0% |
+| `BOO` | 3 / 3 | 100.0% |
+| `COL` | 10 / 25 | 40.0% |
+| `CSR` | 8 / 9 | 88.9% |
+| `GRP` | 72 / 87 | 82.8% |
+| `KLE` | 9 / 9 | 100.0% |
+| `LAT` | 54 / 57 | 94.7% |
+| `LCL` | 9 / 27 | 33.3% |
+| `MVA` | 4 / 4 | 100.0% |
+| `NUM` | 0 / 1 | 0.0% |
+| `NUN` | 1 / 1 | 100.0% |
+| `PLA` | 0 / 1 | 0.0% |
+| `PUZ` | 1 / 2 | 50.0% |
+| `REL` | 35 / 42 | 83.3% |
+| `RNG` | 9 / 19 | 47.4% |
+| `ROB` | 1 / 3 | 33.3% |
+| `SYN` | 3 / 4 | 75.0% |
+| `TOP` | 1 / 1 | 100.0% |
+
+These are correlations, not proof that algebraic flags cause success. The plausible engineering hypothesis is that AC, identity, inverse, and idempotence rules give the equality-sharing and ordering heuristics more useful reductions; controlled ablations are needed to establish causality.
+
+The 222/300 result was recorded after the shared-symbol remapping fix in
+`b124e7d`. An earlier 129/300 UEQ run used different external process
+concurrency, so the database supports a before/after hypothesis but not a
+controlled attribution of the entire gain to that commit.
+
+## 5. FEQ And FNE Structure
+
+### 5.1 FEQ
+
+Complete-profile FEQ rows show a substantial size and depth separation:
+
+| Outcome | Rows | Avg clauses | Avg axioms | Avg max depth | Large-theory rate |
+|---|---:|---:|---:|---:|---:|
+| Definitive | 105 | 631.5 | 322.7 | 5.2 | 18.1% |
+| Non-definitive | 273 | 2,112.2 | 975.8 | 7.4 | 52.0% |
+
+The remaining seven definitive and fifteen non-definitive FEQ rows have incomplete profiles and are excluded from this table.
+
+Using the implementation’s `is_large_theory` threshold (`num_axioms > 150`), the field contains 273 large-theory profiles. Using the separate analytical threshold `num_axioms > 500`:
+
+| Division | Axiom threshold | Definitive / total | Rate |
+|---|---|---:|---:|
+| `FEQ` | `<= 100` | 82 / 191 | 42.9% |
+| `FEQ` | `> 500` | 9 / 122 | 7.4% |
+| `EPU` | `<= 100` | 14 / 21 | 66.7% |
+| `EPU` | `> 500` | 2 / 46 | 4.3% |
+
+Selected FEQ domain rates:
+
+| Domain | Definitive / total | Rate | Avg axioms |
+|---|---:|---:|---:|
+| `COM` | 8 / 11 | 72.7% | 57.4 |
+| `SWV` | 26 / 39 | 66.7% | 58.2 |
+| `ALG` | 6 / 7 | 85.7% | 507.3 |
+| `SWB` | 1 / 40 | 2.5% | 545.3 |
+| `SEU` | 1 / 12 | 8.3% | 1,315.1 |
+| `SEV` | 0 / 11 | 0.0% | 23.9 |
+
+### 5.2 FNE
+
+Complete-profile FNE rows show the opposite size pattern from the original draft:
+
+| Outcome | Rows | Avg clauses | Avg axioms | Avg max depth | Large-theory rate |
+|---|---:|---:|---:|---:|---:|
+| Definitive | 43 | 3,533.0 | 3,369.3 | 3.8 | 55.8% |
+| Non-definitive | 54 | 241.7 | 162.0 | 5.1 | 1.9% |
+
+The three non-definitive incomplete profiles are excluded. This is a warning against interpreting size as a universal predictor: the FNE result population is strongly domain- and morphology-dependent.
+
+`CSR` is a strong positive cluster: 23/24 definitive, with 6,519.5 average clauses. `LCL` is weak: 6/37 definitive, with 114.6 average clauses. Horn ratios are high in both solved and failed FNE groups, so the current data does not establish that Hornness alone explains the difference.
+
+## 6. EPS And EPU: Result Divisions Versus EPR Structure
+
+EPS and EPU are benchmark result divisions, not guarantees that every stored profile is structurally EPR. Among complete profiles:
+
+| Result division | Rows | Avg clauses | Avg axioms | Avg constants | Avg max function arity |
+|---|---:|---:|---:|---:|---:|
+| EPS | 99 | 981.2 | 679.6 | 26.9 | 0.02 |
+| EPU | 94 | 2,621.7 | 2,512.7 | 215.3 | 0.14 |
+
+The result divisions contain some profiles structurally classified as FNE, UEQ, or Unknown. Therefore the correct interpretation is “EPR-heavy benchmark divisions,” not “all rows are EPR.”
+
+Status breakdown across all result rows:
+
+| Division | Definitive | GaveUp | Timeout |
+|---|---:|---:|---:|
+| EPS | 17 | 63 | 20 |
+| EPU | 18 | 28 | 54 |
+
+The large-theory correlation is stronger in EPU: 71/78 failed EPU rows have `is_large_theory = 1` (91.0%). This is evidence for an axiom-selection hypothesis, not proof of passive-queue flooding as the sole root cause. The telemetry contains passive, processed, generated, and LRS fields for 63/83 failed EPS rows and 28/82 failed EPU rows; external timeout rows lack these fields.
+
+## 7. Cross-Corpus Profile Comparison
+
+The complete profile populations for the requested structural divisions are:
+
+| Corpus | Division | Complete profiles | Avg unit ratio | Avg Horn ratio | Avg equality ratio | Large-theory rate |
+|---|---|---:|---:|---:|---:|---:|
+| CASC-30 | FEQ | 602 | 0.237 | 0.861 | 0.243 | 45.3% |
+| CASC-J13 | FEQ | 326 | 0.256 | 0.881 | 0.213 | 47.3% |
+| CASC-30 | FNE | 170 | 0.466 | 0.928 | 0.000 | 15.3% |
+| CASC-J13 | FNE | 140 | 0.378 | 0.922 | 0.000 | 18.4% |
+| CASC-30 | UEQ | 330 | 1.000 | 1.000 | 1.000 | 2.7% |
+| CASC-J13 | UEQ | 404 | 1.000 | 1.000 | 1.000 | 3.7% |
+| CASC-30 | EPR | 247 | 0.344 | 0.854 | 0.034 | 59.9% |
+| CASC-J13 | EPR | 16 | 0.289 | 0.904 | 0.105 | 43.8% |
+
+The profile statistics are similar in broad terms, but the editions are not identical populations. The database currently has 2,901 CASC-30 profiles and 1,293 CASC-J13 profiles, while repository documentation describes a larger full CASC-J13 edition; no completeness claim is made here.
+
+### Dialect distribution
+
+Across the 4,194 stored profiles:
+
+| Dialect | Count | Share |
+|---|---:|---:|
+| THF | 1,891 | 45.09% |
+| FOF | 1,041 | 24.82% |
+| CNF | 915 | 21.82% |
+| TFF | 296 | 7.06% |
+| Unknown | 51 | 1.22% |
+
+All 1,891 THF profiles are classified as `Empty` by the current untyped lowering/profile path. This is a parser/profile coverage fact, not evidence that all THF problems are structurally empty.
+
+## 8. Limitations And Recommendations
+
+1. **Incomplete profiles:** 68 stored profiles are incomplete. All structural aggregates in this report exclude them.
+2. **Division disagreement:** benchmark `results.division` and structural `casc_division` differ for 271/1,039 CASC-30 rows. Do not join or group on division without stating which field is used.
+3. **No causal experiment:** correlations do not establish that AC detection, SInE, EPR handling, or passive-queue size causes a result. Use controlled runs with fixed hardware, process concurrency, and one-change-at-a-time ablations.
+4. **No complete telemetry on hard timeouts:** 136 timeout rows lack detail because the external harness terminated the process before stderr was flushed.
+5. **Memory statistic definition:** report solved-only and all-row memory separately; failed rows are often the high-memory population.
+6. **Schema enforcement:** enable `PRAGMA foreign_keys = ON` on every connection if database-level referential-integrity enforcement is required.
+
+### Testable next experiments
+
+- Compare shared equality exchange against `MRS_SHARED_POOL_INTERVAL=0` on the same UEQ set, with identical `--jobs`, hardware, and timeout.
+- Compare EPR routing against a dedicated InstGen/CDCL path on EPS/EPU, separating structurally EPR rows from FNE/UEQ/Unknown rows.
+- Run SInE ablations on complete FEQ/EPU profiles split at both the implementation threshold (`>150`) and the analytical threshold (`>500`).
+- Re-run the UEQ domain comparison with confidence intervals or bootstrap intervals; the small BOO/KLE groups should not be treated as stable population estimates.

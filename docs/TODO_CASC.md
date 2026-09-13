@@ -78,15 +78,119 @@ only being found by manual code review after the fact.
 
 ---
 
-## CASC Division Priority Map
+## Codex-Driven Current Priorities
 
-| Division | Problems | Current (c0816a7a) | Highest-ROI fix |
-|----------|----------|-------------------|-----------------|
-| FEQ | 400 | 27 (7%) | Clause sharing ✓, AC-Superposition ✓, STree ✓ |
-| FNE | 100 | 24 (24%) | Clause sharing ✓, SInE tuning ✓, STree ✓ |
-| UEQ | 300 | 13 (4%) | AC-Superposition ✓, clause sharing ✓, STree ✓ |
-| EPS | 100 | 13 (13%) | AVATAR EPR (improved), LTO ✓ |
-| EPU | 100 | 8 (8%) | AVATAR EPR (improved), LTO ✓ |
-| ICU | 101 | 1 (1%) | Orphan elimination ✓, clause sharing ✓ |
+The old division table below was based on commit `c0816a7a` and is no longer a
+useful baseline. The current measured baselines are maintained in
+[`docs/CODEX_STATUS.md`](CODEX_STATUS.md):
 
-*Scores based on commit `c0816a7a` at 120s; newer commits (cadical, clause sharing, AC-KBO, LTO, scheduling, STree, SIMD FVI, ML, SInE tuning) expected to dramatically improve all divisions.*
+| Corpus | Division | Definitive | Evaluated | Rate |
+|---|---|---:|---:|---:|
+| CASC-30 | FEQ | 112 | 400 | 28.0% |
+| CASC-30 | FNE | 43 | 100 | 43.0% |
+| CASC-30 | UEQ | 222 | 300 | 74.0% |
+| CASC-30 | EPS | 17 | 100 | 17.0% |
+| CASC-30 | EPU | 18 | 100 | 18.0% |
+| CASC-30 | ICU | 7 | 39 | 17.9% |
+| CASC-J13 | FEQ | 72 | 300 | 24.0% |
+| CASC-J13 | FNE | 35 | 100 | 35.0% |
+| CASC-J13 | UEQ | 257 | 400 | 64.3% |
+
+Failure labels are overlapping diagnostics, not disjoint buckets. A single
+problem can be large, EPR, deep, non-Horn, and LRS-heavy at the same time. Do
+not add proposed gains from separate labels.
+
+### P0: Measurement And Attribution
+
+- Add a benchmark `run_id` and record commit/hash, command, corpus, division,
+  timeout, outer jobs, internal workers, host, TPTP root, and raw output path.
+- Parse `% SZS detail` into typed telemetry while retaining the raw detail.
+- Distinguish external timeout, internal timeout, LRS-pruned `GaveUp`,
+  SInE-subset `GaveUp`, InstGen fallback, parse failure, and resource failure.
+- Exclude `profile_complete = 0` from all structural aggregates.
+- Report `results.division` and `problem_profiles.casc_division` separately.
+
+**Exit gate:** every benchmark row is reproducible and attributable to one
+configuration; every score report states its completeness and telemetry
+coverage.
+
+### P0: EPR / InstGen Coverage
+
+InstGen already exists in `mrs-search/src/instgen.rs`; the work is to extend
+coverage and instrumentation rather than build a second grounder blindly.
+
+- Separate pure relational EPR, EPR with equality, ground EPR, and non-EPR
+  rows inside EPS/EPU result divisions.
+- Record InstGen invocation, rounds, instances, SAT size, elapsed time, return
+  reason, and fallback reason.
+- Replace the single fixed pre-pass budget with an adaptive budget based on
+  constants, variables, clauses, and estimated SAT size.
+- Keep variable-bearing satisfiability conclusions fail-closed and preserve
+  UNSAT proof extraction.
+
+**Exit gate:** improve EPS/EPU definitive coverage without wrong definitive
+statuses or uncertified satisfiable results.
+
+### P0: Large-Theory SInE Experiments
+
+SInE and threshold tuning already exist. The next task is controlled tuning on
+complete profiles:
+
+- compare unpruned, conservative, standard, and aggressive SInE;
+- measure retained axioms, goal connectivity, first useful inference, passive
+  size, and LRS interaction;
+- preserve at least one unpruned worker;
+- keep subset saturation as `GaveUp`.
+
+At the analytical `>500`-axiom threshold, current complete CASC-30 results are
+FEQ 9/122 (7.4%) and EPU 2/46 (4.3%).
+
+### P1: Generalize Shared-Clause Exchange
+
+The shared pool currently transports unit equalities and correctly remaps
+publisher symbols. Telemetry shows no equality imports in FNE and EPU, and no
+imports in EPS. This is a target for an experiment, not proof that sharing is
+the sole bottleneck.
+
+- Extend sharing to selected positive/negative unit predicates and ground unit
+  lemmas.
+- Standardize variables apart and preserve complete ancestor chains.
+- Record eligible, published, imported, duplicate, rejected, and used counts.
+- Compare equality-only, predicate-unit, and disabled-sharing controls.
+
+### P1: LRS And Queue Resilience
+
+- Record LRS target, queue size before/after pruning, discarded goal-distance
+  bands, and the final completeness reason.
+- Compare wall-clock LRS, fixed-iteration LRS, disabled LRS, and a measured
+  protected goal-connected tier.
+- Keep incomplete outcomes fail-closed; no LRS experiment may turn saturation
+  of a pruned subset into `Satisfiable` or `CounterSatisfiable`.
+
+### P1: ICU Resource Containment
+
+The current database has one CASC-30 OS-OOM event at 88.6 GB. Add per-strategy
+resource telemetry, clause/term ceilings, memory watchdogs, graceful
+`ResourceOut`/`GaveUp` handling, and complete worker cleanup.
+
+### P2: FNE Morphology And Non-AC UEQ
+
+- FNE is domain-sensitive: CSR is 23/24 definitive while LCL is 6/37;
+  size alone is not a reliable predictor.
+- Build held-out morphology portfolios using definite ratio, goal-clause ratio,
+  conjecture overlap, non-linearity, clause length, and predicate connectivity.
+- For UEQ, retain the 74.0% CASC-30 and 64.3% CASC-J13 portfolios as gates and
+  test conservative non-AC/combinator guidance on LCL, COL, RNG, and SWX.
+
+### Soundness And Release Gate
+
+Every performance change must retain:
+
+- fail-closed handling for SInE, ML-pruned, SOS, unit-only, and non-standard
+  weight-function saturation;
+- strict proof-kernel and adversarial mutation coverage;
+- no new wrong-polarity or wrong-definitive results;
+- the required Nix-wrapped format, check, clippy, and workspace test passes.
+
+The complete data-driven roadmap, phase gates, and controlled experiment rules
+are in [`docs/PLAN_2027.md`](PLAN_2027.md#phase-8a-codex-driven-casc-optimization).

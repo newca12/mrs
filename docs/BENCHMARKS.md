@@ -386,17 +386,243 @@ REFERENCE VIOLATIONS — none detected.
 ===================================================================
 ===================================================================
 
-commit 4b72fdc54af60e074768506c7cdcc9b81d333aaa (HEAD -> main, origin/main, origin/HEAD)
+commit 50f37f86ab3353d893b3e6388b090930523dbde2 (HEAD -> main, origin/main, origin/HEAD)
 
 [ongoing]
+[www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh   --edition casc-j13 --systems mrs --divisions ueq  --casc-times --jobs 2 --output crates/mrs-bench/results/casc-j13-W8J1-$(date +%Y%m%d)
+
+commit 440404cf925292e314e2b2f9705383873c5c26a3 (HEAD -> main, origin/main, origin/HEAD)
+
+[ongoing]
+[PPROD:user@server97:/DATA/ai/user/mrs]$ crates/mrs-bench/run_strategy_sweep.sh --edition casc-30 --divisions fne,feq,epu,eps,ueq,icu --casc-times --jobs 30 --output crates/mrs-bench/results/casc-30-sweep-$(date +%Y%m%d)
+
+[ongoing]
+[root@mtsdev01 mrs]# for interval in 25 50 100 250; do MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL="${interval}" crates/mrs-bench/casc.sh --edition casc-j13 --systems mrs --divisions ueq --casc-times --jobs 1 --output crates/mrs-bench/results/casc-j13-ueq-sharing-${interval}-$(date +%Y%m%d_%H%M%S); done
+/mnt/sdf1/mrs/crates/mrs-bench/results/casc-j13-ueq-sharing-25-20260912_182655/run.csv
+
+[done]
+[www@server99 mrs]$ crates/mrs-bench/run_strategy_sweep.sh   --edition casc-j13   --divisions fne,feq,ueq   --casc-times   --jobs 30  --output crates/mrs-bench/results/casc-j13-sweep-$(date +%Y%m%d)
+crates/mrs-bench/results/casc-j13-sweep-20260912
+Running `target/debug/bench_report /DATA/ai/mrs/crates/mrs-bench/results/casc-j13-sweep-20260912/run.csv`
+CASC-J13 Results — 2026-09-13 06:08  (800 problems × 15 systems)
+================================================================
+
+Division  Problems    mrs-s01               mrs-s02               mrs-s03               mrs-s04               mrs-s05               mrs-s06               mrs-s07               mrs-s08               mrs-s09               mrs-s10               mrs-s11               mrs-s12               mrs-s13               mrs-s14               mrs-s15
+                 Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)
+------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------
+FNE            100        21   35.238          11   21.203          12   27.391          21   31.947          10   17.844          12   26.716          20   45.451          24   37.869           8   20.284           7    1.426          32   19.950          21   44.201           7    1.936           6   12.430          20   16.655
+FEQ            300        39   19.523          25    8.687          18   10.519          42   20.970          38   23.279          40   21.565          39   14.607          41    9.050          21    7.204          21   48.873          47   14.633          46   17.657          13   38.596          24   23.651          18   20.175
+UEQ            400        36   45.713          38   36.840          30   42.525          59   52.138          43   48.325          33   35.654          23   36.591          47   21.494           7   43.083           2    0.181          41   38.158          58   41.709           3   12.670          35   45.535          28   43.181
+------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------
+TOTAL          800        96   32.782          74   25.004          60   29.897         122   37.932          91   34.517          85   27.762          82   28.296         112   20.447          36   17.087          30   34.556         120   24.088         125   33.276          23   24.057          65   34.399          66   28.869
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+[ongoing]
+[root@server01 mrs]# for interval in 25 50 100 250; do MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL="${interval}" crates/mrs-bench/casc.sh --edition casc-30 --systems mrs --divisions ueq --casc-times --jobs 1 --output crates/mrs-bench/results/casc-30-ueq-sharing-${interval}-$(date +%Y%m%d_%H%M%S); done
+Running `target/debug/bench_report /mnt/sdf1/mrs/crates/mrs-bench/results/casc-30-ueq-sharing-25-20260911_183710/run.csv`
+CASC-30 Results — 2026-09-12 06:37  (300 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                 Solved  Avg (s)
+------------------  --------------------
+UEQ            300       224   12.747
+------------------  --------------------
+TOTAL          300       224   12.747
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+Running `target/debug/bench_report /mnt/sdf1/mrs/crates/mrs-bench/results/casc-30-ueq-sharing-50-20260912_003201/run.csv`
+CASC-30 Results — 2026-09-12 06:38  (300 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                 Solved  Avg (s)
+------------------  --------------------
+UEQ            300       226   12.491
+------------------  --------------------
+TOTAL          300       226   12.491
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+     Running `target/debug/bench_report /mnt/sdf1/mrs/crates/mrs-bench/results/casc-30-ueq-sharing-100-20260912_061754/run.csv`
+CASC-30 Results — 2026-09-12 16:22  (300 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+UEQ            300       228   12.160
+------------------  --------------------
+TOTAL          300       228   12.160
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+     Running `target/debug/bench_report /mnt/sdf1/mrs/crates/mrs-bench/results/casc-30-ueq-sharing-250-20260912_115449/run.csv`
+CASC-30 Results — 2026-09-12 16:23  (300 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+UEQ            300       222   11.549
+------------------  --------------------
+TOTAL          300       222   11.549
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+[ongoing]
+[root@server04 mrs]# for interval in 250 500 1000; do   MRS_WORKERS=8   MRS_SHARED_POOL_INTERVAL="${interval}"   crates/mrs-bench/cooperative_portfolio_sweep.sh     casc-30 feq     11,12,1,6,10,8,14,4     240 1     "results/feq-interval-${interval}-$(date +%Y%m%d_%H%M%S)"; done
+
+[done]
+[PPROD:user@server97:/DATA/ai/fr22192/mrs]$ MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=0 crates/mrs-bench/casc.sh --edition casc-30  --systems mrs --divisions fne,feq,epu,eps,ueq,icu  --casc-times --jobs 2 --output crates/mrs-bench/results/casc-30-W8J2-$(date +%Y%m%d)
+Running `target/debug/bench_report /DATA/ai/fr22192/mrs/crates/mrs-bench/results/casc-30-W8J2-noshare-20260911/run.csv`
+CASC-30 Results — 2026-09-12 16:18  (1095 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs
+                 Solved  Avg (s)
+------------------  --------------------
+FNE            100        42   25.846
+FEQ            400       109   22.962
+EPU            100        18   11.868
+EPS            100        17   23.284
+UEQ            300       124   35.133
+ICU            101         4   75.029
+------------------  --------------------
+TOTAL         1101       314   28.199
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+[done]
+[www@server99 mrs]$ MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=0 crates/mrs-bench/casc.sh --edition casc-j13 --systems mrs --divisions fne,feq,ueq  --casc-times --jobs 2 --output crates/mrs-bench/results/casc-j13-W8J2-nosharing-$(date +%Y%m%d)
+Running `target/debug/bench_report /DATA/ai/mrs/crates/mrs-bench/results/casc-j13-W8J2-nosharing-20260911/run.csv`
+CASC-J13 Results — 2026-09-12 06:28  (800 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs
+                 Solved  Avg (s)
+------------------  --------------------
+FNE            100        35   12.884
+FEQ            300        71   20.391
+UEQ            400       119   32.096
+------------------  --------------------
+TOTAL          800       225   25.414
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+[done]
+[www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh   --edition casc-j13 --systems mrs --divisions fne,feq,ueq  --casc-times --jobs 2 --output crates/mrs-bench/results/casc-j13-W8J1-$(date +%Y%m%d)
+Running `target/debug/bench_report /DATA/ai/mrs/crates/mrs-bench/results/casc-j13-W8J1-20260910/run.csv`
+CASC-J13 Results — 2026-09-11 06:13  (800 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs
+                 Solved  Avg (s)
+------------------  --------------------
+FNE            100        35   12.848
+FEQ            300        72   22.843
+UEQ            400       257   10.997
+------------------  --------------------
+TOTAL          800       364   13.518
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+commit 4b72fdc54af60e074768506c7cdcc9b81d333aaa (HEAD -> main, origin/main, origin/HEAD)
+
+[done]
+[root@server04 mrs]# MRS_WORKERS=8 crates/mrs-bench/cooperative_portfolio_sweep.sh casc-j13 feq 11,12,1,6,10,8,14,4 180 1 "crates/mrs-bench/results/cooperative-j13-feq-$(date +%Y%m%d_%H%M%S)"
+Running `target/debug/bench_report /mnt/sdd1/mrs/crates/mrs-bench/results/cooperative-j13-feq-20260910_111944/run.csv`
+CASC-J13 Results — 2026-09-11 07:05  (300 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs
+                 Solved  Avg (s)
+------------------  --------------------
+FEQ            300        74   21.582
+------------------  --------------------
+TOTAL          300        74   21.582
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+[done]
 [PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=0 JOBS=2 crates/mrs-bench/cooperative_portfolio_sweep.sh casc-30 feq 11,12,1,6,10,8,14,4 240 1 "crates/mrs-bench/results/cooperative-feq-no-sharing-$(date +%Y%m%d_%H%M%S)"
+Running `target/debug/bench_report /DATA/ai/fr22192/mrs/crates/mrs-bench/results/cooperative-feq-no-sharing-20260910_104450/run.csv`
+CASC-30 Results — 2026-09-11 07:03  (400 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+Solved  Avg (s)
+------------------  --------------------
+FEQ            400       122   27.828
+------------------  --------------------
+TOTAL          400       122   27.828
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
 
 commit f0010b740ac3e4f6e1c0e43507f780bd5a38b1e8 (HEAD -> main, origin/main, origin/HEAD)
 
-[ongoing]
+[done]
 [www@server99 mrs]$   crates/mrs-bench/cooperative_portfolio_sweep.sh \
   casc-30 feq 11,12,1,6,10,8,14,4 240 1 \
   "crates/mrs-bench/results/cooperative-feq-$(date +%Y%m%d_%H%M%S)"
+[www@server99 mrs]$ ./target/release/bench_report /DATA/ai/mrs/crates/mrs-bench/results/cooperative-feq-20260909_205003/run.csv
+  CASC-30 Results — 2026-09-10 16:13  (400 problems × 1 systems)
+  ==============================================================
+
+  Division  Problems    mrs
+                        Solved  Avg (s)
+  ------------------  --------------------
+  FEQ            400       119   24.963
+  ------------------  --------------------
+  TOTAL          400       119   24.963
+
+  DISAGREEMENTS — none detected.
+
+  POLARITY VIOLATIONS — none detected.
+  
+  REFERENCE VIOLATIONS — none detected.
 
 commit 181929ae1ea647c30cf91ea92219d69f23d7e9f3 (HEAD -> fix/integrate-casc-next-review, origin/fix/integrate-casc-next-review)
 
@@ -615,9 +841,11 @@ REFERENCE VIOLATIONS — none detected.
 
 commit f13912c763c8c22309fbc7bc2fc6126cad1eb55f
 
-[ongoing] 994/13011
+[interrupted] 994/13011
 export RUST_MIN_STACK=67108864
 [root@server01 mrs]# ./crates/mrs-bench/run_codex_sweep.sh "$TPTP" codex_cat_filtered_sweep_f13912c763_01-03.db 300 1
+[root@server01 mrs]# cat codex_sweep_mrs-s01.out | grep -v Timeout | grep -v GaveUp | grep -v Error | wc -l
+347
 
 [ongoing] 1039/13011
 export RUST_MIN_STACK=67108864
