@@ -1391,6 +1391,175 @@ fn try_resolution_step(
     false
 }
 
+/// Structural demodulation check: rewrite a candidate target premise to
+/// fixpoint using the sibling premises as rewrite rules.
+///
+/// Mirrors `mrs_calculus::demodulation` (`parents: [target, rules...]`,
+/// one-way matching via `mrs_unify::matching::match_term`, leftmost-
+/// outermost rewrite, rescan to fixpoint), with two deliberate
+/// generalizations. Both are sound: every single rewrite is a valid
+/// equational step, and acceptance additionally requires alpha-equivalence
+/// with the conclusion.
+/// * Rules are unit equations tried in each orientation. `mrs` orients each
+///   rule by KBO/LPO, but the proof carries no orientation metadata, and a
+///   single step may need mixed orientations (COL002-5 `c783` needs the
+///   C-axiom forward and the B-axiom backward). Orientation combinations are
+///   enumerated (capped: wide steps fall back to the uniform orientations).
+/// * Every premise is tried as the rewrite target; the TPTP parent order is
+///   not trusted for direction (cf. the superposition parent-order fix).
+///
+/// Bounded: each orientation combination runs at most 100 fixpoint passes,
+/// so adversarial cyclic rules (e.g. `a = b`, `b = a`) terminate instead of
+/// hanging the verifier. Non-unit-equation premises are never used as
+/// rules, matching the prover's demodulation index.
+fn try_demodulation_step(premises: &[mrs_core::Formula], concl: &mrs_core::Formula) -> bool {
+    if premises.is_empty() {
+        return false;
+    }
+    for (i, target) in premises.iter().enumerate() {
+        // Freshen every rule apart from the target (uniformly so): rule
+        // variables must not collide with target variables, otherwise
+        // matching binds the wrong variables (cf. COL002-5 `c699`).
+        let mut equations: Vec<(mrs_core::Term, mrs_core::Term)> = Vec::new();
+        for (j, premise) in premises.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            let shifted = shift_vars_formula(premise, 1000);
+            if let Some((left, right)) = extract_eq_sides(&shifted) {
+                equations.push((left, right));
+            }
+        }
+        if equations.is_empty() {
+            continue;
+        }
+        // Enumerate per-rule orientations when narrow enough for 2^k to stay
+        // cheap; otherwise fall back to the two uniform orientations.
+        const MAX_ENUM_EQUATIONS: usize = 8;
+        if equations.len() <= MAX_ENUM_EQUATIONS {
+            let combos = 1usize << equations.len();
+            for mask in 0..combos {
+                let rules: Vec<(mrs_core::Term, mrs_core::Term)> = equations
+                    .iter()
+                    .enumerate()
+                    .map(|(k, (left, right))| {
+                        if mask & (1 << k) == 0 {
+                            (left.clone(), right.clone())
+                        } else {
+                            (right.clone(), left.clone())
+                        }
+                    })
+                    .collect();
+                if demodulation_rewrites_to(target, &rules, concl) {
+                    return true;
+                }
+            }
+        } else {
+            let forward: Vec<(mrs_core::Term, mrs_core::Term)> = equations
+                .iter()
+                .map(|(left, right)| (left.clone(), right.clone()))
+                .collect();
+            if demodulation_rewrites_to(target, &forward, concl) {
+                return true;
+            }
+            let backward: Vec<(mrs_core::Term, mrs_core::Term)> = equations
+                .iter()
+                .map(|(left, right)| (right.clone(), left.clone()))
+                .collect();
+            if demodulation_rewrites_to(target, &backward, concl) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Rewrite `target`'s clause literals to fixpoint with `rules` and test
+/// alpha-equivalence against `concl`'s literals.
+fn demodulation_rewrites_to(
+    target: &mrs_core::Formula,
+    rules: &[(mrs_core::Term, mrs_core::Term)],
+    concl: &mrs_core::Formula,
+) -> bool {
+    let Some(mut lits) = formula_clause_literals(target) else {
+        return false;
+    };
+    for _ in 0..100 {
+        let mut changed = false;
+        for lit in &mut lits {
+            if rewrite_literal_demod(lit, rules) {
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let Some(concl_lits) = formula_clause_literals(concl) else {
+        return false;
+    };
+    clause_equiv(&lits, &concl_lits)
+}
+
+/// Rewrite one clause literal in place; mirrors
+/// `mrs_calculus::demodulation::rewrite_literal` (predicate arguments and
+/// both equation sides).
+fn rewrite_literal_demod(
+    lit: &mut mrs_core::Formula,
+    rules: &[(mrs_core::Term, mrs_core::Term)],
+) -> bool {
+    match lit {
+        mrs_core::Formula::Atom(atom) => match atom {
+            mrs_core::Atom::Pred(_, args) => {
+                let mut changed = false;
+                for arg in args.iter_mut() {
+                    if rewrite_term_demod(arg, rules) {
+                        changed = true;
+                    }
+                }
+                changed
+            }
+            mrs_core::Atom::Eq(left, right) => {
+                let changed_left = rewrite_term_demod(left, rules);
+                let changed_right = rewrite_term_demod(right, rules);
+                changed_left || changed_right
+            }
+        },
+        mrs_core::Formula::Neg(inner) if matches!(inner.as_ref(), mrs_core::Formula::Atom(_)) => {
+            rewrite_literal_demod(inner, rules)
+        }
+        _ => false,
+    }
+}
+
+/// One demodulation pass over a term: leftmost-outermost single rewrite,
+/// mirroring `mrs_calculus::demodulation::rewrite_term` (match at the
+/// current position first with the first matching rule, else recurse into
+/// arguments).
+fn rewrite_term_demod(
+    term: &mut mrs_core::Term,
+    rules: &[(mrs_core::Term, mrs_core::Term)],
+) -> bool {
+    for (from, to) in rules {
+        if let Ok(sigma) = mrs_unify::matching::match_term(from, term) {
+            *term = sigma.apply_term(to);
+            return true;
+        }
+    }
+    match term {
+        mrs_core::Term::Var(_) => false,
+        mrs_core::Term::App(_, args) => {
+            let mut changed = false;
+            for arg in args.iter_mut() {
+                if rewrite_term_demod(arg, rules) {
+                    changed = true;
+                }
+            }
+            changed
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct AvatarSplitShape {
     parent_literals: Vec<mrs_core::Formula>,
@@ -2292,6 +2461,16 @@ fn prepare_atp_step<'p>(
         if try_factoring_step(p1, &conclusion) {
             return Prepared::Resolved(StepOutcome::Sound);
         }
+    }
+
+    // Fast-path: structural demodulation (multi-rule matching rewrite to
+    // fixpoint). Discharges simplification steps such as COL002-5 `c783`
+    // without an ATP call.
+    if node.inference_rule == Some("demodulation")
+        && !premises.is_empty()
+        && try_demodulation_step(&premises, &conclusion)
+    {
+        return Prepared::Resolved(StepOutcome::Sound);
     }
 
     if formula_max_depth(&conclusion) > 200 {
@@ -3463,5 +3642,191 @@ mod superposition_order_tests {
             try_superposition_step(&target, &rule, &conclusion),
             "[target, rule] order must verify"
         );
+    }
+}
+
+#[cfg(test)]
+mod demodulation_tests {
+    use super::*;
+    use mrs_core::{Atom, Formula, SymbolTable, Term};
+
+    /// Interns fresh `d`-prefixed symbols and leaks the table (see
+    /// `superposition_order_tests` for why the leak is sound in tests).
+    fn syms(names: &[&str]) -> Vec<mrs_core::SymbolId> {
+        let mut table = SymbolTable::new();
+        let ids = names.iter().map(|n| table.intern(n)).collect();
+        let _ = Box::leak(Box::new(table));
+        ids
+    }
+
+    #[test]
+    fn single_rule_verifies_in_both_parent_orders() {
+        let ids = syms(&["df", "dg", "dh", "da", "db"]);
+        let (f, g, h, a, b) = (ids[0], ids[1], ids[2], ids[3], ids[4]);
+        let rule = Formula::forall(
+            0,
+            Formula::atom(Atom::eq(
+                Term::app(f, vec![Term::var(0)]),
+                Term::app(g, vec![Term::var(0)]),
+            )),
+        );
+        let target = Formula::atom(Atom::eq(
+            Term::app(h, vec![Term::app(f, vec![Term::constant(a)])]),
+            Term::constant(b),
+        ));
+        let conclusion = Formula::atom(Atom::eq(
+            Term::app(h, vec![Term::app(g, vec![Term::constant(a)])]),
+            Term::constant(b),
+        ));
+        assert!(try_demodulation_step(
+            &[target.clone(), rule.clone()],
+            &conclusion
+        ));
+        assert!(try_demodulation_step(&[rule, target], &conclusion));
+    }
+
+    #[test]
+    fn multi_rule_chain_rewrites_to_fixpoint() {
+        let ids = syms(&["ef", "eg", "ek", "ep", "ea"]);
+        let (f, g, k, p, a) = (ids[0], ids[1], ids[2], ids[3], ids[4]);
+        // f(X) = g(X), g(X) = k(X): reaching k needs two fixpoint passes.
+        let rule1 = Formula::forall(
+            0,
+            Formula::atom(Atom::eq(
+                Term::app(f, vec![Term::var(0)]),
+                Term::app(g, vec![Term::var(0)]),
+            )),
+        );
+        let rule2 = Formula::forall(
+            0,
+            Formula::atom(Atom::eq(
+                Term::app(g, vec![Term::var(0)]),
+                Term::app(k, vec![Term::var(0)]),
+            )),
+        );
+        let target = Formula::atom(Atom::pred(p, vec![Term::app(f, vec![Term::constant(a)])]));
+        let conclusion = Formula::atom(Atom::pred(p, vec![Term::app(k, vec![Term::constant(a)])]));
+        assert!(try_demodulation_step(&[target, rule1, rule2], &conclusion));
+    }
+
+    #[test]
+    fn mixed_orientations_in_one_step() {
+        let ids = syms(&["mf", "mg", "mh", "mk", "mpair", "ma", "mb", "mz"]);
+        let (f, g, h, k, pair, a, b, z) = (
+            ids[0], ids[1], ids[2], ids[3], ids[4], ids[5], ids[6], ids[7],
+        );
+        // The derivation needs rule1 forward (f→g) and rule2 backward
+        // (h→k although written k=h): COL002-5 `c783` needs exactly this
+        // mix (C-axiom forward, B-axiom backward).
+        let rule1 = Formula::forall(
+            0,
+            Formula::atom(Atom::eq(
+                Term::app(f, vec![Term::var(0)]),
+                Term::app(g, vec![Term::var(0)]),
+            )),
+        );
+        let rule2 = Formula::forall(
+            0,
+            Formula::atom(Atom::eq(
+                Term::app(k, vec![Term::var(0)]),
+                Term::app(h, vec![Term::var(0)]),
+            )),
+        );
+        let target = Formula::atom(Atom::eq(
+            Term::app(
+                pair,
+                vec![
+                    Term::app(f, vec![Term::constant(a)]),
+                    Term::app(h, vec![Term::constant(b)]),
+                ],
+            ),
+            Term::constant(z),
+        ));
+        let conclusion = Formula::atom(Atom::eq(
+            Term::app(
+                pair,
+                vec![
+                    Term::app(g, vec![Term::constant(a)]),
+                    Term::app(k, vec![Term::constant(b)]),
+                ],
+            ),
+            Term::constant(z),
+        ));
+        assert!(try_demodulation_step(&[target, rule1, rule2], &conclusion));
+    }
+
+    #[test]
+    fn quantified_overlap_rewrites_despite_shared_var_id() {
+        let ids = syms(&["qf", "qg", "qh", "qc", "qb"]);
+        let (f, g, h, c, b) = (ids[0], ids[1], ids[2], ids[3], ids[4]);
+        // Rule and target both quantify X0; matching f(X0) against
+        // f(c(X0)) needs freshening to avoid a spurious occurs-check
+        // failure.
+        let rule = Formula::forall(
+            0,
+            Formula::atom(Atom::eq(
+                Term::app(f, vec![Term::var(0)]),
+                Term::app(g, vec![Term::var(0)]),
+            )),
+        );
+        let target = Formula::forall(
+            0,
+            Formula::atom(Atom::eq(
+                Term::app(
+                    h,
+                    vec![Term::app(f, vec![Term::app(c, vec![Term::var(0)])])],
+                ),
+                Term::constant(b),
+            )),
+        );
+        let conclusion = Formula::forall(
+            0,
+            Formula::atom(Atom::eq(
+                Term::app(
+                    h,
+                    vec![Term::app(g, vec![Term::app(c, vec![Term::var(0)])])],
+                ),
+                Term::constant(b),
+            )),
+        );
+        assert!(try_demodulation_step(&[target, rule], &conclusion));
+    }
+
+    #[test]
+    fn rejects_unreachable_conclusion() {
+        let ids = syms(&["rf", "rg", "rh", "rq", "ra", "rb"]);
+        let (f, g, h, q, a, b) = (ids[0], ids[1], ids[2], ids[3], ids[4], ids[5]);
+        let rule = Formula::forall(
+            0,
+            Formula::atom(Atom::eq(
+                Term::app(f, vec![Term::var(0)]),
+                Term::app(g, vec![Term::var(0)]),
+            )),
+        );
+        let target = Formula::atom(Atom::eq(
+            Term::app(h, vec![Term::app(f, vec![Term::constant(a)])]),
+            Term::constant(b),
+        ));
+        let bogus = Formula::atom(Atom::eq(
+            Term::app(h, vec![Term::app(q, vec![Term::constant(a)])]),
+            Term::constant(b),
+        ));
+        assert!(!try_demodulation_step(&[target, rule], &bogus));
+    }
+
+    #[test]
+    fn cyclic_rules_terminate_with_unknown() {
+        let ids = syms(&["cfa", "cfb", "cfc", "cfp"]);
+        let (a, b, c, p) = (ids[0], ids[1], ids[2], ids[3]);
+        // a = b and b = a rewrite each other forever; the pass cap must
+        // terminate the check instead of hanging the verifier.
+        let rule1 = Formula::atom(Atom::eq(Term::constant(a), Term::constant(b)));
+        let rule2 = Formula::atom(Atom::eq(Term::constant(b), Term::constant(a)));
+        let target = Formula::atom(Atom::pred(p, vec![Term::constant(a)]));
+        let unreachable = Formula::atom(Atom::pred(p, vec![Term::constant(c)]));
+        assert!(!try_demodulation_step(
+            &[target, rule1, rule2],
+            &unreachable
+        ));
     }
 }
