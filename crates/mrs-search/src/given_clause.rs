@@ -127,6 +127,54 @@ fn remap_shared_clause_symbols(clause: &mut LegacyClause, mapping: &[SymbolId]) 
     valid
 }
 
+/// Give imported definition symbols a fresh receiver-local name when the
+/// publisher used a name already present in the receiver's symbol table.
+///
+/// Goal transformation currently emits names such as `goal_d0` independently
+/// in each strategy. The ordinary symbol remapping below intentionally interns
+/// names by text, so importing such a chain would otherwise merge unrelated
+/// definitions. Updating the source-index mapping before remapping the chain
+/// keeps every occurrence, including `ClauseSource::Introduced`, consistent.
+fn isolate_shared_introduced_symbols(
+    chain: &[LegacyClause],
+    symbol_names: &[String],
+    existing_names: &HashSet<String>,
+    symbols: &mut mrs_core::SymbolTable,
+    mapping: &mut [SymbolId],
+) {
+    let mut colliding_indices: Vec<usize> = chain
+        .iter()
+        .filter_map(|clause| match &clause.source {
+            ClauseSource::Introduced { symbol } => Some(symbol.index() as usize),
+            _ => None,
+        })
+        .filter(|&index| {
+            symbol_names
+                .get(index)
+                .is_some_and(|name| existing_names.contains(name))
+        })
+        .collect();
+    colliding_indices.sort_unstable();
+    colliding_indices.dedup();
+
+    let mut fresh_counter = 0usize;
+    for index in colliding_indices {
+        let Some(name) = symbol_names.get(index) else {
+            continue;
+        };
+        let fresh_name = loop {
+            let candidate = format!("{name}__shared_{fresh_counter}");
+            fresh_counter += 1;
+            if symbols.resolve_name(&candidate).is_none() {
+                break candidate;
+            }
+        };
+        if let Some(mapped) = mapping.get_mut(index) {
+            *mapped = symbols.intern(&fresh_name);
+        }
+    }
+}
+
 fn lrs_target_size(
     policy: LrsPolicy,
     iteration: u64,
@@ -940,7 +988,8 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 );
             }
             for entry in to_add {
-                let symbol_map = {
+                let existing_names = state.symbols.iter_names().map(str::to_owned).collect();
+                let mut symbol_map = {
                     let symbols = std::sync::Arc::make_mut(&mut state.symbols);
                     entry
                         .symbol_names
@@ -949,6 +998,13 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         .collect::<Vec<_>>()
                 };
                 let mut chain = entry.chain;
+                isolate_shared_introduced_symbols(
+                    &chain,
+                    &entry.symbol_names,
+                    &existing_names,
+                    std::sync::Arc::make_mut(&mut state.symbols),
+                    &mut symbol_map,
+                );
                 if !chain
                     .iter_mut()
                     .all(|clause| remap_shared_clause_symbols(clause, &symbol_map))
@@ -2383,6 +2439,57 @@ mod tests {
         };
         assert_eq!(receiver_symbols.resolve(symbol), "goal_d0");
         assert_eq!(receiver_base, *right_symbol);
+    }
+
+    #[test]
+    fn imported_definition_symbol_isolated_from_receiver_namespace() {
+        let mut publisher_symbols = SymbolTable::new();
+        let publisher_goal = publisher_symbols.intern("goal_d0");
+        let publisher_base = publisher_symbols.intern("base");
+        let mut receiver_symbols = SymbolTable::new();
+        let receiver_goal = receiver_symbols.intern("goal_d0");
+        let receiver_base = receiver_symbols.intern("base");
+
+        let introduced = Clause::new(
+            ClauseIdGen::new().next(),
+            vec![Literal::pos(Atom::Eq(
+                Term::constant(publisher_base),
+                Term::constant(publisher_goal),
+            ))],
+            ClauseSource::Introduced {
+                symbol: publisher_goal,
+            },
+        );
+        let mut chain = vec![introduced];
+        let symbol_names = publisher_symbols
+            .iter_names()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let mut mapping = symbol_names
+            .iter()
+            .map(|name| receiver_symbols.intern(name))
+            .collect::<Vec<_>>();
+
+        isolate_shared_introduced_symbols(
+            &chain,
+            &symbol_names,
+            &receiver_symbols.iter_names().map(str::to_owned).collect(),
+            &mut receiver_symbols,
+            &mut mapping,
+        );
+        assert_eq!(mapping[publisher_base.index() as usize], receiver_base);
+        assert_ne!(mapping[publisher_goal.index() as usize], receiver_goal);
+
+        assert!(
+            chain
+                .iter_mut()
+                .all(|clause| remap_shared_clause_symbols(clause, &mapping))
+        );
+        let ClauseSource::Introduced { symbol } = chain[0].source else {
+            panic!("expected introduced source");
+        };
+        assert_eq!(symbol, mapping[publisher_goal.index() as usize]);
+        assert_ne!(receiver_symbols.resolve(symbol), "goal_d0");
     }
 
     fn input_clause(
