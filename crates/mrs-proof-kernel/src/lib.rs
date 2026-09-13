@@ -431,11 +431,13 @@ fn verify_strict_with_source_internal(
             "equality_resolution" | "destructive_equality_resolution" => {
                 verify_equality_resolution(&parents, conclusion, limits)
             }
+            "ac_normalization" => verify_ac_normalization(&parents, conclusion, limits),
             "equality_factoring" => verify_equality_factoring(&parents, conclusion, limits),
             "condensation" => verify_condensation(&parents, conclusion, limits),
             "demodulation" => verify_demodulation(&parents, conclusion, limits),
             "goal_transformation" => verify_goal_transformation(&parents, conclusion, limits),
             "superposition" => verify_superposition(&parents, conclusion, limits),
+            "ac_superposition" => verify_ac_superposition(&parents, conclusion, limits),
             "paramodulation" => verify_paramodulation(&parents, conclusion, limits),
             "split_component" => verify_split_component(
                 &parents,
@@ -663,8 +665,10 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "condensation"
         | "demodulation"
         | "goal_transformation"
+        | "ac_normalization"
         | "avatar_sat_refutation"
         | "superposition"
+        | "ac_superposition"
         | "paramodulation" => Some("thm"),
         _ => None,
     }
@@ -719,6 +723,7 @@ fn register_signatures(
             }
         }
     }
+    #[allow(clippy::too_many_arguments)]
     fn visit(
         formula: &Formula,
         signatures: &mut HashMap<mrs_core::SymbolId, usize>,
@@ -5653,7 +5658,7 @@ fn verify_demodulation(
         );
     };
     let mut rules = Vec::new();
-    for parent in &parents[1..] {
+    for parent in parents[1..].iter() {
         let Some(clause) = clause_from_formula(parent, limits) else {
             return KernelVerdict::Inconclusive(
                 "demodulation equality parent is not a supported clause".into(),
@@ -5722,6 +5727,518 @@ fn verify_demodulation(
             );
         }
     }
+}
+
+fn verify_ac_normalization(
+    parents: &[Formula],
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if parents.len() < 2 {
+        return KernelVerdict::Rejected(
+            "ac_normalization requires a source clause and AC axioms".into(),
+        );
+    }
+    let Some(source) = clause_from_formula(&parents[0], limits) else {
+        return KernelVerdict::Inconclusive("ac_normalization source is not a clause".into());
+    };
+    let Some(goal) = clause_from_formula(conclusion, limits) else {
+        return KernelVerdict::Inconclusive("ac_normalization conclusion is not a clause".into());
+    };
+
+    // AC axioms are cited as ordinary positive unit equalities. Their
+    // presence makes the conclusion an equational consequence of the source;
+    // the parent list is intentionally explicit so this rule is not a hidden
+    // modulo-AC acceptance path.
+    let mut commutative = HashSet::new();
+    let mut associative = HashSet::new();
+    for (parent_index, parent) in parents[1..].iter().enumerate() {
+        let Some(clause) = clause_from_formula(parent, limits) else {
+            return KernelVerdict::Inconclusive("ac_normalization axiom is not a clause".into());
+        };
+        if clause.len() != 1 || !clause[0].positive || !matches!(clause[0].atom, Atom::Eq(_, _)) {
+            return KernelVerdict::Rejected(
+                "ac_normalization parents must be positive unit equalities".into(),
+            );
+        }
+        let Atom::Eq(left, right) = &clause[0].atom else {
+            unreachable!()
+        };
+        let Some((symbol, kind)) = classify_ac_axiom(left, right) else {
+            return KernelVerdict::Rejected(format!(
+                "ac_normalization parent {parent_index} is not a commutativity or associativity axiom: {:?}",
+                clause[0].atom
+            ));
+        };
+        match kind {
+            AcAxiomKind::Commutative => {
+                commutative.insert(symbol);
+            }
+            AcAxiomKind::Associative => {
+                associative.insert(symbol);
+            }
+        }
+    }
+
+    if (!commutative.is_empty() || !associative.is_empty())
+        && ac_clause_alpha_equiv(&source, &goal, &commutative, &associative, limits)
+    {
+        return KernelVerdict::Certified;
+    }
+    if clause_alpha_equiv(&source, &goal) {
+        KernelVerdict::Certified
+    } else {
+        KernelVerdict::Rejected("ac_normalization conclusion is not AC-equivalent to source".into())
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum AcAxiomKind {
+    Commutative,
+    Associative,
+}
+
+fn classify_ac_axiom(left: &Term, right: &Term) -> Option<(mrs_core::SymbolId, AcAxiomKind)> {
+    let (Term::App(left_symbol, left_args), Term::App(right_symbol, right_args)) = (left, right)
+    else {
+        return None;
+    };
+    if left_symbol != right_symbol || left_args.len() != 2 || right_args.len() != 2 {
+        return None;
+    }
+    if let (Term::Var(x), Term::Var(y), Term::Var(y2), Term::Var(x2)) =
+        (&left_args[0], &left_args[1], &right_args[0], &right_args[1])
+        && x != y
+        && x == x2
+        && y == y2
+    {
+        return Some((*left_symbol, AcAxiomKind::Commutative));
+    }
+
+    let associative =
+        |left_nested: &Term, left_last: &Term, right_first: &Term, right_nested: &Term| -> bool {
+            let (
+                Term::App(left_inner_symbol, left_inner_args),
+                left_last,
+                right_first,
+                Term::App(right_inner_symbol, right_inner_args),
+            ) = (left_nested, left_last, right_first, right_nested)
+            else {
+                return false;
+            };
+            let (Term::Var(z), Term::Var(x2)) = (left_last, right_first) else {
+                return false;
+            };
+            if left_inner_symbol != left_symbol
+                || right_inner_symbol != left_symbol
+                || left_inner_args.len() != 2
+                || right_inner_args.len() != 2
+            {
+                return false;
+            }
+            let (Term::Var(x), Term::Var(y)) = (&left_inner_args[0], &left_inner_args[1]) else {
+                return false;
+            };
+            let (Term::Var(y2), Term::Var(z2)) = (&right_inner_args[0], &right_inner_args[1])
+            else {
+                return false;
+            };
+            *x != *y && *y != *z && *x != *z && *x == *x2 && *y == *y2 && *z == *z2
+        };
+
+    if associative(&left_args[0], &left_args[1], &right_args[0], &right_args[1])
+        || associative(&right_args[0], &right_args[1], &left_args[0], &left_args[1])
+    {
+        return Some((*left_symbol, AcAxiomKind::Associative));
+    }
+    None
+}
+
+fn ac_clause_alpha_equiv(
+    left: &[Literal],
+    right: &[Literal],
+    commutative: &HashSet<mrs_core::SymbolId>,
+    associative: &HashSet<mrs_core::SymbolId>,
+    limits: VerificationLimits,
+) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn visit(
+        index: usize,
+        left: &[Literal],
+        right: &[Literal],
+        used: &mut [bool],
+        mapping: &mut HashMap<VarId, VarId>,
+        reverse: &mut HashMap<VarId, VarId>,
+        commutative: &HashSet<mrs_core::SymbolId>,
+        associative: &HashSet<mrs_core::SymbolId>,
+        steps: &mut usize,
+        limits: VerificationLimits,
+    ) -> bool {
+        if *steps >= limits.max_equivalence_steps {
+            return false;
+        }
+        if index == left.len() {
+            return true;
+        }
+        for right_index in 0..right.len() {
+            if used[right_index] || left[index].positive != right[right_index].positive {
+                continue;
+            }
+            let mut next_mapping = mapping.clone();
+            let mut next_reverse = reverse.clone();
+            *steps += 1;
+            if ac_atom_alpha_equiv(
+                &left[index].atom,
+                &right[right_index].atom,
+                &mut next_mapping,
+                &mut next_reverse,
+                commutative,
+                associative,
+                steps,
+                limits,
+            ) {
+                used[right_index] = true;
+                if visit(
+                    index + 1,
+                    left,
+                    right,
+                    used,
+                    &mut next_mapping,
+                    &mut next_reverse,
+                    commutative,
+                    associative,
+                    steps,
+                    limits,
+                ) {
+                    return true;
+                }
+                used[right_index] = false;
+            }
+        }
+        false
+    }
+
+    visit(
+        0,
+        left,
+        right,
+        &mut vec![false; right.len()],
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        commutative,
+        associative,
+        &mut 0,
+        limits,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ac_atom_alpha_equiv(
+    left: &Atom,
+    right: &Atom,
+    mapping: &mut HashMap<VarId, VarId>,
+    reverse: &mut HashMap<VarId, VarId>,
+    commutative: &HashSet<mrs_core::SymbolId>,
+    associative: &HashSet<mrs_core::SymbolId>,
+    steps: &mut usize,
+    limits: VerificationLimits,
+) -> bool {
+    match (left, right) {
+        (Atom::Pred(left_symbol, left_args), Atom::Pred(right_symbol, right_args)) => {
+            left_symbol == right_symbol
+                && left_args.len() == right_args.len()
+                && left_args.iter().zip(right_args).all(|(left, right)| {
+                    ac_term_alpha_equiv(
+                        left,
+                        right,
+                        mapping,
+                        reverse,
+                        commutative,
+                        associative,
+                        steps,
+                        limits,
+                    )
+                })
+        }
+        (Atom::Eq(left_left, left_right), Atom::Eq(right_left, right_right)) => {
+            let mut direct_mapping = mapping.clone();
+            let mut direct_reverse = reverse.clone();
+            if ac_term_alpha_equiv(
+                left_left,
+                right_left,
+                &mut direct_mapping,
+                &mut direct_reverse,
+                commutative,
+                associative,
+                steps,
+                limits,
+            ) && ac_term_alpha_equiv(
+                left_right,
+                right_right,
+                &mut direct_mapping,
+                &mut direct_reverse,
+                commutative,
+                associative,
+                steps,
+                limits,
+            ) {
+                *mapping = direct_mapping;
+                *reverse = direct_reverse;
+                true
+            } else {
+                let mut flipped_mapping = mapping.clone();
+                let mut flipped_reverse = reverse.clone();
+                if ac_term_alpha_equiv(
+                    left_left,
+                    right_right,
+                    &mut flipped_mapping,
+                    &mut flipped_reverse,
+                    commutative,
+                    associative,
+                    steps,
+                    limits,
+                ) && ac_term_alpha_equiv(
+                    left_right,
+                    right_left,
+                    &mut flipped_mapping,
+                    &mut flipped_reverse,
+                    commutative,
+                    associative,
+                    steps,
+                    limits,
+                ) {
+                    *mapping = flipped_mapping;
+                    *reverse = flipped_reverse;
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+        _ => false,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ac_term_alpha_equiv(
+    left: &Term,
+    right: &Term,
+    mapping: &mut HashMap<VarId, VarId>,
+    reverse: &mut HashMap<VarId, VarId>,
+    commutative: &HashSet<mrs_core::SymbolId>,
+    associative: &HashSet<mrs_core::SymbolId>,
+    steps: &mut usize,
+    limits: VerificationLimits,
+) -> bool {
+    if *steps >= limits.max_equivalence_steps {
+        return false;
+    }
+    match (left, right) {
+        (Term::Var(left), Term::Var(right)) => {
+            if let Some(mapped) = mapping.get(left) {
+                mapped == right
+            } else if reverse.contains_key(right) {
+                false
+            } else {
+                mapping.insert(*left, *right);
+                reverse.insert(*right, *left);
+                true
+            }
+        }
+        (Term::App(left_symbol, left_args), Term::App(right_symbol, right_args))
+            if left_symbol == right_symbol
+                && associative.contains(left_symbol)
+                && commutative.contains(left_symbol) =>
+        {
+            let left_leaves = flatten_ac_term(left, *left_symbol, associative);
+            let right_leaves = flatten_ac_term(right, *right_symbol, associative);
+            if left_leaves.len() != right_leaves.len() {
+                return false;
+            }
+            match_ac_terms(
+                &left_leaves,
+                &right_leaves,
+                0,
+                &mut vec![false; right_leaves.len()],
+                mapping,
+                reverse,
+                commutative,
+                associative,
+                steps,
+                limits,
+            )
+        }
+        (Term::App(left_symbol, left_args), Term::App(right_symbol, right_args))
+            if left_symbol == right_symbol && associative.contains(left_symbol) =>
+        {
+            let left_leaves = flatten_ac_term(left, *left_symbol, associative);
+            let right_leaves = flatten_ac_term(right, *right_symbol, associative);
+            left_leaves.len() == right_leaves.len()
+                && left_leaves.iter().zip(right_leaves).all(|(left, right)| {
+                    ac_term_alpha_equiv(
+                        left,
+                        right,
+                        mapping,
+                        reverse,
+                        commutative,
+                        associative,
+                        steps,
+                        limits,
+                    )
+                })
+        }
+        (Term::App(left_symbol, left_args), Term::App(right_symbol, right_args))
+            if left_symbol == right_symbol
+                && commutative.contains(left_symbol)
+                && left_args.len() == 2
+                && right_args.len() == 2 =>
+        {
+            let mut direct_mapping = mapping.clone();
+            let mut direct_reverse = reverse.clone();
+            if ac_term_alpha_equiv(
+                &left_args[0],
+                &right_args[0],
+                &mut direct_mapping,
+                &mut direct_reverse,
+                commutative,
+                associative,
+                steps,
+                limits,
+            ) && ac_term_alpha_equiv(
+                &left_args[1],
+                &right_args[1],
+                &mut direct_mapping,
+                &mut direct_reverse,
+                commutative,
+                associative,
+                steps,
+                limits,
+            ) {
+                *mapping = direct_mapping;
+                *reverse = direct_reverse;
+                true
+            } else {
+                let mut flipped_mapping = mapping.clone();
+                let mut flipped_reverse = reverse.clone();
+                if ac_term_alpha_equiv(
+                    &left_args[0],
+                    &right_args[1],
+                    &mut flipped_mapping,
+                    &mut flipped_reverse,
+                    commutative,
+                    associative,
+                    steps,
+                    limits,
+                ) && ac_term_alpha_equiv(
+                    &left_args[1],
+                    &right_args[0],
+                    &mut flipped_mapping,
+                    &mut flipped_reverse,
+                    commutative,
+                    associative,
+                    steps,
+                    limits,
+                ) {
+                    *mapping = flipped_mapping;
+                    *reverse = flipped_reverse;
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+        (Term::App(left_symbol, left_args), Term::App(right_symbol, right_args)) => {
+            left_symbol == right_symbol
+                && left_args.len() == right_args.len()
+                && left_args.iter().zip(right_args).all(|(left, right)| {
+                    ac_term_alpha_equiv(
+                        left,
+                        right,
+                        mapping,
+                        reverse,
+                        commutative,
+                        associative,
+                        steps,
+                        limits,
+                    )
+                })
+        }
+        _ => false,
+    }
+}
+
+fn flatten_ac_term<'a>(
+    term: &'a Term,
+    symbol: mrs_core::SymbolId,
+    associative: &HashSet<mrs_core::SymbolId>,
+) -> Vec<&'a Term> {
+    match term {
+        Term::App(current, args) if *current == symbol && associative.contains(current) => args
+            .iter()
+            .flat_map(|arg| flatten_ac_term(arg, symbol, associative))
+            .collect(),
+        _ => vec![term],
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn match_ac_terms(
+    left: &[&Term],
+    right: &[&Term],
+    index: usize,
+    used: &mut [bool],
+    mapping: &mut HashMap<VarId, VarId>,
+    reverse: &mut HashMap<VarId, VarId>,
+    commutative: &HashSet<mrs_core::SymbolId>,
+    associative: &HashSet<mrs_core::SymbolId>,
+    steps: &mut usize,
+    limits: VerificationLimits,
+) -> bool {
+    if index == left.len() {
+        return true;
+    }
+    for right_index in 0..right.len() {
+        if used[right_index] {
+            continue;
+        }
+        let mut next_mapping = mapping.clone();
+        let mut next_reverse = reverse.clone();
+        *steps += 1;
+        if ac_term_alpha_equiv(
+            left[index],
+            right[right_index],
+            &mut next_mapping,
+            &mut next_reverse,
+            commutative,
+            associative,
+            steps,
+            limits,
+        ) {
+            used[right_index] = true;
+            if match_ac_terms(
+                left,
+                right,
+                index + 1,
+                used,
+                &mut next_mapping,
+                &mut next_reverse,
+                commutative,
+                associative,
+                steps,
+                limits,
+            ) {
+                *mapping = next_mapping;
+                *reverse = next_reverse;
+                return true;
+            }
+            used[right_index] = false;
+        }
+    }
+    false
 }
 
 fn verify_goal_transformation(
@@ -5826,6 +6343,293 @@ fn verify_superposition(
         }
     }
     KernelVerdict::Rejected("superposition conclusion is not a valid rewrite".into())
+}
+
+fn verify_ac_superposition(
+    parents: &[Formula],
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if parents.len() < 3 {
+        return KernelVerdict::Rejected(
+            "ac_superposition requires two inference parents and AC axioms".into(),
+        );
+    }
+    let inference = verify_superposition(&parents[..2], conclusion, limits);
+    let source = match clause_from_formula(&parents[0], limits) {
+        Some(clause) => clause,
+        None => return KernelVerdict::Inconclusive("AC source is not a clause".into()),
+    };
+    let target = match clause_from_formula(&parents[1], limits) {
+        Some(clause) => clause,
+        None => return KernelVerdict::Inconclusive("AC target is not a clause".into()),
+    };
+    let goal = match clause_from_formula(conclusion, limits) {
+        Some(clause) => clause,
+        None => return KernelVerdict::Inconclusive("AC conclusion is not a clause".into()),
+    };
+    let mut commutative = HashSet::new();
+    let mut associative = HashSet::new();
+    for parent in &parents[2..] {
+        let Some(clause) = clause_from_formula(parent, limits) else {
+            return KernelVerdict::Inconclusive("AC axiom is not a clause".into());
+        };
+        if clause.len() != 1 || !clause[0].positive {
+            return KernelVerdict::Rejected("AC axiom is not a positive unit equality".into());
+        }
+        let Atom::Eq(left, right) = &clause[0].atom else {
+            return KernelVerdict::Rejected("AC axiom is not an equality".into());
+        };
+        let Some((symbol, kind)) = classify_ac_axiom(left, right) else {
+            return KernelVerdict::Rejected("AC axiom has unsupported shape".into());
+        };
+        match kind {
+            AcAxiomKind::Commutative => {
+                commutative.insert(symbol);
+            }
+            AcAxiomKind::Associative => {
+                associative.insert(symbol);
+            }
+        }
+    }
+
+    if ac_superposition_replay(&source, &target, &goal, &commutative, &associative, limits) {
+        KernelVerdict::Certified
+    } else {
+        inference
+    }
+}
+
+fn ac_superposition_replay(
+    equation_clause: &[Literal],
+    target_clause: &[Literal],
+    goal: &[Literal],
+    commutative: &HashSet<mrs_core::SymbolId>,
+    associative: &HashSet<mrs_core::SymbolId>,
+    limits: VerificationLimits,
+) -> bool {
+    let target_shift = max_var_clause(equation_clause).saturating_add(1);
+    let mut shifted_target = target_clause.to_vec();
+    shift_clause(&mut shifted_target, target_shift);
+    for (equation_index, equation_literal) in equation_clause.iter().enumerate() {
+        if !equation_literal.positive {
+            continue;
+        }
+        let Atom::Eq(left, right) = &equation_literal.atom else {
+            continue;
+        };
+        for (from, to) in [(left, right), (right, left)] {
+            if matches!(from, Term::Var(_)) {
+                continue;
+            }
+            for (target_index, target_literal) in shifted_target.iter().enumerate() {
+                for (side, position) in atom_term_positions(&target_literal.atom) {
+                    let base = match &target_literal.atom {
+                        Atom::Pred(_, args) => args.get(side),
+                        Atom::Eq(left, right) => Some(if side == 0 { left } else { right }),
+                    };
+                    let Some(base) = base else { continue };
+                    let Some(subterm) = term_at_position(base, &position) else {
+                        continue;
+                    };
+                    let mut substitution = HashMap::new();
+                    if !ac_unify_terms(
+                        from,
+                        subterm,
+                        &mut substitution,
+                        commutative,
+                        associative,
+                        limits,
+                    ) {
+                        continue;
+                    }
+                    let replacement = apply_substitution_term(to, &substitution);
+                    let replaced_base = replace_term_at(base, &position, replacement);
+                    let replaced_atom =
+                        replace_atom_side(&target_literal.atom, side, replaced_base);
+                    let mut expected = Vec::new();
+                    for (index, literal) in equation_clause.iter().enumerate() {
+                        if index != equation_index {
+                            expected.push(apply_substitution_literal(literal, &substitution));
+                        }
+                    }
+                    for (index, literal) in shifted_target.iter().enumerate() {
+                        if index != target_index {
+                            expected.push(apply_substitution_literal(literal, &substitution));
+                        } else {
+                            expected.push(Literal {
+                                positive: literal.positive,
+                                atom: apply_substitution_atom(&replaced_atom, &substitution),
+                            });
+                        }
+                    }
+                    if clause_alpha_equiv(&expected, goal)
+                        || ac_clause_alpha_equiv(&expected, goal, commutative, associative, limits)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+fn ac_unify_terms(
+    left: &Term,
+    right: &Term,
+    substitution: &mut HashMap<VarId, Term>,
+    commutative: &HashSet<mrs_core::SymbolId>,
+    associative: &HashSet<mrs_core::SymbolId>,
+    limits: VerificationLimits,
+) -> bool {
+    let left = apply_substitution_term(left, substitution);
+    let right = apply_substitution_term(right, substitution);
+    if left == right {
+        return true;
+    }
+    match (&left, &right) {
+        (Term::Var(var), term) | (term, Term::Var(var)) => {
+            if occurs(*var, term, substitution) {
+                false
+            } else {
+                substitution.insert(*var, term.clone());
+                true
+            }
+        }
+        (Term::App(left_symbol, left_args), Term::App(right_symbol, right_args))
+            if left_symbol == right_symbol
+                && associative.contains(left_symbol)
+                && commutative.contains(left_symbol) =>
+        {
+            let left_leaves = flatten_ac_term(&left, *left_symbol, associative);
+            let right_leaves = flatten_ac_term(&right, *right_symbol, associative);
+            if left_leaves.len() != right_leaves.len() {
+                return false;
+            }
+            let mut used = vec![false; right_leaves.len()];
+            ac_unify_multiset(
+                &left_leaves,
+                &right_leaves,
+                0,
+                &mut used,
+                substitution,
+                commutative,
+                associative,
+                limits,
+            )
+        }
+        (Term::App(left_symbol, left_args), Term::App(right_symbol, right_args))
+            if left_symbol == right_symbol && associative.contains(left_symbol) =>
+        {
+            left_args.len() == right_args.len()
+                && left_args.iter().zip(right_args).all(|(left, right)| {
+                    ac_unify_terms(left, right, substitution, commutative, associative, limits)
+                })
+        }
+        (Term::App(left_symbol, left_args), Term::App(right_symbol, right_args))
+            if left_symbol == right_symbol
+                && commutative.contains(left_symbol)
+                && left_args.len() == 2
+                && right_args.len() == 2 =>
+        {
+            let mut direct = substitution.clone();
+            if ac_unify_terms(
+                &left_args[0],
+                &right_args[0],
+                &mut direct,
+                commutative,
+                associative,
+                limits,
+            ) && ac_unify_terms(
+                &left_args[1],
+                &right_args[1],
+                &mut direct,
+                commutative,
+                associative,
+                limits,
+            ) {
+                *substitution = direct;
+                true
+            } else {
+                let mut swapped = substitution.clone();
+                if ac_unify_terms(
+                    &left_args[0],
+                    &right_args[1],
+                    &mut swapped,
+                    commutative,
+                    associative,
+                    limits,
+                ) && ac_unify_terms(
+                    &left_args[1],
+                    &right_args[0],
+                    &mut swapped,
+                    commutative,
+                    associative,
+                    limits,
+                ) {
+                    *substitution = swapped;
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+        (Term::App(left_symbol, left_args), Term::App(right_symbol, right_args)) => {
+            left_symbol == right_symbol
+                && left_args.len() == right_args.len()
+                && left_args.iter().zip(right_args).all(|(left, right)| {
+                    ac_unify_terms(left, right, substitution, commutative, associative, limits)
+                })
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ac_unify_multiset(
+    left: &[&Term],
+    right: &[&Term],
+    index: usize,
+    used: &mut [bool],
+    substitution: &mut HashMap<VarId, Term>,
+    commutative: &HashSet<mrs_core::SymbolId>,
+    associative: &HashSet<mrs_core::SymbolId>,
+    limits: VerificationLimits,
+) -> bool {
+    if index == left.len() {
+        return true;
+    }
+    for right_index in 0..right.len() {
+        if used[right_index] {
+            continue;
+        }
+        let mut next = substitution.clone();
+        if ac_unify_terms(
+            left[index],
+            right[right_index],
+            &mut next,
+            commutative,
+            associative,
+            limits,
+        ) {
+            used[right_index] = true;
+            if ac_unify_multiset(
+                left,
+                right,
+                index + 1,
+                used,
+                &mut next,
+                commutative,
+                associative,
+                limits,
+            ) {
+                *substitution = next;
+                return true;
+            }
+            used[right_index] = false;
+        }
+    }
+    false
 }
 
 fn verify_paramodulation(
@@ -8097,6 +8901,152 @@ mod tests {
         let problem = parse_tptp(problem).expect("problem parses");
         let proof = parse_tptp(proof).expect("proof parses");
         verify_strict(&problem, &proof, VerificationLimits::default())
+    }
+
+    #[test]
+    fn classifies_commutativity_axiom() {
+        let mut symbols = SymbolTable::new();
+        let f = symbols.intern("f");
+        let left = Term::app(f, vec![Term::var(0), Term::var(1)]);
+        let right = Term::app(f, vec![Term::var(1), Term::var(0)]);
+        let (Term::App(left_symbol, left_args), Term::App(right_symbol, right_args)) =
+            (&left, &right)
+        else {
+            panic!("not apps")
+        };
+        assert_eq!(left_symbol, right_symbol);
+        assert_eq!(left_args.len(), 2);
+        assert_eq!(right_args.len(), 2);
+        let (Term::Var(x), Term::Var(y)) = (&left_args[0], &left_args[1]) else {
+            panic!("left vars")
+        };
+        let (Term::Var(y2), Term::Var(x2)) = (&right_args[0], &right_args[1]) else {
+            panic!("right vars")
+        };
+        assert_ne!(x, y);
+        assert_eq!(x, x2);
+        assert_eq!(y, y2);
+        assert!(matches!(
+            classify_ac_axiom(&left, &right),
+            Some((symbol, AcAxiomKind::Commutative)) if symbol == f
+        ));
+
+        let assoc_left = Term::app(
+            f,
+            vec![Term::app(f, vec![Term::var(0), Term::var(1)]), Term::var(2)],
+        );
+        let assoc_right = Term::app(
+            f,
+            vec![Term::var(0), Term::app(f, vec![Term::var(1), Term::var(2)])],
+        );
+        assert!(matches!(
+            classify_ac_axiom(&assoc_left, &assoc_right),
+            Some((symbol, AcAxiomKind::Associative)) if symbol == f
+        ));
+    }
+
+    #[test]
+    fn certifies_ac_superposition_replay() {
+        let mut symbols = SymbolTable::new();
+        let positive = symbols.intern("positive_part");
+        let lub = symbols.intern("least_upper_bound");
+        let glb = symbols.intern("greatest_lower_bound");
+        let identity = symbols.intern("identity");
+        let app = |symbol, args| Term::app(symbol, args);
+        let constant = |symbol| Term::constant(symbol);
+        let atom = |left, right| Formula::atom(Atom::eq(left, right));
+        let x = Term::var(0);
+        let y = Term::var(1);
+        let z = Term::var(2);
+
+        let source = atom(
+            app(positive, vec![x.clone()]),
+            app(lub, vec![x.clone(), constant(identity)]),
+        );
+        let target = atom(
+            y.clone(),
+            app(glb, vec![y.clone(), app(lub, vec![z.clone(), y.clone()])]),
+        );
+        let conclusion = atom(
+            constant(identity),
+            app(
+                glb,
+                vec![constant(identity), app(positive, vec![z.clone()])],
+            ),
+        );
+        let lub_assoc = atom(
+            app(lub, vec![app(lub, vec![x.clone(), y.clone()]), z.clone()]),
+            app(lub, vec![x.clone(), app(lub, vec![y.clone(), z.clone()])]),
+        );
+        let lub_comm = atom(
+            app(lub, vec![x.clone(), y.clone()]),
+            app(lub, vec![y.clone(), x.clone()]),
+        );
+        let glb_comm = atom(
+            app(glb, vec![x.clone(), y.clone()]),
+            app(glb, vec![y.clone(), x.clone()]),
+        );
+        let glb_assoc = atom(
+            app(glb, vec![app(glb, vec![x.clone(), y.clone()]), z.clone()]),
+            app(glb, vec![x.clone(), app(glb, vec![y.clone(), z.clone()])]),
+        );
+
+        assert_eq!(
+            verify_ac_superposition(
+                &[source, target, lub_assoc, lub_comm, glb_comm, glb_assoc],
+                &conclusion,
+                VerificationLimits::default(),
+            ),
+            KernelVerdict::Certified
+        );
+    }
+
+    #[test]
+    fn certifies_grp167_ac_superposition_shape() {
+        fn lower(input: &str, symbols: &mut SymbolTable) -> Formula {
+            let problem = parse_tptp(input).expect("formula parses");
+            lower_annotated(symbols, &problem.formulas[0], VerificationLimits::default())
+                .expect("formula lowers")
+        }
+
+        let mut symbols = SymbolTable::new();
+        let source = lower(
+            "cnf(source, plain, positive_part(X) = least_upper_bound(X, identity)).",
+            &mut symbols,
+        );
+        let target = lower(
+            "cnf(target, plain, X = greatest_lower_bound(X, least_upper_bound(Y, X))).",
+            &mut symbols,
+        );
+        let conclusion = lower(
+            "cnf(conclusion, plain, identity = greatest_lower_bound(identity, positive_part(X))).",
+            &mut symbols,
+        );
+        let lub_assoc = lower(
+            "cnf(lub_assoc, axiom, least_upper_bound(least_upper_bound(X,Y),Z) = least_upper_bound(X,least_upper_bound(Y,Z))).",
+            &mut symbols,
+        );
+        let lub_comm = lower(
+            "cnf(lub_comm, axiom, least_upper_bound(X,Y) = least_upper_bound(Y,X)).",
+            &mut symbols,
+        );
+        let glb_comm = lower(
+            "cnf(glb_comm, axiom, greatest_lower_bound(X,Y) = greatest_lower_bound(Y,X)).",
+            &mut symbols,
+        );
+        let glb_assoc = lower(
+            "cnf(glb_assoc, axiom, greatest_lower_bound(greatest_lower_bound(X,Y),Z) = greatest_lower_bound(X,greatest_lower_bound(Y,Z))).",
+            &mut symbols,
+        );
+
+        assert_eq!(
+            verify_ac_superposition(
+                &[source, target, lub_assoc, lub_comm, glb_comm, glb_assoc],
+                &conclusion,
+                VerificationLimits::default(),
+            ),
+            KernelVerdict::Certified
+        );
     }
 
     fn flat_definition_problem() -> &'static str {

@@ -48,6 +48,8 @@ pub struct SearchState {
     pub comm_symbols: HashSet<SymbolId>,
     /// Binary function symbols detected as associative.
     pub assoc_symbols: HashSet<SymbolId>,
+    /// Problem-clause IDs that justify the detected AC symbols.
+    pub ac_axiom_ids: Vec<ClauseId>,
     /// Wall-clock deadline for the current search.
     pub search_deadline: Option<Instant>,
     /// Symbol table for mapping SymbolId to strings (used by ML features and TSTP output).
@@ -212,6 +214,7 @@ impl SearchState {
             dormant_unprocessed: HashMap::default(),
             comm_symbols: HashSet::default(),
             assoc_symbols: HashSet::default(),
+            ac_axiom_ids: Vec::new(),
             search_deadline: None,
             symbols,
             term_bank,
@@ -334,7 +337,13 @@ impl SearchState {
 
     /// Registers a new clause in the store and tracks its dependencies.
     pub fn register_clause(&mut self, clause: &IdClause) {
-        self.clause_store.insert(clause.id, clause.clone());
+        // Search may carry an AC-normalized copy of a clause, but the proof
+        // store must retain the first form registered for its ID. This keeps
+        // both input provenance and derived inference formulas aligned with
+        // the actual pre-normalization result that was generated.
+        self.clause_store
+            .entry(clause.id)
+            .or_insert_with(|| clause.clone());
         if let mrs_core::clause::ClauseSource::Inference { rule, parents } = &clause.source {
             let is_destructive = *rule == "demodulation" || *rule == "subsumption_resolution";
             for (i, &parent) in parents.iter().enumerate() {
@@ -392,23 +401,45 @@ impl SearchState {
         norm_clause
     }
 
+    /// Create a proof-visible AC normalization step when the operational
+    /// representation differs from the clause already in the store.
+    pub fn ac_normalize_for_search(
+        &mut self,
+        clause: IdClause,
+        ac_syms: &HashSet<SymbolId>,
+    ) -> IdClause {
+        if ac_syms.is_empty() {
+            return clause;
+        }
+        let mut normalized = self.ac_normalize_clause(clause.clone(), ac_syms);
+        if normalized.literals == clause.literals {
+            return clause;
+        }
+        self.register_clause(&clause);
+        let normalized_id = self.id_gen.next();
+        normalized.id = normalized_id;
+        let mut parents = vec![clause.id];
+        parents.extend(self.ac_axiom_ids.iter().copied());
+        normalized.source = mrs_core::clause::ClauseSource::Inference {
+            rule: "ac_normalization",
+            parents: parents.into(),
+        };
+        self.register_clause(&normalized);
+        normalized
+    }
+
     /// Recursively AC-normalizes all active clauses and updates their weights in queues.
     pub fn ac_normalize_all(&mut self, ac_syms: &HashSet<SymbolId>) {
         if ac_syms.is_empty() {
             return;
         }
 
-        // 1. Normalize all clauses in clause_store
-        let ids: Vec<ClauseId> = self.clause_store.keys().copied().collect();
-        for id in ids {
-            let clause = self.clause_store.remove(&id).unwrap();
-            let norm_clause = self.ac_normalize_clause(clause, ac_syms);
-            self.clause_store.insert(id, norm_clause);
-        }
-
-        // 2. Re-populate unprocessed queue with normalized clauses and updated weights
+        // Re-populate the passive queue with the original clauses. Search
+        // normalizes each selected copy, while the store remains the exact
+        // proof/provenance representation.
+        let unprocessed_ids: Vec<_> = self.unprocessed.iter().collect();
         let mut unprocessed_clauses = Vec::new();
-        for id in self.unprocessed.iter() {
+        for id in unprocessed_ids {
             if let Some(clause) = self.clause_store.get(&id) {
                 unprocessed_clauses.push(clause.clone());
             }
@@ -452,6 +483,44 @@ mod tests {
 
         assert_eq!(state.symbols.len(), 0);
         assert!(state.symbols.resolve_name("spl0_1").is_none());
+    }
+
+    #[test]
+    fn ac_normalization_preserves_input_clause_shape() {
+        use mrs_core::clause::{Clause, ClauseSource};
+        use mrs_core::{Atom, Literal, Term};
+
+        let mut symbols = SymbolTable::new();
+        let f = symbols.intern("f");
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let input = Clause::new(
+            ClauseId(0),
+            vec![Literal::pos(Atom::eq(
+                Term::app(f, vec![Term::constant(b), Term::constant(a)]),
+                Term::constant(a),
+            ))],
+            ClauseSource::Input {
+                name: "commutative_axiom".into(),
+                role: "axiom".into(),
+            },
+        );
+        let mut state = SearchState::new(
+            vec![input],
+            ClauseIdGen::new(),
+            Arc::new(SymbolConfig::default()),
+            Arc::new(symbols),
+            false,
+        );
+        let mut ac = HashSet::default();
+        ac.insert(f);
+
+        let original = state.clause_store.get(&ClauseId(0)).unwrap().clone();
+        state.ac_normalize_all(&ac);
+        let normalized = state.clause_store.get(&ClauseId(0)).unwrap();
+
+        assert_eq!(normalized.literals, original.literals);
+        assert!(matches!(normalized.source, ClauseSource::Input { .. }));
     }
 
     #[cfg(feature = "ml-guidance")]

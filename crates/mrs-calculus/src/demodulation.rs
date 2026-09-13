@@ -306,7 +306,7 @@ fn rewrite_term_id(
     demod_index: &mrs_index::stree::STreeId<(TermId, TermId, ClauseId)>,
     clause_store: &HashMap<ClauseId, IdClause>,
     used_unit_ids: &mut Vec<ClauseId>,
-    ac_syms: &HashSet<SymbolId>,
+    _ac_syms: &HashSet<SymbolId>,
 ) -> (TermId, bool) {
     let rules = demod_index.get_generalizations(term, bank);
     for (from, to, unit_id) in rules {
@@ -321,8 +321,7 @@ fn rewrite_term_id(
                     used_unit_ids.push(unit_id);
                 }
                 let rewritten = apply_matching_subst_id(&sigma, to, bank);
-                let normalized = bank.ac_normalize(rewritten, ac_syms);
-                return (normalized, true);
+                return (rewritten, true);
             }
         }
     }
@@ -338,7 +337,7 @@ fn rewrite_term_id(
                 demod_index,
                 clause_store,
                 used_unit_ids,
-                ac_syms,
+                _ac_syms,
             );
             if ch {
                 changed = true;
@@ -347,8 +346,7 @@ fn rewrite_term_id(
         }
         if changed {
             let app_term = bank.intern_app(sym, new_args);
-            let normalized = bank.ac_normalize(app_term, ac_syms);
-            return (normalized, true);
+            return (app_term, true);
         }
     }
 

@@ -632,16 +632,19 @@ fn avatar_certificate_manifest(
 /// Commutativity: `f(X,Y) = f(Y,X)`
 /// Associativity: `f(f(X,Y),Z) = f(X,f(Y,Z))` or `f(X,f(Y,Z)) = f(f(X,Y),Z)`
 /// Returns the set of commutative symbols, associative symbols, and the IDs of the axioms to remove.
+#[allow(clippy::type_complexity)]
 fn detect_ac_symbols(
     state: &crate::state::SearchState,
 ) -> (
     HashSet<SymbolId>,
     HashSet<SymbolId>,
     Vec<mrs_core::clause::ClauseId>,
+    Vec<(mrs_core::clause::ClauseId, SymbolId)>,
 ) {
     let mut comm = HashSet::default();
     let mut assoc = HashSet::default();
     let mut to_remove = Vec::new();
+    let mut ac_axioms = Vec::new();
     for clause in state.clause_store.values() {
         if clause.len() == 1
             && clause.literals[0].positive
@@ -663,6 +666,7 @@ fn detect_ac_symbols(
                 && y1 == x2
             {
                 comm.insert(*f1);
+                ac_axioms.push((clause.id, *f1));
                 to_remove.push(clause.id);
                 continue;
             }
@@ -712,6 +716,7 @@ fn detect_ac_symbols(
                     && z1 == z2
                 {
                     assoc.insert(*f1);
+                    ac_axioms.push((clause.id, *f1));
                     // to_remove.push(clause.id); // DO NOT remove associativity axioms
                     continue;
                 }
@@ -761,13 +766,25 @@ fn detect_ac_symbols(
                     && z1 == z2
                 {
                     assoc.insert(*f1);
+                    ac_axioms.push((clause.id, *f1));
                     // to_remove.push(clause.id); // DO NOT remove associativity axioms
                     continue;
                 }
             }
         }
     }
-    (comm, assoc, to_remove)
+    (comm, assoc, to_remove, ac_axioms)
+}
+
+fn mark_ac_superposition(clause: &mut IdClause, ac_axiom_ids: &[ClauseId]) {
+    let ClauseSource::Inference { rule, parents } = &mut clause.source else {
+        return;
+    };
+    if *rule != "superposition" || ac_axiom_ids.is_empty() {
+        return;
+    }
+    *rule = "ac_superposition";
+    parents.extend(ac_axiom_ids.iter().copied());
 }
 
 /// Hard ceiling on the cross-strategy shared unit-equality pool
@@ -966,11 +983,18 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
     // default (incomplete — caused false Satisfiable on EPR). Opt in via env.
     let ordered_inferences = config.ordered_inferences || std::env::var("MRS_ORDERED").is_ok();
 
-    let (comm_syms, assoc_syms, to_remove) = detect_ac_symbols(state);
+    let (comm_syms, assoc_syms, to_remove, ac_axiom_symbols) = detect_ac_symbols(state);
     state.comm_symbols = comm_syms.clone();
     state.assoc_symbols = assoc_syms.clone();
 
     let ac_syms: HashSet<SymbolId> = comm_syms.intersection(&assoc_syms).copied().collect();
+    state.ac_axiom_ids = ac_axiom_symbols
+        .into_iter()
+        .filter(|(_, symbol)| ac_syms.contains(symbol))
+        .map(|(id, _)| id)
+        .collect();
+    state.ac_axiom_ids.sort_unstable();
+    state.ac_axiom_ids.dedup();
     if !ac_syms.is_empty() {
         state.ac_normalize_all(&ac_syms);
         if matches!(
@@ -1202,6 +1226,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
         };
 
         let given = state.clause_store.get(&given_id).unwrap().clone();
+        let mut given = state.ac_normalize_for_search(given, &ac_syms);
 
         if !state.is_active(&given) {
             state.dormant_unprocessed.insert(given.id, given);
@@ -1223,8 +1248,6 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
             iteration += 1;
             continue;
         }
-
-        let mut given = given;
 
         // Forward Subsumption Resolution
         let mut given_fv = FeatureVector::from_id_clause(&given, &state.term_bank);
@@ -1514,7 +1537,10 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         &state.comm_symbols,
                         &state.assoc_symbols,
                     );
-                    new_clauses.extend(sp);
+                    new_clauses.extend(sp.into_iter().map(|mut clause| {
+                        mark_ac_superposition(&mut clause, &state.ac_axiom_ids);
+                        clause
+                    }));
                     if start.elapsed() >= config.time_limit {
                         return SearchResult::Timeout;
                     }
@@ -1543,7 +1569,10 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         &state.comm_symbols,
                         &state.assoc_symbols,
                     );
-                    new_clauses.extend(sp);
+                    new_clauses.extend(sp.into_iter().map(|mut clause| {
+                        mark_ac_superposition(&mut clause, &state.ac_axiom_ids);
+                        clause
+                    }));
                 }
             }
 
@@ -1604,7 +1633,10 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         &state.comm_symbols,
                         &state.assoc_symbols,
                     );
-                    new_clauses.extend(sp);
+                    new_clauses.extend(sp.into_iter().map(|mut clause| {
+                        mark_ac_superposition(&mut clause, &state.ac_axiom_ids);
+                        clause
+                    }));
                     if start.elapsed() >= config.time_limit {
                         return SearchResult::Timeout;
                     }
@@ -2189,8 +2221,10 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     continue;
                 }
 
-                // AC Normalization
-                let clause = state.ac_normalize_clause(clause, &ac_syms);
+                // Preserve the pre-normalized inference in the proof store;
+                // AC normalization is an operational search representation.
+                state.register_clause(&clause);
+                let clause = state.ac_normalize_for_search(clause, &ac_syms);
 
                 // Destructive Equality Resolution (DER)
                 let clause = if let Some((simplified, steps)) =
