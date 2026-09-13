@@ -128,17 +128,21 @@ fn remap_shared_clause_symbols(clause: &mut LegacyClause, mapping: &[SymbolId]) 
 }
 
 /// Give imported definition symbols a fresh receiver-local name when the
-/// publisher used a name already present in the receiver's symbol table.
+/// publisher used a name already present in the receiver's symbol table and
+/// the definition is incompatible with the receiver's existing definition.
 ///
 /// Goal transformation currently emits names such as `goal_d0` independently
 /// in each strategy. The ordinary symbol remapping below intentionally interns
 /// names by text, so importing such a chain would otherwise merge unrelated
-/// definitions. Updating the source-index mapping before remapping the chain
-/// keeps every occurrence, including `ClauseSource::Introduced`, consistent.
+/// definitions. Compatible definitions retain the existing symbol to preserve
+/// the search behavior; conflicting definitions get a fresh name. Updating the
+/// source-index mapping before remapping the chain keeps every occurrence,
+/// including `ClauseSource::Introduced`, consistent.
 fn isolate_shared_introduced_symbols(
     chain: &[LegacyClause],
     symbol_names: &[String],
     existing_names: &HashSet<String>,
+    existing_definitions: &[(SymbolId, LegacyClause)],
     symbols: &mut mrs_core::SymbolTable,
     mapping: &mut [SymbolId],
 ) {
@@ -149,9 +153,26 @@ fn isolate_shared_introduced_symbols(
             _ => None,
         })
         .filter(|&index| {
-            symbol_names
-                .get(index)
-                .is_some_and(|name| existing_names.contains(name))
+            symbol_names.get(index).is_some_and(|name| {
+                existing_names.contains(name)
+                    && !chain
+                        .iter()
+                        .filter(|clause| {
+                            matches!(
+                                clause.source,
+                                ClauseSource::Introduced { symbol }
+                                    if symbol.index() as usize == index
+                            )
+                        })
+                        .all(|clause| {
+                            definition_matches_existing(
+                                clause,
+                                mapping.get(index).copied(),
+                                existing_definitions,
+                                mapping,
+                            )
+                        })
+            })
         })
         .collect();
     colliding_indices.sort_unstable();
@@ -172,6 +193,39 @@ fn isolate_shared_introduced_symbols(
         if let Some(mapped) = mapping.get_mut(index) {
             *mapped = symbols.intern(&fresh_name);
         }
+    }
+}
+
+fn definition_matches_existing(
+    clause: &LegacyClause,
+    mapped_symbol: Option<SymbolId>,
+    existing_definitions: &[(SymbolId, LegacyClause)],
+    mapping: &[SymbolId],
+) -> bool {
+    let Some(mapped_symbol) = mapped_symbol else {
+        return false;
+    };
+    let mut candidate = clause.clone();
+    if !remap_shared_clause_symbols(&mut candidate, mapping) {
+        return false;
+    }
+    existing_definitions.iter().any(|(symbol, existing)| {
+        *symbol == mapped_symbol && definitions_equivalent(&candidate, existing)
+    })
+}
+
+fn definitions_equivalent(left: &LegacyClause, right: &LegacyClause) -> bool {
+    if left.literals.len() != 1 || right.literals.len() != 1 {
+        return false;
+    }
+    if !left.literals[0].positive || !right.literals[0].positive {
+        return false;
+    }
+    match (&left.literals[0].atom, &right.literals[0].atom) {
+        (Atom::Eq(left_l, left_r), Atom::Eq(right_l, right_r)) => {
+            (left_l == right_l && left_r == right_r) || (left_l == right_r && left_r == right_l)
+        }
+        _ => false,
     }
 }
 
@@ -989,6 +1043,16 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
             }
             for entry in to_add {
                 let existing_names = state.symbols.iter_names().map(str::to_owned).collect();
+                let existing_definitions = state
+                    .clause_store
+                    .values()
+                    .filter_map(|clause| match clause.source {
+                        ClauseSource::Introduced { symbol } => {
+                            Some((symbol, state.term_bank.clause_to_legacy(clause)))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
                 let mut symbol_map = {
                     let symbols = std::sync::Arc::make_mut(&mut state.symbols);
                     entry
@@ -1002,6 +1066,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     &chain,
                     &entry.symbol_names,
                     &existing_names,
+                    &existing_definitions,
                     std::sync::Arc::make_mut(&mut state.symbols),
                     &mut symbol_map,
                 );
@@ -2442,7 +2507,7 @@ mod tests {
     }
 
     #[test]
-    fn imported_definition_symbol_isolated_from_receiver_namespace() {
+    fn compatible_imported_definition_reuses_receiver_symbol() {
         let mut publisher_symbols = SymbolTable::new();
         let publisher_goal = publisher_symbols.intern("goal_d0");
         let publisher_base = publisher_symbols.intern("base");
@@ -2469,16 +2534,96 @@ mod tests {
             .iter()
             .map(|name| receiver_symbols.intern(name))
             .collect::<Vec<_>>();
+        let existing_names = receiver_symbols.iter_names().map(str::to_owned).collect();
+        let existing_definition = Clause::new(
+            ClauseIdGen::new().next(),
+            vec![Literal::pos(Atom::Eq(
+                Term::constant(receiver_base),
+                Term::constant(receiver_goal),
+            ))],
+            ClauseSource::Introduced {
+                symbol: receiver_goal,
+            },
+        );
+        let existing_definitions = vec![(receiver_goal, existing_definition)];
 
         isolate_shared_introduced_symbols(
             &chain,
             &symbol_names,
-            &receiver_symbols.iter_names().map(str::to_owned).collect(),
+            &existing_names,
+            &existing_definitions,
             &mut receiver_symbols,
             &mut mapping,
         );
         assert_eq!(mapping[publisher_base.index() as usize], receiver_base);
+        assert_eq!(mapping[publisher_goal.index() as usize], receiver_goal);
+
+        assert!(
+            chain
+                .iter_mut()
+                .all(|clause| remap_shared_clause_symbols(clause, &mapping))
+        );
+        let ClauseSource::Introduced { symbol } = chain[0].source else {
+            panic!("expected introduced source");
+        };
+        assert_eq!(symbol, mapping[publisher_goal.index() as usize]);
+        assert_eq!(receiver_symbols.resolve(symbol), "goal_d0");
+    }
+
+    #[test]
+    fn conflicting_imported_definition_gets_isolated_symbol() {
+        let mut publisher_symbols = SymbolTable::new();
+        let publisher_goal = publisher_symbols.intern("goal_d0");
+        let publisher_base = publisher_symbols.intern("publisher_base");
+        let mut receiver_symbols = SymbolTable::new();
+        let receiver_goal = receiver_symbols.intern("goal_d0");
+        let receiver_base = receiver_symbols.intern("receiver_base");
+
+        let introduced = Clause::new(
+            ClauseIdGen::new().next(),
+            vec![Literal::pos(Atom::Eq(
+                Term::constant(publisher_base),
+                Term::constant(publisher_goal),
+            ))],
+            ClauseSource::Introduced {
+                symbol: publisher_goal,
+            },
+        );
+        let mut chain = vec![introduced];
+        let symbol_names = publisher_symbols
+            .iter_names()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let mut mapping = symbol_names
+            .iter()
+            .map(|name| receiver_symbols.intern(name))
+            .collect::<Vec<_>>();
+        let existing_names = receiver_symbols.iter_names().map(str::to_owned).collect();
+        let existing_definition = Clause::new(
+            ClauseIdGen::new().next(),
+            vec![Literal::pos(Atom::Eq(
+                Term::constant(receiver_base),
+                Term::constant(receiver_goal),
+            ))],
+            ClauseSource::Introduced {
+                symbol: receiver_goal,
+            },
+        );
+        let existing_definitions = vec![(receiver_goal, existing_definition)];
+
+        isolate_shared_introduced_symbols(
+            &chain,
+            &symbol_names,
+            &existing_names,
+            &existing_definitions,
+            &mut receiver_symbols,
+            &mut mapping,
+        );
         assert_ne!(mapping[publisher_goal.index() as usize], receiver_goal);
+        assert_eq!(
+            mapping[publisher_base.index() as usize],
+            receiver_symbols.resolve_name("publisher_base").unwrap()
+        );
 
         assert!(
             chain
