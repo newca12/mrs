@@ -9154,6 +9154,78 @@ mod tests {
         );
     }
 
+    #[test]
+    fn certifies_ac_normalization_with_nested_addition_reassociation() {
+        fn lower(input: &str, symbols: &mut SymbolTable) -> Formula {
+            let problem = parse_tptp(input).expect("formula parses");
+            lower_annotated(symbols, &problem.formulas[0], VerificationLimits::default())
+                .expect("formula lowers")
+        }
+
+        let mut symbols = SymbolTable::new();
+        let source = lower(
+            "cnf(source, axiom, addition(multiplication(addition(X9,multiplication(X9,X1)),X8),multiplication(X9,X11)) = multiplication(X9,addition(addition(X8,multiplication(X1,X8)),X11))).",
+            &mut symbols,
+        );
+        let conclusion = lower(
+            "cnf(conclusion, plain, addition(multiplication(X9,X11),multiplication(addition(X9,multiplication(X9,X1)),X8)) = multiplication(X9,addition(X8,addition(multiplication(X1,X8),X11)))).",
+            &mut symbols,
+        );
+        let add_assoc = lower(
+            "cnf(add_assoc, axiom, addition(addition(X,Y),Z) = addition(X,addition(Y,Z))).",
+            &mut symbols,
+        );
+        let add_comm = lower(
+            "cnf(add_comm, axiom, addition(X,Y) = addition(Y,X)).",
+            &mut symbols,
+        );
+
+        assert_eq!(
+            verify_ac_normalization(
+                &[source, add_assoc, add_comm],
+                &conclusion,
+                VerificationLimits::default(),
+            ),
+            KernelVerdict::Certified
+        );
+    }
+
+    #[test]
+    fn certifies_ac_normalization_with_nested_meet_reassociation() {
+        fn lower(input: &str, symbols: &mut SymbolTable) -> Formula {
+            let problem = parse_tptp(input).expect("formula parses");
+            lower_annotated(symbols, &problem.formulas[0], VerificationLimits::default())
+                .expect("formula lowers")
+        }
+
+        let mut symbols = SymbolTable::new();
+        let source = lower(
+            "cnf(source, axiom, meet(X9,meet(X1,X9)) = meet(X9,meet(meet(X1,X9),join(X9,meet(X1,X9))))).",
+            &mut symbols,
+        );
+        let conclusion = lower(
+            "cnf(conclusion, plain, meet(X1,meet(X9,X9)) = meet(X1,meet(X9,meet(X9,join(X9,meet(X1,X9)))))).",
+            &mut symbols,
+        );
+        let meet_assoc = lower(
+            "cnf(meet_assoc, axiom, meet(meet(X,Y),Z) = meet(X,meet(Y,Z))).",
+            &mut symbols,
+        );
+        let meet_comm = lower(
+            "cnf(meet_comm, axiom, meet(X,Y) = meet(Y,X)).",
+            &mut symbols,
+        );
+
+        assert_eq!(
+            verify_ac_normalization(
+                &[source, meet_assoc, meet_comm],
+                &conclusion,
+                VerificationLimits::default(),
+            ),
+            KernelVerdict::Certified
+        );
+    }
+
     fn flat_definition_problem() -> &'static str {
         "fof(src, axiom, q(a) | r(a)).\n\
          fof(nq, axiom, ~q(a)).\n\
