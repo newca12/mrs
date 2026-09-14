@@ -237,7 +237,11 @@ fn main() {
     rows.sort_by_key(AuditRow::key);
 
     write_audit_csv(&report_path, &rows).unwrap_or_else(|error| fail(&error));
-    print_summary(&rows, &args.checks, &report_path);
+    let summary_path = args.output.join("audit-summary.txt");
+    let summary = render_summary(&rows, &args.checks, &report_path, &summary_path);
+    fs::write(&summary_path, &summary)
+        .unwrap_or_else(|error| fail(&format!("write {}: {error}", summary_path.display())));
+    print!("{summary}");
 }
 
 fn parse_args(args: Vec<String>) -> Result<Args, String> {
@@ -910,45 +914,198 @@ fn write_audit_csv(path: &Path, rows: &[AuditRow]) -> Result<(), String> {
     fs::write(path, output).map_err(|error| format!("write {}: {error}", path.display()))
 }
 
-fn print_summary(rows: &[AuditRow], checks: &Checks, report: &Path) {
-    println!("audit_report={}", report.display());
-    println!("checks={}", checks.names());
-    for (name, statuses) in [
-        (
-            "strict",
-            rows.iter()
-                .map(|row| &row.strict.status)
-                .collect::<Vec<_>>(),
-        ),
-        (
-            "mrs",
-            rows.iter().map(|row| &row.mrs.status).collect::<Vec<_>>(),
-        ),
-        (
-            "ladder",
-            rows.iter()
-                .map(|row| &row.ladder.status)
-                .collect::<Vec<_>>(),
-        ),
-    ] {
-        if !checks.contains(match name {
-            "strict" => Check::Strict,
-            "mrs" => Check::Mrs,
-            _ => Check::Ladder,
-        }) {
+fn render_summary(
+    rows: &[AuditRow],
+    checks: &Checks,
+    report: &Path,
+    summary_path: &Path,
+) -> String {
+    let mut divisions = rows
+        .iter()
+        .map(|row| row.division.clone())
+        .collect::<Vec<_>>();
+    divisions.sort();
+    divisions.dedup();
+
+    let mut output = String::new();
+    output.push_str(&format!("audit_report={}\n", report.display()));
+    output.push_str(&format!("summary_report={}\n", summary_path.display()));
+    output.push_str(&format!("checks=[{}]\n", checks.names()));
+
+    for division in divisions {
+        let division_rows = rows
+            .iter()
+            .filter(|row| row.division == division)
+            .collect::<Vec<_>>();
+        output.push('\n');
+        output.push_str(&format!("{}\n", "=".repeat(80)));
+        output.push_str(&format!(
+            "Division: {division:<60} Rows: {}\n",
+            division_rows.len()
+        ));
+        output.push_str(&format!("{}\n\n", "=".repeat(80)));
+
+        output.push_str("Generation\n");
+        output.push_str(&format_generation_table(&division_rows));
+        output.push('\n');
+
+        output.push_str("Verification\n");
+        output.push_str(&format_verification_table(&division_rows, checks));
+    }
+    output
+}
+
+fn format_generation_table(rows: &[&AuditRow]) -> String {
+    const HEADERS: [&str; 2] = ["Status", "Count"];
+    let statuses = [
+        "Theorem",
+        "Unsatisfiable",
+        "Satisfiable",
+        "CounterSatisfiable",
+        "GaveUp",
+        "Timeout",
+        "Error",
+        "Other",
+    ];
+    let mut counts = HashMap::<&str, usize>::new();
+    for row in rows {
+        *counts.entry(row.generation_status.as_str()).or_default() += 1;
+    }
+    let mut output = String::new();
+    output.push_str(&ascii_table(
+        &HEADERS,
+        &statuses
+            .iter()
+            .map(|status| {
+                let count = counts.get(status).copied().unwrap_or(0);
+                vec![status.to_string(), count.to_string()]
+            })
+            .collect::<Vec<_>>(),
+    ));
+    output
+}
+
+fn format_verification_table(rows: &[&AuditRow], checks: &Checks) -> String {
+    const HEADERS: [&str; 10] = [
+        "Mode",
+        "Applicable",
+        "VerifiedGood",
+        "VerifiedBad",
+        "Unknown",
+        "Timeout",
+        "N/A: Model",
+        "N/A: Incomplete",
+        "Error",
+        "Other",
+    ];
+    let mut table_rows = Vec::new();
+    for check in [Check::Strict, Check::Mrs, Check::Ladder] {
+        if !checks.contains(check) {
             continue;
         }
         let mut counts = HashMap::<&str, usize>::new();
-        for status in statuses {
-            *counts.entry(status.as_str()).or_default() += 1;
+        let mut applicable = 0;
+        for row in rows {
+            let scope = generation_scope(&row.generation_status);
+            let value = check_result_for(row, check).status.as_str();
+            if scope == GenerationScope::Refutation {
+                applicable += 1;
+                *counts.entry(value).or_default() += 1;
+            } else if scope == GenerationScope::Model {
+                *counts.entry("N/A: Model").or_default() += 1;
+            } else if scope == GenerationScope::Incomplete {
+                *counts.entry("N/A: Incomplete").or_default() += 1;
+            } else {
+                *counts.entry("Error").or_default() += 1;
+            }
         }
-        let mut entries = counts.into_iter().collect::<Vec<_>>();
-        entries.sort_by_key(|(status, _)| *status);
-        println!("{name}");
-        for (status, count) in entries {
-            println!("  {status}={count}");
+        table_rows.push(vec![
+            check.as_str().to_string(),
+            applicable.to_string(),
+            count_string(&counts, "VerifiedGood"),
+            count_string(&counts, "VerifiedBad"),
+            count_string(&counts, "Unknown"),
+            count_string(&counts, "Timeout"),
+            count_string(&counts, "N/A: Model"),
+            count_string(&counts, "N/A: Incomplete"),
+            count_string(&counts, "Error"),
+            count_string(&counts, "Other"),
+        ]);
+    }
+    ascii_table(&HEADERS, &table_rows)
+}
+
+fn check_result_for(row: &AuditRow, check: Check) -> &CheckResult {
+    match check {
+        Check::Strict => &row.strict,
+        Check::Mrs => &row.mrs,
+        Check::Ladder => &row.ladder,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GenerationScope {
+    Refutation,
+    Model,
+    Incomplete,
+    Error,
+}
+
+fn generation_scope(status: &str) -> GenerationScope {
+    match status {
+        "Theorem" | "Unsatisfiable" => GenerationScope::Refutation,
+        "Satisfiable" | "CounterSatisfiable" => GenerationScope::Model,
+        "GaveUp" | "Timeout" | "ResourceOut" | "Unknown" => GenerationScope::Incomplete,
+        _ => GenerationScope::Error,
+    }
+}
+
+fn count_string(counts: &HashMap<&str, usize>, status: &str) -> String {
+    counts.get(status).copied().unwrap_or(0).to_string()
+}
+
+fn ascii_table(headers: &[&str], rows: &[Vec<String>]) -> String {
+    let mut widths = headers
+        .iter()
+        .map(|header| header.len())
+        .collect::<Vec<_>>();
+    for row in rows {
+        for (index, value) in row.iter().enumerate() {
+            widths[index] = widths[index].max(value.len());
         }
     }
+    let separator = format!(
+        "+{}+\n",
+        widths
+            .iter()
+            .map(|width| "-".repeat(width + 2))
+            .collect::<Vec<_>>()
+            .join("+")
+    );
+    let format_row = |values: &[String]| {
+        format!(
+            "|{}|\n",
+            values
+                .iter()
+                .enumerate()
+                .map(|(index, value)| format!(" {:>width$} ", value, width = widths[index]))
+                .collect::<Vec<_>>()
+                .join("|")
+        )
+    };
+    let mut output = separator.clone();
+    output.push_str(&format_row(
+        &headers
+            .iter()
+            .map(|header| (*header).to_string())
+            .collect::<Vec<_>>(),
+    ));
+    output.push_str(&separator);
+    for row in rows {
+        output.push_str(&format_row(row));
+    }
+    output.push_str(&separator);
+    output
 }
 
 fn row_key(edition: &str, division: &str, problem: &str, system: &str) -> String {
@@ -1101,5 +1258,42 @@ mod tests {
             parse_csv_line(&line),
             vec!["a", "detail, with \"quotes\"", "c"]
         );
+    }
+
+    #[test]
+    fn summary_separates_model_rows_from_refutation_checks() {
+        let row = |status: &str| AuditRow {
+            edition: "casc-30".to_string(),
+            division: "EPS".to_string(),
+            problem: "P.p".to_string(),
+            system: "mrs".to_string(),
+            timeout: 120,
+            raw_stdout_path: String::new(),
+            raw_stderr_path: String::new(),
+            raw_stdout_sha256: String::new(),
+            raw_stderr_sha256: String::new(),
+            proof_path: String::new(),
+            proof_sha256: String::new(),
+            generation_status: status.to_string(),
+            generation_detail: String::new(),
+            strict: CheckResult::not_run(),
+            mrs: CheckResult::not_run(),
+            ladder: CheckResult::not_run(),
+            checks: String::new(),
+            audit_time_s: 0.0,
+        };
+        let rows = vec![row("Satisfiable"), row("GaveUp"), row("Timeout")];
+        let summary = render_summary(
+            &rows,
+            &Checks::all(),
+            Path::new("audit.csv"),
+            Path::new("audit-summary.txt"),
+        );
+        assert!(summary.contains("Division: EPS"));
+        assert!(summary.contains("Satisfiable"));
+        assert!(summary.contains("strict"));
+        assert!(summary.contains("N/A: Model"));
+        assert!(summary.contains("N/A: Incomplete"));
+        assert_eq!(generation_scope("Satisfiable"), GenerationScope::Model);
     }
 }

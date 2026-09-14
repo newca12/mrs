@@ -105,7 +105,8 @@ nix develop -c cargo run --release -p mrs-bench --bin audit_casc_proofs -- \
 `--checks` accepts any non-empty comma-separated subset of `strict`, `mrs`,
 and `ladder`. The audit checks all selected policies against one normalized
 proof and writes `proof-audit/audit.csv`. It never calls MRS. The report is
-resumable and can be imported after the original CASC results:
+resumable, writes `proof-audit/audit-summary.txt` as a per-division ASCII
+console report, and can be imported after the original CASC results:
 
 ```bash
 nix develop -c cargo run --release -p mrs-codex -- \
