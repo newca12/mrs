@@ -31,7 +31,7 @@
 #   <output>/run.csv    — one row per (problem, system)
 #   <output>/run.log    — harness stderr
 #
-# CSV schema: edition,division,problem,system,szs_status,expected,verdict,wall_time_s,peak_memory_mb,failure_detail
+# CSV schema: edition,division,problem,system,timeout,szs_status,expected,verdict,wall_time_s,peak_memory_mb,failure_detail,raw_stdout_path,raw_stderr_path,raw_stdout_sha256,raw_stderr_sha256
 #   verdict ∈ {ok, ko, unknown}
 #     ok      — system status agrees with the reference answer
 #     ko      — system status disagrees with the reference answer
@@ -138,6 +138,13 @@ if [[ -z "${OUTPUT}" ]]; then
     OUTPUT="${SCRIPT_DIR}/results/${EDITION}/${TIMESTAMP}"
 fi
 mkdir -p "${OUTPUT}"
+RAW_ROOT="${OUTPUT}/raw"
+mkdir -p "${RAW_ROOT}"
+
+if ! command -v sha256sum >/dev/null 2>&1; then
+    echo "sha256sum is required to archive benchmark artifacts." >&2
+    exit 1
+fi
 
 # Redirect harness stderr to run.log (tee so it still shows on terminal)
 exec 2> >(tee -a "${OUTPUT}/run.log" >&2)
@@ -207,7 +214,7 @@ if [[ ! -f "${ANSWERS}" ]]; then
 fi
 
 CSV="${OUTPUT}/run.csv"
-echo "edition,division,problem,system,szs_status,expected,verdict,wall_time_s,peak_memory_mb,failure_detail" > "${CSV}"
+echo "edition,division,problem,system,timeout,szs_status,expected,verdict,wall_time_s,peak_memory_mb,failure_detail,raw_stdout_path,raw_stderr_path,raw_stdout_sha256,raw_stderr_sha256" > "${CSV}"
 
 JOBS_FILE="${OUTPUT}/.jobs"
 > "${JOBS_FILE}"
@@ -311,7 +318,7 @@ echo "[casc] Total jobs:  ${total_problems}" >&2
 # Arguments: div  problem  prob_path  sys  time_limit
 #
 # Emits one CSV row:
-#   edition,division,problem,system,szs_status,expected,verdict,wall_time_s,peak_memory_mb,failure_detail
+#   edition,division,problem,system,timeout,szs_status,expected,verdict,wall_time_s,peak_memory_mb,failure_detail,raw_stdout_path,raw_stderr_path,raw_stdout_sha256,raw_stderr_sha256
 #
 # `verdict` compares the system's SZS status against the reference
 # answer for `problem` (from systems/reference/answers.tsv):
@@ -329,6 +336,15 @@ run_one() {
     tmp_err="$(mktemp)"
     tmp_mem="$(mktemp)"
 
+    # Keep the raw prover streams outside temporary files. Relative paths are
+    # stable within a run directory and can be resolved by later audits.
+    local raw_rel_dir="raw/${sys}/${div}"
+    local raw_stdout_rel="${raw_rel_dir}/${problem}.stdout"
+    local raw_stderr_rel="${raw_rel_dir}/${problem}.stderr"
+    local raw_stdout="${OUTPUT}/${raw_stdout_rel}"
+    local raw_stderr="${OUTPUT}/${raw_stderr_rel}"
+    mkdir -p "${OUTPUT}/${raw_rel_dir}"
+
     local start_ms end_ms wall_s szs exit_code
     start_ms=$(date +%s%3N)
 
@@ -344,13 +360,18 @@ run_one() {
 
     # Give the system tlimit seconds; add 10s grace for it to flush output.
     if [[ -n "${time_bin}" ]]; then
+        set +e
         "${time_bin}" -o "${tmp_mem}" -f "%M" timeout $(( tlimit + 10 )) "${invoke}" "${prob_path}" "${tlimit}" \
             > "${tmp}" 2>"${tmp_err}"
+        exit_code=$?
+        set -e
     else
+        set +e
         timeout $(( tlimit + 10 )) "${invoke}" "${prob_path}" "${tlimit}" \
             > "${tmp}" 2>"${tmp_err}"
+        exit_code=$?
+        set -e
     fi
-    exit_code=$?
     end_ms=$(date +%s%3N)
 
     wall_s=$(echo "scale=3; (${end_ms} - ${start_ms}) / 1000" | bc)
@@ -425,6 +446,14 @@ run_one() {
         fi
     fi
 
+    # Archive both streams for every outcome, including timeout and error
+    # rows, before removing the temporary files.
+    cp -- "${tmp}" "${raw_stdout}"
+    cp -- "${tmp_err}" "${raw_stderr}"
+    local raw_stdout_sha256 raw_stderr_sha256
+    raw_stdout_sha256=$(sha256sum "${raw_stdout}" | cut -d ' ' -f 1)
+    raw_stderr_sha256=$(sha256sum "${raw_stderr}" | cut -d ' ' -f 1)
+
     rm -f "${tmp}" "${tmp_err}" "${tmp_mem}"
 
     # Look up reference answer and grade.
@@ -448,9 +477,10 @@ run_one() {
         fi
     fi
 
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
-        "${EDITION}" "${div}" "${problem}" "${sys}" \
-        "${szs}" "${expected}" "${verdict}" "${wall_s}" "${peak_memory_mb}" "${failure_detail}"
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+        "${EDITION}" "${div}" "${problem}" "${sys}" "${tlimit}" \
+        "${szs}" "${expected}" "${verdict}" "${wall_s}" "${peak_memory_mb}" "${failure_detail}" \
+        "${raw_stdout_rel}" "${raw_stderr_rel}" "${raw_stdout_sha256}" "${raw_stderr_sha256}"
 }
 
 # Map an SZS status to a coarse provability class so different
@@ -468,7 +498,7 @@ szs_class() {
     esac
 }
 export -f run_one szs_class
-export SCRIPT_DIR EDITION ANSWERS
+export SCRIPT_DIR EDITION ANSWERS OUTPUT RAW_ROOT
 
 # ---------- execute ----------
 

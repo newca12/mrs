@@ -53,3 +53,7 @@ path = "src/bin/repeat_search.rs"
 [[bin]]
 name = "dual_run_sanity_check"
 path = "src/bin/dual_run_sanity_check.rs"
+
+[[bin]]
+name = "audit_casc_proofs"
+path = "src/bin/audit_casc_proofs.rs"

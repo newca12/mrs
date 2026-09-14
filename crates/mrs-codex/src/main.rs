@@ -7,6 +7,7 @@ use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
 use regex::Regex;
 use rusqlite::{Connection, Result as SqliteResult, params};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -54,6 +55,10 @@ struct Args {
     /// Ingest CASC benchmark results from a run.csv file or results directory
     #[arg(long)]
     import_casc: Option<PathBuf>,
+
+    /// Import verifier results from an audit_casc_proofs audit.csv file.
+    #[arg(long)]
+    import_proof_audit: Option<PathBuf>,
 
     /// Path to the competition problems root directory (default: auto-detected under crates/mrs-bench/problems/<edition>)
     #[arg(long)]
@@ -365,9 +370,21 @@ fn init_db(conn: &Connection) -> SqliteResult<()> {
             mrs_verify_time REAL,
             competition_validated TEXT,
             competition_time REAL,
-            external_atp_validated TEXT,
-            external_atp_time REAL,
-            FOREIGN KEY(system_id) REFERENCES systems(id),
+             external_atp_validated TEXT,
+             external_atp_time REAL,
+             raw_stdout_path TEXT,
+             raw_stderr_path TEXT,
+             raw_stdout_sha256 TEXT,
+             raw_stderr_sha256 TEXT,
+             proof_path TEXT,
+             proof_sha256 TEXT,
+             kernel_detail TEXT,
+             mrs_verify_detail TEXT,
+             competition_detail TEXT,
+             external_atp_detail TEXT,
+             proof_audit_checks TEXT,
+             proof_audit_time REAL,
+             FOREIGN KEY(system_id) REFERENCES systems(id),
             FOREIGN KEY(hardware_id) REFERENCES hardware(id),
             FOREIGN KEY(parameter_id) REFERENCES parameters(id),
             UNIQUE(problem_name, system_id, hardware_id, parameter_id, timeout)
@@ -400,6 +417,18 @@ fn init_db(conn: &Connection) -> SqliteResult<()> {
         ("competition_time", "REAL"),
         ("external_atp_validated", "TEXT"),
         ("external_atp_time", "REAL"),
+        ("raw_stdout_path", "TEXT"),
+        ("raw_stderr_path", "TEXT"),
+        ("raw_stdout_sha256", "TEXT"),
+        ("raw_stderr_sha256", "TEXT"),
+        ("proof_path", "TEXT"),
+        ("proof_sha256", "TEXT"),
+        ("kernel_detail", "TEXT"),
+        ("mrs_verify_detail", "TEXT"),
+        ("competition_detail", "TEXT"),
+        ("external_atp_detail", "TEXT"),
+        ("proof_audit_checks", "TEXT"),
+        ("proof_audit_time", "REAL"),
     ] {
         let _ = conn.execute(
             &format!("ALTER TABLE results ADD COLUMN {name} {sql_type}"),
@@ -1656,6 +1685,11 @@ fn run_import_casc(args: &Args, import_path: &Path) {
         .or_else(|| col_idx("time"));
     let idx_peak_mem = col_idx("peak_memory_mb").or_else(|| col_idx("memory_mb"));
     let idx_failure = col_idx("failure_detail").or_else(|| col_idx("failure"));
+    let idx_timeout = col_idx("timeout");
+    let idx_raw_stdout_path = col_idx("raw_stdout_path");
+    let idx_raw_stderr_path = col_idx("raw_stderr_path");
+    let idx_raw_stdout_sha256 = col_idx("raw_stdout_sha256");
+    let idx_raw_stderr_sha256 = col_idx("raw_stderr_sha256");
 
     if idx_problem.is_none() || idx_system.is_none() || idx_status.is_none() {
         eprintln!(
@@ -1747,6 +1781,26 @@ fn run_import_casc(args: &Args, import_path: &Path) {
         let wall_time_s = get(idx_wall_time).and_then(|s| s.parse::<f64>().ok());
         let peak_memory_mb = get(idx_peak_mem).and_then(|s| s.parse::<f64>().ok());
         let failure_detail = get(idx_failure);
+        let csv_timeout = get(idx_timeout).and_then(|s| s.parse::<u64>().ok());
+
+        let resolve_artifact = |idx: Option<usize>| {
+            get(idx).map(|path| {
+                let candidate = Path::new(&path);
+                if candidate.is_absolute() {
+                    candidate.to_path_buf()
+                } else {
+                    csv_path.parent().unwrap_or(Path::new(".")).join(candidate)
+                }
+            })
+        };
+        let raw_stdout_path = resolve_artifact(idx_raw_stdout_path)
+            .filter(|path| !path.as_os_str().is_empty())
+            .map(|path| path.to_string_lossy().into_owned());
+        let raw_stderr_path = resolve_artifact(idx_raw_stderr_path)
+            .filter(|path| !path.as_os_str().is_empty())
+            .map(|path| path.to_string_lossy().into_owned());
+        let raw_stdout_sha256 = get(idx_raw_stdout_sha256);
+        let raw_stderr_sha256 = get(idx_raw_stderr_sha256);
 
         parsed_rows += 1;
 
@@ -1770,10 +1824,12 @@ fn run_import_casc(args: &Args, import_path: &Path) {
             }
         };
         let div_lower = division.to_ascii_lowercase();
-        let timeout = log_time_limits
-            .get(&div_lower)
-            .copied()
-            .unwrap_or_else(|| default_casc_timeout(&division, &edition));
+        let timeout = csv_timeout.unwrap_or_else(|| {
+            log_time_limits
+                .get(&div_lower)
+                .copied()
+                .unwrap_or_else(|| default_casc_timeout(&division, &edition))
+        });
         let filename = if problem.ends_with(".p") {
             problem.clone()
         } else {
@@ -1782,11 +1838,28 @@ fn run_import_casc(args: &Args, import_path: &Path) {
         let problem_name = scoped_problem_name(&edition, true, &format!("{division}/{filename}"));
         let canonical_name = canonical_tptp_name(&filename);
         tx.execute(
-            "INSERT OR REPLACE INTO results
+            "INSERT INTO results
              (problem_name, division, system_id, hardware_id, parameter_id, timeout,
-              time_to_solve, status, corpus, canonical_name, is_competition,
-              expected, verdict, peak_memory_mb, failure_detail)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1, ?11, ?12, ?13, ?14)",
+               time_to_solve, status, corpus, canonical_name, is_competition,
+               expected, verdict, peak_memory_mb, failure_detail,
+               raw_stdout_path, raw_stderr_path, raw_stdout_sha256, raw_stderr_sha256)
+              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+              ON CONFLICT(problem_name, system_id, hardware_id, parameter_id, timeout)
+              DO UPDATE SET
+                division = excluded.division,
+                time_to_solve = excluded.time_to_solve,
+                status = excluded.status,
+                corpus = excluded.corpus,
+                canonical_name = excluded.canonical_name,
+                is_competition = excluded.is_competition,
+                expected = excluded.expected,
+                verdict = excluded.verdict,
+                peak_memory_mb = excluded.peak_memory_mb,
+                failure_detail = excluded.failure_detail,
+                raw_stdout_path = COALESCE(excluded.raw_stdout_path, results.raw_stdout_path),
+                raw_stderr_path = COALESCE(excluded.raw_stderr_path, results.raw_stderr_path),
+                raw_stdout_sha256 = COALESCE(NULLIF(excluded.raw_stdout_sha256, ''), results.raw_stdout_sha256),
+                raw_stderr_sha256 = COALESCE(NULLIF(excluded.raw_stderr_sha256, ''), results.raw_stderr_sha256)",
             params![
                 problem_name,
                 division,
@@ -1802,6 +1875,10 @@ fn run_import_casc(args: &Args, import_path: &Path) {
                 verdict,
                 peak_memory_mb,
                 failure_detail,
+                raw_stdout_path,
+                raw_stderr_path,
+                raw_stdout_sha256,
+                raw_stderr_sha256,
             ],
         )
         .expect("Failed to insert run result");
@@ -1913,6 +1990,324 @@ fn run_import_casc(args: &Args, import_path: &Path) {
     }
 }
 
+/// Imports verifier results produced by `audit_casc_proofs` and merges them
+/// into the already-imported CASC result rows. Generation fields are never
+/// changed here, and an audit cannot create a new benchmark result.
+fn run_import_proof_audit(args: &Args, import_path: &Path) {
+    let csv_path = if import_path.is_dir() {
+        import_path.join("audit.csv")
+    } else {
+        import_path.to_path_buf()
+    };
+    if !csv_path.is_file() {
+        eprintln!("Error: proof audit CSV '{}' not found.", csv_path.display());
+        std::process::exit(1);
+    }
+
+    let content = std::fs::read_to_string(&csv_path)
+        .unwrap_or_else(|error| panic!("Failed to read proof audit CSV: {error}"));
+    let mut lines = content.lines();
+    let header = lines.next().unwrap_or_default();
+    let headers = parse_csv_line(header)
+        .into_iter()
+        .map(|value| value.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let col = |name: &str| {
+        headers
+            .iter()
+            .position(|header| header == name)
+            .unwrap_or_else(|| {
+                eprintln!("Error: proof audit CSV missing required column '{name}'.");
+                std::process::exit(1);
+            })
+    };
+    let edition_col = col("edition");
+    let division_col = col("division");
+    let problem_col = col("problem");
+    let system_col = col("system");
+    let timeout_col = headers.iter().position(|header| header == "timeout");
+    let raw_stdout_path_col = headers
+        .iter()
+        .position(|header| header == "raw_stdout_path");
+    let raw_stderr_path_col = headers
+        .iter()
+        .position(|header| header == "raw_stderr_path");
+    let raw_stdout_hash_col = headers
+        .iter()
+        .position(|header| header == "raw_stdout_sha256");
+    let raw_stderr_hash_col = headers
+        .iter()
+        .position(|header| header == "raw_stderr_sha256");
+    let proof_path_col = headers.iter().position(|header| header == "proof_path");
+    let proof_hash_col = headers.iter().position(|header| header == "proof_sha256");
+    let checks_col = headers.iter().position(|header| header == "checks");
+    let audit_time_col = headers.iter().position(|header| header == "audit_time_s");
+    let strict_status_col = headers.iter().position(|header| header == "strict_status");
+    let strict_time_col = headers.iter().position(|header| header == "strict_time_s");
+    let strict_detail_col = headers.iter().position(|header| header == "strict_detail");
+    let mrs_status_col = headers.iter().position(|header| header == "mrs_status");
+    let mrs_time_col = headers.iter().position(|header| header == "mrs_time_s");
+    let mrs_detail_col = headers.iter().position(|header| header == "mrs_detail");
+    let ladder_status_col = headers.iter().position(|header| header == "ladder_status");
+    let ladder_time_col = headers.iter().position(|header| header == "ladder_time_s");
+    let ladder_detail_col = headers.iter().position(|header| header == "ladder_detail");
+
+    let conn = Connection::open(&args.db).expect("Failed to open Codex database");
+    init_db(&conn).expect("Failed to initialize Codex schema");
+    let report_root = csv_path.parent().unwrap_or(Path::new("."));
+    let mut imported = 0usize;
+    let mut skipped = 0usize;
+
+    for (line_number, line) in lines.enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let fields = parse_csv_line(line);
+        let get = |index: Option<usize>| {
+            index
+                .and_then(|index| fields.get(index))
+                .cloned()
+                .unwrap_or_default()
+        };
+        let edition = get(Some(edition_col));
+        let division = get(Some(division_col)).to_ascii_uppercase();
+        let problem = get(Some(problem_col));
+        let system = get(Some(system_col));
+        if edition.is_empty() || division.is_empty() || problem.is_empty() || system.is_empty() {
+            eprintln!(
+                "Error: audit row {} has an incomplete identity.",
+                line_number + 2
+            );
+            std::process::exit(1);
+        }
+        let filename = if problem.ends_with(".p") {
+            problem.clone()
+        } else {
+            format!("{problem}.p")
+        };
+        let problem_name = format!("{edition}/{division}/{filename}");
+        let timeout = get(timeout_col).parse::<i64>().ok();
+
+        let mut sql = String::from(
+            "SELECT r.id, r.raw_stdout_sha256, r.raw_stderr_sha256 FROM results r JOIN systems s ON s.id = r.system_id
+             WHERE r.corpus = ?1 AND r.problem_name = ?2 AND r.division = ?3 AND s.name = ?4",
+        );
+        if timeout.is_some_and(|timeout| timeout > 0) {
+            sql.push_str(" AND r.timeout = ?5");
+        }
+        let mut statement = conn.prepare(&sql).unwrap_or_else(|error| {
+            panic!("prepare proof audit lookup: {error}");
+        });
+        let ids = if let Some(timeout) = timeout.filter(|timeout| *timeout > 0) {
+            statement
+                .query_map(
+                    params![edition, problem_name, division, system, timeout],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                        ))
+                    },
+                )
+                .expect("query proof audit lookup")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("read proof audit lookup")
+        } else {
+            statement
+                .query_map(params![edition, problem_name, division, system], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                })
+                .expect("query proof audit lookup")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("read proof audit lookup")
+        };
+        if ids.is_empty() {
+            eprintln!(
+                "Error: no Codex result matches audit row {} ({problem_name}, {system}).",
+                line_number + 2
+            );
+            std::process::exit(1);
+        }
+        if ids.len() != 1 {
+            eprintln!(
+                "Error: audit row {} matches {} Codex results ({problem_name}, {system}); refusing ambiguous import.",
+                line_number + 2,
+                ids.len()
+            );
+            std::process::exit(1);
+        }
+        let (result_id, stored_stdout_hash, stored_stderr_hash) = ids[0].clone();
+
+        let resolve_report_path = |index: Option<usize>| {
+            let raw = get(index);
+            if raw.is_empty() {
+                return None;
+            }
+            let path = Path::new(&raw);
+            Some(if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                report_root.join(path)
+            })
+        };
+        let raw_stdout_path = resolve_report_path(raw_stdout_path_col);
+        let raw_stderr_path = resolve_report_path(raw_stderr_path_col);
+        let proof_path = resolve_report_path(proof_path_col);
+        let raw_stdout_hash = get(raw_stdout_hash_col);
+        let raw_stderr_hash = get(raw_stderr_hash_col);
+        let proof_hash = get(proof_hash_col);
+        if stored_stdout_hash
+            .as_deref()
+            .is_some_and(|stored| !raw_stdout_hash.is_empty() && stored != raw_stdout_hash)
+            || stored_stderr_hash
+                .as_deref()
+                .is_some_and(|stored| !raw_stderr_hash.is_empty() && stored != raw_stderr_hash)
+        {
+            eprintln!(
+                "Error: audit row {} artifact hash does not match the existing Codex result; refusing cross-run import.",
+                line_number + 2
+            );
+            std::process::exit(1);
+        }
+        for (name, path, expected_hash) in [
+            (
+                "raw stdout",
+                raw_stdout_path.as_ref(),
+                raw_stdout_hash.as_str(),
+            ),
+            (
+                "raw stderr",
+                raw_stderr_path.as_ref(),
+                raw_stderr_hash.as_str(),
+            ),
+            ("proof", proof_path.as_ref(), proof_hash.as_str()),
+        ] {
+            if let Some(path) = path {
+                if !path.is_file() {
+                    eprintln!(
+                        "Error: {name} artifact for audit row {} does not exist: {}",
+                        line_number + 2,
+                        path.display()
+                    );
+                    std::process::exit(1);
+                }
+                if !expected_hash.is_empty() {
+                    let actual_hash = sha256_file(path).unwrap_or_else(|error| {
+                        panic!("hash {name} artifact {}: {error}", path.display())
+                    });
+                    if actual_hash != expected_hash {
+                        eprintln!(
+                            "Error: {name} hash mismatch for audit row {}: expected {}, got {}",
+                            line_number + 2,
+                            expected_hash,
+                            actual_hash
+                        );
+                        std::process::exit(1);
+                    }
+                }
+            }
+        }
+
+        let strict_status = non_not_run(get(strict_status_col));
+        let strict_time = parsed_optional_f64(get(strict_time_col));
+        let strict_detail = non_empty(get(strict_detail_col));
+        let mrs_status = non_not_run(get(mrs_status_col));
+        let mrs_time = parsed_optional_f64(get(mrs_time_col));
+        let mrs_detail = non_empty(get(mrs_detail_col));
+        let ladder_status = non_not_run(get(ladder_status_col));
+        let ladder_time = parsed_optional_f64(get(ladder_time_col));
+        let ladder_detail = non_empty(get(ladder_detail_col));
+        let proof_audit_checks = non_empty(get(checks_col));
+        let proof_audit_time = parsed_optional_f64(get(audit_time_col));
+
+        conn.execute(
+            "UPDATE results SET
+                raw_stdout_path = COALESCE(?1, raw_stdout_path),
+                raw_stderr_path = COALESCE(?2, raw_stderr_path),
+                raw_stdout_sha256 = COALESCE(NULLIF(?3, ''), raw_stdout_sha256),
+                raw_stderr_sha256 = COALESCE(NULLIF(?4, ''), raw_stderr_sha256),
+                proof_path = COALESCE(?5, proof_path),
+                proof_sha256 = COALESCE(NULLIF(?6, ''), proof_sha256),
+                kernel_validated = COALESCE(?7, kernel_validated),
+                kernel_time = COALESCE(?8, kernel_time),
+                kernel_detail = COALESCE(?9, kernel_detail),
+                mrs_validated = COALESCE(?10, mrs_validated),
+                mrs_verify_time = COALESCE(?11, mrs_verify_time),
+                mrs_verify_detail = COALESCE(?12, mrs_verify_detail),
+                proover_validated = COALESCE(?13, proover_validated),
+                competition_validated = COALESCE(?14, competition_validated),
+                competition_time = COALESCE(?15, competition_time),
+                competition_detail = COALESCE(?16, competition_detail),
+                external_atp_validated = COALESCE(?17, external_atp_validated),
+                external_atp_time = COALESCE(?18, external_atp_time),
+                external_atp_detail = COALESCE(?19, external_atp_detail),
+                starexec_validated = COALESCE(?20, starexec_validated),
+                time_to_verify = COALESCE(?21, time_to_verify),
+                proof_audit_checks = COALESCE(?22, proof_audit_checks),
+                proof_audit_time = COALESCE(?23, proof_audit_time)
+             WHERE id = ?24",
+            params![
+                raw_stdout_path.map(|path| path.to_string_lossy().into_owned()),
+                raw_stderr_path.map(|path| path.to_string_lossy().into_owned()),
+                raw_stdout_hash,
+                raw_stderr_hash,
+                proof_path.map(|path| path.to_string_lossy().into_owned()),
+                proof_hash,
+                strict_status.clone(),
+                strict_time,
+                strict_detail,
+                mrs_status.clone(),
+                mrs_time,
+                mrs_detail,
+                mrs_status,
+                ladder_status.clone(),
+                ladder_time,
+                ladder_detail.clone(),
+                ladder_status.clone(),
+                ladder_time,
+                ladder_detail,
+                ladder_status,
+                ladder_time,
+                proof_audit_checks,
+                proof_audit_time,
+                result_id,
+            ],
+        )
+        .unwrap_or_else(|error| panic!("update proof audit row: {error}"));
+        imported += 1;
+        if strict_status.is_none() && mrs_status.is_none() && ladder_status.is_none() {
+            skipped += 1;
+        }
+    }
+    println!(
+        "Imported {imported} proof audit rows into {} ({} rows had no selected check verdict).",
+        args.db.display(),
+        skipped
+    );
+}
+
+fn non_not_run(value: String) -> Option<String> {
+    (!value.is_empty() && value != "not_run").then_some(value)
+}
+
+fn non_empty(value: String) -> Option<String> {
+    (!value.is_empty()).then_some(value)
+}
+
+fn parsed_optional_f64(value: String) -> Option<f64> {
+    value.parse::<f64>().ok()
+}
+
+fn sha256_file(path: &Path) -> std::io::Result<String> {
+    let bytes = std::fs::read(path)?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -1923,6 +2318,11 @@ fn main() {
 
     if let Some(import_path) = &args.import_casc {
         run_import_casc(&args, import_path);
+        return;
+    }
+
+    if let Some(import_path) = &args.import_proof_audit {
+        run_import_proof_audit(&args, import_path);
         return;
     }
 
@@ -2676,6 +3076,7 @@ casc-30,UEQ,GRP001-1.p,mrs,Unsatisfiable,Unsatisfiable,CORRECT,0.12,\n";
             profile_only: false,
             overwrite_profiles: false,
             import_casc: Some(csv_path.clone()),
+            import_proof_audit: None,
             problems_dir: None,
             corpus: None,
             skip_profiles: true,
@@ -2696,6 +3097,7 @@ casc-30,UEQ,GRP001-1.p,mrs,Unsatisfiable,Unsatisfiable,CORRECT,0.12,\n";
             .prepare("SELECT problem_name, division, timeout, status, corpus, canonical_name, is_competition, time_to_solve FROM results ORDER BY system_id, problem_name")
             .unwrap();
 
+        #[allow(clippy::type_complexity)]
         let rows: Vec<(String, String, i64, String, String, String, i64, f64)> = stmt
             .query_map([], |row| {
                 Ok((
@@ -2723,6 +3125,135 @@ casc-30,UEQ,GRP001-1.p,mrs,Unsatisfiable,Unsatisfiable,CORRECT,0.12,\n";
         let agt_rows: Vec<_> = rows.iter().filter(|r| r.5 == "AGT/AGT005+1.p").collect();
         assert_eq!(agt_rows.len(), 2);
         assert_eq!(agt_rows[0].2, 240); // FEQ timeout from log
+    }
+
+    #[test]
+    fn test_import_casc_preserves_existing_audit_columns() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("preserve.db");
+        let csv_path = temp_dir.path().join("run.csv");
+        let log_path = temp_dir.path().join("run.log");
+        std::fs::write(
+            &csv_path,
+            "edition,division,problem,system,timeout,szs_status,expected,verdict,wall_time_s,raw_stdout_path,raw_stderr_path,raw_stdout_sha256,raw_stderr_sha256\n\
+casc-30,UEQ,GRP001-1.p,mrs,240,Unsatisfiable,Unsatisfiable,ok,1.2,raw/out,raw/err,stdout-hash,stderr-hash\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &log_path,
+            "[casc] Edition: casc-30\n[casc] Time limits: ueq=240s\n",
+        )
+        .unwrap();
+        let args = Args {
+            folder: None,
+            db: db_path.clone(),
+            import_casc: Some(csv_path.clone()),
+            import_proof_audit: None,
+            problems_dir: None,
+            corpus: None,
+            skip_profiles: true,
+            system: String::new(),
+            hardware: Some("test".to_string()),
+            timeout: 240,
+            cmd: String::new(),
+            params: None,
+            jobs: Some(1),
+            verify_mode: VerifyMode::None,
+            profile_only: false,
+            overwrite_profiles: false,
+        };
+        run_import_casc(&args, &csv_path);
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute(
+            "UPDATE results SET kernel_validated = 'VerifiedGood', kernel_time = 2.5, proof_sha256 = 'proof-hash'",
+            [],
+        )
+        .unwrap();
+        run_import_casc(&args, &csv_path);
+        let row: (String, f64, String, String) = conn
+            .query_row(
+                "SELECT kernel_validated, kernel_time, proof_sha256, raw_stdout_sha256 FROM results",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "VerifiedGood");
+        assert_eq!(row.1, 2.5);
+        assert_eq!(row.2, "proof-hash");
+        assert_eq!(row.3, "stdout-hash");
+    }
+
+    #[test]
+    fn test_import_proof_audit_merges_and_verifies_artifacts() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("audit.db");
+        let run_csv = temp_dir.path().join("run.csv");
+        let run_log = temp_dir.path().join("run.log");
+        std::fs::write(
+            &run_csv,
+            "edition,division,problem,system,timeout,szs_status,expected,verdict,wall_time_s\n\
+casc-30,UEQ,GRP001-1.p,mrs,240,Unsatisfiable,Unsatisfiable,ok,1.2\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &run_log,
+            "[casc] Edition: casc-30\n[casc] Time limits: ueq=240s\n",
+        )
+        .unwrap();
+        let args = Args {
+            folder: None,
+            db: db_path.clone(),
+            import_casc: Some(run_csv.clone()),
+            import_proof_audit: None,
+            problems_dir: None,
+            corpus: None,
+            skip_profiles: true,
+            system: String::new(),
+            hardware: Some("test".to_string()),
+            timeout: 240,
+            cmd: String::new(),
+            params: None,
+            jobs: Some(1),
+            verify_mode: VerifyMode::None,
+            profile_only: false,
+            overwrite_profiles: false,
+        };
+        run_import_casc(&args, &run_csv);
+
+        let raw_stdout = temp_dir.path().join("proof.stdout");
+        let raw_stderr = temp_dir.path().join("proof.stderr");
+        let proof = temp_dir.path().join("proof.s");
+        std::fs::write(&raw_stdout, b"raw stdout").unwrap();
+        std::fs::write(&raw_stderr, b"raw stderr").unwrap();
+        std::fs::write(&proof, b"proof").unwrap();
+        let audit_csv = temp_dir.path().join("audit.csv");
+        let csv = format!(
+            "edition,division,problem,system,timeout,raw_stdout_path,raw_stderr_path,raw_stdout_sha256,raw_stderr_sha256,proof_path,proof_sha256,generation_status,generation_detail,strict_status,strict_time_s,strict_detail,mrs_status,mrs_time_s,mrs_detail,ladder_status,ladder_time_s,ladder_detail,checks,audit_time_s\n\
+casc-30,UEQ,GRP001-1.p,mrs,240,{},{},{},{},{},{},refutation,,VerifiedGood,1.5,,VerifiedGood,2.5,,Unknown,3.5,,\"strict,mrs,ladder\",8.0\n",
+            raw_stdout.display(),
+            raw_stderr.display(),
+            sha256_file(&raw_stdout).unwrap(),
+            sha256_file(&raw_stderr).unwrap(),
+            proof.display(),
+            sha256_file(&proof).unwrap(),
+        );
+        std::fs::write(&audit_csv, csv).unwrap();
+        run_import_proof_audit(&args, &audit_csv);
+
+        let conn = Connection::open(&db_path).unwrap();
+        let row: (String, f64, String, f64, String, String) = conn
+            .query_row(
+                "SELECT kernel_validated, kernel_time, mrs_validated, mrs_verify_time, competition_validated, proof_sha256 FROM results",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "VerifiedGood");
+        assert_eq!(row.1, 1.5);
+        assert_eq!(row.2, "VerifiedGood");
+        assert_eq!(row.3, 2.5);
+        assert_eq!(row.4, "Unknown");
+        assert_eq!(row.5, sha256_file(&proof).unwrap());
     }
 
     #[test]

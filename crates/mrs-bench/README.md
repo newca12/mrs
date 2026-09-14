@@ -6,7 +6,7 @@ CASC benchmark harness and report tool for `mrs`.
 
 | Path | Purpose |
 |------|---------|
-| `casc.sh` | Run a full benchmark: invoke each system on each problem, collect SZS status and wall time, write `results/<edition>/*/run.csv` |
+| `casc.sh` | Run a full benchmark: invoke each system on each problem, collect SZS status and wall time, archive raw stdout/stderr and hashes, and write `results/<edition>/*/run.csv` |
 | `cooperative_portfolio_sweep.sh` | Measure an explicit multi-worker portfolio with shared equality-clause exchange enabled (or disabled with `MRS_SHARED_POOL_INTERVAL=0`) |
 | `cooperative_portfolio_search.sh` | Run one-swap local search over portfolios using cooperative solved-count coverage |
 | `setup.sh` | Download and extract the CASC problem and axiom archives from tptp.org |
@@ -22,6 +22,7 @@ CASC benchmark harness and report tool for `mrs`.
 | `fetch_zenodo_corpus.sh` | Download + normalise the Zenodo 19792604 proof-checker benchmark (gitignored under `zenodo-corpus/`) |
 | `zenodo_benchmark.sh` | Evaluate `mrs-proover` (optionally Nörgler, `--with-norgler`) on the Zenodo benchmark; checks the original→never-VerifiedBad / falsified→never-VerifiedGood invariants |
 | `norgler_compare.sh` | Compare `mrs-proover` vs Nörgler on the committed deterministic corpus |
+| `audit_casc_proofs` | Replay archived CASC prover output through strict, MRS-only, and full-ladder checks without rerunning MRS |
 
 ## Quick start
 
@@ -78,6 +79,39 @@ The cooperative result is the portfolio-selection objective. Compare the
 shared and no-sharing runs to quantify cooperation separately from strategy
 diversity. `failure_detail` records `strategy_ids`, `shared_published`, and
 `shared_imported` telemetry for each problem.
+
+## Deferred CASC proof auditing
+
+`casc.sh` preserves every prover stream below the run directory:
+
+```text
+raw/<system>/<division>/<problem>.stdout
+raw/<system>/<division>/<problem>.stderr
+```
+
+The CSV records those paths and SHA-256 hashes. Use the archived output later
+without contaminating CASC generation timing:
+
+```bash
+nix develop -c cargo run --release -p mrs-bench --bin audit_casc_proofs -- \
+  --run crates/mrs-bench/results/casc-30/<run> \
+  --problems-dir crates/mrs-bench/problems/casc-30 \
+  --checks strict,mrs,ladder \
+  --strict-time 30 --mrs-time 10 --ladder-time 30 \
+  --ladder-workers 8 --jobs 1 \
+  --output crates/mrs-bench/results/casc-30/<run>/proof-audit
+```
+
+`--checks` accepts any non-empty comma-separated subset of `strict`, `mrs`,
+and `ladder`. The audit checks all selected policies against one normalized
+proof and writes `proof-audit/audit.csv`. It never calls MRS. The report is
+resumable and can be imported after the original CASC results:
+
+```bash
+nix develop -c cargo run --release -p mrs-codex -- \
+  --db codex-casc30.db \
+  --import-proof-audit crates/mrs-bench/results/casc-30/<run>/proof-audit/audit.csv
+```
 
 ## Adding a new system
 
