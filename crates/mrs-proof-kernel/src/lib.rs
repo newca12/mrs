@@ -5722,8 +5722,11 @@ fn verify_demodulation(
             }
         }
         if !changed {
-            return KernelVerdict::Rejected(
-                "demodulation conclusion is not reachable from cited rewrites".into(),
+            // The bounded greedy replay is incomplete: failure to find one
+            // rewrite path is not proof that no valid path exists.
+            return KernelVerdict::Inconclusive(
+                "demodulation replay could not reach the conclusion within the implemented search"
+                    .into(),
             );
         }
     }
@@ -5788,7 +5791,9 @@ fn verify_ac_normalization(
     if clause_alpha_equiv(&source, &goal) {
         KernelVerdict::Certified
     } else {
-        KernelVerdict::Rejected("ac_normalization conclusion is not AC-equivalent to source".into())
+        KernelVerdict::Inconclusive(
+            "ac_normalization replay could not establish AC-equivalence within the implemented search".into(),
+        )
     }
 }
 
@@ -6413,7 +6418,12 @@ fn verify_ac_superposition(
     if ac_superposition_replay(&source, &target, &goal, &commutative, &associative, limits) {
         KernelVerdict::Certified
     } else {
-        inference
+        match inference {
+            KernelVerdict::Rejected(reason) => KernelVerdict::Inconclusive(format!(
+                "ac_superposition replay is incomplete: {reason}"
+            )),
+            other => other,
+        }
     }
 }
 
@@ -11119,6 +11129,20 @@ mod tests {
                      fof(n, axiom, ~p(b), file('problem.p', neg)).\n\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [s,n])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn demodulation_replay_failure_is_inconclusive() {
+        let problem = "fof(rule, axiom, f(a) = b).\n\
+                       fof(target, axiom, p(f(a))).";
+        let proof = "fof(rule, axiom, f(a) = b, file('problem.p', rule)).\
+                     fof(target, axiom, p(f(a)), file('problem.p', target)).\
+                     fof(s, plain, q(a), inference(demodulation, [status(thm)], [target,rule])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [s])).";
+        assert!(matches!(
+            check(problem, proof),
+            KernelVerdict::Inconclusive(_)
+        ));
     }
 
     #[test]
