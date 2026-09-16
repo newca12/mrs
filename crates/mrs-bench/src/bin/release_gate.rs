@@ -136,6 +136,19 @@ fn check_phase_manifest(root: &Path) -> Result<(), String> {
             return Err(format!("malformed release phase row: {line}"));
         }
         let commit = fields[2];
+        let artifact = fields[3];
+        if fields[0].is_empty() || fields[1].is_empty() || fields[4].is_empty() {
+            return Err(format!(
+                "release phase row has an empty required field: {line}"
+            ));
+        }
+        let artifact_path = root.join(artifact);
+        if !artifact_path.exists() {
+            return Err(format!(
+                "required phase artifact does not exist: {}",
+                artifact_path.display()
+            ));
+        }
         let commit_exists = command(
             "git",
             &["cat-file", "-e", &format!("{commit}^{{commit}}")],
@@ -197,13 +210,7 @@ fn run_required_checks(root: &Path) -> Result<(), String> {
     ];
     for (name, command_args) in checks {
         println!("release gate: running {name}");
-        let output = match command("nix", &command_args_with_develop(&command_args), Some(root)) {
-            Ok(out) => out,
-            Err(_) => {
-                let prog = command_args[0];
-                command(prog, &command_args[1..], Some(root))?
-            }
-        };
+        let output = command("nix", &command_args_with_develop(&command_args), Some(root))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);

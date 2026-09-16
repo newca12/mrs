@@ -872,9 +872,6 @@ pub fn run_schedule_with_candidate_receiver(
         }
     });
 
-    // Compute how much time remains after all pre-processing steps.
-    let remaining_at_spawn = total_budget.saturating_sub(schedule_start.elapsed());
-
     std::thread::scope(|s| {
         for worker_id in 0..num_workers {
             let stop = Arc::clone(&stop_flag);
@@ -911,14 +908,23 @@ pub fn run_schedule_with_candidate_receiver(
                     if search_config.time_limit.is_zero() {
                         continue;
                     }
-                    if remaining_at_spawn.is_zero() {
+                    // A worker may finish a strategy early and start another
+                    // one. Recompute the shared wall-clock budget before each
+                    // launch; using one snapshot from thread creation lets a
+                    // sequence of short strategies run past the schedule
+                    // deadline.
+                    let remaining = total_budget.saturating_sub(schedule_start.elapsed());
+                    if remaining.is_zero() {
                         break;
                     }
 
                     let mut sc = search_config.clone();
                     // Scale the individual time slice by the number of workers, capped by wall-clock limit.
                     let scaled_ms = (sc.time_limit.as_millis() as u64).saturating_mul(num_workers as u64);
-                    sc.time_limit = Duration::from_millis(scaled_ms).min(remaining_at_spawn);
+                    sc.time_limit = Duration::from_millis(scaled_ms).min(remaining);
+                    if sc.time_limit.is_zero() {
+                        break;
+                    }
 
                     if has_epr {
                         sc.max_term_weight = None;
@@ -1177,7 +1183,8 @@ pub fn run_schedule_with_candidate_receiver(
                                 clause_id: id,
                                 tstp_proof: tstp.clone(),
                                 elapsed_ms,
-                                time_remaining: remaining_at_spawn.saturating_sub(strategy_start.elapsed()),
+                                time_remaining: total_budget
+                                    .saturating_sub(schedule_start.elapsed()),
                             });
                             if should_stop {
                                 stop.store(true, Ordering::Relaxed);

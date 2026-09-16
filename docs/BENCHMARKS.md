@@ -702,7 +702,7 @@ commit 11e36a05958984e0fe9b5118223fd57ba7ffec2e (HEAD -> main, origin/main, orig
 [root@server04 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --edition casc-30 --divisions fne --systems mrs --jobs 1 --casc-times
 Running `target/debug/bench_report crates/mrs-bench/results/casc-30/20260914_112303/run.csv`
 CASC-30 Results — 2026-09-14 16:22  (100 problems × 1 systems)
-==============================================================                                                          
+==============================================================
 Division  Problems    mrs
                  Solved  Avg (s)
 ------------------  --------------------

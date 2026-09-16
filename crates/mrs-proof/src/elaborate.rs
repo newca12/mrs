@@ -582,7 +582,12 @@ pub fn topological_sort(clauses: &[Clause]) -> Result<Vec<Clause>, ElaborationEr
     let mut clause_order: HashMap<ClauseId, usize> = HashMap::default();
 
     for (idx, c) in clauses.iter().enumerate() {
-        id_to_clause.insert(c.id, c.clone());
+        if id_to_clause.insert(c.id, c.clone()).is_some() {
+            return Err(ElaborationError::Inconclusive(format!(
+                "duplicate clause id c{} in proof",
+                c.id.0
+            )));
+        }
         clause_order.insert(c.id, idx);
         in_degree.insert(c.id, 0);
     }
@@ -609,10 +614,18 @@ pub fn topological_sort(clauses: &[Clause]) -> Result<Vec<Clause>, ElaborationEr
             }
         }
 
-        // Deduplicate and filter to parents within the proof
+        // Every cited parent must be present. Silently dropping a missing
+        // parent would make the exported proof appear well-formed while
+        // changing the derivation being checked.
         let mut unique_parents = HashSet::new();
         for p in parents {
-            if id_to_clause.contains_key(&p) && unique_parents.insert(p) {
+            if !id_to_clause.contains_key(&p) {
+                return Err(ElaborationError::Inconclusive(format!(
+                    "clause c{} cites missing parent c{}",
+                    c.id.0, p.0
+                )));
+            }
+            if unique_parents.insert(p) {
                 dependents.entry(p).or_default().push(c.id);
                 *in_degree.entry(c.id).or_default() += 1;
             }
@@ -1010,6 +1023,22 @@ mod tests {
 
         assert_eq!(res1[2].id, ClauseId(3));
         assert_eq!(res2[2].id, ClauseId(3));
+    }
+
+    #[test]
+    fn missing_parent_is_not_silently_dropped() {
+        let child = Clause::new(
+            ClauseId(2),
+            vec![],
+            ClauseSource::Inference {
+                rule: "resolution",
+                parents: vec![ClauseId(99)].into(),
+            },
+        );
+        assert!(matches!(
+            topological_sort(&[child]),
+            Err(ElaborationError::Inconclusive(reason)) if reason.contains("missing parent")
+        ));
     }
 
     #[test]

@@ -157,9 +157,21 @@ impl AsyncCoordinator {
 
                     // Verification: strict kernel execution
                     let kernel_start = Instant::now();
-                    let (verdict, error_msg) =
+                    let (mut verdict, mut error_msg) =
                         verify_candidate_proof(&self.config, &temp_proof_text);
                     let kernel_time = kernel_start.elapsed();
+
+                    // A certificate that finishes after the process budget is
+                    // not a valid certified result for this run. The kernel
+                    // is synchronous, so enforce the deadline immediately
+                    // after it returns rather than emitting a late theorem.
+                    if matches!(verdict, KernelVerdict::Certified)
+                        && self.config.start_time.elapsed() >= self.config.time_limit
+                    {
+                        let msg = "strict self-check exceeded the time limit".to_string();
+                        verdict = KernelVerdict::Inconclusive(msg.clone());
+                        error_msg = Some(msg);
+                    }
 
                     let mut tele = self.telemetry.lock().unwrap();
                     tele.total_elaboration_time += elab_time;

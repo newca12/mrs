@@ -179,7 +179,7 @@ impl ModelCertificate {
 
     /// Helper to compute index into a flat row-major table for inputs `[d_0, ..., d_{k-1}]`.
     pub fn table_index(&self, args: &[usize]) -> Result<usize, String> {
-        let mut idx = 0;
+        let mut idx: usize = 0;
         for &arg in args {
             if arg >= self.domain_size {
                 return Err(format!(
@@ -187,9 +187,22 @@ impl ModelCertificate {
                     self.domain_size
                 ));
             }
-            idx = idx * self.domain_size + arg;
+            idx = idx
+                .checked_mul(self.domain_size)
+                .and_then(|value| value.checked_add(arg))
+                .ok_or_else(|| "model table index overflow".to_string())?;
         }
         Ok(idx)
+    }
+
+    fn table_len(&self, arity: usize, kind: &str, name: &str) -> Result<usize, ModelVerdict> {
+        (0..arity).try_fold(1usize, |length, _| {
+            length.checked_mul(self.domain_size).ok_or_else(|| {
+                ModelVerdict::Inconclusive(format!(
+                    "{kind} `{name}` table size overflows the host usize"
+                ))
+            })
+        })
     }
 
     /// Evaluates a term under a variable assignment environment.
@@ -546,7 +559,10 @@ impl ModelCertificate {
 
         // 4. Function & predicate table sizes and ranges
         for (name, func) in &self.functions {
-            let expected_len = self.domain_size.pow(func.arity as u32);
+            let expected_len = match self.table_len(func.arity, "function", name) {
+                Ok(length) => length,
+                Err(verdict) => return verdict,
+            };
             if func.table.len() != expected_len {
                 return ModelVerdict::Rejected(format!(
                     "function `{name}` table length {} != expected {}",
@@ -565,7 +581,10 @@ impl ModelCertificate {
         }
 
         for (name, pred) in &self.predicates {
-            let expected_len = self.domain_size.pow(pred.arity as u32);
+            let expected_len = match self.table_len(pred.arity, "predicate", name) {
+                Ok(length) => length,
+                Err(verdict) => return verdict,
+            };
             if pred.table.len() != expected_len {
                 return ModelVerdict::Rejected(format!(
                     "predicate `{name}` table length {} != expected {}",
@@ -580,6 +599,81 @@ impl ModelCertificate {
                 return ModelVerdict::Rejected(format!(
                     "constant `{name}` has value {val} >= domain_size {}",
                     self.domain_size
+                ));
+            }
+        }
+
+        // A certificate is complete only when it supplies interpretations for
+        // every symbol occurring in the supported input. Extra entries are
+        // harmless, but missing entries must not be discovered accidentally
+        // halfway through formula evaluation.
+        let mut required_constants = BTreeSet::new();
+        let mut required_functions = BTreeMap::<String, usize>::new();
+        let mut required_predicates = BTreeMap::<String, usize>::new();
+        for input in &problem.formulas {
+            match input {
+                AnnotatedFormula::FOF(formula) => {
+                    let FOFStatement::Logical(statement) = &formula.formula else {
+                        return ModelVerdict::Inconclusive(
+                            "FOF sequents unsupported in model evaluation".into(),
+                        );
+                    };
+                    collect_fof_signatures(
+                        statement,
+                        &mut required_constants,
+                        &mut required_functions,
+                        &mut required_predicates,
+                    );
+                }
+                AnnotatedFormula::CNF(formula) => {
+                    let CNFStatement::Logical(statement) = &formula.formula;
+                    collect_cnf_signatures(
+                        statement,
+                        &mut required_constants,
+                        &mut required_functions,
+                        &mut required_predicates,
+                    );
+                }
+                _ => {
+                    return ModelVerdict::Inconclusive(
+                        "model validation currently supports FOF and CNF dialects".into(),
+                    );
+                }
+            }
+        }
+        for name in required_constants {
+            if !self.constants.contains_key(&name) {
+                return ModelVerdict::Rejected(format!(
+                    "missing interpretation for constant `{name}`"
+                ));
+            }
+        }
+        for (name, arity) in required_functions {
+            if name == "$true" || name == "$false" {
+                continue;
+            }
+            let Some(function) = self.functions.get(&name) else {
+                return ModelVerdict::Rejected(format!(
+                    "missing interpretation for function `{name}`"
+                ));
+            };
+            if function.arity != arity {
+                return ModelVerdict::Rejected(format!(
+                    "function `{name}` arity mismatch: expected {arity}, got {}",
+                    function.arity
+                ));
+            }
+        }
+        for (name, arity) in required_predicates {
+            let Some(predicate) = self.predicates.get(&name) else {
+                return ModelVerdict::Rejected(format!(
+                    "missing interpretation for predicate `{name}`"
+                ));
+            };
+            if predicate.arity != arity {
+                return ModelVerdict::Rejected(format!(
+                    "predicate `{name}` arity mismatch: expected {arity}, got {}",
+                    predicate.arity
                 ));
             }
         }
@@ -733,6 +827,108 @@ fn collect_cnf_literal_vars(lit: &CNFLiteral<'_>, vars: &mut BTreeSet<String>) {
         CNFLiteral::Equality(left, right) | CNFLiteral::Inequality(left, right) => {
             collect_term_vars(left, vars);
             collect_term_vars(right, vars);
+        }
+    }
+}
+
+fn collect_fof_signatures(
+    formula: &FOFFormula<'_>,
+    constants: &mut BTreeSet<String>,
+    functions: &mut BTreeMap<String, usize>,
+    predicates: &mut BTreeMap<String, usize>,
+) {
+    match formula {
+        FOFFormula::Atomic(atom) => match atom {
+            FOFAtomicFormula::Plain(name, args) => {
+                predicates.insert(name.as_str().to_string(), args.len());
+                for arg in args {
+                    collect_fof_term_signatures(arg, constants, functions);
+                }
+            }
+            FOFAtomicFormula::Defined(_, args) | FOFAtomicFormula::System(_, args) => {
+                for arg in args {
+                    collect_fof_term_signatures(arg, constants, functions);
+                }
+            }
+            FOFAtomicFormula::True | FOFAtomicFormula::False => {}
+        },
+        FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => {
+            collect_fof_signatures(inner, constants, functions, predicates)
+        }
+        FOFFormula::Quantified { formula, .. } => {
+            collect_fof_signatures(formula, constants, functions, predicates)
+        }
+        FOFFormula::Binary { left, right, .. } => {
+            collect_fof_signatures(left, constants, functions, predicates);
+            collect_fof_signatures(right, constants, functions, predicates);
+        }
+        FOFFormula::Equality(left, right) | FOFFormula::Inequality(left, right) => {
+            collect_fof_term_signatures(left, constants, functions);
+            collect_fof_term_signatures(right, constants, functions);
+        }
+    }
+}
+
+fn collect_fof_term_signatures(
+    term: &FOFTerm<'_>,
+    constants: &mut BTreeSet<String>,
+    functions: &mut BTreeMap<String, usize>,
+) {
+    match term {
+        FOFTerm::Function(name, args) => {
+            let name = name.as_str().to_string();
+            if args.is_empty() {
+                constants.insert(name);
+            } else {
+                functions.insert(name, args.len());
+                for arg in args {
+                    collect_fof_term_signatures(arg, constants, functions);
+                }
+            }
+        }
+        FOFTerm::DistinctObject(name) => {
+            constants.insert(name.to_string());
+        }
+        FOFTerm::DefinedFunction(_, args) | FOFTerm::SystemFunction(_, args) => {
+            for arg in args {
+                collect_fof_term_signatures(arg, constants, functions);
+            }
+        }
+        FOFTerm::Variable(_) | FOFTerm::Number(_) => {}
+    }
+}
+
+fn collect_cnf_signatures(
+    formula: &CNFFormula<'_>,
+    constants: &mut BTreeSet<String>,
+    functions: &mut BTreeMap<String, usize>,
+    predicates: &mut BTreeMap<String, usize>,
+) {
+    for literal in formula.literals() {
+        match literal {
+            CNFLiteral::Positive(CNFAtomicFormula::Plain(name, args))
+            | CNFLiteral::Negative(CNFAtomicFormula::Plain(name, args)) => {
+                predicates.insert(name.as_str().to_string(), args.len());
+                for arg in args {
+                    collect_fof_term_signatures(arg, constants, functions);
+                }
+            }
+            CNFLiteral::Positive(CNFAtomicFormula::Defined(_, args))
+            | CNFLiteral::Negative(CNFAtomicFormula::Defined(_, args))
+            | CNFLiteral::Positive(CNFAtomicFormula::System(_, args))
+            | CNFLiteral::Negative(CNFAtomicFormula::System(_, args)) => {
+                for arg in args {
+                    collect_fof_term_signatures(arg, constants, functions);
+                }
+            }
+            CNFLiteral::Positive(CNFAtomicFormula::True)
+            | CNFLiteral::Positive(CNFAtomicFormula::False)
+            | CNFLiteral::Negative(CNFAtomicFormula::True)
+            | CNFLiteral::Negative(CNFAtomicFormula::False) => {}
+            CNFLiteral::Equality(left, right) | CNFLiteral::Inequality(left, right) => {
+                collect_fof_term_signatures(left, constants, functions);
+                collect_fof_term_signatures(right, constants, functions);
+            }
         }
     }
 }
@@ -906,6 +1102,40 @@ fof(conj, conjecture, p(a)).
 
         let verdict = cert.validate(&problem, None);
         assert!(matches!(verdict, ModelVerdict::Rejected(ref r) if r.contains("digest mismatch")));
+    }
+
+    #[test]
+    fn rejects_overflowing_model_table_shape_inconclusively() {
+        let problem = parse_tptp("fof(ax, axiom, p(f(a))).").unwrap();
+        let mut cert = ModelCertificate {
+            domain_size: usize::MAX,
+            constants: [("a".to_string(), 0)].into_iter().collect(),
+            functions: [(
+                "f".to_string(),
+                FunctionTable {
+                    arity: 2,
+                    table: Vec::new(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            predicates: [(
+                "p".to_string(),
+                PredicateTable {
+                    arity: 1,
+                    table: vec![true],
+                },
+            )]
+            .into_iter()
+            .collect(),
+            equality: EqualitySemantics::StrictIdentity,
+            digest: String::new(),
+        };
+        cert.digest = cert.compute_digest();
+        assert!(matches!(
+            cert.validate(&problem, Some("Satisfiable")),
+            ModelVerdict::Inconclusive(reason) if reason.contains("overflows")
+        ));
     }
 
     #[test]

@@ -863,6 +863,14 @@ fn main() {
     let mut status = final_status;
     let result = final_result;
 
+    // A search saturation is not a certified model.  The strict release path
+    // currently certifies refutations only; model certificates are validated
+    // by a separate tool and are not produced by this binary.  Never turn an
+    // incomplete or heuristic saturation into a positive SZS model result.
+    if self_check && matches!(result, SearchResult::Saturated) {
+        status = SzsStatus::GaveUp;
+    }
+
     #[cfg(feature = "ml")]
     if let Some(log_dir) = &log_ml_data
         && matches!(status, SzsStatus::Theorem | SzsStatus::Unsatisfiable)

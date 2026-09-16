@@ -9188,6 +9188,24 @@ mod tests {
     }
 
     #[test]
+    fn rejects_model_with_missing_predicate_interpretation() {
+        let problem = parse_tptp("fof(a, axiom, p(a)).").expect("problem parses");
+        let mut certificate = ModelCertificate {
+            domain_size: 1,
+            constants: [("a".to_string(), 0)].into_iter().collect(),
+            functions: Default::default(),
+            predicates: Default::default(),
+            equality: EqualitySemantics::StrictIdentity,
+            digest: String::new(),
+        };
+        certificate.digest = certificate.compute_digest();
+        assert!(matches!(
+            certificate.validate(&problem, Some("Satisfiable")),
+            ModelVerdict::Rejected(reason) if reason.contains("predicate `p`")
+        ));
+    }
+
+    #[test]
     fn classifies_commutativity_axiom() {
         let mut symbols = SymbolTable::new();
         let f = symbols.intern("f");

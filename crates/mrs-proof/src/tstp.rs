@@ -81,24 +81,23 @@ fn status_for_rule(rule: &str) -> &'static str {
 /// FOF-level proof steps (e.g. NNF conversion or Skolemization results) and
 /// are printed as `fof(...)` annotated formulas instead of `cnf(...)`.
 pub fn format_tstp(proof: &[Clause], symbols: &SymbolTable) -> String {
-    let proof_sorted = crate::elaborate::elaborate(proof, symbols)
-        .map(|ep| ep.clauses)
-        .unwrap_or_else(|_| {
-            crate::elaborate::topological_sort(proof).unwrap_or_else(|_| {
-                let mut fallback = proof.to_vec();
-                fallback.sort_unstable_by_key(|c| c.id.0);
-                fallback
-            })
-        });
+    // Elaboration is an optional refinement. If a composite step cannot be
+    // replayed, retain a dependency-topological compact proof so the strict
+    // kernel can classify it as inconclusive. Never fall back to numeric-ID
+    // sorting, and never emit a graph with missing or cyclic dependencies.
+    let proof_sorted = match crate::elaborate::elaborate(proof, symbols) {
+        Ok(elaborated) => elaborated.clauses,
+        Err(_) => match crate::elaborate::topological_sort(proof) {
+            Ok(sorted) => sorted,
+            Err(_) => return String::new(),
+        },
+    };
 
     let mut lines = Vec::new();
     let problem_path = problem_path();
 
     // Prepend the standard % Proof : <path> header at the very top
     lines.push(format!("% Proof : {}", problem_path));
-
-    let valid_ids: std::collections::HashSet<mrs_core::clause::ClauseId> =
-        proof_sorted.iter().map(|c| c.id).collect();
 
     for clause in &proof_sorted {
         let id = clause.id.0;
@@ -133,11 +132,8 @@ pub fn format_tstp(proof: &[Clause], symbols: &SymbolTable) -> String {
                 format!("file('{}', '{}')", problem_path, name)
             }
             ClauseSource::Inference { rule, parents } => {
-                let parent_names: Vec<String> = parents
-                    .iter()
-                    .filter(|p| valid_ids.contains(p))
-                    .map(|p| format!("c{}", p.0))
-                    .collect();
+                let parent_names: Vec<String> =
+                    parents.iter().map(|p| format!("c{}", p.0)).collect();
                 let status = status_for_rule(rule);
                 let mut info = format!("status({status})");
                 if let Some(certificate) = &clause.certificate {
@@ -421,6 +417,21 @@ mod tests {
     }
 
     #[test]
+    fn format_tstp_does_not_emit_incomplete_parent_list() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let child = Clause::new(
+            ClauseId(2),
+            vec![Literal::pos(Atom::prop(p))],
+            ClauseSource::Inference {
+                rule: "resolution",
+                parents: vec![ClauseId(99)].into(),
+            },
+        );
+        assert!(format_tstp(&[child], &symbols).is_empty());
+    }
+
+    #[test]
     fn format_formula_step_uses_fof_wrapper() {
         use mrs_core::Formula;
 
@@ -611,6 +622,14 @@ mod tests {
 
         let mut symbols = SymbolTable::new();
         let p = symbols.intern("p");
+        let parent = Clause::new(
+            mrs_core::clause::ClauseId(1),
+            vec![Literal::pos(Atom::pred(p, vec![]))],
+            ClauseSource::Input {
+                name: "parent".into(),
+                role: "axiom".into(),
+            },
+        );
         let clause = Clause::new(
             mrs_core::clause::ClauseId(3),
             vec![Literal::pos(Atom::pred(p, vec![]))],
@@ -628,7 +647,7 @@ mod tests {
                 literal_indices: vec![0],
             }],
         });
-        let output = format_tstp(&[clause], &symbols);
+        let output = format_tstp(&[parent, clause], &symbols);
         assert!(output.contains("avatar_split([branch(0, spl0_7, [0])], [])"));
     }
 
@@ -636,6 +655,15 @@ mod tests {
     fn format_avatar_step_status_uses_esa() {
         let mut symbols = SymbolTable::new();
         let p = symbols.intern("p");
+
+        let input = Clause::new(
+            ClauseId(0),
+            vec![Literal::pos(Atom::pred(p, vec![]))],
+            ClauseSource::Input {
+                name: "input".into(),
+                role: "axiom".into(),
+            },
+        );
 
         let split_clause = Clause::new(
             ClauseId(1),
@@ -672,6 +700,7 @@ mod tests {
 
         let output = format_tstp(
             &[
+                input,
                 split_clause,
                 component_clause,
                 branch_refutation,
