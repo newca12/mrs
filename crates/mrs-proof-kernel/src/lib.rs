@@ -557,8 +557,24 @@ fn verify_strict_with_source_internal(
                 node.name
             ));
         }
-        if !matches!(outcome, KernelVerdict::Certified) {
-            return outcome;
+        match outcome {
+            KernelVerdict::Certified => {}
+            KernelVerdict::Rejected(msg) => {
+                let msg = if msg.contains(node.name) {
+                    msg
+                } else {
+                    format!("node {}: {}", node.name, msg)
+                };
+                return KernelVerdict::Rejected(msg);
+            }
+            KernelVerdict::Inconclusive(msg) => {
+                let msg = if msg.contains(node.name) {
+                    msg
+                } else {
+                    format!("node {}: {}", node.name, msg)
+                };
+                return KernelVerdict::Inconclusive(msg);
+            }
         }
         if !matches!(
             rule,
@@ -4525,13 +4541,19 @@ fn collect_all_term_symbols(term: &FOFTerm<'_>, symbols: &mut HashSet<String>) {
 }
 
 #[derive(Clone)]
+struct SkolemScope {
+    allowed: HashSet<String>,
+    required: HashSet<String>,
+}
+
+#[derive(Clone)]
 struct SkolemMatch {
     fresh_symbols: HashSet<String>,
     used_symbols: HashSet<String>,
     universal_map: HashMap<String, String>,
     existential_terms: HashMap<String, String>,
     witness_owners: HashMap<String, String>,
-    active_existentials: HashMap<String, Vec<String>>,
+    active_existentials: HashMap<String, SkolemScope>,
     active_universals: Vec<String>,
     steps: Rc<Cell<usize>>,
     step_limit: usize,
@@ -4632,6 +4654,9 @@ fn match_skolem_formula_inner(
         return false;
     }
 
+    let mut free_in_parent_matrix = HashSet::new();
+    collect_free_variable_names(parent_matrix, &mut free_in_parent_matrix);
+
     let mut step_universal_idx = 0;
     let mut local_universals = Vec::new();
     let mut local_existentials = Vec::new();
@@ -4661,9 +4686,16 @@ fn match_skolem_formula_inner(
                 {
                     return false;
                 }
+                let allowed: HashSet<String> = state.active_universals.iter().cloned().collect();
+                let required: HashSet<String> = state
+                    .universal_map
+                    .iter()
+                    .filter(|(p_var, _)| free_in_parent_matrix.contains(*p_var))
+                    .map(|(_, s_var)| s_var.clone())
+                    .collect();
                 state
                     .active_existentials
-                    .insert(parent_var.clone(), state.active_universals.clone());
+                    .insert(parent_var.clone(), SkolemScope { allowed, required });
                 local_existentials.push(parent_var.clone());
             }
         }
@@ -4944,7 +4976,6 @@ fn match_skolem_term(parent: &FOFTerm<'_>, step: &FOFTerm<'_>, state: &mut Skole
                 let Some((symbol, arguments)) = skolem_application(step) else {
                     return false;
                 };
-                let expected: HashSet<&str> = scope.iter().map(String::as_str).collect();
                 let actual: Option<Vec<&str>> = arguments
                     .iter()
                     .map(|argument| match argument {
@@ -4956,9 +4987,13 @@ fn match_skolem_term(parent: &FOFTerm<'_>, step: &FOFTerm<'_>, state: &mut Skole
                     return false;
                 };
                 let actual_set: HashSet<&str> = actual.iter().copied().collect();
-                if arguments.len() != expected.len()
-                    || actual.len() != actual_set.len()
-                    || actual_set != expected
+                let allowed_refs: HashSet<&str> =
+                    scope.allowed.iter().map(String::as_str).collect();
+                let required_refs: HashSet<&str> =
+                    scope.required.iter().map(String::as_str).collect();
+                if actual.len() != actual_set.len()
+                    || !actual_set.is_subset(&allowed_refs)
+                    || !required_refs.is_subset(&actual_set)
                     || !state.fresh_symbols.contains(&symbol)
                 {
                     return false;
@@ -5088,18 +5123,6 @@ fn verify_resolution(
             "resolution conclusion is not a supported clause".into(),
         );
     };
-    if left
-        .iter()
-        .any(|literal| matches!(literal.atom, Atom::Eq(..)))
-        || right
-            .iter()
-            .any(|literal| matches!(literal.atom, Atom::Eq(..)))
-    {
-        return KernelVerdict::Inconclusive(
-            "equality resolution is not yet implemented by the strict kernel".into(),
-        );
-    }
-
     let shift = max_var_clause(&left).saturating_add(1);
     shift_clause(&mut right, shift);
     for (left_idx, left_literal) in left.iter().enumerate() {
@@ -5107,20 +5130,36 @@ fn verify_resolution(
             if left_literal.positive == right_literal.positive {
                 continue;
             }
-            let (Atom::Pred(left_symbol, left_args), Atom::Pred(right_symbol, right_args)) =
-                (&left_literal.atom, &right_literal.atom)
-            else {
-                continue;
-            };
-            if left_symbol != right_symbol || left_args.len() != right_args.len() {
-                continue;
-            }
             let mut substitution = HashMap::new();
-            if !left_args
-                .iter()
-                .zip(right_args)
-                .all(|(left, right)| unify_terms(left, right, &mut substitution))
-            {
+            let unified = match (&left_literal.atom, &right_literal.atom) {
+                (Atom::Pred(left_symbol, left_args), Atom::Pred(right_symbol, right_args)) => {
+                    if left_symbol != right_symbol || left_args.len() != right_args.len() {
+                        false
+                    } else {
+                        left_args
+                            .iter()
+                            .zip(right_args)
+                            .all(|(left, right)| unify_terms(left, right, &mut substitution))
+                    }
+                }
+                (Atom::Eq(ls, lt), Atom::Eq(rs, rt)) => {
+                    let mut sub1 = HashMap::new();
+                    if unify_terms(ls, rs, &mut sub1) && unify_terms(lt, rt, &mut sub1) {
+                        substitution = sub1;
+                        true
+                    } else {
+                        let mut sub2 = HashMap::new();
+                        if unify_terms(ls, rt, &mut sub2) && unify_terms(lt, rs, &mut sub2) {
+                            substitution = sub2;
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                }
+                _ => false,
+            };
+            if !unified {
                 continue;
             }
             let mut resolvent = Vec::with_capacity(left.len() + right.len() - 2);
@@ -5937,35 +5976,38 @@ fn ac_clause_alpha_equiv(
             if used[right_index] || left[index].positive != right[right_index].positive {
                 continue;
             }
-            let mut next_mapping = mapping.clone();
-            let mut next_reverse = reverse.clone();
-            *steps += 1;
-            if ac_atom_alpha_equiv(
+            used[right_index] = true;
+            let mut branch_mapping = mapping.clone();
+            let mut branch_reverse = reverse.clone();
+            let matched = ac_atom_matches(
                 &left[index].atom,
                 &right[right_index].atom,
-                &mut next_mapping,
-                &mut next_reverse,
+                &mut branch_mapping,
+                &mut branch_reverse,
                 commutative,
                 associative,
                 steps,
                 limits,
-            ) {
-                used[right_index] = true;
-                if visit(
-                    index + 1,
-                    left,
-                    right,
-                    used,
-                    &mut next_mapping,
-                    &mut next_reverse,
-                    commutative,
-                    associative,
-                    steps,
-                    limits,
-                ) {
-                    return true;
-                }
-                used[right_index] = false;
+                &mut |next_m, next_r, steps| {
+                    let mut m = next_m.clone();
+                    let mut r = next_r.clone();
+                    visit(
+                        index + 1,
+                        left,
+                        right,
+                        used,
+                        &mut m,
+                        &mut r,
+                        commutative,
+                        associative,
+                        steps,
+                        limits,
+                    )
+                },
+            );
+            used[right_index] = false;
+            if matched {
+                return true;
             }
         }
         false
@@ -5985,8 +6027,11 @@ fn ac_clause_alpha_equiv(
     )
 }
 
+type AcCallback<'a> =
+    &'a mut dyn FnMut(&HashMap<VarId, VarId>, &HashMap<VarId, VarId>, &mut usize) -> bool;
+
 #[allow(clippy::too_many_arguments)]
-fn ac_atom_alpha_equiv(
+fn ac_atom_matches(
     left: &Atom,
     right: &Atom,
     mapping: &mut HashMap<VarId, VarId>,
@@ -5995,28 +6040,31 @@ fn ac_atom_alpha_equiv(
     associative: &HashSet<mrs_core::SymbolId>,
     steps: &mut usize,
     limits: VerificationLimits,
+    callback: AcCallback<'_>,
 ) -> bool {
     match (left, right) {
         (Atom::Pred(left_symbol, left_args), Atom::Pred(right_symbol, right_args)) => {
-            left_symbol == right_symbol
-                && left_args.len() == right_args.len()
-                && left_args.iter().zip(right_args).all(|(left, right)| {
-                    ac_term_alpha_equiv(
-                        left,
-                        right,
-                        mapping,
-                        reverse,
-                        commutative,
-                        associative,
-                        steps,
-                        limits,
-                    )
-                })
+            if left_symbol != right_symbol || left_args.len() != right_args.len() {
+                false
+            } else {
+                ac_args_matches(
+                    left_args,
+                    right_args,
+                    0,
+                    mapping,
+                    reverse,
+                    commutative,
+                    associative,
+                    steps,
+                    limits,
+                    callback,
+                )
+            }
         }
         (Atom::Eq(left_left, left_right), Atom::Eq(right_left, right_right)) => {
             let mut direct_mapping = mapping.clone();
             let mut direct_reverse = reverse.clone();
-            if ac_term_alpha_equiv(
+            let direct_matched = ac_term_matches(
                 left_left,
                 right_left,
                 &mut direct_mapping,
@@ -6025,55 +6073,106 @@ fn ac_atom_alpha_equiv(
                 associative,
                 steps,
                 limits,
-            ) && ac_term_alpha_equiv(
-                left_right,
+                &mut |m, r, steps| {
+                    let mut next_m = m.clone();
+                    let mut next_r = r.clone();
+                    ac_term_matches(
+                        left_right,
+                        right_right,
+                        &mut next_m,
+                        &mut next_r,
+                        commutative,
+                        associative,
+                        steps,
+                        limits,
+                        &mut *callback,
+                    )
+                },
+            );
+            if direct_matched {
+                return true;
+            }
+            let mut flipped_mapping = mapping.clone();
+            let mut flipped_reverse = reverse.clone();
+            ac_term_matches(
+                left_left,
                 right_right,
-                &mut direct_mapping,
-                &mut direct_reverse,
+                &mut flipped_mapping,
+                &mut flipped_reverse,
                 commutative,
                 associative,
                 steps,
                 limits,
-            ) {
-                *mapping = direct_mapping;
-                *reverse = direct_reverse;
-                true
-            } else {
-                let mut flipped_mapping = mapping.clone();
-                let mut flipped_reverse = reverse.clone();
-                if ac_term_alpha_equiv(
-                    left_left,
-                    right_right,
-                    &mut flipped_mapping,
-                    &mut flipped_reverse,
-                    commutative,
-                    associative,
-                    steps,
-                    limits,
-                ) && ac_term_alpha_equiv(
-                    left_right,
-                    right_left,
-                    &mut flipped_mapping,
-                    &mut flipped_reverse,
-                    commutative,
-                    associative,
-                    steps,
-                    limits,
-                ) {
-                    *mapping = flipped_mapping;
-                    *reverse = flipped_reverse;
-                    true
-                } else {
-                    false
-                }
-            }
+                &mut |m, r, steps| {
+                    let mut next_m = m.clone();
+                    let mut next_r = r.clone();
+                    ac_term_matches(
+                        left_right,
+                        right_left,
+                        &mut next_m,
+                        &mut next_r,
+                        commutative,
+                        associative,
+                        steps,
+                        limits,
+                        &mut *callback,
+                    )
+                },
+            )
         }
         _ => false,
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn ac_term_alpha_equiv(
+fn ac_args_matches(
+    left_args: &[Term],
+    right_args: &[Term],
+    index: usize,
+    mapping: &mut HashMap<VarId, VarId>,
+    reverse: &mut HashMap<VarId, VarId>,
+    commutative: &HashSet<mrs_core::SymbolId>,
+    associative: &HashSet<mrs_core::SymbolId>,
+    steps: &mut usize,
+    limits: VerificationLimits,
+    callback: AcCallback<'_>,
+) -> bool {
+    if *steps >= limits.max_equivalence_steps {
+        return false;
+    }
+    if index == left_args.len() {
+        return callback(mapping, reverse, steps);
+    }
+    ac_term_matches(
+        &left_args[index],
+        &right_args[index],
+        mapping,
+        reverse,
+        commutative,
+        associative,
+        steps,
+        limits,
+        &mut |m, r, steps| {
+            let mut next_m = m.clone();
+            let mut next_r = r.clone();
+            ac_args_matches(
+                left_args,
+                right_args,
+                index + 1,
+                &mut next_m,
+                &mut next_r,
+                commutative,
+                associative,
+                steps,
+                limits,
+                &mut *callback,
+            )
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ac_term_matches(
     left: &Term,
     right: &Term,
     mapping: &mut HashMap<VarId, VarId>,
@@ -6082,98 +6181,90 @@ fn ac_term_alpha_equiv(
     associative: &HashSet<mrs_core::SymbolId>,
     steps: &mut usize,
     limits: VerificationLimits,
+    callback: AcCallback<'_>,
 ) -> bool {
     if *steps >= limits.max_equivalence_steps {
         return false;
     }
+    *steps += 1;
     match (left, right) {
-        (Term::Var(left), Term::Var(right)) => {
-            if let Some(mapped) = mapping.get(left) {
-                mapped == right
-            } else if reverse.contains_key(right) {
+        (Term::Var(left_var), Term::Var(right_var)) => {
+            if let Some(mapped) = mapping.get(left_var) {
+                if mapped == right_var {
+                    callback(mapping, reverse, steps)
+                } else {
+                    false
+                }
+            } else if reverse.contains_key(right_var) {
                 false
             } else {
-                mapping.insert(*left, *right);
-                reverse.insert(*right, *left);
-                true
+                mapping.insert(*left_var, *right_var);
+                reverse.insert(*right_var, *left_var);
+                let res = callback(mapping, reverse, steps);
+                mapping.remove(left_var);
+                reverse.remove(right_var);
+                res
             }
         }
         (Term::App(left_symbol, left_args), Term::App(right_symbol, right_args))
-            if left_symbol == right_symbol
-                && associative.contains(left_symbol)
-                && commutative.contains(left_symbol) =>
+            if left_symbol == right_symbol =>
         {
-            let left_leaves = flatten_ac_term(left, *left_symbol, associative);
-            let right_leaves = flatten_ac_term(right, *right_symbol, associative);
-            if left_leaves.len() != right_leaves.len() {
-                return false;
-            }
-            match_ac_terms(
-                &left_leaves,
-                &right_leaves,
-                0,
-                &mut vec![false; right_leaves.len()],
-                mapping,
-                reverse,
-                commutative,
-                associative,
-                steps,
-                limits,
-            )
-        }
-        (Term::App(left_symbol, left_args), Term::App(right_symbol, right_args))
-            if left_symbol == right_symbol && associative.contains(left_symbol) =>
-        {
-            let left_leaves = flatten_ac_term(left, *left_symbol, associative);
-            let right_leaves = flatten_ac_term(right, *right_symbol, associative);
-            left_leaves.len() == right_leaves.len()
-                && left_leaves.iter().zip(right_leaves).all(|(left, right)| {
-                    ac_term_alpha_equiv(
-                        left,
-                        right,
-                        mapping,
-                        reverse,
-                        commutative,
-                        associative,
-                        steps,
-                        limits,
-                    )
-                })
-        }
-        (Term::App(left_symbol, left_args), Term::App(right_symbol, right_args))
-            if left_symbol == right_symbol
-                && commutative.contains(left_symbol)
+            if associative.contains(left_symbol) && commutative.contains(left_symbol) {
+                let left_leaves = flatten_ac_term(left, *left_symbol, associative);
+                let right_leaves = flatten_ac_term(right, *right_symbol, associative);
+                if left_leaves.len() != right_leaves.len() {
+                    return false;
+                }
+                match_ac_leaves(
+                    &left_leaves,
+                    &right_leaves,
+                    0,
+                    &mut vec![false; right_leaves.len()],
+                    mapping,
+                    reverse,
+                    commutative,
+                    associative,
+                    steps,
+                    limits,
+                    callback,
+                )
+            } else if commutative.contains(left_symbol)
                 && left_args.len() == 2
-                && right_args.len() == 2 =>
-        {
-            let mut direct_mapping = mapping.clone();
-            let mut direct_reverse = reverse.clone();
-            if ac_term_alpha_equiv(
-                &left_args[0],
-                &right_args[0],
-                &mut direct_mapping,
-                &mut direct_reverse,
-                commutative,
-                associative,
-                steps,
-                limits,
-            ) && ac_term_alpha_equiv(
-                &left_args[1],
-                &right_args[1],
-                &mut direct_mapping,
-                &mut direct_reverse,
-                commutative,
-                associative,
-                steps,
-                limits,
-            ) {
-                *mapping = direct_mapping;
-                *reverse = direct_reverse;
-                true
-            } else {
+                && right_args.len() == 2
+            {
+                let mut direct_mapping = mapping.clone();
+                let mut direct_reverse = reverse.clone();
+                let direct_matched = ac_term_matches(
+                    &left_args[0],
+                    &right_args[0],
+                    &mut direct_mapping,
+                    &mut direct_reverse,
+                    commutative,
+                    associative,
+                    steps,
+                    limits,
+                    &mut |m, r, steps| {
+                        let mut next_m = m.clone();
+                        let mut next_r = r.clone();
+                        ac_term_matches(
+                            &left_args[1],
+                            &right_args[1],
+                            &mut next_m,
+                            &mut next_r,
+                            commutative,
+                            associative,
+                            steps,
+                            limits,
+                            &mut *callback,
+                        )
+                    },
+                );
+                if direct_matched {
+                    return true;
+                }
                 let mut flipped_mapping = mapping.clone();
                 let mut flipped_reverse = reverse.clone();
-                if ac_term_alpha_equiv(
+                ac_term_matches(
                     &left_args[0],
                     &right_args[1],
                     &mut flipped_mapping,
@@ -6182,39 +6273,39 @@ fn ac_term_alpha_equiv(
                     associative,
                     steps,
                     limits,
-                ) && ac_term_alpha_equiv(
-                    &left_args[1],
-                    &right_args[0],
-                    &mut flipped_mapping,
-                    &mut flipped_reverse,
+                    &mut |m, r, steps| {
+                        let mut next_m = m.clone();
+                        let mut next_r = r.clone();
+                        ac_term_matches(
+                            &left_args[1],
+                            &right_args[0],
+                            &mut next_m,
+                            &mut next_r,
+                            commutative,
+                            associative,
+                            steps,
+                            limits,
+                            &mut *callback,
+                        )
+                    },
+                )
+            } else {
+                if left_args.len() != right_args.len() {
+                    return false;
+                }
+                ac_args_matches(
+                    left_args,
+                    right_args,
+                    0,
+                    mapping,
+                    reverse,
                     commutative,
                     associative,
                     steps,
                     limits,
-                ) {
-                    *mapping = flipped_mapping;
-                    *reverse = flipped_reverse;
-                    true
-                } else {
-                    false
-                }
+                    callback,
+                )
             }
-        }
-        (Term::App(left_symbol, left_args), Term::App(right_symbol, right_args)) => {
-            left_symbol == right_symbol
-                && left_args.len() == right_args.len()
-                && left_args.iter().zip(right_args).all(|(left, right)| {
-                    ac_term_alpha_equiv(
-                        left,
-                        right,
-                        mapping,
-                        reverse,
-                        commutative,
-                        associative,
-                        steps,
-                        limits,
-                    )
-                })
         }
         _ => false,
     }
@@ -6235,7 +6326,7 @@ fn flatten_ac_term<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn match_ac_terms(
+fn match_ac_leaves(
     left: &[&Term],
     right: &[&Term],
     index: usize,
@@ -6246,46 +6337,50 @@ fn match_ac_terms(
     associative: &HashSet<mrs_core::SymbolId>,
     steps: &mut usize,
     limits: VerificationLimits,
+    callback: AcCallback<'_>,
 ) -> bool {
-    if index == left.len() {
-        return true;
+    if *steps >= limits.max_equivalence_steps {
+        return false;
     }
-    let mut candidates: Vec<_> = (0..right.len()).filter(|&index| !used[index]).collect();
+    if index == left.len() {
+        return callback(mapping, reverse, steps);
+    }
+    let mut candidates: Vec<_> = (0..right.len()).filter(|&i| !used[i]).collect();
     candidates.sort_by_key(|&right_index| {
         ac_match_priority(left[index], right[right_index], mapping, reverse)
     });
     for right_index in candidates {
-        let mut next_mapping = mapping.clone();
-        let mut next_reverse = reverse.clone();
-        *steps += 1;
-        if ac_term_alpha_equiv(
+        used[right_index] = true;
+        let matched = ac_term_matches(
             left[index],
             right[right_index],
-            &mut next_mapping,
-            &mut next_reverse,
+            mapping,
+            reverse,
             commutative,
             associative,
             steps,
             limits,
-        ) {
-            used[right_index] = true;
-            if match_ac_terms(
-                left,
-                right,
-                index + 1,
-                used,
-                &mut next_mapping,
-                &mut next_reverse,
-                commutative,
-                associative,
-                steps,
-                limits,
-            ) {
-                *mapping = next_mapping;
-                *reverse = next_reverse;
-                return true;
-            }
-            used[right_index] = false;
+            &mut |next_m, next_r, steps| {
+                let mut m = next_m.clone();
+                let mut r = next_r.clone();
+                match_ac_leaves(
+                    left,
+                    right,
+                    index + 1,
+                    used,
+                    &mut m,
+                    &mut r,
+                    commutative,
+                    associative,
+                    steps,
+                    limits,
+                    &mut *callback,
+                )
+            },
+        );
+        used[right_index] = false;
+        if matched {
+            return true;
         }
     }
     false
@@ -9272,6 +9367,39 @@ mod tests {
         assert_eq!(
             verify_ac_normalization(
                 &[source, lub_assoc, lub_comm, glb_comm, glb_assoc],
+                &conclusion,
+                VerificationLimits::default(),
+            ),
+            KernelVerdict::Certified
+        );
+    }
+
+    #[test]
+    fn certifies_ac_normalization_predicate_args() {
+        fn lower(input: &str, symbols: &mut SymbolTable) -> Formula {
+            let problem = parse_tptp(input).expect("formula parses");
+            lower_annotated(symbols, &problem.formulas[0], VerificationLimits::default())
+                .expect("formula lowers")
+        }
+
+        let mut symbols = SymbolTable::new();
+        let source = lower("cnf(source, plain, ~def(vplus(X5, X3), X5)).", &mut symbols);
+        let conclusion = lower(
+            "cnf(conclusion, plain, ~def(vplus(X3, X5), X5)).",
+            &mut symbols,
+        );
+        let plus_comm = lower(
+            "cnf(plus_comm, axiom, vplus(X1, X0) = vplus(X0, X1)).",
+            &mut symbols,
+        );
+        let plus_assoc = lower(
+            "cnf(plus_assoc, axiom, vplus(vplus(X0, X1), X2) = vplus(X0, vplus(X1, X2))).",
+            &mut symbols,
+        );
+
+        assert_eq!(
+            verify_ac_normalization(
+                &[source, plus_comm, plus_assoc],
                 &conclusion,
                 VerificationLimits::default(),
             ),

@@ -180,18 +180,10 @@ pub fn clausify_with_provenance(
         },
     );
 
-    // Step 2: Miniscope (push quantifiers inward to reduce Skolem arity).
-    // Purely structural (preserves logical equivalence exactly, introduces
-    // no new symbols) — folded into the NNF->Skolemization boundary rather
-    // than cited as its own step.
-    let mini_formula = if contains_exists(&nnf_formula) {
-        miniscope::miniscope(&nnf_formula)
-    } else {
-        // Without existential quantifiers there is no Skolem arity benefit,
-        // and skipping miniscoping keeps the NNF -> Skolem provenance edge
-        // exact rather than silently folding a structural rewrite into it.
-        nnf_formula.clone()
-    };
+    // Step 2: Skip miniscoping to keep the NNF -> Skolemization provenance
+    // edge exact. Skolemization already applies free-variable filtering to
+    // produce minimal-arity Skolem terms without rewriting the formula structure.
+    let mini_formula = nnf_formula.clone();
 
     // Step 3: Skolemize (eliminate existential quantifiers)
     let skolem_formula = skolem::skolemize(&mini_formula, symbols, name);
@@ -481,18 +473,6 @@ fn contains_and(formula: &Formula) -> bool {
         Formula::And(_) => true,
         Formula::Or(ds) => ds.iter().any(contains_and),
         _ => false,
-    }
-}
-
-fn contains_exists(formula: &Formula) -> bool {
-    match formula {
-        Formula::Exists(_, _) => true,
-        Formula::Forall(_, body) | Formula::Neg(body) => contains_exists(body),
-        Formula::And(parts) | Formula::Or(parts) => parts.iter().any(contains_exists),
-        Formula::Implies(left, right) | Formula::Iff(left, right) => {
-            contains_exists(left) || contains_exists(right)
-        }
-        Formula::Atom(_) | Formula::True | Formula::False => false,
     }
 }
 
