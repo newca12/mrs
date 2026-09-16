@@ -69,6 +69,44 @@ editing the release metadata. It is not a release approval.
 No release process should push automatically. Publishing, tagging, and remote
 merges require an explicit human decision after the gate passes.
 
+## Certified Release Verification (Phase 9)
+
+In addition to the baseline release gate, every certified release promotion requires verifying:
+
+1. **Certified CASC Run**:
+   - Run benchmark sweep in certified mode (`mrs --strict` or `MRS_CERTIFIED=1`).
+   - Every emitted refutation candidate is verified by `mrs-proof-kernel`.
+   - Any candidate failing kernel verification triggers fallback to subsequent portfolio candidates.
+
+2. **Strict Proof-Audit Summary**:
+   - Audit all generated proofs using `audit_casc_proofs --checks strict,mrs,ladder`.
+   - Ensure zero `VerifiedBad` results in strict and ladder modes.
+   - All accepted refutations match the TPTP reference polarity and have unbroken proof DAGs.
+
+3. **Candidate Rejection Summary**:
+   - Record telemetry for any uncertified candidates rejected by the async coordinator (`candidate_rejected` counts and failure reasons).
+   - Confirm that an uncertified first candidate does not suppress a subsequent valid proof.
+
+4. **FEQ Bad-Proof Regression Audit**:
+   - Confirm all historic FEQ bad-proof problems are either solved with verified proofs or fail closed (`GaveUp`).
+   - Regression suite passes without any reference polarity violation or unsound step.
+
+5. **EPU and UEQ Golden-Proof Audit**:
+   - EPU and UEQ golden test suites run and achieve 100% `VerifiedGood` in strict kernel mode.
+   - Demodulation steps are validated step-by-step or safely elaborated.
+
+6. **Proof-Format Reproducibility Check**:
+   - TSTP outputs contain valid `% SZS output start CNFRefutation` or `% SZS output start Proof`.
+   - Formulas and inferences conform strictly to TPTP v9 specification and ProoVer 2026 rules.
+
+7. **Raw vs Certified Score Comparison**:
+   - Report raw, ladder, and strict-certified scores separately in division summaries.
+   - Explicitly document the delta between raw generation and kernel-certified totals.
+
+8. **Model-Result Labeling Check for EPS**:
+   - Satisfiable / CounterSatisfiable results in EPS must be accompanied by a validated `ModelCertificate` (domain size, constant/function/predicate tables, SHA-256 digest) or marked `N/A: Model`.
+   - Never mislabel model results as refutation proof certificates.
+
 ## Known Boundaries
 
 - The PRV score report requires the configured verifier mode and any external

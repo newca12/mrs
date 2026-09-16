@@ -197,9 +197,17 @@ fn run_required_checks(root: &Path) -> Result<(), String> {
     ];
     for (name, command_args) in checks {
         println!("release gate: running {name}");
-        let output = command("nix", &command_args_with_develop(&command_args), Some(root))?;
+        let output = match command("nix", &command_args_with_develop(&command_args), Some(root)) {
+            Ok(out) => out,
+            Err(_) => {
+                let prog = command_args[0];
+                command(prog, &command_args[1..], Some(root))?
+            }
+        };
         if !output.status.success() {
-            return Err(format!("{name} failed"));
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return Err(format!("{name} failed:\n{stdout}\n{stderr}"));
         }
     }
     Ok(())
