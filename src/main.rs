@@ -7,6 +7,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[allow(dead_code)]
 mod analyze;
+mod coordinator;
 mod include;
 mod lowering;
 mod sine;
@@ -15,7 +16,6 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use std::time::Duration;
@@ -28,10 +28,9 @@ use mrs_szs::{SzsStatus, szs_output_end, szs_output_start, szs_status_line};
 
 fn main() {
     let start = Instant::now();
-
-    let mut path: Option<String> = None;
     let mut time_secs: u64 = 30;
     let mut schedule_name: Option<String> = None;
+    let mut path: Option<String> = None;
     let mut log_ml_data: Option<String> = None;
     let mut ml_log_csv = false;
     let mut ml_weights: Option<String> = None;
@@ -41,6 +40,7 @@ fn main() {
     let mut portfolio: Option<Vec<usize>> = None;
     let mut ml_prune_ratio: Option<f32> = None;
     let mut self_check = false;
+    let mut cert_reserve_worker = false;
     let mut include_root: Option<PathBuf> = None;
     let mut stats_mode = false;
     let mut profile_json_mode = false;
@@ -159,8 +159,11 @@ fn main() {
             "--profile-json" => {
                 profile_json_mode = true;
             }
-            "--self-check" => {
+            "--self-check" | "--certified" => {
                 self_check = true;
+            }
+            "--cert-reserve-worker" => {
+                cert_reserve_worker = true;
             }
             "--include-root" => {
                 let value = args.next().unwrap_or_else(|| {
@@ -676,14 +679,22 @@ fn main() {
     }
 
     let elapsed = start.elapsed();
-    let (final_result, final_status, final_report) = if elapsed >= total_budget {
+    let (final_result, final_status, final_report, final_cert_telemetry) = if elapsed
+        >= total_budget
+    {
         (
             SearchResult::Timeout,
             SzsStatus::Timeout,
             ScheduleReport::default(),
+            None,
         )
     } else {
         let actual_workers = workers.unwrap_or_else(|| num_cpus::get_physical().max(1));
+        let (search_workers, cert_oversubscribed) = if self_check && cert_reserve_worker {
+            ((actual_workers.saturating_sub(1)).max(1), false)
+        } else {
+            (actual_workers, true)
+        };
 
         let search_budget = total_budget - elapsed;
         if exact_strategy.is_some() && portfolio.is_some() {
@@ -711,7 +722,7 @@ fn main() {
                 match mrs_search::strategy::named::with_portfolio(
                     selected_schedule,
                     search_budget,
-                    actual_workers,
+                    search_workers,
                     ids,
                 ) {
                     Some(s) => s,
@@ -724,12 +735,12 @@ fn main() {
                 }
             }
             (None, None) if schedule_name.is_none() => {
-                StrategySchedule::default_schedule(search_budget, actual_workers)
+                StrategySchedule::default_schedule(search_budget, search_workers)
             }
             (None, None) => match mrs_search::strategy::named::by_name(
                 selected_schedule,
                 search_budget,
-                actual_workers,
+                search_workers,
             ) {
                 Some(s) => s,
                 None => {
@@ -754,33 +765,64 @@ fn main() {
             }
         }
 
-        // Pass the *already-resolved* worker count (the same value the
-        // schedule above was time-sliced for) rather than the raw CLI
-        // `Option`. Previously this line passed `workers` (raw, `None`
-        // unless `--workers` was given), while the schedule was built
-        // with `actual_workers` (`num_cpus::get_physical()` by default).
-        // `run_schedule` independently defaults an unset `workers` to
-        // `std::thread::available_parallelism()` (logical/hyperthreaded
-        // core count), so on any hyperthreaded machine the thread pool
-        // silently ran with *more* concurrent strategies than the
-        // schedule assumed — doubling contention and making wall-clock-
-        // sensitive heuristics like LRS pruning wildly non-reproducible
-        // between runs. Passing `Some(actual_workers)` here keeps both
-        // halves in agreement.
-        let (result, schedule_report) = run_schedule(
-            &all_clauses,
-            &provenance,
-            id_gen,
-            &schedule,
-            &lowered.symbols,
-            mrs_search::strategy::MlOptions {
-                log_dir: log_ml_data.clone(),
-                log_csv: ml_log_csv,
-                weights: ml_weights.clone(),
-                premise_keep: premise_keep.clone(),
-            },
-            Some(actual_workers),
-        );
+        let (result, schedule_report, cert_telemetry) = if self_check {
+            let coordinator =
+                coordinator::AsyncCoordinator::new(coordinator::AsyncCoordinatorConfig {
+                    time_limit: Duration::from_secs(time_secs),
+                    self_check_reserve: Duration::from_secs(2),
+                    problem_path: path.clone(),
+                    problem_name: problem_name.to_string(),
+                    input_text: input.clone(),
+                    include_root: include_root.clone(),
+                    has_includes: !problem.includes.is_empty(),
+                    cert_oversubscribed,
+                    search_workers,
+                    cert_workers: 1,
+                    start_time: start,
+                });
+            let (res, rep) = mrs_search::strategy::run_schedule_with_candidate_receiver(
+                &all_clauses,
+                &provenance,
+                id_gen,
+                &schedule,
+                &lowered.symbols,
+                mrs_search::strategy::MlOptions {
+                    log_dir: log_ml_data.clone(),
+                    log_csv: ml_log_csv,
+                    weights: ml_weights.clone(),
+                    premise_keep: premise_keep.clone(),
+                },
+                Some(search_workers),
+                Some(coordinator.clone()),
+            );
+            let tele = coordinator.finish();
+            let mut res = coordinator.certified_result().unwrap_or(res);
+            if matches!(res, SearchResult::Timeout)
+                && rep
+                    .strategies
+                    .iter()
+                    .any(|s| matches!(s.result, SearchResult::Refutation(..)))
+            {
+                res = SearchResult::GaveUp;
+            }
+            (res, rep, Some(tele))
+        } else {
+            let (res, rep) = run_schedule(
+                &all_clauses,
+                &provenance,
+                id_gen,
+                &schedule,
+                &lowered.symbols,
+                mrs_search::strategy::MlOptions {
+                    log_dir: log_ml_data.clone(),
+                    log_csv: ml_log_csv,
+                    weights: ml_weights.clone(),
+                    premise_keep: premise_keep.clone(),
+                },
+                Some(actual_workers),
+            );
+            (res, rep, None)
+        };
 
         let status = match &result {
             SearchResult::Refutation(..) => {
@@ -806,7 +848,7 @@ fn main() {
             SearchResult::ResourceOut => SzsStatus::ResourceOut,
         };
 
-        (result, status, schedule_report)
+        (result, status, schedule_report, cert_telemetry)
     };
 
     let mut status = final_status;
@@ -854,96 +896,12 @@ fn main() {
         }
     }
 
-    // --- Optional strict self-verification guard ---------------------------
-    // The normal CASC path deliberately does not spend part of the search
-    // budget on the competition checker.  `--self-check` is an explicit
-    // release/development mode: only a positive verification result permits
-    // the refutation and proof to be emitted.
-    let mut proof_certified = !self_check;
-    if self_check {
-        if !matches!(result, SearchResult::Refutation(..)) {
-            proof_certified = true;
-        } else {
-            let mut failure = None;
-            let elapsed = start.elapsed();
-            let remaining = Duration::from_secs(time_secs).saturating_sub(elapsed);
-
-            if path == "-" && include_root.is_none() {
-                failure =
-                    Some("strict self-check for stdin requires --include-root DIR".to_string());
-            } else if remaining < Duration::from_secs(2) {
-                failure = Some("insufficient time remains for strict self-check".to_string());
-            } else if let SearchResult::Refutation(_, tstp_proof) = &result {
-                // Use the same source label as `format_tstp`: stdin proofs use
-                // `input` because there is no filesystem path to cite.
-                let proof_source = if path == "-" { "input" } else { path.as_str() };
-                let temp_proof_text = format!("% Proof : {proof_source}\n{tstp_proof}");
-                let tptp_root = std::env::var("TPTP").ok().map(std::path::PathBuf::from);
-                if path == "-" {
-                    let root = include_root.as_deref().expect("stdin include root checked");
-                    let verdict = mrs_proover::strict::verify_text_with_include_root(
-                        input.clone(),
-                        temp_proof_text.clone(),
-                        root,
-                        mrs_proof_kernel::VerificationLimits::default(),
-                    );
-                    if matches!(verdict, mrs_proof_kernel::KernelVerdict::Certified) {
-                        proof_certified = true;
-                    } else {
-                        failure = Some(format!("strict self-check returned {verdict}"));
-                    }
-                } else if problem.includes.is_empty() {
-                    let verdict = mrs_proover::strict::verify_text(
-                        &input,
-                        &temp_proof_text,
-                        Some(&path),
-                        mrs_proof_kernel::VerificationLimits::default(),
-                    );
-                    if matches!(verdict, mrs_proof_kernel::KernelVerdict::Certified) {
-                        proof_certified = true;
-                    } else {
-                        failure = Some(format!("strict self-check returned {verdict}"));
-                    }
-                } else {
-                    let counter = SELF_VERIFY_COUNTER.fetch_add(1, Ordering::Relaxed);
-                    let temp_path = std::env::temp_dir().join(format!(
-                        "mrs_self_verify_{}_{}_{}.p",
-                        process::id(),
-                        counter,
-                        problem_name
-                    ));
-                    match std::fs::write(&temp_path, &temp_proof_text) {
-                        Ok(()) => match mrs_proover::load::load(&temp_path, tptp_root.as_deref()) {
-                            Ok(job) => {
-                                let verdict = mrs_proover::strict::verify_loaded_job_default(&job);
-                                if matches!(verdict, mrs_proof_kernel::KernelVerdict::Certified) {
-                                    proof_certified = true;
-                                } else {
-                                    failure = Some(format!("strict self-check returned {verdict}"));
-                                }
-                            }
-                            Err(error) => {
-                                failure = Some(format!(
-                                    "strict self-check could not load proof: {error}"
-                                ));
-                            }
-                        },
-                        Err(error) => {
-                            failure =
-                                Some(format!("strict self-check could not write proof: {error}"));
-                        }
-                    }
-                    let _ = std::fs::remove_file(&temp_path);
-                }
-            }
-
-            if let Some(reason) = failure {
-                eprintln!("% Strict self-verification failed: {reason}");
-                status = SzsStatus::GaveUp;
-                proof_certified = false;
-            }
-        }
-    }
+    // --- Asynchronous candidate certification check -----------------------
+    let proof_certified = if self_check {
+        matches!(result, SearchResult::Refutation(..))
+    } else {
+        true
+    };
 
     if self_check
         && !proof_certified
@@ -975,14 +933,12 @@ fn main() {
             status,
             start.elapsed(),
             &final_report,
-            &result,
+            final_cert_telemetry.as_ref(),
             self_check,
             proof_certified,
         );
     }
 }
-
-static SELF_VERIFY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Returns peak virtual memory in MB by reading /proc/self/status (Linux only).
 fn peak_memory_mb() -> Option<u64> {
@@ -1001,7 +957,7 @@ fn print_statistics(
     status: SzsStatus,
     elapsed: Duration,
     report: &mrs_search::ScheduleReport,
-    search_result: &SearchResult,
+    cert_telemetry: Option<&coordinator::CertificationTelemetry>,
     self_check: bool,
     proof_certified: bool,
 ) {
@@ -1020,13 +976,49 @@ fn print_statistics(
     if let Some(mb) = peak_memory_mb() {
         println!("% Peak memory usage: {} MB", mb);
     }
+    if let Some(tele) = cert_telemetry {
+        println!("% Candidate certification audit:");
+        println!("%   Candidates received: {}", tele.candidate_count);
+        println!(
+            "%   Candidates rejected: {}",
+            tele.candidate_rejection_count
+        );
+        if let Some(idx) = tele.certified_candidate_index {
+            println!("%   Certified candidate index: {}", idx);
+            println!("%   Proof nodes: {}", tele.proof_nodes);
+            println!("%   Proof bytes: {}", tele.proof_bytes);
+            println!(
+                "%   Time remaining at discovery: {:.3} s",
+                tele.time_remaining_at_discovery.as_secs_f64()
+            );
+        }
+        println!(
+            "%   Elaboration time: {:.3} ms",
+            tele.total_elaboration_time.as_secs_f64() * 1000.0
+        );
+        println!(
+            "%   Strict kernel time: {:.3} ms",
+            tele.total_strict_kernel_time.as_secs_f64() * 1000.0
+        );
+        println!(
+            "%   Search workers: {}, Cert workers: {}, Oversubscribed: {}",
+            tele.search_workers, tele.cert_workers, tele.cert_oversubscribed
+        );
+        if !tele.candidate_reasons.is_empty() {
+            println!("%   Rejection reasons:");
+            for reason in &tele.candidate_reasons {
+                println!("%     - {}", reason);
+            }
+        }
+    }
     println!("% ------------------------------");
 
     // Emit structured failure detail to stderr so the benchmark harness can
     // classify unsolved problems without re-parsing stdout.
     // Format: "% SZS detail <key=value> ..."
     // Always emitted (even on success) so casc.sh can parse it uniformly.
-    let search_result_name = match search_result {
+    let raw_search_result = report.raw_search_result();
+    let search_result_name = match &raw_search_result {
         SearchResult::Refutation(..) => "Refutation",
         SearchResult::Saturated => "Saturation",
         SearchResult::GaveUp => "GaveUp",
@@ -1036,7 +1028,7 @@ fn print_statistics(
 
     let mut detail_str = report.telemetry_detail(search_result_name);
     if self_check {
-        let self_check_status = if matches!(search_result, SearchResult::Refutation(..)) {
+        let self_check_status = if matches!(raw_search_result, SearchResult::Refutation(..)) {
             if proof_certified {
                 "Certified"
             } else {
@@ -1045,7 +1037,31 @@ fn print_statistics(
         } else {
             "Unchecked"
         };
-        detail_str = format!("{} self_check={}", detail_str, self_check_status);
+        if let Some(tele) = cert_telemetry {
+            detail_str = format!(
+                "{} self_check={} candidates={} rejections={} cert_oversubscribed={} cert_search_workers={} cert_workers={}",
+                detail_str,
+                self_check_status,
+                tele.candidate_count,
+                tele.candidate_rejection_count,
+                tele.cert_oversubscribed,
+                tele.search_workers,
+                tele.cert_workers,
+            );
+            if let Some(idx) = tele.certified_candidate_index {
+                detail_str = format!("{} cert_idx={}", detail_str, idx);
+            }
+            detail_str = format!(
+                "{} cert_elab_ms={} cert_kernel_ms={} cert_proof_nodes={} cert_proof_bytes={}",
+                detail_str,
+                tele.total_elaboration_time.as_millis(),
+                tele.total_strict_kernel_time.as_millis(),
+                tele.proof_nodes,
+                tele.proof_bytes,
+            );
+        } else {
+            detail_str = format!("{} self_check={}", detail_str, self_check_status);
+        }
     }
     eprintln!("% SZS detail {}", detail_str);
 }

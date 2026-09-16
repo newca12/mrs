@@ -60,6 +60,7 @@ pub use mrs_cnf::goal_transform::GoalTransformMode;
 pub use preprocessing::{PreprocessingConfig, PreprocessingStats, preprocess_clauses};
 pub use resource::{ResourceLimits, current_memory_mb, system_memory_limit_mb};
 pub use select::{QueueType, SelectionStrategy};
+pub use strategy::{CandidateReceiver, CandidateRefutation, run_schedule_with_candidate_receiver};
 pub use symbol_config::{PrecedenceScheme, SymbolWeightScheme, compute_symbol_config};
 
 /// Per-strategy counters for failure diagnosis and throughput analysis.
@@ -255,6 +256,32 @@ impl ScheduleReport {
             total_lrs_disc,
             total_fwd_sub,
         ))
+    }
+
+    /// Returns the raw search result seen across all strategies in the schedule,
+    /// before any post-search certification filtering.
+    pub fn raw_search_result(&self) -> SearchResult {
+        for s in &self.strategies {
+            if matches!(s.result, SearchResult::Refutation(..)) {
+                return s.result.clone();
+            }
+        }
+        for s in &self.strategies {
+            if matches!(s.result, SearchResult::Saturated) {
+                return s.result.clone();
+            }
+        }
+        for s in &self.strategies {
+            if matches!(s.result, SearchResult::ResourceOut) {
+                return s.result.clone();
+            }
+        }
+        for s in &self.strategies {
+            if matches!(s.result, SearchResult::GaveUp) {
+                return s.result.clone();
+            }
+        }
+        SearchResult::Timeout
     }
 }
 

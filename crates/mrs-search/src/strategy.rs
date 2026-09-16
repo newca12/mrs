@@ -479,6 +479,30 @@ fn is_ml_prune_slot(strategy_idx: usize, total_strategies: usize) -> bool {
     strategy_idx >= total_strategies.saturating_sub(ML_PRUNE_LAST_SLOTS)
 }
 
+/// A candidate refutation discovered during search.
+#[derive(Debug, Clone)]
+pub struct CandidateRefutation {
+    pub strategy_idx: usize,
+    pub strategy_id: usize,
+    pub clause_id: mrs_core::clause::ClauseId,
+    pub tstp_proof: String,
+    pub elapsed_ms: u64,
+    pub time_remaining: Duration,
+}
+
+/// Interface for receiving and evaluating candidate refutations asynchronously.
+pub trait CandidateReceiver: Send + Sync {
+    /// Submit a candidate refutation to the coordinator.
+    /// Returns `true` if search should stop immediately (e.g. candidate was already certified).
+    fn submit_candidate(&self, candidate: CandidateRefutation) -> bool;
+
+    /// Registers the search stop flag so the receiver can cancel workers when a candidate certifies.
+    fn register_stop_flag(&self, stop_flag: Arc<AtomicBool>);
+
+    /// Returns the certified search result, if one was accepted.
+    fn certified_result(&self) -> Option<SearchResult>;
+}
+
 pub fn run_schedule(
     clauses: &[Clause],
     provenance: &[Clause],
@@ -487,6 +511,22 @@ pub fn run_schedule(
     symbols: &SymbolTable,
     ml: MlOptions,
     workers: Option<usize>,
+) -> (SearchResult, crate::ScheduleReport) {
+    run_schedule_with_candidate_receiver(
+        clauses, provenance, id_gen, schedule, symbols, ml, workers, None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_schedule_with_candidate_receiver(
+    clauses: &[Clause],
+    provenance: &[Clause],
+    id_gen: ClauseIdGen,
+    schedule: &StrategySchedule,
+    symbols: &SymbolTable,
+    ml: MlOptions,
+    workers: Option<usize>,
+    candidate_receiver: Option<Arc<dyn CandidateReceiver>>,
 ) -> (SearchResult, crate::ScheduleReport) {
     // 0. Clause preprocessing: Tautology Elimination, Pure Literal Elimination (PLE),
     // and First-Order Blocked Clause Elimination (BCE).
@@ -577,6 +617,9 @@ pub fn run_schedule(
     // CaDiCaL's SAT instance beyond memory limits). AVATAR handles EPR
     // structure lazily and correctly without pre-expansion.
 
+    let total_budget: Duration = actual_configs.iter().map(|c| c.time_limit).sum();
+    let schedule_start = Instant::now();
+
     // Detect EPR structure even when the full expansion exceeds MAX_INSTANCES.
     // EPR problems (only variables and ground terms, no function symbols of
     // arity ≥ 1) must run without AVATAR regardless of whether we succeeded in
@@ -595,13 +638,44 @@ pub fn run_schedule(
         if let Some(result) =
             try_fvo_refutation(&clauses_owned, provenance, &mut fvo_id_gen, symbols)
         {
-            return (
-                result,
-                crate::ScheduleReport {
-                    workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
-                    ..crate::ScheduleReport::default()
-                },
-            );
+            if let SearchResult::Refutation(id, ref tstp) = result {
+                if let Some(ref r) = candidate_receiver {
+                    let should_stop = r.submit_candidate(CandidateRefutation {
+                        strategy_idx: 0,
+                        strategy_id: 0,
+                        clause_id: id,
+                        tstp_proof: tstp.clone(),
+                        elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                        time_remaining: total_budget.saturating_sub(schedule_start.elapsed()),
+                    });
+                    if should_stop {
+                        let final_res = r.certified_result().unwrap_or(result);
+                        return (
+                            final_res,
+                            crate::ScheduleReport {
+                                workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                                ..crate::ScheduleReport::default()
+                            },
+                        );
+                    }
+                } else {
+                    return (
+                        result,
+                        crate::ScheduleReport {
+                            workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                            ..crate::ScheduleReport::default()
+                        },
+                    );
+                }
+            } else {
+                return (
+                    result,
+                    crate::ScheduleReport {
+                        workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                        ..crate::ScheduleReport::default()
+                    },
+                );
+            }
         }
     }
 
@@ -619,13 +693,44 @@ pub fn run_schedule(
         if let Some(result) =
             try_instgen_epr(&clauses_owned, provenance, &mut instgen_id_gen, symbols)
         {
-            return (
-                result,
-                crate::ScheduleReport {
-                    workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
-                    ..crate::ScheduleReport::default()
-                },
-            );
+            if let SearchResult::Refutation(id, ref tstp) = result {
+                if let Some(ref r) = candidate_receiver {
+                    let should_stop = r.submit_candidate(CandidateRefutation {
+                        strategy_idx: 0,
+                        strategy_id: 0,
+                        clause_id: id,
+                        tstp_proof: tstp.clone(),
+                        elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                        time_remaining: total_budget.saturating_sub(schedule_start.elapsed()),
+                    });
+                    if should_stop {
+                        let final_res = r.certified_result().unwrap_or(result);
+                        return (
+                            final_res,
+                            crate::ScheduleReport {
+                                workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                                ..crate::ScheduleReport::default()
+                            },
+                        );
+                    }
+                } else {
+                    return (
+                        result,
+                        crate::ScheduleReport {
+                            workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                            ..crate::ScheduleReport::default()
+                        },
+                    );
+                }
+            } else {
+                return (
+                    result,
+                    crate::ScheduleReport {
+                        workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                        ..crate::ScheduleReport::default()
+                    },
+                );
+            }
         }
     }
 
@@ -656,19 +761,46 @@ pub fn run_schedule(
                 default_config.clone(),
             )
         {
-            return (
-                result,
-                crate::ScheduleReport {
-                    workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
-                    ..crate::ScheduleReport::default()
-                },
-            );
+            if let SearchResult::Refutation(id, ref tstp) = result {
+                if let Some(ref r) = candidate_receiver {
+                    let should_stop = r.submit_candidate(CandidateRefutation {
+                        strategy_idx: 0,
+                        strategy_id: 0,
+                        clause_id: id,
+                        tstp_proof: tstp.clone(),
+                        elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                        time_remaining: total_budget.saturating_sub(schedule_start.elapsed()),
+                    });
+                    if should_stop {
+                        let final_res = r.certified_result().unwrap_or(result);
+                        return (
+                            final_res,
+                            crate::ScheduleReport {
+                                workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                                ..crate::ScheduleReport::default()
+                            },
+                        );
+                    }
+                } else {
+                    return (
+                        result,
+                        crate::ScheduleReport {
+                            workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                            ..crate::ScheduleReport::default()
+                        },
+                    );
+                }
+            } else {
+                return (
+                    result,
+                    crate::ScheduleReport {
+                        workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                        ..crate::ScheduleReport::default()
+                    },
+                );
+            }
         }
     }
-
-    // Total time budget = sum of all strategy slices.
-    let total_budget: Duration = actual_configs.iter().map(|c| c.time_limit).sum();
-    let schedule_start = Instant::now();
 
     // Run strategies in parallel.  Each non-zero strategy runs for the full
     // remaining budget instead of only its proportional slice — with N threads
@@ -684,6 +816,9 @@ pub fn run_schedule(
     // thread constructs its own SearchState from the cloned clause data, but
     // we share a pool of globally discovered unit equalities via an RwLock.
     let stop_flag = Arc::new(AtomicBool::new(false));
+    if let Some(ref r) = candidate_receiver {
+        r.register_stop_flag(Arc::clone(&stop_flag));
+    }
     let shared_pool = Arc::new(std::sync::RwLock::new(Vec::<SharedClauseChain>::new()));
     let (tx, rx) = mpsc::channel::<(usize, SearchResult, crate::SearchStats, u64)>();
 
@@ -750,6 +885,7 @@ pub fn run_schedule(
             let ml_model_thread = ml_model.clone();
             let log_ml_data_thread = ml.log_dir.clone();
             let premise_keep_thread = ml.premise_keep.clone();
+            let candidate_receiver_thread = candidate_receiver.clone();
             std::thread::Builder::new()
                 .name(format!("mrs-worker-{worker_id}"))
                 .stack_size(64 * 1024 * 1024)
@@ -1026,10 +1162,23 @@ pub fn run_schedule(
                         other => other,
                     };
 
-                    if matches!(
-                        result,
-                        SearchResult::Refutation(..) | SearchResult::Saturated
-                    ) {
+                    if let SearchResult::Refutation(id, ref tstp) = result {
+                        if let Some(ref r) = candidate_receiver_thread {
+                            let should_stop = r.submit_candidate(CandidateRefutation {
+                                strategy_idx,
+                                strategy_id: sc.strategy_id,
+                                clause_id: id,
+                                tstp_proof: tstp.clone(),
+                                elapsed_ms,
+                                time_remaining: remaining_at_spawn.saturating_sub(strategy_start.elapsed()),
+                            });
+                            if should_stop {
+                                stop.store(true, Ordering::Relaxed);
+                            }
+                        } else {
+                            stop.store(true, Ordering::Relaxed);
+                        }
+                    } else if matches!(result, SearchResult::Saturated) {
                         stop.store(true, Ordering::Relaxed);
                     }
 
@@ -1063,7 +1212,9 @@ pub fn run_schedule(
             });
             match &res {
                 SearchResult::Refutation(..) => {
-                    best = res;
+                    if candidate_receiver.is_none() {
+                        best = res;
+                    }
                     // Keep draining the channel so threads can finish cleanly.
                 }
                 SearchResult::Saturated => {
@@ -1084,6 +1235,20 @@ pub fn run_schedule(
                 SearchResult::Timeout => { /* lowest priority — keep existing best */ }
             }
         }
+
+        if let Some(ref r) = candidate_receiver {
+            if let Some(certified) = r.certified_result() {
+                best = certified;
+            } else if matches!(best, SearchResult::Timeout)
+                && report
+                    .strategies
+                    .iter()
+                    .any(|s| matches!(s.result, SearchResult::Refutation(..)))
+            {
+                best = SearchResult::GaveUp;
+            }
+        }
+
         report.elapsed_ms = schedule_start.elapsed().as_millis() as u64;
         (best, report)
     })
@@ -1292,5 +1457,115 @@ mod tests {
         assert_eq!(report.workers, 1);
         assert!(report.elapsed_ms <= 1_000);
         assert_eq!(report.strategies.len(), 1);
+    }
+
+    #[test]
+    fn candidate_receiver_recovers_after_rejection() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Mutex, RwLock};
+
+        struct MockReceiver {
+            stop_flag: RwLock<Option<Arc<AtomicBool>>>,
+            attempts: AtomicUsize,
+            winner: Mutex<Option<SearchResult>>,
+        }
+
+        impl CandidateReceiver for MockReceiver {
+            fn submit_candidate(&self, candidate: CandidateRefutation) -> bool {
+                let n = self.attempts.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    // Reject first candidate to test search continuation
+                    false
+                } else {
+                    // Accept subsequent candidate
+                    *self.winner.lock().unwrap() = Some(SearchResult::Refutation(
+                        candidate.clause_id,
+                        format!("certified:{}", candidate.tstp_proof),
+                    ));
+                    if let Some(stop) = self.stop_flag.read().unwrap().as_ref() {
+                        stop.store(true, Ordering::Relaxed);
+                    }
+                    true
+                }
+            }
+
+            fn register_stop_flag(&self, stop_flag: Arc<AtomicBool>) {
+                *self.stop_flag.write().unwrap() = Some(stop_flag);
+            }
+
+            fn certified_result(&self) -> Option<SearchResult> {
+                self.winner.lock().unwrap().clone()
+            }
+        }
+
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+        // Contradictory input: p(a) and ~p(a)
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            "ax1",
+        );
+        let c2 = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::pred(p, vec![Term::constant(a)]))],
+            "ax2",
+        );
+
+        let receiver = Arc::new(MockReceiver {
+            stop_flag: RwLock::new(None),
+            attempts: AtomicUsize::new(0),
+            winner: Mutex::new(None),
+        });
+
+        // Two strategies so the second one can run if the first's refutation is rejected
+        let schedule = StrategySchedule {
+            strategies: vec![
+                (
+                    SearchConfig {
+                        time_limit: Duration::from_millis(200),
+                        max_term_weight: None,
+                        use_avatar: false,
+                        ..SearchConfig::default()
+                    },
+                    Duration::from_millis(200),
+                ),
+                (
+                    SearchConfig {
+                        time_limit: Duration::from_millis(200),
+                        max_term_weight: None,
+                        use_avatar: false,
+                        ..SearchConfig::default()
+                    },
+                    Duration::from_millis(200),
+                ),
+            ],
+        };
+
+        let (result, _report) = run_schedule_with_candidate_receiver(
+            &[c1, c2],
+            &[],
+            id_gen,
+            &schedule,
+            &syms,
+            MlOptions::default(),
+            Some(1),
+            Some(receiver.clone()),
+        );
+
+        assert!(
+            receiver.attempts.load(Ordering::SeqCst) >= 2,
+            "expected at least 2 candidates submitted across strategies, got {}",
+            receiver.attempts.load(Ordering::SeqCst)
+        );
+        assert!(
+            matches!(result, SearchResult::Refutation(..)),
+            "expected SearchResult::Refutation, got {result:?}"
+        );
+        if let SearchResult::Refutation(_, proof) = result {
+            assert!(proof.starts_with("certified:"));
+        }
     }
 }
