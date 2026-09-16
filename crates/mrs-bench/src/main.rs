@@ -206,6 +206,9 @@ fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
 #[derive(Default)]
 struct DetailStats {
     strategies: u64,
+    workers: u64,
+    result: String,
+    elapsed_ms: u64,
     timeout: u64,
     saturated: u64,
     processed: u64,
@@ -214,23 +217,53 @@ struct DetailStats {
     weight_discarded: u64,
     lrs_discarded: u64,
     fwd_subsumed: u64,
+    shared_published: u64,
+    shared_imported: u64,
+    self_check: String,
+    candidates: u64,
+    rejections: u64,
+    cert_elab_ms: u64,
+    cert_kernel_ms: u64,
+    instgen_route: String,
+    instgen_rounds: u64,
+    instgen_instances: u64,
+    instgen_vars: u64,
+    instgen_clauses: u64,
+    instgen_ms: u64,
+    instgen_fallback: String,
 }
 
 fn parse_detail(detail: &str) -> DetailStats {
     let mut s = DetailStats::default();
     for kv in detail.split_whitespace() {
         if let Some((k, v)) = kv.split_once('=') {
-            let n: u64 = v.parse().unwrap_or(0);
             match k {
-                "strategies" => s.strategies = n,
-                "timeout" => s.timeout = n,
-                "saturated" => s.saturated = n,
-                "processed" => s.processed = n,
-                "generated" => s.generated = n,
-                "passive" => s.passive = n,
-                "weight_discarded" => s.weight_discarded = n,
-                "lrs_discarded" => s.lrs_discarded = n,
-                "fwd_subsumed" => s.fwd_subsumed = n,
+                "strategies" => s.strategies = v.parse().unwrap_or(0),
+                "workers" => s.workers = v.parse().unwrap_or(0),
+                "result" => s.result = v.to_string(),
+                "elapsed_ms" => s.elapsed_ms = v.parse().unwrap_or(0),
+                "timeout" => s.timeout = v.parse().unwrap_or(0),
+                "saturated" => s.saturated = v.parse().unwrap_or(0),
+                "processed" => s.processed = v.parse().unwrap_or(0),
+                "generated" => s.generated = v.parse().unwrap_or(0),
+                "passive" => s.passive = v.parse().unwrap_or(0),
+                "weight_discarded" => s.weight_discarded = v.parse().unwrap_or(0),
+                "lrs_discarded" => s.lrs_discarded = v.parse().unwrap_or(0),
+                "fwd_subsumed" => s.fwd_subsumed = v.parse().unwrap_or(0),
+                "shared_published" => s.shared_published = v.parse().unwrap_or(0),
+                "shared_imported" => s.shared_imported = v.parse().unwrap_or(0),
+                "self_check" => s.self_check = v.to_string(),
+                "candidates" => s.candidates = v.parse().unwrap_or(0),
+                "rejections" => s.rejections = v.parse().unwrap_or(0),
+                "cert_elab_ms" => s.cert_elab_ms = v.parse().unwrap_or(0),
+                "cert_kernel_ms" => s.cert_kernel_ms = v.parse().unwrap_or(0),
+                "instgen_route" => s.instgen_route = v.to_string(),
+                "instgen_rounds" => s.instgen_rounds = v.parse().unwrap_or(0),
+                "instgen_instances" => s.instgen_instances = v.parse().unwrap_or(0),
+                "instgen_vars" => s.instgen_vars = v.parse().unwrap_or(0),
+                "instgen_clauses" => s.instgen_clauses = v.parse().unwrap_or(0),
+                "instgen_ms" => s.instgen_ms = v.parse().unwrap_or(0),
+                "instgen_fallback" => s.instgen_fallback = v.to_string(),
                 _ => {}
             }
         }
@@ -241,37 +274,65 @@ fn parse_detail(detail: &str) -> DetailStats {
 /// Classify an unsolved row into a failure bucket.
 ///
 /// Returns a short tag:
-///   `timeout`         — all strategies hit the time limit (pure time starvation)
-///   `timeout_passive` — timed out with large passive queue (>10k clauses); search active
-///   `saturated`       — search space genuinely exhausted (could be complete refutation)
-///   `gave_up`         — strategy gave up (incomplete literal selection)
-///   `parse_error`     — ms reported Error (parse/lowering/clausification failure)
-///   `no_detail`       — no failure_detail present (non-mrs system or old run)
+///   `timeout`            — external or unspecified time starvation
+///   `timeout_passive`    — timed out with large passive queue (>10k clauses); search active
+///   `saturated`          — search space genuinely exhausted
+///   `gave_up`            — strategy gave up (e.g. incomplete literal selection)
+///   `parse_error`        — prover reported Error (parse/lowering/clausification failure)
+///   `resource_out`       — resource/memory ceiling reached cleanly
+///   `external_timeout`   — OS timeout killed process before detail could be written
+///   `internal_timeout`   — prover timer expired cleanly with normal passive load
+///   `candidate_rejected` — refutation candidate rejected by async certifier
+///   `instgen_fallback`   — InstGen pre-pass fell back or gave up on variable-bearing model
+///   `lrs_pruned`         — excessive LRS clause pruning starved the search
+///   `no_detail`          — no failure_detail present (non-mrs system or old run)
 fn classify_failure(szs: &str, detail: &str) -> &'static str {
     if szs == "Error" {
         return "parse_error";
     }
+    if szs == "ResourceOut" {
+        return "resource_out";
+    }
     if szs == "Timeout" && detail.is_empty() {
-        // OS timeout fired (invocation killed before mrs could flush stderr).
-        return "timeout";
+        return "external_timeout";
     }
     if detail.is_empty() {
         return "no_detail";
     }
+
+    let s = parse_detail(detail);
+
+    if s.rejections > 0 && s.candidates > 0 && s.self_check != "ok" {
+        return "candidate_rejected";
+    }
+
     if szs == "GaveUp" {
-        let s = parse_detail(detail);
         if s.saturated > 0 {
             return "saturated";
         }
+        if !s.instgen_fallback.is_empty() {
+            return "instgen_fallback";
+        }
         return "gave_up";
     }
-    // GaveUp or Timeout with detail present.
-    let s = parse_detail(detail);
-    if s.passive > 10_000 {
-        "timeout_passive"
-    } else {
-        "timeout"
+
+    if s.saturated > 0 {
+        return "saturated";
     }
+
+    if s.lrs_discarded > 0 && s.lrs_discarded > s.processed * 3 {
+        return "lrs_pruned";
+    }
+
+    if s.passive > 10_000 {
+        return "timeout_passive";
+    }
+
+    if s.timeout > 0 {
+        return "internal_timeout";
+    }
+
+    "timeout"
 }
 
 fn print_census(rows: &[Row], system: &str) {
@@ -296,6 +357,10 @@ fn print_census(rows: &[Row], system: &str) {
     let mut generated_total: u64 = 0;
     let mut wt_disc_total: u64 = 0;
     let mut lrs_disc_total: u64 = 0;
+    let mut shared_pub_total: u64 = 0;
+    let mut shared_imp_total: u64 = 0;
+    let mut rejections_total: u64 = 0;
+    let mut instgen_instances_total: u64 = 0;
 
     for row in &unsolved {
         let bucket = classify_failure(&row.szs_status, &row.failure_detail);
@@ -310,6 +375,10 @@ fn print_census(rows: &[Row], system: &str) {
             generated_total += s.generated;
             wt_disc_total += s.weight_discarded;
             lrs_disc_total += s.lrs_discarded;
+            shared_pub_total += s.shared_published;
+            shared_imp_total += s.shared_imported;
+            rejections_total += s.rejections;
+            instgen_instances_total += s.instgen_instances;
         }
     }
 
@@ -391,6 +460,22 @@ fn print_census(rows: &[Row], system: &str) {
             "  weight_discarded (Σ)  : {wt_disc_total:>12}  ← clauses killed by max_term_weight"
         );
         println!("  lrs_discarded (Σ)     : {lrs_disc_total:>12}  ← clauses pruned by LRS");
+        if shared_pub_total > 0 || shared_imp_total > 0 {
+            println!(
+                "  shared published (Σ)  : {shared_pub_total:>12}  ← unit equalities exported"
+            );
+            println!(
+                "  shared imported (Σ)   : {shared_imp_total:>12}  ← unit equalities imported"
+            );
+        }
+        if rejections_total > 0 {
+            println!("  candidate rejections(Σ): {rejections_total:>12}  ← certifier rejected");
+        }
+        if instgen_instances_total > 0 {
+            println!(
+                "  instgen instances (Σ) : {instgen_instances_total:>12}  ← InstGen instances added"
+            );
+        }
         if n_with_detail > 0 {
             println!(
                 "  processed / problem   : {:>12.0}",

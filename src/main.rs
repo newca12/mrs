@@ -263,12 +263,21 @@ fn main() {
             "--trace-instgen" => unsafe {
                 std::env::set_var("TRACE_INSTGEN", "1");
             },
+            "--no-lrs" => unsafe {
+                std::env::set_var("MRS_NO_LRS", "1");
+            },
+            "--trace-lrs" => unsafe {
+                std::env::set_var("TRACE_LRS", "1");
+            },
+            "--no-sharing" => unsafe {
+                std::env::set_var("MRS_SHARED_POOL_INTERVAL", "0");
+            },
             #[cfg(feature = "proover")]
             "--quiet" => quiet = true,
             _ => {
                 if path.is_some() {
                     eprintln!(
-                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--goal-transform MODE] [--no-bce] [--no-ple] [--no-instgen] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"
+                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--goal-transform MODE] [--no-bce] [--no-ple] [--no-instgen] [--no-lrs] [--no-sharing] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"
                     );
                     process::exit(1);
                 }
@@ -278,7 +287,7 @@ fn main() {
     }
     let Some(path) = path else {
         eprintln!(
-            "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--goal-transform MODE] [--no-bce] [--no-ple] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"
+            "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--goal-transform MODE] [--no-bce] [--no-ple] [--no-instgen] [--no-lrs] [--no-sharing] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"
         );
         eprintln!("  An automated theorem prover for TPTP problems.");
         eprintln!(

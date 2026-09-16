@@ -238,8 +238,9 @@ fn lrs_target_size(
     iteration: u64,
     elapsed: Duration,
     time_limit: Duration,
-) -> usize {
+) -> Option<usize> {
     let remaining_iterations = match policy {
+        LrsPolicy::Disabled => return None,
         LrsPolicy::WallClock => {
             let avg_nanos = (elapsed.as_nanos() / iteration.max(1) as u128).max(1);
             let remaining_nanos = time_limit.saturating_sub(elapsed).as_nanos();
@@ -247,7 +248,7 @@ fn lrs_target_size(
         }
         LrsPolicy::FixedIterations { budget } => budget.saturating_sub(iteration),
     };
-    remaining_iterations.max(2000) as usize
+    Some(remaining_iterations.max(2000) as usize)
 }
 
 fn should_poll_shared_pool(iteration: u64, interval: u64) -> bool {
@@ -1215,17 +1216,27 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
         // --- Limited Resource Strategy (LRS) Periodic Pruning ---
         if iteration.is_multiple_of(100) && iteration >= 100 {
             let elapsed = start.elapsed();
-            let target_size =
-                lrs_target_size(config.lrs_policy, iteration, elapsed, config.time_limit);
+            if let Some(target_size) =
+                lrs_target_size(config.lrs_policy, iteration, elapsed, config.time_limit)
+            {
+                let active = state.unprocessed.active_count();
+                let should_prune = if active > 10_000 {
+                    active > target_size.saturating_add(1000)
+                } else if let Some(mem_mb) = crate::current_memory_mb() {
+                    mem_mb > 1024 && active > target_size.saturating_add(1000)
+                } else {
+                    false
+                };
 
-            if state.unprocessed.active_count() > target_size.saturating_add(1000) {
-                let discarded = state.unprocessed.prune(target_size);
-                state.stats.lrs_discarded += discarded as u64;
-                if std::env::var("TRACE_LRS").is_ok() {
-                    eprintln!(
-                        "[LRS] pruned passive queue to target={} (discarded {})",
-                        target_size, discarded
-                    );
+                if should_prune {
+                    let discarded = state.unprocessed.prune(target_size);
+                    state.stats.lrs_discarded += discarded as u64;
+                    if std::env::var("TRACE_LRS").is_ok() {
+                        eprintln!(
+                            "[LRS] pruned passive queue to target={} (discarded {})",
+                            target_size, discarded
+                        );
+                    }
                 }
             }
 
@@ -2508,7 +2519,7 @@ mod tests {
                 Duration::from_millis(1),
                 Duration::from_secs(1),
             ),
-            8_000
+            Some(8_000)
         );
         assert_eq!(
             lrs_target_size(
@@ -2517,7 +2528,7 @@ mod tests {
                 Duration::from_secs(20),
                 Duration::from_millis(1),
             ),
-            8_000
+            Some(8_000)
         );
         assert_eq!(
             lrs_target_size(
@@ -2526,7 +2537,11 @@ mod tests {
                 Duration::ZERO,
                 Duration::ZERO,
             ),
-            2_000
+            Some(2_000)
+        );
+        assert_eq!(
+            lrs_target_size(LrsPolicy::Disabled, 2_000, Duration::ZERO, Duration::ZERO,),
+            None
         );
     }
 

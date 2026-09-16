@@ -138,6 +138,28 @@ pub fn is_pure_relational_epr(clauses: &[Clause]) -> bool {
         })
 }
 
+/// Classify the EPR profile of a clause set into one of:
+/// - "empty": empty clause set
+/// - "non_epr": contains function symbols of arity >= 1
+/// - "ground": all clauses are ground
+/// - "pure_relational_epr": non-ground, only constants and variables, no equality
+/// - "epr_equality": EPR with equality atoms
+pub fn classify_epr_profile(clauses: &[Clause]) -> &'static str {
+    if clauses.is_empty() {
+        return "empty";
+    }
+    if !is_epr(clauses) {
+        return "non_epr";
+    }
+    if clauses.iter().all(|c| c.free_vars().is_empty()) {
+        return "ground";
+    }
+    if is_pure_relational_epr(clauses) {
+        return "pure_relational_epr";
+    }
+    "epr_equality"
+}
+
 /// Returns `true` if `term` is a variable or a constant.
 pub fn term_is_epr(term: &Term) -> bool {
     match term {
@@ -515,23 +537,56 @@ fn dfs_topo(
     order.push(idx);
 }
 
-/// Tries to decide an EPR problem using lazy SAT-guided InstGen.
-///
-/// Returns `Some(SearchResult::Refutation(..))` if unsatisfiable,
-/// `Some(SearchResult::Saturated)` if the ground SAT model is conclusive,
-/// `Some(SearchResult::GaveUp)` if the abstraction is inconclusive for a
-/// variable-bearing clause set,
-/// or `None` if the budget/heuristics expire without a conclusive result.
-pub fn try_instgen_epr(
+///// Telemetry counters for the InstGen reasoning loop.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InstGenTelemetry {
+    /// Whether InstGen was actually invoked.
+    pub attempted: bool,
+    /// Detected EPR classification route ("pure_relational_epr", "ground", "epr_equality", "non_epr").
+    pub route: &'static str,
+    /// Number of InstGen rounds executed.
+    pub rounds: usize,
+    /// Number of first-order instances generated and added.
+    pub generated_instances: usize,
+    /// Final number of propositional variables in CaDiCaL.
+    pub sat_vars: usize,
+    /// Final number of propositional clauses in CaDiCaL.
+    pub sat_clauses: usize,
+    /// Total elapsed time in milliseconds spent in InstGen.
+    pub elapsed_ms: u64,
+    /// Reason for falling back to portfolio search, if any.
+    pub fallback_reason: Option<&'static str>,
+    /// Whether a verified TSTP refutation proof was successfully extracted.
+    pub proof_extracted: bool,
+}
+
+/// Tries to decide an EPR problem using lazy SAT-guided InstGen, collecting
+/// detailed execution telemetry.
+pub fn try_instgen_epr_with_telemetry(
     clauses: &[Clause],
     provenance: &[Clause],
     id_gen: &mut ClauseIdGen,
     symbols: &SymbolTable,
-) -> Option<SearchResult> {
+) -> (Option<SearchResult>, InstGenTelemetry) {
+    let route = classify_epr_profile(clauses);
+    let mut tele = InstGenTelemetry {
+        attempted: false,
+        route,
+        rounds: 0,
+        generated_instances: 0,
+        sat_vars: 0,
+        sat_clauses: 0,
+        elapsed_ms: 0,
+        fallback_reason: None,
+        proof_extracted: false,
+    };
+
     if !is_pure_relational_epr(clauses) {
-        return None;
+        tele.fallback_reason = Some("unsupported_epr_profile");
+        return (None, tele);
     }
 
+    tele.attempted = true;
     let trace = std::env::var("TRACE_INSTGEN").is_ok();
     let start_time = Instant::now();
 
@@ -575,6 +630,10 @@ pub fn try_instgen_epr(
 
     while round < MAX_ROUNDS && start_time.elapsed() < DEFAULT_INSTGEN_TIMEOUT {
         round += 1;
+        tele.rounds = round;
+        tele.sat_vars = abs.atom_to_var.len();
+        tele.sat_clauses = prop_clauses.len();
+        tele.generated_instances = all_clauses.len().saturating_sub(clauses.len());
 
         match solver.solve() {
             SolveResult::Unsat => {
@@ -623,63 +682,53 @@ pub fn try_instgen_epr(
                                                 .collect();
                                             Literal {
                                                 positive: lit.positive,
-                                                atom: Atom::pred(*sym, new_args),
+                                                atom: Atom::Pred(*sym, new_args),
                                             }
                                         })
                                         .collect();
-                                    let ground_c = Clause::new(
-                                        id_gen.next(),
+
+                                    let g_id = id_gen.next();
+                                    fof_proof.push(Clause::new(
+                                        g_id,
                                         ground_lits,
                                         ClauseSource::Inference {
                                             rule: "instantiation",
                                             parents: vec![orig_clause.id].into(),
                                         },
-                                    );
-                                    prop_idx_to_fof_id.insert(idx, ground_c.id);
-                                    fof_proof.push(orig_clause.clone());
-                                    fof_proof.push(ground_c);
+                                    ));
+                                    prop_idx_to_fof_id.insert(idx, g_id);
                                 } else {
                                     prop_idx_to_fof_id.insert(idx, orig_clause.id);
-                                    fof_proof.push(orig_clause.clone());
                                 }
                             }
                             PSrc::Resolvent { left, right } => {
-                                let left_id = prop_idx_to_fof_id[left];
-                                let right_id = prop_idx_to_fof_id[right];
-                                let res_lits: Vec<Literal> = bfs_pcs[idx]
-                                    .iter()
-                                    .map(|&pl| {
-                                        let atom_key =
-                                            &abs.var_to_atom[pl.unsigned_abs() as usize - 1];
-                                        let fo_atom = Atom::pred(
-                                            atom_key.pred,
-                                            atom_key
-                                                .args
-                                                .iter()
-                                                .map(|&c| Term::constant(c))
-                                                .collect(),
-                                        );
-                                        Literal {
-                                            positive: pl > 0,
-                                            atom: fo_atom,
-                                        }
-                                    })
-                                    .collect();
+                                let fof_p1 = prop_idx_to_fof_id[left];
+                                let fof_p2 = prop_idx_to_fof_id[right];
 
-                                let is_empty = res_lits.is_empty();
-                                let resolvent_c = Clause::new(
-                                    id_gen.next(),
-                                    res_lits,
+                                let pc = &bfs_pcs[idx];
+                                let mut fof_lits: Vec<Literal> = Vec::with_capacity(pc.len());
+                                for &lit in pc {
+                                    let p_atom = &abs.var_to_atom[lit.unsigned_abs() as usize - 1];
+                                    let args: Vec<Term> =
+                                        p_atom.args.iter().map(|&c| Term::constant(c)).collect();
+                                    fof_lits.push(Literal {
+                                        positive: lit > 0,
+                                        atom: Atom::Pred(p_atom.pred, args),
+                                    });
+                                }
+
+                                let res_id = id_gen.next();
+                                fof_proof.push(Clause::new(
+                                    res_id,
+                                    fof_lits.clone(),
                                     ClauseSource::Inference {
                                         rule: "resolution",
-                                        parents: vec![left_id, right_id].into(),
+                                        parents: vec![fof_p1, fof_p2].into(),
                                     },
-                                );
-                                let cid = resolvent_c.id;
-                                prop_idx_to_fof_id.insert(idx, cid);
-                                fof_proof.push(resolvent_c);
-                                if is_empty {
-                                    empty_id = Some(cid);
+                                ));
+                                prop_idx_to_fof_id.insert(idx, res_id);
+                                if fof_lits.is_empty() {
+                                    empty_id = Some(res_id);
                                 }
                             }
                         }
@@ -687,6 +736,9 @@ pub fn try_instgen_epr(
 
                     if let Some(eid) = empty_id {
                         let mut clause_store: HashMap<ClauseId, Clause> = HashMap::default();
+                        for c in &fof_proof {
+                            clause_store.insert(c.id, c.clone());
+                        }
                         for c in provenance {
                             clause_store.insert(c.id, c.clone());
                         }
@@ -712,7 +764,9 @@ pub fn try_instgen_epr(
                         }
 
                         let tstp = format_tstp(&complete_proof, &symbols_local);
-                        return Some(SearchResult::Refutation(eid, tstp));
+                        tele.elapsed_ms = start_time.elapsed().as_millis() as u64;
+                        tele.proof_extracted = true;
+                        return (Some(SearchResult::Refutation(eid, tstp)), tele);
                     }
                 }
 
@@ -740,11 +794,14 @@ pub fn try_instgen_epr(
                     ..SearchConfig::default()
                 };
                 let res = crate::given_clause::search(&mut state, &config);
+                tele.elapsed_ms = start_time.elapsed().as_millis() as u64;
                 if matches!(res, SearchResult::Refutation(..)) {
-                    return Some(res);
+                    tele.proof_extracted = true;
+                    return (Some(res), tele);
                 }
 
-                return None;
+                tele.fallback_reason = Some("proof_extraction_failed");
+                return (None, tele);
             }
 
             SolveResult::Sat => {
@@ -867,6 +924,7 @@ pub fn try_instgen_epr(
                 }
 
                 if new_instances.is_empty() {
+                    tele.elapsed_ms = start_time.elapsed().as_millis() as u64;
                     // The abstraction maps every variable position to one
                     // placeholder atom. That model is exact for a ground
                     // clause set, but it is not a first-order model for
@@ -876,12 +934,18 @@ pub fn try_instgen_epr(
                     // claim; a refutation remains sound, while the caller
                     // reports GaveUp for the unresolved variable-bearing case.
                     if has_variables {
-                        return Some(SearchResult::GaveUp);
+                        tele.fallback_reason = Some("sat_variables_model_gaveup");
+                        return (Some(SearchResult::GaveUp), tele);
                     }
                     if trace {
                         eprintln!("[InstGen] Round {}: ground SAT model verified", round);
                     }
-                    return Some(SearchResult::Saturated);
+                    return (Some(SearchResult::Saturated), tele);
+                }
+
+                if all_clauses.len() + new_instances.len() > MAX_TOTAL_INSTANCES {
+                    tele.fallback_reason = Some("max_instances_exceeded");
+                    break;
                 }
 
                 if trace {
@@ -905,11 +969,41 @@ pub fn try_instgen_epr(
                 }
             }
 
-            SolveResult::Unknown => return None,
+            SolveResult::Unknown => {
+                tele.elapsed_ms = start_time.elapsed().as_millis() as u64;
+                tele.fallback_reason = Some("sat_solver_unknown");
+                return (None, tele);
+            }
         }
     }
 
-    None
+    tele.elapsed_ms = start_time.elapsed().as_millis() as u64;
+    if tele.fallback_reason.is_none() {
+        if round >= MAX_ROUNDS {
+            tele.fallback_reason = Some("max_rounds_reached");
+        } else if start_time.elapsed() >= DEFAULT_INSTGEN_TIMEOUT {
+            tele.fallback_reason = Some("timeout");
+        } else {
+            tele.fallback_reason = Some("exhausted_without_model");
+        }
+    }
+    (None, tele)
+}
+
+/// Tries to decide an EPR problem using lazy SAT-guided InstGen.
+///
+/// Returns `Some(SearchResult::Refutation(..))` if unsatisfiable,
+/// `Some(SearchResult::Saturated)` if the ground SAT model is conclusive,
+/// `Some(SearchResult::GaveUp)` if the abstraction is inconclusive for a
+/// variable-bearing clause set,
+/// or `None` if the budget/heuristics expire without a conclusive result.
+pub fn try_instgen_epr(
+    clauses: &[Clause],
+    provenance: &[Clause],
+    id_gen: &mut ClauseIdGen,
+    symbols: &SymbolTable,
+) -> Option<SearchResult> {
+    try_instgen_epr_with_telemetry(clauses, provenance, id_gen, symbols).0
 }
 
 #[cfg(test)]
@@ -1320,6 +1414,59 @@ mod tests {
             tstp.contains("$false") || tstp.contains("status(thm)"),
             "Proof should contain empty clause derivation: {}",
             tstp
+        );
+    }
+
+    #[test]
+    fn instgen_telemetry_records_execution_and_profiles() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let f = syms.intern("f");
+        let mut id_gen = ClauseIdGen::new();
+
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::var(0)]))],
+            "c1",
+        );
+        let c2 = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::pred(p, vec![Term::constant(a)]))],
+            "c2",
+        );
+
+        assert_eq!(
+            classify_epr_profile(&[c1.clone(), c2.clone()]),
+            "pure_relational_epr"
+        );
+        let (res, tele) =
+            try_instgen_epr_with_telemetry(&[c1.clone(), c2.clone()], &[], &mut id_gen, &syms);
+        assert!(matches!(res, Some(SearchResult::Refutation(..))));
+        assert!(tele.attempted);
+        assert_eq!(tele.route, "pure_relational_epr");
+        assert!(tele.proof_extracted);
+        assert!(tele.rounds >= 1);
+        assert!(tele.sat_clauses >= 2);
+
+        // Non-EPR profile test
+        let c_non_epr = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(
+                p,
+                vec![Term::app(f, vec![Term::var(0)])],
+            ))],
+            "c_non_epr",
+        );
+        assert_eq!(classify_epr_profile(&[c_non_epr.clone()]), "non_epr");
+        let (res_non_epr, tele_non_epr) =
+            try_instgen_epr_with_telemetry(&[c_non_epr], &[], &mut id_gen, &syms);
+        assert!(res_non_epr.is_none());
+        assert!(!tele_non_epr.attempted);
+        assert_eq!(tele_non_epr.route, "non_epr");
+        assert_eq!(
+            tele_non_epr.fallback_reason,
+            Some("unsupported_epr_profile")
         );
     }
 }

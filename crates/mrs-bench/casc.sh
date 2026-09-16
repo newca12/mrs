@@ -146,6 +146,50 @@ if ! command -v sha256sum >/dev/null 2>&1; then
     exit 1
 fi
 
+RUN_ID="mrs_bench_${TIMESTAMP}_$(head -c 4 /dev/urandom 2>/dev/null | xxd -p 2>/dev/null || od -N 4 -t x4 /dev/urandom 2>/dev/null | head -n1 | awk '{print $2}' || echo $$)"
+GIT_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo "unknown")"
+GIT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")"
+GIT_DIRTY="$(git status --porcelain 2>/dev/null | grep -q . && echo "true" || echo "false")"
+CPU_MODEL="$(lscpu 2>/dev/null | grep "Model name:" | sed 's/Model name:[ \t]*//' || grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs || echo "unknown")"
+CPU_CORES="$(nproc 2>/dev/null || echo "8")"
+KERNEL_VER="$(uname -r 2>/dev/null || echo "unknown")"
+HOSTNAME_STR="$(hostname 2>/dev/null || echo "unknown")"
+TOTAL_RAM_MB="$(free -m 2>/dev/null | awk '/^Mem:/{print $2}' || echo "0")"
+RUSTC_VER="$(rustc --version 2>/dev/null || /home/fr22192/.cargo/bin/rustc --version 2>/dev/null || echo "unknown")"
+MRS_BIN="${SCRIPT_DIR}/../../target/release/mrs"
+MRS_BIN_SHA256="unknown"
+if [[ -f "${MRS_BIN}" ]]; then
+    MRS_BIN_SHA256="$(sha256sum "${MRS_BIN}" | awk '{print $1}')"
+fi
+
+cat <<EOF > "${OUTPUT}/run_meta.json"
+{
+  "run_id": "${RUN_ID}",
+  "timestamp": "${TIMESTAMP}",
+  "git_commit": "${GIT_COMMIT}",
+  "git_branch": "${GIT_BRANCH}",
+  "git_dirty": ${GIT_DIRTY},
+  "binary_path": "${MRS_BIN}",
+  "binary_sha256": "${MRS_BIN_SHA256}",
+  "edition": "${EDITION}",
+  "systems": "${SYSTEMS:-all}",
+  "divisions": "${DIVISIONS:-all}",
+  "jobs": ${JOBS},
+  "default_time_limit": ${TIME_LIMIT},
+  "use_casc_times": ${USE_CASC_TIMES},
+  "host": {
+    "hostname": "${HOSTNAME_STR}",
+    "kernel": "${KERNEL_VER}",
+    "cpu_model": "${CPU_MODEL}",
+    "cpu_cores": ${CPU_CORES},
+    "memory_mb": ${TOTAL_RAM_MB}
+  },
+  "toolchain": {
+    "rustc": "${RUSTC_VER}"
+  }
+}
+EOF
+
 # Redirect harness stderr to run.log (tee so it still shows on terminal)
 exec 2> >(tee -a "${OUTPUT}/run.log" >&2)
 

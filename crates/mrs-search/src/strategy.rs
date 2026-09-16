@@ -22,7 +22,7 @@ use mrs_proof::tstp::format_tstp;
 use crate::cwa::try_componentwise_refute;
 use crate::fvo::try_fvo_refutation;
 use crate::given_clause::search;
-use crate::instgen::{is_epr, is_pure_relational_epr, try_instgen_epr};
+use crate::instgen::{InstGenTelemetry, is_epr, try_instgen_epr_with_telemetry};
 use crate::state::SearchState;
 use crate::{
     LiteralSelection, SearchConfig, SearchResult, SelectionStrategy, SharedClauseChain,
@@ -579,7 +579,11 @@ pub fn run_schedule_with_candidate_receiver(
     let mut actual_configs = Vec::new();
     for (search_config, _) in &schedule.strategies {
         let mut actual_config = search_config.clone();
-        if let Ok(value) = std::env::var("MRS_LRS_FIXED_ITERATIONS")
+        if std::env::var("MRS_NO_LRS").is_ok()
+            || std::env::var("MRS_LRS_POLICY").as_deref() == Ok("disabled")
+        {
+            actual_config.lrs_policy = crate::LrsPolicy::Disabled;
+        } else if let Ok(value) = std::env::var("MRS_LRS_FIXED_ITERATIONS")
             && let Ok(budget) = value.parse::<u64>()
         {
             actual_config.lrs_policy = crate::LrsPolicy::FixedIterations { budget };
@@ -685,14 +689,35 @@ pub fn run_schedule_with_candidate_receiver(
     // propositional SAT solving (via CaDiCaL) with first-order MGU instantiation.
     // It decides both Satisfiability (EPS) and Unsatisfiability (EPU) lazily
     // without combinatorial explosion.
-    if is_problem_epr
-        && std::env::var("MRS_NO_INSTGEN").is_err()
-        && is_pure_relational_epr(&clauses_owned)
-    {
+    let mut instgen_telemetry: Option<InstGenTelemetry> = None;
+    if is_problem_epr && std::env::var("MRS_NO_INSTGEN").is_err() {
         let mut instgen_id_gen = id_gen.clone();
-        if let Some(result) =
-            try_instgen_epr(&clauses_owned, provenance, &mut instgen_id_gen, symbols)
-        {
+        let (instgen_result, tele) = try_instgen_epr_with_telemetry(
+            &clauses_owned,
+            provenance,
+            &mut instgen_id_gen,
+            symbols,
+        );
+        instgen_telemetry = Some(tele.clone());
+        if let Some(result) = instgen_result {
+            let single_stats = crate::SearchStats {
+                processed: tele.sat_clauses as u64,
+                generated: tele.generated_instances as u64,
+                ..crate::SearchStats::default()
+            };
+            let single_report = crate::ScheduleReport {
+                workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                strategies: vec![crate::StrategyReport {
+                    strategy_idx: 0,
+                    strategy_id: 0,
+                    result: result.clone(),
+                    stats: single_stats,
+                    elapsed_ms: tele.elapsed_ms,
+                }],
+                instgen: Some(tele),
+            };
+
             if let SearchResult::Refutation(id, ref tstp) = result {
                 if let Some(ref r) = candidate_receiver {
                     let should_stop = r.submit_candidate(CandidateRefutation {
@@ -705,31 +730,13 @@ pub fn run_schedule_with_candidate_receiver(
                     });
                     if should_stop {
                         let final_res = r.certified_result().unwrap_or(result);
-                        return (
-                            final_res,
-                            crate::ScheduleReport {
-                                workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
-                                ..crate::ScheduleReport::default()
-                            },
-                        );
+                        return (final_res, single_report);
                     }
                 } else {
-                    return (
-                        result,
-                        crate::ScheduleReport {
-                            workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
-                            ..crate::ScheduleReport::default()
-                        },
-                    );
+                    return (result, single_report);
                 }
             } else {
-                return (
-                    result,
-                    crate::ScheduleReport {
-                        workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
-                        ..crate::ScheduleReport::default()
-                    },
-                );
+                return (result, single_report);
             }
         }
     }
@@ -1249,6 +1256,7 @@ pub fn run_schedule_with_candidate_receiver(
             }
         }
 
+        report.instgen = instgen_telemetry;
         report.elapsed_ms = schedule_start.elapsed().as_millis() as u64;
         (best, report)
     })

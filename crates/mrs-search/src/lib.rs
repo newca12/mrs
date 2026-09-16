@@ -54,6 +54,10 @@ use mrs_core::clause::{Clause, ClauseId};
 
 pub use goal_distance::GoalDistanceMap;
 
+pub use instgen::{
+    InstGenTelemetry, classify_epr_profile, is_epr, is_pure_relational_epr, try_instgen_epr,
+    try_instgen_epr_with_telemetry,
+};
 pub use mrs_calculus::literal_selection::LiteralSelection;
 pub use mrs_calculus::ordering::TermOrdering;
 pub use mrs_cnf::goal_transform::GoalTransformMode;
@@ -119,6 +123,8 @@ pub struct ScheduleReport {
     /// Wall-clock duration of the schedule run in milliseconds.
     pub elapsed_ms: u64,
     pub strategies: Vec<StrategyReport>,
+    /// Telemetry collected from the InstGen pre-pass, if run.
+    pub instgen: Option<InstGenTelemetry>,
 }
 
 impl ScheduleReport {
@@ -159,7 +165,7 @@ impl ScheduleReport {
             .filter(|s| matches!(s.result, SearchResult::Saturated))
             .count();
 
-        format!(
+        let mut detail = format!(
             "strategies={} workers={} strategy_ids={} result={} elapsed_ms={} timeout={} saturated={} \
              processed={} generated={} passive={} weight_discarded={} lrs_discarded={} \
              fwd_subsumed={} shared_published={} shared_imported={}",
@@ -190,7 +196,19 @@ impl ScheduleReport {
             total_forward_subsumed,
             total_shared_published,
             total_shared_imported,
-        )
+        );
+
+        if let Some(ig) = &self.instgen {
+            detail.push_str(&format!(
+                " instgen_route={} instgen_rounds={} instgen_instances={} instgen_vars={} instgen_clauses={} instgen_ms={}",
+                ig.route, ig.rounds, ig.generated_instances, ig.sat_vars, ig.sat_clauses, ig.elapsed_ms
+            ));
+            if let Some(reason) = ig.fallback_reason {
+                detail.push_str(&format!(" instgen_fallback={}", reason));
+            }
+        }
+
+        detail
     }
 
     /// Human-readable one-line summary of the failure mode seen across all
@@ -311,6 +329,8 @@ pub enum LrsPolicy {
         /// Total logical iterations available to the search.
         budget: u64,
     },
+    /// Disable LRS passive queue pruning completely.
+    Disabled,
 }
 
 /// A proof-preserving unit-equality chain shared between portfolio workers.
