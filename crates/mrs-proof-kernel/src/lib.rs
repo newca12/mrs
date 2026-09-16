@@ -18,6 +18,9 @@ use mrs_tptp::proover::{
 use mrs_tptp::{AnnotatedFormula, BinaryConnective, CNFFormula, CNFLiteral, CNFStatement};
 use mrs_tptp::{FOFAtomicFormula, FOFFormula, FOFStatement, FOFTerm, FormulaRole, Quantifier};
 
+pub mod model;
+pub use model::{EqualitySemantics, FunctionTable, ModelCertificate, ModelVerdict, PredicateTable};
+
 /// Result of strict proof-kernel verification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KernelVerdict {

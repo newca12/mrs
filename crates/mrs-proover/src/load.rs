@@ -185,7 +185,7 @@ fn resolve_includes_recursive(
     Ok(())
 }
 
-fn resolve_problem_path_with_base(
+pub fn resolve_problem_path_with_base(
     proof_path: &Path,
     problems_root: Option<&Path>,
     base_dir: &Path,

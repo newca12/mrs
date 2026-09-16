@@ -104,6 +104,38 @@ fn main() -> ExitCode {
 
     let problems_dir = problems_dir.or_else(|| std::env::var("TPTP").ok().map(PathBuf::from));
 
+    // Check if the input file contains a model certificate
+    if let Ok(raw_text) = std::fs::read_to_string(&proof_path)
+        && let Ok(cert) = mrs_proover::model::ModelCertificate::extract_from_text(&raw_text)
+    {
+        let header_link = mrs_tptp::proover::proof_header_link(&raw_text);
+        let prob_path = header_link
+            .and_then(|link| {
+                mrs_proover::load::resolve_problem_path_with_base(
+                    &proof_path,
+                    problems_dir.as_deref(),
+                    std::path::Path::new("."),
+                    link,
+                )
+            })
+            .or_else(|| {
+                let stem = proof_path.file_stem()?.to_str()?;
+                problems_dir
+                    .as_ref()
+                    .map(|dir| dir.join(format!("{stem}.p")))
+            });
+
+        if let Some(path) = prob_path {
+            let verdict = cert.validate_file(&path, None);
+            let v = match verdict {
+                mrs_proover::model::ModelVerdict::Certified { .. } => Verdict::VerifiedGood,
+                mrs_proover::model::ModelVerdict::Rejected(reason) => Verdict::VerifiedBad(reason),
+                mrs_proover::model::ModelVerdict::Inconclusive(reason) => Verdict::Unknown(reason),
+            };
+            return print_and_exit(v);
+        }
+    }
+
     let job = match load(&proof_path, problems_dir.as_deref()) {
         Ok(j) => j,
         Err(LoadError::MissingProofHeader) => {

@@ -10,3 +10,6 @@ rust-version.workspace = true
 [dependencies]
 mrs-core = { workspace = true, features = ["proover"] }
 mrs-tptp = { workspace = true, features = ["proover"] }
+sha2 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

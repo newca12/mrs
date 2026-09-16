@@ -13,6 +13,8 @@ rayon = "1.12.0"
 mrs-core = { workspace = true }
 mrs-szs = { workspace = true }
 mrs-tptp = { workspace = true }
+mrs-proof-kernel = { workspace = true }
+serde_json = { workspace = true }
 sha2 = { workspace = true }
 tempfile = "3.27.0"
 walkdir = "2.5.0"

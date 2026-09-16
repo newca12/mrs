@@ -3544,9 +3544,11 @@ name = "mrs-bench"
 version = "0.2.3"
 dependencies = [
  "mrs-core",
+ "mrs-proof-kernel",
  "mrs-szs",
  "mrs-tptp",
  "rayon",
+ "serde_json",
  "sha2",
  "tempfile",
  "wait-timeout",
@@ -3647,6 +3649,9 @@ version = "0.2.3"
 dependencies = [
  "mrs-core",
  "mrs-tptp",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -3662,6 +3667,8 @@ dependencies = [
  "mrs-tptp",
  "mrs-unify",
  "num_cpus",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

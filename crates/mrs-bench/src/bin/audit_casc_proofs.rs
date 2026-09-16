@@ -514,6 +514,45 @@ fn audit_one(run: &RunRow, mut row: AuditRow, args: &Args) -> AuditRow {
     let status = extract_szs_status(&stdout_text).unwrap_or_else(|| run.generation_status.clone());
     row.generation_status = status.clone();
     if status != "Theorem" && status != "Unsatisfiable" {
+        if (status == "Satisfiable" || status == "CounterSatisfiable")
+            && let Ok(cert) =
+                mrs_proof_kernel::model::ModelCertificate::extract_from_text(&stdout_text)
+            && let Some(problem_path) =
+                find_problem(&args.problems_dir, &run.division, &run.problem)
+            && let Ok(problem_text) = fs::read_to_string(&problem_path)
+            && let Ok(problem) = mrs_tptp::parse_tptp(&problem_text)
+        {
+            let verdict = cert.validate(&problem, Some(&status));
+            match verdict {
+                mrs_proof_kernel::model::ModelVerdict::Certified {
+                    domain_size,
+                    digest,
+                    ..
+                } => {
+                    let res = CheckResult {
+                        status: "VerifiedGood".to_string(),
+                        time_s: start.elapsed().as_secs_f64(),
+                        detail: format!("certified_model:domain={domain_size},digest={digest}"),
+                    };
+                    row.strict = res.clone();
+                    row.mrs = res.clone();
+                    row.ladder = res;
+                    row.checks = available_check_names(&row);
+                    row.audit_time_s = start.elapsed().as_secs_f64();
+                    return row;
+                }
+                mrs_proof_kernel::model::ModelVerdict::Rejected(reason) => {
+                    mark_selected_error(&mut row, &args.checks, "invalid_model", &reason);
+                    row.audit_time_s = start.elapsed().as_secs_f64();
+                    return row;
+                }
+                mrs_proof_kernel::model::ModelVerdict::Inconclusive(reason) => {
+                    mark_selected_error(&mut row, &args.checks, "inconclusive_model", &reason);
+                    row.audit_time_s = start.elapsed().as_secs_f64();
+                    return row;
+                }
+            }
+        }
         mark_selected_error(
             &mut row,
             &args.checks,
@@ -949,10 +988,50 @@ fn render_summary(
         output.push_str(&format_generation_table(&division_rows));
         output.push('\n');
 
-        output.push_str("Verification\n");
+        output.push_str("Verification (Refutations)\n");
         output.push_str(&format_verification_table(&division_rows, checks));
+
+        let has_models = division_rows
+            .iter()
+            .any(|row| generation_scope(&row.generation_status) == GenerationScope::Model);
+        if has_models {
+            output.push('\n');
+            output.push_str("Verification (Model Certificates)\n");
+            output.push_str(&format_model_verification_table(&division_rows));
+        }
     }
     output
+}
+
+fn format_model_verification_table(rows: &[&AuditRow]) -> String {
+    const HEADERS: [&str; 4] = [
+        "Total Models",
+        "Certified Models",
+        "Invalid Models",
+        "Uncertified (N/A: Model)",
+    ];
+    let model_rows: Vec<_> = rows
+        .iter()
+        .filter(|row| generation_scope(&row.generation_status) == GenerationScope::Model)
+        .collect();
+    let total = model_rows.len();
+    let certified = model_rows
+        .iter()
+        .filter(|row| row.strict.status == "VerifiedGood")
+        .count();
+    let invalid = model_rows
+        .iter()
+        .filter(|row| row.strict.status == "VerifiedBad")
+        .count();
+    let uncertified = total.saturating_sub(certified + invalid);
+
+    let table_rows = vec![vec![
+        total.to_string(),
+        certified.to_string(),
+        invalid.to_string(),
+        uncertified.to_string(),
+    ]];
+    ascii_table(&HEADERS, &table_rows)
 }
 
 fn format_generation_table(rows: &[&AuditRow]) -> String {
