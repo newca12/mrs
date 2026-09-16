@@ -20,6 +20,7 @@ use mrs_core::term::Term;
 use crate::ordering::{TermComparison, TermOrdering};
 use crate::rename::{max_var, max_var_id, rename_clause, rename_clause_id};
 use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank, TermId};
+use mrs_core::witness::{ProofNodeId, ProofWitness};
 
 /// Performs all superposition inferences from `eq_clause` into `target`.
 ///
@@ -86,7 +87,7 @@ pub fn superpose_selected(
         };
 
         // Try both orientations: l→r and r→l
-        for (from, to) in [(left, right), (right, left)] {
+        for (from, to, is_left) in [(left, right, true), (right, left, false)] {
             // Standard superposition condition: don't superpose from a variable.
             // A variable from-term unifies with every non-variable subterm,
             // producing many useless inferences that explode the search space.
@@ -99,6 +100,7 @@ pub fn superpose_selected(
                 i,
                 from,
                 to,
+                is_left,
                 ordering,
                 id_gen,
                 target_sel,
@@ -135,7 +137,7 @@ pub fn superpose_selected_id(
             _ => continue,
         };
 
-        for (from, to) in [(left, right), (right, left)] {
+        for (from, to, is_left) in [(left, right, true), (right, left, false)] {
             if matches!(bank.get(from), mrs_core::term_bank::TermNode::Var(_)) {
                 continue;
             }
@@ -145,6 +147,7 @@ pub fn superpose_selected_id(
                 i,
                 from,
                 to,
+                is_left,
                 bank,
                 ordering,
                 id_gen,
@@ -166,6 +169,7 @@ fn superpose_with_id(
     eq_lit_idx: usize,
     from: TermId,
     to: TermId,
+    is_left: bool,
     bank: &mut TermBank,
     ordering: &TermOrdering,
     id_gen: &mut ClauseIdGen,
@@ -222,7 +226,7 @@ fn superpose_with_id(
                 let mut new_avatar = eq_clause.avatar.clone();
                 new_avatar.extend_from_slice(&target.avatar);
 
-                results.push(IdClause::new_avatar(
+                let mut derived = IdClause::new_avatar(
                     id_gen.next(),
                     new_lits,
                     ClauseSource::Inference {
@@ -230,7 +234,17 @@ fn superpose_with_id(
                         parents: vec![eq_clause.id, target.id].into(),
                     },
                     new_avatar,
-                ));
+                );
+                derived.witness = Some(ProofWitness::Superposition {
+                    lhs_parent: eq_clause.proof_id.unwrap_or(ProofNodeId(eq_clause.id.0)),
+                    rhs_parent: target.proof_id.unwrap_or(ProofNodeId(target.id.0)),
+                    lhs_lit_idx: eq_lit_idx,
+                    rhs_lit_idx: j,
+                    term_path: pos,
+                    orientation_left: is_left,
+                    unifier: None,
+                });
+                results.push(derived);
             }
         }
     }
@@ -284,6 +298,7 @@ fn superpose_with(
     eq_lit_idx: usize,
     from: &Term,
     to: &Term,
+    is_left: bool,
     ordering: &TermOrdering,
     id_gen: &mut ClauseIdGen,
     target_sel: Option<&[usize]>,
@@ -345,7 +360,7 @@ fn superpose_with(
                 let mut new_avatar = eq_clause.avatar.clone();
                 new_avatar.extend_from_slice(&target.avatar);
 
-                results.push(Clause::new_avatar(
+                let mut derived = Clause::new_avatar(
                     id_gen.next(),
                     new_lits,
                     ClauseSource::Inference {
@@ -353,7 +368,17 @@ fn superpose_with(
                         parents: vec![eq_clause.id, target.id].into(),
                     },
                     new_avatar,
-                ));
+                );
+                derived.witness = Some(ProofWitness::Superposition {
+                    lhs_parent: eq_clause.proof_id.unwrap_or(ProofNodeId(eq_clause.id.0)),
+                    rhs_parent: target.proof_id.unwrap_or(ProofNodeId(target.id.0)),
+                    lhs_lit_idx: eq_lit_idx,
+                    rhs_lit_idx: j,
+                    term_path: pos.clone(),
+                    orientation_left: is_left,
+                    unifier: Some(sigma),
+                });
+                results.push(derived);
             }
         }
     }

@@ -12,6 +12,7 @@ use crate::Formula;
 use crate::formula::Atom;
 use crate::symbol::SymbolId;
 use crate::term::VarId;
+use crate::witness::{ProofNodeId, ProofWitness};
 
 /// Unique identifier for a clause within a proof search.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
@@ -265,6 +266,10 @@ pub struct Clause {
     pub formula: Option<Box<Formula>>,
     /// Optional explicit certificate metadata for specialized proof rules.
     pub certificate: Option<ClauseCertificate>,
+    /// Stable proof node identifier in the append-only proof arena.
+    pub proof_id: Option<ProofNodeId>,
+    /// Typed inference witness for exact justification.
+    pub witness: Option<ProofWitness>,
 }
 
 impl Clause {
@@ -281,6 +286,8 @@ impl Clause {
             distance: 1000,
             formula: None,
             certificate: None,
+            proof_id: None,
+            witness: None,
         }
     }
 
@@ -300,6 +307,8 @@ impl Clause {
             distance: 1000,
             formula: Some(Box::new(formula)),
             certificate: None,
+            proof_id: None,
+            witness: None,
         }
     }
 
@@ -323,7 +332,16 @@ impl Clause {
             distance: 1000,
             formula: None,
             certificate: None,
+            proof_id: None,
+            witness: None,
         }
+    }
+
+    /// Attach a proof node and witness to this clause.
+    pub fn with_witness(mut self, proof_id: ProofNodeId, witness: ProofWitness) -> Self {
+        self.proof_id = Some(proof_id);
+        self.witness = Some(witness);
+        self
     }
 
     /// Set the distance for this clause.

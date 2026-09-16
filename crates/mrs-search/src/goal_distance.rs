@@ -270,6 +270,8 @@ mod tests {
             distance: 0,
             formula: None,
             certificate: None,
+            proof_id: None,
+            witness: None,
         };
 
         // Axiom 1: p(X) | ~q(X, d)  (shares 'p' with conjecture -> dist 1)
@@ -289,6 +291,8 @@ mod tests {
             distance: 100,
             formula: None,
             certificate: None,
+            proof_id: None,
+            witness: None,
         };
 
         // Axiom 2: q(e, Y) | ~r(Y)  (shares 'q' with ax1 -> dist 2)
@@ -308,6 +312,8 @@ mod tests {
             distance: 100,
             formula: None,
             certificate: None,
+            proof_id: None,
+            witness: None,
         };
 
         // Axiom 3: s(f)  (completely disconnected)
@@ -324,6 +330,8 @@ mod tests {
             distance: 100,
             formula: None,
             certificate: None,
+            proof_id: None,
+            witness: None,
         };
 
         let map = GoalDistanceMap::compute(&[conj.clone(), ax1.clone(), ax2.clone(), ax3.clone()]);

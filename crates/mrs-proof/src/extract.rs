@@ -137,6 +137,37 @@ pub fn extract_proof_ids<S: BuildHasher>(
     order
 }
 
+/// Extracts the topologically sorted sequence of proof nodes from `ProofArena`
+/// starting from the empty clause node `root`.
+pub fn extract_proof_nodes(
+    root: mrs_core::witness::ProofNodeId,
+    arena: &mrs_core::witness::ProofArena,
+) -> Vec<mrs_core::witness::ProofNode> {
+    let mut visited = HashSet::new();
+    let mut queue = VecDeque::new();
+    let mut order = Vec::new();
+
+    queue.push_back(root);
+    visited.insert(root);
+
+    while let Some(id) = queue.pop_front() {
+        order.push(id);
+        if let Some(node) = arena.get(id) {
+            for &p in &node.parents {
+                if visited.insert(p) {
+                    queue.push_back(p);
+                }
+            }
+        }
+    }
+
+    order.reverse();
+    order
+        .into_iter()
+        .filter_map(|id| arena.get(id).cloned())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,5 +308,59 @@ mod tests {
         let proof = extract_proof(ClauseId(4), &store);
         assert_eq!(proof.len(), 5);
         assert_eq!(proof[proof.len() - 1].id, ClauseId(4));
+    }
+
+    #[test]
+    fn test_extract_proof_nodes_dag() {
+        use mrs_core::witness::{ProofArena, ProofWitness};
+
+        let mut arena = ProofArena::new();
+        let n0 = arena.alloc(
+            ClauseId(1),
+            ProofWitness::Input {
+                name: "ax1".to_string(),
+                role: "axiom".to_string(),
+            },
+            vec![].into(),
+        );
+        let n1 = arena.alloc(
+            ClauseId(2),
+            ProofWitness::Input {
+                name: "ax2".to_string(),
+                role: "axiom".to_string(),
+            },
+            vec![].into(),
+        );
+        let n2 = arena.alloc(
+            ClauseId(3),
+            ProofWitness::Resolution {
+                parent_left: n0,
+                parent_right: n1,
+                lit_idx_left: 0,
+                lit_idx_right: 0,
+                renaming_offset: 0,
+                unifier: None,
+            },
+            vec![n0, n1].into(),
+        );
+        let n3 = arena.alloc(
+            ClauseId(4),
+            ProofWitness::EqualityResolution {
+                parent: n2,
+                lit_idx: 0,
+                unifier: None,
+            },
+            vec![n2].into(),
+        );
+
+        let nodes = extract_proof_nodes(n3, &arena);
+        assert_eq!(nodes.len(), 4);
+        let pos_n0 = nodes.iter().position(|n| n.id == n0).unwrap();
+        let pos_n1 = nodes.iter().position(|n| n.id == n1).unwrap();
+        let pos_n2 = nodes.iter().position(|n| n.id == n2).unwrap();
+        let pos_n3 = nodes.iter().position(|n| n.id == n3).unwrap();
+        assert!(pos_n0 < pos_n2);
+        assert!(pos_n1 < pos_n2);
+        assert!(pos_n2 < pos_n3);
     }
 }

@@ -9,6 +9,7 @@
 
 use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource};
 use mrs_core::term::Term;
+use mrs_core::witness::{ProofNodeId, ProofWitness};
 use mrs_core::{Atom, Literal};
 
 /// Converts an atom to a term for unification purposes.
@@ -52,7 +53,7 @@ pub fn factor(clause: &Clause, id_gen: &mut ClauseIdGen) -> Vec<Clause> {
                     }
                 }
 
-                factors.push(Clause::new_avatar(
+                let mut derived = Clause::new_avatar(
                     id_gen.next(),
                     lits,
                     ClauseSource::Inference {
@@ -60,7 +61,14 @@ pub fn factor(clause: &Clause, id_gen: &mut ClauseIdGen) -> Vec<Clause> {
                         parents: vec![clause.id].into(),
                     },
                     clause.avatar.clone(),
-                ));
+                );
+                derived.witness = Some(ProofWitness::Factoring {
+                    parent: clause.proof_id.unwrap_or(ProofNodeId(clause.id.0)),
+                    retained_lit_idx: i,
+                    removed_lit_idx: j,
+                    unifier: Some(mgu),
+                });
+                factors.push(derived);
             }
         }
     }
@@ -110,7 +118,7 @@ pub fn factor_id(
                     }
                 }
 
-                factors.push(IdClause::new_avatar(
+                let mut derived = IdClause::new_avatar(
                     id_gen.next(),
                     lits,
                     ClauseSource::Inference {
@@ -118,7 +126,14 @@ pub fn factor_id(
                         parents: vec![clause.id].into(),
                     },
                     clause.avatar.clone(),
-                ));
+                );
+                derived.witness = Some(ProofWitness::Factoring {
+                    parent: clause.proof_id.unwrap_or(ProofNodeId(clause.id.0)),
+                    retained_lit_idx: i,
+                    removed_lit_idx: j,
+                    unifier: None,
+                });
+                factors.push(derived);
             }
         }
     }

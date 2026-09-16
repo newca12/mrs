@@ -9,6 +9,7 @@ use mrs_calculus::ordering::SymbolConfig;
 use mrs_core::SymbolId;
 use mrs_core::clause::{Clause, ClauseId, ClauseIdGen};
 use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank, TermId};
+use mrs_core::witness::{ProofArena, ProofNodeId, ProofWitness};
 use mrs_index::literal_index::LiteralIndex;
 use mrs_index::stree::STreeId;
 
@@ -32,6 +33,8 @@ pub struct SearchState {
     pub unprocessed: UnprocessedSet,
     /// Maps clause IDs to `IdClause` (for proof extraction).
     pub clause_store: HashMap<ClauseId, IdClause>,
+    /// Append-only proof arena preserving exact derivation steps.
+    pub proof_arena: ProofArena,
     /// Generator for fresh clause IDs.
     pub id_gen: ClauseIdGen,
     /// Configuration for symbol precedence and weights.
@@ -201,11 +204,45 @@ impl SearchState {
             clause_store.insert(id_clause.id, id_clause);
         }
 
+        let mut proof_arena = ProofArena::new();
+        for (id, clause) in &clause_store {
+            let witness = if let Some(w) = &clause.witness {
+                w.clone()
+            } else {
+                match &clause.source {
+                    mrs_core::clause::ClauseSource::Input { name, role } => ProofWitness::Input {
+                        name: name.clone(),
+                        role: role.clone(),
+                    },
+                    mrs_core::clause::ClauseSource::Introduced { symbol } => {
+                        ProofWitness::Definition {
+                            symbol: *symbol,
+                            defining_formula: clause.formula.clone(),
+                        }
+                    }
+                    mrs_core::clause::ClauseSource::Inference { rule, parents } => {
+                        ProofWitness::Legacy {
+                            rule,
+                            parents: parents.iter().map(|p| ProofNodeId(p.0)).collect(),
+                        }
+                    }
+                }
+            };
+            let parents = match &clause.source {
+                mrs_core::clause::ClauseSource::Inference { parents, .. } => {
+                    parents.iter().map(|p| ProofNodeId(p.0)).collect()
+                }
+                _ => smallvec::SmallVec::new(),
+            };
+            proof_arena.alloc(*id, witness, parents);
+        }
+
         Self {
             processed: LiteralIndex::new(),
             demod_index: STreeId::new(),
             unprocessed,
             clause_store,
+            proof_arena,
             id_gen,
             config,
             avatar,
@@ -246,8 +283,45 @@ impl SearchState {
         )
     }
 
+    /// Registers a clause in `clause_store` and the append-only `proof_arena`.
+    pub fn store_clause(&mut self, clause: &IdClause) {
+        self.clause_store.insert(clause.id, clause.clone());
+        if self.proof_arena.node_for_clause(clause.id).is_none() {
+            let witness = if let Some(w) = &clause.witness {
+                w.clone()
+            } else {
+                match &clause.source {
+                    mrs_core::clause::ClauseSource::Input { name, role } => ProofWitness::Input {
+                        name: name.clone(),
+                        role: role.clone(),
+                    },
+                    mrs_core::clause::ClauseSource::Introduced { symbol } => {
+                        ProofWitness::Definition {
+                            symbol: *symbol,
+                            defining_formula: clause.formula.clone(),
+                        }
+                    }
+                    mrs_core::clause::ClauseSource::Inference { rule, parents } => {
+                        ProofWitness::Legacy {
+                            rule,
+                            parents: parents.iter().map(|p| ProofNodeId(p.0)).collect(),
+                        }
+                    }
+                }
+            };
+            let parents = match &clause.source {
+                mrs_core::clause::ClauseSource::Inference { parents, .. } => {
+                    parents.iter().map(|p| ProofNodeId(p.0)).collect()
+                }
+                _ => smallvec::SmallVec::new(),
+            };
+            self.proof_arena.alloc(clause.id, witness, parents);
+        }
+    }
+
     /// Enqueues a clause into `unprocessed` using its computed weight and relational goal distance.
     pub fn push_unprocessed(&mut self, clause: &IdClause, weight: u32, score: Option<f32>) {
+        self.store_clause(clause);
         let goal_dist = self.goal_map.clause_goal_distance(clause, &self.term_bank);
         self.unprocessed
             .push(clause, &self.term_bank, weight, Some(goal_dist), score);

@@ -753,6 +753,8 @@ mod tests {
             distance: 0,
             formula: None,
             certificate: None,
+            proof_id: None,
+            witness: None,
         };
 
         // Ax1: p(X) | ~q(X)  (shares p -> dist 1, q gets dist 1)
@@ -772,6 +774,8 @@ mod tests {
             distance: 100,
             formula: None,
             certificate: None,
+            proof_id: None,
+            witness: None,
         };
 
         // Ax2: q(b)  (shares q -> dist 2, b gets dist 2)
@@ -788,6 +792,8 @@ mod tests {
             distance: 100,
             formula: None,
             certificate: None,
+            proof_id: None,
+            witness: None,
         };
 
         let map = crate::goal_distance::GoalDistanceMap::compute(&[

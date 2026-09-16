@@ -10,6 +10,7 @@ use mrs_core::clause::{
 use mrs_core::formula::Atom;
 use mrs_core::term::{Term, VarId};
 use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank, TermNode};
+use mrs_core::witness::{ProofNodeId, ProofWitness};
 
 pub struct AvatarContext {
     pub solver: Solver,
@@ -188,6 +189,11 @@ impl AvatarContext {
                 branch_index: i,
                 sat_var: var,
             });
+            new_clause.witness = Some(ProofWitness::Avatar {
+                split_parent: Some(ProofNodeId(split_id.0)),
+                branch_roots: vec![ProofNodeId(split_id.0)],
+                context: new_clause.avatar.clone(),
+            });
             split_clauses.push(new_clause);
         }
 
@@ -349,6 +355,11 @@ impl AvatarContext {
                 })
                 .collect(),
         });
+        split_c.witness = Some(ProofWitness::Avatar {
+            split_parent: Some(clause.proof_id.unwrap_or(ProofNodeId(clause.id.0))),
+            branch_roots: Vec::new(),
+            context: clause.avatar.clone(),
+        });
         clause_store.insert(split_id, split_c);
         // 2. Construct each component clause derived from split_c
         let mut split_clauses = Vec::with_capacity(parts.len());
@@ -372,6 +383,11 @@ impl AvatarContext {
                 split_parent: split_id,
                 branch_index: i,
                 sat_var: var,
+            });
+            new_clause.witness = Some(ProofWitness::Avatar {
+                split_parent: Some(ProofNodeId(split_id.0)),
+                branch_roots: vec![ProofNodeId(split_id.0)],
+                context: new_clause.avatar.clone(),
             });
             split_clauses.push(new_clause);
         }

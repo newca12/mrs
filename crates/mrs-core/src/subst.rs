@@ -31,7 +31,7 @@ use crate::term::{Term, VarId};
 /// let result = sub.apply_term(&Term::var(0));
 /// assert_eq!(result, Term::constant(a));
 /// ```
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Substitution {
     bindings: HashMap<VarId, Term>,
 }

@@ -2,6 +2,7 @@
 
 use mrs_core::clause::{ClauseIdGen, ClauseSource};
 use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank, TermNode};
+use mrs_core::witness::{ProofNodeId, ProofWitness};
 use rustc_hash::FxHashSet as HashSet;
 
 /// Destructive Equality Resolution (DER / eager variable elimination) for `IdClause`.
@@ -37,7 +38,7 @@ pub fn destructive_equality_resolution_id(
                     .filter(|&(k, _)| k != i)
                     .map(|(_, lit)| lit.clone())
                     .collect();
-                let next = IdClause::new_avatar(
+                let mut next = IdClause::new_avatar(
                     id_gen.next(),
                     new_lits,
                     ClauseSource::Inference {
@@ -46,6 +47,11 @@ pub fn destructive_equality_resolution_id(
                     },
                     current.avatar.clone(),
                 );
+                next.witness = Some(ProofWitness::EqualityResolution {
+                    parent: current.proof_id.unwrap_or(ProofNodeId(current.id.0)),
+                    lit_idx: i,
+                    unifier: None,
+                });
                 steps.push(next.clone());
                 current = next;
                 simplified_step = true;
@@ -80,7 +86,7 @@ pub fn destructive_equality_resolution_id(
                     .filter(|&(k, _)| k != i)
                     .map(|(_, lit)| term_bank.substitute_var_literal(lit, target_var, replacement))
                     .collect();
-                let next = IdClause::new_avatar(
+                let mut next = IdClause::new_avatar(
                     id_gen.next(),
                     new_lits,
                     ClauseSource::Inference {
@@ -89,6 +95,11 @@ pub fn destructive_equality_resolution_id(
                     },
                     current.avatar.clone(),
                 );
+                next.witness = Some(ProofWitness::EqualityResolution {
+                    parent: current.proof_id.unwrap_or(ProofNodeId(current.id.0)),
+                    lit_idx: i,
+                    unifier: None,
+                });
                 steps.push(next.clone());
                 current = next;
                 simplified_step = true;

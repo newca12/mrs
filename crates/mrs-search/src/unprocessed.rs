@@ -496,6 +496,8 @@ mod tests {
                 distance: dist,
                 formula: None,
                 certificate: None,
+                proof_id: None,
+                witness: None,
             };
             bank.clause_from_legacy(&legacy)
         };

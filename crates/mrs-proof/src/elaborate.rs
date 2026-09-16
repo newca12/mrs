@@ -155,6 +155,8 @@ pub fn replace_subterm_in_clause(
         distance: clause.distance,
         certificate: clause.certificate.clone(),
         formula: clause.formula.clone(),
+        proof_id: clause.proof_id,
+        witness: clause.witness.clone(),
     })
 }
 
@@ -554,6 +556,12 @@ pub fn reconstruct_demodulation(
             },
             formula: if is_last {
                 conclusion.formula.clone()
+            } else {
+                None
+            },
+            proof_id: if is_last { conclusion.proof_id } else { None },
+            witness: if is_last {
+                conclusion.witness.clone()
             } else {
                 None
             },

@@ -141,6 +141,8 @@ pub fn transform_goal_clauses(
                 distance: 0,
                 formula: None,
                 certificate: None,
+                proof_id: None,
+                witness: None,
             };
 
             result_clauses.push(new_goal);

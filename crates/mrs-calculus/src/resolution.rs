@@ -17,6 +17,7 @@ use mrs_core::{Atom, Literal};
 
 use crate::rename::{max_var, max_var_id, rename_clause, rename_clause_id};
 use mrs_core::term_bank::{IdAtom, IdClause, TermBank, TermId};
+use mrs_core::witness::{ProofNodeId, ProofWitness};
 
 /// Converts an atom to a term for unification purposes.
 ///
@@ -131,7 +132,7 @@ pub fn resolve_selected(
             let mut new_avatar = c1.avatar.clone();
             new_avatar.extend_from_slice(&c2.avatar);
 
-            resolvents.push(Clause::new_avatar(
+            let mut resolvent = Clause::new_avatar(
                 id_gen.next(),
                 lits,
                 ClauseSource::Inference {
@@ -143,7 +144,16 @@ pub fn resolve_selected(
                     parents: vec![c1.id, c2.id].into(),
                 },
                 new_avatar,
-            ));
+            );
+            resolvent.witness = Some(ProofWitness::Resolution {
+                parent_left: c1.proof_id.unwrap_or(ProofNodeId(c1.id.0)),
+                parent_right: c2.proof_id.unwrap_or(ProofNodeId(c2.id.0)),
+                lit_idx_left: i,
+                lit_idx_right: j,
+                renaming_offset: offset,
+                unifier: Some(mgu),
+            });
+            resolvents.push(resolvent);
         }
     }
 
@@ -214,7 +224,7 @@ pub fn resolve_selected_id(
             let mut new_avatar = c1.avatar.clone();
             new_avatar.extend_from_slice(&c2.avatar);
 
-            resolvents.push(IdClause::new_avatar(
+            let mut resolvent = IdClause::new_avatar(
                 id_gen.next(),
                 lits,
                 ClauseSource::Inference {
@@ -226,7 +236,16 @@ pub fn resolve_selected_id(
                     parents: vec![c1.id, c2.id].into(),
                 },
                 new_avatar,
-            ));
+            );
+            resolvent.witness = Some(ProofWitness::Resolution {
+                parent_left: c1.proof_id.unwrap_or(ProofNodeId(c1.id.0)),
+                parent_right: c2.proof_id.unwrap_or(ProofNodeId(c2.id.0)),
+                lit_idx_left: i,
+                lit_idx_right: j,
+                renaming_offset: offset,
+                unifier: None,
+            });
+            resolvents.push(resolvent);
         }
     }
 

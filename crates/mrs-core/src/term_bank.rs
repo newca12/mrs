@@ -6,6 +6,7 @@ use crate::clause::{Clause, ClauseCertificate, ClauseId, ClauseSource, Literal};
 use crate::formula::Atom;
 use crate::symbol::SymbolId;
 use crate::term::{Term, VarId};
+use crate::witness::{ProofNodeId, ProofWitness};
 
 /// A lightweight handle to an interned term.
 /// Because terms are hash-consed, `TermId` equality implies deep structural equality.
@@ -76,6 +77,10 @@ pub struct IdClause {
     /// empty clause (a refutation) by the given-clause loop.
     pub formula: Option<Box<Formula>>,
     pub certificate: Option<ClauseCertificate>,
+    /// Stable proof node identifier in the append-only proof arena.
+    pub proof_id: Option<ProofNodeId>,
+    /// Typed inference witness for exact justification.
+    pub witness: Option<ProofWitness>,
 }
 
 impl IdClause {
@@ -91,6 +96,8 @@ impl IdClause {
             distance: 1000,
             formula: None,
             certificate: None,
+            proof_id: None,
+            witness: None,
         }
     }
 
@@ -109,7 +116,16 @@ impl IdClause {
             distance: 1000,
             formula: None,
             certificate: None,
+            proof_id: None,
+            witness: None,
         }
+    }
+
+    /// Attach a proof node and witness to this clause.
+    pub fn with_witness(mut self, proof_id: ProofNodeId, witness: ProofWitness) -> Self {
+        self.proof_id = Some(proof_id);
+        self.witness = Some(witness);
+        self
     }
 
     pub fn free_vars(&self, bank: &TermBank) -> HashSet<VarId> {
@@ -522,6 +538,8 @@ impl TermBank {
         c.distance = clause.distance;
         c.formula = clause.formula.clone();
         c.certificate = clause.certificate.clone();
+        c.proof_id = clause.proof_id;
+        c.witness = clause.witness.clone();
         c
     }
 
@@ -538,6 +556,8 @@ impl TermBank {
             distance: clause.distance,
             formula: clause.formula.clone(),
             certificate: clause.certificate.clone(),
+            proof_id: clause.proof_id,
+            witness: clause.witness.clone(),
         }
     }
 }

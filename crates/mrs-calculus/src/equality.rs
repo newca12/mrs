@@ -6,6 +6,7 @@
 
 use mrs_core::Atom;
 use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource, Literal};
+use mrs_core::witness::{ProofNodeId, ProofWitness};
 use mrs_unify::unify;
 
 use crate::ordering::{TermComparison, TermOrdering};
@@ -43,7 +44,7 @@ pub fn equality_resolve(clause: &Clause, id_gen: &mut ClauseIdGen) -> Vec<Clause
             .map(|(_, lit)| sigma.apply_literal(lit))
             .collect();
 
-        results.push(Clause::new_avatar(
+        let mut derived = Clause::new_avatar(
             id_gen.next(),
             new_lits,
             ClauseSource::Inference {
@@ -51,7 +52,13 @@ pub fn equality_resolve(clause: &Clause, id_gen: &mut ClauseIdGen) -> Vec<Clause
                 parents: vec![clause.id].into(),
             },
             clause.avatar.clone(),
-        ));
+        );
+        derived.witness = Some(ProofWitness::EqualityResolution {
+            parent: clause.proof_id.unwrap_or(ProofNodeId(clause.id.0)),
+            lit_idx: i,
+            unifier: Some(sigma),
+        });
+        results.push(derived);
     }
 
     results
@@ -221,7 +228,7 @@ pub fn equality_factor(
                     }
                 }
 
-                results.push(Clause::new_avatar(
+                let mut derived = Clause::new_avatar(
                     id_gen.next(),
                     new_lits,
                     ClauseSource::Inference {
@@ -229,7 +236,14 @@ pub fn equality_factor(
                         parents: vec![clause.id].into(),
                     },
                     clause.avatar.clone(),
-                ));
+                );
+                derived.witness = Some(ProofWitness::EqualityFactoring {
+                    parent: clause.proof_id.unwrap_or(ProofNodeId(clause.id.0)),
+                    equality_lit_idx: i,
+                    other_lit_idx: j,
+                    unifier: Some(sigma),
+                });
+                results.push(derived);
             }
         }
     }
@@ -264,7 +278,7 @@ pub fn equality_resolve_id(
                 .map(|(_, lit)| sigma.apply_literal(lit, bank))
                 .collect();
 
-            results.push(IdClause::new_avatar(
+            let mut derived = IdClause::new_avatar(
                 id_gen.next(),
                 new_lits,
                 ClauseSource::Inference {
@@ -272,7 +286,13 @@ pub fn equality_resolve_id(
                     parents: vec![clause.id].into(),
                 },
                 clause.avatar.clone(),
-            ));
+            );
+            derived.witness = Some(ProofWitness::EqualityResolution {
+                parent: clause.proof_id.unwrap_or(ProofNodeId(clause.id.0)),
+                lit_idx: i,
+                unifier: None,
+            });
+            results.push(derived);
         }
     }
 
@@ -337,7 +357,7 @@ pub fn equality_factor_id(
                         }
                     }
 
-                    results.push(IdClause::new_avatar(
+                    let mut derived = IdClause::new_avatar(
                         id_gen.next(),
                         new_lits,
                         ClauseSource::Inference {
@@ -345,7 +365,14 @@ pub fn equality_factor_id(
                             parents: vec![clause.id].into(),
                         },
                         clause.avatar.clone(),
-                    ));
+                    );
+                    derived.witness = Some(ProofWitness::EqualityFactoring {
+                        parent: clause.proof_id.unwrap_or(ProofNodeId(clause.id.0)),
+                        equality_lit_idx: i,
+                        other_lit_idx: j,
+                        unifier: None,
+                    });
+                    results.push(derived);
                 }
             }
         }

@@ -4,6 +4,7 @@ use mrs_core::clause::{Clause, ClauseId, ClauseIdGen, ClauseSource, Literal};
 use mrs_core::formula::Atom;
 use mrs_core::subst::Substitution;
 use mrs_core::term::Term;
+use mrs_core::witness::{ProofNodeId, ProofWitness};
 use mrs_unify::matching::match_term;
 
 /// Performs forward demodulation on a clause using the provided index of unit equalities.
@@ -54,7 +55,17 @@ pub fn demodulate(
             }
         }
 
-        Some(Clause::new_avatar(
+        let rule_parents: Vec<ProofNodeId> = used_unit_ids
+            .iter()
+            .map(|p| {
+                clause_store
+                    .get(p)
+                    .and_then(|c| c.proof_id)
+                    .unwrap_or(ProofNodeId(p.0))
+            })
+            .collect();
+
+        let mut derived = Clause::new_avatar(
             id_gen.next(),
             current_lits,
             ClauseSource::Inference {
@@ -62,7 +73,13 @@ pub fn demodulate(
                 parents: unique_parents.into(),
             },
             clause.avatar.clone(),
-        ))
+        );
+        derived.witness = Some(ProofWitness::Demodulation {
+            target: clause.proof_id.unwrap_or(ProofNodeId(clause.id.0)),
+            rule_parents,
+            steps: Vec::new(),
+        });
+        Some(derived)
     } else {
         None
     }
@@ -222,7 +239,17 @@ pub fn demodulate_id(
             }
         }
 
-        Some(IdClause::new_avatar(
+        let rule_parents: Vec<ProofNodeId> = used_unit_ids
+            .iter()
+            .map(|p| {
+                clause_store
+                    .get(p)
+                    .and_then(|c| c.proof_id)
+                    .unwrap_or(ProofNodeId(p.0))
+            })
+            .collect();
+
+        let mut derived = IdClause::new_avatar(
             id_gen.next(),
             current_lits,
             ClauseSource::Inference {
@@ -230,7 +257,13 @@ pub fn demodulate_id(
                 parents: unique_parents.into(),
             },
             clause.avatar.clone(),
-        ))
+        );
+        derived.witness = Some(ProofWitness::Demodulation {
+            target: clause.proof_id.unwrap_or(ProofNodeId(clause.id.0)),
+            rule_parents,
+            steps: Vec::new(),
+        });
+        Some(derived)
     } else {
         None
     }

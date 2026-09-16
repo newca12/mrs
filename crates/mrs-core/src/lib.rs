@@ -24,6 +24,7 @@ pub mod subst;
 pub mod symbol;
 pub mod term;
 pub mod term_bank;
+pub mod witness;
 
 #[cfg(feature = "proover")]
 pub mod alpha;
@@ -37,3 +38,4 @@ pub use profile::{InputMetadata, ProblemArchetype, ProblemProfile};
 pub use subst::Substitution;
 pub use symbol::{SymbolId, SymbolTable};
 pub use term::{Term, VarId};
+pub use witness::{DemodStepWitness, ProofArena, ProofNode, ProofNodeId, ProofWitness};
