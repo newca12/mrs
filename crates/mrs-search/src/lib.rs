@@ -39,6 +39,7 @@ pub mod given_clause;
 pub mod goal_distance;
 pub mod instgen;
 pub mod preprocessing;
+pub mod resource;
 pub mod select;
 pub mod sine;
 pub mod state;
@@ -57,6 +58,7 @@ pub use mrs_calculus::literal_selection::LiteralSelection;
 pub use mrs_calculus::ordering::TermOrdering;
 pub use mrs_cnf::goal_transform::GoalTransformMode;
 pub use preprocessing::{PreprocessingConfig, PreprocessingStats, preprocess_clauses};
+pub use resource::{ResourceLimits, current_memory_mb, system_memory_limit_mb};
 pub use select::{QueueType, SelectionStrategy};
 pub use symbol_config::{PrecedenceScheme, SymbolWeightScheme, compute_symbol_config};
 
@@ -228,6 +230,11 @@ impl ScheduleReport {
             .iter()
             .filter(|s| matches!(s.result, SearchResult::Timeout))
             .count();
+        let n_resource_out = self
+            .strategies
+            .iter()
+            .filter(|s| matches!(s.result, SearchResult::ResourceOut))
+            .count();
         let n_saturated = self
             .strategies
             .iter()
@@ -235,10 +242,11 @@ impl ScheduleReport {
             .count();
 
         Some(format!(
-            "strategies={} timeout={} saturated={} \
+            "strategies={} timeout={} resource_out={} saturated={} \
              processed={} generated={} passive={} weight_discarded={} lrs_discarded={} fwd_subsumed={}",
             self.strategies.len(),
             n_timeout,
+            n_resource_out,
             n_saturated,
             total_processed,
             total_generated,
@@ -261,6 +269,8 @@ pub enum SearchResult {
     Timeout,
     /// The search gave up (e.g. saturated with an incomplete strategy).
     GaveUp,
+    /// The search exceeded resource limits (memory watchdog, clause or term ceiling).
+    ResourceOut,
 }
 
 /// Policy used by the Limited Resource Strategy (LRS) passive-queue pruner.
@@ -414,6 +424,8 @@ pub struct SearchConfig {
     pub precedence_scheme: PrecedenceScheme,
     /// Scheme used to compute symbol weights for reduction orderings (KBO).
     pub symbol_weight_scheme: SymbolWeightScheme,
+    /// Resource containment limits (clause ceilings, term bank ceiling, memory watchdog).
+    pub resource_limits: ResourceLimits,
 }
 
 impl Default for SearchConfig {
@@ -438,6 +450,7 @@ impl Default for SearchConfig {
             shared_pool_poll_interval: 500,
             precedence_scheme: PrecedenceScheme::InvFreq,
             symbol_weight_scheme: SymbolWeightScheme::Uniform,
+            resource_limits: ResourceLimits::default(),
         }
     }
 }

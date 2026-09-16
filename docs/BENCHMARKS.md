@@ -386,19 +386,541 @@ REFERENCE VIOLATIONS — none detected.
 ===================================================================
 ===================================================================
 
-commit 50f37f86ab3353d893b3e6388b090930523dbde2 (HEAD -> main, origin/main, origin/HEAD)
+commit 4f7bd15d31ec2814bac2372f4475f243fee3552f (HEAD -> main, origin/main, origin/HEAD)
+
+ [ongoing]
+ [root@mtsdev04 mrs]# for interval in 250 500 1000; do MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL="${interval}" crates/mrs-bench/casc.sh --edition casc-j13 --systems mrs --divisions ueq --casc-times --jobs 1 --output crates/mrs-bench/results/casc-j13-ueq-sharing-${interval}-$(date +%Y%m%d_%H%M%S); done
 
 [ongoing]
+[root@mtsdev01 mrs]# for interval in 25 50 100; do MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL="${interval}" crates/mrs-bench/casc.sh --edition casc-j13 --systems mrs --divisions ueq --casc-times --jobs 1 --output crates/mrs-bench/results/casc-j13-ueq-sharing-${interval}-$(date +%Y%m%d_%H%M%S); done
+
+
+[done]
+[PPROD:user@server97:/DATA/ai/fr22192/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --edition casc-30  --systems mrs --divisions fne,feq,epu,eps,ueq,icu  --casc-times --jobs 2 --output crates/mrs-bench/results/casc-30-W8J2-$(date +%Y%m%d)
+Running `target/debug/bench_report /DATA/ai/fr22192/mrs/crates/mrs-bench/results/casc-30-W8J2-20260914/run.csv`
+CASC-30 Results — 2026-09-16 07:13  (1101 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs
+                 Solved  Avg (s)
+------------------  --------------------
+FNE            100        43   27.309
+FEQ            400       113   24.132
+EPU            100        18   12.052
+EPS            100        17   23.478
+UEQ            300        81   30.882
+ICU            101         4  147.508
+------------------  --------------------
+TOTAL         1101       276   27.568
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+[PPROD:user@server97:/DATA/ai/user/mrs]$ cargo run --release -p mrs-bench --bin audit_casc_proofs -- --run crates/mrs-bench/results/casc-30-W8J2-20260914 --problems-dir crates/mrs-bench/problems/casc-30 --checks strict,mrs,ladder --strict-time 60 --mrs-time 60 --ladder-time 60 --ladder-workers 8 --jobs 4 --output crates/mrs-bench/results/casc-30-W8J2-20260914/proof-audit
+     Running `target/release/audit_casc_proofs --run crates/mrs-bench/results/casc-30-W8J2-20260914 --problems-dir crates/mrs-bench/problems/casc-30 --checks strict,mrs,ladder --strict-time 60 --mrs-time 60 --ladder-time 60 --ladder-workers 8 --jobs 4 --output crates/mrs-bench/results/casc-30-W8J2-20260914/proof-audit`
+audit_report=crates/mrs-bench/results/casc-30-W8J2-20260914/proof-audit/audit.csv
+summary_report=crates/mrs-bench/results/casc-30-W8J2-20260914/proof-audit/audit-summary.txt
+checks=[strict,mrs,ladder]
+
+================================================================================
+Division: eps                                                          Rows: 100
+================================================================================
+
+Generation
++--------------------+-------+
+|             Status | Count |
++--------------------+-------+
+|            Theorem |     0 |
+|      Unsatisfiable |     0 |
+|        Satisfiable |    17 |
+| CounterSatisfiable |     0 |
+|             GaveUp |    63 |
+|            Timeout |    20 |
+|              Error |     0 |
+|              Other |     0 |
++--------------------+-------+
+
+Verification
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+|   Mode | Applicable | VerifiedGood | VerifiedBad | Unknown | Timeout | N/A: Model | N/A: Incomplete | Error | Other |
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+| strict |          0 |            0 |           0 |       0 |       0 |         17 |              83 |     0 |     0 |
+|    mrs |          0 |            0 |           0 |       0 |       0 |         17 |              83 |     0 |     0 |
+| ladder |          0 |            0 |           0 |       0 |       0 |         17 |              83 |     0 |     0 |
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+
+================================================================================
+Division: epu                                                          Rows: 100
+================================================================================
+
+Generation
++--------------------+-------+
+|             Status | Count |
++--------------------+-------+
+|            Theorem |     0 |
+|      Unsatisfiable |    18 |
+|        Satisfiable |     0 |
+| CounterSatisfiable |     0 |
+|             GaveUp |    26 |
+|            Timeout |    56 |
+|              Error |     0 |
+|              Other |     0 |
++--------------------+-------+
+
+Verification
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+|   Mode | Applicable | VerifiedGood | VerifiedBad | Unknown | Timeout | N/A: Model | N/A: Incomplete | Error | Other |
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+| strict |         18 |           17 |           0 |       1 |       0 |          0 |              82 |     0 |     0 |
+|    mrs |         18 |           18 |           0 |       0 |       0 |          0 |              82 |     0 |     0 |
+| ladder |         18 |           18 |           0 |       0 |       0 |          0 |              82 |     0 |     0 |
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+
+================================================================================
+Division: feq                                                          Rows: 400
+================================================================================
+
+Generation
++--------------------+-------+
+|             Status | Count |
++--------------------+-------+
+|            Theorem |   113 |
+|      Unsatisfiable |     0 |
+|        Satisfiable |     0 |
+| CounterSatisfiable |     0 |
+|             GaveUp |   252 |
+|            Timeout |    35 |
+|              Error |     0 |
+|              Other |     0 |
++--------------------+-------+
+
+Verification
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+|   Mode | Applicable | VerifiedGood | VerifiedBad | Unknown | Timeout | N/A: Model | N/A: Incomplete | Error | Other |
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+| strict |        113 |           15 |          64 |      33 |       1 |          0 |             287 |     0 |     0 |
+|    mrs |        113 |           23 |           4 |      77 |       9 |          0 |             287 |     0 |     0 |
+| ladder |        113 |           53 |           6 |      45 |       9 |          0 |             287 |     0 |     0 |
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+
+================================================================================
+Division: fne                                                          Rows: 100
+================================================================================
+
+Generation
++--------------------+-------+
+|             Status | Count |
++--------------------+-------+
+|            Theorem |    43 |
+|      Unsatisfiable |     0 |
+|        Satisfiable |     0 |
+| CounterSatisfiable |     0 |
+|             GaveUp |    52 |
+|            Timeout |     5 |
+|              Error |     0 |
+|              Other |     0 |
++--------------------+-------+
+
+Verification
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+|   Mode | Applicable | VerifiedGood | VerifiedBad | Unknown | Timeout | N/A: Model | N/A: Incomplete | Error | Other |
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+| strict |         43 |            9 |          24 |      10 |       0 |          0 |              57 |     0 |     0 |
+|    mrs |         43 |           18 |           0 |      15 |      10 |          0 |              57 |     0 |     0 |
+| ladder |         43 |           19 |           0 |      16 |       8 |          0 |              57 |     0 |     0 |
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+
+================================================================================
+Division: icu                                                          Rows: 101
+================================================================================
+
+Generation
++--------------------+-------+
+|             Status | Count |
++--------------------+-------+
+|            Theorem |     4 |
+|      Unsatisfiable |     0 |
+|        Satisfiable |     0 |
+| CounterSatisfiable |     0 |
+|             GaveUp |    73 |
+|            Timeout |    19 |
+|              Error |     5 |
+|              Other |     0 |
++--------------------+-------+
+
+Verification
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+|   Mode | Applicable | VerifiedGood | VerifiedBad | Unknown | Timeout | N/A: Model | N/A: Incomplete | Error | Other |
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+| strict |          4 |            0 |           3 |       1 |       0 |          0 |              92 |     5 |     0 |
+|    mrs |          4 |            1 |           0 |       2 |       1 |          0 |              92 |     5 |     0 |
+| ladder |          4 |            2 |           0 |       1 |       1 |          0 |              92 |     5 |     0 |
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+
+================================================================================
+Division: ueq                                                          Rows: 300
+================================================================================
+
+Generation
++--------------------+-------+
+|             Status | Count |
++--------------------+-------+
+|            Theorem |     0 |
+|      Unsatisfiable |    81 |
+|        Satisfiable |     0 |
+| CounterSatisfiable |     0 |
+|             GaveUp |   191 |
+|            Timeout |    28 |
+|              Error |     0 |
+|              Other |     0 |
++--------------------+-------+
+
+Verification
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+|   Mode | Applicable | VerifiedGood | VerifiedBad | Unknown | Timeout | N/A: Model | N/A: Incomplete | Error | Other |
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+| strict |         81 |           32 |           0 |      49 |       0 |          0 |             219 |     0 |     0 |
+|    mrs |         81 |           48 |           0 |      27 |       6 |          0 |             219 |     0 |     0 |
+| ladder |         81 |           75 |           0 |       0 |       6 |          0 |             219 |     0 |     0 |
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+
+
+[done]
+[www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --edition casc-j13 --systems mrs --divisions fne,feq,ueq  --casc-times --jobs 2 --output crates/mrs-bench/results/casc-j13-W8J2-$(date +%Y%m%d)
+     Running `target/debug/bench_report crates/mrs-bench/results/casc-j13-W8J2-20260914/run.csv`
+CASC-J13 Results — 2026-09-15 11:39  (800 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+FNE            100        35   12.877
+FEQ            300        72   19.004
+UEQ            400        78   17.773
+------------------  --------------------
+TOTAL          800       185   17.326
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+[www@server99 mrs]$ cargo run --release -p mrs-bench --bin audit_casc_proofs -- --run crates/mrs-bench/results/casc-j13-W8J2-20260914 --problems-dir crates/mrs-bench/problems/casc-j13 --checks strict,mrs,ladder --strict-time 60 --mrs-time 60 --ladder-time 60 --ladder-workers 8 --jobs 4 --output crates/mrs-bench/results/casc-j13-W8J2-20260914/proof-audit
+[www@teenf9901 mrs]$ cat crates/mrs-bench/results/casc-j13-W8J2-20260914/proof-audit/audit-summary.txt
+audit_report=crates/mrs-bench/results/casc-j13-W8J2-20260914/proof-audit/audit.csv
+summary_report=crates/mrs-bench/results/casc-j13-W8J2-20260914/proof-audit/audit-summary.txt
+checks=[strict,mrs,ladder]
+
+================================================================================
+Division: feq                                                          Rows: 300
+================================================================================
+
+Generation
++--------------------+-------+
+|             Status | Count |
++--------------------+-------+
+|            Theorem |    72 |
+|      Unsatisfiable |     0 |
+|        Satisfiable |     0 |
+| CounterSatisfiable |     0 |
+|             GaveUp |   179 |
+|            Timeout |    49 |
+|              Error |     0 |
+|              Other |     0 |
++--------------------+-------+
+
+Verification
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+|   Mode | Applicable | VerifiedGood | VerifiedBad | Unknown | Timeout | N/A: Model | N/A: Incomplete | Error | Other |
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+| strict |         72 |           16 |          30 |      26 |       0 |          0 |             228 |     0 |     0 |
+|    mrs |         72 |           23 |           2 |      41 |       6 |          0 |             228 |     0 |     0 |
+| ladder |         72 |           46 |           4 |      15 |       7 |          0 |             228 |     0 |     0 |
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+
+================================================================================
+Division: fne                                                          Rows: 100
+================================================================================
+
+Generation
++--------------------+-------+
+|             Status | Count |
++--------------------+-------+
+|            Theorem |    35 |
+|      Unsatisfiable |     0 |
+|        Satisfiable |     0 |
+| CounterSatisfiable |     0 |
+|             GaveUp |    58 |
+|            Timeout |     7 |
+|              Error |     0 |
+|              Other |     0 |
++--------------------+-------+
+
+Verification
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+|   Mode | Applicable | VerifiedGood | VerifiedBad | Unknown | Timeout | N/A: Model | N/A: Incomplete | Error | Other |
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+| strict |         35 |            5 |          21 |       9 |       0 |          0 |              65 |     0 |     0 |
+|    mrs |         35 |           10 |           0 |      21 |       4 |          0 |              65 |     0 |     0 |
+| ladder |         35 |           10 |           0 |      23 |       2 |          0 |              65 |     0 |     0 |
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+
+================================================================================
+Division: ueq                                                          Rows: 400
+================================================================================
+
+Generation
++--------------------+-------+
+|             Status | Count |
++--------------------+-------+
+|            Theorem |     0 |
+|      Unsatisfiable |    78 |
+|        Satisfiable |     0 |
+| CounterSatisfiable |     0 |
+|             GaveUp |   289 |
+|            Timeout |    33 |
+|              Error |     0 |
+|              Other |     0 |
++--------------------+-------+
+
+Verification
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+|   Mode | Applicable | VerifiedGood | VerifiedBad | Unknown | Timeout | N/A: Model | N/A: Incomplete | Error | Other |
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+| strict |         78 |           41 |           0 |      37 |       0 |          0 |             322 |     0 |     0 |
+|    mrs |         78 |           40 |           0 |      24 |      14 |          0 |             322 |     0 |     0 |
+| ladder |         78 |           64 |           0 |       0 |      14 |          0 |             322 |     0 |     0 |
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+
+commit 11e36a05958984e0fe9b5118223fd57ba7ffec2e (HEAD -> main, origin/main, origin/HEAD)
+
+[done]
+[root@server04 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --edition casc-30 --divisions fne --systems mrs --jobs 1 --casc-times
+Running `target/debug/bench_report crates/mrs-bench/results/casc-30/20260914_112303/run.csv`
+CASC-30 Results — 2026-09-14 16:22  (100 problems × 1 systems)
+==============================================================                                                          
+Division  Problems    mrs
+                 Solved  Avg (s)
+------------------  --------------------
+FNE            100        43   31.267
+------------------  --------------------
+TOTAL          100        43   31.267
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+[root@server04 mrs]# cargo run --release -p mrs-bench --bin audit_casc_proofs -- --run crates/mrs-bench/results/casc-30/20260914_112303 --problems-dir crates/mrs-bench/problems/casc-30 --checks strict,mrs,ladder --strict-time 60 --mrs-time 60 --ladder-time 60 --ladder-workers 8 --jobs 1 --output crates/mrs-bench/results/casc-30/20260914_112303/proof-audit
+strict
+  Unknown=10
+  VerifiedBad=24
+  VerifiedGood=9
+  non_refutation=57
+mrs
+  Timeout=9
+  Unknown=15
+  VerifiedGood=19
+  non_refutation=57
+ladder
+  Timeout=7
+  Unknown=16
+  VerifiedGood=20
+  non_refutation=57
+
+[root@server01 mrs]# MRS_WORKERS=8 crates/mrs-bench/casc.sh --edition casc-30 --divisions eps --systems mrs --jobs 1 --casc-times
+
+MRS_WORKERS=8 crates/mrs-bench/casc.sh --systems mrs --divisions eps  --casc-times --jobs 1
+     Running `target/debug/bench_report /mnt/sdf1/mrs/crates/mrs-bench/results/casc-30/20260914_122604/run.csv`
+CASC-30 Results — 2026-09-14 16:52  (100 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+EPS            100        16   19.308
+------------------  --------------------
+TOTAL          100        16   19.308
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+[root@mtsdev01 mrs]# cargo run --release -p mrs-bench --bin audit_casc_proofs -- --run crates/mrs-bench/results/casc-30/20260914_122604 --problems-dir crates/mrs-bench/problems/casc-30 --checks strict,mrs,ladder --strict-time 60 --mrs-time 60 --ladder-time 60 --ladder-workers 8 --jobs 1 --output crates/mrs-bench/results/casc-30/20260914_122604/proof-audit
+checks=strict,mrs,ladder
+strict
+  non_refutation=100
+mrs
+  non_refutation=100
+ladder
+  non_refutation=100
+
+commit f0558694c5e1df15df6013d619dfc5ed339a8862 (HEAD -> main, origin/main, origin/HEAD)
+
+[done]
 [www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh   --edition casc-j13 --systems mrs --divisions ueq  --casc-times --jobs 2 --output crates/mrs-bench/results/casc-j13-W8J1-$(date +%Y%m%d)
+Running `target/debug/bench_report crates/mrs-bench/results/casc-j13-W8J2-20260914/run.csv`
+CASC-J13 Results — 2026-09-14 16:11  (400 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs
+                 Solved  Avg (s)
+------------------  --------------------
+UEQ            400        80   22.653
+------------------  --------------------
+TOTAL          400        80   22.653
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+
+[done]
+[PPROD:user@server97:/DATA/ai/user/mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh --edition casc-30  --systems mrs --divisions ueq  --casc-times --jobs 2 --output crates/mrs-bench/results/casc-30-W8J2-$(date +%Y%m%d)
+Running `target/debug/bench_report /DATA/ai/user/mrs/crates/mrs-bench/results/casc-30-W8J2-20260914/run.csv`
+CASC-30 Results — 2026-09-14 15:40  (300 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                 Solved  Avg (s)
+------------------  --------------------
+UEQ            300        82   27.348
+------------------  --------------------
+TOTAL          300        82   27.348
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+commit 50f37f86ab3353d893b3e6388b090930523dbde2 (HEAD -> main, origin/main, origin/HEAD)
+
+[done]
+[www@server99 mrs]$ MRS_WORKERS=8 crates/mrs-bench/casc.sh   --edition casc-j13 --systems mrs --divisions ueq  --casc-times --jobs 2 --output crates/mrs-bench/results/casc-j13-W8J1-$(date +%Y%m%d)
+Running `target/debug/bench_report /DATA/ai/mrs/crates/mrs-bench/results/casc-j13-W8J1-20260913/run.csv`
+CASC-J13 Results — 2026-09-14 06:22  (400 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs
+                 Solved  Avg (s)
+------------------  --------------------
+UEQ            400        69   17.774
+------------------  --------------------
+TOTAL          400        69   17.774
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
 
 commit 440404cf925292e314e2b2f9705383873c5c26a3 (HEAD -> main, origin/main, origin/HEAD)
 
-[ongoing]
+[done]
 [PPROD:user@server97:/DATA/ai/user/mrs]$ crates/mrs-bench/run_strategy_sweep.sh --edition casc-30 --divisions fne,feq,epu,eps,ueq,icu --casc-times --jobs 30 --output crates/mrs-bench/results/casc-30-sweep-$(date +%Y%m%d)
+Running `target/debug/bench_report /DATA/ai/fr22192/mrs/crates/mrs-bench/results/casc-30-sweep-20260912/run.csv`
+CASC-30 Results — 2026-09-14 07:15  (1101 problems × 15 systems)
+================================================================
+
+Division  Problems    mrs-s01               mrs-s02               mrs-s03               mrs-s04               mrs-s05               mrs-s06               mrs-s07               mrs-s08               mrs-s09               mrs-s10               mrs-s11               mrs-s12               mrs-s13               mrs-s14               mrs-s15
+                 Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)      Solved  Avg (s)
+------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------
+FNE            100        31   63.764          21   22.233          25   35.434          30   56.531          10   30.567          15   68.894          31   72.409          31   24.430          25   36.737           3    0.433          32   37.872          23   48.077           3    0.411           4    9.008          18   37.214
+FEQ            400        40   31.157          16    4.631          16   25.004          37   30.470          39   26.186          44   39.971          43   40.573          51   21.219          17   33.840          22   46.478          55   23.418          62   28.968          17   50.045          19   19.494          19   14.125
+EPU            100        15   17.775          15   15.241          14   13.528          15   16.655           9    9.781           8   19.293          14   16.467          15   19.098           7    5.222           5    0.186          16   19.710          16   18.805           5    0.105           6    0.118          15    8.928
+EPS            100        15   21.756          16   19.687          15   24.255           2    0.112           2    0.111           3    0.100          11   16.685          12   11.138           8   19.334           2    0.108           2    0.096           2    0.096           2    0.098           2    0.111           2    0.106
+UEQ            300        48   89.647          36   60.610          31   37.765          78   61.491          58   79.793          44   60.242          13   56.777          36   58.231           5   84.060           3   41.726          54   65.268          71   58.344           4    1.696          38   51.313          31   45.521
+ICU            101         2  168.262           2  198.448           2  166.014           1  263.891           1    3.888           1   20.724           1  262.863           1  447.609           1  314.749           0    0.000           1    6.368           2  144.667           0    0.000           1   37.469           1   42.129
+------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------  --------------------
+TOTAL         1101       151   55.997         106   34.561         103   32.445         163   49.899         119   50.816         115   48.853         113   47.826         146   32.901          63   38.412          35   32.861         160   39.665         176   43.379          31   27.726          70   34.210          86   29.368
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
 
 [ongoing]
 [root@mtsdev01 mrs]# for interval in 25 50 100 250; do MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL="${interval}" crates/mrs-bench/casc.sh --edition casc-j13 --systems mrs --divisions ueq --casc-times --jobs 1 --output crates/mrs-bench/results/casc-j13-ueq-sharing-${interval}-$(date +%Y%m%d_%H%M%S); done
 /mnt/sdf1/mrs/crates/mrs-bench/results/casc-j13-ueq-sharing-25-20260912_182655/run.csv
+Running `target/debug/bench_report /mnt/sdf1/mrs/crates/mrs-bench/results/casc-j13-ueq-sharing-25-20260912_182655/run.csv`
+CASC-J13 Results — 2026-09-14 08:05  (400 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs
+                 Solved  Avg (s)
+------------------  --------------------
+UEQ            400       255   12.751
+------------------  --------------------
+TOTAL          400       255   12.751
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected
+
+     Running `target/debug/bench_report /mnt/sdf1/mrs/crates/mrs-bench/results/casc-j13-ueq-sharing-50-20260913_024037/run.csv`
+CASC-J13 Results — 2026-09-14 08:06  (400 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+UEQ            400       258   11.356
+------------------  --------------------
+TOTAL          400       258   11.356
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+     Running `target/debug/bench_report /mnt/sdf1/mrs/crates/mrs-bench/results/casc-j13-ueq-sharing-100-20260913_103938/run.csv`
+CASC-J13 Results — 2026-09-14 08:07  (400 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+UEQ            400       260   12.147
+------------------  --------------------
+TOTAL          400       260   12.147
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+     Running `target/debug/bench_report /mnt/sdf1/mrs/crates/mrs-bench/results/casc-j13-ueq-sharing-250-20260913_183558/run.csv`
+CASC-J13 Results — 2026-09-14 08:07  (400 problems × 1 systems)
+===============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+UEQ            400       254   10.579
+------------------  --------------------
+TOTAL          400       254   10.579
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
 
 [done]
 [www@server99 mrs]$ crates/mrs-bench/run_strategy_sweep.sh   --edition casc-j13   --divisions fne,feq,ueq   --casc-times   --jobs 30  --output crates/mrs-bench/results/casc-j13-sweep-$(date +%Y%m%d)
@@ -492,8 +1014,64 @@ POLARITY VIOLATIONS — none detected.
 
 REFERENCE VIOLATIONS — none detected.
 
-[ongoing]
+[done]
 [root@server04 mrs]# for interval in 250 500 1000; do   MRS_WORKERS=8   MRS_SHARED_POOL_INTERVAL="${interval}"   crates/mrs-bench/cooperative_portfolio_sweep.sh     casc-30 feq     11,12,1,6,10,8,14,4     240 1     "results/feq-interval-${interval}-$(date +%Y%m%d_%H%M%S)"; done
+[root@server04 mrs]# cargo run -p mrs-bench --bin bench_report -- /mnt/sdd1/mrs/results/feq-interval-250-20260911_175359/run.csv
+    Finished `dev` profile [unoptimized] target(s) in 0.35s
+     Running `target/debug/bench_report /mnt/sdd1/mrs/results/feq-interval-250-20260911_175359/run.csv`
+CASC-30 Results — 2026-09-14 07:43  (400 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+FEQ            400       108   21.477
+------------------  --------------------
+TOTAL          400       108   21.477
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+[root@server04 mrs]# cargo run -p mrs-bench --bin bench_report -- /mnt/sdd1/mrs/results/feq-interval-500-20260912_140750/run.csv
+    Finished `dev` profile [unoptimized] target(s) in 0.36s
+     Running `target/debug/bench_report /mnt/sdd1/mrs/results/feq-interval-500-20260912_140750/run.csv`
+CASC-30 Results — 2026-09-14 07:44  (400 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+FEQ            400       110   24.137
+------------------  --------------------
+TOTAL          400       110   24.137
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
+
+[root@server04 mrs]# cargo run -p mrs-bench --bin bench_report -- /mnt/sdd1/mrs/results/feq-interval-1000-20260913_101832/run.csv
+    Finished `dev` profile [unoptimized] target(s) in 0.36s
+     Running `target/debug/bench_report /mnt/sdd1/mrs/results/feq-interval-1000-20260913_101832/run.csv`
+CASC-30 Results — 2026-09-14 07:44  (400 problems × 1 systems)
+==============================================================
+
+Division  Problems    mrs
+                      Solved  Avg (s)
+------------------  --------------------
+FEQ            400       110   24.484
+------------------  --------------------
+TOTAL          400       110   24.484
+
+DISAGREEMENTS — none detected.
+
+POLARITY VIOLATIONS — none detected.
+
+REFERENCE VIOLATIONS — none detected.
 
 [done]
 [PPROD:user@server97:/DATA/ai/fr22192/mrs]$ MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=0 crates/mrs-bench/casc.sh --edition casc-30  --systems mrs --divisions fne,feq,epu,eps,ueq,icu  --casc-times --jobs 2 --output crates/mrs-bench/results/casc-30-W8J2-$(date +%Y%m%d)

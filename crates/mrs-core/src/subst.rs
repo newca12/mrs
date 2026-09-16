@@ -93,10 +93,13 @@ impl Substitution {
         if self.bindings.is_empty() {
             return term.clone();
         }
-        self.apply_term_opt(term).unwrap_or_else(|| term.clone())
+        self.apply_term_opt(term, 0).unwrap_or_else(|| term.clone())
     }
 
-    fn apply_term_opt(&self, term: &Term) -> Option<Term> {
+    fn apply_term_opt(&self, term: &Term, depth: usize) -> Option<Term> {
+        if depth > 500 {
+            return None;
+        }
         match term {
             Term::Var(start) => {
                 let mut current = *start;
@@ -113,17 +116,17 @@ impl Substitution {
                         }
                         Some(Term::Var(next)) => {
                             steps += 1;
-                            debug_assert!(
-                                steps < 100_000,
-                                "apply_term: variable chain exceeded 100,000 steps — \
-                                 likely a cycle. substitution = {:?}",
-                                self.bindings
-                            );
+                            if steps > 1000 {
+                                return None;
+                            }
                             current = *next;
                             changed = true;
                         }
                         Some(t) => {
-                            return Some(self.apply_term_opt(t).unwrap_or_else(|| t.clone()));
+                            return Some(
+                                self.apply_term_opt(t, depth + 1)
+                                    .unwrap_or_else(|| t.clone()),
+                            );
                         }
                     }
                 }
@@ -131,7 +134,7 @@ impl Substitution {
             Term::App(f, args) => {
                 let mut new_args: Option<Vec<Term>> = None;
                 for (i, arg) in args.iter().enumerate() {
-                    if let Some(new_arg) = self.apply_term_opt(arg) {
+                    if let Some(new_arg) = self.apply_term_opt(arg, depth + 1) {
                         if new_args.is_none() {
                             let mut v = Vec::with_capacity(args.len());
                             v.extend(args.iter().take(i).cloned());

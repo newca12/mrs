@@ -81,8 +81,15 @@ fn status_for_rule(rule: &str) -> &'static str {
 /// FOF-level proof steps (e.g. NNF conversion or Skolemization results) and
 /// are printed as `fof(...)` annotated formulas instead of `cnf(...)`.
 pub fn format_tstp(proof: &[Clause], symbols: &SymbolTable) -> String {
-    let mut proof_sorted = proof.to_vec();
-    proof_sorted.sort_unstable_by_key(|c| c.id.0);
+    let proof_sorted = crate::elaborate::elaborate(proof, symbols)
+        .map(|ep| ep.clauses)
+        .unwrap_or_else(|_| {
+            crate::elaborate::topological_sort(proof).unwrap_or_else(|_| {
+                let mut fallback = proof.to_vec();
+                fallback.sort_unstable_by_key(|c| c.id.0);
+                fallback
+            })
+        });
 
     let mut lines = Vec::new();
     let problem_path = problem_path();

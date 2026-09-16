@@ -734,7 +734,7 @@ pub fn run_schedule(
     let remaining_at_spawn = total_budget.saturating_sub(schedule_start.elapsed());
 
     std::thread::scope(|s| {
-        for _ in 0..num_workers {
+        for worker_id in 0..num_workers {
             let stop = Arc::clone(&stop_flag);
             let pool = Arc::clone(&shared_pool);
             let tx = tx.clone();
@@ -750,9 +750,11 @@ pub fn run_schedule(
             let ml_model_thread = ml_model.clone();
             let log_ml_data_thread = ml.log_dir.clone();
             let premise_keep_thread = ml.premise_keep.clone();
-
-            s.spawn(move || {
-                loop {
+            std::thread::Builder::new()
+                .name(format!("mrs-worker-{worker_id}"))
+                .stack_size(64 * 1024 * 1024)
+                .spawn_scoped(s, move || {
+                    loop {
                     if stop.load(Ordering::Relaxed) {
                         break;
                     }
@@ -1033,15 +1035,16 @@ pub fn run_schedule(
 
                     let _ = tx.send((strategy_idx, result, state.stats.clone(), elapsed_ms));
                 }
-            });
+            })
+            .expect("failed to spawn worker thread");
         }
 
         // Drop the main sender so the channel closes when all threads finish.
         drop(tx);
 
         // Collect results: track the best definitive answer seen.
-        // Priority: Refutation > Saturated > GaveUp > Timeout
-        let mut best: SearchResult = SearchResult::GaveUp;
+        // Priority: Refutation > Saturated > ResourceOut > GaveUp > Timeout
+        let mut best: SearchResult = SearchResult::Timeout;
         let mut report = crate::ScheduleReport {
             workers: num_workers,
             ..crate::ScheduleReport::default()
@@ -1065,6 +1068,11 @@ pub fn run_schedule(
                 }
                 SearchResult::Saturated => {
                     if !matches!(best, SearchResult::Refutation(..)) {
+                        best = res;
+                    }
+                }
+                SearchResult::ResourceOut => {
+                    if matches!(best, SearchResult::Timeout | SearchResult::GaveUp) {
                         best = res;
                     }
                 }

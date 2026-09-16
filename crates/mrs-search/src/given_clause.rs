@@ -778,6 +778,16 @@ fn mark_ac_superposition(clause: &mut IdClause, ac_axiom_ids: &[ClauseId]) {
     parents.extend(ac_axiom_ids.iter().copied());
 }
 
+fn mark_ac_resolution(clause: &mut IdClause, ac_axiom_ids: &[ClauseId]) {
+    let ClauseSource::Inference { rule, parents } = &mut clause.source else {
+        return;
+    };
+    if *rule != "ac_resolution" || ac_axiom_ids.is_empty() {
+        return;
+    }
+    parents.extend(ac_axiom_ids.iter().copied());
+}
+
 /// Hard ceiling on the cross-strategy shared unit-equality pool
 /// (`SearchState::shared_pool`).
 ///
@@ -1006,6 +1016,20 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
     let start = Instant::now();
     state.search_deadline = Some(start + config.time_limit);
 
+    // Initial memory watchdog check
+    if let Some(limit_mb) = config.resource_limits.max_memory_mb
+        && let Some(current_mb) = crate::current_memory_mb()
+        && current_mb >= limit_mb
+    {
+        if std::env::var("TRACE_SEARCH").is_ok() {
+            eprintln!(
+                "[WATCHDOG] Initial memory limit exceeded: {} MB >= {} MB",
+                current_mb, limit_mb
+            );
+        }
+        return SearchResult::ResourceOut;
+    }
+
     // Initial SAT sync
     if config.use_avatar {
         state.avatar.current_model.clear();
@@ -1203,6 +1227,55 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         target_size, discarded
                     );
                 }
+            }
+
+            // --- Resource Containment Ceilings & Memory Watchdog ---
+            if let Some(limit) = config.resource_limits.max_processed
+                && state.stats.processed >= limit
+            {
+                if std::env::var("TRACE_SEARCH").is_ok() {
+                    eprintln!(
+                        "[RESOURCE] Processed clause limit exceeded: {} >= {}",
+                        state.stats.processed, limit
+                    );
+                }
+                return SearchResult::ResourceOut;
+            }
+            if let Some(limit) = config.resource_limits.max_passive {
+                let passive_count = state.unprocessed.active_count() as u64;
+                if passive_count >= limit {
+                    if std::env::var("TRACE_SEARCH").is_ok() {
+                        eprintln!(
+                            "[RESOURCE] Passive clause limit exceeded: {} >= {}",
+                            passive_count, limit
+                        );
+                    }
+                    return SearchResult::ResourceOut;
+                }
+            }
+            if let Some(limit) = config.resource_limits.max_terms
+                && state.term_bank.len() >= limit
+            {
+                if std::env::var("TRACE_SEARCH").is_ok() {
+                    eprintln!(
+                        "[RESOURCE] Term bank limit exceeded: {} >= {}",
+                        state.term_bank.len(),
+                        limit
+                    );
+                }
+                return SearchResult::ResourceOut;
+            }
+            if let Some(limit_mb) = config.resource_limits.max_memory_mb
+                && let Some(current_mb) = crate::current_memory_mb()
+                && current_mb >= limit_mb
+            {
+                if std::env::var("TRACE_SEARCH").is_ok() {
+                    eprintln!(
+                        "[WATCHDOG] Memory limit exceeded: {} MB >= {} MB",
+                        current_mb, limit_mb
+                    );
+                }
+                return SearchResult::ResourceOut;
             }
         }
 
@@ -1453,7 +1526,10 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                             &state.comm_symbols,
                             &state.assoc_symbols,
                         );
-                        new_clauses.extend(resolvents);
+                        for mut r in resolvents {
+                            mark_ac_resolution(&mut r, &state.ac_axiom_ids);
+                            new_clauses.push(r);
+                        }
                         if start.elapsed() >= config.time_limit {
                             return SearchResult::Timeout;
                         }
@@ -3272,6 +3348,37 @@ mod tests {
         assert!(
             matches!(result, SearchResult::Refutation(..)),
             "in-place backward demodulation should refute f(a)!=b, a=c, f(c)=b (got {result:?})"
+        );
+    }
+
+    #[test]
+    fn resource_ceiling_triggers_graceful_resource_out() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let mut id_gen = ClauseIdGen::new();
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![]))],
+            "ax1",
+            "axiom",
+        );
+        let ordering_cfg = mrs_calculus::ordering::SymbolConfig::default();
+
+        let mut state = crate::state::SearchState::new(
+            vec![c1],
+            id_gen,
+            std::sync::Arc::new(ordering_cfg),
+            std::sync::Arc::new(syms),
+            false,
+        );
+
+        // Ceiling with max_memory_mb: Some(0) triggers immediately
+        let mut config = SearchConfig::default();
+        config.resource_limits.max_memory_mb = Some(0);
+        let result = search(&mut state, &config);
+        assert!(
+            matches!(result, SearchResult::ResourceOut),
+            "watchdog should trigger ResourceOut when memory limit is exceeded (got {result:?})"
         );
     }
 }

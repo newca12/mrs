@@ -203,7 +203,6 @@ pub fn rename_complex_equivalences(
     let mut ctx = BicondCtx {
         symbols,
         prefix: prefix.to_string(),
-        counter: 0,
         definitions: Vec::new(),
     };
     let renamed = ctx.traverse(formula, threshold);
@@ -213,7 +212,6 @@ pub fn rename_complex_equivalences(
 struct BicondCtx<'a> {
     symbols: &'a mut SymbolTable,
     prefix: String,
-    counter: usize,
     definitions: Vec<IntroducedDefinition>,
 }
 
@@ -285,9 +283,9 @@ impl BicondCtx<'_> {
                 }
             })
             .collect();
-        let name = format!("def_{}_{}", sanitized_prefix, self.counter);
-        self.counter += 1;
-        let sym = self.symbols.intern(&name);
+        let sym = self
+            .symbols
+            .fresh_symbol(&format!("def_{sanitized_prefix}"));
         let args: Vec<Term> = free_vars.iter().map(|&v| Term::var(v)).collect();
         let def_atom = Atom::pred(sym, args);
 
@@ -339,7 +337,6 @@ pub fn to_cnf_definitional_with_defs_thresh(
     let mut ctx = DefCtx {
         symbols,
         prefix: prefix.to_string(),
-        counter: 0,
         threshold,
         definitions: Vec::new(),
     };
@@ -386,7 +383,6 @@ pub fn to_cnf_definitional_with_defs_thresh(
 struct DefCtx<'a> {
     symbols: &'a mut SymbolTable,
     prefix: String,
-    counter: usize,
     threshold: usize,
     /// Collected definitions: (definition_atom, conjuncts_of_named_formula)
     definitions: Vec<(Atom, Vec<Formula>)>,
@@ -474,9 +470,9 @@ impl DefCtx<'_> {
                 }
             })
             .collect();
-        let name = format!("def_{}_{}", sanitized_prefix, self.counter);
-        self.counter += 1;
-        let sym = self.symbols.intern(&name);
+        let sym = self
+            .symbols
+            .fresh_symbol(&format!("def_{sanitized_prefix}"));
         let args: Vec<Term> = sorted_vars.iter().map(|&v| Term::var(v)).collect();
         let def_atom = Atom::pred(sym, args);
 
@@ -908,5 +904,46 @@ mod tests {
             estimate_clause_count(&Formula::iff(p.clone(), q.clone())),
             2
         );
+    }
+
+    #[test]
+    fn distinct_definitions_for_colliding_sanitized_prefixes() {
+        let mut syms = SymbolTable::new();
+
+        // Two SWX-style axiom names whose non-alphanumerics sanitize to identical underscores:
+        let prefix1 = "(@+)/2";
+        let prefix2 = "(**)/2";
+
+        let f1 = Formula::or(vec![
+            atom(&mut syms, "a"),
+            Formula::and(vec![atom(&mut syms, "b"), atom(&mut syms, "c")]),
+        ]);
+        let f2 = Formula::or(vec![
+            atom(&mut syms, "d"),
+            Formula::and(vec![atom(&mut syms, "e"), atom(&mut syms, "g")]),
+        ]);
+
+        let (_cnf1, defs1) = to_cnf_definitional_with_defs_thresh(&f1, &mut syms, prefix1, 1);
+        let (_cnf2, defs2) = to_cnf_definitional_with_defs_thresh(&f2, &mut syms, prefix2, 1);
+
+        assert_eq!(defs1.len(), 1);
+        assert_eq!(defs2.len(), 1);
+
+        let sym1 = match &defs1[0].0 {
+            Atom::Pred(s, _) => *s,
+            _ => panic!("Expected predicate atom"),
+        };
+        let sym2 = match &defs2[0].0 {
+            Atom::Pred(s, _) => *s,
+            _ => panic!("Expected predicate atom"),
+        };
+
+        assert_ne!(
+            sym1, sym2,
+            "Definitions for distinct formulas must have distinct symbols even if prefixes sanitize identically!"
+        );
+        let name1 = syms.resolve(sym1);
+        let name2 = syms.resolve(sym2);
+        assert_ne!(name1, name2);
     }
 }

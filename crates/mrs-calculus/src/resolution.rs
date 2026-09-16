@@ -107,33 +107,43 @@ pub fn resolve_selected(
             };
 
             // Try unification
-            if let Ok(mgu) = mrs_unify::unify_comm(&t1, &t2, comm) {
-                // Build resolvent: all literals except the resolved pair
-                let mut lits: Vec<Literal> = Vec::new();
-                for (k, lit) in c1.literals.iter().enumerate() {
-                    if k != i {
-                        lits.push(mgu.apply_literal(lit));
-                    }
-                }
-                for (k, lit) in c2r.literals.iter().enumerate() {
-                    if k != j {
-                        lits.push(mgu.apply_literal(lit));
-                    }
-                }
+            let (mgu, used_ac) = if let Ok(mgu) = mrs_unify::unify(&t1, &t2) {
+                (mgu, false)
+            } else if let Ok(mgu) = mrs_unify::unify_comm(&t1, &t2, comm) {
+                (mgu, true)
+            } else {
+                continue;
+            };
 
-                let mut new_avatar = c1.avatar.clone();
-                new_avatar.extend_from_slice(&c2.avatar);
-
-                resolvents.push(Clause::new_avatar(
-                    id_gen.next(),
-                    lits,
-                    ClauseSource::Inference {
-                        rule: "resolution",
-                        parents: vec![c1.id, c2.id].into(),
-                    },
-                    new_avatar,
-                ));
+            // Build resolvent: all literals except the resolved pair
+            let mut lits: Vec<Literal> = Vec::new();
+            for (k, lit) in c1.literals.iter().enumerate() {
+                if k != i {
+                    lits.push(mgu.apply_literal(lit));
+                }
             }
+            for (k, lit) in c2r.literals.iter().enumerate() {
+                if k != j {
+                    lits.push(mgu.apply_literal(lit));
+                }
+            }
+
+            let mut new_avatar = c1.avatar.clone();
+            new_avatar.extend_from_slice(&c2.avatar);
+
+            resolvents.push(Clause::new_avatar(
+                id_gen.next(),
+                lits,
+                ClauseSource::Inference {
+                    rule: if used_ac {
+                        "ac_resolution"
+                    } else {
+                        "resolution"
+                    },
+                    parents: vec![c1.id, c2.id].into(),
+                },
+                new_avatar,
+            ));
         }
     }
 
@@ -181,32 +191,42 @@ pub fn resolve_selected_id(
                 None => continue,
             };
 
-            if let Ok(mgu) = mrs_unify::robinson::unify_ac_id(t1, t2, bank, comm, assoc) {
-                let mut lits = Vec::new();
-                for (k, lit) in c1.literals.iter().enumerate() {
-                    if k != i {
-                        lits.push(mgu.apply_literal(lit, bank));
-                    }
-                }
-                for (k, lit) in c2r.literals.iter().enumerate() {
-                    if k != j {
-                        lits.push(mgu.apply_literal(lit, bank));
-                    }
-                }
+            let (mgu, used_ac) = if let Ok(mgu) = mrs_unify::robinson::unify_id(t1, t2, bank) {
+                (mgu, false)
+            } else if let Ok(mgu) = mrs_unify::robinson::unify_ac_id(t1, t2, bank, comm, assoc) {
+                (mgu, true)
+            } else {
+                continue;
+            };
 
-                let mut new_avatar = c1.avatar.clone();
-                new_avatar.extend_from_slice(&c2.avatar);
-
-                resolvents.push(IdClause::new_avatar(
-                    id_gen.next(),
-                    lits,
-                    ClauseSource::Inference {
-                        rule: "resolution",
-                        parents: vec![c1.id, c2.id].into(),
-                    },
-                    new_avatar,
-                ));
+            let mut lits = Vec::new();
+            for (k, lit) in c1.literals.iter().enumerate() {
+                if k != i {
+                    lits.push(mgu.apply_literal(lit, bank));
+                }
             }
+            for (k, lit) in c2r.literals.iter().enumerate() {
+                if k != j {
+                    lits.push(mgu.apply_literal(lit, bank));
+                }
+            }
+
+            let mut new_avatar = c1.avatar.clone();
+            new_avatar.extend_from_slice(&c2.avatar);
+
+            resolvents.push(IdClause::new_avatar(
+                id_gen.next(),
+                lits,
+                ClauseSource::Inference {
+                    rule: if used_ac {
+                        "ac_resolution"
+                    } else {
+                        "resolution"
+                    },
+                    parents: vec![c1.id, c2.id].into(),
+                },
+                new_avatar,
+            ));
         }
     }
 
@@ -402,5 +422,48 @@ mod tests {
         assert_eq!(resolvents[0].len(), 1); // just q(X')
         // The remaining literal should have q applied to a variable
         assert!(resolvents[0].literals[0].is_positive());
+    }
+
+    #[test]
+    fn ac_resolution_rule_tagging() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let f = syms.intern("f");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+
+        let mut comm = HashSet::default();
+        comm.insert(f);
+        let assoc = HashSet::default();
+
+        let c1_legacy = input_clause(
+            1,
+            vec![Literal::pos(Atom::pred(
+                p,
+                vec![Term::app(f, vec![Term::constant(a), Term::constant(b)])],
+            ))],
+        );
+        let c2_legacy = input_clause(
+            2,
+            vec![Literal::neg(Atom::pred(
+                p,
+                vec![Term::app(f, vec![Term::constant(b), Term::constant(a)])],
+            ))],
+        );
+
+        let mut bank = TermBank::new();
+        let c1 = bank.clause_from_legacy(&c1_legacy);
+        let c2 = bank.clause_from_legacy(&c2_legacy);
+
+        let mut id_gen = ClauseIdGen::new();
+        let resolvents =
+            resolve_selected_id(&c1, &c2, &mut bank, &mut id_gen, None, None, &comm, &assoc);
+        assert_eq!(resolvents.len(), 1);
+        if let ClauseSource::Inference { rule, parents } = &resolvents[0].source {
+            assert_eq!(*rule, "ac_resolution");
+            assert_eq!(parents.as_slice(), &[ClauseId(1), ClauseId(2)]);
+        } else {
+            panic!("expected Inference source");
+        }
     }
 }

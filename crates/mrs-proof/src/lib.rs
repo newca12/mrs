@@ -7,5 +7,6 @@
 //! 2. **Formats** the proof in TSTP format for verification by external
 //!    tools ([`tstp`]).
 
+pub mod elaborate;
 pub mod extract;
 pub mod tstp;

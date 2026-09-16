@@ -150,22 +150,25 @@ impl AvatarContext {
         }
 
         // We have successfully split the clause into `parts`.
+        let mut sat_vars = Vec::with_capacity(parts.len());
+        let mut used_vars = HashSet::default();
+        for lits in &parts {
+            let comp_str = canonical_component_key(lits);
+            let var = self.component_var(comp_str, &used_vars)?;
+            if clause.avatar.contains(&var) {
+                // The clause already contains this component in its avatar trail.
+                // Splitting would introduce a propositional tautology (var | ~var).
+                return None;
+            }
+            used_vars.insert(var);
+            sat_vars.push(var);
+        }
+
         let split_id = id_gen.next();
         let mut split_clauses = Vec::new();
-        let mut sat_clause = Vec::new();
-        let mut used_vars = HashSet::default();
+        let mut sat_clause = Vec::with_capacity(sat_vars.len() + clause.avatar.len());
 
-        for (i, lits) in parts.into_iter().enumerate() {
-            // For each part, canonicalize the component by renaming variables
-            // 0..N in DFS order through the literals.  Two alpha-equivalent
-            // components (identical up to variable renaming) then get the same
-            // key, which lets the SAT solver share AVATAR variables between them
-            // and prunes redundant case splits.
-            let comp_str = canonical_component_key(&lits);
-
-            let var = self.component_var(comp_str, &used_vars)?;
-            used_vars.insert(var);
-
+        for (i, (var, lits)) in sat_vars.into_iter().zip(parts).enumerate() {
             sat_clause.push(var as i32);
 
             let mut new_avatar = clause.avatar.clone();
@@ -288,19 +291,27 @@ impl AvatarContext {
             parts.push(vec![lit]);
         }
 
-        let mut split_clauses = Vec::new();
-        let mut sat_clause = Vec::new();
-        let mut split_lits = Vec::new();
+        // 1. Generate split component variable IDs and ensure none is already assumed in the trail
+        let mut sat_vars = Vec::with_capacity(parts.len());
         let mut used_vars = HashSet::default();
-
-        // 1. Generate split component variable IDs and construct the parent split clause
         for entries in &parts {
             let lits: Vec<IdLiteral> = entries.iter().map(|(_, lit)| lit.clone()).collect();
             let comp_str = canonical_component_key_id(&lits, bank);
 
             let var = self.component_var(comp_str, &used_vars)?;
+            if clause.avatar.contains(&var) {
+                // The clause already contains this component in its avatar trail.
+                // Splitting would introduce a propositional tautology (var | ~var).
+                return None;
+            }
             used_vars.insert(var);
+            sat_vars.push(var);
+        }
 
+        let mut sat_clause = Vec::with_capacity(sat_vars.len() + clause.avatar.len());
+        let mut split_lits = Vec::with_capacity(sat_vars.len());
+
+        for &var in &sat_vars {
             sat_clause.push(var as i32);
 
             let sym_name = format!("spl0_{}", var);
@@ -340,6 +351,7 @@ impl AvatarContext {
         });
         clause_store.insert(split_id, split_c);
         // 2. Construct each component clause derived from split_c
+        let mut split_clauses = Vec::with_capacity(parts.len());
         for (i, entries) in parts.into_iter().enumerate() {
             let var = sat_clause[i] as u32;
             let lits: Vec<IdLiteral> = entries.into_iter().map(|(_, lit)| lit).collect();
@@ -1003,5 +1015,44 @@ mod tests {
         let splits2 = ctx.split_clause(&c2, &mut id_gen).expect("c2 must split");
 
         assert_eq!(splits1[0].avatar.last(), splits2[0].avatar.last());
+    }
+
+    #[test]
+    fn split_clause_refuses_when_component_in_avatar_trail() {
+        let mut ctx = AvatarContext::new();
+        let mut id_gen = ClauseIdGen::new();
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+
+        let c1 = Clause::new(
+            id_gen.next(),
+            vec![
+                Literal::pos(Atom::pred(p, vec![Term::var(0)])),
+                Literal::pos(Atom::pred(q, vec![Term::var(1)])),
+            ],
+            mrs_core::clause::ClauseSource::Input {
+                name: "c1".into(),
+                role: "axiom".into(),
+            },
+        );
+        let splits1 = ctx.split_clause(&c1, &mut id_gen).expect("c1 must split");
+        let p_var = *splits1[0].avatar.last().unwrap();
+
+        let r = syms.intern("r");
+        let mut c2 = Clause::new(
+            id_gen.next(),
+            vec![
+                Literal::pos(Atom::pred(p, vec![Term::var(0)])),
+                Literal::pos(Atom::pred(r, vec![Term::var(2)])),
+            ],
+            mrs_core::clause::ClauseSource::Input {
+                name: "c2".into(),
+                role: "axiom".into(),
+            },
+        );
+        c2.avatar.push(p_var);
+
+        assert!(ctx.split_clause(&c2, &mut id_gen).is_none());
     }
 }

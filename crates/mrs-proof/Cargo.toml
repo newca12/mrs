@@ -10,3 +10,5 @@ rust-version.workspace = true
 [dependencies]
 mrs-core = { workspace = true }
 mrs-szs = { workspace = true }
+mrs-unify = { workspace = true }
+rustc-hash = { workspace = true }

@@ -26,7 +26,6 @@ pub fn skolemize(formula: &Formula, symbols: &mut SymbolTable, prefix: &str) -> 
     let mut ctx = SkolemCtx {
         symbols,
         prefix: prefix.to_string(),
-        counter: 0,
         universal_vars: Vec::new(),
     };
     ctx.skolemize(formula)
@@ -35,7 +34,6 @@ pub fn skolemize(formula: &Formula, symbols: &mut SymbolTable, prefix: &str) -> 
 struct SkolemCtx<'a> {
     symbols: &'a mut SymbolTable,
     prefix: String,
-    counter: usize,
     /// Stack of universally quantified variables currently in scope.
     universal_vars: Vec<VarId>,
 }
@@ -54,9 +52,7 @@ impl SkolemCtx<'_> {
                 }
             })
             .collect();
-        let name = format!("sk_{}_{}", sanitized_prefix, self.counter);
-        self.counter += 1;
-        self.symbols.intern(&name)
+        self.symbols.fresh_symbol(&format!("sk_{sanitized_prefix}"))
     }
 
     fn skolemize(&mut self, formula: &Formula) -> Formula {

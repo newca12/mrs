@@ -44,6 +44,7 @@ impl SymbolId {
 pub struct SymbolTable {
     names: Vec<String>,
     ids: HashMap<String, SymbolId>,
+    fresh_counters: HashMap<String, usize>,
 }
 
 impl SymbolTable {
@@ -52,6 +53,28 @@ impl SymbolTable {
         Self {
             names: Vec::new(),
             ids: HashMap::default(),
+            fresh_counters: HashMap::default(),
+        }
+    }
+
+    /// Generates a fresh symbol guaranteed to be globally unique in this symbol table.
+    ///
+    /// The resulting symbol will start with `base_prefix`, followed by an underscore
+    /// and a monotonically increasing counter, continuing until an unused symbol name
+    /// is found. This prevents collisions across formulas or passes.
+    pub fn fresh_symbol(&mut self, base_prefix: &str) -> SymbolId {
+        let prefix = if base_prefix.is_empty() {
+            "fresh"
+        } else {
+            base_prefix
+        };
+        loop {
+            let count = self.fresh_counters.entry(prefix.to_string()).or_insert(0);
+            let name = format!("{prefix}_{count}");
+            *count += 1;
+            if !self.ids.contains_key(&name) {
+                return self.intern(&name);
+            }
         }
     }
 
@@ -131,5 +154,20 @@ mod tests {
         let b = st.intern("hello");
         assert_eq!(a, b);
         assert_eq!(st.len(), 1);
+    }
+
+    #[test]
+    fn fresh_symbol_monotonic_and_collision_free() {
+        let mut st = SymbolTable::new();
+        let s0 = st.fresh_symbol("def");
+        let s1 = st.fresh_symbol("def");
+        assert_ne!(s0, s1);
+        assert_eq!(st.resolve(s0), "def_0");
+        assert_eq!(st.resolve(s1), "def_1");
+
+        // If def_2 is already interned, fresh_symbol must skip it
+        let _s2_manual = st.intern("def_2");
+        let s3 = st.fresh_symbol("def");
+        assert_eq!(st.resolve(s3), "def_3");
     }
 }

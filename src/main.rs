@@ -803,6 +803,7 @@ fn main() {
             }
             SearchResult::Timeout => SzsStatus::Timeout,
             SearchResult::GaveUp => SzsStatus::GaveUp,
+            SearchResult::ResourceOut => SzsStatus::ResourceOut,
         };
 
         (result, status, schedule_report)
@@ -1007,7 +1008,8 @@ fn print_statistics(
     let termination_reason = match status {
         SzsStatus::Theorem | SzsStatus::Unsatisfiable => "Refutation",
         SzsStatus::CounterSatisfiable | SzsStatus::Satisfiable => "Saturation",
-        SzsStatus::Timeout | SzsStatus::ResourceOut => "Timeout",
+        SzsStatus::Timeout => "Timeout",
+        SzsStatus::ResourceOut => "ResourceOut",
         SzsStatus::GaveUp => "GaveUp",
         SzsStatus::Unknown | SzsStatus::Error => "Error",
     };
@@ -1029,6 +1031,7 @@ fn print_statistics(
         SearchResult::Saturated => "Saturation",
         SearchResult::GaveUp => "GaveUp",
         SearchResult::Timeout => "Timeout",
+        SearchResult::ResourceOut => "ResourceOut",
     };
 
     let mut detail_str = report.telemetry_detail(search_result_name);

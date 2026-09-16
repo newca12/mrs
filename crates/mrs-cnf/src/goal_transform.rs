@@ -364,9 +364,13 @@ fn get_or_create_def(
         return (sym, id);
     }
 
-    let sym_name = format!("goal_d{}", *def_counter);
-    *def_counter += 1;
-    let def_sym = symbols.intern(&sym_name);
+    let def_sym = loop {
+        let sym_name = format!("goal_d{}", *def_counter);
+        *def_counter += 1;
+        if symbols.resolve_name(&sym_name).is_none() {
+            break symbols.intern(&sym_name);
+        }
+    };
     let def_id = id_gen.next();
 
     // Clause: term = def_sym

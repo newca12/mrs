@@ -201,6 +201,16 @@ impl TermBank {
         Self::default()
     }
 
+    /// Returns the number of unique term nodes stored in the term bank.
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Returns true if the term bank contains no terms.
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
     /// Interns a variable into the term bank.
     pub fn intern_var(&mut self, var: VarId) -> TermId {
         let node = TermNode::Var(var);

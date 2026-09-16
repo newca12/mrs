@@ -426,6 +426,7 @@ fn verify_strict_with_source_internal(
                 limits,
             ),
             "resolution" => verify_resolution(&parents, conclusion, limits),
+            "ac_resolution" => verify_ac_resolution(&parents, conclusion, limits),
             "subsumption_resolution" => verify_subsumption_resolution(&parents, conclusion, limits),
             "factoring" => verify_factoring(&parents, conclusion, limits),
             "equality_resolution" | "destructive_equality_resolution" => {
@@ -434,7 +435,12 @@ fn verify_strict_with_source_internal(
             "ac_normalization" => verify_ac_normalization(&parents, conclusion, limits),
             "equality_factoring" => verify_equality_factoring(&parents, conclusion, limits),
             "condensation" => verify_condensation(&parents, conclusion, limits),
-            "demodulation" => verify_demodulation(&parents, conclusion, limits),
+            "demodulation" => match verify_demodulation(&parents, conclusion, limits) {
+                KernelVerdict::Inconclusive(msg) => {
+                    KernelVerdict::Inconclusive(format!("node {}: {}", node.name, msg))
+                }
+                other => other,
+            },
             "goal_transformation" => verify_goal_transformation(&parents, conclusion, limits),
             "superposition" => verify_superposition(&parents, conclusion, limits),
             "ac_superposition" => verify_ac_superposition(&parents, conclusion, limits),
@@ -669,6 +675,7 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "avatar_sat_refutation"
         | "superposition"
         | "ac_superposition"
+        | "ac_resolution"
         | "paramodulation" => Some("thm"),
         _ => None,
     }
@@ -5657,7 +5664,7 @@ fn verify_demodulation(
             "demodulation conclusion is not a supported clause".into(),
         );
     };
-    let mut rules = Vec::new();
+    let mut orientation_choices: Vec<Vec<(Term, Term)>> = Vec::new();
     for parent in parents[1..].iter() {
         let Some(clause) = clause_from_formula(parent, limits) else {
             return KernelVerdict::Inconclusive(
@@ -5681,54 +5688,91 @@ fn verify_demodulation(
         let right_vars = term_var_set(right);
         let left_weight = term_weight(left);
         let right_weight = term_weight(right);
+        let mut parent_orientations = Vec::new();
         if right_vars.is_subset(&left_vars) && left_weight >= right_weight {
-            rules.push((left.clone(), right.clone()));
+            parent_orientations.push((left.clone(), right.clone()));
         }
         if left_vars.is_subset(&right_vars) && right_weight >= left_weight {
-            rules.push((right.clone(), left.clone()));
+            let rev = (right.clone(), left.clone());
+            if !parent_orientations.contains(&rev) {
+                parent_orientations.push(rev);
+            }
         }
+        if parent_orientations.is_empty() {
+            return KernelVerdict::Rejected("demodulation has no non-trivial rewrite rule".into());
+        }
+        orientation_choices.push(parent_orientations);
     }
-    if rules.is_empty() {
+    if orientation_choices.is_empty() {
         return KernelVerdict::Rejected("demodulation has no non-trivial rewrite rule".into());
     }
 
-    let mut current = target;
-    let shift = max_var_clause(&current)
-        .max(max_var_clause(&goal))
-        .max(
-            rules
-                .iter()
-                .flat_map(|(left, right)| [max_var_term(left), max_var_term(right)])
-                .max()
-                .unwrap_or(0),
-        )
-        .saturating_add(1);
-    shift_clause(&mut current, shift);
-    let mut steps = 0usize;
-    loop {
-        if clause_alpha_equiv(&current, &goal) {
-            return KernelVerdict::Certified;
-        }
-        if steps >= limits.max_rewrite_steps {
-            return KernelVerdict::Inconclusive(
-                "demodulation exceeded strict rewrite-step limit".into(),
-            );
-        }
-        let mut changed = false;
-        for literal in &mut current {
-            if rewrite_atom(&mut literal.atom, &rules, &mut steps, limits) {
-                changed = true;
+    let mut candidate_rule_sets: Vec<Vec<(Term, Term)>> = vec![Vec::new()];
+    for choices in orientation_choices {
+        let mut next = Vec::new();
+        for prev in &candidate_rule_sets {
+            for choice in &choices {
+                let mut combo = prev.clone();
+                combo.push(choice.clone());
+                next.push(combo);
+                if next.len() >= 16 {
+                    break;
+                }
+            }
+            if next.len() >= 16 {
                 break;
             }
         }
-        if !changed {
-            // The bounded greedy replay is incomplete: failure to find one
-            // rewrite path is not proof that no valid path exists.
-            return KernelVerdict::Inconclusive(
-                "demodulation replay could not reach the conclusion within the implemented search"
-                    .into(),
-            );
+        candidate_rule_sets = next;
+    }
+
+    let mut hit_step_limit = false;
+    for rules in candidate_rule_sets {
+        let mut current = target.clone();
+        let shift = max_var_clause(&current)
+            .max(max_var_clause(&goal))
+            .max(
+                rules
+                    .iter()
+                    .flat_map(|(left, right)| [max_var_term(left), max_var_term(right)])
+                    .max()
+                    .unwrap_or(0),
+            )
+            .saturating_add(1);
+        shift_clause(&mut current, shift);
+        let mut steps = 0usize;
+        let mut visited: Vec<Vec<Literal>> = Vec::new();
+        loop {
+            if clause_alpha_equiv(&current, &goal) {
+                return KernelVerdict::Certified;
+            }
+            if steps >= limits.max_rewrite_steps {
+                hit_step_limit = true;
+                break;
+            }
+            if visited.iter().any(|v| v == &current) {
+                break;
+            }
+            visited.push(current.clone());
+            let mut changed = false;
+            for literal in &mut current {
+                if rewrite_atom(&mut literal.atom, &rules, &mut steps, limits) {
+                    changed = true;
+                    break;
+                }
+            }
+            if !changed {
+                break;
+            }
         }
+    }
+    if hit_step_limit {
+        KernelVerdict::Inconclusive("demodulation exceeded strict rewrite-step limit".into())
+    } else {
+        KernelVerdict::Inconclusive(
+            "demodulation replay could not reach the conclusion within the implemented search"
+                .into(),
+        )
     }
 }
 
@@ -6425,6 +6469,121 @@ fn verify_ac_superposition(
             other => other,
         }
     }
+}
+
+fn verify_ac_resolution(
+    parents: &[Formula],
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if parents.len() < 3 {
+        return KernelVerdict::Rejected(
+            "ac_resolution requires two inference parents and AC axioms".into(),
+        );
+    }
+    let left = match clause_from_formula(&parents[0], limits) {
+        Some(clause) => clause,
+        None => return KernelVerdict::Inconclusive("AC left parent is not a clause".into()),
+    };
+    let right = match clause_from_formula(&parents[1], limits) {
+        Some(clause) => clause,
+        None => return KernelVerdict::Inconclusive("AC right parent is not a clause".into()),
+    };
+    let goal = match clause_from_formula(conclusion, limits) {
+        Some(clause) => clause,
+        None => return KernelVerdict::Inconclusive("AC conclusion is not a clause".into()),
+    };
+    let mut commutative = HashSet::new();
+    let mut associative = HashSet::new();
+    for parent in &parents[2..] {
+        let Some(clause) = clause_from_formula(parent, limits) else {
+            return KernelVerdict::Inconclusive("AC axiom is not a clause".into());
+        };
+        if clause.len() != 1 || !clause[0].positive {
+            return KernelVerdict::Rejected("AC axiom is not a positive unit equality".into());
+        }
+        let Atom::Eq(left, right) = &clause[0].atom else {
+            return KernelVerdict::Rejected("AC axiom is not an equality".into());
+        };
+        let Some((symbol, kind)) = classify_ac_axiom(left, right) else {
+            return KernelVerdict::Rejected("AC axiom has unsupported shape".into());
+        };
+        match kind {
+            AcAxiomKind::Commutative => {
+                commutative.insert(symbol);
+            }
+            AcAxiomKind::Associative => {
+                associative.insert(symbol);
+            }
+        }
+    }
+
+    if ac_resolution_replay(&left, &right, &goal, &commutative, &associative, limits) {
+        KernelVerdict::Certified
+    } else {
+        KernelVerdict::Inconclusive(
+            "ac_resolution replay could not establish equivalence within limits".into(),
+        )
+    }
+}
+
+fn ac_resolution_replay(
+    left: &[Literal],
+    right: &[Literal],
+    goal: &[Literal],
+    commutative: &HashSet<mrs_core::SymbolId>,
+    associative: &HashSet<mrs_core::SymbolId>,
+    limits: VerificationLimits,
+) -> bool {
+    let shift = max_var_clause(left).saturating_add(1);
+    let mut shifted_right = right.to_vec();
+    shift_clause(&mut shifted_right, shift);
+
+    for (left_idx, left_literal) in left.iter().enumerate() {
+        for (right_idx, right_literal) in shifted_right.iter().enumerate() {
+            if left_literal.positive == right_literal.positive {
+                continue;
+            }
+            let (Atom::Pred(left_symbol, left_args), Atom::Pred(right_symbol, right_args)) =
+                (&left_literal.atom, &right_literal.atom)
+            else {
+                continue;
+            };
+            if left_symbol != right_symbol || left_args.len() != right_args.len() {
+                continue;
+            }
+            let mut substitution = HashMap::new();
+            if !left_args.iter().zip(right_args).all(|(l, r)| {
+                ac_unify_terms(l, r, &mut substitution, commutative, associative, limits)
+            }) {
+                continue;
+            }
+            let mut resolvent = Vec::with_capacity(left.len() + shifted_right.len() - 2);
+            for (idx, literal) in left.iter().enumerate() {
+                if idx != left_idx {
+                    resolvent.push(apply_substitution_literal(literal, &substitution));
+                }
+            }
+            for (idx, literal) in shifted_right.iter().enumerate() {
+                if idx != right_idx {
+                    resolvent.push(apply_substitution_literal(literal, &substitution));
+                }
+            }
+            if ac_clause_alpha_equiv(&resolvent, goal, commutative, associative, limits) {
+                return true;
+            }
+            let mut deduplicated = Vec::with_capacity(resolvent.len());
+            for lit in &resolvent {
+                if !deduplicated.contains(lit) {
+                    deduplicated.push(lit.clone());
+                }
+            }
+            if ac_clause_alpha_equiv(&deduplicated, goal, commutative, associative, limits) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn ac_superposition_replay(
@@ -11373,5 +11532,17 @@ mod tests {
                          inference(avatar_sat_refutation,\
                            [status(thm)], [split, branch_p, branch_p2])).";
         assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn certifies_ac_resolution_with_commutativity_axiom() {
+        let problem = "cnf(c1, axiom, p(f(a, b))).\n\
+                       cnf(c2, axiom, ~p(f(b, a))).\n\
+                       cnf(c_comm, axiom, f(X, Y) = f(Y, X)).";
+        let proof = "cnf(c1, axiom, p(f(a, b)), file('problem.p', c1)).\n\
+                     cnf(c2, axiom, ~p(f(b, a)), file('problem.p', c2)).\n\
+                     cnf(c_comm, axiom, f(X, Y) = f(Y, X), file('problem.p', c_comm)).\n\
+                     cnf(c_bot, plain, $false, inference(ac_resolution, [status(thm)], [c1, c2, c_comm])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
     }
 }
