@@ -229,10 +229,11 @@ impl SearchState {
                 }
             };
             let parents = match &clause.source {
-                mrs_core::clause::ClauseSource::Inference { parents, .. } => {
+                mrs_core::clause::ClauseSource::Inference { parents, .. }
+                | mrs_core::clause::ClauseSource::Introduced { parents, .. } => {
                     parents.iter().map(|p| ProofNodeId(p.0)).collect()
                 }
-                _ => smallvec::SmallVec::new(),
+                mrs_core::clause::ClauseSource::Input { .. } => smallvec::SmallVec::new(),
             };
             proof_arena.alloc(*id, witness, parents);
         }
@@ -310,10 +311,11 @@ impl SearchState {
                 }
             };
             let parents = match &clause.source {
-                mrs_core::clause::ClauseSource::Inference { parents, .. } => {
+                mrs_core::clause::ClauseSource::Inference { parents, .. }
+                | mrs_core::clause::ClauseSource::Introduced { parents, .. } => {
                     parents.iter().map(|p| ProofNodeId(p.0)).collect()
                 }
-                _ => smallvec::SmallVec::new(),
+                mrs_core::clause::ClauseSource::Input { .. } => smallvec::SmallVec::new(),
             };
             self.proof_arena.alloc(clause.id, witness, parents);
         }
@@ -418,19 +420,27 @@ impl SearchState {
         self.clause_store
             .entry(clause.id)
             .or_insert_with(|| clause.clone());
-        if let mrs_core::clause::ClauseSource::Inference { rule, parents } = &clause.source {
-            let is_destructive = *rule == "demodulation" || *rule == "subsumption_resolution";
-            for (i, &parent) in parents.iter().enumerate() {
-                // For destructive inference rules, the primary target clause is always
-                // at index 0. Subsequent parents are auxiliary rewrites or subsuming clauses.
-                // We only track the primary target for orphan elimination. If an auxiliary
-                // parent is backward-subsumed, we should NOT delete the derived clause,
-                // otherwise we lose completeness.
-                if is_destructive && i > 0 {
-                    continue;
+        match &clause.source {
+            mrs_core::clause::ClauseSource::Inference { rule, parents } => {
+                let is_destructive = *rule == "demodulation" || *rule == "subsumption_resolution";
+                for (i, &parent) in parents.iter().enumerate() {
+                    // For destructive inference rules, the primary target clause is always
+                    // at index 0. Subsequent parents are auxiliary rewrites or subsuming clauses.
+                    // We only track the primary target for orphan elimination. If an auxiliary
+                    // parent is backward-subsumed, we should NOT delete the derived clause,
+                    // otherwise we lose completeness.
+                    if is_destructive && i > 0 {
+                        continue;
+                    }
+                    self.children.entry(parent).or_default().push(clause.id);
                 }
-                self.children.entry(parent).or_default().push(clause.id);
             }
+            mrs_core::clause::ClauseSource::Introduced { parents, .. } => {
+                for &parent in parents {
+                    self.children.entry(parent).or_default().push(clause.id);
+                }
+            }
+            mrs_core::clause::ClauseSource::Input { .. } => {}
         }
     }
 

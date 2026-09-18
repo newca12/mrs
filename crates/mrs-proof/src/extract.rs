@@ -1,7 +1,8 @@
 //! Proof extraction from the clause store.
 //!
-//! Traces back from the empty clause through `ClauseSource::Inference` parent
-//! pointers to collect all clauses involved in the refutation.
+//! Traces back from the empty clause through `ClauseSource::Inference` and
+//! `ClauseSource::Introduced` parent pointers to collect all clauses involved
+//! in the refutation.
 //! The result is topologically sorted: input clauses first, empty clause last.
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -13,8 +14,8 @@ use mrs_core::term_bank::IdClause;
 /// Extracts the proof DAG from the clause store.
 ///
 /// Starting from `empty_clause_id`, follows parent pointers in
-/// `ClauseSource::Inference` and `ClauseCertificate` dependencies to collect
-/// all ancestor clauses.
+/// `ClauseSource::Inference`, `ClauseSource::Introduced`, and
+/// `ClauseCertificate` dependencies to collect all ancestor clauses.
 ///
 /// Returns a topologically sorted vector: input clauses appear before
 /// any clause that depends on them. The empty clause is last.
@@ -248,6 +249,32 @@ mod tests {
         store.insert(ClauseId(3), inferred(3, vec![1, 2]));
         let proof = extract_proof(ClauseId(3), &store);
         assert_eq!(proof.len(), 4); // c0 appears once, not twice
+    }
+
+    #[test]
+    fn extract_introduced_definition_parents() {
+        let mut store = HashMap::new();
+        let mut symbols = mrs_core::SymbolTable::new();
+        let definition_symbol = symbols.intern("d");
+        let source = input(0);
+        let definition = Clause::new_formula_step(
+            ClauseId(1),
+            mrs_core::Formula::True,
+            ClauseSource::Introduced {
+                symbol: definition_symbol,
+                parents: vec![ClauseId(0)].into(),
+            },
+        );
+        let conclusion = inferred(2, vec![1]);
+        store.insert(source.id, source);
+        store.insert(definition.id, definition);
+        store.insert(conclusion.id, conclusion);
+
+        let proof = extract_proof(ClauseId(2), &store);
+        assert_eq!(
+            proof.iter().map(|clause| clause.id).collect::<Vec<_>>(),
+            vec![ClauseId(0), ClauseId(1), ClauseId(2)]
+        );
     }
 
     #[test]

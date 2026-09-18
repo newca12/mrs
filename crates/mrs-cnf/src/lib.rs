@@ -139,7 +139,14 @@ pub fn clausify_with_provenance(
             let def_id = id_gen.next();
             def_ids.push(def_id);
             bicond_def_id_by_symbol.insert(def_sym, def_id);
+        }
 
+        for def in &bicond_defs {
+            let def_sym = match &def.head {
+                mrs_core::Atom::Pred(sym, _) => *sym,
+                mrs_core::Atom::Eq(..) => unreachable!(),
+            };
+            let def_id = bicond_def_id_by_symbol[&def_sym];
             let mut free_vars: Vec<_> = def.rhs.free_vars().into_iter().collect();
             free_vars.sort_unstable();
             let biconditional = Formula::iff(Formula::atom(def.head.clone()), def.rhs.clone());
@@ -147,12 +154,25 @@ pub fn clausify_with_provenance(
                 .into_iter()
                 .rev()
                 .fold(biconditional, |body, v| Formula::forall(v, body));
+            let mut referenced = std::collections::HashSet::new();
+            collect_pred_symbols(&def.rhs, &mut referenced);
+            let mut dependency_symbols: Vec<_> = referenced
+                .into_iter()
+                .filter(|sym| *sym != def_sym && bicond_def_id_by_symbol.contains_key(sym))
+                .collect();
+            dependency_symbols.sort_unstable();
+            let mut parents: smallvec::SmallVec<[ClauseId; 2]> = vec![leaf_id].into();
+            parents.extend(
+                dependency_symbols
+                    .into_iter()
+                    .filter_map(|sym| bicond_def_id_by_symbol.get(&sym).copied()),
+            );
             provenance.push(Clause::new_formula_step(
                 def_id,
                 closed_biconditional,
                 ClauseSource::Introduced {
                     symbol: def_sym,
-                    parents: smallvec::smallvec![leaf_id],
+                    parents,
                 },
             ));
         }
@@ -215,8 +235,9 @@ pub fn clausify_with_provenance(
 
     // Step 5b: for each fresh definitional predicate Tseitin introduced,
     // emit its full biconditional as its own `introduced(definition)` step
-    // (no parents, no status — sound by construction, since the symbol is
-    // guaranteed fresh: a conservative extension). See
+    // (with internal parents for proof-DAG ordering, but no printed TSTP
+    // parents/status — sound by construction, since the symbol is guaranteed
+    // fresh: a conservative extension). See
     // `to_cnf_definitional_with_defs`'s doc comment for why citing only the
     // Skolemization step as a clause's parent does not work once that
     // clause mentions one of these fresh symbols.
@@ -226,9 +247,20 @@ pub fn clausify_with_provenance(
     // `definition_renaming` step that the NNF and Skolemization steps cite.
     let mut def_id_by_symbol = std::collections::HashMap::new();
     let mut def_provenance = Vec::with_capacity(definitions.len());
+    let mut def_source_by_symbol = std::collections::HashMap::new();
     let mut def_deps: std::collections::HashMap<mrs_core::SymbolId, Vec<mrs_core::SymbolId>> =
         std::collections::HashMap::new();
     let mut bicond_def_clauses = Vec::new();
+
+    for (def_atom, _) in &definitions {
+        let def_sym = match def_atom {
+            mrs_core::Atom::Pred(sym, _) => *sym,
+            mrs_core::Atom::Eq(..) => {
+                unreachable!("definitional CNF only introduces fresh predicate symbols")
+            }
+        };
+        def_source_by_symbol.insert(def_sym, skolem_id);
+    }
 
     // Clausify the full biconditional definitions created by the equivalence-
     // renaming pass. Their clauses are real search premises, while the
@@ -283,6 +315,15 @@ pub fn clausify_with_provenance(
         } else {
             (cnf::to_cnf(&def_stripped), Vec::new())
         };
+        for (inner_atom, _) in &def_inner_defs {
+            let inner_sym = match inner_atom {
+                mrs_core::Atom::Pred(sym, _) => *sym,
+                mrs_core::Atom::Eq(..) => {
+                    unreachable!("definitional CNF only introduces fresh predicate symbols")
+                }
+            };
+            def_source_by_symbol.insert(inner_sym, def_skolem_id);
+        }
         definitions.extend(def_inner_defs);
         let def_source = ClauseSource::Inference {
             rule: "cnf_transformation",
@@ -342,7 +383,8 @@ pub fn clausify_with_provenance(
             .into_iter()
             .rev()
             .fold(biconditional, |body, v| Formula::forall(v, body));
-        let mut def_parents: smallvec::SmallVec<[ClauseId; 2]> = smallvec::smallvec![skolem_id];
+        let source_id = def_source_by_symbol[&def_sym];
+        let mut def_parents: smallvec::SmallVec<[ClauseId; 2]> = smallvec::smallvec![source_id];
         if let Some(deps) = def_deps.get(&def_sym) {
             for dep_sym in deps {
                 if let Some(&dep_id) = def_id_by_symbol.get(dep_sym) {
@@ -887,6 +929,36 @@ mod provenance_tests {
             _ => unreachable!(),
         };
         assert_eq!(renaming_def_ids.len(), def_ids.len());
+        for step in &def_steps {
+            let ClauseSource::Introduced { symbol, parents } = &step.source else {
+                unreachable!()
+            };
+            let body = step.formula.as_ref().expect("formula step");
+            let mut referenced = std::collections::HashSet::new();
+            collect_pred_symbols(body, &mut referenced);
+            for referenced_symbol in referenced {
+                if referenced_symbol == *symbol {
+                    continue;
+                }
+                if let Some(&dependency_id) = def_steps.iter().find_map(|candidate| {
+                    let ClauseSource::Introduced {
+                        symbol: candidate_symbol,
+                        ..
+                    } = &candidate.source
+                    else {
+                        unreachable!()
+                    };
+                    (*candidate_symbol == referenced_symbol).then_some(&candidate.id)
+                }) {
+                    assert!(
+                        parents.contains(&dependency_id),
+                        "introduced definition c{} must cite nested definition c{}",
+                        step.id.0,
+                        dependency_id.0
+                    );
+                }
+            }
+        }
         let nnf = provenance
             .iter()
             .find(|c| {

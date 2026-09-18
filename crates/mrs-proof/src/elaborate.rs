@@ -997,7 +997,7 @@ mod tests {
         let d2 = syms.intern("def_d2");
 
         let c_def1 = Clause::new(
-            ClauseId(1),
+            ClauseId(2),
             vec![],
             ClauseSource::Introduced {
                 symbol: d1,
@@ -1005,17 +1005,19 @@ mod tests {
             },
         );
         let c_def2 = Clause::new(
-            ClauseId(2),
+            ClauseId(3),
             vec![],
             ClauseSource::Introduced {
                 symbol: d2,
-                parents: smallvec::SmallVec::new(),
+                parents: vec![ClauseId(2)].into(),
             },
         );
 
-        let proof = vec![c_def1, c_def2];
+        let proof = vec![c_def2, c_def1];
         let elaborated = elaborate(&proof, &syms).expect("definitions elaborate cleanly");
         assert_eq!(elaborated.clauses.len(), 2);
+        assert_eq!(elaborated.clauses[0].id, ClauseId(2));
+        assert_eq!(elaborated.clauses[1].id, ClauseId(3));
     }
 
     #[test]
