@@ -2342,6 +2342,220 @@ fn verify_instantiation(
     }
 }
 
+fn max_var_formula(formula: &Formula) -> VarId {
+    let mut max = 0;
+    fn walk_term(term: &Term, max: &mut VarId) {
+        match term {
+            Term::Var(v) => *max = (*max).max(*v),
+            Term::App(_, args) => {
+                for arg in args {
+                    walk_term(arg, max);
+                }
+            }
+        }
+    }
+    fn walk_atom(atom: &Atom, max: &mut VarId) {
+        match atom {
+            Atom::Pred(_, args) => {
+                for arg in args {
+                    walk_term(arg, max);
+                }
+            }
+            Atom::Eq(l, r) => {
+                walk_term(l, max);
+                walk_term(r, max);
+            }
+        }
+    }
+    fn walk(formula: &Formula, max: &mut VarId) {
+        match formula {
+            Formula::Atom(atom) => walk_atom(atom, max),
+            Formula::Neg(inner) => walk(inner, max),
+            Formula::And(parts) | Formula::Or(parts) => {
+                for part in parts {
+                    walk(part, max);
+                }
+            }
+            Formula::Implies(l, r) | Formula::Iff(l, r) => {
+                walk(l, max);
+                walk(r, max);
+            }
+            Formula::Forall(v, inner) | Formula::Exists(v, inner) => {
+                *max = (*max).max(*v);
+                walk(inner, max);
+            }
+            Formula::True | Formula::False => {}
+        }
+    }
+    walk(formula, &mut max);
+    max
+}
+
+fn substitute_definition_rhs(
+    body: &Formula,
+    params: &[VarId],
+    args: &[Term],
+    fresh: &Cell<VarId>,
+) -> Formula {
+    let mut map: HashMap<VarId, Term> = params.iter().copied().zip(args.iter().cloned()).collect();
+    fn sub_term(term: &Term, map: &HashMap<VarId, Term>) -> Term {
+        match term {
+            Term::Var(v) => map.get(v).cloned().unwrap_or(Term::Var(*v)),
+            Term::App(sym, args) => {
+                Term::App(*sym, args.iter().map(|arg| sub_term(arg, map)).collect())
+            }
+        }
+    }
+    fn sub_atom(atom: &Atom, map: &HashMap<VarId, Term>) -> Atom {
+        match atom {
+            Atom::Pred(sym, args) => {
+                Atom::Pred(*sym, args.iter().map(|arg| sub_term(arg, map)).collect())
+            }
+            Atom::Eq(l, r) => Atom::Eq(sub_term(l, map), sub_term(r, map)),
+        }
+    }
+    fn sub_form(f: &Formula, map: &mut HashMap<VarId, Term>, fresh: &Cell<VarId>) -> Formula {
+        match f {
+            Formula::Atom(atom) => Formula::Atom(sub_atom(atom, map)),
+            Formula::Neg(inner) => Formula::neg(sub_form(inner, map, fresh)),
+            Formula::And(parts) => {
+                Formula::And(parts.iter().map(|p| sub_form(p, map, fresh)).collect())
+            }
+            Formula::Or(parts) => {
+                Formula::Or(parts.iter().map(|p| sub_form(p, map, fresh)).collect())
+            }
+            Formula::Implies(l, r) => {
+                Formula::implies(sub_form(l, map, fresh), sub_form(r, map, fresh))
+            }
+            Formula::Iff(l, r) => Formula::iff(sub_form(l, map, fresh), sub_form(r, map, fresh)),
+            Formula::Forall(v, inner) => {
+                let nv = fresh.get();
+                fresh.set(nv.saturating_add(1));
+                let prev = map.insert(*v, Term::Var(nv));
+                let sub_inner = sub_form(inner, map, fresh);
+                match prev {
+                    Some(old) => {
+                        map.insert(*v, old);
+                    }
+                    None => {
+                        map.remove(v);
+                    }
+                }
+                Formula::forall(nv, sub_inner)
+            }
+            Formula::Exists(v, inner) => {
+                let nv = fresh.get();
+                fresh.set(nv.saturating_add(1));
+                let prev = map.insert(*v, Term::Var(nv));
+                let sub_inner = sub_form(inner, map, fresh);
+                match prev {
+                    Some(old) => {
+                        map.insert(*v, old);
+                    }
+                    None => {
+                        map.remove(v);
+                    }
+                }
+                Formula::exists(nv, sub_inner)
+            }
+            Formula::True | Formula::False => f.clone(),
+        }
+    }
+    sub_form(body, &mut map, fresh)
+}
+
+fn unfold_definitions_once(
+    formula: &Formula,
+    defs: &HashMap<mrs_core::SymbolId, (Vec<VarId>, Formula)>,
+    fresh: &Cell<VarId>,
+    limits: VerificationLimits,
+    steps: &mut usize,
+) -> Option<(Formula, bool)> {
+    if *steps >= limits.max_rewrite_steps {
+        return None;
+    }
+    *steps += 1;
+    match formula {
+        Formula::Atom(Atom::Pred(sym, args)) => {
+            if let Some((params, body)) = defs.get(sym) {
+                if params.len() != args.len() {
+                    return None;
+                }
+                let expanded = substitute_definition_rhs(body, params, args, fresh);
+                Some((expanded, true))
+            } else {
+                Some((formula.clone(), false))
+            }
+        }
+        Formula::Atom(Atom::Eq(..)) | Formula::True | Formula::False => {
+            Some((formula.clone(), false))
+        }
+        Formula::Neg(inner) => {
+            let (sub, changed) = unfold_definitions_once(inner, defs, fresh, limits, steps)?;
+            Some((Formula::neg(sub), changed))
+        }
+        Formula::And(parts) => {
+            let mut changed = false;
+            let mut sub_parts = Vec::with_capacity(parts.len());
+            for part in parts {
+                let (sub, c) = unfold_definitions_once(part, defs, fresh, limits, steps)?;
+                changed |= c;
+                sub_parts.push(sub);
+            }
+            Some((Formula::And(sub_parts), changed))
+        }
+        Formula::Or(parts) => {
+            let mut changed = false;
+            let mut sub_parts = Vec::with_capacity(parts.len());
+            for part in parts {
+                let (sub, c) = unfold_definitions_once(part, defs, fresh, limits, steps)?;
+                changed |= c;
+                sub_parts.push(sub);
+            }
+            Some((Formula::Or(sub_parts), changed))
+        }
+        Formula::Implies(l, r) => {
+            let (sl, cl) = unfold_definitions_once(l, defs, fresh, limits, steps)?;
+            let (sr, cr) = unfold_definitions_once(r, defs, fresh, limits, steps)?;
+            Some((Formula::implies(sl, sr), cl || cr))
+        }
+        Formula::Iff(l, r) => {
+            let (sl, cl) = unfold_definitions_once(l, defs, fresh, limits, steps)?;
+            let (sr, cr) = unfold_definitions_once(r, defs, fresh, limits, steps)?;
+            Some((Formula::iff(sl, sr), cl || cr))
+        }
+        Formula::Forall(v, inner) => {
+            let (sub, changed) = unfold_definitions_once(inner, defs, fresh, limits, steps)?;
+            Some((Formula::forall(*v, sub), changed))
+        }
+        Formula::Exists(v, inner) => {
+            let (sub, changed) = unfold_definitions_once(inner, defs, fresh, limits, steps)?;
+            Some((Formula::exists(*v, sub), changed))
+        }
+    }
+}
+
+fn unfold_definitions_all(
+    formula: &Formula,
+    defs: &HashMap<mrs_core::SymbolId, (Vec<VarId>, Formula)>,
+    fresh: &Cell<VarId>,
+    limits: VerificationLimits,
+) -> Option<Formula> {
+    let mut current = formula.clone();
+    let mut steps = 0;
+    for _ in 0..(defs.len() + 2) {
+        if formula_size(&current) > limits.max_formula_nodes {
+            return None;
+        }
+        let (next, changed) = unfold_definitions_once(&current, defs, fresh, limits, &mut steps)?;
+        current = next;
+        if !changed {
+            return Some(current);
+        }
+    }
+    Some(current)
+}
+
 fn verify_definition_renaming(
     parents: &[Formula],
     conclusion: &Formula,
@@ -2383,18 +2597,59 @@ fn verify_definition_renaming(
         };
         definitions.push(definition);
     }
-    let Some(expected) = replace_definition_subformulas(source, &definitions, limits) else {
+
+    // 1. Fast path: forward replacement (exact substitution of definition RHS in source)
+    let forward_res = replace_definition_subformulas(source, &definitions, limits);
+    if let Some(expected) = &forward_res
+        && alpha_equiv(expected, conclusion)
+    {
+        return KernelVerdict::Certified;
+    }
+
+    // 2. Unfolding fallback: unfold introduced definitions in conclusion and source
+    // to handle cases where multiple definitions have structurally identical bodies.
+    let mut defs_by_symbol = HashMap::new();
+    for def in &definitions {
+        if let Atom::Pred(sym, args) = &def.head {
+            let mut params = Vec::with_capacity(args.len());
+            for arg in args {
+                let Term::Var(v) = arg else {
+                    return KernelVerdict::Inconclusive(
+                        "definition_renaming head contains non-variable argument".into(),
+                    );
+                };
+                params.push(*v);
+            }
+            defs_by_symbol.insert(*sym, (params, def.rhs.clone()));
+        }
+    }
+
+    let mut max_var = max_var_formula(source).max(max_var_formula(conclusion));
+    for def in &definitions {
+        max_var = max_var.max(max_var_formula(&def.rhs));
+    }
+    let fresh = Cell::new(max_var.saturating_add(1));
+
+    let unfolded_source_res = unfold_definitions_all(source, &defs_by_symbol, &fresh, limits);
+    let unfolded_conclusion_res =
+        unfold_definitions_all(conclusion, &defs_by_symbol, &fresh, limits);
+
+    if let (Some(unfolded_source), Some(unfolded_conclusion)) =
+        (&unfolded_source_res, &unfolded_conclusion_res)
+        && alpha_equiv(unfolded_source, unfolded_conclusion)
+    {
+        return KernelVerdict::Certified;
+    }
+
+    if forward_res.is_none() || unfolded_source_res.is_none() || unfolded_conclusion_res.is_none() {
         return KernelVerdict::Inconclusive(
             "definition_renaming exceeded strict matching-step limit".into(),
         );
-    };
-    if alpha_equiv(&expected, conclusion) {
-        KernelVerdict::Certified
-    } else {
-        KernelVerdict::Rejected(
-            "definition_renaming conclusion is not the source with definitions replaced".into(),
-        )
     }
+
+    KernelVerdict::Rejected(
+        "definition_renaming conclusion is not the source with definitions replaced".into(),
+    )
 }
 
 fn verify_existential_generation(
@@ -9920,6 +10175,28 @@ mod tests {
                      cnf(d0, plain, d0, inference(resolution, [status(thm)], [p,negr])).\
                      cnf(nd0, plain, ~d0, inference(resolution, [status(thm)], [np,posr])).\
                      cnf(bot, plain, $false, inference(resolution, [status(thm)], [d0,nd0])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_krs187_definition_renaming() {
+        let problem = "fof(goal, conjecture, ~(((?[X2]: (model(X2, a)) <=> ?[X3]: (model(X3, b))) <=> r))).\n\
+                       fof(posr, axiom, r).\n\
+                       fof(negr, axiom, ~r).";
+        let proof = "fof(goal, conjecture, ~(((?[X2]: (model(X2, a)) <=> ?[X3]: (model(X3, b))) <=> r)), file('problem.p', goal)).\n\
+                     fof(posr, axiom, r, file('problem.p', posr)).\n\
+                     fof(negr, axiom, ~r, file('problem.p', negr)).\n\
+                     fof(c95, definition, ![X0]: ((def_esa_iff_0(X0) <=> ?[X2]: (model(X2, X0)))), introduced(definition, [new_symbols(definition, [def_esa_iff_0])])).\n\
+                     fof(c96, definition, ![X1]: ((def_esa_iff_1(X1) <=> ?[X3]: (model(X3, X1)))), introduced(definition, [new_symbols(definition, [def_esa_iff_1])])).\n\
+                     fof(c97, definition, ![X0]: (![X1]: ((def_esa_iff_2(X0, X1) <=> (def_esa_iff_0(X0) <=> def_esa_iff_1(X1))))), introduced(definition, [new_symbols(definition, [def_esa_iff_2])])).\n\
+                     fof(c98, plain, ~(def_esa_iff_2(a, b) <=> r), inference(definition_renaming, [status(thm)], [goal, c95, c96, c97])).\n\
+                     fof(n, plain, ((def_esa_iff_2(a, b) | r) & (~def_esa_iff_2(a, b) | ~r)), inference(fof_nnf_transformation, [status(thm)], [c98])).\n\
+                     fof(sk, plain, ((def_esa_iff_2(a, b) | r) & (~def_esa_iff_2(a, b) | ~r)), inference(skolemisation, [status(esa)], [n])).\n\
+                     cnf(p, plain, def_esa_iff_2(a, b) | r, inference(cnf_transformation, [status(thm)], [sk])).\n\
+                     cnf(np, plain, ~def_esa_iff_2(a, b) | ~r, inference(cnf_transformation, [status(thm)], [sk])).\n\
+                     cnf(d2, plain, def_esa_iff_2(a, b), inference(resolution, [status(thm)], [p, negr])).\n\
+                     cnf(nd2, plain, ~def_esa_iff_2(a, b), inference(resolution, [status(thm)], [np, posr])).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [d2, nd2])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
     }
 
