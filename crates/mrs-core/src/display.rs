@@ -210,7 +210,7 @@ impl fmt::Display for ClauseSource {
                 }
                 write!(f, ")")
             }
-            ClauseSource::Introduced { symbol } => {
+            ClauseSource::Introduced { symbol, .. } => {
                 write!(
                     f,
                     "introduced(definition, [new_symbols(definition, [s{}])])",

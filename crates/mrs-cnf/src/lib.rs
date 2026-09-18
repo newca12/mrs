@@ -150,7 +150,10 @@ pub fn clausify_with_provenance(
             provenance.push(Clause::new_formula_step(
                 def_id,
                 closed_biconditional,
-                ClauseSource::Introduced { symbol: def_sym },
+                ClauseSource::Introduced {
+                    symbol: def_sym,
+                    parents: smallvec::smallvec![leaf_id],
+                },
             ));
         }
 
@@ -339,10 +342,21 @@ pub fn clausify_with_provenance(
             .into_iter()
             .rev()
             .fold(biconditional, |body, v| Formula::forall(v, body));
+        let mut def_parents: smallvec::SmallVec<[ClauseId; 2]> = smallvec::smallvec![skolem_id];
+        if let Some(deps) = def_deps.get(&def_sym) {
+            for dep_sym in deps {
+                if let Some(&dep_id) = def_id_by_symbol.get(dep_sym) {
+                    def_parents.push(dep_id);
+                }
+            }
+        }
         def_provenance.push(Clause::new_formula_step(
             def_id,
             closed_biconditional,
-            ClauseSource::Introduced { symbol: def_sym },
+            ClauseSource::Introduced {
+                symbol: def_sym,
+                parents: def_parents,
+            },
         ));
     }
 
@@ -725,7 +739,7 @@ mod provenance_tests {
             .iter()
             .filter(|c| matches!(c.source, ClauseSource::Introduced { .. }))
         {
-            let ClauseSource::Introduced { symbol } = &step.source else {
+            let ClauseSource::Introduced { symbol, .. } = &step.source else {
                 unreachable!()
             };
             let body = step.formula.as_ref().expect("formula step");

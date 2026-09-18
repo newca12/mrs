@@ -108,6 +108,8 @@ pub enum ClauseSource {
     Introduced {
         /// The fresh symbol this step defines.
         symbol: SymbolId,
+        /// The parent clauses this definition was introduced from or depends on.
+        parents: SmallVec<[ClauseId; 2]>,
     },
 }
 

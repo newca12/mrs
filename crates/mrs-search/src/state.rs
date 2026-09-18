@@ -214,7 +214,7 @@ impl SearchState {
                         name: name.clone(),
                         role: role.clone(),
                     },
-                    mrs_core::clause::ClauseSource::Introduced { symbol } => {
+                    mrs_core::clause::ClauseSource::Introduced { symbol, .. } => {
                         ProofWitness::Definition {
                             symbol: *symbol,
                             defining_formula: clause.formula.clone(),
@@ -295,7 +295,7 @@ impl SearchState {
                         name: name.clone(),
                         role: role.clone(),
                     },
-                    mrs_core::clause::ClauseSource::Introduced { symbol } => {
+                    mrs_core::clause::ClauseSource::Introduced { symbol, .. } => {
                         ProofWitness::Definition {
                             symbol: *symbol,
                             defining_formula: clause.formula.clone(),

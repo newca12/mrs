@@ -36,7 +36,9 @@ pub fn extract_proof<S: BuildHasher>(
         order.push(id);
 
         if let Some(clause) = clause_store.get(&id) {
-            if let ClauseSource::Inference { parents, .. } = &clause.source {
+            if let ClauseSource::Inference { parents, .. }
+            | ClauseSource::Introduced { parents, .. } = &clause.source
+            {
                 for &parent_id in parents {
                     if visited.insert(parent_id) {
                         queue.push_back(parent_id);
@@ -97,7 +99,9 @@ pub fn extract_proof_ids<S: BuildHasher>(
         order.push(id);
 
         if let Some(clause) = clause_store.get(&id) {
-            if let ClauseSource::Inference { parents, .. } = &clause.source {
+            if let ClauseSource::Inference { parents, .. }
+            | ClauseSource::Introduced { parents, .. } = &clause.source
+            {
                 for &parent_id in parents {
                     if visited.insert(parent_id) {
                         queue.push_back(parent_id);

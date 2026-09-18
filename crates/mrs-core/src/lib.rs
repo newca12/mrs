@@ -39,3 +39,4 @@ pub use subst::Substitution;
 pub use symbol::{SymbolId, SymbolTable};
 pub use term::{Term, VarId};
 pub use witness::{DemodStepWitness, ProofArena, ProofNode, ProofNodeId, ProofWitness};
+pub use smallvec::SmallVec;
