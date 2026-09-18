@@ -602,6 +602,7 @@ pub fn try_propositional_abstraction(premises: &[Formula], conclusion: &Formula)
                     let lit1 = enc.encode(&eq1, &mut solver);
                     let lit2 = enc.encode(&eq2, &mut solver);
                     solver.add_clause([-lit1, lit2]);
+                    solver.add_clause([-lit2, lit1]);
                 }
             }
 

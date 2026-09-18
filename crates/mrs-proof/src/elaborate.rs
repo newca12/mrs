@@ -238,17 +238,26 @@ fn term_weight(term: &Term) -> usize {
 
 /// Extracts non-variable-expanding oriented rewrite rules from a unit equality clause.
 pub fn extract_oriented_rules(rule_clause: &Clause) -> Result<Vec<OrientedRule>, ElaborationError> {
-    if rule_clause.literals.len() != 1 || !rule_clause.literals[0].positive {
-        return Err(ElaborationError::Inconclusive(format!(
-            "Demodulation parent c{} must be a positive unit equality",
-            rule_clause.id.0
-        )));
+    let mut eq_lit = None;
+    for lit in &rule_clause.literals {
+        if lit.positive && matches!(lit.atom, Atom::Eq(..)) {
+            if eq_lit.is_some() {
+                return Err(ElaborationError::Inconclusive(format!(
+                    "Demodulation parent c{} has multiple equalities",
+                    rule_clause.id.0
+                )));
+            }
+            eq_lit = Some(lit);
+        }
     }
-    let Atom::Eq(l, r) = &rule_clause.literals[0].atom else {
+    let Some(eq_lit) = eq_lit else {
         return Err(ElaborationError::Inconclusive(format!(
-            "Demodulation parent c{} must be an equality",
+            "Demodulation parent c{} must contain a positive equality",
             rule_clause.id.0
         )));
+    };
+    let Atom::Eq(l, r) = &eq_lit.atom else {
+        unreachable!();
     };
     if l == r {
         return Ok(Vec::new());

@@ -323,9 +323,8 @@ fn verify_strict_with_source_internal(
                 if !matches!(outcome, KernelVerdict::Certified) {
                     return outcome;
                 }
-                collect_function_symbols(node.formula, &mut known_function_symbols);
-                if !is_skolem_symbol_introduction(annotations) {
-                    collect_function_symbols(node.formula, &mut known_non_skolem_function_symbols);
+                if is_skolem_symbol_introduction(annotations) {
+                    collect_function_symbols(node.formula, &mut known_function_symbols);
                 }
                 continue;
             }
@@ -4814,7 +4813,30 @@ fn match_skolem_matrix(
             ) {
                 let parent_parts = flatten_skolem_associative(parent, *parent_connective);
                 let step_parts = flatten_skolem_associative(step, *step_connective);
-                match_skolem_multiset(&parent_parts, &step_parts, state, polarity)
+                let mut candidate_state = state.clone();
+                if match_skolem_multiset(&parent_parts, &step_parts, &mut candidate_state, polarity)
+                {
+                    *state = candidate_state;
+                    true
+                } else {
+                    let mut fallback_state = state.clone();
+                    if match_skolem_formula_with_polarity(
+                        parent_left,
+                        step_left,
+                        &mut fallback_state,
+                        polarity,
+                    ) && match_skolem_formula_with_polarity(
+                        parent_right,
+                        step_right,
+                        &mut fallback_state,
+                        polarity,
+                    ) {
+                        *state = fallback_state;
+                        true
+                    } else {
+                        false
+                    }
+                }
             } else {
                 match_skolem_formula_with_polarity(parent_left, step_left, state, polarity)
                     && match_skolem_formula_with_polarity(parent_right, step_right, state, polarity)
@@ -5707,21 +5729,50 @@ fn verify_demodulation(
         );
     };
     let mut orientation_choices: Vec<Vec<(Term, Term)>> = Vec::new();
+    let mut new_conditions: Vec<Literal> = Vec::new();
     for parent in parents[1..].iter() {
         let Some(clause) = clause_from_formula(parent, limits) else {
             return KernelVerdict::Inconclusive(
                 "demodulation equality parent is not a supported clause".into(),
             );
         };
-        if clause.len() != 1 || !clause[0].positive {
+        let mut eq_idx = None;
+        for (idx, lit) in clause.iter().enumerate() {
+            if lit.positive && matches!(lit.atom, Atom::Eq(_, _)) {
+                if eq_idx.is_some() {
+                    return KernelVerdict::Rejected(
+                        "demodulation parents must contain at most one positive equality".into(),
+                    );
+                }
+                eq_idx = Some(idx);
+            }
+        }
+        let Some(eq_idx) = eq_idx else {
             return KernelVerdict::Rejected(
-                "demodulation parents must be positive unit equalities".into(),
+                "demodulation parents must contain a positive equality".into(),
+            );
+        };
+
+        for (idx, lit) in clause.iter().enumerate() {
+            if idx == eq_idx {
+                continue;
+            }
+            if target.iter().any(|t| t == lit) {
+                continue;
+            }
+            if literal_var_set(lit).is_empty() && goal.iter().any(|g| g == lit) {
+                if !new_conditions.contains(lit) {
+                    new_conditions.push(lit.clone());
+                }
+                continue;
+            }
+            return KernelVerdict::Rejected(
+                "demodulation condition literal not satisfied in target or conclusion".into(),
             );
         }
-        let Atom::Eq(left, right) = &clause[0].atom else {
-            return KernelVerdict::Rejected(
-                "demodulation parents must be positive unit equalities".into(),
-            );
+
+        let Atom::Eq(left, right) = &clause[eq_idx].atom else {
+            unreachable!();
         };
         if left == right {
             continue;
@@ -5771,6 +5822,11 @@ fn verify_demodulation(
     let mut hit_step_limit = false;
     for rules in candidate_rule_sets {
         let mut current = target.clone();
+        for cond in &new_conditions {
+            if !current.contains(cond) {
+                current.push(cond.clone());
+            }
+        }
         let shift = max_var_clause(&current)
             .max(max_var_clause(&goal))
             .max(
@@ -5786,6 +5842,15 @@ fn verify_demodulation(
         let mut visited: Vec<Vec<Literal>> = Vec::new();
         loop {
             if clause_alpha_equiv(&current, &goal) {
+                return KernelVerdict::Certified;
+            }
+            let mut deduplicated = Vec::with_capacity(current.len());
+            for lit in &current {
+                if !deduplicated.contains(lit) {
+                    deduplicated.push(lit.clone());
+                }
+            }
+            if deduplicated.len() != current.len() && clause_alpha_equiv(&deduplicated, &goal) {
                 return KernelVerdict::Certified;
             }
             if steps >= limits.max_rewrite_steps {
@@ -8424,6 +8489,22 @@ fn collect_term_vars_set(term: &Term, vars: &mut HashSet<VarId>) {
 
 fn max_var_term(term: &Term) -> VarId {
     term_var_set(term).into_iter().max().unwrap_or(0)
+}
+
+fn literal_var_set(literal: &Literal) -> HashSet<VarId> {
+    let mut vars = HashSet::new();
+    match &literal.atom {
+        Atom::Pred(_, args) => {
+            for arg in args {
+                collect_term_vars_set(arg, &mut vars);
+            }
+        }
+        Atom::Eq(left, right) => {
+            collect_term_vars_set(left, &mut vars);
+            collect_term_vars_set(right, &mut vars);
+        }
+    }
+    vars
 }
 
 fn clause_from_formula(formula: &Formula, limits: VerificationLimits) -> Option<Vec<Literal>> {
@@ -11461,6 +11542,49 @@ mod tests {
                      fof(s, plain, p(b), inference(demodulation, [status(thm)], [target])).\n\
                      fof(bot, plain, $false, inference(consequence, [status(thm)], [s])).";
         assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn certifies_avatar_conditional_demodulation() {
+        let problem = "cnf(target, axiom, p(f(a)) | ~spl0_1).\n\
+                       cnf(rule, axiom, f(a) = b | ~spl0_1).\n\
+                       cnf(neg, axiom, ~p(b) | ~spl0_1).\n\
+                       cnf(spl, axiom, spl0_1).";
+        let proof = "cnf(target, axiom, p(f(a)) | ~spl0_1, file('problem.p', target)).\n\
+                     cnf(rule, axiom, f(a) = b | ~spl0_1, file('problem.p', rule)).\n\
+                     cnf(neg, axiom, ~p(b) | ~spl0_1, file('problem.p', neg)).\n\
+                     cnf(spl, axiom, spl0_1, file('problem.p', spl)).\n\
+                     cnf(s, plain, p(b) | ~spl0_1, inference(demodulation, [status(thm)], [target, rule])).\n\
+                     cnf(c, plain, ~spl0_1, inference(resolution, [status(thm)], [s, neg])).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [c, spl])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_conditional_demodulation_with_unsatisfied_condition() {
+        let problem = "cnf(target, axiom, p(f(a))).\n\
+                       cnf(rule, axiom, f(a) = b | ~spl0_1).";
+        let proof = "cnf(target, axiom, p(f(a)), file('problem.p', target)).\n\
+                     cnf(rule, axiom, f(a) = b | ~spl0_1, file('problem.p', rule)).\n\
+                     cnf(s, plain, p(b), inference(demodulation, [status(thm)], [target, rule])).\n\
+                     cnf(bot, plain, $false, inference(consequence, [status(thm)], [s])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn certifies_conditional_demodulation_propagating_ground_condition() {
+        let problem = "cnf(target, axiom, p(f(a))).\n\
+                       cnf(rule, axiom, f(a) = b | ~spl0_1).\n\
+                       cnf(neg, axiom, ~p(b) | ~spl0_1).\n\
+                       cnf(spl, axiom, spl0_1).";
+        let proof = "cnf(target, axiom, p(f(a)), file('problem.p', target)).\n\
+                     cnf(rule, axiom, f(a) = b | ~spl0_1, file('problem.p', rule)).\n\
+                     cnf(neg, axiom, ~p(b) | ~spl0_1, file('problem.p', neg)).\n\
+                     cnf(spl, axiom, spl0_1, file('problem.p', spl)).\n\
+                     cnf(s, plain, p(b) | ~spl0_1, inference(demodulation, [status(thm)], [target, rule])).\n\
+                     cnf(c, plain, ~spl0_1, inference(resolution, [status(thm)], [s, neg])).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [c, spl])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
     }
 
     #[test]
