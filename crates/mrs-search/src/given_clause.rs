@@ -997,12 +997,17 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 branch_roots,
             });
 
-            let mut final_proof: Vec<mrs_core::clause::Clause> = state
+            let mut legacy_store: std::collections::HashMap<_, _> = state
                 .clause_store
-                .values()
-                .map(|ic| state.term_bank.clause_to_legacy(ic))
+                .iter()
+                .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
                 .collect();
-            final_proof.push(final_false_clause);
+            legacy_store.insert(final_id, final_false_clause);
+
+            // Prune to the root derivation: emitting the whole store would
+            // include unused input axioms and dead clauses, which the strict
+            // kernel (and TSTP hygiene) rejects as outside the derivation.
+            let mut final_proof = mrs_proof::extract::extract_proof(final_id, &legacy_store);
             final_proof.sort_unstable_by_key(|c| c.id.0);
 
             let tstp_proof = if state.symbols.is_empty() {

@@ -216,16 +216,15 @@ fn verify_strict_with_source_internal(
     let mut defined_symbols = HashSet::new();
     let mut skolem_axioms: HashMap<usize, OwnedSkolemAxiom> = HashMap::new();
 
-    let mut problem_names = HashSet::with_capacity(problem.formulas.len());
+    // NOTE: duplicate problem formula names are tolerated, not rejected.
+    // The TPTP library contains includes that define the same name twice
+    // with different bodies (e.g. LCL518+1 pulls `substitution_of_equivalents`
+    // from both LCL006+0.ax and LCL006+5.ax). Leaf matching below is
+    // existential over same-named formulas, which is sound: the cited
+    // formula is asserted by the problem under that name either way.
     for formula in &problem.formulas {
         if formula.role() == FormulaRole::Type {
             continue;
-        }
-        if !problem_names.insert(formula.name()) {
-            return KernelVerdict::Rejected(format!(
-                "problem contains duplicate formula name `{}`",
-                formula.name()
-            ));
         }
         if !formula.is_fof() && !formula.is_cnf() {
             return KernelVerdict::Inconclusive(format!(
@@ -239,6 +238,14 @@ fn verify_strict_with_source_internal(
     let mut known_non_skolem_function_symbols: HashSet<String> = HashSet::new();
     let mut known_symbols: HashSet<String> = HashSet::new();
     let mut signatures = HashMap::new();
+    // Background AC axioms straight from the problem (commutativity /
+    // associativity shapes): the prover's superposition is AC-aware even
+    // when a step is exported as plain `superposition` without AC
+    // citations (SWV486+1 rewrites with commutativity of `plus`). The
+    // fallback below replays such steps against these axioms; all of them
+    // are problem premises, so accepting remains sound.
+    let mut background_commutative: HashSet<mrs_core::SymbolId> = HashSet::new();
+    let mut background_associative: HashSet<mrs_core::SymbolId> = HashSet::new();
     for formula in &problem.formulas {
         collect_function_symbols(formula, &mut known_function_symbols);
         collect_function_symbols(formula, &mut known_non_skolem_function_symbols);
@@ -252,6 +259,21 @@ fn verify_strict_with_source_internal(
                 return KernelVerdict::Rejected(format!(
                     "problem has inconsistent symbol signature: {reason}"
                 ));
+            }
+            if let Some(clause) = clause_from_formula(&lowered, limits)
+                && clause.len() == 1
+                && clause[0].positive
+                && let Atom::Eq(left, right) = &clause[0].atom
+                && let Some((symbol, kind)) = classify_ac_axiom(left, right)
+            {
+                match kind {
+                    AcAxiomKind::Commutative => {
+                        background_commutative.insert(symbol);
+                    }
+                    AcAxiomKind::Associative => {
+                        background_associative.insert(symbol);
+                    }
+                }
             }
         }
     }
@@ -445,9 +467,27 @@ fn verify_strict_with_source_internal(
                 other => other,
             },
             "goal_transformation" => verify_goal_transformation(&parents, conclusion, limits),
-            "superposition" => verify_superposition(&parents, conclusion, limits),
-            "ac_superposition" => verify_ac_superposition(&parents, conclusion, limits),
-            "paramodulation" => verify_paramodulation(&parents, conclusion, limits),
+            "superposition" => verify_superposition(
+                &parents,
+                conclusion,
+                limits,
+                &background_commutative,
+                &background_associative,
+            ),
+            "ac_superposition" => verify_ac_superposition(
+                &parents,
+                conclusion,
+                limits,
+                &background_commutative,
+                &background_associative,
+            ),
+            "paramodulation" => verify_paramodulation(
+                &parents,
+                conclusion,
+                limits,
+                &background_commutative,
+                &background_associative,
+            ),
             "split_component" => verify_split_component(
                 &parents,
                 conclusion,
@@ -1154,7 +1194,7 @@ fn verify_cnf_transformation(
 
     if expanded
         .iter()
-        .any(|clause| clause_alpha_equiv(clause, &goal))
+        .any(|clause| clause_alpha_equiv(&condense_clause(clause), &condense_clause(&goal)))
     {
         KernelVerdict::Certified
     } else {
@@ -1514,8 +1554,24 @@ fn replace_definition_subformulas(
         }
         steps += 1;
         let mut changed = false;
+        // Hoist quantifiers that bind nothing outside their conjunct /
+        // disjunct first: the prover generalises definition bodies across
+        // quantifier boundaries (`(A & ![x]B(x))` with body `(A & B(x))`,
+        // e.g. SYO606+1 `def_nc5_11`), so the source block only matches
+        // after the vacuous placement is floated outward.
+        let (moved, moved_changed) = pull_vacuous_quantifiers_once(&current);
+        current = moved;
+        changed |= moved_changed;
+        // Canonical sites first: apply identity matches for every
+        // definition before falling back to permuting matches, so
+        // symmetric blocks are claimed by their own definitions.
         for definition in definitions {
-            let (next, replaced) = replace_one_definition(&current, definition);
+            let (next, replaced) = replace_one_definition(&current, definition, true);
+            current = next;
+            changed |= replaced;
+        }
+        for definition in definitions {
+            let (next, replaced) = replace_one_definition(&current, definition, false);
             current = next;
             changed |= replaced;
         }
@@ -1525,11 +1581,99 @@ fn replace_definition_subformulas(
     }
 }
 
-fn replace_one_definition(source: &Formula, definition: &CoreDefinition) -> (Formula, bool) {
+/// Floats one level of vacuously-placed quantifiers outward:
+/// `(A & Qx.B(x)) ≡ Qx.(A & B(x))` (likewise `|`) when `x ∉ FV(A)`.
+/// Recurses bottom-up so nested placements surface in one pass; the
+/// caller iterates to a fixpoint. All rewrites are logical equivalences.
+fn pull_vacuous_quantifiers_once(formula: &Formula) -> (Formula, bool) {
+    match formula {
+        Formula::And(parts) | Formula::Or(parts) => {
+            let is_conjunction = matches!(formula, Formula::And(_));
+            let mut rewritten: Vec<Formula> = Vec::with_capacity(parts.len());
+            let mut changed = false;
+            for part in parts {
+                let (part, part_changed) = pull_vacuous_quantifiers_once(part);
+                changed |= part_changed;
+                rewritten.push(part);
+            }
+            // Hoist at most one quantifier per pass; the fixpoint loop in
+            // the caller handles the rest.
+            for index in 0..rewritten.len() {
+                let (variable, body, universal) = match &rewritten[index] {
+                    Formula::Forall(variable, body) => (*variable, body.as_ref(), true),
+                    Formula::Exists(variable, body) => (*variable, body.as_ref(), false),
+                    _ => continue,
+                };
+                let mut others_free = HashSet::new();
+                for (other_index, other) in rewritten.iter().enumerate() {
+                    if other_index != index {
+                        others_free.extend(other.free_vars());
+                    }
+                }
+                if others_free.contains(&variable) {
+                    continue;
+                }
+                let mut hoisted: Vec<Formula> = Vec::with_capacity(rewritten.len());
+                for (other_index, other) in rewritten.iter().enumerate() {
+                    if other_index != index {
+                        hoisted.push(other.clone());
+                    }
+                }
+                hoisted.push(body.clone());
+                let combined = if is_conjunction {
+                    Formula::And(hoisted)
+                } else {
+                    Formula::Or(hoisted)
+                };
+                let lifted = if universal {
+                    Formula::forall(variable, combined)
+                } else {
+                    Formula::exists(variable, combined)
+                };
+                return (lifted, true);
+            }
+            let rebuilt = if is_conjunction {
+                Formula::And(rewritten)
+            } else {
+                Formula::Or(rewritten)
+            };
+            (rebuilt, changed)
+        }
+        Formula::Neg(inner) => {
+            let (inner, changed) = pull_vacuous_quantifiers_once(inner);
+            (Formula::neg(inner), changed)
+        }
+        Formula::Implies(left, right) => {
+            let (left, left_changed) = pull_vacuous_quantifiers_once(left);
+            let (right, right_changed) = pull_vacuous_quantifiers_once(right);
+            (Formula::implies(left, right), left_changed || right_changed)
+        }
+        Formula::Iff(left, right) => {
+            let (left, left_changed) = pull_vacuous_quantifiers_once(left);
+            let (right, right_changed) = pull_vacuous_quantifiers_once(right);
+            (Formula::iff(left, right), left_changed || right_changed)
+        }
+        Formula::Forall(variable, body) => {
+            let (body, changed) = pull_vacuous_quantifiers_once(body);
+            (Formula::forall(*variable, body), changed)
+        }
+        Formula::Exists(variable, body) => {
+            let (body, changed) = pull_vacuous_quantifiers_once(body);
+            (Formula::exists(*variable, body), changed)
+        }
+        _ => (formula.clone(), false),
+    }
+}
+
+fn replace_one_definition(
+    source: &Formula,
+    definition: &CoreDefinition,
+    identity_only: bool,
+) -> (Formula, bool) {
     let (transformed, replaced) = match source {
         Formula::Atom(_) | Formula::True | Formula::False => (source.clone(), false),
         Formula::Neg(inner) => {
-            let (inner, replaced) = replace_one_definition(inner, definition);
+            let (inner, replaced) = replace_one_definition(inner, definition, identity_only);
             (Formula::neg(inner), replaced)
         }
         Formula::And(parts) => {
@@ -1537,7 +1681,8 @@ fn replace_one_definition(source: &Formula, definition: &CoreDefinition) -> (For
             let parts = parts
                 .iter()
                 .map(|part| {
-                    let (part, part_replaced) = replace_one_definition(part, definition);
+                    let (part, part_replaced) =
+                        replace_one_definition(part, definition, identity_only);
                     replaced |= part_replaced;
                     part
                 })
@@ -1549,7 +1694,8 @@ fn replace_one_definition(source: &Formula, definition: &CoreDefinition) -> (For
             let parts = parts
                 .iter()
                 .map(|part| {
-                    let (part, part_replaced) = replace_one_definition(part, definition);
+                    let (part, part_replaced) =
+                        replace_one_definition(part, definition, identity_only);
                     replaced |= part_replaced;
                     part
                 })
@@ -1557,36 +1703,50 @@ fn replace_one_definition(source: &Formula, definition: &CoreDefinition) -> (For
             (Formula::Or(parts), replaced)
         }
         Formula::Implies(left, right) => {
-            let (left, left_replaced) = replace_one_definition(left, definition);
-            let (right, right_replaced) = replace_one_definition(right, definition);
+            let (left, left_replaced) = replace_one_definition(left, definition, identity_only);
+            let (right, right_replaced) = replace_one_definition(right, definition, identity_only);
             (
                 Formula::implies(left, right),
                 left_replaced || right_replaced,
             )
         }
         Formula::Iff(left, right) => {
-            let (left, left_replaced) = replace_one_definition(left, definition);
-            let (right, right_replaced) = replace_one_definition(right, definition);
+            let (left, left_replaced) = replace_one_definition(left, definition, identity_only);
+            let (right, right_replaced) = replace_one_definition(right, definition, identity_only);
             (Formula::iff(left, right), left_replaced || right_replaced)
         }
         Formula::Forall(var, body) => {
-            let (body, replaced) = replace_one_definition(body, definition);
+            let (body, replaced) = replace_one_definition(body, definition, identity_only);
             (Formula::forall(*var, body), replaced)
         }
         Formula::Exists(var, body) => {
-            let (body, replaced) = replace_one_definition(body, definition);
+            let (body, replaced) = replace_one_definition(body, definition, identity_only);
             (Formula::exists(*var, body), replaced)
         }
     };
 
     let mut mapping = HashMap::new();
     if match_core_formula(&definition.rhs, &transformed, &mut mapping)
+        // In identity mode only accept matches that keep every pattern
+        // variable fixed: the prover introduces each definition at its
+        // canonical block, so canonical sites must win contested blocks
+        // (e.g. GEO125+1's two definitions over symmetric blocks).
+        && (!identity_only || is_identity_mapping(&mapping))
         && let Some(head) = apply_core_definition_head(&definition.head, &mapping)
     {
         (Formula::atom(head), true)
     } else {
         (transformed, replaced)
     }
+}
+
+/// Whether every binding maps a pattern variable to itself. Such matches
+/// identify a definition's canonical block (same variable names as the
+/// rendered definition), as opposed to permuted cross-matches.
+fn is_identity_mapping(mapping: &HashMap<VarId, Term>) -> bool {
+    mapping
+        .iter()
+        .all(|(variable, term)| matches!(term, Term::Var(other) if other == variable))
 }
 
 fn apply_core_definition_head(head: &Atom, mapping: &HashMap<VarId, Term>) -> Option<Atom> {
@@ -2023,8 +2183,8 @@ fn build_dag<'a>(
         .filter(|(_, node)| node.is_false && !used_as_parent.contains(node.name))
         .map(|(idx, _)| idx)
         .collect();
-    let root = match roots.as_slice() {
-        [root] => *root,
+    match roots.as_slice() {
+        [_] => {}
         [] => {
             return Err(KernelVerdict::Rejected(
                 "proof has no unparented `$false` root".into(),
@@ -2038,22 +2198,12 @@ fn build_dag<'a>(
         }
     };
 
-    let mut reachable = HashSet::new();
-    let mut stack = vec![root];
-    while let Some(idx) = stack.pop() {
-        if !reachable.insert(idx) {
-            continue;
-        }
-        for parent in &nodes[idx].parents {
-            stack.push(*by_name.get(parent.name).expect("validated parent"));
-        }
-    }
-    if reachable.len() != nodes.len() {
-        return Err(KernelVerdict::Rejected(
-            "proof contains nodes outside the root derivation".into(),
-        ));
-    }
-
+    // Nodes outside the root derivation are still validated individually
+    // below, but they no longer invalidate the proof on their own:
+    // unreachable nodes cannot affect the validity of the refutation
+    // (typical cause: the exporter emits unused input axioms, e.g.
+    // GEO127+1's `meet_defn`/`finish_point_defn` leaves). A forged
+    // unreachable step is still rejected by its own verification.
     Ok(Dag {
         nodes,
         by_name,
@@ -2142,36 +2292,47 @@ fn verify_leaf<'a>(
             node.name, annotation.0
         )));
     }
-    let expected = problem
+    // Existential over same-named problem formulas: includes may define
+    // one name twice (see above), so a leaf is substantiated when ANY of
+    // them matches in role and formula.
+    let proof_formula = lower_annotated(symbols, node.formula, limits)?;
+    let mut named_match = false;
+    let mut role_match = false;
+    for expected in problem
         .formulas
         .iter()
-        .find(|formula| formula.name() == annotation.1)
-        .ok_or_else(|| {
-            KernelVerdict::Rejected(format!(
-                "leaf `{}` references missing problem formula `{}`",
-                node.name, annotation.1
-            ))
-        })?;
-    if !roles_compatible(node.role, expected.role()) {
+        .filter(|formula| formula.name() == annotation.1)
+    {
+        named_match = true;
+        if !roles_compatible(node.role, expected.role()) {
+            continue;
+        }
+        role_match = true;
+        let expected_formula = lower_annotated(symbols, expected, limits)?;
+        if alpha_equiv(&proof_formula, &expected_formula) {
+            return Ok(());
+        }
+    }
+    if !named_match {
+        return Err(KernelVerdict::Rejected(format!(
+            "leaf `{}` references missing problem formula `{}`",
+            node.name, annotation.1
+        )));
+    }
+    if !role_match {
         return Err(KernelVerdict::Rejected(format!(
             "leaf `{}` role `{}` is incompatible with problem role `{}`",
             node.name,
             node.role.as_str(),
-            expected.role().as_str()
+            annotation.1
         )));
     }
-    let proof_formula = lower_annotated(symbols, node.formula, limits)?;
-    let expected_formula = lower_annotated(symbols, expected, limits)?;
-    if alpha_equiv(&proof_formula, &expected_formula) {
-        Ok(())
-    } else {
-        // Keep the argument in the error so callers can diagnose a forged
-        // provenance leaf without exposing the full formula in SZS output.
-        Err(KernelVerdict::Rejected(format!(
-            "leaf `{}` does not match problem formula `{}`",
-            node.name, annotation.1
-        )))
-    }
+    // Keep the argument in the error so callers can diagnose a forged
+    // provenance leaf without exposing the full formula in SZS output.
+    Err(KernelVerdict::Rejected(format!(
+        "leaf `{}` does not match problem formula `{}`",
+        node.name, annotation.1
+    )))
 }
 
 fn roles_compatible(proof: FormulaRole, problem: FormulaRole) -> bool {
@@ -5488,6 +5649,14 @@ fn verify_subsumption_resolution(
         );
     };
 
+    // A conclusion identical to either cited parent is entailed by that
+    // parent alone, regardless of rule naming (COM130+1 c45780 restates
+    // its active parent after chained simplifications whose intermediate
+    // steps were subsumed away).
+    if clause_alpha_equiv(&c0, &goal) || clause_alpha_equiv(&c1, &goal) {
+        return KernelVerdict::Certified;
+    }
+
     // Try both orderings: (target=c0, active=c1) and (target=c1, active=c0)
     for (target, active) in [(&c0, &c1), (&c1, &c0)] {
         if active.is_empty() || active.len() > target.len() {
@@ -6771,6 +6940,8 @@ fn verify_superposition(
     parents: &[Formula],
     conclusion: &Formula,
     limits: VerificationLimits,
+    background_commutative: &HashSet<mrs_core::SymbolId>,
+    background_associative: &HashSet<mrs_core::SymbolId>,
 ) -> KernelVerdict {
     if parents.len() != 2 {
         return KernelVerdict::Rejected("superposition must have two parents".into());
@@ -6850,24 +7021,184 @@ fn verify_superposition(
                     if clause_alpha_equiv(&expected, &goal) {
                         return KernelVerdict::Certified;
                     }
+                    // The prover condenses duplicate literals (e.g. shared
+                    // AVATAR assumptions from both parents), so also accept
+                    // the conclusion modulo condensation (GEO127+1 c11104
+                    // merges a duplicated `~spl0_1`).
+                    if clause_alpha_equiv(&condense_clause(&expected), &condense_clause(&goal)) {
+                        return KernelVerdict::Certified;
+                    }
+                    // Folded demodulation: the prover simplifies
+                    // superposition conclusions with unit equalities, citing
+                    // only the original parents (SET637+1 c21169 rewrites
+                    // `intersection(empty_set, empty_set)` with the cited
+                    // equation itself). Accept conclusions reachable by
+                    // bounded rewriting with the cited unit equation.
+                    if equation_clause.len() == 1
+                        && let Atom::Eq(unit_left, unit_right) = &equation_literal.atom
+                        && unit_rewrite_closure_matches(
+                            unit_left, unit_right, &expected, &goal, limits,
+                        )
+                    {
+                        return KernelVerdict::Certified;
+                    }
                 }
             }
         }
     }
+    // Background-theory AC replay: the prover's superposition is AC-aware
+    // even when exported as plain `superposition` (SWV486+1 rewrites with
+    // commutativity of `plus`, cited nowhere). Retrying against problem
+    // AC axioms is sound: they are premises of the problem itself.
+    if background_ac_fallback(
+        parents,
+        &goal,
+        limits,
+        background_commutative,
+        background_associative,
+    ) {
+        return KernelVerdict::Certified;
+    }
     KernelVerdict::Rejected("superposition conclusion is not a valid rewrite".into())
+}
+
+/// Background-AC fallback shared by the superposition entry points below.
+/// Retries a failed plain check as AC superposition against problem-theory
+/// axioms (see the collection site in the main loop).
+fn background_ac_fallback(
+    parents: &[Formula],
+    goal: &[Literal],
+    limits: VerificationLimits,
+    background_commutative: &HashSet<mrs_core::SymbolId>,
+    background_associative: &HashSet<mrs_core::SymbolId>,
+) -> bool {
+    if background_commutative.is_empty() && background_associative.is_empty() {
+        return false;
+    }
+    let Ok([first, second]) = <&[Formula; 2]>::try_from(parents) else {
+        return false;
+    };
+    for (equation_parent, target_parent) in [(first, second), (second, first)] {
+        let (Some(equation_clause), Some(target_clause)) = (
+            clause_from_formula(equation_parent, limits),
+            clause_from_formula(target_parent, limits),
+        ) else {
+            continue;
+        };
+        if ac_superposition_replay(
+            &equation_clause,
+            &target_clause,
+            goal,
+            background_commutative,
+            background_associative,
+            limits,
+        ) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether `goal` is reachable from `start` by bounded rewriting with the
+/// unit equation `left = right` (either orientation), comparing modulo
+/// condensation. Every rewrite step is an instance of a cited unit
+/// premise, hence sound; the state cap keeps the search decidable and
+/// exceeding it simply fails closed (`false`, never unsound).
+fn unit_rewrite_closure_matches(
+    left: &Term,
+    right: &Term,
+    start: &[Literal],
+    goal: &[Literal],
+    limits: VerificationLimits,
+) -> bool {
+    let condensed_goal = condense_clause(goal);
+    let mut visited: Vec<Vec<Literal>> = Vec::with_capacity(limits.max_rewrite_steps.max(1));
+    let mut stack = vec![start.to_vec(), condense_clause(start)];
+    while let Some(state) = stack.pop() {
+        if visited.len() >= limits.max_rewrite_steps.max(1) {
+            return false;
+        }
+        if visited.iter().any(|seen| clause_alpha_equiv(seen, &state)) {
+            continue;
+        }
+        visited.push(state.clone());
+        if clause_alpha_equiv(&condense_clause(&state), &condensed_goal) {
+            return true;
+        }
+        for (literal_idx, literal) in state.iter().enumerate() {
+            for (from, to) in [(left, right), (right, left)] {
+                if matches!(from, Term::Var(_)) {
+                    continue;
+                }
+                for (side, position) in atom_term_positions(&literal.atom) {
+                    let base = match &literal.atom {
+                        Atom::Pred(_, args) => args.get(side),
+                        Atom::Eq(left_term, right_term) => {
+                            if side == 0 {
+                                Some(left_term)
+                            } else {
+                                Some(right_term)
+                            }
+                        }
+                    };
+                    let Some(base) = base else { continue };
+                    let Some(subterm) = term_at_position(base, &position) else {
+                        continue;
+                    };
+                    let mut substitution = HashMap::new();
+                    if !unify_terms(from, subterm, &mut substitution) {
+                        continue;
+                    }
+                    // Simplifications only: the replacement instance must
+                    // be strictly smaller than the matched instance.
+                    // Besides mirroring demodulation, this guarantees
+                    // termination (no rewrite cycles) and keeps the
+                    // expanding direction from starving the search.
+                    let from_instance = apply_substitution_term(from, &substitution);
+                    let to_instance = apply_substitution_term(to, &substitution);
+                    if term_size(&to_instance) >= term_size(&from_instance) {
+                        continue;
+                    }
+                    let replacement = to_instance;
+                    let replaced_base = replace_term_at(base, &position, replacement);
+                    let replaced_atom = replace_atom_side(&literal.atom, side, replaced_base);
+                    let mut next: Vec<Literal> = state
+                        .iter()
+                        .enumerate()
+                        .filter(|(idx, _)| *idx != literal_idx)
+                        .map(|(_, other)| apply_substitution_literal(other, &substitution))
+                        .collect();
+                    next.push(Literal {
+                        positive: literal.positive,
+                        atom: apply_substitution_atom(&replaced_atom, &substitution),
+                    });
+                    stack.push(next);
+                }
+            }
+        }
+    }
+    false
 }
 
 fn verify_ac_superposition(
     parents: &[Formula],
     conclusion: &Formula,
     limits: VerificationLimits,
+    background_commutative: &HashSet<mrs_core::SymbolId>,
+    background_associative: &HashSet<mrs_core::SymbolId>,
 ) -> KernelVerdict {
     if parents.len() < 3 {
         return KernelVerdict::Rejected(
             "ac_superposition requires two inference parents and AC axioms".into(),
         );
     }
-    let inference = verify_superposition(&parents[..2], conclusion, limits);
+    let inference = verify_superposition(
+        &parents[..2],
+        conclusion,
+        limits,
+        background_commutative,
+        background_associative,
+    );
     let source = match clause_from_formula(&parents[0], limits) {
         Some(clause) => clause,
         None => return KernelVerdict::Inconclusive("AC source is not a clause".into()),
@@ -7268,16 +7599,30 @@ fn verify_paramodulation(
     parents: &[Formula],
     conclusion: &Formula,
     limits: VerificationLimits,
+    background_commutative: &HashSet<mrs_core::SymbolId>,
+    background_associative: &HashSet<mrs_core::SymbolId>,
 ) -> KernelVerdict {
     if parents.len() != 2 {
         return KernelVerdict::Rejected("paramodulation must have two parents".into());
     }
-    let first = verify_superposition(parents, conclusion, limits);
+    let first = verify_superposition(
+        parents,
+        conclusion,
+        limits,
+        background_commutative,
+        background_associative,
+    );
     if matches!(first, KernelVerdict::Certified) {
         return first;
     }
     let reversed = [parents[1].clone(), parents[0].clone()];
-    let second = verify_superposition(&reversed, conclusion, limits);
+    let second = verify_superposition(
+        &reversed,
+        conclusion,
+        limits,
+        background_commutative,
+        background_associative,
+    );
     if matches!(second, KernelVerdict::Certified) {
         second
     } else if matches!(first, KernelVerdict::Inconclusive(_)) {
@@ -7547,9 +7892,21 @@ fn verify_avatar_component_clause(
     let mut expected_context = split.inherited_vars.clone();
     expected_context.push(branch_var);
     normalize_avatar_vars(&mut expected_context);
+    // The prover condenses duplicate literals, so a component derived
+    // from duplicated parent literals (e.g. COM133+1's split of
+    // `[visFreeVar, visFreeVar, vtcheck]` yields a one-literal
+    // `visFreeVar` component) must compare modulo condensation.
+    let expected_indices = &split.component_literal_indices[branch_index];
+    let expected_component = expected_indices
+        .iter()
+        .map(|index| split.parent_literals[*index].clone())
+        .collect::<Vec<_>>();
     if split.branch_vars.get(branch_index).copied() != parse_avatar_var(annotation.sat_var)
         || normalize_avatar_vars_copy(goal_context) != expected_context
-        || goal.len() != split.component_literal_indices[branch_index].len()
+        || !clause_alpha_equiv(
+            &condense_clause(&expected_component),
+            &condense_clause(&goal),
+        )
     {
         return Err(KernelVerdict::Rejected(
             "avatar_component_clause metadata does not match its branch".into(),
@@ -7560,12 +7917,10 @@ fn verify_avatar_component_clause(
             "avatar_component_clause has an empty component".into(),
         ));
     };
-    let expected_indices = &split.component_literal_indices[branch_index];
-    let expected = expected_indices
-        .iter()
-        .map(|index| split.parent_literals[*index].clone())
-        .collect::<Vec<_>>();
-    if !clause_alpha_equiv(&expected, &goal) {
+    if !clause_alpha_equiv(
+        &condense_clause(&expected_component),
+        &condense_clause(&goal),
+    ) {
         return Err(KernelVerdict::Rejected(
             "avatar_component_clause does not contain its declared component".into(),
         ));
@@ -9020,27 +9375,22 @@ fn clause_alpha_equiv(left: &[Literal], right: &[Literal]) -> bool {
     )
 }
 
-/// Remove alpha-duplicate literals, keeping the first of each class.
-/// Duplicate literals are logically inert (`C | L | L` ≡ `C | L`), but the
-/// prover does not always condense intermediate clauses while conclusions
-/// are condensed, so strict checks must compare modulo condensation.
+/// Remove syntactically duplicate literals, keeping the first of each
+/// class. Duplicate literals are logically inert (`C | L | L` ≡ `C | L`),
+/// but the prover does not always condense intermediate clauses while
+/// conclusions are condensed, so strict checks must compare modulo
+/// condensation.
+///
+/// NOTE: only *syntactic* duplicates are removed. Merging
+/// alpha-variant literals (`p(X,Y) | p(U,V)` to `p(X,Y)`) is unsound in
+/// general (it strengthens the clause) and must go through real
+/// condensation (unify + global substitution), never silent deletion.
 fn condense_clause(clause: &[Literal]) -> Vec<Literal> {
     let mut kept: Vec<Literal> = Vec::with_capacity(clause.len());
-    'outer: for literal in clause {
-        for existing in &kept {
-            if literal.positive != existing.positive {
-                continue;
-            }
-            if atom_alpha_equiv(
-                &literal.atom,
-                &existing.atom,
-                &mut HashMap::new(),
-                &mut HashMap::new(),
-            ) {
-                continue 'outer;
-            }
+    for literal in clause {
+        if !kept.contains(literal) {
+            kept.push(literal.clone());
         }
-        kept.push(literal.clone());
     }
     kept
 }
@@ -9689,6 +10039,8 @@ mod tests {
                 &[source, target, lub_assoc, lub_comm, glb_comm, glb_assoc],
                 &conclusion,
                 VerificationLimits::default(),
+                &std::collections::HashSet::new(),
+                &std::collections::HashSet::new(),
             ),
             KernelVerdict::Certified
         );
@@ -9737,6 +10089,8 @@ mod tests {
                 &[source, target, lub_assoc, lub_comm, glb_comm, glb_assoc],
                 &conclusion,
                 VerificationLimits::default(),
+                &std::collections::HashSet::new(),
+                &std::collections::HashSet::new(),
             ),
             KernelVerdict::Certified
         );
@@ -9939,6 +10293,112 @@ mod tests {
         "fof(src, axiom, q(a) | r(a)).\n\
          fof(nq, axiom, ~q(a)).\n\
          fof(nr, axiom, ~r(a))."
+    }
+
+    #[test]
+    fn certifies_definition_remainder_across_quantifier_boundary() {
+        // SYO606+1 c102 shape: the defined block `(g & ![X]h(X))` places
+        // the quantifier inside while the definition body `(g & h(X))`
+        // generalises across it. The kernel floats the vacuous placement
+        // outward before matching.
+        let problem = "fof(src, axiom, ((g & ![X] : h(X)) | ![Y] : (k & m(Y)))).\n\
+                       fof(ng, axiom, ~g).\n\
+                       fof(nk, axiom, ~k).";
+        let proof = "fof(src, axiom, ((g & ![X] : h(X)) | ![Y] : (k & m(Y))), file('problem.p', src)).\n\
+                     fof(ng, axiom, ~g, file('problem.p', ng)).\n\
+                     fof(nk, axiom, ~k, file('problem.p', nk)).\n\
+                     fof(d1, definition, ![X] : (d1(X) <=> (g & h(X))), introduced(definition, [new_symbols(definition, [d1])])).\n\
+                     fof(d2, definition, ![Y] : (d2(Y) <=> (k & m(Y))), introduced(definition, [new_symbols(definition, [d2])])).\n\
+                     cnf(main, plain, d1(X) | d2(Y), inference(cnf_transformation, [status(thm)], [src,d2,d1])).\n\
+                     cnf(w1, plain, ~d1(X) | g, inference(cnf_transformation, [status(thm)], [src,d2,d1])).\n\
+                     cnf(w2, plain, ~d2(Y) | k, inference(cnf_transformation, [status(thm)], [src,d2,d1])).\n\
+                     cnf(r1, plain, ~d1(X), inference(resolution, [status(thm)], [w1,ng])).\n\
+                     cnf(r2, plain, ~d2(Y), inference(resolution, [status(thm)], [w2,nk])).\n\
+                     cnf(m1, plain, d2(Y), inference(resolution, [status(thm)], [main,r1])).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [m1,r2])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_shared_definition_remainder() {
+        // GEO125+1 c176 shape: two definitions cover the two disjuncts
+        // of one source block; the remainder keeps one literal from the
+        // source alongside both defined heads.
+        let problem = "fof(src, axiom, ![X,Y] : (~b(X,Y) | ((p(X,Y) & q(X,Y)) | (r(X,Y) & s(X,Y))))).\n\
+                       fof(fb, axiom, b(c,d)).\n\
+                       fof(fp, axiom, ~p(c,d)).\n\
+                       fof(fr, axiom, ~r(c,d)).";
+        let proof = "fof(src, axiom, ![X,Y] : (~b(X,Y) | ((p(X,Y) & q(X,Y)) | (r(X,Y) & s(X,Y)))), file('problem.p', src)).\n\
+                     fof(fb, axiom, b(c,d), file('problem.p', fb)).\n\
+                     fof(fp, axiom, ~p(c,d), file('problem.p', fp)).\n\
+                     fof(fr, axiom, ~r(c,d), file('problem.p', fr)).\n\
+                     fof(d0, definition, ![X,Y] : (d0(X,Y) <=> (p(X,Y) & q(X,Y))), introduced(definition, [new_symbols(definition, [d0])])).\n\
+                     fof(d1, definition, ![X,Y] : (d1(X,Y) <=> (r(X,Y) & s(X,Y))), introduced(definition, [new_symbols(definition, [d1])])).\n\
+                     cnf(main, plain, ~b(X,Y) | d0(X,Y) | d1(X,Y), inference(cnf_transformation, [status(thm)], [src,d1,d0])).\n\
+                     cnf(w0, plain, ~d0(X,Y) | p(X,Y), inference(cnf_transformation, [status(thm)], [src,d1,d0])).\n\
+                     cnf(w1, plain, ~d1(X,Y) | r(X,Y), inference(cnf_transformation, [status(thm)], [src,d1,d0])).\n\
+                     cnf(m1, plain, d0(c,d) | d1(c,d), inference(resolution, [status(thm)], [main,fb])).\n\
+                     cnf(m2, plain, d1(c,d) | p(c,d), inference(resolution, [status(thm)], [m1,w0])).\n\
+                     cnf(m3, plain, d1(c,d), inference(resolution, [status(thm)], [m2,fp])).\n\
+                     cnf(m4, plain, r(c,d), inference(resolution, [status(thm)], [m3,w1])).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [m4,fr])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_symmetric_definition_blocks() {
+        // GEO125+1 c176 shape: two definitions cover symmetric blocks;
+        // each block must be claimed by its own (identity-matching)
+        // definition, not cross-matched by permutation.
+        let problem = "fof(src, axiom, ![X0]: (![X1]: (![X2]: (![X3]: (((~(between_o(X0, X1, X2, X3)) | ((ordered_by(X0, X3, X2) & ordered_by(X0, X2, X1)) | (ordered_by(X0, X2, X3) & ordered_by(X0, X1, X2)))) & (between_o(X0, X1, X2, X3) | ((~(ordered_by(X0, X3, X2)) | ~(ordered_by(X0, X2, X1))) & (~(ordered_by(X0, X2, X3)) | ~(ordered_by(X0, X1, X2))))))))))).\n\
+                       fof(fb, axiom, between_o(a,b,c,d)).\n\
+                       fof(f1, axiom, ~ordered_by(a,d,c)).\n\
+                       fof(f2, axiom, ~ordered_by(a,c,d)).";
+        let proof = "fof(src, axiom, ![X0]: (![X1]: (![X2]: (![X3]: (((~(between_o(X0, X1, X2, X3)) | ((ordered_by(X0, X3, X2) & ordered_by(X0, X2, X1)) | (ordered_by(X0, X2, X3) & ordered_by(X0, X1, X2)))) & (between_o(X0, X1, X2, X3) | ((~(ordered_by(X0, X3, X2)) | ~(ordered_by(X0, X2, X1))) & (~(ordered_by(X0, X2, X3)) | ~(ordered_by(X0, X1, X2)))))))))), file('problem.p', src)).\n\
+                     fof(fb, axiom, between_o(a,b,c,d), file('problem.p', fb)).\n\
+                     fof(f1, axiom, ~ordered_by(a,d,c), file('problem.p', f1)).\n\
+                     fof(f2, axiom, ~ordered_by(a,c,d), file('problem.p', f2)).\n\
+                     fof(d0, definition, ![X0]: (![X1]: (![X2]: (![X3]: ((def_between_o_defn_0(X0, X1, X2, X3) <=> (ordered_by(X0, X3, X2) & ordered_by(X0, X2, X1))))))), introduced(definition, [new_symbols(definition, [def_between_o_defn_0])])).\n\
+                     fof(d1, definition, ![X0]: (![X1]: (![X2]: (![X3]: ((def_between_o_defn_1(X0, X1, X2, X3) <=> (ordered_by(X0, X2, X3) & ordered_by(X0, X1, X2))))))), introduced(definition, [new_symbols(definition, [def_between_o_defn_1])])).\n\
+                     cnf(main, plain, ~between_o(X0, X1, X2, X3) | def_between_o_defn_0(X0, X1, X2, X3) | def_between_o_defn_1(X0, X1, X2, X3), inference(cnf_transformation, [status(thm)], [src,d1,d0])).\n\
+                     cnf(w0, plain, ~def_between_o_defn_0(X0,X1,X2,X3) | ordered_by(X0,X3,X2), inference(cnf_transformation, [status(thm)], [src,d1,d0])).\n\
+                     cnf(w1, plain, ~def_between_o_defn_1(X0,X1,X2,X3) | ordered_by(X0,X2,X3), inference(cnf_transformation, [status(thm)], [src,d1,d0])).\n\
+                     cnf(m1, plain, def_between_o_defn_0(a,b,c,d) | def_between_o_defn_1(a,b,c,d), inference(resolution, [status(thm)], [main,fb])).\n\
+                     cnf(m2, plain, def_between_o_defn_1(a,b,c,d) | ordered_by(a,d,c), inference(resolution, [status(thm)], [m1,w0])).\n\
+                     cnf(m3, plain, def_between_o_defn_1(a,b,c,d), inference(resolution, [status(thm)], [m2,f1])).\n\
+                     cnf(m4, plain, ordered_by(a,c,d), inference(resolution, [status(thm)], [m3,w1])).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [m4,f2])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn tmp_alpha_geo111() {
+        use mrs_tptp::parse_tptp;
+        let base = "/mnt/c7ed69d9-f52c-4dd3-ac27-f37a10305d37/home/hack/STOCK/nvme0n1p5/EDLA/git/mrs/target/verify-fresh/";
+        let src_text = format!(
+            "fof(src, axiom, {}).",
+            std::fs::read_to_string(format!("{base}geo111_src.txt")).expect("read")
+        );
+        let goal_text = format!(
+            "cnf(g, plain, {}).",
+            std::fs::read_to_string(format!("{base}geo111_goal.txt")).expect("read")
+        );
+        let mut symbols = SymbolTable::new();
+        let limits = VerificationLimits::default();
+        let mut lp = |t: &str| {
+            lower_annotated(&mut symbols, &parse_tptp(t).expect("p").formulas[0], limits)
+                .expect("l")
+        };
+        let srcf = lp(&src_text);
+        let goalf = lp(&goal_text);
+        let named = replace_definition_subformulas(&srcf, &[], limits).expect("r");
+        let norm = normalize_quantified_cnf(&named, limits).expect("n");
+        let matrix = strip_forall_core(&norm);
+        let mut expanded = Vec::new();
+        assert!(cnf_expand(matrix, &mut expanded, limits));
+        assert_eq!(expanded.len(), 1);
+        let goal = clause_from_formula(&goalf, limits).expect("g");
+        eprintln!("direct equiv: {}", clause_alpha_equiv(&expanded[0], &goal));
     }
 
     fn flat_definition_proof() -> &'static str {
@@ -10236,6 +10696,27 @@ mod tests {
     }
 
     #[test]
+    fn certifies_subsumption_resolution_restating_parent() {
+        // COM130+1 c45780 shape: chained simplifications delete the
+        // intermediate steps, leaving a conclusion identical to the
+        // active parent (and not reachable by single-literal removal).
+        // A premise entails itself, so the step is sound regardless of
+        // rule naming.
+        let input = "cnf(target, axiom, p(a) | q(a)).\n\
+                     cnf(active, axiom, q(a) | r(a)).\n\
+                     cnf(nq, axiom, ~q(a)).\n\
+                     cnf(nr, axiom, ~r(a)).";
+        let proof = "cnf(target, axiom, p(a) | q(a), file('problem.p', target)).\n\
+                     cnf(active, axiom, q(a) | r(a), file('problem.p', active)).\n\
+                     cnf(cut, plain, q(a) | r(a), inference(subsumption_resolution, [status(thm)], [target,active])).\n\
+                     cnf(nq, axiom, ~q(a), file('problem.p', nq)).\n\
+                     cnf(r, plain, r(a), inference(resolution, [status(thm)], [cut,nq])).\n\
+                     cnf(nr, axiom, ~r(a), file('problem.p', nr)).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [r,nr])).";
+        assert_eq!(check(input, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
     fn rejects_forged_subsumption_resolution_conclusion() {
         let input = "cnf(target, axiom, ~p(a) | q(a) | r(a)).\n\
                      cnf(active, axiom, p(X) | q(X)).\n\
@@ -10474,6 +10955,25 @@ mod tests {
             check(flat_definition_problem(), flat_definition_proof()),
             KernelVerdict::Certified
         );
+    }
+
+    #[test]
+    fn certifies_cnf_clause_with_condensed_duplicates() {
+        // GEO452+1 c6456 shape: CNF expansion of `(~d | p | q | p)`
+        // yields a duplicated literal the prover condenses away.
+        let problem = "fof(src, axiom, ((~d | (p | q) | p) & (d | (~p & ~q) & ~p))).\n\
+                       fof(nd, axiom, d).\n\
+                       fof(np, axiom, ~p).\n\
+                       fof(nq, axiom, ~q).";
+        let proof = "fof(src, axiom, ((~d | (p | q) | p) & (d | (~p & ~q) & ~p)), file('problem.p', src)).\n\
+                     fof(nd, axiom, d, file('problem.p', nd)).\n\
+                     fof(np, axiom, ~p, file('problem.p', np)).\n\
+                     fof(nq, axiom, ~q, file('problem.p', nq)).\n\
+                     cnf(c, plain, ~d | p | q, inference(cnf_transformation, [status(thm)], [src])).\n\
+                     cnf(m1, plain, p | q, inference(resolution, [status(thm)], [c,nd])).\n\
+                     cnf(m2, plain, q, inference(resolution, [status(thm)], [m1,np])).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [m2,nq])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
     }
 
     #[test]
@@ -11811,6 +12311,35 @@ mod tests {
     }
 
     #[test]
+    fn ignores_axiom_leaves_outside_the_root_derivation() {
+        // GEO127+1 shape: the exporter emits every input axiom as a leaf,
+        // including ones the refutation never uses. Unreachable nodes
+        // cannot affect validity, so the kernel verifies the reachable
+        // subgraph instead of rejecting the proof.
+        let problem = "fof(a, axiom, p(a)).\n\
+                       fof(unused, axiom, q(b)).\n\
+                       fof(n, axiom, ~p(a)).";
+        let proof = "fof(a, axiom, p(a), file('problem.p', a)).\n\
+                     fof(unused, axiom, q(b), file('problem.p', unused)).\n\
+                     fof(n, axiom, ~p(a), file('problem.p', n)).\n\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [a,n])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn matches_leaf_against_duplicate_problem_names() {
+        // LCL518+1 shape: two includes define `dup` differently. A leaf
+        // is substantiated when ANY same-named problem formula matches.
+        let problem = "fof(dup, axiom, p(a)).\n\
+                       fof(dup, axiom, q(b)).\n\
+                       fof(n, axiom, ~q(b)).";
+        let proof = "fof(dup, axiom, q(b), file('problem.p', dup)).\n\
+                     fof(n, axiom, ~q(b), file('problem.p', n)).\n\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [dup,n])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
     fn certifies_factoring() {
         let problem = "fof(a, axiom, p(X) | p(a) | q(X)).\n\
                        fof(n1, axiom, ~p(a)).\n\
@@ -12015,6 +12544,27 @@ mod tests {
     }
 
     #[test]
+    fn certifies_superposition_with_condensed_conclusion() {
+        // GEO127+1 c11104 shape: both parents share an AVATAR assumption,
+        // so the raw rewrite has a duplicate literal the prover condenses.
+        let problem = "cnf(eq, axiom, f(a) = b | ~s1 | ~s2).\n\
+                       cnf(target, axiom, p(f(a)) | ~s1).\n\
+                       cnf(neg, axiom, ~p(b)).\n\
+                       cnf(a1, axiom, s1).\n\
+                       cnf(a2, axiom, s2).";
+        let proof = "cnf(eq, axiom, f(a) = b | ~s1 | ~s2, file('problem.p', eq)).\n\
+                     cnf(target, axiom, p(f(a)) | ~s1, file('problem.p', target)).\n\
+                     cnf(neg, axiom, ~p(b), file('problem.p', neg)).\n\
+                     cnf(a1, axiom, s1, file('problem.p', a1)).\n\
+                     cnf(a2, axiom, s2, file('problem.p', a2)).\n\
+                     cnf(s, plain, p(b) | ~s1 | ~s2, inference(superposition, [status(thm)], [eq,target])).\n\
+                     cnf(mid, plain, ~s1 | ~s2, inference(resolution, [status(thm)], [s,neg])).\n\
+                     cnf(mid2, plain, ~s2, inference(resolution, [status(thm)], [mid,a1])).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [mid2,a2])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
     fn rejects_forged_superposition_conclusion() {
         let problem = "fof(eq, axiom, f(a) = b).\n\
                        fof(target, axiom, p(f(a))).";
@@ -12023,6 +12573,47 @@ mod tests {
                      fof(s, plain, q(b), inference(superposition, [status(thm)], [eq,target])).\n\
                      fof(bot, plain, $false, inference(consequence, [status(thm)], [s])).";
         assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn certifies_superposition_with_background_commutativity() {
+        // SWV486+1 shape: the step needs commutativity of `plus`, but is
+        // exported as plain `superposition` without AC citations. The
+        // kernel retries against problem-theory AC axioms, which are
+        // premises of the problem itself.
+        let problem = "fof(comm, axiom, ![X,Y] : (plus(X,Y) = plus(Y,X))).\n\
+                       fof(eq, axiom, plus(X1,one) = plus(X1,sk(X1))).\n\
+                       fof(target, axiom, p(plus(Y,sk0)) | q(Y)).\n\
+                       fof(n1, axiom, ~p(plus(sk0,sk(sk0)))).\n\
+                       fof(n2, axiom, ~q(one)).";
+        let proof = "fof(comm, axiom, ![X,Y] : (plus(X,Y) = plus(Y,X)), file('problem.p', comm)).\n\
+                     fof(eq, axiom, plus(X1,one) = plus(X1,sk(X1)), file('problem.p', eq)).\n\
+                     fof(target, axiom, p(plus(Y,sk0)) | q(Y), file('problem.p', target)).\n\
+                     fof(n1, axiom, ~p(plus(sk0,sk(sk0))), file('problem.p', n1)).\n\
+                     fof(n2, axiom, ~q(one), file('problem.p', n2)).\n\
+                     cnf(s, plain, p(plus(sk0,sk(sk0))) | q(one), inference(superposition, [status(thm)], [eq,target])).\n\
+                     cnf(m1, plain, q(one), inference(resolution, [status(thm)], [s,n1])).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [m1,n2])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_superposition_with_folded_demodulation() {
+        // SET637+1 c21169 shape: the single rewrite leaves a redex
+        // (`inter(es,es)`) that the prover demodulates with the cited
+        // equation itself before emitting the conclusion.
+        let problem = "fof(eq, axiom, inter(X,es) = es).\n\
+                       fof(target, axiom, d(X8) | m(sk(X8), inter(X8,inter(X8,X8)))).\n\
+                       fof(nd, axiom, ~d(es)).\n\
+                       fof(nm, axiom, ~m(sk(es),es)).";
+        let proof = "fof(eq, axiom, inter(X,es) = es, file('problem.p', eq)).\n\
+                     fof(target, axiom, d(X8) | m(sk(X8), inter(X8,inter(X8,X8))), file('problem.p', target)).\n\
+                     fof(nd, axiom, ~d(es), file('problem.p', nd)).\n\
+                     fof(nm, axiom, ~m(sk(es),es), file('problem.p', nm)).\n\
+                     cnf(s, plain, d(es) | m(sk(es),es), inference(superposition, [status(thm)], [eq,target])).\n\
+                     cnf(m1, plain, m(sk(es),es), inference(resolution, [status(thm)], [s,nd])).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [m1,nm])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
     }
 
     #[test]
@@ -12101,6 +12692,52 @@ mod tests {
             KernelVerdict::Rejected(_) | KernelVerdict::Inconclusive(_)
         ));
         assert!(sat_trace.contains("sat_trace"));
+    }
+
+    #[test]
+    fn certifies_avatar_component_with_condensed_duplicates() {
+        // COM133+1 shape: the split parent carries a duplicated literal,
+        // so branch 0 covers two identical indices while the derived
+        // component clause is condensed to one.
+        let problem = "fof(top, axiom, p | p | q).\n\
+                       fof(np, axiom, ~p).\n\
+                       fof(nq, axiom, ~q).";
+        let (sat_trace, _) = explicit_avatar_sat_trace();
+        let proof = format!(
+            "fof(top, axiom, p | p | q, file('problem.p', top)).\
+                     fof(np, axiom, ~p, file('problem.p', np)).\
+                     fof(nq, axiom, ~q, file('problem.p', nq)).\
+                     fof(split, plain, spl0_1 | spl0_2,\
+                         inference(avatar_split_clause,\
+                           [status(esa),\
+                            avatar_split([branch(0, spl0_1, [0, 1]),\
+                                         branch(1, spl0_2, [2])], [])],\
+                           [top])).\
+                     fof(comp_p, plain, p | ~spl0_1,\
+                         inference(avatar_component_clause,\
+                           [status(esa), avatar_component(split, 0, spl0_1)],\
+                           [split])).\
+                     fof(comp_q, plain, q | ~spl0_2,\
+                         inference(avatar_component_clause,\
+                           [status(esa), avatar_component(split, 1, spl0_2)],\
+                           [split])).\
+                     fof(empty_p, plain, ~spl0_1,\
+                         inference(resolution, [status(thm)], [comp_p, np])).\
+                     fof(empty_q, plain, ~spl0_2,\
+                         inference(resolution, [status(thm)], [comp_q, nq])).\
+                     fof(branch_p, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(esa), avatar_context([spl0_1])], [empty_p])).\
+                     fof(branch_q, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(esa), avatar_context([spl0_2])], [empty_q])).\
+                     fof(bot, plain, $false,\
+                         inference(avatar_sat_refutation,\
+                            [status(thm),\
+                             {sat_trace}],\
+                            [split, branch_p, branch_q])).",
+        );
+        assert_eq!(check(problem, &proof), KernelVerdict::Certified);
     }
 
     #[test]
