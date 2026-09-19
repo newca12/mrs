@@ -10371,36 +10371,6 @@ mod tests {
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
     }
 
-    #[test]
-    fn tmp_alpha_geo111() {
-        use mrs_tptp::parse_tptp;
-        let base = "/mnt/c7ed69d9-f52c-4dd3-ac27-f37a10305d37/home/hack/STOCK/nvme0n1p5/EDLA/git/mrs/target/verify-fresh/";
-        let src_text = format!(
-            "fof(src, axiom, {}).",
-            std::fs::read_to_string(format!("{base}geo111_src.txt")).expect("read")
-        );
-        let goal_text = format!(
-            "cnf(g, plain, {}).",
-            std::fs::read_to_string(format!("{base}geo111_goal.txt")).expect("read")
-        );
-        let mut symbols = SymbolTable::new();
-        let limits = VerificationLimits::default();
-        let mut lp = |t: &str| {
-            lower_annotated(&mut symbols, &parse_tptp(t).expect("p").formulas[0], limits)
-                .expect("l")
-        };
-        let srcf = lp(&src_text);
-        let goalf = lp(&goal_text);
-        let named = replace_definition_subformulas(&srcf, &[], limits).expect("r");
-        let norm = normalize_quantified_cnf(&named, limits).expect("n");
-        let matrix = strip_forall_core(&norm);
-        let mut expanded = Vec::new();
-        assert!(cnf_expand(matrix, &mut expanded, limits));
-        assert_eq!(expanded.len(), 1);
-        let goal = clause_from_formula(&goalf, limits).expect("g");
-        eprintln!("direct equiv: {}", clause_alpha_equiv(&expanded[0], &goal));
-    }
-
     fn flat_definition_proof() -> &'static str {
         "fof(src, axiom, q(a) | r(a), file('problem.p', src)).\
          fof(nq, axiom, ~q(a), file('problem.p', nq)).\
