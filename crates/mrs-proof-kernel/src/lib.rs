@@ -2342,62 +2342,22 @@ fn verify_instantiation(
     }
 }
 
-fn max_var_formula(formula: &Formula) -> VarId {
-    let mut max = 0;
-    fn walk_term(term: &Term, max: &mut VarId) {
-        match term {
-            Term::Var(v) => *max = (*max).max(*v),
-            Term::App(_, args) => {
-                for arg in args {
-                    walk_term(arg, max);
-                }
-            }
-        }
-    }
-    fn walk_atom(atom: &Atom, max: &mut VarId) {
-        match atom {
-            Atom::Pred(_, args) => {
-                for arg in args {
-                    walk_term(arg, max);
-                }
-            }
-            Atom::Eq(l, r) => {
-                walk_term(l, max);
-                walk_term(r, max);
-            }
-        }
-    }
-    fn walk(formula: &Formula, max: &mut VarId) {
-        match formula {
-            Formula::Atom(atom) => walk_atom(atom, max),
-            Formula::Neg(inner) => walk(inner, max),
-            Formula::And(parts) | Formula::Or(parts) => {
-                for part in parts {
-                    walk(part, max);
-                }
-            }
-            Formula::Implies(l, r) | Formula::Iff(l, r) => {
-                walk(l, max);
-                walk(r, max);
-            }
-            Formula::Forall(v, inner) | Formula::Exists(v, inner) => {
-                *max = (*max).max(*v);
-                walk(inner, max);
-            }
-            Formula::True | Formula::False => {}
-        }
-    }
-    walk(formula, &mut max);
-    max
-}
-
 fn substitute_definition_rhs(
     body: &Formula,
     params: &[VarId],
     args: &[Term],
     fresh: &Cell<VarId>,
-) -> Formula {
-    let mut map: HashMap<VarId, Term> = params.iter().copied().zip(args.iter().cloned()).collect();
+) -> Option<Formula> {
+    let mut map = HashMap::new();
+    for (param, arg) in params.iter().copied().zip(args.iter()) {
+        if let Some(previous) = map.get(&param) {
+            if previous != arg {
+                return None;
+            }
+        } else {
+            map.insert(param, arg.clone());
+        }
+    }
     fn sub_term(term: &Term, map: &HashMap<VarId, Term>) -> Term {
         match term {
             Term::Var(v) => map.get(v).cloned().unwrap_or(Term::Var(*v)),
@@ -2461,7 +2421,7 @@ fn substitute_definition_rhs(
             Formula::True | Formula::False => f.clone(),
         }
     }
-    sub_form(body, &mut map, fresh)
+    Some(sub_form(body, &mut map, fresh))
 }
 
 fn unfold_definitions_once(
@@ -2481,7 +2441,9 @@ fn unfold_definitions_once(
                 if params.len() != args.len() {
                     return None;
                 }
-                let expanded = substitute_definition_rhs(body, params, args, fresh);
+                let Some(expanded) = substitute_definition_rhs(body, params, args, fresh) else {
+                    return Some((formula.clone(), false));
+                };
                 Some((expanded, true))
             } else {
                 Some((formula.clone(), false))
@@ -2540,20 +2502,22 @@ fn unfold_definitions_all(
     defs: &HashMap<mrs_core::SymbolId, (Vec<VarId>, Formula)>,
     fresh: &Cell<VarId>,
     limits: VerificationLimits,
-) -> Option<Formula> {
+) -> Option<(Formula, bool)> {
     let mut current = formula.clone();
+    let mut changed_any = false;
     let mut steps = 0;
-    for _ in 0..(defs.len() + 2) {
+    for _ in 0..=defs.len().saturating_add(1) {
         if formula_size(&current) > limits.max_formula_nodes {
             return None;
         }
         let (next, changed) = unfold_definitions_once(&current, defs, fresh, limits, &mut steps)?;
         current = next;
+        changed_any |= changed;
         if !changed {
-            return Some(current);
+            return Some((current, changed_any));
         }
     }
-    Some(current)
+    None
 }
 
 fn verify_definition_renaming(
@@ -2601,13 +2565,16 @@ fn verify_definition_renaming(
     // 1. Fast path: forward replacement (exact substitution of definition RHS in source)
     let forward_res = replace_definition_subformulas(source, &definitions, limits);
     if let Some(expected) = &forward_res
+        && !alpha_equiv(expected, source)
         && alpha_equiv(expected, conclusion)
     {
         return KernelVerdict::Certified;
     }
 
-    // 2. Unfolding fallback: unfold introduced definitions in conclusion and source
-    // to handle cases where multiple definitions have structurally identical bodies.
+    // 2. Unfolding fallback: unfold introduced definitions in the conclusion
+    // to handle cases where multiple definitions have structurally identical
+    // bodies. A valid renaming must actually use at least one fresh definition;
+    // otherwise an unchanged source would be accepted as a forged no-op.
     let mut defs_by_symbol = HashMap::new();
     for def in &definitions {
         if let Atom::Pred(sym, args) = &def.head {
@@ -2624,24 +2591,40 @@ fn verify_definition_renaming(
         }
     }
 
-    let mut max_var = max_var_formula(source).max(max_var_formula(conclusion));
+    let mut conclusion_symbols = HashSet::new();
+    collect_core_predicate_symbols(conclusion, &mut conclusion_symbols);
+    let uses_definition = defs_by_symbol
+        .keys()
+        .any(|symbol| conclusion_symbols.contains(symbol));
+    if !uses_definition {
+        return if forward_res.is_none() {
+            KernelVerdict::Inconclusive(
+                "definition_renaming exceeded strict matching-step limit".into(),
+            )
+        } else {
+            KernelVerdict::Rejected(
+                "definition_renaming conclusion does not use a cited definition".into(),
+            )
+        };
+    }
+
+    let mut max_var = max_formula_var(source).max(max_formula_var(conclusion));
     for def in &definitions {
-        max_var = max_var.max(max_var_formula(&def.rhs));
+        max_var = max_var.max(max_formula_var(&def.rhs));
     }
     let fresh = Cell::new(max_var.saturating_add(1));
 
-    let unfolded_source_res = unfold_definitions_all(source, &defs_by_symbol, &fresh, limits);
     let unfolded_conclusion_res =
         unfold_definitions_all(conclusion, &defs_by_symbol, &fresh, limits);
 
-    if let (Some(unfolded_source), Some(unfolded_conclusion)) =
-        (&unfolded_source_res, &unfolded_conclusion_res)
-        && alpha_equiv(unfolded_source, unfolded_conclusion)
+    if let Some((unfolded_conclusion, changed)) = &unfolded_conclusion_res
+        && *changed
+        && alpha_equiv(source, unfolded_conclusion)
     {
         return KernelVerdict::Certified;
     }
 
-    if forward_res.is_none() || unfolded_source_res.is_none() || unfolded_conclusion_res.is_none() {
+    if forward_res.is_none() || unfolded_conclusion_res.is_none() {
         return KernelVerdict::Inconclusive(
             "definition_renaming exceeded strict matching-step limit".into(),
         );
@@ -10198,6 +10181,40 @@ mod tests {
                      cnf(nd2, plain, ~def_esa_iff_2(a, b), inference(resolution, [status(thm)], [np, posr])).\n\
                      cnf(bot, plain, $false, inference(resolution, [status(thm)], [d2, nd2])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_definition_renaming_noop_conclusion() {
+        let problem = "fof(goal, conjecture, p).";
+        let proof = "fof(goal, conjecture, p, file('problem.p', goal)).\
+                     fof(d, definition, (d0 <=> q), introduced(definition, [new_symbols(definition, [d0])])).\
+                     fof(noop, plain, p, inference(definition_renaming, [status(thm)], [goal,d])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [noop])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn rejects_definition_renaming_inconsistent_repeated_head_arguments() {
+        let problem = "fof(goal, conjecture, p(a)).";
+        let proof = "fof(goal, conjecture, p(a), file('problem.p', goal)).\
+                     fof(d, definition, ![X] : (d0(X,X) <=> q(X)), introduced(definition, [new_symbols(definition, [d0])])).\
+                     fof(bad, plain, d0(a,b), inference(definition_renaming, [status(thm)], [goal,d])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [bad])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn definition_renaming_cycle_is_inconclusive() {
+        let problem = "fof(goal, conjecture, p).";
+        let proof = "fof(goal, conjecture, p, file('problem.p', goal)).\
+                     fof(d0, definition, (d0 <=> d1), introduced(definition, [new_symbols(definition, [d0])])).\
+                     fof(d1, definition, (d1 <=> d0), introduced(definition, [new_symbols(definition, [d1])])).\
+                     fof(result, plain, d0, inference(definition_renaming, [status(thm)], [goal,d0,d1])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [result])).";
+        assert!(matches!(
+            check(problem, proof),
+            KernelVerdict::Inconclusive(_)
+        ));
     }
 
     #[test]
