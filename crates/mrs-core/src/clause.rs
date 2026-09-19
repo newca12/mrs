@@ -93,12 +93,14 @@ pub enum ClauseSource {
     },
     /// A definitionally-introduced formula: the full biconditional defining
     /// a fresh predicate/function symbol (e.g. from Tseitin/definitional
-    /// CNF), with no parents at all. Sound by construction as a
-    /// conservative extension, since the symbol is guaranteed fresh — no
-    /// derivation is needed to justify it, unlike `Inference`. Rendered in
-    /// TSTP output as `introduced(definition, [new_symbols(definition,
-    /// [<symbol>])])` with role `definition`. Both the explicit role and
-    /// the `new_symbols` annotation are required by GDV's
+    /// CNF). The parent list records proof-DAG dependencies when the
+    /// definition was introduced from an earlier transformation or another
+    /// nested definition. The definition remains sound by construction as a
+    /// conservative extension, since the symbol is guaranteed fresh. Rendered
+    /// in TSTP output as `introduced(definition, [new_symbols(definition,
+    /// [<symbol>])])` with role `definition`; the internal parent list is not
+    /// printed because GDV treats the introduction as a conservative
+    /// extension. Both the explicit role and the `new_symbols` annotation are required by GDV's
     /// `IsCorrectlySpecifiedDefinition` check (confirmed against a real
     /// GDV build: role `plain` with a bare `introduced(definition)`
     /// annotation, which is what E emits and what `mrs-proover`'s own
@@ -108,6 +110,8 @@ pub enum ClauseSource {
     Introduced {
         /// The fresh symbol this step defines.
         symbol: SymbolId,
+        /// The parent clauses this definition was introduced from or depends on.
+        parents: SmallVec<[ClauseId; 2]>,
     },
 }
 

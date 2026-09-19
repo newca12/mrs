@@ -45,12 +45,13 @@ use crate::{SearchConfig, SearchResult};
 /// `clause_store` with remapped IDs, so a shared clause never ends up in
 /// the final extracted proof with an empty/unjustified parent list.
 fn build_shared_chain(state: &SearchState, head_id: ClauseId) -> Vec<LegacyClause> {
-    let mut ids = extract_proof_ids(head_id, &state.clause_store);
-    ids.sort_unstable_by_key(|id| id.0);
-    ids.iter()
+    let ids = extract_proof_ids(head_id, &state.clause_store);
+    let proof = ids
+        .iter()
         .filter_map(|id| state.clause_store.get(id))
-        .map(|c| state.term_bank.clause_to_legacy(c))
-        .collect()
+        .map(|clause| state.term_bank.clause_to_legacy(clause))
+        .collect::<Vec<_>>();
+    mrs_proof::elaborate::topological_sort(&proof).unwrap_or_default()
 }
 
 fn shared_chain_key(chain: &[LegacyClause], symbols: &mrs_core::SymbolTable) -> String {
@@ -118,13 +119,51 @@ fn remap_shared_clause_symbols(clause: &mut LegacyClause, mapping: &[SymbolId]) 
     for literal in &mut clause.literals {
         valid &= remap_atom(&mut literal.atom, mapping);
     }
-    if let ClauseSource::Introduced { symbol } = &mut clause.source {
+    if let ClauseSource::Introduced { symbol, .. } = &mut clause.source {
         valid &= remap_symbol(symbol, mapping);
     }
     if let Some(formula) = &mut clause.formula {
         valid &= remap_formula(formula, mapping);
     }
     valid
+}
+
+/// Rebind parent clause IDs when a shared proof chain is imported into a
+/// receiving worker. All IDs are assigned before this runs, so forward parent
+/// references are remapped just like ordinary backward references.
+fn remap_shared_clause_ids(clause: &mut LegacyClause, mapping: &HashMap<ClauseId, ClauseId>) {
+    match &mut clause.source {
+        ClauseSource::Inference { parents, .. } | ClauseSource::Introduced { parents, .. } => {
+            for parent in parents {
+                if let Some(&mapped) = mapping.get(parent) {
+                    *parent = mapped;
+                }
+            }
+        }
+        ClauseSource::Input { .. } => {}
+    }
+    if let Some(certificate) = &mut clause.certificate {
+        match certificate {
+            ClauseCertificate::AvatarComponent { split_parent, .. } => {
+                if let Some(&mapped) = mapping.get(split_parent) {
+                    *split_parent = mapped;
+                }
+            }
+            ClauseCertificate::AvatarSatRefutation {
+                split_nodes,
+                branch_roots,
+                ..
+            } => {
+                for id in split_nodes.iter_mut().chain(branch_roots.iter_mut()) {
+                    if let Some(&mapped) = mapping.get(id) {
+                        *id = mapped;
+                    }
+                }
+            }
+            ClauseCertificate::AvatarSplit { .. }
+            | ClauseCertificate::AvatarBranchRefutation { .. } => {}
+        }
+    }
 }
 
 /// Give imported definition symbols a fresh receiver-local name when the
@@ -150,7 +189,7 @@ fn isolate_shared_introduced_symbols(
     loop {
         let mut renamed = false;
         for clause in chain.iter() {
-            let ClauseSource::Introduced { symbol } = clause.source else {
+            let ClauseSource::Introduced { symbol, .. } = clause.source else {
                 continue;
             };
             let index = symbol.index() as usize;
@@ -1100,7 +1139,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     .clause_store
                     .values()
                     .filter_map(|clause| match clause.source {
-                        ClauseSource::Introduced { symbol } => {
+                        ClauseSource::Introduced { symbol, .. } => {
                             Some((clause.id, symbol, state.term_bank.clause_to_legacy(clause)))
                         }
                         _ => None,
@@ -1142,7 +1181,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 let mut known_definitions = existing_definitions;
                 let mut definition_reuse: HashMap<ClauseId, ClauseId> = HashMap::default();
                 for clause in &chain {
-                    let ClauseSource::Introduced { symbol } = clause.source else {
+                    let ClauseSource::Introduced { symbol, .. } = clause.source else {
                         continue;
                     };
                     if let Some(existing_id) =
@@ -1163,32 +1202,28 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 // real derivation history instead of the old parent-less
                 // `shared` stub, which failed GDV-style structural
                 // "every derived formula has parents" checks.
+                let head_old_id = chain.last().map(|clause| clause.id);
                 let mut remap: HashMap<ClauseId, ClauseId> = HashMap::default();
-                let mut head: Option<IdClause> = None;
+                let mut imported = Vec::with_capacity(chain.len());
                 for mut c in chain {
                     let old_id = c.id;
                     if let Some(&existing_id) = definition_reuse.get(&old_id) {
                         remap.insert(old_id, existing_id);
-                        head = state.clause_store.get(&existing_id).cloned();
                         continue;
                     }
                     let new_id = state.id_gen.next();
                     remap.insert(old_id, new_id);
                     c.id = new_id;
-                    if let ClauseSource::Inference { rule, parents } = &c.source {
-                        let remapped_parents = parents
-                            .iter()
-                            .map(|p| remap.get(p).copied().unwrap_or(*p))
-                            .collect();
-                        c.source = ClauseSource::Inference {
-                            rule,
-                            parents: remapped_parents,
-                        };
-                    }
+                    imported.push(c);
+                }
+                for mut c in imported {
+                    remap_shared_clause_ids(&mut c, &remap);
                     let id_clause = state.term_bank.clause_from_legacy(&c);
                     state.register_clause(&id_clause);
-                    head = Some(id_clause);
                 }
+                let head = head_old_id
+                    .and_then(|old_id| remap.get(&old_id).copied())
+                    .and_then(|id| state.clause_store.get(&id).cloned());
 
                 // Only the chain's head (the shared unit equality itself)
                 // is offered to the active search as a new premise;
@@ -2636,6 +2671,7 @@ mod tests {
             ))],
             ClauseSource::Introduced {
                 symbol: publisher_goal,
+                parents: smallvec::SmallVec::new(),
             },
         );
         let symbol_map = publisher_symbols
@@ -2655,11 +2691,49 @@ mod tests {
         };
         assert_eq!(receiver_symbols.resolve(*left_symbol), "goal_d0");
         assert_eq!(receiver_symbols.resolve(*right_symbol), "base");
-        let ClauseSource::Introduced { symbol } = shared.source else {
+        let ClauseSource::Introduced { symbol, .. } = shared.source else {
             panic!("expected an introduced clause");
         };
         assert_eq!(receiver_symbols.resolve(symbol), "goal_d0");
         assert_eq!(receiver_base, *right_symbol);
+    }
+
+    #[test]
+    fn shared_chain_parent_ids_are_remapped_for_introduced_definitions() {
+        let mut symbols = SymbolTable::new();
+        let definition_symbol = symbols.intern("d");
+        let mut definition = Clause::new_formula_step(
+            ClauseId(11),
+            Formula::True,
+            ClauseSource::Introduced {
+                symbol: definition_symbol,
+                parents: vec![ClauseId(10)].into(),
+            },
+        );
+        let mut inference = Clause::new(
+            ClauseId(12),
+            Vec::<mrs_core::Literal>::new(),
+            ClauseSource::Inference {
+                rule: "resolution",
+                parents: vec![ClauseId(11)].into(),
+            },
+        );
+        let mut remap = HashMap::default();
+        remap.insert(ClauseId(10), ClauseId(20));
+        remap.insert(ClauseId(11), ClauseId(21));
+        remap.insert(ClauseId(12), ClauseId(22));
+
+        remap_shared_clause_ids(&mut definition, &remap);
+        remap_shared_clause_ids(&mut inference, &remap);
+
+        let ClauseSource::Introduced { parents, .. } = definition.source else {
+            panic!("expected introduced source");
+        };
+        assert_eq!(parents.as_slice(), &[ClauseId(20)]);
+        let ClauseSource::Inference { parents, .. } = inference.source else {
+            panic!("expected inference source");
+        };
+        assert_eq!(parents.as_slice(), &[ClauseId(21)]);
     }
 
     #[test]
@@ -2679,6 +2753,7 @@ mod tests {
             ))],
             ClauseSource::Introduced {
                 symbol: publisher_goal,
+                parents: smallvec::SmallVec::new(),
             },
         );
         let mut chain = vec![introduced];
@@ -2699,6 +2774,7 @@ mod tests {
             ))],
             ClauseSource::Introduced {
                 symbol: receiver_goal,
+                parents: smallvec::SmallVec::new(),
             },
         );
         let existing_definitions = vec![(ClauseId(99), receiver_goal, existing_definition)];
@@ -2719,7 +2795,7 @@ mod tests {
                 .iter_mut()
                 .all(|clause| remap_shared_clause_symbols(clause, &mapping))
         );
-        let ClauseSource::Introduced { symbol } = chain[0].source else {
+        let ClauseSource::Introduced { symbol, .. } = chain[0].source else {
             panic!("expected introduced source");
         };
         assert_eq!(symbol, mapping[publisher_goal.index() as usize]);
@@ -2743,6 +2819,7 @@ mod tests {
             ))],
             ClauseSource::Introduced {
                 symbol: publisher_goal,
+                parents: smallvec::SmallVec::new(),
             },
         );
         let mut chain = vec![introduced];
@@ -2763,6 +2840,7 @@ mod tests {
             ))],
             ClauseSource::Introduced {
                 symbol: receiver_goal,
+                parents: smallvec::SmallVec::new(),
             },
         );
         let existing_definitions = vec![(ClauseId(99), receiver_goal, existing_definition)];
@@ -2786,7 +2864,7 @@ mod tests {
                 .iter_mut()
                 .all(|clause| remap_shared_clause_symbols(clause, &mapping))
         );
-        let ClauseSource::Introduced { symbol } = chain[0].source else {
+        let ClauseSource::Introduced { symbol, .. } = chain[0].source else {
             panic!("expected introduced source");
         };
         assert_eq!(symbol, mapping[publisher_goal.index() as usize]);
@@ -2811,7 +2889,10 @@ mod tests {
                     Term::constant(base),
                     Term::constant(goal0),
                 ))],
-                ClauseSource::Introduced { symbol: goal0 },
+                ClauseSource::Introduced {
+                    symbol: goal0,
+                    parents: smallvec::SmallVec::new(),
+                },
             ),
             Clause::new(
                 ids.next(),
@@ -2819,7 +2900,10 @@ mod tests {
                     Term::app(goal0, vec![]),
                     Term::constant(goal1),
                 ))],
-                ClauseSource::Introduced { symbol: goal1 },
+                ClauseSource::Introduced {
+                    symbol: goal1,
+                    parents: smallvec::SmallVec::new(),
+                },
             ),
         ];
         let symbol_names = publisher_symbols
@@ -2842,6 +2926,7 @@ mod tests {
                 ))],
                 ClauseSource::Introduced {
                     symbol: receiver_goal0,
+                    parents: smallvec::SmallVec::new(),
                 },
             ),
         )];

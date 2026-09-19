@@ -5050,13 +5050,31 @@ fn match_skolem_matrix(
                 parent_connective,
                 BinaryConnective::And | BinaryConnective::Or
             ) {
+                let mut multiset_state = state.clone();
                 let parent_parts = flatten_skolem_associative(parent, *parent_connective);
                 let step_parts = flatten_skolem_associative(step, *step_connective);
-                match_skolem_multiset(&parent_parts, &step_parts, state, polarity)
-            } else {
-                match_skolem_formula_with_polarity(parent_left, step_left, state, polarity)
-                    && match_skolem_formula_with_polarity(parent_right, step_right, state, polarity)
+                if match_skolem_multiset(&parent_parts, &step_parts, &mut multiset_state, polarity)
+                {
+                    *state = multiset_state;
+                    return true;
+                }
             }
+            let mut structural_state = state.clone();
+            if match_skolem_formula_with_polarity(
+                parent_left,
+                step_left,
+                &mut structural_state,
+                polarity,
+            ) && match_skolem_formula_with_polarity(
+                parent_right,
+                step_right,
+                &mut structural_state,
+                polarity,
+            ) {
+                *state = structural_state;
+                return true;
+            }
+            false
         }
         (
             FOFFormula::Equality(parent_left, parent_right),

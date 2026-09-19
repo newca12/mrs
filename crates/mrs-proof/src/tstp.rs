@@ -153,7 +153,7 @@ pub fn format_tstp(proof: &[Clause], symbols: &SymbolTable) -> String {
             // `new_symbols(definition, [<symbol>])` info entry naming
             // exactly which symbol is being defined (confirmed against a
             // real GDV build).
-            ClauseSource::Introduced { symbol } => format!(
+            ClauseSource::Introduced { symbol, .. } => format!(
                 "introduced(definition, [new_symbols(definition, [{}])])",
                 symbols.resolve(*symbol)
             ),
@@ -607,7 +607,10 @@ mod tests {
         let def_step = Clause::new_formula_step(
             ClauseId(5),
             Formula::iff(Formula::atom(Atom::prop(def)), Formula::atom(Atom::prop(q))),
-            ClauseSource::Introduced { symbol: def },
+            ClauseSource::Introduced {
+                symbol: def,
+                parents: smallvec::SmallVec::new(),
+            },
         );
 
         let output = format_tstp(&[def_step], &syms);

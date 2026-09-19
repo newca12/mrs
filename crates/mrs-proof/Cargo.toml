@@ -12,3 +12,4 @@ mrs-core = { workspace = true }
 mrs-szs = { workspace = true }
 mrs-unify = { workspace = true }
 rustc-hash = { workspace = true }
+smallvec = { workspace = true }
