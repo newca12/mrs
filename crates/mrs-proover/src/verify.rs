@@ -1319,31 +1319,57 @@ fn try_factoring_step(p1: &mrs_core::Formula, concl: &mrs_core::Formula) -> bool
         _ => vec![concl_body.clone()],
     };
 
-    for i in 0..lits1.len() {
-        let Some((sym1, args1, pol1)) = extract_pred_atom(&lits1[i]) else {
-            continue;
-        };
-        for j in i + 1..lits1.len() {
-            let Some((sym2, args2, pol2)) = extract_pred_atom(&lits1[j]) else {
+    // Factoring may merge more than one pair of literals in a single
+    // exported step. Accept any conclusion reachable by repeated
+    // single-factor steps (each step removes exactly one literal).
+    fn one_step_factors(lits: &[mrs_core::Formula]) -> Vec<Vec<mrs_core::Formula>> {
+        let mut out = Vec::new();
+        for i in 0..lits.len() {
+            let Some((sym1, args1, pol1)) = extract_pred_atom(&lits[i]) else {
                 continue;
             };
-            if sym1 == sym2
-                && pol1 == pol2
-                && let Some(subst) = unify_lists(args1, args2)
-            {
-                let mut expected_lits = Vec::new();
-                let subst_map: std::collections::HashMap<mrs_core::VarId, mrs_core::Term> =
-                    subst.iter().map(|(&v, t)| (v, t.clone())).collect();
+            for j in i + 1..lits.len() {
+                let Some((sym2, args2, pol2)) = extract_pred_atom(&lits[j]) else {
+                    continue;
+                };
+                if sym1 == sym2
+                    && pol1 == pol2
+                    && let Some(subst) = unify_lists(args1, args2)
+                {
+                    let mut expected_lits = Vec::new();
+                    let subst_map: std::collections::HashMap<mrs_core::VarId, mrs_core::Term> =
+                        subst.iter().map(|(&v, t)| (v, t.clone())).collect();
 
-                for (k, x) in lits1.iter().enumerate() {
-                    if k != j {
-                        expected_lits.push(apply_subst_formula(x, &subst_map));
+                    for (k, x) in lits.iter().enumerate() {
+                        if k != j {
+                            expected_lits.push(apply_subst_formula(x, &subst_map));
+                        }
                     }
+                    out.push(expected_lits);
                 }
-
-                if clause_equiv(&concl_lits, &expected_lits) {
-                    return true;
-                }
+            }
+        }
+        out
+    }
+    let mut stack: Vec<Vec<mrs_core::Formula>> = one_step_factors(&lits1)
+        .into_iter()
+        .filter(|expected| expected.len() >= concl_lits.len())
+        .collect();
+    let mut visited: usize = 0;
+    while let Some(state) = stack.pop() {
+        visited += 1;
+        if visited > 5_000 {
+            return false;
+        }
+        if clause_equiv(&concl_lits, &state) {
+            return true;
+        }
+        if state.len() <= concl_lits.len() {
+            continue;
+        }
+        for expected in one_step_factors(&state) {
+            if expected.len() >= concl_lits.len() {
+                stack.push(expected);
             }
         }
     }

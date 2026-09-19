@@ -5519,7 +5519,11 @@ fn verify_subsumption_resolution(
                 .filter(|(idx, _)| *idx != removed_idx)
                 .map(|(_, literal)| literal.clone())
                 .collect();
-            if clause_alpha_equiv(&expected, &goal) {
+            // The prover does not always condense intermediate clauses, so
+            // the target may contain duplicate literals while the conclusion
+            // is condensed (`C | L | L` vs `C | L`). Condense both sides
+            // before comparing; duplicate literals are logically inert.
+            if clause_alpha_equiv(&condense_clause(&expected), &condense_clause(&goal)) {
                 return KernelVerdict::Certified;
             }
         }
@@ -5701,6 +5705,16 @@ fn verify_factoring(
             "factoring conclusion is not a supported clause".into(),
         );
     };
+    // Factoring may merge more than one pair of literals in a single
+    // exported step (e.g. `X1 = X2 = X3` collapses three literals at
+    // once). Accept any conclusion reachable by repeated single-factor
+    // steps: each step removes exactly one literal, so the search depth is
+    // bounded by the parent size.
+    let step_cap = limits.max_subsumption_steps.max(5_000);
+    let mut visited: usize = 0;
+    let mut stack: Vec<Vec<Literal>> = Vec::new();
+    // Seed with all one-step factors of the parent (at least one merge is
+    // required; a verbatim repeat of the parent is not factoring).
     for first in 0..parent.len() {
         for second in (first + 1)..parent.len() {
             let left = &parent[first];
@@ -5730,8 +5744,56 @@ fn verify_factoring(
                 .filter(|(idx, _)| *idx != second)
                 .map(|(_, literal)| apply_substitution_literal(literal, &substitution))
                 .collect();
-            if clause_alpha_equiv(&expected, &goal) {
-                return KernelVerdict::Certified;
+            if expected.len() < goal.len() {
+                continue;
+            }
+            stack.push(expected);
+        }
+    }
+    while let Some(state) = stack.pop() {
+        visited += 1;
+        if visited > step_cap {
+            return KernelVerdict::Inconclusive("factoring search exceeded step limit".into());
+        }
+        if clause_alpha_equiv(&state, &goal) {
+            return KernelVerdict::Certified;
+        }
+        if state.len() <= goal.len() {
+            continue;
+        }
+        for first in 0..state.len() {
+            for second in (first + 1)..state.len() {
+                let left = &state[first];
+                let right = &state[second];
+                if left.positive != right.positive {
+                    continue;
+                }
+                let (Atom::Pred(left_symbol, left_args), Atom::Pred(right_symbol, right_args)) =
+                    (&left.atom, &right.atom)
+                else {
+                    continue;
+                };
+                if left_symbol != right_symbol || left_args.len() != right_args.len() {
+                    continue;
+                }
+                let mut substitution = HashMap::new();
+                if !left_args
+                    .iter()
+                    .zip(right_args)
+                    .all(|(left, right)| unify_terms(left, right, &mut substitution))
+                {
+                    continue;
+                }
+                let expected: Vec<Literal> = state
+                    .iter()
+                    .enumerate()
+                    .filter(|(idx, _)| *idx != second)
+                    .map(|(_, literal)| apply_substitution_literal(literal, &substitution))
+                    .collect();
+                if expected.len() < goal.len() {
+                    continue;
+                }
+                stack.push(expected);
             }
         }
     }
@@ -8958,6 +9020,31 @@ fn clause_alpha_equiv(left: &[Literal], right: &[Literal]) -> bool {
     )
 }
 
+/// Remove alpha-duplicate literals, keeping the first of each class.
+/// Duplicate literals are logically inert (`C | L | L` ≡ `C | L`), but the
+/// prover does not always condense intermediate clauses while conclusions
+/// are condensed, so strict checks must compare modulo condensation.
+fn condense_clause(clause: &[Literal]) -> Vec<Literal> {
+    let mut kept: Vec<Literal> = Vec::with_capacity(clause.len());
+    'outer: for literal in clause {
+        for existing in &kept {
+            if literal.positive != existing.positive {
+                continue;
+            }
+            if atom_alpha_equiv(
+                &literal.atom,
+                &existing.atom,
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+            ) {
+                continue 'outer;
+            }
+        }
+        kept.push(literal.clone());
+    }
+    kept
+}
+
 fn atom_alpha_equiv(
     left: &Atom,
     right: &Atom,
@@ -10121,6 +10208,24 @@ mod tests {
                      cnf(nq, axiom, ~q(a)).\n\
                      cnf(nr, axiom, ~r(a)).";
         let proof = "cnf(target, axiom, ~p(a) | q(a) | r(a), file('problem.p', target)).\n\
+                     cnf(active, axiom, p(X) | q(X), file('problem.p', active)).\n\
+                     cnf(cut, plain, q(a) | r(a), inference(subsumption_resolution, [status(thm)], [target,active])).\n\
+                     cnf(nq, axiom, ~q(a), file('problem.p', nq)).\n\
+                     cnf(r, plain, r(a), inference(resolution, [status(thm)], [cut,nq])).\n\
+                     cnf(nr, axiom, ~r(a), file('problem.p', nr)).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [r,nr])).";
+        assert_eq!(check(input, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_subsumption_resolution_condensed_conclusion() {
+        // SYN353+1 shape: the target carries a duplicate literal while the
+        // conclusion is condensed (`C | L | L` vs `C | L`).
+        let input = "cnf(target, axiom, ~p(a) | q(a) | r(a) | q(a)).\n\
+                     cnf(active, axiom, p(X) | q(X)).\n\
+                     cnf(nq, axiom, ~q(a)).\n\
+                     cnf(nr, axiom, ~r(a)).";
+        let proof = "cnf(target, axiom, ~p(a) | q(a) | r(a) | q(a), file('problem.p', target)).\n\
                      cnf(active, axiom, p(X) | q(X), file('problem.p', active)).\n\
                      cnf(cut, plain, q(a) | r(a), inference(subsumption_resolution, [status(thm)], [target,active])).\n\
                      cnf(nq, axiom, ~q(a), file('problem.p', nq)).\n\
@@ -11715,6 +11820,21 @@ mod tests {
                      fof(n2, axiom, ~q(a), file('problem.p', n2)).\n\
                      fof(s, plain, p(a) | q(a), inference(factoring, [status(thm)], [a])).\n\
                      fof(mid, plain, q(a), inference(resolution, [status(thm)], [s,n1])).\n\
+                      fof(bot, plain, $false, inference(resolution, [status(thm)], [mid,n2])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_multi_literal_factoring() {
+        // SYN353+1 shape: three literals collapse at once via X1 = X2 = X3.
+        let problem = "fof(a, axiom, ~p(X1,X2,X3) | ~p(X2,X3,X1) | ~p(X3,X1,X2) | ~q(X1,X2,X3)).\n\
+                       fof(n1, axiom, p(a,a,a)).\n\
+                       fof(n2, axiom, q(a,a,a)).";
+        let proof = "fof(a, axiom, ~p(X1,X2,X3) | ~p(X2,X3,X1) | ~p(X3,X1,X2) | ~q(X1,X2,X3), file('problem.p', a)).\n\
+                     fof(n1, axiom, p(a,a,a), file('problem.p', n1)).\n\
+                     fof(n2, axiom, q(a,a,a), file('problem.p', n2)).\n\
+                     fof(s, plain, ~p(X3,X3,X3) | ~q(X3,X3,X3), inference(factoring, [status(thm)], [a])).\n\
+                     fof(mid, plain, ~q(a,a,a), inference(resolution, [status(thm)], [s,n1])).\n\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [mid,n2])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
     }
