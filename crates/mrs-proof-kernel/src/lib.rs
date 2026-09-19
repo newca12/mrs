@@ -323,8 +323,9 @@ fn verify_strict_with_source_internal(
                 if !matches!(outcome, KernelVerdict::Certified) {
                     return outcome;
                 }
-                if is_skolem_symbol_introduction(annotations) {
-                    collect_function_symbols(node.formula, &mut known_function_symbols);
+                collect_function_symbols(node.formula, &mut known_function_symbols);
+                if !is_skolem_symbol_introduction(annotations) {
+                    collect_function_symbols(node.formula, &mut known_non_skolem_function_symbols);
                 }
                 continue;
             }
@@ -2341,6 +2342,184 @@ fn verify_instantiation(
     }
 }
 
+fn substitute_definition_rhs(
+    body: &Formula,
+    params: &[VarId],
+    args: &[Term],
+    fresh: &Cell<VarId>,
+) -> Option<Formula> {
+    let mut map = HashMap::new();
+    for (param, arg) in params.iter().copied().zip(args.iter()) {
+        if let Some(previous) = map.get(&param) {
+            if previous != arg {
+                return None;
+            }
+        } else {
+            map.insert(param, arg.clone());
+        }
+    }
+    fn sub_term(term: &Term, map: &HashMap<VarId, Term>) -> Term {
+        match term {
+            Term::Var(v) => map.get(v).cloned().unwrap_or(Term::Var(*v)),
+            Term::App(sym, args) => {
+                Term::App(*sym, args.iter().map(|arg| sub_term(arg, map)).collect())
+            }
+        }
+    }
+    fn sub_atom(atom: &Atom, map: &HashMap<VarId, Term>) -> Atom {
+        match atom {
+            Atom::Pred(sym, args) => {
+                Atom::Pred(*sym, args.iter().map(|arg| sub_term(arg, map)).collect())
+            }
+            Atom::Eq(l, r) => Atom::Eq(sub_term(l, map), sub_term(r, map)),
+        }
+    }
+    fn sub_form(f: &Formula, map: &mut HashMap<VarId, Term>, fresh: &Cell<VarId>) -> Formula {
+        match f {
+            Formula::Atom(atom) => Formula::Atom(sub_atom(atom, map)),
+            Formula::Neg(inner) => Formula::neg(sub_form(inner, map, fresh)),
+            Formula::And(parts) => {
+                Formula::And(parts.iter().map(|p| sub_form(p, map, fresh)).collect())
+            }
+            Formula::Or(parts) => {
+                Formula::Or(parts.iter().map(|p| sub_form(p, map, fresh)).collect())
+            }
+            Formula::Implies(l, r) => {
+                Formula::implies(sub_form(l, map, fresh), sub_form(r, map, fresh))
+            }
+            Formula::Iff(l, r) => Formula::iff(sub_form(l, map, fresh), sub_form(r, map, fresh)),
+            Formula::Forall(v, inner) => {
+                let nv = fresh.get();
+                fresh.set(nv.saturating_add(1));
+                let prev = map.insert(*v, Term::Var(nv));
+                let sub_inner = sub_form(inner, map, fresh);
+                match prev {
+                    Some(old) => {
+                        map.insert(*v, old);
+                    }
+                    None => {
+                        map.remove(v);
+                    }
+                }
+                Formula::forall(nv, sub_inner)
+            }
+            Formula::Exists(v, inner) => {
+                let nv = fresh.get();
+                fresh.set(nv.saturating_add(1));
+                let prev = map.insert(*v, Term::Var(nv));
+                let sub_inner = sub_form(inner, map, fresh);
+                match prev {
+                    Some(old) => {
+                        map.insert(*v, old);
+                    }
+                    None => {
+                        map.remove(v);
+                    }
+                }
+                Formula::exists(nv, sub_inner)
+            }
+            Formula::True | Formula::False => f.clone(),
+        }
+    }
+    Some(sub_form(body, &mut map, fresh))
+}
+
+fn unfold_definitions_once(
+    formula: &Formula,
+    defs: &HashMap<mrs_core::SymbolId, (Vec<VarId>, Formula)>,
+    fresh: &Cell<VarId>,
+    limits: VerificationLimits,
+    steps: &mut usize,
+) -> Option<(Formula, bool)> {
+    if *steps >= limits.max_rewrite_steps {
+        return None;
+    }
+    *steps += 1;
+    match formula {
+        Formula::Atom(Atom::Pred(sym, args)) => {
+            if let Some((params, body)) = defs.get(sym) {
+                if params.len() != args.len() {
+                    return None;
+                }
+                let Some(expanded) = substitute_definition_rhs(body, params, args, fresh) else {
+                    return Some((formula.clone(), false));
+                };
+                Some((expanded, true))
+            } else {
+                Some((formula.clone(), false))
+            }
+        }
+        Formula::Atom(Atom::Eq(..)) | Formula::True | Formula::False => {
+            Some((formula.clone(), false))
+        }
+        Formula::Neg(inner) => {
+            let (sub, changed) = unfold_definitions_once(inner, defs, fresh, limits, steps)?;
+            Some((Formula::neg(sub), changed))
+        }
+        Formula::And(parts) => {
+            let mut changed = false;
+            let mut sub_parts = Vec::with_capacity(parts.len());
+            for part in parts {
+                let (sub, c) = unfold_definitions_once(part, defs, fresh, limits, steps)?;
+                changed |= c;
+                sub_parts.push(sub);
+            }
+            Some((Formula::And(sub_parts), changed))
+        }
+        Formula::Or(parts) => {
+            let mut changed = false;
+            let mut sub_parts = Vec::with_capacity(parts.len());
+            for part in parts {
+                let (sub, c) = unfold_definitions_once(part, defs, fresh, limits, steps)?;
+                changed |= c;
+                sub_parts.push(sub);
+            }
+            Some((Formula::Or(sub_parts), changed))
+        }
+        Formula::Implies(l, r) => {
+            let (sl, cl) = unfold_definitions_once(l, defs, fresh, limits, steps)?;
+            let (sr, cr) = unfold_definitions_once(r, defs, fresh, limits, steps)?;
+            Some((Formula::implies(sl, sr), cl || cr))
+        }
+        Formula::Iff(l, r) => {
+            let (sl, cl) = unfold_definitions_once(l, defs, fresh, limits, steps)?;
+            let (sr, cr) = unfold_definitions_once(r, defs, fresh, limits, steps)?;
+            Some((Formula::iff(sl, sr), cl || cr))
+        }
+        Formula::Forall(v, inner) => {
+            let (sub, changed) = unfold_definitions_once(inner, defs, fresh, limits, steps)?;
+            Some((Formula::forall(*v, sub), changed))
+        }
+        Formula::Exists(v, inner) => {
+            let (sub, changed) = unfold_definitions_once(inner, defs, fresh, limits, steps)?;
+            Some((Formula::exists(*v, sub), changed))
+        }
+    }
+}
+
+fn unfold_definitions_all(
+    formula: &Formula,
+    defs: &HashMap<mrs_core::SymbolId, (Vec<VarId>, Formula)>,
+    fresh: &Cell<VarId>,
+    limits: VerificationLimits,
+) -> Option<(Formula, bool)> {
+    let mut current = formula.clone();
+    let mut changed_any = false;
+    let mut steps = 0;
+    for _ in 0..=defs.len().saturating_add(1) {
+        if formula_size(&current) > limits.max_formula_nodes {
+            return None;
+        }
+        let (next, changed) = unfold_definitions_once(&current, defs, fresh, limits, &mut steps)?;
+        current = next;
+        changed_any |= changed;
+        if !changed {
+            return Some((current, changed_any));
+        }
+    }
+    None
+}
+
 fn verify_definition_renaming(
     parents: &[Formula],
     conclusion: &Formula,
@@ -2382,18 +2561,78 @@ fn verify_definition_renaming(
         };
         definitions.push(definition);
     }
-    let Some(expected) = replace_definition_subformulas(source, &definitions, limits) else {
+
+    // 1. Fast path: forward replacement (exact substitution of definition RHS in source)
+    let forward_res = replace_definition_subformulas(source, &definitions, limits);
+    if let Some(expected) = &forward_res
+        && !alpha_equiv(expected, source)
+        && alpha_equiv(expected, conclusion)
+    {
+        return KernelVerdict::Certified;
+    }
+
+    // 2. Unfolding fallback: unfold introduced definitions in the conclusion
+    // to handle cases where multiple definitions have structurally identical
+    // bodies. A valid renaming must actually use at least one fresh definition;
+    // otherwise an unchanged source would be accepted as a forged no-op.
+    let mut defs_by_symbol = HashMap::new();
+    for def in &definitions {
+        if let Atom::Pred(sym, args) = &def.head {
+            let mut params = Vec::with_capacity(args.len());
+            for arg in args {
+                let Term::Var(v) = arg else {
+                    return KernelVerdict::Inconclusive(
+                        "definition_renaming head contains non-variable argument".into(),
+                    );
+                };
+                params.push(*v);
+            }
+            defs_by_symbol.insert(*sym, (params, def.rhs.clone()));
+        }
+    }
+
+    let mut conclusion_symbols = HashSet::new();
+    collect_core_predicate_symbols(conclusion, &mut conclusion_symbols);
+    let uses_definition = defs_by_symbol
+        .keys()
+        .any(|symbol| conclusion_symbols.contains(symbol));
+    if !uses_definition {
+        return if forward_res.is_none() {
+            KernelVerdict::Inconclusive(
+                "definition_renaming exceeded strict matching-step limit".into(),
+            )
+        } else {
+            KernelVerdict::Rejected(
+                "definition_renaming conclusion does not use a cited definition".into(),
+            )
+        };
+    }
+
+    let mut max_var = max_formula_var(source).max(max_formula_var(conclusion));
+    for def in &definitions {
+        max_var = max_var.max(max_formula_var(&def.rhs));
+    }
+    let fresh = Cell::new(max_var.saturating_add(1));
+
+    let unfolded_conclusion_res =
+        unfold_definitions_all(conclusion, &defs_by_symbol, &fresh, limits);
+
+    if let Some((unfolded_conclusion, changed)) = &unfolded_conclusion_res
+        && *changed
+        && alpha_equiv(source, unfolded_conclusion)
+    {
+        return KernelVerdict::Certified;
+    }
+
+    if forward_res.is_none() || unfolded_conclusion_res.is_none() {
         return KernelVerdict::Inconclusive(
             "definition_renaming exceeded strict matching-step limit".into(),
         );
-    };
-    if alpha_equiv(&expected, conclusion) {
-        KernelVerdict::Certified
-    } else {
-        KernelVerdict::Rejected(
-            "definition_renaming conclusion is not the source with definitions replaced".into(),
-        )
     }
+
+    KernelVerdict::Rejected(
+        "definition_renaming conclusion is not the source with definitions replaced".into(),
+    )
 }
 
 fn verify_existential_generation(
@@ -5729,7 +5968,7 @@ fn verify_demodulation(
         );
     };
     let mut orientation_choices: Vec<Vec<(Term, Term)>> = Vec::new();
-    let mut new_conditions: Vec<Literal> = Vec::new();
+    let mut condition_literals = Vec::new();
     for parent in parents[1..].iter() {
         let Some(clause) = clause_from_formula(parent, limits) else {
             return KernelVerdict::Inconclusive(
@@ -5752,17 +5991,13 @@ fn verify_demodulation(
                 "demodulation parents must contain a positive equality".into(),
             );
         };
-
         for (idx, lit) in clause.iter().enumerate() {
-            if idx == eq_idx {
+            if idx == eq_idx || target.iter().any(|target_lit| target_lit == lit) {
                 continue;
             }
-            if target.iter().any(|t| t == lit) {
-                continue;
-            }
-            if literal_var_set(lit).is_empty() && goal.iter().any(|g| g == lit) {
-                if !new_conditions.contains(lit) {
-                    new_conditions.push(lit.clone());
+            if literal_var_set(lit).is_empty() && goal.iter().any(|goal_lit| goal_lit == lit) {
+                if !condition_literals.contains(lit) {
+                    condition_literals.push(lit.clone());
                 }
                 continue;
             }
@@ -5770,7 +6005,6 @@ fn verify_demodulation(
                 "demodulation condition literal not satisfied in target or conclusion".into(),
             );
         }
-
         let Atom::Eq(left, right) = &clause[eq_idx].atom else {
             unreachable!();
         };
@@ -5822,11 +6056,7 @@ fn verify_demodulation(
     let mut hit_step_limit = false;
     for rules in candidate_rule_sets {
         let mut current = target.clone();
-        for cond in &new_conditions {
-            if !current.contains(cond) {
-                current.push(cond.clone());
-            }
-        }
+        current.extend(condition_literals.iter().cloned());
         let shift = max_var_clause(&current)
             .max(max_var_clause(&goal))
             .max(
@@ -5842,15 +6072,6 @@ fn verify_demodulation(
         let mut visited: Vec<Vec<Literal>> = Vec::new();
         loop {
             if clause_alpha_equiv(&current, &goal) {
-                return KernelVerdict::Certified;
-            }
-            let mut deduplicated = Vec::with_capacity(current.len());
-            for lit in &current {
-                if !deduplicated.contains(lit) {
-                    deduplicated.push(lit.clone());
-                }
-            }
-            if deduplicated.len() != current.len() && clause_alpha_equiv(&deduplicated, &goal) {
                 return KernelVerdict::Certified;
             }
             if steps >= limits.max_rewrite_steps {
@@ -8429,6 +8650,9 @@ fn rewrite_term(
     limits: VerificationLimits,
 ) -> bool {
     for (left, right) in rules {
+        if *steps >= limits.max_rewrite_steps {
+            return false;
+        }
         let mut substitution = HashMap::new();
         if match_pattern(left, term, &mut substitution) {
             *term = apply_substitution_term(right, &substitution);
@@ -8443,7 +8667,6 @@ fn rewrite_term(
             }
         }
     }
-    let _ = limits;
     false
 }
 
@@ -9799,10 +10022,9 @@ mod tests {
                      fof(n, axiom, ![X] : ~p(X), file('problem.p', n)).\
                      cnf(c, plain, p(sk0), inference(cnf_transformation, [status(thm)], [src])).\
                      cnf(bot, plain, $false, inference(resolution, [status(thm)], [c,n])).";
-        assert!(matches!(
-            check(problem, proof),
-            KernelVerdict::Inconclusive(_)
-        ));
+        let verdict = check(problem, proof);
+        eprintln!("{verdict}");
+        assert!(matches!(verdict, KernelVerdict::Inconclusive(_)));
     }
 
     #[test]
@@ -10002,6 +10224,62 @@ mod tests {
                      cnf(nd0, plain, ~d0, inference(resolution, [status(thm)], [np,posr])).\
                      cnf(bot, plain, $false, inference(resolution, [status(thm)], [d0,nd0])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_krs187_definition_renaming() {
+        let problem = "fof(goal, conjecture, ~(((?[X2]: (model(X2, a)) <=> ?[X3]: (model(X3, b))) <=> r))).\n\
+                       fof(posr, axiom, r).\n\
+                       fof(negr, axiom, ~r).";
+        let proof = "fof(goal, conjecture, ~(((?[X2]: (model(X2, a)) <=> ?[X3]: (model(X3, b))) <=> r)), file('problem.p', goal)).\n\
+                     fof(posr, axiom, r, file('problem.p', posr)).\n\
+                     fof(negr, axiom, ~r, file('problem.p', negr)).\n\
+                     fof(c95, definition, ![X0]: ((def_esa_iff_0(X0) <=> ?[X2]: (model(X2, X0)))), introduced(definition, [new_symbols(definition, [def_esa_iff_0])])).\n\
+                     fof(c96, definition, ![X1]: ((def_esa_iff_1(X1) <=> ?[X3]: (model(X3, X1)))), introduced(definition, [new_symbols(definition, [def_esa_iff_1])])).\n\
+                     fof(c97, definition, ![X0]: (![X1]: ((def_esa_iff_2(X0, X1) <=> (def_esa_iff_0(X0) <=> def_esa_iff_1(X1))))), introduced(definition, [new_symbols(definition, [def_esa_iff_2])])).\n\
+                     fof(c98, plain, ~(def_esa_iff_2(a, b) <=> r), inference(definition_renaming, [status(thm)], [goal, c95, c96, c97])).\n\
+                     fof(n, plain, ((def_esa_iff_2(a, b) | r) & (~def_esa_iff_2(a, b) | ~r)), inference(fof_nnf_transformation, [status(thm)], [c98])).\n\
+                     fof(sk, plain, ((def_esa_iff_2(a, b) | r) & (~def_esa_iff_2(a, b) | ~r)), inference(skolemisation, [status(esa)], [n])).\n\
+                     cnf(p, plain, def_esa_iff_2(a, b) | r, inference(cnf_transformation, [status(thm)], [sk])).\n\
+                     cnf(np, plain, ~def_esa_iff_2(a, b) | ~r, inference(cnf_transformation, [status(thm)], [sk])).\n\
+                     cnf(d2, plain, def_esa_iff_2(a, b), inference(resolution, [status(thm)], [p, negr])).\n\
+                     cnf(nd2, plain, ~def_esa_iff_2(a, b), inference(resolution, [status(thm)], [np, posr])).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [d2, nd2])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_definition_renaming_noop_conclusion() {
+        let problem = "fof(goal, conjecture, p).";
+        let proof = "fof(goal, conjecture, p, file('problem.p', goal)).\
+                     fof(d, definition, (d0 <=> q), introduced(definition, [new_symbols(definition, [d0])])).\
+                     fof(noop, plain, p, inference(definition_renaming, [status(thm)], [goal,d])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [noop])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn rejects_definition_renaming_inconsistent_repeated_head_arguments() {
+        let problem = "fof(goal, conjecture, p(a)).";
+        let proof = "fof(goal, conjecture, p(a), file('problem.p', goal)).\
+                     fof(d, definition, ![X] : (d0(X,X) <=> q(X)), introduced(definition, [new_symbols(definition, [d0])])).\
+                     fof(bad, plain, d0(a,b), inference(definition_renaming, [status(thm)], [goal,d])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [bad])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn definition_renaming_cycle_is_inconclusive() {
+        let problem = "fof(goal, conjecture, p).";
+        let proof = "fof(goal, conjecture, p, file('problem.p', goal)).\
+                     fof(d0, definition, (d0 <=> d1), introduced(definition, [new_symbols(definition, [d0])])).\
+                     fof(d1, definition, (d1 <=> d0), introduced(definition, [new_symbols(definition, [d1])])).\
+                     fof(result, plain, d0, inference(definition_renaming, [status(thm)], [goal,d0,d1])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [result])).";
+        assert!(matches!(
+            check(problem, proof),
+            KernelVerdict::Inconclusive(_)
+        ));
     }
 
     #[test]
@@ -11521,6 +11799,49 @@ mod tests {
     }
 
     #[test]
+    fn certifies_avatar_conditional_demodulation() {
+        let problem = "cnf(target, axiom, p(f(a)) | ~spl0_1).\n\
+                       cnf(rule, axiom, f(a) = b | ~spl0_1).\n\
+                       cnf(neg, axiom, ~p(b) | ~spl0_1).\n\
+                       cnf(spl, axiom, spl0_1).";
+        let proof = "cnf(target, axiom, p(f(a)) | ~spl0_1, file('problem.p', target)).\n\
+                     cnf(rule, axiom, f(a) = b | ~spl0_1, file('problem.p', rule)).\
+                     cnf(neg, axiom, ~p(b) | ~spl0_1, file('problem.p', neg)).\
+                     cnf(spl, axiom, spl0_1, file('problem.p', spl)).\
+                     cnf(s, plain, p(b) | ~spl0_1, inference(demodulation, [status(thm)], [target, rule])).\
+                     cnf(c, plain, ~spl0_1, inference(resolution, [status(thm)], [s, neg])).\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [c, spl])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_conditional_demodulation_with_unsatisfied_condition() {
+        let problem = "cnf(target, axiom, p(f(a))).\n\
+                       cnf(rule, axiom, f(a) = b | ~spl0_1).";
+        let proof = "cnf(target, axiom, p(f(a)), file('problem.p', target)).\n\
+                     cnf(rule, axiom, f(a) = b | ~spl0_1, file('problem.p', rule)).\
+                     cnf(s, plain, p(b), inference(demodulation, [status(thm)], [target, rule])).\
+                     cnf(bot, plain, $false, inference(consequence, [status(thm)], [s])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn certifies_conditional_demodulation_propagating_ground_condition() {
+        let problem = "cnf(target, axiom, p(f(a))).\n\
+                       cnf(rule, axiom, f(a) = b | ~spl0_1).\n\
+                       cnf(neg, axiom, ~p(b) | ~spl0_1).\n\
+                       cnf(spl, axiom, spl0_1).";
+        let proof = "cnf(target, axiom, p(f(a)), file('problem.p', target)).\n\
+                     cnf(rule, axiom, f(a) = b | ~spl0_1, file('problem.p', rule)).\
+                     cnf(neg, axiom, ~p(b) | ~spl0_1, file('problem.p', neg)).\
+                     cnf(spl, axiom, spl0_1, file('problem.p', spl)).\
+                     cnf(s, plain, p(b) | ~spl0_1, inference(demodulation, [status(thm)], [target, rule])).\
+                     cnf(c, plain, ~spl0_1, inference(resolution, [status(thm)], [s, neg])).\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [c, spl])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
     fn demodulation_replay_failure_is_inconclusive() {
         let problem = "fof(rule, axiom, f(a) = b).\n\
                        fof(target, axiom, p(f(a))).";
@@ -11545,46 +11866,19 @@ mod tests {
     }
 
     #[test]
-    fn certifies_avatar_conditional_demodulation() {
-        let problem = "cnf(target, axiom, p(f(a)) | ~spl0_1).\n\
-                       cnf(rule, axiom, f(a) = b | ~spl0_1).\n\
-                       cnf(neg, axiom, ~p(b) | ~spl0_1).\n\
-                       cnf(spl, axiom, spl0_1).";
-        let proof = "cnf(target, axiom, p(f(a)) | ~spl0_1, file('problem.p', target)).\n\
-                     cnf(rule, axiom, f(a) = b | ~spl0_1, file('problem.p', rule)).\n\
-                     cnf(neg, axiom, ~p(b) | ~spl0_1, file('problem.p', neg)).\n\
-                     cnf(spl, axiom, spl0_1, file('problem.p', spl)).\n\
-                     cnf(s, plain, p(b) | ~spl0_1, inference(demodulation, [status(thm)], [target, rule])).\n\
-                     cnf(c, plain, ~spl0_1, inference(resolution, [status(thm)], [s, neg])).\n\
-                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [c, spl])).";
-        assert_eq!(check(problem, proof), KernelVerdict::Certified);
-    }
-
-    #[test]
-    fn rejects_conditional_demodulation_with_unsatisfied_condition() {
-        let problem = "cnf(target, axiom, p(f(a))).\n\
-                       cnf(rule, axiom, f(a) = b | ~spl0_1).";
-        let proof = "cnf(target, axiom, p(f(a)), file('problem.p', target)).\n\
-                     cnf(rule, axiom, f(a) = b | ~spl0_1, file('problem.p', rule)).\n\
-                     cnf(s, plain, p(b), inference(demodulation, [status(thm)], [target, rule])).\n\
-                     cnf(bot, plain, $false, inference(consequence, [status(thm)], [s])).";
-        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
-    }
-
-    #[test]
-    fn certifies_conditional_demodulation_propagating_ground_condition() {
-        let problem = "cnf(target, axiom, p(f(a))).\n\
-                       cnf(rule, axiom, f(a) = b | ~spl0_1).\n\
-                       cnf(neg, axiom, ~p(b) | ~spl0_1).\n\
-                       cnf(spl, axiom, spl0_1).";
-        let proof = "cnf(target, axiom, p(f(a)), file('problem.p', target)).\n\
-                     cnf(rule, axiom, f(a) = b | ~spl0_1, file('problem.p', rule)).\n\
-                     cnf(neg, axiom, ~p(b) | ~spl0_1, file('problem.p', neg)).\n\
-                     cnf(spl, axiom, spl0_1, file('problem.p', spl)).\n\
-                     cnf(s, plain, p(b) | ~spl0_1, inference(demodulation, [status(thm)], [target, rule])).\n\
-                     cnf(c, plain, ~spl0_1, inference(resolution, [status(thm)], [s, neg])).\n\
-                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [c, spl])).";
-        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    fn introduced_definition_symbol_is_reserved_for_later_skolemization() {
+        let problem = "fof(source, axiom, ?[X] : p(X)).\n\
+                       fof(neg, axiom, ![X] : ~p(X)).";
+        let proof = "fof(source, axiom, ?[X] : p(X), file('problem.p', source)).\
+                     fof(neg, axiom, ![X] : ~p(X), file('problem.p', neg)).\
+                     cnf(def, definition, d0 = a, introduced(definition, [new_symbols(definition, [d0])])).\
+                     fof(sk, plain, p(d0), inference(skolemisation, [status(esa)], [source])).\
+                     cnf(p_a, plain, p(a), inference(superposition, [status(thm)], [def, sk])).\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [p_a, neg])).";
+        assert!(matches!(
+            check(problem, proof),
+            KernelVerdict::Inconclusive(_)
+        ));
     }
 
     #[test]

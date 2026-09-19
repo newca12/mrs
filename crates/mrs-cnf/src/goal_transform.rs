@@ -382,7 +382,10 @@ fn get_or_create_def(
             term.clone(),
             Term::constant(def_sym),
         ))],
-        ClauseSource::Introduced { symbol: def_sym },
+        ClauseSource::Introduced {
+            symbol: def_sym,
+            parents: smallvec::SmallVec::new(),
+        },
     )
     .with_distance(0);
 
@@ -443,7 +446,7 @@ mod tests {
         assert_eq!(new_goal.distance, 0);
 
         match &def0.source {
-            ClauseSource::Introduced { symbol } => {
+            ClauseSource::Introduced { symbol, .. } => {
                 assert_eq!(symbols.resolve(*symbol), "goal_d0");
             }
             _ => panic!("Expected Introduced source for def0"),
@@ -632,7 +635,7 @@ mod tests {
         let new_goal = &res.clauses[1];
 
         match &def0.source {
-            ClauseSource::Introduced { symbol } => {
+            ClauseSource::Introduced { symbol, .. } => {
                 assert_eq!(symbols.resolve(*symbol), "goal_d0");
             }
             _ => panic!("Expected Introduced"),

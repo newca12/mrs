@@ -35,6 +35,7 @@ pub mod ml;
 pub use clause::{Clause, ClauseId, ClauseSource, Literal};
 pub use formula::{Atom, Formula};
 pub use profile::{InputMetadata, ProblemArchetype, ProblemProfile};
+pub use smallvec::SmallVec;
 pub use subst::Substitution;
 pub use symbol::{SymbolId, SymbolTable};
 pub use term::{Term, VarId};

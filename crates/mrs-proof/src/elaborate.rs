@@ -603,7 +603,9 @@ pub fn topological_sort(clauses: &[Clause]) -> Result<Vec<Clause>, ElaborationEr
 
     for c in clauses {
         let mut parents = Vec::new();
-        if let ClauseSource::Inference { parents: p, .. } = &c.source {
+        if let ClauseSource::Inference { parents: p, .. }
+        | ClauseSource::Introduced { parents: p, .. } = &c.source
+        {
             parents.extend_from_slice(p);
         }
         if let Some(cert) = &c.certificate {
@@ -701,7 +703,7 @@ pub fn elaborate(
 
     // Verify definitions do not define pre-existing axiom symbols
     for c in proof {
-        if let ClauseSource::Introduced { symbol } = &c.source {
+        if let ClauseSource::Introduced { symbol, .. } = &c.source {
             let sym_name = symbols.resolve(*symbol);
             if sym_name.is_empty() {
                 return Err(ElaborationError::Inconclusive(format!(
@@ -1003,12 +1005,28 @@ mod tests {
         let d1 = syms.intern("def_d1");
         let d2 = syms.intern("def_d2");
 
-        let c_def1 = Clause::new(ClauseId(1), vec![], ClauseSource::Introduced { symbol: d1 });
-        let c_def2 = Clause::new(ClauseId(2), vec![], ClauseSource::Introduced { symbol: d2 });
+        let c_def1 = Clause::new(
+            ClauseId(2),
+            vec![],
+            ClauseSource::Introduced {
+                symbol: d1,
+                parents: smallvec::SmallVec::new(),
+            },
+        );
+        let c_def2 = Clause::new(
+            ClauseId(3),
+            vec![],
+            ClauseSource::Introduced {
+                symbol: d2,
+                parents: vec![ClauseId(2)].into(),
+            },
+        );
 
-        let proof = vec![c_def1, c_def2];
+        let proof = vec![c_def2, c_def1];
         let elaborated = elaborate(&proof, &syms).expect("definitions elaborate cleanly");
         assert_eq!(elaborated.clauses.len(), 2);
+        assert_eq!(elaborated.clauses[0].id, ClauseId(2));
+        assert_eq!(elaborated.clauses[1].id, ClauseId(3));
     }
 
     #[test]

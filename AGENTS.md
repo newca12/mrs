@@ -3,9 +3,10 @@
 Quick-start context for AI agents working in this repo.
 
 ## Agent Workflow Constraint
-Do not use the `explore` subagent (`subagent_type: "explore"`) in this
-repository; it may not terminate. Use bounded direct searches and file reads,
-or another explicitly requested tool, instead.
+Do not use the `explore` or `general` subagents (`subagent_type: "explore"` or
+`subagent_type: "general"`) in this repository; they may not terminate. Use
+bounded direct searches and file reads, or another explicitly requested tool,
+instead.
 
 ## 1. NixOS WSL Development Environment (SOTA)
 The host environment is **NixOS running inside Windows Subsystem for Linux (WSL)**.
