@@ -799,12 +799,14 @@ fn shift_vars_formula(f: &mrs_core::Formula, shift: u32) -> mrs_core::Formula {
         // `c699`: rule `S(X0,X1,X2)` vs target `...X0...` fails occurs-check
         // without the shift). Shifting uniformly preserves the
         // alpha-equivalence class while freshening all IDs.
-        mrs_core::Formula::Forall(v, inner) => {
-            mrs_core::Formula::Forall(v + shift, Box::new(shift_vars_formula(inner, shift)))
-        }
-        mrs_core::Formula::Exists(v, inner) => {
-            mrs_core::Formula::Exists(v + shift, Box::new(shift_vars_formula(inner, shift)))
-        }
+        mrs_core::Formula::Forall(v, inner) => mrs_core::Formula::Forall(
+            v.saturating_add(shift),
+            Box::new(shift_vars_formula(inner, shift)),
+        ),
+        mrs_core::Formula::Exists(v, inner) => mrs_core::Formula::Exists(
+            v.saturating_add(shift),
+            Box::new(shift_vars_formula(inner, shift)),
+        ),
         mrs_core::Formula::True | mrs_core::Formula::False => f.clone(),
     }
 }
@@ -1008,7 +1010,10 @@ fn try_directed_superposition_step(
     if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
         eprintln!("[prop-sat-dbg] try_superposition_step called! rule = {rule:?}");
     }
-    let p1_shifted = shift_vars_formula(rule, 1000);
+    let shift = max_var_formula(rule)
+        .max(max_var_formula(target))
+        .saturating_add(1);
+    let p1_shifted = shift_vars_formula(rule, shift);
     let (l1, r1) = match extract_eq_sides(&p1_shifted) {
         Some(res) => res,
         None => return false,
@@ -1059,6 +1064,34 @@ fn try_directed_superposition_step(
         }
     }
     false
+}
+
+fn max_var_term(term: &mrs_core::Term) -> u32 {
+    match term {
+        mrs_core::Term::Var(id) => *id,
+        mrs_core::Term::App(_, args) => args.iter().map(max_var_term).max().unwrap_or(0),
+    }
+}
+
+fn max_var_formula(formula: &mrs_core::Formula) -> u32 {
+    match formula {
+        mrs_core::Formula::Atom(mrs_core::Atom::Pred(_, args)) => {
+            args.iter().map(max_var_term).max().unwrap_or(0)
+        }
+        mrs_core::Formula::Atom(mrs_core::Atom::Eq(left, right)) => {
+            max_var_term(left).max(max_var_term(right))
+        }
+        mrs_core::Formula::Neg(inner)
+        | mrs_core::Formula::Forall(_, inner)
+        | mrs_core::Formula::Exists(_, inner) => max_var_formula(inner),
+        mrs_core::Formula::And(parts) | mrs_core::Formula::Or(parts) => {
+            parts.iter().map(max_var_formula).max().unwrap_or(0)
+        }
+        mrs_core::Formula::Implies(left, right) | mrs_core::Formula::Iff(left, right) => {
+            max_var_formula(left).max(max_var_formula(right))
+        }
+        mrs_core::Formula::True | mrs_core::Formula::False => 0,
+    }
 }
 
 fn extract_eq_sides(f: &mrs_core::Formula) -> Option<(mrs_core::Term, mrs_core::Term)> {
@@ -1425,7 +1458,10 @@ fn try_demodulation_step(premises: &[mrs_core::Formula], concl: &mrs_core::Formu
             if i == j {
                 continue;
             }
-            let shifted = shift_vars_formula(premise, 1000);
+            let shift = max_var_formula(premise)
+                .max(max_var_formula(target))
+                .saturating_add(1);
+            let shifted = shift_vars_formula(premise, shift);
             if let Some((left, right)) = extract_eq_sides(&shifted) {
                 equations.push((left, right));
             }
