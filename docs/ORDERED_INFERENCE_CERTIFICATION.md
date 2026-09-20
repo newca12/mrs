@@ -118,7 +118,7 @@ Fast gate, 10 s per problem:
 
 | Division | Ordering | Total | Certified | Fail-closed | False positives |
 |----------|----------|-------|-----------|-------------|-----------------|
-| EPS | KBO (s1) | 100 | 6 | 94 | 0 |
+| EPS | KBO (s1) | 100 | 5 | 95 | 0 |
 | EPS | LPO (s7) | 100 | 5 | 95 | 0 |
 | EPU | KBO (s1) | 100 | 0 | 100 | 0 |
 | EPU | LPO (s7) | 100 | 0 | 100 | 0 |
@@ -127,16 +127,21 @@ Deep gate (`--deep`, 120 s per problem):
 
 | Division | Ordering | Total | Certified | Fail-closed | False positives |
 |----------|----------|-------|-----------|-------------|-----------------|
-| EPS | KBO (s1) | 100 | 7 | 93 | 0 |
-| EPS | LPO (s7) | 100 | 7 | 93 | 0 |
+| EPS | KBO (s1) | 100 | 8 | 92 | 0 |
+| EPS | LPO (s7) | 100 | 10 | 90 | 0 |
 | EPU | KBO (s1) | 100 | 0 | 100 | 0 |
 | EPU | LPO (s7) | 100 | 0 | 100 | 0 |
 
-(The fast-gate jump from 3 to 6/5 EPS is the Tier-2 SAT path converting
+(The fast-gate jump from 3 EPS is the Tier-2 SAT path converting
 closure-bound groundings — e.g. NLP116-1: 200 034 clauses over 5 211
-atoms, verified model. EPU stays zero by construction: the SAT tier
-certifies satisfiability only, and EPU problems die at grounding size or
-real equality content before any closure runs.)
+atoms, verified model. Single-count wobble at the fast budget (6 vs 5 on
+s1 across runs) is budget-edge flakiness: problems saturating within
+milliseconds of the deadline flip with load; both outcomes are sound.
+EPU stays zero throughout: the SAT tier certifies satisfiability only,
+Tier 3 found no small cores at either budget, and EPU problems otherwise
+die at grounding size or real equality content before any closure runs.
+No Tier-3 refutation ever fired on EPS — as required for truly
+satisfiable problems.)
 
 Dominant fail-closed reasons are resource bounds (`ground instance limit
 exceeded` on 66 problems, `ground atom limit exceeded` on 23) and
@@ -209,6 +214,32 @@ axiom files, which is outside the predicate-only fragment. Peak RSS on the
 largest explored grounding is ~524 MB. Conclusion: retrieval speed is no
 longer the coverage bottleneck; closure *size* is — which is what the
 SAT-backed Tier 2 below addresses for the satisfiable side.
+
+## Tier 3: Constant-Subset Unsatisfiability Search
+
+Groundings that are infeasible in full (size refusals) or proved UNSAT
+without a proof (Tier-2 outcomes) fall through to a bounded search over
+small constant subsets (singletons, then biased pairs/triples with try
+caps). Each subset grounds with vocabulary restriction — only clauses
+whose constants lie in the subset are kept, which is sound for the
+refutation direction — and runs the full Tier-1 double closure with
+agreement and TSTP ancestry. A subset refutation is a valid whole-problem
+refutation (subset instances ⊆ full instances); subset saturation proves
+nothing and is skipped. The tier can only refute, never certify
+satisfiability, and shares the run deadline. Constants are tried in
+goal-biased order (negated-conjecture vocabulary first, then frequency).
+
+Measured: unit tests cover small-core refutation, saturation-never,
+zero-budget instant failure, bias order, and the Tier-2-UNSAT fallthrough.
+Whether corpus EPU problems yield small cores is empirical (deep-gate
+numbers below); pigeonhole-style problems needing many constants stay
+fail-closed by design (documented incompleteness, not a regression).
+
+Boundary: Tier 3 fires only on size refusals and Tier-2 UNSAT, never on
+fragment errors (equality, function terms, formula/AVATAR clauses).
+Vocabulary restriction could in principle drop offending clauses and still
+refute soundly, but that would smuggle non-EPR reasoning into an
+EPR-only tier — explicitly out of scope; such inputs stay `GaveUp`.
 
 ## SAT-Backed Tier 2 (Phase 4 Outcome)
 

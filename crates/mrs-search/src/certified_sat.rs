@@ -46,9 +46,9 @@ pub(crate) fn encode_sat(
     let mut encoded = Vec::with_capacity(grounded.len());
     for clause in grounded {
         if clause.is_empty() {
-            return Err(CertificationFailure::Unsupported(
-                "sat-backed tier certifies satisfiability only",
-            ));
+            // An empty grounded clause means unsatisfiability without a
+            // TSTP-ancestry proof: Tier-3-eligible, like solver UNSAT.
+            return Err(CertificationFailure::Tier2Unsat);
         }
         if clause.is_tautology() {
             continue;
@@ -146,9 +146,9 @@ pub(crate) fn certify_sat_backed(
                 "sat_outcome=unsat vars={var_count} clauses={}",
                 encoded.len(),
             ));
-            Err(CertificationFailure::Unsupported(
-                "sat-backed tier certifies satisfiability only",
-            ))
+            // Sound but proof-less: the router may still try Tier-3 subset
+            // search for a TSTP-ancestry refutation.
+            Err(CertificationFailure::Tier2Unsat)
         }
         SolveResult::Unknown => {
             trace_certify("sat_outcome=unknown".to_string());
@@ -248,9 +248,7 @@ mod tests {
         );
         assert!(matches!(
             encode_sat(std::slice::from_ref(&empty), &[]),
-            Err(CertificationFailure::Unsupported(
-                "sat-backed tier certifies satisfiability only"
-            ))
+            Err(CertificationFailure::Tier2Unsat)
         ));
     }
 
@@ -304,14 +302,13 @@ mod tests {
 
     #[test]
     fn sat_path_fails_closed_on_unsat() {
-        // Documents the Tier-2 asymmetry: unsatisfiable groundings are
-        // GaveUp here (no FRAT-to-TSTP elaborator), never refutations.
+        // Documents the Tier-2 asymmetry: unsatisfiable groundings surface
+        // as Tier2Unsat (no FRAT-to-TSTP elaborator), never refutations.
+        // The router may still route these to Tier-3 subset search.
         let (clauses, atoms) = unsat_fixture();
         assert!(matches!(
             certify_sat_backed(&clauses, &atoms, Duration::from_secs(5)),
-            Err(CertificationFailure::Unsupported(
-                "sat-backed tier certifies satisfiability only"
-            ))
+            Err(CertificationFailure::Tier2Unsat)
         ));
     }
 

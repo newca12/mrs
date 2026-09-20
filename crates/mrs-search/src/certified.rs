@@ -51,6 +51,14 @@ const MAX_INFERENCES: u64 = 1_000_000;
 const MAX_GROUND_INSTANCES: usize = 500_000;
 const TIER2_MAX_ATOMS: usize = 16_384;
 const TIER2_MAX_GROUND_INSTANCES: usize = 2_000_000;
+/// Tier-3 constant-subset search bounds: subset sizes, per-size try caps,
+/// and the per-subset grounding cap. Subsets stay small so each Tier-1 run
+/// is milliseconds; everything shares the run deadline.
+const TIER3_MAX_SUBSET_SIZE: usize = 3;
+const TIER3_MAX_SINGLETON_TRIES: usize = 200;
+const TIER3_MAX_PAIR_TRIES: usize = 100;
+const TIER3_MAX_TRIPLE_TRIES: usize = 30;
+const TIER3_MAX_SUBSET_INSTANCES: usize = 50_000;
 
 /// Diagnostic logging for certification sizing, gated on `TRACE_CERTIFY=1`.
 /// Follows the `TRACE_LRS` / `TRACE_BCE` precedent: refusal reasons plus
@@ -66,6 +74,10 @@ pub(crate) enum CertificationFailure {
     Unsupported(&'static str),
     Limit(&'static str),
     OrderedClosureMismatch,
+    /// Tier-2 SAT solving proved unsatisfiability: sound but uncertifiable
+    /// in the SAT-only tier (no FRAT-to-TSTP elaborator). The router may
+    /// still try Tier-3 subset search for a TSTP-ancestry refutation.
+    Tier2Unsat,
 }
 
 pub(crate) struct CertifiedGroundReport {
@@ -95,44 +107,99 @@ pub(crate) fn certify_ground_ordered_resolution(
     time_limit: Duration,
 ) -> Result<CertifiedGroundReport, CertificationFailure> {
     let mut proof_symbols = symbols.clone();
-    let grounded = ground_epr_clauses(clauses, &mut proof_symbols, id_gen)?;
-    let atoms = collect_fragment_atoms(&grounded.clauses)?;
-    // Tier router. Tier 1 (double ordered-resolution closure) handles small
-    // groundings; Tier 2 (SAT-backed satisfiability, no ordering needed)
-    // handles the next size slice. Anything larger fails closed.
-    let tier1 = atoms.len() <= MAX_ATOMS && grounded.clauses.len() <= MAX_GROUND_INSTANCES;
-    let tier2 =
-        atoms.len() <= TIER2_MAX_ATOMS && grounded.clauses.len() <= TIER2_MAX_GROUND_INSTANCES;
-    if tier2 && !tier1 {
-        if !is_pure_relational_epr_input(&grounded.originals) {
-            return Err(CertificationFailure::Unsupported(
-                "saturation is certified for EPR inputs only",
+    let deadline = Instant::now() + time_limit;
+    let constants = collect_grounding_constants(clauses, &mut proof_symbols)?;
+    // Full grounding first; only size limits divert to Tier 3 below —
+    // fragment errors propagate because subsets cannot fix them.
+    let grounded =
+        match ground_with_constants(clauses, &constants, id_gen, TIER2_MAX_GROUND_INSTANCES) {
+            Err(CertificationFailure::Limit(_)) => None,
+            Err(other) => return Err(other),
+            Ok(grounded) => Some(grounded),
+        };
+    if let Some(grounded) = grounded {
+        let atoms = collect_fragment_atoms(&grounded.clauses)?;
+        // Tier router. Tier 1 (double ordered-resolution closure) handles
+        // small groundings; Tier 2 (SAT-backed satisfiability, no ordering
+        // needed) handles the next size slice.
+        let tier1 = atoms.len() <= MAX_ATOMS && grounded.clauses.len() <= MAX_GROUND_INSTANCES;
+        let tier2 =
+            atoms.len() <= TIER2_MAX_ATOMS && grounded.clauses.len() <= TIER2_MAX_GROUND_INSTANCES;
+        if tier1 {
+            return run_tier1(
+                &grounded,
+                provenance,
+                ordering,
+                &proof_symbols,
+                id_gen,
+                deadline,
+                "tier1",
+            );
+        }
+        if tier2 {
+            if !is_pure_relational_epr_input(&grounded.originals) {
+                return Err(CertificationFailure::Unsupported(
+                    "saturation is certified for EPR inputs only",
+                ));
+            }
+            trace_certify(format!(
+                "sat_tier=2 grounded={} atoms={}",
+                grounded.clauses.len(),
+                atoms.len()
+            ));
+            match crate::certified_sat::certify_sat_backed(
+                &grounded.clauses,
+                &atoms,
+                deadline.saturating_duration_since(Instant::now()),
+            ) {
+                Err(CertificationFailure::Tier2Unsat) => {
+                    // Sound but proof-less: a small constant core may still
+                    // refute with TSTP ancestry via Tier 3 below.
+                }
+                outcome => return outcome,
+            }
+        } else {
+            trace_certify(format!(
+                "refuse=tier_size grounded={} atoms={}",
+                grounded.clauses.len(),
+                atoms.len()
             ));
         }
-        trace_certify(format!(
-            "sat_tier=2 grounded={} atoms={}",
-            grounded.clauses.len(),
-            atoms.len()
-        ));
-        return crate::certified_sat::certify_sat_backed(&grounded.clauses, &atoms, time_limit);
     }
-    if !tier1 {
-        trace_certify(format!(
-            "refuse=tier_size grounded={} atoms={}",
-            grounded.clauses.len(),
-            atoms.len()
-        ));
-        return Err(CertificationFailure::Limit(
-            "certified tier size limit exceeded",
-        ));
-    }
+    // Tier 3: the full grounding is infeasible or proved UNSAT without a
+    // proof — search small constant subsets for a certified refutation.
+    tier3_subset_unsat(
+        clauses,
+        provenance,
+        &constants,
+        ordering,
+        &proof_symbols,
+        id_gen,
+        deadline,
+    )
+}
+
+/// Tier 1: double ordered-resolution closure with agreement over an
+/// already-routed grounding. Shared by the normal path and Tier-3 subset
+/// tries (each subset carries full Tier-1 guarantees, including the
+/// agreement check and TSTP-ancestry proofs).
+#[allow(clippy::too_many_arguments)]
+fn run_tier1(
+    grounded: &GroundedInputs,
+    provenance: &[Clause],
+    ordering: &TermOrdering,
+    proof_symbols: &SymbolTable,
+    id_gen: &mut ClauseIdGen,
+    deadline: Instant,
+    context: &'static str,
+) -> Result<CertifiedGroundReport, CertificationFailure> {
+    let atoms = collect_fragment_atoms(&grounded.clauses)?;
     validate_ordering_kind(ordering)?;
     if atoms.len() > MAX_ATOMS {
         trace_certify(format!("refuse=atom_limit atoms={}", atoms.len()));
         return Err(CertificationFailure::Limit("ground atom limit exceeded"));
     }
     validate_ground_order(ordering, &atoms)?;
-    let deadline = Instant::now() + time_limit;
 
     let mut ordered_id_gen = id_gen.clone();
     let ordered = closure_indexed(
@@ -157,7 +224,7 @@ pub(crate) fn certify_ground_ordered_resolution(
     }
 
     trace_certify(format!(
-        "certified status={:?} grounded={} atoms={} ordered_clauses={} ordered_inferences={} reference_clauses={} reference_inferences={}",
+        "certified {context} status={:?} grounded={} atoms={} ordered_clauses={} ordered_inferences={} reference_clauses={} reference_inferences={}",
         ordered.status,
         grounded.clauses.len(),
         atoms.len(),
@@ -194,7 +261,7 @@ pub(crate) fn certify_ground_ordered_resolution(
                 store.insert(clause.id, clause.clone());
             }
             let proof = mrs_proof::extract::extract_proof(empty.id, &store);
-            let tstp = mrs_proof::tstp::format_tstp(&proof, &proof_symbols);
+            let tstp = mrs_proof::tstp::format_tstp(&proof, proof_symbols);
             Ok(CertifiedGroundReport {
                 result: SearchResult::Refutation(empty.id, tstp),
                 stats,
@@ -242,16 +309,253 @@ fn term_is_epr_constant_or_var(term: &Term) -> bool {
     }
 }
 
+/// Tier 3: constant-subset unsatisfiability search for groundings that are
+/// infeasible in full (size refusals) or proved UNSAT without a proof
+/// (Tier-2 SAT outcomes).
+///
+/// Soundness: subset instances are a subset of full instances, so an empty
+/// clause derived from a subset — via the full Tier-1 double closure with
+/// agreement and TSTP ancestry — is a valid refutation of the whole
+/// problem. Subset *saturation* proves nothing and is skipped over: this
+/// tier can only refute, never certify satisfiability. That asymmetry is
+/// load-bearing and unit-tested.
+///
+/// Completeness is explicitly absent: unsatisfiability may genuinely need
+/// many constants (pigeonhole-style), and tries are bounded. Exhaustion
+/// fails closed.
+///
+/// Outcome encoding: `Ok(report)` is a certified refutation (returned);
+/// `Err(())` means "try the next subset"; `Err` with `timed_out` set means
+/// the shared deadline expired (fail closed immediately).
+#[allow(clippy::too_many_arguments)]
+fn tier3_subset_unsat(
+    clauses: &[Clause],
+    provenance: &[Clause],
+    constants: &[SymbolId],
+    ordering: &TermOrdering,
+    proof_symbols: &SymbolTable,
+    id_gen: &mut ClauseIdGen,
+    deadline: Instant,
+) -> Result<CertifiedGroundReport, CertificationFailure> {
+    // Ordering applies to every Tier-1 subset run: reject once here instead
+    // of once per subset.
+    validate_ordering_kind(ordering)?;
+    let biased = bias_order_constants(clauses, constants);
+    // Per-clause variable counts, computed once: subset estimates stay
+    // arithmetic, never materialized speculatively.
+    let var_counts: Vec<usize> = clauses
+        .iter()
+        .map(|clause| clause.free_vars().len())
+        .collect();
+
+    // k = 1: every constant alone (bias order), then bounded biased k = 2, 3.
+    let mut subsets: Vec<Vec<SymbolId>> = Vec::new();
+    for (index, constant) in biased.iter().enumerate() {
+        if index >= TIER3_MAX_SINGLETON_TRIES {
+            break;
+        }
+        subsets.push(vec![*constant]);
+    }
+    'pairs: for (i, a) in biased.iter().enumerate() {
+        for b in biased.iter().skip(i + 1) {
+            if subsets.len() >= TIER3_MAX_SINGLETON_TRIES + TIER3_MAX_PAIR_TRIES {
+                break 'pairs;
+            }
+            subsets.push(vec![*a, *b]);
+        }
+    }
+    'triples: for (i, a) in biased.iter().enumerate() {
+        for (j, b) in biased.iter().enumerate().skip(i + 1) {
+            for c in biased.iter().skip(j + 1) {
+                if subsets.len()
+                    >= TIER3_MAX_SINGLETON_TRIES + TIER3_MAX_PAIR_TRIES + TIER3_MAX_TRIPLE_TRIES
+                {
+                    break 'triples;
+                }
+                subsets.push(vec![*a, *b, *c]);
+            }
+        }
+    }
+    debug_assert!(subsets.iter().all(|s| s.len() <= TIER3_MAX_SUBSET_SIZE));
+
+    let mut tries = 0u64;
+    for subset in &subsets {
+        if Instant::now() >= deadline {
+            trace_certify(format!("tier3_exhausted tries={tries} (deadline)"));
+            return Err(CertificationFailure::Limit(
+                "certification time limit exceeded",
+            ));
+        }
+        // Arithmetic pre-check: skip subsets whose grounding alone would
+        // exceed the per-subset budget.
+        let mut estimated = 0usize;
+        let mut fits = true;
+        for &vars in &var_counts {
+            match subset.len().checked_pow(vars as u32) {
+                Some(instances)
+                    if estimated
+                        .checked_add(instances)
+                        .is_some_and(|total| total <= TIER3_MAX_SUBSET_INSTANCES) =>
+                {
+                    estimated += instances;
+                }
+                _ => {
+                    fits = false;
+                    break;
+                }
+            }
+        }
+        if !fits {
+            continue;
+        }
+        tries += 1;
+        // Vocabulary restriction: keep only clauses whose constants all
+        // lie in the subset (variable-only clauses are always kept — they
+        // ground over the subset). Dropping premises is sound for the
+        // refutation direction: a proof from fewer premises stays valid
+        // for the full problem. It also keeps each try cheap when the
+        // input is ground-heavy.
+        let restricted: Vec<Clause> = clauses
+            .iter()
+            .filter(|clause| clause_mentions_only(clause, subset))
+            .cloned()
+            .collect();
+        if restricted.is_empty() {
+            continue;
+        }
+        let subset_grounded =
+            match ground_with_constants(&restricted, subset, id_gen, TIER3_MAX_SUBSET_INSTANCES) {
+                Ok(grounded) => grounded,
+                Err(_) => continue,
+            };
+        match run_tier1(
+            &subset_grounded,
+            provenance,
+            ordering,
+            proof_symbols,
+            id_gen,
+            deadline,
+            "tier3-sub",
+        ) {
+            Ok(report) if matches!(report.result, SearchResult::Refutation(..)) => {
+                trace_certify(format!(
+                    "tier3_found subset_size={} tries={tries}",
+                    subset.len()
+                ));
+                return Ok(report);
+            }
+            // Subset saturation proves nothing about the full problem, and
+            // subset failures (limits, mismatch) only rule out this subset.
+            _ => {}
+        }
+    }
+    trace_certify(format!("tier3_exhausted tries={tries}"));
+    if Instant::now() >= deadline {
+        return Err(CertificationFailure::Limit(
+            "certification time limit exceeded",
+        ));
+    }
+    Err(CertificationFailure::Limit(
+        "subset instantiation budget exhausted",
+    ))
+}
+
+/// Order constants for subset enumeration: goal-connected constants
+/// (`distance == 0`, i.e. negated-conjecture descendants) first, then by
+/// decreasing occurrence frequency, stably by first-seen position. Small
+/// unsatisfiable cores usually involve the goal vocabulary, so bias order
+/// is hit-rate, not soundness: every subset is decided independently.
+fn bias_order_constants(clauses: &[Clause], constants: &[SymbolId]) -> Vec<SymbolId> {
+    let mut position: StdHashMap<SymbolId, usize> = StdHashMap::new();
+    for (index, constant) in constants.iter().enumerate() {
+        position.insert(*constant, index);
+    }
+    let mut goal = HashSet::default();
+    let mut frequency: StdHashMap<SymbolId, u64> = StdHashMap::new();
+    for clause in clauses {
+        for literal in &clause.literals {
+            let Atom::Pred(_, args) = &literal.atom else {
+                continue;
+            };
+            for arg in args {
+                count_constants(arg, &mut frequency, clause.distance == 0, &mut goal);
+            }
+        }
+    }
+    let mut biased = constants.to_vec();
+    biased.sort_by_key(|constant| {
+        let goal_rank = if goal.contains(constant) { 0 } else { 1 };
+        let frequency = frequency.get(constant).copied().unwrap_or(0);
+        (
+            goal_rank,
+            std::cmp::Reverse(frequency),
+            position.get(constant).copied().unwrap_or(usize::MAX),
+        )
+    });
+    biased
+}
+
+fn count_constants(
+    term: &Term,
+    frequency: &mut StdHashMap<SymbolId, u64>,
+    is_goal: bool,
+    goal: &mut HashSet<SymbolId>,
+) {
+    if let Term::App(symbol, args) = term {
+        if args.is_empty() {
+            *frequency.entry(*symbol).or_default() += 1;
+            if is_goal {
+                goal.insert(*symbol);
+            }
+        } else {
+            for arg in args {
+                count_constants(arg, frequency, is_goal, goal);
+            }
+        }
+    }
+}
+
+/// Returns `true` iff every constant occurring in `clause` is a member of
+/// `subset` (variables are unrestricted). Used for Tier-3 vocabulary
+/// restriction: kept clauses ground over the subset using only subset
+/// constants, so their instances are a subset of the full instances.
+fn clause_mentions_only(clause: &Clause, subset: &[SymbolId]) -> bool {
+    clause.literals.iter().all(|literal| {
+        let args: &[Term] = match &literal.atom {
+            Atom::Pred(_, args) => args,
+            Atom::Eq(..) => return false,
+        };
+        args.iter().all(|arg| term_mentions_only(arg, subset))
+    })
+}
+
+fn term_mentions_only(term: &Term, subset: &[SymbolId]) -> bool {
+    match term {
+        Term::Var(_) => true,
+        Term::App(symbol, args) => {
+            if args.is_empty() {
+                subset.contains(symbol)
+            } else {
+                // Fragment-clean inputs have no function terms; treat any
+                // nested term conservatively as outside the subset.
+                false
+            }
+        }
+    }
+}
+
 struct GroundedInputs {
     clauses: Vec<Clause>,
     originals: Vec<Clause>,
 }
 
-fn ground_epr_clauses(
+/// Collect the finite constant domain of EPR clauses: fragment checks plus
+/// the sorted distinct constants (or one fresh domain constant when the
+/// input has none). Tier 3 reuses this to enumerate constant subsets.
+fn collect_grounding_constants(
     clauses: &[Clause],
     symbols: &mut SymbolTable,
-    id_gen: &mut ClauseIdGen,
-) -> Result<GroundedInputs, CertificationFailure> {
+) -> Result<Vec<SymbolId>, CertificationFailure> {
     let mut constants = Vec::new();
     let mut seen_constants = HashSet::default();
     for clause in clauses {
@@ -275,7 +579,18 @@ fn ground_epr_clauses(
         constants.push(symbols.fresh_symbol("$cert_domain"));
     }
     constants.sort_unstable();
+    Ok(constants)
+}
 
+/// Exhaustively instantiate clauses over `constants`, refusing past
+/// `instance_cap` before materializing. The estimate is exact: one output
+/// per ground input clause plus `constants^vars` per variable clause.
+fn ground_with_constants(
+    clauses: &[Clause],
+    constants: &[SymbolId],
+    id_gen: &mut ClauseIdGen,
+    instance_cap: usize,
+) -> Result<GroundedInputs, CertificationFailure> {
     let originals = clauses.to_vec();
     let mut grounded = Vec::new();
     let mut estimated_instances = 0usize;
@@ -298,7 +613,7 @@ fn ground_epr_clauses(
             ));
         };
         estimated_instances = estimated_instances.saturating_add(instances);
-        if estimated_instances > TIER2_MAX_GROUND_INSTANCES {
+        if estimated_instances > instance_cap {
             trace_certify(format!(
                 "refuse=instance_limit estimated={estimated_instances} vars={} constants={}",
                 vars.len(),
@@ -312,7 +627,7 @@ fn ground_epr_clauses(
         instantiate_clause(
             clause,
             &vars,
-            &constants,
+            constants,
             0,
             &mut substitution,
             id_gen,
@@ -1490,7 +1805,7 @@ mod tests {
         let q = symbols.intern("q");
         let mut ids = ClauseIdGen::new();
         // Twelve distinct constants plus one 6-variable clause:
-        // 12^6 = 2_985_984 instances exceeds MAX_GROUND_INSTANCES (500_000).
+        // 12^6 = 2_985_984 instances exceeds TIER2_MAX_GROUND_INSTANCES.
         let mut clauses = Vec::new();
         for i in 0..12 {
             let c = symbols.intern(&format!("blowup_c{i}"));
@@ -1526,16 +1841,221 @@ mod tests {
                 &mut ids,
                 Duration::from_secs(1),
             );
+            // Full grounding is refused (2.98M > Tier-2 cap); Tier-3 subset
+            // tries find only all-positive saturations and exhaust. Either
+            // Limit fails closed — never a saturation claim.
             assert!(
-                matches!(
-                    result,
-                    Err(CertificationFailure::Limit(
-                        "ground instance limit exceeded"
-                    ))
-                ),
+                matches!(result, Err(CertificationFailure::Limit(_))),
                 "grounding blowup must fail closed with Limit under {ordering:?}"
             );
         }
+    }
+
+    /// Tier 3 finds a small unsatisfiable core: p(a) / ~p(a) hide among
+    /// junk whose full grounding (10^8) is refused, but the {a} singleton
+    /// grounds trivially and Tier 1 refutes with agreement.
+    #[test]
+    fn tier3_finds_small_unsatisfiable_core() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let q = symbols.intern("q");
+        let big = symbols.intern("big");
+        let a = symbols.intern("core_a");
+        let mut ids = ClauseIdGen::new();
+        let mut clauses = vec![ground_pos(&mut ids, p, a), ground_neg(&mut ids, p, a)];
+        for i in 0..10 {
+            let c = symbols.intern(&format!("junk_c{i}"));
+            clauses.push(ground_pos(&mut ids, q, c));
+        }
+        // One 8-variable junk clause (separate predicate keeps arities
+        // consistent) forces the full grounding refusal.
+        clauses.push(input_clause(
+            &mut ids,
+            vec![mrs_core::clause::Literal::pos(Atom::pred(
+                big,
+                vec![
+                    Term::var(0),
+                    Term::var(1),
+                    Term::var(2),
+                    Term::var(3),
+                    Term::var(4),
+                    Term::var(5),
+                    Term::var(6),
+                    Term::var(7),
+                ],
+            ))],
+        ));
+        for ordering in [TermOrdering::KBO, TermOrdering::LPO] {
+            let mut ids = ids.clone();
+            let report = certify_ground_ordered_resolution(
+                &clauses,
+                &[],
+                &symbols,
+                &ordering,
+                &mut ids,
+                Duration::from_secs(5),
+            )
+            .expect("small core must certify");
+            assert!(
+                matches!(report.result, SearchResult::Refutation(..)),
+                "Tier 3 must refute via the small core under {ordering:?}"
+            );
+        }
+    }
+
+    /// Tier 3 never certifies satisfiability: an all-positive problem whose
+    /// full grounding is refused saturates every subset and exhausts.
+    #[test]
+    fn tier3_never_claims_saturation_from_subsets() {
+        let mut symbols = SymbolTable::new();
+        let r = symbols.intern("r");
+        let mut ids = ClauseIdGen::new();
+        // r(X1..X6) over 20 occurring constants: 64M instances, refused in
+        // full. Every subset grounding is all-positive, hence saturating —
+        // which must never become a saturation claim.
+        let mut clauses = Vec::new();
+        for i in 0..20 {
+            let c = symbols.intern(&format!("sat_c{i}"));
+            clauses.push(ground_pos(&mut ids, r, c));
+        }
+        clauses.push(input_clause(
+            &mut ids,
+            vec![mrs_core::clause::Literal::pos(Atom::pred(
+                r,
+                vec![
+                    Term::var(0),
+                    Term::var(1),
+                    Term::var(2),
+                    Term::var(3),
+                    Term::var(4),
+                    Term::var(5),
+                ],
+            ))],
+        ));
+        for ordering in [TermOrdering::KBO, TermOrdering::LPO] {
+            let mut ids = ids.clone();
+            let result = certify_ground_ordered_resolution(
+                &clauses,
+                &[],
+                &symbols,
+                &ordering,
+                &mut ids,
+                Duration::from_secs(5),
+            );
+            assert!(
+                !matches!(
+                    result,
+                    Ok(ref report) if matches!(
+                        report.result,
+                        SearchResult::Saturated(_)
+                    )
+                ),
+                "Tier 3 must never saturate from subsets under {ordering:?}"
+            );
+        }
+    }
+
+    /// Tier 3 respects a zero budget: it fails closed immediately instead of
+    /// enumerating subsets without time.
+    #[test]
+    fn tier3_zero_budget_fails_closed_fast() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let q = symbols.intern("q");
+        let big = symbols.intern("big");
+        let mut ids = ClauseIdGen::new();
+        let mut clauses = vec![
+            ground_pos(&mut ids, p, symbols.intern("z_a")),
+            ground_neg(&mut ids, p, symbols.intern("z_a")),
+        ];
+        for i in 0..10 {
+            let c = symbols.intern(&format!("z_c{i}"));
+            clauses.push(ground_pos(&mut ids, q, c));
+        }
+        clauses.push(input_clause(
+            &mut ids,
+            vec![mrs_core::clause::Literal::pos(Atom::pred(
+                big,
+                vec![
+                    Term::var(0),
+                    Term::var(1),
+                    Term::var(2),
+                    Term::var(3),
+                    Term::var(4),
+                    Term::var(5),
+                    Term::var(6),
+                    Term::var(7),
+                ],
+            ))],
+        ));
+        let start = Instant::now();
+        let result = certify_ground_ordered_resolution(
+            &clauses,
+            &[],
+            &symbols,
+            &TermOrdering::KBO,
+            &mut ids,
+            Duration::ZERO,
+        );
+        assert!(result.is_err(), "zero budget must fail closed");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "zero budget must not enumerate subsets"
+        );
+    }
+
+    /// Goal bias: constants from distance-0 (negated-conjecture) clauses
+    /// sort before frequent non-goal constants.
+    #[test]
+    fn bias_order_puts_goal_constants_first() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let goal_c = symbols.intern("goal_c");
+        let freq_c = symbols.intern("freq_c");
+        let rare_c = symbols.intern("rare_c");
+        let mut ids = ClauseIdGen::new();
+        let mut goal_clause = ground_pos(&mut ids, p, goal_c);
+        goal_clause.distance = 0;
+        let clauses = vec![
+            goal_clause,
+            ground_pos(&mut ids, p, freq_c),
+            ground_pos(&mut ids, p, freq_c),
+            ground_pos(&mut ids, p, freq_c),
+            ground_pos(&mut ids, p, rare_c),
+        ];
+        let constants = vec![freq_c, goal_c, rare_c];
+        let biased = bias_order_constants(&clauses, &constants);
+        assert_eq!(biased.first(), Some(&goal_c));
+        assert_eq!(biased.get(1), Some(&freq_c));
+        assert_eq!(biased.get(2), Some(&rare_c));
+    }
+
+    /// Tier-2-UNSAT routes into Tier 3 and refutes: ~4100 ground units
+    /// exceed the Tier-1 atom cap (landing in Tier-2 range with few
+    /// instances), the solver proves UNSAT without a proof, and Tier 3
+    /// finds the TSTP refutation — vocabulary restriction drops the 4100
+    /// off-core units from the {a} subset, leaving just the core pair.
+    #[test]
+    fn tier2_unsat_falls_through_to_tier3_refutation() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("core2_a");
+        let mut ids = ClauseIdGen::new();
+        let mut clauses = vec![ground_pos(&mut ids, p, a), ground_neg(&mut ids, p, a)];
+        for i in 0..4100 {
+            let c = symbols.intern(&format!("wide_c{i}"));
+            clauses.push(ground_pos(&mut ids, p, c));
+        }
+        let report = certify_ground_ordered_resolution(
+            &clauses,
+            &[],
+            &symbols,
+            &TermOrdering::KBO,
+            &mut ids,
+            Duration::from_secs(30),
+        )
+        .expect("vocabulary-restricted core must certify after Tier-2 UNSAT");
+        assert!(matches!(report.result, SearchResult::Refutation(..)));
     }
 
     fn ground_pos(id_gen: &mut ClauseIdGen, pred: SymbolId, constant: SymbolId) -> Clause {
