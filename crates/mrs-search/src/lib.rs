@@ -33,6 +33,7 @@ pub(crate) use rustc_hash::FxHashSet as HashSet;
 
 pub mod avatar;
 pub(crate) mod certified;
+pub(crate) mod certified_sat;
 pub mod cwa;
 pub mod der;
 pub mod fvo;
@@ -339,6 +340,10 @@ pub enum SaturationReason {
     Ground,
     /// A finite ground ordered-resolution closure agreed with its unrestricted reference closure.
     GroundOrderedResolution,
+    /// A large EPR grounding was decided satisfiable by CaDiCaL and the
+    /// model was independently re-verified clause by clause (Tier 2,
+    /// SAT-direction only; unsatisfiable outcomes fail closed).
+    SatBackedGrounding,
 }
 
 /// Evidence that a saturation result was produced by a complete search path.
@@ -359,6 +364,13 @@ impl CompletenessWitness {
     pub(crate) fn ground_ordered_resolution() -> Self {
         Self {
             reason: SaturationReason::GroundOrderedResolution,
+        }
+    }
+
+    /// Create evidence for the SAT-backed Tier-2 satisfiability certificate.
+    pub(crate) fn sat_backed_grounding() -> Self {
+        Self {
+            reason: SaturationReason::SatBackedGrounding,
         }
     }
 

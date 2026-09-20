@@ -899,7 +899,11 @@ fn main() {
         && matches!(
             result,
             SearchResult::Saturated(ref witness)
-                if witness.reason() != mrs_search::SaturationReason::GroundOrderedResolution
+                if !matches!(
+                    witness.reason(),
+                    mrs_search::SaturationReason::GroundOrderedResolution
+                        | mrs_search::SaturationReason::SatBackedGrounding
+                )
         )
     {
         status = SzsStatus::GaveUp;

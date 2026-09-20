@@ -36,27 +36,26 @@ use mrs_core::term_bank::TermBank;
 use mrs_index::literal_index::LiteralIndex;
 
 /// Resource caps for the bounded certifier. `MAX_ATOMS` and
-/// `MAX_GROUND_INSTANCES` were sized from TRACE_CERTIFY measurements over
-/// the casc-30 EPS/EPU divisions: 4096 atoms covers every observed
-/// atom-limited problem (max 3627), and 500 000 instances covers the lower
-/// half of instance-limited groundings. The caps are usable (rather than
-/// merely converting refusals into timeouts) because both closures retrieve
-/// partners through a `LiteralIndex` (see `closure_indexed`) instead of
-/// scanning all pairs; measured peak RSS on the largest explored grounding
-/// is ~524 MB. `MAX_CLAUSES` and `MAX_INFERENCES` bound closure memory and
-/// work after grounding (deep-budget probes hit the 1M inference cap on
-/// PUZ028-4, correctly fail-closed), and the per-run time limit bounds the
-/// rest. Everything beyond the caps fails closed as `Limit`, never as
-/// saturation.
+/// `MAX_GROUND_INSTANCES` bound Tier 1 (double ordered-resolution closure);
+/// `TIER2_MAX_ATOMS` and `TIER2_MAX_GROUND_INSTANCES` bound Tier 2
+/// (SAT-backed satisfiability via CaDiCaL, see `certified_sat`). Tier-2
+/// bounds were sized from TRACE_CERTIFY measurements: they admit the next
+/// slice of closure-bound groundings while keeping the materialized vec and
+/// the solver arena within a few hundred MB. `MAX_CLAUSES` and
+/// `MAX_INFERENCES` bound Tier-1 closure memory and work after grounding,
+/// and the per-run time limit bounds everything else. Anything beyond the
+/// Tier-2 caps fails closed as `Limit`, never as saturation.
 const MAX_ATOMS: usize = 4096;
 const MAX_CLAUSES: usize = 100_000;
 const MAX_INFERENCES: u64 = 1_000_000;
 const MAX_GROUND_INSTANCES: usize = 500_000;
+const TIER2_MAX_ATOMS: usize = 16_384;
+const TIER2_MAX_GROUND_INSTANCES: usize = 2_000_000;
 
 /// Diagnostic logging for certification sizing, gated on `TRACE_CERTIFY=1`.
 /// Follows the `TRACE_LRS` / `TRACE_BCE` precedent: refusal reasons plus
 /// the problem sizes that triggered them, so cap changes stay data-driven.
-fn trace_certify(message: String) {
+pub(crate) fn trace_certify(message: String) {
     if std::env::var_os("TRACE_CERTIFY").is_some() {
         eprintln!("[CERTIFY] {message}");
     }
@@ -97,7 +96,41 @@ pub(crate) fn certify_ground_ordered_resolution(
 ) -> Result<CertifiedGroundReport, CertificationFailure> {
     let mut proof_symbols = symbols.clone();
     let grounded = ground_epr_clauses(clauses, &mut proof_symbols, id_gen)?;
-    let atoms = validate_fragment(&grounded.clauses, ordering)?;
+    let atoms = collect_fragment_atoms(&grounded.clauses)?;
+    // Tier router. Tier 1 (double ordered-resolution closure) handles small
+    // groundings; Tier 2 (SAT-backed satisfiability, no ordering needed)
+    // handles the next size slice. Anything larger fails closed.
+    let tier1 = atoms.len() <= MAX_ATOMS && grounded.clauses.len() <= MAX_GROUND_INSTANCES;
+    let tier2 =
+        atoms.len() <= TIER2_MAX_ATOMS && grounded.clauses.len() <= TIER2_MAX_GROUND_INSTANCES;
+    if tier2 && !tier1 {
+        if !is_pure_relational_epr_input(&grounded.originals) {
+            return Err(CertificationFailure::Unsupported(
+                "saturation is certified for EPR inputs only",
+            ));
+        }
+        trace_certify(format!(
+            "sat_tier=2 grounded={} atoms={}",
+            grounded.clauses.len(),
+            atoms.len()
+        ));
+        return crate::certified_sat::certify_sat_backed(&grounded.clauses, &atoms, time_limit);
+    }
+    if !tier1 {
+        trace_certify(format!(
+            "refuse=tier_size grounded={} atoms={}",
+            grounded.clauses.len(),
+            atoms.len()
+        ));
+        return Err(CertificationFailure::Limit(
+            "certified tier size limit exceeded",
+        ));
+    }
+    validate_ordering_kind(ordering)?;
+    if atoms.len() > MAX_ATOMS {
+        trace_certify(format!("refuse=atom_limit atoms={}", atoms.len()));
+        return Err(CertificationFailure::Limit("ground atom limit exceeded"));
+    }
     validate_ground_order(ordering, &atoms)?;
     let deadline = Instant::now() + time_limit;
 
@@ -265,7 +298,7 @@ fn ground_epr_clauses(
             ));
         };
         estimated_instances = estimated_instances.saturating_add(instances);
-        if estimated_instances > MAX_GROUND_INSTANCES {
+        if estimated_instances > TIER2_MAX_GROUND_INSTANCES {
             trace_certify(format!(
                 "refuse=instance_limit estimated={estimated_instances} vars={} constants={}",
                 vars.len(),
@@ -362,13 +395,7 @@ fn is_lpo(ordering: &TermOrdering) -> bool {
     matches!(ordering, TermOrdering::LPO | TermOrdering::CustomLPO(_))
 }
 
-fn validate_fragment(
-    clauses: &[Clause],
-    ordering: &TermOrdering,
-) -> Result<Vec<Atom>, CertificationFailure> {
-    if clauses.is_empty() {
-        return Err(CertificationFailure::Unsupported("empty input clause set"));
-    }
+fn validate_ordering_kind(ordering: &TermOrdering) -> Result<(), CertificationFailure> {
     if matches!(ordering, TermOrdering::CustomACKBO(_, _)) {
         return Err(CertificationFailure::Unsupported(
             "AC ordering is outside the certified fragment",
@@ -379,7 +406,17 @@ fn validate_fragment(
             "only KBO and LPO are certified for ordered ground resolution",
         ));
     }
+    Ok(())
+}
 
+/// Fragment checks shared by both tiers: non-empty input, no
+/// formula/AVATAR clauses, predicate atoms only, consistent arities.
+/// Returns the distinct ground atoms. Ordering validation and size caps are
+/// tier-specific and applied by the caller.
+fn collect_fragment_atoms(clauses: &[Clause]) -> Result<Vec<Atom>, CertificationFailure> {
+    if clauses.is_empty() {
+        return Err(CertificationFailure::Unsupported("empty input clause set"));
+    }
     let mut atoms = HashSet::default();
     let mut arities = StdHashMap::<SymbolId, usize>::new();
     for clause in clauses {
@@ -400,10 +437,6 @@ fn validate_fragment(
             }
             atoms.insert(literal.atom.clone());
         }
-    }
-    if atoms.len() > MAX_ATOMS {
-        trace_certify(format!("refuse=atom_limit atoms={}", atoms.len()));
-        return Err(CertificationFailure::Limit("ground atom limit exceeded"));
     }
     Ok(atoms.into_iter().collect())
 }

@@ -12,7 +12,15 @@
 # is observed.
 #
 # Usage:
-#   ./crates/mrs-bench/epr_certify_canaries.sh [--corpus DIR] [--time SECS] [--jobs N]
+#   ./crates/mrs-bench/epr_certify_canaries.sh [--corpus DIR] [--time SECS] [--jobs N] [--deep]
+#
+# --deep selects the deep-budget variant (120 s per problem instead of 10 s)
+# for measuring Tier-2 SAT-backed coverage on large groundings. The gate
+# criterion is identical: zero false positives.
+#
+# --divisions EPS (or EPU / EPS,EPU) restricts the run to a subset of
+# divisions; useful because deep EPU runs burn the full budget proving
+# UNSAT before failing closed per the Tier-2 SAT-only rule.
 #
 # Env overrides: MRS_BIN (prover binary, default ./target/release/mrs),
 #   MRS_CANARY_TIME, MRS_CANARY_JOBS.
@@ -22,12 +30,15 @@ CORPUS="crates/mrs-bench/problems/casc-30"
 TIME_SECS="${MRS_CANARY_TIME:-10}"
 JOBS="${MRS_CANARY_JOBS:-4}"
 BIN="${MRS_BIN:-./target/release/mrs}"
+DIVISIONS="EPS EPU"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --corpus) CORPUS="$2"; shift 2 ;;
         --time) TIME_SECS="$2"; shift 2 ;;
         --jobs) JOBS="$2"; shift 2 ;;
+        --deep) TIME_SECS="120"; shift ;;
+        --divisions) DIVISIONS="${2//,/ }"; shift 2 ;;
         *) echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -48,7 +59,8 @@ trap 'rm -rf "$RESULTS_DIR"' EXIT
 # Phase 1: run the prover over the whole corpus with a bounded job pool.
 # Each job writes one .out file; classification happens afterwards.
 running=0
-for division in EPS EPU; do
+# shellcheck disable=SC2086
+for division in $DIVISIONS; do
     for strategy in 1 7; do
         while IFS= read -r problem; do
             base="$(basename "$problem" .p)"
@@ -68,7 +80,8 @@ wait
 
 # Phase 2: classify. Only a status contradicting the division label counts.
 overall_fp=0
-for division in EPS EPU; do
+# shellcheck disable=SC2086
+for division in $DIVISIONS; do
     for strategy in 1 7; do
         total=0; certified=0; fail_closed=0; fps=0; fp_list=""
         for out in "$RESULTS_DIR/${division}-s${strategy}-"*.out; do

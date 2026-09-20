@@ -48,6 +48,17 @@ The result is accepted only when both closures agree:
 - both saturate without the empty clause, producing
   `CompletenessWitness::GroundOrderedResolution`.
 
+Large groundings that exceed the closure tier take a second path instead:
+Tier 2 encodes the grounded set propositionally and asks CaDiCaL to decide
+it (`crates/mrs-search/src/certified_sat.rs`). A satisfiable verdict plus
+an independently re-verified model produces
+`CompletenessWitness::SatBackedGrounding`; unsatisfiable, unknown, and
+failed-model outcomes all fail closed. Tier 2 is SAT-direction only by
+design (there is no FRAT-to-TSTP elaborator for UNSAT proofs) and skips
+ordering validation (meaningless for model checking). Tiers are selected by
+grounding size with no CLI change; where both tiers run, their verdicts
+must agree (tested differentially).
+
 If the closures disagree, or a resource limit is reached, certification fails
 closed with `GaveUp`.
 
@@ -101,14 +112,31 @@ false positive and fails the gate; `GaveUp`/`Timeout`/`ResourceOut` are
 allowed (fail-closed). Every problem runs under both certified orderings
 (`--strategy 1` KBO, `--strategy 7` LPO).
 
-Last measured outcome (2026-09-20, `casc-30` corpus, 10 s per problem):
+Last measured outcome (2026-09-20, `casc-30` corpus):
+
+Fast gate, 10 s per problem:
 
 | Division | Ordering | Total | Certified | Fail-closed | False positives |
 |----------|----------|-------|-----------|-------------|-----------------|
-| EPS | KBO (s1) | 100 | 3 | 97 | 0 |
-| EPS | LPO (s7) | 100 | 3 | 97 | 0 |
+| EPS | KBO (s1) | 100 | 6 | 94 | 0 |
+| EPS | LPO (s7) | 100 | 5 | 95 | 0 |
 | EPU | KBO (s1) | 100 | 0 | 100 | 0 |
 | EPU | LPO (s7) | 100 | 0 | 100 | 0 |
+
+Deep gate (`--deep`, 120 s per problem):
+
+| Division | Ordering | Total | Certified | Fail-closed | False positives |
+|----------|----------|-------|-----------|-------------|-----------------|
+| EPS | KBO (s1) | 100 | 7 | 93 | 0 |
+| EPS | LPO (s7) | 100 | 7 | 93 | 0 |
+| EPU | KBO (s1) | 100 | 0 | 100 | 0 |
+| EPU | LPO (s7) | 100 | 0 | 100 | 0 |
+
+(The fast-gate jump from 3 to 6/5 EPS is the Tier-2 SAT path converting
+closure-bound groundings — e.g. NLP116-1: 200 034 clauses over 5 211
+atoms, verified model. EPU stays zero by construction: the SAT tier
+certifies satisfiability only, and EPU problems die at grounding size or
+real equality content before any closure runs.)
 
 Dominant fail-closed reasons are resource bounds (`ground instance limit
 exceeded` on 66 problems, `ground atom limit exceeded` on 23) and
@@ -179,6 +207,25 @@ fail-closed. EPU never reaches closure at all: roughly half its problems
 refuse on grounding size and half on real equality content in (included)
 axiom files, which is outside the predicate-only fragment. Peak RSS on the
 largest explored grounding is ~524 MB. Conclusion: retrieval speed is no
-longer the coverage bottleneck; closure *size* is. Further coverage needs a
-different decision procedure for large groundings (e.g. SAT-backed), not
-faster pairs.
+longer the coverage bottleneck; closure *size* is — which is what the
+SAT-backed Tier 2 below addresses for the satisfiable side.
+
+## SAT-Backed Tier 2 (Phase 4 Outcome)
+
+Groundings too large for either closure (up to 2M instances / 16 384
+atoms) are encoded propositionally and decided by CaDiCaL. The model is
+then re-verified clause by clause; only a passing re-check yields
+`Saturated`. During development the re-check caught a real polarity bug
+(`Solver::value` reports variable assignment even for negative arguments —
+passing signed literals through inverted every negative literal), which
+would otherwise have kept Tier-2 coverage at zero behind a passing solver
+verdict. Tier-2 UNSAT fails closed by design (no FRAT-to-TSTP elaborator);
+ordering validation is skipped (vacuous for model checking, quadratic at
+16k atoms). Encoder, verifier, asymmetry, and Tier-1-vs-Tier-2 differential
+agreement are unit-tested; the canary gate re-validates empirically
+(EPU zero-FP is the backstop: any unsound SAT claim there fails loudly).
+Measured peak RSS on the largest Tier-2 grounding is ~524 MB. Remaining
+EPR coverage needs lazy/incremental grounding (the 66 instance-limit + 19
+overflow problems never materialize) or the UNSAT proof pipeline —
+both declared future work, not regressions: Tier 1 behavior is unchanged
+where closures terminate.
