@@ -79,7 +79,9 @@ The next certification layers require independent proofs and tests for:
 - KBO/LPO substitution stability and valid custom signatures (ground
   totality/transitivity plus KBO weight and KBO/LPO precedence validation
   are certified; lifted stability is still open);
-- indexed lookup equivalence to linear inference generation;
+- indexed lookup equivalence to linear inference generation (per-query
+  recall/validity/removal evidenced in `tests/index_equivalence.rs`;
+  end-to-end trace equivalence still open);
 - demodulation, subsumption, BCE/PLE, AC normalization, and AVATAR;
 - shared-clause and portfolio-stop behavior; and
 - EPR/FEQ/UEQ reference canaries with zero false positive statuses.
@@ -130,3 +132,28 @@ estimated=… vars=… constants=…`, `refuse=atom_limit atoms=…`,
 `refuse=closure_time ordered=… clauses=… inferences=…`) plus a summary line
 per successful certification, following the `TRACE_LRS` precedent, so
 future cap changes stay data-driven.
+
+## Indexed Lookup Equivalence
+
+The given-clause loop retrieves inference partners through `LiteralIndex`
+(discrimination + feature-vector trees) and the demodulation `STreeId`,
+never by linear scan. The trees document an imperfect-filter contract —
+over-approximation allowed, misses forbidden — and
+`crates/mrs-search/tests/index_equivalence.rs` pins it differentially:
+every query the engine issues (resolution partners, superposition
+targets/sources, all four subsumption candidate directions, demodulation
+generalizations) is answered both by the index and by a naive linear scan
+with an independent exact oracle (Robinson unification/matching on legacy
+terms, `mrs_calculus::subsumption`), asserting recall (every exact hit is
+indexed), validity (coarse-filter and FVI necessary conditions on indexed
+hits), and removal consistency, with non-vacuity counters on every oracle
+so the assertions cannot pass on empty exact sets. Fixtures mine
+solved-run shapes from `results/` (GRP123-4.004 EPR vocabulary, UEQ-style
+equational stores, a mixed-arity trap, foreign-term robustness queries).
+The suite caught one oracle-side bug during development (per-position
+fresh-substitution unification wrongly reported unifiable pairs the tree
+correctly rejected); no index recall violation was found.
+
+Out of scope for this layer: end-to-end search-trace equivalence (would
+need a linear-scan dual-run mode) and AVATAR-gated clause filtering, which
+happens after index retrieval.
