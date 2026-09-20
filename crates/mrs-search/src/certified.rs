@@ -1158,4 +1158,113 @@ mod tests {
             "equality input must never certify saturation"
         );
     }
+
+    /// Regression canary for the historical false-`Satisfiable` shape
+    /// (SYN861/862/866): an unsatisfiable clause set containing an
+    /// all-positive clause must REFUTE under ordered resolution, never
+    /// saturate — under both certified orderings.
+    #[test]
+    fn all_positive_epr_unsat_refutes_under_kbo_and_lpo() {
+        for ordering in [TermOrdering::KBO, TermOrdering::LPO] {
+            let mut symbols = SymbolTable::new();
+            let p = symbols.intern("p");
+            let q = symbols.intern("q");
+            let a = symbols.intern("a");
+            let mut ids = ClauseIdGen::new();
+            // p(a) | q(a) , ~p(a) , ~q(a) — unsatisfiable.
+            let clauses = vec![
+                input_clause(
+                    &mut ids,
+                    vec![
+                        mrs_core::clause::Literal::pos(Atom::pred(p, vec![Term::constant(a)])),
+                        mrs_core::clause::Literal::pos(Atom::pred(q, vec![Term::constant(a)])),
+                    ],
+                ),
+                input_clause(
+                    &mut ids,
+                    vec![mrs_core::clause::Literal::neg(Atom::pred(
+                        p,
+                        vec![Term::constant(a)],
+                    ))],
+                ),
+                input_clause(
+                    &mut ids,
+                    vec![mrs_core::clause::Literal::neg(Atom::pred(
+                        q,
+                        vec![Term::constant(a)],
+                    ))],
+                ),
+            ];
+            let report = certify_ground_ordered_resolution(
+                &clauses,
+                &[],
+                &symbols,
+                &ordering,
+                &mut ids,
+                Duration::from_secs(1),
+            )
+            .expect("all-positive UNSAT EPR must certify");
+            assert!(
+                matches!(report.result, SearchResult::Refutation(..)),
+                "all-positive UNSAT EPR must refute under {ordering:?}, got {:?}",
+                report.result
+            );
+        }
+    }
+
+    /// Resource canary: a finite EPR grounding that exceeds the instance
+    /// budget must fail closed with `Limit`, never with a saturation claim.
+    #[test]
+    fn grounding_blowup_fails_closed_with_limit() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let q = symbols.intern("q");
+        let mut ids = ClauseIdGen::new();
+        // Twelve distinct constants plus one 5-variable clause:
+        // 12^5 = 248_832 instances exceeds MAX_GROUND_INSTANCES (100_000).
+        let mut clauses = Vec::new();
+        for i in 0..12 {
+            let c = symbols.intern(&format!("blowup_c{i}"));
+            clauses.push(input_clause(
+                &mut ids,
+                vec![mrs_core::clause::Literal::pos(Atom::pred(
+                    q,
+                    vec![Term::constant(c)],
+                ))],
+            ));
+        }
+        clauses.push(input_clause(
+            &mut ids,
+            vec![mrs_core::clause::Literal::pos(Atom::pred(
+                p,
+                vec![
+                    Term::var(0),
+                    Term::var(1),
+                    Term::var(2),
+                    Term::var(3),
+                    Term::var(4),
+                ],
+            ))],
+        ));
+        for ordering in [TermOrdering::KBO, TermOrdering::LPO] {
+            let mut ids = ids.clone();
+            let result = certify_ground_ordered_resolution(
+                &clauses,
+                &[],
+                &symbols,
+                &ordering,
+                &mut ids,
+                Duration::from_secs(1),
+            );
+            assert!(
+                matches!(
+                    result,
+                    Err(CertificationFailure::Limit(
+                        "ground instance limit exceeded"
+                    ))
+                ),
+                "grounding blowup must fail closed with Limit under {ordering:?}"
+            );
+        }
+    }
 }

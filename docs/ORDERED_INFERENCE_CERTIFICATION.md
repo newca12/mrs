@@ -88,3 +88,29 @@ Until those layers are complete, `SearchResult::Saturated` from the ordinary
 given-clause portfolio remains disabled. The only certified positive
 saturation is the EPR `GroundOrderedResolution` witness produced by the
 double-closure certifier described here.
+
+## EPR Reference Canaries
+
+The soundness gate is `crates/mrs-bench/epr_certify_canaries.sh`. Ground
+truth comes from CASC division labels, never from the prover: every problem
+under `EPS/` is expected satisfiable and every problem under `EPU/` is
+expected unsatisfiable. A refutation on EPS, or a saturation on EPU, is a
+false positive and fails the gate; `GaveUp`/`Timeout`/`ResourceOut` are
+allowed (fail-closed). Every problem runs under both certified orderings
+(`--strategy 1` KBO, `--strategy 7` LPO).
+
+Last measured outcome (2026-09-20, `casc-30` corpus, 10 s per problem):
+
+| Division | Ordering | Total | Certified | Fail-closed | False positives |
+|----------|----------|-------|-----------|-------------|-----------------|
+| EPS | KBO (s1) | 100 | 3 | 97 | 0 |
+| EPS | LPO (s7) | 100 | 3 | 97 | 0 |
+| EPU | KBO (s1) | 100 | 0 | 100 | 0 |
+| EPU | LPO (s7) | 100 | 0 | 100 | 0 |
+
+Dominant fail-closed reasons are resource bounds (`ground atom limit
+exceeded` on large group-theory groundings) and out-of-fragment inputs
+(`equality is outside the certified fragment` where an axiom file uses real
+equality). Raising the caps is a completeness concern for a later phase;
+the caps stay conservative while the gate criterion is zero false
+positives.
