@@ -25,13 +25,14 @@
 //! let mut state = SearchState::new(vec![], id_gen, config_arc, symbols_arc, true);
 //! let config = SearchConfig::default();
 //! let result = search(&mut state, &config);
-//! assert!(matches!(result, SearchResult::Saturated));
+//! assert!(matches!(result, SearchResult::GaveUp));
 //! ```
 
 pub(crate) use rustc_hash::FxHashMap as HashMap;
 pub(crate) use rustc_hash::FxHashSet as HashSet;
 
 pub mod avatar;
+pub(crate) mod certified;
 pub mod cwa;
 pub mod der;
 pub mod fvo;
@@ -162,7 +163,7 @@ impl ScheduleReport {
         let saturated = self
             .strategies
             .iter()
-            .filter(|s| matches!(s.result, SearchResult::Saturated))
+            .filter(|s| matches!(s.result, SearchResult::Saturated(_)))
             .count();
 
         let mut detail = format!(
@@ -257,7 +258,7 @@ impl ScheduleReport {
         let n_saturated = self
             .strategies
             .iter()
-            .filter(|s| matches!(s.result, SearchResult::Saturated))
+            .filter(|s| matches!(s.result, SearchResult::Saturated(_)))
             .count();
 
         Some(format!(
@@ -285,7 +286,7 @@ impl ScheduleReport {
             }
         }
         for s in &self.strategies {
-            if matches!(s.result, SearchResult::Saturated) {
+            if matches!(s.result, SearchResult::Saturated(_)) {
                 return s.result.clone();
             }
         }
@@ -303,13 +304,78 @@ impl ScheduleReport {
     }
 }
 
+/// Detailed reason why a search configuration cannot soundly claim saturation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IncompletenessReason {
+    /// Generated clauses were discarded by a maximum term-weight cap.
+    MaxTermWeightDiscarded {
+        /// Configured maximum clause weight.
+        cap: u32,
+        /// Number of discarded generated clauses.
+        discarded: u64,
+    },
+    /// Set-of-Support restricts inference generation.
+    SosRestricted(u32),
+    /// Only unit-resolution inferences are generated.
+    UnitOnlyResolution,
+    /// SInE removed input axioms.
+    SineFiltered,
+    /// ML premise pruning removed input axioms.
+    MlPremisePruned,
+    /// A non-standard clause weight changes the simplification/search order.
+    NonStandardWeightFn,
+    /// Literal selection does not preserve complete inference generation.
+    IncompleteLiteralSelection,
+    /// LRS discarded passive clauses.
+    LrsDiscarded(u64),
+    /// Ordered maximal-literal restriction is not certified for this engine.
+    OrderedInferenceRestriction,
+}
+
+/// Category of completeness evidence carried by a saturation result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaturationReason {
+    /// A purely ground clause set was checked by the exact ground model path.
+    Ground,
+    /// A finite ground ordered-resolution closure agreed with its unrestricted reference closure.
+    GroundOrderedResolution,
+}
+
+/// Evidence that a saturation result was produced by a complete search path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompletenessWitness {
+    reason: SaturationReason,
+}
+
+impl CompletenessWitness {
+    /// Create evidence for the exact ground model path.
+    pub(crate) fn ground() -> Self {
+        Self {
+            reason: SaturationReason::Ground,
+        }
+    }
+
+    /// Create evidence for the bounded ground ordered-resolution certificate.
+    pub(crate) fn ground_ordered_resolution() -> Self {
+        Self {
+            reason: SaturationReason::GroundOrderedResolution,
+        }
+    }
+
+    /// Return the evidence category.
+    pub fn reason(&self) -> SaturationReason {
+        self.reason
+    }
+}
+
 /// Result of a proof search.
 #[derive(Clone, Debug)]
 pub enum SearchResult {
     /// A refutation was found. Contains the ID of the empty clause and the proof TSTP string.
     Refutation(ClauseId, String),
-    /// All clauses were processed without finding a contradiction.
-    Saturated,
+    /// All clauses were processed without finding a contradiction and the
+    /// search path supplied completeness evidence.
+    Saturated(CompletenessWitness),
     /// The time limit was exceeded.
     Timeout,
     /// The search gave up (e.g. saturated with an incomplete strategy).
@@ -456,6 +522,10 @@ pub struct SearchConfig {
     /// a sound literal ordering. Kept behind the flag for future, correct work.
     /// Enable for experiments via the `MRS_ORDERED` env var.
     pub ordered_inferences: bool,
+    /// Run the bounded, independently cross-checked ground ordered-resolution
+    /// certifier instead of the heuristic given-clause path. Unsupported
+    /// non-ground/equality inputs fail closed as `GaveUp`.
+    pub certify_ordered_inferences: bool,
     /// SInE tolerance level. `None` means SInE is disabled.
     pub sine_tolerance: Option<f64>,
     /// SInE depth limit.
@@ -475,6 +545,68 @@ pub struct SearchConfig {
     pub resource_limits: ResourceLimits,
 }
 
+impl SearchConfig {
+    /// Whether ordered inference is enabled for this search, including the
+    /// process-wide diagnostic override.
+    pub fn ordered_inferences_enabled(&self) -> bool {
+        effective_ordered_inferences(
+            self.ordered_inferences,
+            std::env::var_os("MRS_ORDERED").is_some(),
+        )
+    }
+
+    /// Check whether this configuration avoids known incomplete restrictions.
+    /// This is only a configuration audit; it is not by itself a completeness
+    /// proof for the full given-clause implementation.
+    pub fn check_completeness(
+        &self,
+        weight_discarded: u64,
+        lrs_discarded: u64,
+        ml_pruned: bool,
+    ) -> Result<(), IncompletenessReason> {
+        if let Some(cap) = self.max_term_weight
+            && weight_discarded > 0
+        {
+            return Err(IncompletenessReason::MaxTermWeightDiscarded {
+                cap,
+                discarded: weight_discarded,
+            });
+        }
+        if self.sos_depth < u32::MAX {
+            return Err(IncompletenessReason::SosRestricted(self.sos_depth));
+        }
+        if self.unit_only_resolution {
+            return Err(IncompletenessReason::UnitOnlyResolution);
+        }
+        if self.sine_tolerance.is_some() {
+            return Err(IncompletenessReason::SineFiltered);
+        }
+        if ml_pruned {
+            return Err(IncompletenessReason::MlPremisePruned);
+        }
+        if self.weight_fn != ClauseWeightFn::Standard {
+            return Err(IncompletenessReason::NonStandardWeightFn);
+        }
+        if matches!(
+            self.literal_selection,
+            LiteralSelection::MaxNegativeOrMaxPositive
+        ) {
+            return Err(IncompletenessReason::IncompleteLiteralSelection);
+        }
+        if lrs_discarded > 0 {
+            return Err(IncompletenessReason::LrsDiscarded(lrs_discarded));
+        }
+        if self.ordered_inferences_enabled() {
+            return Err(IncompletenessReason::OrderedInferenceRestriction);
+        }
+        Ok(())
+    }
+}
+
+fn effective_ordered_inferences(configured: bool, environment_override: bool) -> bool {
+    configured || environment_override
+}
+
 impl Default for SearchConfig {
     fn default() -> Self {
         Self {
@@ -489,7 +621,10 @@ impl Default for SearchConfig {
             unit_only_resolution: false,
             weight_fn: ClauseWeightFn::Standard,
             sos_depth: u32::MAX, // disabled
-            ordered_inferences: true,
+            // Ordered maximal-literal inference remains available for
+            // refutation search, but is not certified for positive results.
+            ordered_inferences: false,
+            certify_ordered_inferences: false,
             sine_tolerance: None,
             sine_depth_limit: None,
             goal_transformation: None,
@@ -499,5 +634,105 @@ impl Default for SearchConfig {
             symbol_weight_scheme: SymbolWeightScheme::Uniform,
             resource_limits: ResourceLimits::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completeness_audit_accepts_unpruned_default_configuration() {
+        let config = SearchConfig::default();
+        config
+            .check_completeness(0, 0, false)
+            .expect("default configuration should pass the configuration audit");
+    }
+
+    #[test]
+    fn completeness_audit_rejects_ordered_inference() {
+        let config = SearchConfig {
+            ordered_inferences: true,
+            ..SearchConfig::default()
+        };
+        assert_eq!(
+            config.check_completeness(0, 0, false),
+            Err(IncompletenessReason::OrderedInferenceRestriction)
+        );
+    }
+
+    #[test]
+    fn effective_ordered_inference_includes_environment_override() {
+        assert!(!effective_ordered_inferences(false, false));
+        assert!(effective_ordered_inferences(true, false));
+        assert!(effective_ordered_inferences(false, true));
+        assert!(effective_ordered_inferences(true, true));
+    }
+
+    #[test]
+    fn completeness_audit_rejects_each_known_pruning_source() {
+        let base = SearchConfig {
+            max_term_weight: Some(10),
+            ..SearchConfig::default()
+        };
+        assert_eq!(
+            base.check_completeness(1, 0, false),
+            Err(IncompletenessReason::MaxTermWeightDiscarded {
+                cap: 10,
+                discarded: 1,
+            })
+        );
+
+        let sos = SearchConfig {
+            sos_depth: 10,
+            ..base.clone()
+        };
+        assert_eq!(
+            sos.check_completeness(0, 0, false),
+            Err(IncompletenessReason::SosRestricted(10))
+        );
+
+        let unit_only = SearchConfig {
+            unit_only_resolution: true,
+            ..base.clone()
+        };
+        assert_eq!(
+            unit_only.check_completeness(0, 0, false),
+            Err(IncompletenessReason::UnitOnlyResolution)
+        );
+
+        let sine = SearchConfig {
+            sine_tolerance: Some(2.0),
+            ..base.clone()
+        };
+        assert_eq!(
+            sine.check_completeness(0, 0, false),
+            Err(IncompletenessReason::SineFiltered)
+        );
+
+        assert_eq!(
+            base.check_completeness(0, 0, true),
+            Err(IncompletenessReason::MlPremisePruned)
+        );
+        assert_eq!(
+            base.check_completeness(0, 42, false),
+            Err(IncompletenessReason::LrsDiscarded(42))
+        );
+        assert_eq!(
+            SearchConfig {
+                weight_fn: ClauseWeightFn::FunctionDepth,
+                ..base.clone()
+            }
+            .check_completeness(0, 0, false),
+            Err(IncompletenessReason::NonStandardWeightFn)
+        );
+        assert_eq!(
+            SearchConfig {
+                literal_selection: LiteralSelection::MaxNegativeOrMaxPositive,
+                ..base
+            }
+            .check_completeness(0, 0, false),
+            Err(IncompletenessReason::IncompleteLiteralSelection)
+        );
     }
 }

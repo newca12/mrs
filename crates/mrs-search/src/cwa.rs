@@ -286,7 +286,7 @@ fn make_branch_unit(top_clause: &Clause, k: usize, id_gen: &mut ClauseIdGen) -> 
 ///
 /// Returns:
 /// - `Some(SearchResult::Refutation)` if every branch refutes.
-/// - `Some(SearchResult::Saturated)` if any branch genuinely saturates
+/// - `Some(SearchResult::Saturated(_))` if any branch genuinely saturates
 ///   without weight bound (currently unreachable because we always use a
 ///   weight bound; reserved for future use).
 /// - `None` if the input doesn't match the pattern, any branch times out, or
@@ -355,7 +355,7 @@ pub fn try_componentwise_refute(
         if std::env::var("TRACE_CWA").is_ok() {
             let outcome = match &result {
                 SearchResult::Refutation(..) => "Refutation",
-                SearchResult::Saturated => "Saturated",
+                SearchResult::Saturated(_) => "Saturated",
                 SearchResult::Timeout => "Timeout",
                 SearchResult::GaveUp => "GaveUp",
                 SearchResult::ResourceOut => "ResourceOut",

@@ -940,7 +940,10 @@ pub fn try_instgen_epr_with_telemetry(
                     if trace {
                         eprintln!("[InstGen] Round {}: ground SAT model verified", round);
                     }
-                    return (Some(SearchResult::Saturated), tele);
+                    return (
+                        Some(SearchResult::Saturated(crate::CompletenessWitness::ground())),
+                        tele,
+                    );
                 }
 
                 if all_clauses.len() + new_instances.len() > MAX_TOTAL_INSTANCES {
@@ -993,7 +996,7 @@ pub fn try_instgen_epr_with_telemetry(
 /// Tries to decide an EPR problem using lazy SAT-guided InstGen.
 ///
 /// Returns `Some(SearchResult::Refutation(..))` if unsatisfiable,
-/// `Some(SearchResult::Saturated)` if the ground SAT model is conclusive,
+/// `Some(SearchResult::Saturated(_))` if the ground SAT model is conclusive,
 /// `Some(SearchResult::GaveUp)` if the abstraction is inconclusive for a
 /// variable-bearing clause set,
 /// or `None` if the budget/heuristics expire without a conclusive result.
@@ -1305,7 +1308,7 @@ mod tests {
 
         let res = try_instgen_epr(&[c1, c2], &[], &mut id_gen, &syms);
         assert!(
-            matches!(res, Some(SearchResult::Saturated)),
+            matches!(res, Some(SearchResult::Saturated(_))),
             "Expected Saturated for a ground satisfiable set, got {:?}",
             res
         );

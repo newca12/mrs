@@ -850,8 +850,9 @@ const SHARED_POOL_CAP: usize = 4096;
 /// Runs the given-clause proof search.
 ///
 /// Returns `SearchResult::Refutation(id)` if the empty clause is derived,
-/// `SearchResult::Saturated` if all clauses are processed without contradiction,
-/// or `SearchResult::Timeout` on timeout.
+/// `SearchResult::Saturated(witness)` if all clauses are processed without
+/// contradiction and the configuration audit passes, or `SearchResult::Timeout`
+/// on timeout.
 fn extract_and_format_proof(
     empty_id: mrs_core::clause::ClauseId,
     state: &crate::state::SearchState,
@@ -1025,9 +1026,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
     let mut ordering = config.ordering.clone();
     let sym_config = ordering.symbol_config();
 
-    // Ordered-inference maximal-literal restriction. EXPERIMENTAL and off by
-    // default (incomplete — caused false Satisfiable on EPR). Opt in via env.
-    let ordered_inferences = config.ordered_inferences || std::env::var("MRS_ORDERED").is_ok();
+    // Ordered inference remains useful for finding refutations, but its
+    // saturation result is rejected by the completeness audit below.
+    let ordered_inferences = config.ordered_inferences_enabled();
 
     let (comm_syms, assoc_syms, to_remove, ac_axiom_symbols) = detect_ac_symbols(state);
     state.comm_symbols = comm_syms.clone();
@@ -2519,11 +2520,20 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
         return SearchResult::GaveUp;
     }
 
-    // If the literal selection is incomplete, return GaveUp rather than Saturated.
-    match config.literal_selection {
-        crate::LiteralSelection::MaxNegativeOrMaxPositive => SearchResult::GaveUp,
-        _ => SearchResult::Saturated,
+    let audit = config.check_completeness(
+        state.stats.weight_discarded,
+        state.stats.lrs_discarded,
+        false,
+    );
+    if std::env::var("TRACE_SEARCH").is_ok() {
+        eprintln!(
+            "[TRACE] ordinary given-clause saturation is not independently certified: audit={audit:?}"
+        );
     }
+    // The ordinary engine has not yet been proven complete with respect to
+    // indexing, simplification, preprocessing, AC handling, and cancellation.
+    // Only `certified.rs` may return positive saturation evidence.
+    SearchResult::GaveUp
 }
 
 /// Returns true if a clause is a unit positive equality (used for demodulation).
@@ -3074,7 +3084,34 @@ mod tests {
         );
         let config = SearchConfig::default();
         let result = search(&mut state, &config);
-        assert!(matches!(result, SearchResult::Saturated));
+        assert!(matches!(result, SearchResult::GaveUp));
+    }
+
+    #[test]
+    fn ordered_saturation_is_demoted_to_gave_up() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+        let clause = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            "ax",
+            "axiom",
+        );
+
+        let mut state = crate::state::SearchState::new(
+            vec![clause],
+            id_gen,
+            std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+            std::sync::Arc::new(syms),
+            false,
+        );
+        let config = SearchConfig {
+            ordered_inferences: true,
+            ..SearchConfig::default()
+        };
+        assert!(matches!(search(&mut state, &config), SearchResult::GaveUp));
     }
 
     #[test]

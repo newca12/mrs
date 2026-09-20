@@ -528,6 +528,24 @@ pub fn run_schedule_with_candidate_receiver(
     workers: Option<usize>,
     candidate_receiver: Option<Arc<dyn CandidateReceiver>>,
 ) -> (SearchResult, crate::ScheduleReport) {
+    if let Some(cert_config) = schedule
+        .strategies
+        .iter()
+        .map(|(config, _)| config)
+        .find(|config| config.certify_ordered_inferences)
+    {
+        return run_certified_ordered_fragment(
+            clauses,
+            provenance,
+            id_gen,
+            symbols,
+            cert_config,
+            schedule_start_for_certification(),
+            candidate_receiver,
+            workers,
+        );
+    }
+
     // 0. Clause preprocessing: Tautology Elimination, Pure Literal Elimination (PLE),
     // and First-Order Blocked Clause Elimination (BCE).
     let no_bce = std::env::var("MRS_NO_BCE").is_ok();
@@ -955,13 +973,10 @@ pub fn run_schedule_with_candidate_receiver(
                     // this does not guarantee mrs-ml can never solve fewer
                     // problems than the unpruned baseline — it only bounds
                     // how much coverage is put at risk.
-                    let mut ml_pruned = false;
                     if let Some(keep) = &premise_keep_thread
                         && is_ml_prune_slot(strategy_idx, actual_configs_ref.len())
                     {
-                        let before_len = thread_clauses.len();
                         thread_clauses.retain(|c| keep.contains(&c.id));
-                        ml_pruned = thread_clauses.len() < before_len;
                     }
 
                     let mut thread_provenance = provenance_for_thread.clone();
@@ -1141,37 +1156,10 @@ pub fn run_schedule_with_candidate_receiver(
                             };
                             SearchResult::Refutation(id, tstp)
                         }
-                        SearchResult::Saturated if sc.max_term_weight.is_some() => SearchResult::GaveUp,
-                        // SOS is refutationally incomplete: a strategy with sos_depth set
-                        // cannot distinguish "no proof exists" from "proof exists but is
-                        // unreachable under SOS restrictions".  Saturation from an
-                        // SOS-restricted strategy must therefore be GaveUp, not Saturated.
-                        // Without this, the stop flag fires and the entire portfolio is
-                        // killed, producing a false CounterSatisfiable on Theorem problems.
-                        SearchResult::Saturated if sc.sos_depth < u32::MAX => SearchResult::GaveUp,
-                        // Unit-only resolution is incomplete: a clause set may be
-                        // unsatisfiable yet require non-unit resolvents to find the proof.
-                        SearchResult::Saturated if sc.unit_only_resolution => SearchResult::GaveUp,
-                        // SInE filtering drops axioms; saturating on a subset of the problem
-                        // does not imply the full problem is satisfiable.
-                        SearchResult::Saturated if sc.sine_tolerance.is_some() => SearchResult::GaveUp,
-                        // Same for ML premise pruning: a worker that actually dropped
-                        // axioms cannot claim Saturated for the full problem.
-                        SearchResult::Saturated if ml_pruned => SearchResult::GaveUp,
-                        // Non-Standard weight functions affect the ORDER in which clauses
-                        // are selected, which in turn changes which clauses are generated
-                        // and which are simplified away.  This interaction between
-                        // ordering and simplification (forward subsumption, condensation)
-                        // can make saturation incomplete even when passive=0: a proof-
-                        // relevant clause may have been forward-subsumed earlier than it
-                        // would have been with Standard ordering.  Treat saturation from
-                        // any non-Standard weight strategy as GaveUp to avoid false
-                        // Satisfiable/CounterSatisfiable verdicts.
-                        SearchResult::Saturated
-                            if sc.weight_fn != crate::ClauseWeightFn::Standard =>
-                        {
-                            SearchResult::GaveUp
-                        }
+                        // Ordinary given-clause search is refutation-only until
+                        // its full completeness proof is established. Positive
+                        // saturation is produced only by the certified fragment.
+                        SearchResult::Saturated(_) => SearchResult::GaveUp,
                         other => other,
                     };
 
@@ -1192,7 +1180,7 @@ pub fn run_schedule_with_candidate_receiver(
                         } else {
                             stop.store(true, Ordering::Relaxed);
                         }
-                    } else if matches!(result, SearchResult::Saturated) {
+                    } else if matches!(result, SearchResult::Saturated(_)) {
                         stop.store(true, Ordering::Relaxed);
                     }
 
@@ -1231,7 +1219,7 @@ pub fn run_schedule_with_candidate_receiver(
                     }
                     // Keep draining the channel so threads can finish cleanly.
                 }
-                SearchResult::Saturated => {
+                SearchResult::Saturated(_) => {
                     if !matches!(best, SearchResult::Refutation(..)) {
                         best = res;
                     }
@@ -1267,6 +1255,75 @@ pub fn run_schedule_with_candidate_receiver(
         report.elapsed_ms = schedule_start.elapsed().as_millis() as u64;
         (best, report)
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_certified_ordered_fragment(
+    clauses: &[Clause],
+    provenance: &[Clause],
+    mut id_gen: ClauseIdGen,
+    symbols: &SymbolTable,
+    config: &SearchConfig,
+    schedule_start: Instant,
+    candidate_receiver: Option<Arc<dyn CandidateReceiver>>,
+    workers: Option<usize>,
+) -> (SearchResult, crate::ScheduleReport) {
+    let (result, stats) = match crate::certified::certify_ground_ordered_resolution(
+        clauses,
+        provenance,
+        symbols,
+        &config.ordering,
+        &mut id_gen,
+        config.time_limit,
+    ) {
+        Ok(report) => (report.result, report.stats),
+        Err(reason) => {
+            if std::env::var("TRACE_SEARCH").is_ok() {
+                eprintln!("[TRACE] ordered certifier refused input: {reason:?}");
+            }
+            (SearchResult::GaveUp, crate::SearchStats::default())
+        }
+    };
+
+    let result = if let SearchResult::Refutation(id, ref tstp) = result {
+        if let Some(receiver) = candidate_receiver {
+            let candidate = CandidateRefutation {
+                strategy_idx: 0,
+                strategy_id: config.strategy_id,
+                clause_id: id,
+                tstp_proof: tstp.clone(),
+                elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                time_remaining: config.time_limit.saturating_sub(schedule_start.elapsed()),
+            };
+            if receiver.submit_candidate(candidate) {
+                receiver.certified_result().unwrap_or(SearchResult::GaveUp)
+            } else {
+                SearchResult::GaveUp
+            }
+        } else {
+            result
+        }
+    } else {
+        result
+    };
+
+    let report = crate::ScheduleReport {
+        workers: workers.unwrap_or(1),
+        elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+        strategies: vec![crate::StrategyReport {
+            strategy_idx: 0,
+            strategy_id: config.strategy_id,
+            result: result.clone(),
+            stats,
+            elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+        }],
+        instgen: None,
+    };
+    (result, report)
+}
+
+fn schedule_start_for_certification() -> Instant {
+    Instant::now()
 }
 
 #[cfg(test)]
@@ -1433,8 +1490,54 @@ mod tests {
         // After EPR preprocessing, a saturated ground search is demoted to
         // GaveUp (conservative: avoids outputting a wrong Satisfiable).
         assert!(
-            matches!(result, SearchResult::Saturated | SearchResult::GaveUp),
+            matches!(result, SearchResult::Saturated(_) | SearchResult::GaveUp),
             "expected Saturated or GaveUp, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn incomplete_saturation_cannot_stop_the_portfolio() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+        let clause = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            "ax",
+        );
+        let schedule = StrategySchedule {
+            strategies: vec![(
+                SearchConfig {
+                    time_limit: Duration::from_millis(100),
+                    ordered_inferences: true,
+                    max_term_weight: None,
+                    use_avatar: false,
+                    ..SearchConfig::default()
+                },
+                Duration::from_millis(100),
+            )],
+        };
+
+        let (result, report) = run_schedule(
+            &[clause],
+            &[],
+            id_gen,
+            &schedule,
+            &syms,
+            MlOptions::default(),
+            Some(1),
+        );
+
+        assert!(matches!(
+            result,
+            SearchResult::GaveUp | SearchResult::Timeout
+        ));
+        assert!(
+            report
+                .strategies
+                .iter()
+                .all(|strategy| !matches!(strategy.result, SearchResult::Saturated(_)))
         );
     }
 

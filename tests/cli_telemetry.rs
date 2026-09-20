@@ -75,3 +75,31 @@ fn unsupported_formula_in_include_is_not_reported_satisfiable() {
     );
     assert!(!stdout.contains("% SZS status Satisfiable"));
 }
+
+#[test]
+fn ordered_certifier_accepts_ground_sat_and_rejects_equality() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let sat = root.join("problems/certified_epr_sat.p");
+    let sat_output = Command::new(env!("CARGO_BIN_EXE_mrs"))
+        .args(["--certify-ordered", "--workers", "1", "--strategy", "1"])
+        .arg(&sat)
+        .output()
+        .expect("mrs CLI should run");
+    assert!(sat_output.status.success());
+    assert!(
+        String::from_utf8_lossy(&sat_output.stdout)
+            .contains("% SZS status Satisfiable for certified_epr_sat")
+    );
+
+    let equality = root.join("problems/eq_simple.p");
+    let equality_output = Command::new(env!("CARGO_BIN_EXE_mrs"))
+        .args(["--certify-ordered", "--workers", "1", "--strategy", "1"])
+        .arg(&equality)
+        .output()
+        .expect("mrs CLI should run");
+    assert!(equality_output.status.success());
+    assert!(
+        String::from_utf8_lossy(&equality_output.stdout)
+            .contains("% SZS status GaveUp for eq_simple")
+    );
+}

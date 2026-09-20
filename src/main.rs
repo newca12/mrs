@@ -45,6 +45,7 @@ fn main() {
     let mut stats_mode = false;
     let mut profile_json_mode = false;
     let mut goal_transform: Option<mrs_cnf::GoalTransformMode> = None;
+    let mut certify_ordered = false;
     #[cfg(feature = "ml")]
     let mut ml_premise_weights: Option<String> = None;
 
@@ -238,6 +239,9 @@ fn main() {
                     }
                 }
             }
+            "--certify-ordered" => {
+                certify_ordered = true;
+            }
             // Deprecated alias: --fast is now --schedule fast.
             "--fast" => {
                 schedule_name = Some("fast".to_string());
@@ -277,7 +281,7 @@ fn main() {
             _ => {
                 if path.is_some() {
                     eprintln!(
-                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--goal-transform MODE] [--no-bce] [--no-ple] [--no-instgen] [--no-lrs] [--no-sharing] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"
+                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--goal-transform MODE] [--certify-ordered] [--no-bce] [--no-ple] [--no-instgen] [--no-lrs] [--no-sharing] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"
                     );
                     process::exit(1);
                 }
@@ -287,7 +291,7 @@ fn main() {
     }
     let Some(path) = path else {
         eprintln!(
-            "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--goal-transform MODE] [--no-bce] [--no-ple] [--no-instgen] [--no-lrs] [--no-sharing] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"
+            "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--goal-transform MODE] [--certify-ordered] [--no-bce] [--no-ple] [--no-instgen] [--no-lrs] [--no-sharing] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"
         );
         eprintln!("  An automated theorem prover for TPTP problems.");
         eprintln!(
@@ -699,6 +703,10 @@ fn main() {
         )
     } else {
         let actual_workers = workers.unwrap_or_else(|| num_cpus::get_physical().max(1));
+        if certify_ordered && (actual_workers != 1 || exact_strategy.is_none()) {
+            eprintln!("Error: --certify-ordered requires --workers 1 and --strategy N");
+            process::exit(1);
+        }
         let (search_workers, cert_oversubscribed) = if self_check && cert_reserve_worker {
             ((actual_workers.saturating_sub(1)).max(1), false)
         } else {
@@ -773,6 +781,27 @@ fn main() {
                 config.goal_transformation = Some(gt);
             }
         }
+        if certify_ordered {
+            if schedule.strategies.len() != 1 {
+                eprintln!(
+                    "Error: --certify-ordered requires one strategy; use --workers 1 --strategy 1 or a single explicit schedule"
+                );
+                process::exit(1);
+            }
+            let (config, _) = &mut schedule.strategies[0];
+            config.certify_ordered_inferences = true;
+            config.ordered_inferences = true;
+            config.max_term_weight = None;
+            config.use_avatar = false;
+            config.literal_selection = mrs_search::LiteralSelection::All;
+            config.sos_depth = u32::MAX;
+            config.unit_only_resolution = false;
+            config.weight_fn = mrs_search::ClauseWeightFn::Standard;
+            config.sine_tolerance = None;
+            config.sine_depth_limit = None;
+            config.lrs_policy = mrs_search::LrsPolicy::Disabled;
+            config.shared_pool_poll_interval = 0;
+        }
 
         let (result, schedule_report, cert_telemetry) = if self_check {
             let coordinator =
@@ -841,11 +870,10 @@ fn main() {
                     SzsStatus::Unsatisfiable
                 }
             }
-            SearchResult::Saturated => {
-                // Sound even with --ml-prune: pruning is per-worker and any
-                // worker that actually dropped axioms has its Saturated
-                // demoted to GaveUp inside run_schedule, so a Saturated here
-                // always comes from a complete, unpruned strategy.
+            SearchResult::Saturated(_) => {
+                // Positive saturation is emitted only by an independently
+                // cross-checked certification path. Ordinary portfolio search
+                // demotes saturation to GaveUp before it reaches this match.
                 if has_conjecture {
                     SzsStatus::CounterSatisfiable
                 } else {
@@ -867,7 +895,13 @@ fn main() {
     // currently certifies refutations only; model certificates are validated
     // by a separate tool and are not produced by this binary.  Never turn an
     // incomplete or heuristic saturation into a positive SZS model result.
-    if self_check && matches!(result, SearchResult::Saturated) {
+    if self_check
+        && matches!(
+            result,
+            SearchResult::Saturated(ref witness)
+                if witness.reason() != mrs_search::SaturationReason::GroundOrderedResolution
+        )
+    {
         status = SzsStatus::GaveUp;
     }
 
@@ -1037,7 +1071,7 @@ fn print_statistics(
     let raw_search_result = report.raw_search_result();
     let search_result_name = match &raw_search_result {
         SearchResult::Refutation(..) => "Refutation",
-        SearchResult::Saturated => "Saturation",
+        SearchResult::Saturated(_) => "Saturation",
         SearchResult::GaveUp => "GaveUp",
         SearchResult::Timeout => "Timeout",
         SearchResult::ResourceOut => "ResourceOut",

@@ -76,7 +76,7 @@ nix develop -c cargo test --workspace
 | Tautology elimination, PLE, and BCE | `eca8405`, `mrs-search/src/preprocessing.rs`; synthetic tests for cascading PLE, BCE, equality reflexivity, and conjecture protection | Refutation completeness; preprocessing can alter all results | **Yellow** | Add independent before/after satisfiability oracle tests with first-order variables and partner-cap boundary cases |
 | SInE filtering | `mrs-search/src/sine.rs`; filtering test; saturation after SInE is demoted to `GaveUp` in `strategy.rs` | Positive status claims and refutation coverage | **Green/Yellow** | Add explicit tests that filtered subsets cannot stop a portfolio with `Satisfiable`/`CounterSatisfiable`; measure false-negative proof coverage |
 | LRS passive pruning | `given_clause.rs`, `LrsPolicy`; fixed-iteration tests; `lrs_discarded` forces `GaveUp` | Positive status claims; refutation completeness | **Green/Yellow** | Add deterministic-vs-wall-clock canaries and test deadline/cancellation boundaries |
-| Literal selection and ordered inference | `mrs-calculus/src/literal_selection.rs`; maximal-literal regression for SYN861/862/866; incomplete selection demotion | Refutation completeness and positive status | **Yellow/Red boundary** | Resolve the contradiction between the `ordered_inferences` comment and `SearchConfig::default()` setting it to `true`; then rerun EPR canaries |
+| Literal selection and ordered inference | `mrs-calculus/src/literal_selection.rs`; maximal-literal regression for SYN861/862/866; incomplete selection demotion; typed saturation witness and effective-ordering audit | Refutation completeness and positive status | **Yellow/Red boundary** | Prove ordered-inference completeness before allowing it in positive saturation; continue EPR canary coverage |
 | Multi-queue selection | `3ec3228`, `select.rs`, `unprocessed.rs`; queue fallback/interleaving tests | Indirectly affects completeness and saturation | **Yellow** | Prove queue choice is ordering-only; compare bounded runs with a complete FIFO baseline; ensure incomplete modes demote saturation |
 | Dynamic precedence and symbol weighting | `379baa5`, `symbol_config.rs`, `weight.rs`; scheme and weight tests; non-standard weight saturation demoted | Refutation search and saturation classification | **Green/Yellow** | Add ordering stability-under-substitution tests and bounded differential search across schemes |
 | Goal-distance guidance and SOS | `6f807a7`, `goal_distance.rs`, `sos_depth`; reachability tests; SOS saturation demoted | Refutation completeness and positive status | **Green/Yellow** | Add graph permutation tests and proof-coverage comparison; ensure all restricted SOS paths fail closed |
@@ -100,10 +100,11 @@ nix develop -c cargo test --workspace
 The following items must be resolved or explicitly isolated before a
 soundness-sensitive default release:
 
-1. **Ordered inference default mismatch.** The source comment describes ordered
-   inference as experimental and incomplete, while `SearchConfig::default()`
-   currently sets `ordered_inferences: true`. Either make the default false or
-   prove completeness and add current EPR status canaries.
+1. **Ordered-inference certification.** Ordered inference remains available for
+   refutation search, but `SearchConfig::default()` disables it and the effective
+   `MRS_ORDERED` override is rejected by the completeness audit. Positive
+   saturation therefore fails closed until ordered-inference completeness is
+   formally established and covered by current EPR status canaries.
 2. **FVO audit.** `fvo.rs` has a hand-written soundness justification and a
    narrow trigger, the same risk shape that allowed the CWA polarity defect to
    survive. Its current path is refutation-only, but it still needs an

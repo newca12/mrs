@@ -794,6 +794,8 @@ impl TermOrdering {
 mod tests {
     use super::*;
     use mrs_core::SymbolTable;
+    use mrs_core::subst::Substitution;
+    use std::sync::Arc;
 
     #[test]
     fn compare_identical() {
@@ -1060,5 +1062,73 @@ mod tests {
             ord.compare(&Term::app(f, vec![Term::constant(a)]), &Term::constant(a)),
             TermComparison::Greater
         );
+    }
+
+    #[test]
+    fn kbo_is_strict_transitive_and_substitution_stable_on_bounded_terms() {
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("f");
+        let g = syms.intern("g");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let config = Arc::new(SymbolConfig {
+            precedence: vec![4, 3, 2, 1],
+            weights: vec![2, 2, 1, 1],
+            w0: 1,
+        });
+        let kbo = KBO::with_config(config);
+        let terms = vec![
+            Term::var(0),
+            Term::var(1),
+            Term::constant(a),
+            Term::constant(b),
+            Term::app(f, vec![Term::var(0)]),
+            Term::app(f, vec![Term::constant(a)]),
+            Term::app(g, vec![Term::constant(b)]),
+            Term::app(f, vec![Term::app(g, vec![Term::constant(a)])]),
+        ];
+
+        for term in &terms {
+            assert_ne!(kbo.compare(term, term), TermComparison::Greater);
+            assert_ne!(kbo.compare(term, term), TermComparison::Less);
+        }
+        for left in &terms {
+            for middle in &terms {
+                for right in &terms {
+                    if kbo.compare(left, middle) == TermComparison::Greater
+                        && kbo.compare(middle, right) == TermComparison::Greater
+                    {
+                        assert_eq!(kbo.compare(left, right), TermComparison::Greater);
+                    }
+                }
+            }
+        }
+
+        let substitutions = [
+            Substitution::singleton(0, Term::constant(a)),
+            Substitution::singleton(0, Term::app(g, vec![Term::constant(b)])),
+            {
+                let mut substitution = Substitution::new();
+                substitution.bind(0, Term::constant(a));
+                substitution.bind(1, Term::app(f, vec![Term::constant(b)]));
+                substitution
+            },
+        ];
+        for left in &terms {
+            for right in &terms {
+                if kbo.compare(left, right) != TermComparison::Greater {
+                    continue;
+                }
+                for substitution in &substitutions {
+                    let left_instance = substitution.apply_term(left);
+                    let right_instance = substitution.apply_term(right);
+                    assert_eq!(
+                        kbo.compare(&left_instance, &right_instance),
+                        TermComparison::Greater,
+                        "KBO lost strictness under substitution: {left:?} > {right:?}"
+                    );
+                }
+            }
+        }
     }
 }

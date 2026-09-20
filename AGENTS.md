@@ -135,6 +135,7 @@ nix develop -c cargo run --release -- --list-schedules
 | `--ml-weights <file>` | — | Load Burn model weights for ML-guided selection; **needs `ml-guidance`**, defaults schedule to `ml` |
 | `--quiet` | — | Suppress non-SZS stderr; **requires `proover` feature** |
 | `-` (positional) | — | Read TPTP from stdin; **requires `proover` feature** |
+| `--certify-ordered` | — | Diagnostic bounded function-free EPR ordered-resolution certification; use with `--workers 1 --strategy N`; unsupported inputs return `GaveUp` |
 
 Named schedules live in `mrs_search::strategy::named` (`crates/mrs-search/src/strategy/named.rs`):
 
