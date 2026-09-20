@@ -5,17 +5,22 @@
 //! fragment is:
 //!
 //! - function-free relational EPR clauses, exhaustively grounded over their
-//!   finite constant domain;
+//!   finite constant domain (`Saturated` is enabled for this EPR fragment
+//!   only; anything else fails closed as `GaveUp`);
 //! - predicate atoms only (no equality);
 //! - no AVATAR assertions or formula-level search nodes;
-//! - KBO with a validated positive-weight, total precedence; and
+//! - KBO (with a validated positive-weight, total precedence) or LPO (with a
+//!   validated total precedence), applied in that implementation order; and
 //! - no pruning or heuristic simplification.
 //!
 //! For that finite fragment, ordered resolution cannot introduce new terms or
 //! atoms.  We compute both the ordered closure and an independent unrestricted
-//! ground-resolution closure.  A positive result is returned only when both
-//! closures saturate without the empty clause.  If the ordered closure ever
-//! disagrees with the unrestricted reference, certification fails closed.
+//! ground-resolution closure (the double-closure reference is retained by
+//! design and is not replaced by a trace replay of the given-clause loop).
+//! A positive result is returned only when both closures agree: either both
+//! derive the empty clause (refutation) or both saturate without it.  If the
+//! ordered closure ever disagrees with the unrestricted reference,
+//! certification fails closed.
 
 use std::collections::HashMap as StdHashMap;
 use std::time::{Duration, Instant};
@@ -127,10 +132,45 @@ pub(crate) fn certify_ground_ordered_resolution(
                 stats,
             })
         }
-        ClosureStatus::Saturated => Ok(CertifiedGroundReport {
-            result: SearchResult::Saturated(CompletenessWitness::ground_ordered_resolution()),
-            stats,
-        }),
+        ClosureStatus::Saturated => {
+            // `Saturated` is enabled for the EPR fragment only. The fragment
+            // checks above already reject equality, function terms, and
+            // formula/AVATAR clauses, but re-check the pre-grounding inputs
+            // here so a future refactor cannot accidentally certify
+            // saturation for a non-EPR problem.
+            if !is_pure_relational_epr_input(&grounded.originals) {
+                return Err(CertificationFailure::Unsupported(
+                    "saturation is certified for EPR inputs only",
+                ));
+            }
+            Ok(CertifiedGroundReport {
+                result: SearchResult::Saturated(CompletenessWitness::ground_ordered_resolution()),
+                stats,
+            })
+        }
+    }
+}
+
+/// Returns `true` iff every input clause is pure relational EPR: predicate
+/// atoms only, with each argument a variable or a constant. Formula-level
+/// and AVATAR clauses are not EPR for certification purposes.
+fn is_pure_relational_epr_input(clauses: &[Clause]) -> bool {
+    !clauses.is_empty()
+        && clauses.iter().all(|clause| {
+            clause.formula.is_none()
+                && clause.avatar.is_empty()
+                && !clause.literals.is_empty()
+                && clause.literals.iter().all(|literal| match &literal.atom {
+                    Atom::Pred(_, args) => args.iter().all(term_is_epr_constant_or_var),
+                    Atom::Eq(_, _) => false,
+                })
+        })
+}
+
+fn term_is_epr_constant_or_var(term: &Term) -> bool {
+    match term {
+        Term::Var(_) => true,
+        Term::App(_, args) => args.is_empty(),
     }
 }
 
@@ -271,6 +311,14 @@ fn instantiate_clause(
     }
 }
 
+fn is_kbo(ordering: &TermOrdering) -> bool {
+    matches!(ordering, TermOrdering::KBO | TermOrdering::CustomKBO(_))
+}
+
+fn is_lpo(ordering: &TermOrdering) -> bool {
+    matches!(ordering, TermOrdering::LPO | TermOrdering::CustomLPO(_))
+}
+
 fn validate_fragment(
     clauses: &[Clause],
     ordering: &TermOrdering,
@@ -278,9 +326,14 @@ fn validate_fragment(
     if clauses.is_empty() {
         return Err(CertificationFailure::Unsupported("empty input clause set"));
     }
-    if !matches!(ordering, TermOrdering::KBO | TermOrdering::CustomKBO(_)) {
+    if matches!(ordering, TermOrdering::CustomACKBO(_, _)) {
         return Err(CertificationFailure::Unsupported(
-            "only KBO is certified for ordered ground resolution",
+            "AC ordering is outside the certified fragment",
+        ));
+    }
+    if !(is_kbo(ordering) || is_lpo(ordering)) {
+        return Err(CertificationFailure::Unsupported(
+            "only KBO and LPO are certified for ordered ground resolution",
         ));
     }
 
@@ -345,7 +398,7 @@ fn validate_ground_order(
     atoms: &[Atom],
 ) -> Result<(), CertificationFailure> {
     let config = ordering.symbol_config();
-    validate_symbol_config(&config, atoms)?;
+    validate_symbol_config(ordering, &config, atoms)?;
     let terms: Vec<Term> = atoms.iter().map(atom_term).collect();
 
     for (i, left) in terms.iter().enumerate() {
@@ -358,7 +411,7 @@ fn validate_ground_order(
                 TermComparison::Greater | TermComparison::Less
             ) {
                 return Err(CertificationFailure::Unsupported(
-                    "KBO is not a strict total order on ground atoms",
+                    "ordering is not a strict total order on ground atoms",
                 ));
             }
         }
@@ -372,7 +425,7 @@ fn validate_ground_order(
                     && ordering.compare(a, c) != TermComparison::Greater
                 {
                     return Err(CertificationFailure::Unsupported(
-                        "KBO is not transitive on ground atoms",
+                        "ordering is not transitive on ground atoms",
                     ));
                 }
             }
@@ -382,10 +435,14 @@ fn validate_ground_order(
 }
 
 fn validate_symbol_config(
+    ordering: &TermOrdering,
     config: &SymbolConfig,
     atoms: &[Atom],
 ) -> Result<(), CertificationFailure> {
-    if config.w0 == 0 {
+    // KBO is validated first, then LPO: KBO needs positive weights plus a
+    // total precedence, while LPO needs only the total precedence (weights
+    // are irrelevant to LPO comparison).
+    if is_kbo(ordering) && config.w0 == 0 {
         return Err(CertificationFailure::Unsupported(
             "KBO variable weight must be positive",
         ));
@@ -402,14 +459,14 @@ fn validate_symbol_config(
     }
     let mut precedence = HashSet::default();
     for symbol in symbols {
-        if config.symbol_weight(symbol) == 0 {
+        if is_kbo(ordering) && config.symbol_weight(symbol) == 0 {
             return Err(CertificationFailure::Unsupported(
                 "KBO symbol weight must be positive",
             ));
         }
         if !precedence.insert(config.symbol_precedence(symbol)) {
             return Err(CertificationFailure::Unsupported(
-                "KBO precedence must be total on the input signature",
+                "precedence must be total on the input signature",
             ));
         }
     }
@@ -800,5 +857,305 @@ mod tests {
                 "function terms are outside the certified EPR fragment"
             ))
         ));
+    }
+
+    #[test]
+    fn certifies_ground_satisfiable_ordered_closure_lpo() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let q = symbols.intern("q");
+        let a = symbols.intern("a");
+        let mut ids = ClauseIdGen::new();
+        let clauses = vec![
+            input_clause(
+                &mut ids,
+                vec![mrs_core::clause::Literal::pos(Atom::pred(
+                    p,
+                    vec![Term::constant(a)],
+                ))],
+            ),
+            input_clause(
+                &mut ids,
+                vec![mrs_core::clause::Literal::pos(Atom::pred(
+                    q,
+                    vec![Term::constant(a)],
+                ))],
+            ),
+        ];
+        let report = certify_ground_ordered_resolution(
+            &clauses,
+            &[],
+            &symbols,
+            &TermOrdering::LPO,
+            &mut ids,
+            Duration::from_secs(1),
+        )
+        .expect("finite ground SAT closure should certify under LPO");
+        assert!(matches!(
+            report.result,
+            SearchResult::Saturated(witness)
+                if witness.reason() == crate::SaturationReason::GroundOrderedResolution
+        ));
+    }
+
+    #[test]
+    fn certifies_ground_refutation_lpo() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let mut ids = ClauseIdGen::new();
+        let clauses = vec![
+            input_clause(
+                &mut ids,
+                vec![mrs_core::clause::Literal::pos(Atom::pred(
+                    p,
+                    vec![Term::constant(a)],
+                ))],
+            ),
+            input_clause(
+                &mut ids,
+                vec![mrs_core::clause::Literal::neg(Atom::pred(
+                    p,
+                    vec![Term::constant(a)],
+                ))],
+            ),
+        ];
+        let report = certify_ground_ordered_resolution(
+            &clauses,
+            &[],
+            &symbols,
+            &TermOrdering::LPO,
+            &mut ids,
+            Duration::from_secs(1),
+        )
+        .expect("finite ground UNSAT closure should certify under LPO");
+        assert!(matches!(report.result, SearchResult::Refutation(..)));
+    }
+
+    #[test]
+    fn certifies_variable_epr_refutation_lpo_after_finite_grounding() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let mut ids = ClauseIdGen::new();
+        let clauses = vec![
+            input_clause(
+                &mut ids,
+                vec![mrs_core::clause::Literal::pos(Atom::pred(
+                    p,
+                    vec![Term::var(0)],
+                ))],
+            ),
+            input_clause(
+                &mut ids,
+                vec![mrs_core::clause::Literal::neg(Atom::pred(
+                    p,
+                    vec![Term::constant(a)],
+                ))],
+            ),
+        ];
+        let report = certify_ground_ordered_resolution(
+            &clauses,
+            &[],
+            &symbols,
+            &TermOrdering::LPO,
+            &mut ids,
+            Duration::from_secs(1),
+        )
+        .expect("finite EPR grounding should certify the refutation under LPO");
+        assert!(matches!(report.result, SearchResult::Refutation(..)));
+    }
+
+    #[test]
+    fn lpo_ignores_weights_while_kbo_requires_them() {
+        use mrs_calculus::ordering::SymbolConfig;
+        use std::sync::Arc;
+
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let q = symbols.intern("q");
+        let a = symbols.intern("a");
+        let mut ids = ClauseIdGen::new();
+        let clauses = vec![
+            input_clause(
+                &mut ids,
+                vec![mrs_core::clause::Literal::pos(Atom::pred(
+                    p,
+                    vec![Term::constant(a)],
+                ))],
+            ),
+            input_clause(
+                &mut ids,
+                vec![mrs_core::clause::Literal::pos(Atom::pred(
+                    q,
+                    vec![Term::constant(a)],
+                ))],
+            ),
+        ];
+        // Distinct precedences, zero weights: valid for LPO, invalid for KBO.
+        let config = Arc::new(SymbolConfig {
+            precedence: vec![10, 20, 30],
+            weights: vec![0, 0, 0],
+            w0: 0,
+        });
+        let lpo = TermOrdering::CustomLPO(config.clone());
+        certify_ground_ordered_resolution(
+            &clauses,
+            &[],
+            &symbols,
+            &lpo,
+            &mut ids.clone(),
+            Duration::from_secs(1),
+        )
+        .expect("LPO must not require positive weights");
+        let kbo = TermOrdering::CustomKBO(config);
+        assert!(matches!(
+            certify_ground_ordered_resolution(
+                &clauses,
+                &[],
+                &symbols,
+                &kbo,
+                &mut ids,
+                Duration::from_secs(1),
+            ),
+            Err(CertificationFailure::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_ac_ordering_and_non_kbo_lpo_orderings() {
+        use mrs_calculus::ordering::SymbolConfig;
+        use std::sync::Arc;
+
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let mut ids = ClauseIdGen::new();
+        let clauses = vec![input_clause(
+            &mut ids,
+            vec![mrs_core::clause::Literal::pos(Atom::pred(
+                p,
+                vec![Term::constant(a)],
+            ))],
+        )];
+        let config = Arc::new(SymbolConfig::default());
+        let ac_symbols: Arc<HashSet<mrs_core::SymbolId>> = Arc::new(HashSet::default());
+        let ac = TermOrdering::CustomACKBO(config, ac_symbols);
+        assert!(matches!(
+            certify_ground_ordered_resolution(
+                &clauses,
+                &[],
+                &symbols,
+                &ac,
+                &mut ids,
+                Duration::from_secs(1),
+            ),
+            Err(CertificationFailure::Unsupported(
+                "AC ordering is outside the certified fragment"
+            ))
+        ));
+    }
+
+    #[test]
+    fn saturation_is_epr_only() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let f = symbols.intern("f");
+        let mut ids = ClauseIdGen::new();
+        let epr = input_clause(
+            &mut ids,
+            vec![mrs_core::clause::Literal::pos(Atom::pred(
+                p,
+                vec![Term::constant(a)],
+            ))],
+        );
+        assert!(is_pure_relational_epr_input(std::slice::from_ref(&epr)));
+        assert!(is_pure_relational_epr_input(&[epr.clone(), epr.clone()]));
+
+        let with_var = Clause::new(
+            ids.next(),
+            vec![mrs_core::clause::Literal::pos(Atom::pred(
+                p,
+                vec![Term::var(0)],
+            ))],
+            ClauseSource::Input {
+                name: "test".into(),
+                role: "axiom".into(),
+            },
+        );
+        assert!(is_pure_relational_epr_input(std::slice::from_ref(
+            &with_var
+        )));
+
+        let equality = input_clause(
+            &mut ids,
+            vec![mrs_core::clause::Literal::pos(Atom::Eq(
+                Term::constant(a),
+                Term::constant(a),
+            ))],
+        );
+        assert!(!is_pure_relational_epr_input(std::slice::from_ref(
+            &equality
+        )));
+
+        let function = input_clause(
+            &mut ids,
+            vec![mrs_core::clause::Literal::pos(Atom::pred(
+                p,
+                vec![Term::app(f, vec![Term::constant(a)])],
+            ))],
+        );
+        assert!(!is_pure_relational_epr_input(std::slice::from_ref(
+            &function
+        )));
+
+        assert!(!is_pure_relational_epr_input(&[]));
+
+        let formula = Clause::new_formula_step(
+            ids.next(),
+            mrs_core::Formula::True,
+            ClauseSource::Input {
+                name: "test".into(),
+                role: "axiom".into(),
+            },
+        );
+        assert!(!is_pure_relational_epr_input(std::slice::from_ref(
+            &formula
+        )));
+
+        let avatar = Clause::new_avatar(
+            ids.next(),
+            vec![mrs_core::clause::Literal::pos(Atom::pred(
+                p,
+                vec![Term::constant(a)],
+            ))],
+            ClauseSource::Input {
+                name: "test".into(),
+                role: "axiom".into(),
+            },
+            vec![1],
+        );
+        assert!(!is_pure_relational_epr_input(std::slice::from_ref(&avatar)));
+
+        // Non-EPR inputs must fail closed, never saturate.
+        let equality_saturation = certify_ground_ordered_resolution(
+            &[equality],
+            &[],
+            &symbols,
+            &TermOrdering::KBO,
+            &mut ids,
+            Duration::from_secs(1),
+        );
+        assert!(
+            !matches!(
+                equality_saturation,
+                Ok(ref report) if matches!(
+                    report.result,
+                    SearchResult::Saturated(_)
+                )
+            ),
+            "equality input must never certify saturation"
+        );
     }
 }
