@@ -33,10 +33,29 @@ use mrs_core::subst::Substitution;
 use mrs_core::symbol::{SymbolId, SymbolTable};
 use mrs_core::term::Term;
 
+/// Resource caps for the bounded certifier. These stay conservative on
+/// purpose: a TRACE_CERTIFY sizing pass over the casc-30 EPS/EPU divisions
+/// (2026-09-20) showed that raising them only converts instant grounding
+/// refusals into closure timeouts with zero coverage gain at both 10 s and
+/// 120 s budgets — the linear all-pairs closure cannot close mid-size
+/// groundings (tens of thousands of clauses) on practical budgets, and
+/// 12x budget on sampled problems still timed out with clauses growing
+/// past 40k. Covering those problems needs indexed inference generation,
+/// which is a documented open layer, not bigger caps. Everything beyond the
+/// caps fails closed as `Limit`, never as saturation.
 const MAX_ATOMS: usize = 64;
 const MAX_CLAUSES: usize = 100_000;
 const MAX_INFERENCES: u64 = 1_000_000;
 const MAX_GROUND_INSTANCES: usize = 100_000;
+
+/// Diagnostic logging for certification sizing, gated on `TRACE_CERTIFY=1`.
+/// Follows the `TRACE_LRS` / `TRACE_BCE` precedent: refusal reasons plus
+/// the problem sizes that triggered them, so cap changes stay data-driven.
+fn trace_certify(message: String) {
+    if std::env::var_os("TRACE_CERTIFY").is_some() {
+        eprintln!("[CERTIFY] {message}");
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CertificationFailure {
@@ -98,6 +117,17 @@ pub(crate) fn certify_ground_ordered_resolution(
     if ordered.status != reference.status {
         return Err(CertificationFailure::OrderedClosureMismatch);
     }
+
+    trace_certify(format!(
+        "certified status={:?} grounded={} atoms={} ordered_clauses={} ordered_inferences={} reference_clauses={} reference_inferences={}",
+        ordered.status,
+        grounded.clauses.len(),
+        atoms.len(),
+        ordered.clauses.len(),
+        ordered.inferences,
+        reference.clauses.len(),
+        reference.inferences,
+    ));
 
     *id_gen = ordered_id_gen;
     let stats = SearchStats {
@@ -219,15 +249,23 @@ fn ground_epr_clauses(
             grounded.push(clause.clone());
             continue;
         }
-        let instances =
-            constants
-                .len()
-                .checked_pow(vars.len() as u32)
-                .ok_or(CertificationFailure::Limit(
-                    "ground instance count overflow",
-                ))?;
+        let Some(instances) = constants.len().checked_pow(vars.len() as u32) else {
+            trace_certify(format!(
+                "refuse=instance_count_overflow vars={} constants={}",
+                vars.len(),
+                constants.len()
+            ));
+            return Err(CertificationFailure::Limit(
+                "ground instance count overflow",
+            ));
+        };
         estimated_instances = estimated_instances.saturating_add(instances);
         if estimated_instances > MAX_GROUND_INSTANCES {
+            trace_certify(format!(
+                "refuse=instance_limit estimated={estimated_instances} vars={} constants={}",
+                vars.len(),
+                constants.len()
+            ));
             return Err(CertificationFailure::Limit(
                 "ground instance limit exceeded",
             ));
@@ -359,6 +397,7 @@ fn validate_fragment(
         }
     }
     if atoms.len() > MAX_ATOMS {
+        trace_certify(format!("refuse=atom_limit atoms={}", atoms.len()));
         return Err(CertificationFailure::Limit("ground atom limit exceeded"));
     }
     Ok(atoms.into_iter().collect())
@@ -499,6 +538,17 @@ fn closure(
     let mut clauses = Vec::new();
     let mut seen = HashSet::default();
     for clause in input {
+        // The input normalization pass is linear but unbounded in the input
+        // size, so it honors the same deadline as the pair loop below.
+        if Instant::now() >= deadline {
+            trace_certify(format!(
+                "refuse=closure_time ordered={ordered} clauses={} inferences=0",
+                clauses.len()
+            ));
+            return Err(CertificationFailure::Limit(
+                "certification time limit exceeded",
+            ));
+        }
         let Some(normalized) = normalize_clause(clause.clone()) else {
             continue;
         };
@@ -516,41 +566,55 @@ fn closure(
         }
     }
 
+    // Pin down the exact pair-generation semantics for the optimizations
+    // below: pairs are (current, previous) with previous_index < index, the
+    // current selection is fixed per outer iteration, and clauses derived
+    // mid-iteration are appended but never revisited within the same outer
+    // iteration. Borrowing `previous` instead of cloning it, hoisting the
+    // current selection out of the inner loop, and checking the deadline
+    // once per outer iteration preserve this order exactly while removing
+    // one full clause clone per pair.
     let mut inferences = 0;
     let mut index = 0;
     while index < clauses.len() {
         if Instant::now() >= deadline {
+            trace_certify(format!(
+                "refuse=closure_time ordered={ordered} clauses={} inferences={inferences}",
+                clauses.len()
+            ));
             return Err(CertificationFailure::Limit(
                 "certification time limit exceeded",
             ));
         }
         let current = clauses[index].clone();
+        let current_selection = if ordered {
+            selected_literals(&current, ordering)
+        } else {
+            all_literal_indices(&current)
+        };
         for previous_index in 0..index {
-            if Instant::now() >= deadline {
-                return Err(CertificationFailure::Limit(
-                    "certification time limit exceeded",
-                ));
-            }
-            let previous = clauses[previous_index].clone();
-            let current_selection = if ordered {
-                selected_literals(&current, ordering)
-            } else {
-                all_literal_indices(&current)
+            // Scope the borrow so it ends before any push below.
+            let derived_batch = {
+                let previous = &clauses[previous_index];
+                let previous_selection = if ordered {
+                    selected_literals(previous, ordering)
+                } else {
+                    all_literal_indices(previous)
+                };
+                resolve_ground_pair(
+                    &current,
+                    previous,
+                    &current_selection,
+                    &previous_selection,
+                    id_gen,
+                )
             };
-            let previous_selection = if ordered {
-                selected_literals(&previous, ordering)
-            } else {
-                all_literal_indices(&previous)
-            };
-            for derived in resolve_ground_pair(
-                &current,
-                &previous,
-                &current_selection,
-                &previous_selection,
-                id_gen,
-            ) {
+            for derived in derived_batch {
                 inferences += 1;
                 if inferences > MAX_INFERENCES {
+                    trace_certify(format!(
+                        "refuse=inference_limit ordered={ordered} inferences={inferences}"
+                    ));
                     return Err(CertificationFailure::Limit(
                         "ground inference limit exceeded",
                     ));
@@ -569,6 +633,10 @@ fn closure(
                 if seen.insert(clause_key(&derived)) {
                     clauses.push(derived);
                     if clauses.len() > MAX_CLAUSES {
+                        trace_certify(format!(
+                            "refuse=clause_limit ordered={ordered} clauses={} inferences={inferences}",
+                            clauses.len()
+                        ));
                         return Err(CertificationFailure::Limit("ground clause limit exceeded"));
                     }
                 }

@@ -108,9 +108,25 @@ Last measured outcome (2026-09-20, `casc-30` corpus, 10 s per problem):
 | EPU | KBO (s1) | 100 | 0 | 100 | 0 |
 | EPU | LPO (s7) | 100 | 0 | 100 | 0 |
 
-Dominant fail-closed reasons are resource bounds (`ground atom limit
-exceeded` on large group-theory groundings) and out-of-fragment inputs
-(`equality is outside the certified fragment` where an axiom file uses real
-equality). Raising the caps is a completeness concern for a later phase;
-the caps stay conservative while the gate criterion is zero false
-positives.
+Dominant fail-closed reasons are resource bounds (`ground instance limit
+exceeded` on 66 problems, `ground atom limit exceeded` on 23) and
+out-of-fragment inputs (`equality is outside the certified fragment` where
+an axiom file uses real equality, plus function terms).
+
+Cap-sizing experiment (same corpus, `TRACE_CERTIFY=1` refusal telemetry):
+raising `MAX_ATOMS` 64 → 4096 and `MAX_GROUND_INSTANCES` 100k → 500k moved
+problems from instant grounding refusals into closure timeouts (28 at the
+10 s budget, all EPS) with zero coverage gain — certified stayed 3/0 — and
+spot checks at a 12x budget (120 s) still timed out with closures growing
+past 40k clauses. The linear all-pairs closure cannot close mid-size
+groundings on practical budgets, so the caps were reverted to their
+conservative values: fast refusals beat slow timeouts with identical
+coverage. Covering those problems needs indexed inference generation with
+an indexed-vs-linear equivalence proof, which remains an open layer, not
+bigger caps. The gate criterion stays zero false positives.
+
+`TRACE_CERTIFY=1` emits per-refusal sizes (`refuse=instance_limit
+estimated=… vars=… constants=…`, `refuse=atom_limit atoms=…`,
+`refuse=closure_time ordered=… clauses=… inferences=…`) plus a summary line
+per successful certification, following the `TRACE_LRS` precedent, so
+future cap changes stay data-driven.
