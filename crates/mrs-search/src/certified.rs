@@ -32,21 +32,26 @@ use mrs_core::formula::Atom;
 use mrs_core::subst::Substitution;
 use mrs_core::symbol::{SymbolId, SymbolTable};
 use mrs_core::term::Term;
+use mrs_core::term_bank::TermBank;
+use mrs_index::literal_index::LiteralIndex;
 
-/// Resource caps for the bounded certifier. These stay conservative on
-/// purpose: a TRACE_CERTIFY sizing pass over the casc-30 EPS/EPU divisions
-/// (2026-09-20) showed that raising them only converts instant grounding
-/// refusals into closure timeouts with zero coverage gain at both 10 s and
-/// 120 s budgets — the linear all-pairs closure cannot close mid-size
-/// groundings (tens of thousands of clauses) on practical budgets, and
-/// 12x budget on sampled problems still timed out with clauses growing
-/// past 40k. Covering those problems needs indexed inference generation,
-/// which is a documented open layer, not bigger caps. Everything beyond the
-/// caps fails closed as `Limit`, never as saturation.
-const MAX_ATOMS: usize = 64;
+/// Resource caps for the bounded certifier. `MAX_ATOMS` and
+/// `MAX_GROUND_INSTANCES` were sized from TRACE_CERTIFY measurements over
+/// the casc-30 EPS/EPU divisions: 4096 atoms covers every observed
+/// atom-limited problem (max 3627), and 500 000 instances covers the lower
+/// half of instance-limited groundings. The caps are usable (rather than
+/// merely converting refusals into timeouts) because both closures retrieve
+/// partners through a `LiteralIndex` (see `closure_indexed`) instead of
+/// scanning all pairs; measured peak RSS on the largest explored grounding
+/// is ~524 MB. `MAX_CLAUSES` and `MAX_INFERENCES` bound closure memory and
+/// work after grounding (deep-budget probes hit the 1M inference cap on
+/// PUZ028-4, correctly fail-closed), and the per-run time limit bounds the
+/// rest. Everything beyond the caps fails closed as `Limit`, never as
+/// saturation.
+const MAX_ATOMS: usize = 4096;
 const MAX_CLAUSES: usize = 100_000;
 const MAX_INFERENCES: u64 = 1_000_000;
-const MAX_GROUND_INSTANCES: usize = 100_000;
+const MAX_GROUND_INSTANCES: usize = 500_000;
 
 /// Diagnostic logging for certification sizing, gated on `TRACE_CERTIFY=1`.
 /// Follows the `TRACE_LRS` / `TRACE_BCE` precedent: refusal reasons plus
@@ -97,7 +102,7 @@ pub(crate) fn certify_ground_ordered_resolution(
     let deadline = Instant::now() + time_limit;
 
     let mut ordered_id_gen = id_gen.clone();
-    let ordered = closure(
+    let ordered = closure_indexed(
         &grounded.clauses,
         ordering,
         true,
@@ -106,7 +111,7 @@ pub(crate) fn certify_ground_ordered_resolution(
     )?;
 
     let mut reference_id_gen = id_gen.clone();
-    let reference = closure(
+    let reference = closure_indexed(
         &grounded.clauses,
         ordering,
         false,
@@ -528,7 +533,11 @@ fn atom_term(atom: &Atom) -> Term {
     Term::app(*predicate, args.clone())
 }
 
-fn closure(
+/// Linear all-pairs closure. Retained as the independent reference for the
+/// indexed-vs-linear equivalence unit tests; the certification path uses
+/// [`closure_indexed`] for both closures.
+#[cfg(test)]
+fn closure_linear(
     input: &[Clause],
     ordering: &TermOrdering,
     ordered: bool,
@@ -643,6 +652,165 @@ fn closure(
             }
         }
         index += 1;
+    }
+    Ok(Closure {
+        clauses,
+        status: ClosureStatus::Saturated,
+        inferences,
+    })
+}
+
+/// Indexed closure: same fixpoint as [`closure_linear`], but inference
+/// partners come from a [`LiteralIndex`] over hash-consed clause twins
+/// instead of an all-pairs scan. Retrieval is a superset of the exact
+/// partners (recall is pinned by `tests/index_equivalence.rs`), and
+/// [`resolve_ground_pair`] still applies the exact ground-atom check, so the
+/// derived clause set is identical; only the pair-visit order may differ.
+/// Partner positions are restricted to already-processed clauses via
+/// `id_to_pos`, mirroring the linear `previous_index < index` scan exactly
+/// (derivation order, and hence fresh id assignment, can still differ from
+/// the linear run when the index over-approximates — the agreement check
+/// compares statuses, and proof parents are tracked by id either way).
+///
+/// Both the ordered and the reference closure use this implementation: the
+/// linear scan provably cannot close mid-size groundings on practical
+/// budgets (see the cap-sizing experiment in
+/// `docs/ORDERED_INFERENCE_CERTIFICATION.md`), so keeping one side linear
+/// would cap coverage at the linear side. Correlated index misses would
+/// surface as agreeing false saturations and are guarded empirically by the
+/// EPU canary gate (any saturation on EPU fails loudly).
+fn closure_indexed(
+    input: &[Clause],
+    ordering: &TermOrdering,
+    ordered: bool,
+    id_gen: &mut ClauseIdGen,
+    deadline: Instant,
+) -> Result<Closure, CertificationFailure> {
+    let mut bank = TermBank::new();
+    let mut index = LiteralIndex::new();
+    let mut id_to_pos: StdHashMap<ClauseId, usize> = StdHashMap::new();
+    let mut clauses = Vec::new();
+    let mut seen = HashSet::default();
+    for clause in input {
+        // The input normalization pass is linear but unbounded in the input
+        // size, so it honors the same deadline as the pair loop below.
+        if Instant::now() >= deadline {
+            trace_certify(format!(
+                "refuse=closure_time ordered={ordered} clauses={} inferences=0",
+                clauses.len()
+            ));
+            return Err(CertificationFailure::Limit(
+                "certification time limit exceeded",
+            ));
+        }
+        let Some(normalized) = normalize_clause(clause.clone()) else {
+            continue;
+        };
+        let key = clause_key(&normalized);
+        if seen.insert(key) {
+            if normalized.is_empty() {
+                clauses.push(normalized);
+                return Ok(Closure {
+                    clauses,
+                    status: ClosureStatus::Refuted,
+                    inferences: 0,
+                });
+            }
+            id_to_pos.insert(normalized.id, clauses.len());
+            let twin = bank.clause_from_legacy(&normalized);
+            index.insert(twin, &bank);
+            clauses.push(normalized);
+        }
+    }
+
+    let mut inferences = 0;
+    let mut pos = 0;
+    while pos < clauses.len() {
+        if Instant::now() >= deadline {
+            trace_certify(format!(
+                "refuse=closure_time ordered={ordered} clauses={} inferences={inferences}",
+                clauses.len()
+            ));
+            return Err(CertificationFailure::Limit(
+                "certification time limit exceeded",
+            ));
+        }
+        let current = clauses[pos].clone();
+        let current_twin = bank.clause_from_legacy(&current);
+        let current_selection = if ordered {
+            selected_literals(&current, ordering)
+        } else {
+            all_literal_indices(&current)
+        };
+        // Collect already-processed partner positions via the index. Sorting
+        // ascending reproduces the linear scan order.
+        let mut partner_pos = Vec::new();
+        for &lit_idx in &current_selection {
+            let query = &current_twin.literals[lit_idx];
+            for hit in index.get_unifiable_resolution_partners(&query.atom, query.positive, &bank) {
+                if let Some(&p) = id_to_pos.get(&hit.id)
+                    && p < pos
+                {
+                    partner_pos.push(p);
+                }
+            }
+        }
+        partner_pos.sort_unstable();
+        partner_pos.dedup();
+        for previous_index in partner_pos {
+            // Scope the borrow so it ends before any push below.
+            let derived_batch = {
+                let previous = &clauses[previous_index];
+                let previous_selection = if ordered {
+                    selected_literals(previous, ordering)
+                } else {
+                    all_literal_indices(previous)
+                };
+                resolve_ground_pair(
+                    &current,
+                    previous,
+                    &current_selection,
+                    &previous_selection,
+                    id_gen,
+                )
+            };
+            for derived in derived_batch {
+                inferences += 1;
+                if inferences > MAX_INFERENCES {
+                    trace_certify(format!(
+                        "refuse=inference_limit ordered={ordered} inferences={inferences}"
+                    ));
+                    return Err(CertificationFailure::Limit(
+                        "ground inference limit exceeded",
+                    ));
+                }
+                let Some(derived) = normalize_clause(derived) else {
+                    continue;
+                };
+                if derived.is_empty() {
+                    clauses.push(derived);
+                    return Ok(Closure {
+                        clauses,
+                        status: ClosureStatus::Refuted,
+                        inferences,
+                    });
+                }
+                if seen.insert(clause_key(&derived)) {
+                    id_to_pos.insert(derived.id, clauses.len());
+                    let twin = bank.clause_from_legacy(&derived);
+                    index.insert(twin, &bank);
+                    clauses.push(derived);
+                    if clauses.len() > MAX_CLAUSES {
+                        trace_certify(format!(
+                            "refuse=clause_limit ordered={ordered} clauses={} inferences={inferences}",
+                            clauses.len()
+                        ));
+                        return Err(CertificationFailure::Limit("ground clause limit exceeded"));
+                    }
+                }
+            }
+        }
+        pos += 1;
     }
     Ok(Closure {
         clauses,
@@ -1288,8 +1456,8 @@ mod tests {
         let p = symbols.intern("p");
         let q = symbols.intern("q");
         let mut ids = ClauseIdGen::new();
-        // Twelve distinct constants plus one 5-variable clause:
-        // 12^5 = 248_832 instances exceeds MAX_GROUND_INSTANCES (100_000).
+        // Twelve distinct constants plus one 6-variable clause:
+        // 12^6 = 2_985_984 instances exceeds MAX_GROUND_INSTANCES (500_000).
         let mut clauses = Vec::new();
         for i in 0..12 {
             let c = symbols.intern(&format!("blowup_c{i}"));
@@ -1311,6 +1479,7 @@ mod tests {
                     Term::var(2),
                     Term::var(3),
                     Term::var(4),
+                    Term::var(5),
                 ],
             ))],
         ));
@@ -1333,6 +1502,140 @@ mod tests {
                 ),
                 "grounding blowup must fail closed with Limit under {ordering:?}"
             );
+        }
+    }
+
+    fn ground_pos(id_gen: &mut ClauseIdGen, pred: SymbolId, constant: SymbolId) -> Clause {
+        input_clause(
+            id_gen,
+            vec![mrs_core::clause::Literal::pos(Atom::pred(
+                pred,
+                vec![Term::constant(constant)],
+            ))],
+        )
+    }
+
+    fn ground_neg(id_gen: &mut ClauseIdGen, pred: SymbolId, constant: SymbolId) -> Clause {
+        input_clause(
+            id_gen,
+            vec![mrs_core::clause::Literal::neg(Atom::pred(
+                pred,
+                vec![Term::constant(constant)],
+            ))],
+        )
+    }
+
+    fn closure_key_set(closure: &Closure) -> Vec<Vec<String>> {
+        let mut keys: Vec<Vec<String>> = closure.clauses.iter().map(clause_key).collect();
+        keys.sort();
+        keys
+    }
+
+    /// The indexed closure must compute the same fixpoint as the linear
+    /// all-pairs closure: same status always, and the same derived clause
+    /// set (as content keys — fresh id assignment may differ when the index
+    /// over-approximates retrieval) whenever a run saturates. Refuted runs
+    /// return at the first empty clause, so their truncated clause sets may
+    /// legitimately differ by pair-visit order; only the status must agree.
+    /// This mirrors the production agreement check, which compares statuses.
+    #[test]
+    fn indexed_closure_matches_linear_closure() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let q = symbols.intern("q");
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+
+        let build_inputs = |ids: &mut ClauseIdGen| -> Vec<Vec<Clause>> {
+            // 0: SAT pair. 1: direct UNSAT pair.
+            // 2: all-positive UNSAT (needs two resolution steps).
+            // 3: full binary tree over p(a), q(a) (UNSAT, multi-step).
+            let sat = vec![ground_pos(ids, p, a), ground_pos(ids, q, a)];
+            let unsat = vec![ground_pos(ids, p, a), ground_neg(ids, p, a)];
+            let all_pos = vec![
+                input_clause(
+                    ids,
+                    vec![
+                        mrs_core::clause::Literal::pos(Atom::pred(p, vec![Term::constant(a)])),
+                        mrs_core::clause::Literal::pos(Atom::pred(q, vec![Term::constant(a)])),
+                    ],
+                ),
+                ground_neg(ids, p, a),
+                ground_neg(ids, q, a),
+            ];
+            let tree = vec![
+                input_clause(
+                    ids,
+                    vec![
+                        mrs_core::clause::Literal::pos(Atom::pred(p, vec![Term::constant(a)])),
+                        mrs_core::clause::Literal::pos(Atom::pred(q, vec![Term::constant(a)])),
+                    ],
+                ),
+                input_clause(
+                    ids,
+                    vec![
+                        mrs_core::clause::Literal::neg(Atom::pred(p, vec![Term::constant(a)])),
+                        mrs_core::clause::Literal::pos(Atom::pred(q, vec![Term::constant(a)])),
+                    ],
+                ),
+                input_clause(
+                    ids,
+                    vec![
+                        mrs_core::clause::Literal::pos(Atom::pred(p, vec![Term::constant(b)])),
+                        mrs_core::clause::Literal::neg(Atom::pred(q, vec![Term::constant(a)])),
+                    ],
+                ),
+                input_clause(
+                    ids,
+                    vec![
+                        mrs_core::clause::Literal::neg(Atom::pred(p, vec![Term::constant(b)])),
+                        mrs_core::clause::Literal::neg(Atom::pred(q, vec![Term::constant(a)])),
+                    ],
+                ),
+            ];
+            vec![sat, unsat, all_pos, tree]
+        };
+
+        for ordering in [TermOrdering::KBO, TermOrdering::LPO] {
+            for ordered in [true, false] {
+                let mut ids = ClauseIdGen::new();
+                for (case, input) in build_inputs(&mut ids).into_iter().enumerate() {
+                    let mut linear_ids = ClauseIdGen::new();
+                    let linear = closure_linear(
+                        &input,
+                        &ordering,
+                        ordered,
+                        &mut linear_ids,
+                        Instant::now() + Duration::from_secs(5),
+                    )
+                    .expect("linear closure must terminate on tiny inputs");
+                    let mut indexed_ids = ClauseIdGen::new();
+                    let indexed = closure_indexed(
+                        &input,
+                        &ordering,
+                        ordered,
+                        &mut indexed_ids,
+                        Instant::now() + Duration::from_secs(5),
+                    )
+                    .expect("indexed closure must terminate on tiny inputs");
+                    assert_eq!(
+                        linear.status, indexed.status,
+                        "status mismatch case={case} ordered={ordered} ordering={ordering:?}"
+                    );
+                    if matches!(linear.status, ClosureStatus::Saturated) {
+                        assert_eq!(
+                            closure_key_set(&linear),
+                            closure_key_set(&indexed),
+                            "clause-set mismatch case={case} ordered={ordered} ordering={ordering:?}"
+                        );
+                    } else {
+                        assert!(
+                            closure_key_set(&indexed).contains(&Vec::new()),
+                            "refuted indexed closure must contain the empty clause"
+                        );
+                    }
+                }
+            }
         }
     }
 }

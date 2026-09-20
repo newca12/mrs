@@ -118,14 +118,11 @@ an axiom file uses real equality, plus function terms).
 Cap-sizing experiment (same corpus, `TRACE_CERTIFY=1` refusal telemetry):
 raising `MAX_ATOMS` 64 → 4096 and `MAX_GROUND_INSTANCES` 100k → 500k moved
 problems from instant grounding refusals into closure timeouts (28 at the
-10 s budget, all EPS) with zero coverage gain — certified stayed 3/0 — and
-spot checks at a 12x budget (120 s) still timed out with closures growing
-past 40k clauses. The linear all-pairs closure cannot close mid-size
-groundings on practical budgets, so the caps were reverted to their
-conservative values: fast refusals beat slow timeouts with identical
-coverage. Covering those problems needs indexed inference generation with
-an indexed-vs-linear equivalence proof, which remains an open layer, not
-bigger caps. The gate criterion stays zero false positives.
+10 s budget, all EPS) with zero coverage gain — certified stayed 3/0 —
+because the linear all-pairs closure could not close mid-size groundings
+even at 12x budget. The caps were then kept at the raised values *together
+with* indexed closures (see below), which makes them usable: retrieval is
+no longer the bottleneck. The gate criterion stays zero false positives.
 
 `TRACE_CERTIFY=1` emits per-refusal sizes (`refuse=instance_limit
 estimated=… vars=… constants=…`, `refuse=atom_limit atoms=…`,
@@ -157,3 +154,31 @@ correctly rejected); no index recall violation was found.
 Out of scope for this layer: end-to-end search-trace equivalence (would
 need a linear-scan dual-run mode) and AVATAR-gated clause filtering, which
 happens after index retrieval.
+
+## Indexed Closures (Phase 3 Outcome)
+
+Both certifier closures now retrieve partners through a `LiteralIndex`
+over hash-consed clause twins (`closure_indexed` in `certified.rs`) instead
+of scanning all pairs; the linear implementation is retained under
+`#[cfg(test)]` as the equivalence reference. A dedicated unit test
+(`indexed_closure_matches_linear_closure`) asserts identical status always
+and identical saturated clause sets on SAT and multi-step UNSAT fixtures
+under both orderings — refuted runs are status-compared only, since both
+sides correctly stop at the first empty clause and their truncated sets
+may differ by pair-visit order. The ordered/reference agreement check is
+unchanged, and the EPU canary gate stays the empirical backstop against
+correlated index misses: any agreeing false saturation on EPU fails loudly.
+
+Measured effect on the casc-30 gate (10 s budget, raised caps): zero false
+positives, coverage unchanged at 3 SAT / 0 UNSAT. The indexed closure
+explores ~20–50x more per second (linear stalled at ~5k clauses; indexed
+reaches ~100k clauses with ~460k inferences), but the remaining EPS
+problems have genuinely enormous ground closures — 300 s probes still time
+out at ~90k clauses, and PUZ028-4 hits the 1M inference cap, correctly
+fail-closed. EPU never reaches closure at all: roughly half its problems
+refuse on grounding size and half on real equality content in (included)
+axiom files, which is outside the predicate-only fragment. Peak RSS on the
+largest explored grounding is ~524 MB. Conclusion: retrieval speed is no
+longer the coverage bottleneck; closure *size* is. Further coverage needs a
+different decision procedure for large groundings (e.g. SAT-backed), not
+faster pairs.
