@@ -243,6 +243,7 @@ pub(crate) fn certify_sat_backed(
                 processed: grounded.len() as u64,
                 ..SearchStats::default()
             },
+            tier: crate::certified::CertifiedTier::Two,
         });
     }
     let mut solver = Solver::new();
@@ -289,6 +290,7 @@ pub(crate) fn certify_sat_backed(
                     processed: grounded.len() as u64,
                     ..SearchStats::default()
                 },
+                tier: crate::certified::CertifiedTier::Two,
             })
         }
         SolveResult::Unsat => {
@@ -340,6 +342,7 @@ pub(crate) fn certify_sat_backed(
                     generated: report.derived as u64,
                     ..SearchStats::default()
                 },
+                tier: crate::certified::CertifiedTier::Two,
             })
         }
         SolveResult::Unknown => {
@@ -717,6 +720,7 @@ mod tests {
             SearchResult::Saturated(witness)
                 if witness.reason() == crate::SaturationReason::SatBackedGrounding
         ));
+        assert_eq!(report.tier, crate::certified::CertifiedTier::Two);
     }
 
     #[test]

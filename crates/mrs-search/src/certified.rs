@@ -83,6 +83,29 @@ pub(crate) enum CertificationFailure {
 pub(crate) struct CertifiedGroundReport {
     pub result: SearchResult,
     pub stats: SearchStats,
+    pub tier: CertifiedTier,
+}
+
+/// Which certification tier produced a report. Surfaced as `cert_tier=`
+/// telemetry so benchmark harnesses can attribute coverage without TRACE.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CertifiedTier {
+    /// Double ordered-resolution closure over a small grounding.
+    One,
+    /// SAT-backed satisfiability over a large grounding.
+    Two,
+    /// Constant-subset refutation for infeasible groundings.
+    Three,
+}
+
+impl CertifiedTier {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            CertifiedTier::One => "1",
+            CertifiedTier::Two => "2",
+            CertifiedTier::Three => "3",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -274,6 +297,7 @@ fn run_tier1(
             Ok(CertifiedGroundReport {
                 result: SearchResult::Refutation(empty.id, tstp),
                 stats,
+                tier: CertifiedTier::One,
             })
         }
         ClosureStatus::Saturated => {
@@ -290,6 +314,7 @@ fn run_tier1(
             Ok(CertifiedGroundReport {
                 result: SearchResult::Saturated(CompletenessWitness::ground_ordered_resolution()),
                 stats,
+                tier: CertifiedTier::One,
             })
         }
     }
@@ -451,11 +476,12 @@ fn tier3_subset_unsat(
             deadline,
             "tier3-sub",
         ) {
-            Ok(report) if matches!(report.result, SearchResult::Refutation(..)) => {
+            Ok(mut report) if matches!(report.result, SearchResult::Refutation(..)) => {
                 trace_certify(format!(
                     "tier3_found subset_size={} tries={tries}",
                     subset.len()
                 ));
+                report.tier = CertifiedTier::Three;
                 return Ok(report);
             }
             // Subset saturation proves nothing about the full problem, and
@@ -1338,6 +1364,7 @@ mod tests {
             SearchResult::Saturated(witness)
                 if witness.reason() == crate::SaturationReason::GroundOrderedResolution
         ));
+        assert_eq!(report.tier, CertifiedTier::One);
     }
 
     #[test]
@@ -1934,6 +1961,7 @@ mod tests {
                 matches!(report.result, SearchResult::Refutation(..)),
                 "Tier 3 must refute via the small core under {ordering:?}"
             );
+            assert_eq!(report.tier, CertifiedTier::Three);
         }
     }
 

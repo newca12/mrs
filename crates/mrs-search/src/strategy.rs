@@ -734,6 +734,8 @@ pub fn run_schedule_with_candidate_receiver(
                     elapsed_ms: tele.elapsed_ms,
                 }],
                 instgen: Some(tele),
+                cert_tier: None,
+                cert_ordering: None,
             };
 
             if let SearchResult::Refutation(id, ref tstp) = result {
@@ -1268,7 +1270,7 @@ fn run_certified_ordered_fragment(
     candidate_receiver: Option<Arc<dyn CandidateReceiver>>,
     workers: Option<usize>,
 ) -> (SearchResult, crate::ScheduleReport) {
-    let (result, stats) = match crate::certified::certify_ground_ordered_resolution(
+    let (result, stats, cert_tier) = match crate::certified::certify_ground_ordered_resolution(
         clauses,
         provenance,
         symbols,
@@ -1276,13 +1278,22 @@ fn run_certified_ordered_fragment(
         &mut id_gen,
         config.time_limit,
     ) {
-        Ok(report) => (report.result, report.stats),
+        Ok(report) => (
+            report.result,
+            report.stats,
+            Some(report.tier.as_str().to_string()),
+        ),
         Err(reason) => {
             if std::env::var("TRACE_SEARCH").is_ok() {
                 eprintln!("[TRACE] ordered certifier refused input: {reason:?}");
             }
-            (SearchResult::GaveUp, crate::SearchStats::default())
+            (SearchResult::GaveUp, crate::SearchStats::default(), None)
         }
+    };
+    let cert_ordering = match &config.ordering {
+        crate::TermOrdering::KBO | crate::TermOrdering::CustomKBO(_) => Some("kbo".to_string()),
+        crate::TermOrdering::LPO | crate::TermOrdering::CustomLPO(_) => Some("lpo".to_string()),
+        crate::TermOrdering::CustomACKBO(_, _) => Some("ac-kbo".to_string()),
     };
 
     let result = if let SearchResult::Refutation(id, ref tstp) = result {
@@ -1318,6 +1329,8 @@ fn run_certified_ordered_fragment(
             elapsed_ms: schedule_start.elapsed().as_millis() as u64,
         }],
         instgen: None,
+        cert_tier,
+        cert_ordering,
     };
     (result, report)
 }
@@ -1539,6 +1552,117 @@ mod tests {
                 .iter()
                 .all(|strategy| !matches!(strategy.result, SearchResult::Saturated(_)))
         );
+    }
+
+    /// The `--certify-ordered` path attributes tier and ordering in the
+    /// schedule report so harnesses read them from `% SZS detail` without
+    /// TRACE output. Uses a two-unit SAT input (Tier-1 saturates).
+    #[test]
+    fn certified_schedule_reports_tier_and_ordering() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+        let clauses = vec![
+            input_clause(
+                &mut id_gen,
+                vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+                "ax1",
+            ),
+            input_clause(
+                &mut id_gen,
+                vec![Literal::pos(Atom::pred(q, vec![Term::constant(a)]))],
+                "ax2",
+            ),
+        ];
+        for (ordering, expected) in [(TermOrdering::KBO, "kbo"), (TermOrdering::LPO, "lpo")] {
+            let schedule = StrategySchedule {
+                strategies: vec![(
+                    SearchConfig {
+                        time_limit: Duration::from_secs(5),
+                        certify_ordered_inferences: true,
+                        ordered_inferences: true,
+                        max_term_weight: None,
+                        use_avatar: false,
+                        literal_selection: LiteralSelection::All,
+                        ordering,
+                        ..SearchConfig::default()
+                    },
+                    Duration::from_secs(5),
+                )],
+            };
+            let (result, report) = run_schedule(
+                &clauses,
+                &[],
+                id_gen.clone(),
+                &schedule,
+                &syms,
+                MlOptions::default(),
+                Some(1),
+            );
+            assert!(
+                matches!(result, SearchResult::Saturated(_)),
+                "certified SAT input must saturate under {expected}"
+            );
+            assert_eq!(report.cert_tier.as_deref(), Some("1"));
+            assert_eq!(report.cert_ordering.as_deref(), Some(expected));
+            let detail = report.telemetry_detail("Saturation");
+            assert!(
+                detail.contains("cert_tier=1"),
+                "telemetry detail must carry the tier"
+            );
+            assert!(
+                detail.contains(&format!("cert_ordering={expected}")),
+                "telemetry detail must carry the ordering"
+            );
+        }
+    }
+
+    /// Fail-closed certification leaves tier attribution empty while still
+    /// recording the attempted ordering.
+    #[test]
+    fn certified_schedule_omits_tier_on_gaveup() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let f = syms.intern("f");
+        let mut id_gen = ClauseIdGen::new();
+        // Function term: outside the fragment, instant GaveUp.
+        let clause = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(
+                p,
+                vec![Term::app(f, vec![Term::constant(a)])],
+            ))],
+            "ax",
+        );
+        let schedule = StrategySchedule {
+            strategies: vec![(
+                SearchConfig {
+                    time_limit: Duration::from_secs(5),
+                    certify_ordered_inferences: true,
+                    ordered_inferences: true,
+                    max_term_weight: None,
+                    use_avatar: false,
+                    ordering: TermOrdering::KBO,
+                    ..SearchConfig::default()
+                },
+                Duration::from_secs(5),
+            )],
+        };
+        let (result, report) = run_schedule(
+            &[clause],
+            &[],
+            id_gen,
+            &schedule,
+            &syms,
+            MlOptions::default(),
+            Some(1),
+        );
+        assert!(matches!(result, SearchResult::GaveUp));
+        assert_eq!(report.cert_tier, None);
+        assert_eq!(report.cert_ordering.as_deref(), Some("kbo"));
     }
 
     #[test]

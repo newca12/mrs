@@ -127,6 +127,14 @@ pub struct ScheduleReport {
     pub strategies: Vec<StrategyReport>,
     /// Telemetry collected from the InstGen pre-pass, if run.
     pub instgen: Option<InstGenTelemetry>,
+    /// Certification tier that produced this schedule's result (`1`, `2`,
+    /// or `3`), set only by the `--certify-ordered` path on success.
+    /// Lets benchmark harnesses attribute coverage without TRACE output.
+    pub cert_tier: Option<String>,
+    /// Ordering the certifier ran under (`kbo`, `lpo`, or `ac-kbo`),
+    /// recorded whenever the `--certify-ordered` path runs — including
+    /// fail-closed runs, so remote analysis can tabulate attempts.
+    pub cert_ordering: Option<String>,
 }
 
 impl ScheduleReport {
@@ -208,6 +216,13 @@ impl ScheduleReport {
             if let Some(reason) = ig.fallback_reason {
                 detail.push_str(&format!(" instgen_fallback={}", reason));
             }
+        }
+
+        if let Some(tier) = &self.cert_tier {
+            detail.push_str(&format!(" cert_tier={tier}"));
+        }
+        if let Some(ordering) = &self.cert_ordering {
+            detail.push_str(&format!(" cert_ordering={ordering}"));
         }
 
         detail

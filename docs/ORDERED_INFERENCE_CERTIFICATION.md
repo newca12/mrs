@@ -81,6 +81,21 @@ heuristically simplified searches. Variable-bearing relational EPR inputs are
 accepted only when their finite exhaustive grounding stays within the
 certifier's resource bounds.
 
+## Benchmark Harness Integration
+
+`crates/mrs-bench/systems/mrs-certify/invoke.sh` runs one base strategy
+with `--workers 1 --certify-ordered` under the standard `casc.sh`
+harness (`--systems mrs-certify --divisions eps,epu ...`), so verdicts
+(`ok`/`ko`/`unknown` against `answers.tsv`), wall time, and peak RSS land
+in `run.csv` like any other system. The strategy comes from
+`MRS_CERTIFY_STRATEGY` (default 1, KBO; 7 selects the LPO variant);
+`MRS_WORKERS` is deliberately ignored — parallelizing a certification run
+would silently break its isolation. Successful certifications carry
+`cert_tier=N cert_ordering=...` in the `% SZS detail` line (recorded as
+`failure_detail` in `run.csv`); fail-closed runs carry `cert_ordering`
+only, never a tier. First full-harness run (casc-30 EPS+EPU, 10 s):
+6 certified all `ok`, 194 unknown, **0 `ko`**.
+
 ## Required Expansion Before Broader Enablement
 
 The next certification layers require independent proofs and tests for:
