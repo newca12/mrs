@@ -65,7 +65,10 @@ for division in $DIVISIONS; do
         while IFS= read -r problem; do
             base="$(basename "$problem" .p)"
             out="$RESULTS_DIR/${division}-s${strategy}-${base}.out"
-            timeout "$((TIME_SECS + 60))" "$BIN" \
+            # Wrapper margin covers proof-trace capture, Tier-3 subset
+            # tries, and solver teardown past the prover budget; kills
+            # count as fail-closed (no SZS line), never as error.
+            timeout "$((TIME_SECS + 120))" "$BIN" \
                 --time "$TIME_SECS" --workers 1 --strategy "$strategy" \
                 --certify-ordered "$problem" >"$out" 2>/dev/null &
             running=$((running + 1))

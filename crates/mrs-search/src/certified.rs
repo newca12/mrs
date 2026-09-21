@@ -111,8 +111,13 @@ pub(crate) fn certify_ground_ordered_resolution(
     let constants = collect_grounding_constants(clauses, &mut proof_symbols)?;
     // Full grounding first; only size limits divert to Tier 3 below —
     // fragment errors propagate because subsets cannot fix them.
-    let grounded =
-        match ground_with_constants(clauses, &constants, id_gen, TIER2_MAX_GROUND_INSTANCES) {
+    let grounded = match ground_with_constants(
+        clauses,
+        &constants,
+        id_gen,
+        TIER2_MAX_GROUND_INSTANCES,
+        deadline,
+    ) {
             Err(CertificationFailure::Limit(_)) => None,
             Err(other) => return Err(other),
             Ok(grounded) => Some(grounded),
@@ -423,11 +428,16 @@ fn tier3_subset_unsat(
         if restricted.is_empty() {
             continue;
         }
-        let subset_grounded =
-            match ground_with_constants(&restricted, subset, id_gen, TIER3_MAX_SUBSET_INSTANCES) {
-                Ok(grounded) => grounded,
-                Err(_) => continue,
-            };
+        let subset_grounded = match ground_with_constants(
+            &restricted,
+            subset,
+            id_gen,
+            TIER3_MAX_SUBSET_INSTANCES,
+            deadline,
+        ) {
+            Ok(grounded) => grounded,
+            Err(_) => continue,
+        };
         match run_tier1(
             &subset_grounded,
             provenance,
@@ -590,6 +600,7 @@ fn ground_with_constants(
     constants: &[SymbolId],
     id_gen: &mut ClauseIdGen,
     instance_cap: usize,
+    deadline: Instant,
 ) -> Result<GroundedInputs, CertificationFailure> {
     let originals = clauses.to_vec();
     let mut grounded = Vec::new();
@@ -623,6 +634,11 @@ fn ground_with_constants(
                 "ground instance limit exceeded",
             ));
         }
+        if Instant::now() >= deadline {
+            return Err(CertificationFailure::Limit(
+                "certification time limit exceeded",
+            ));
+        }
         let mut substitution = Substitution::new();
         instantiate_clause(
             clause,
@@ -632,7 +648,8 @@ fn ground_with_constants(
             &mut substitution,
             id_gen,
             &mut grounded,
-        );
+            deadline,
+        )?;
     }
 
     Ok(GroundedInputs {
@@ -668,8 +685,18 @@ fn instantiate_clause(
     substitution: &mut Substitution,
     id_gen: &mut ClauseIdGen,
     output: &mut Vec<Clause>,
-) {
+    deadline: Instant,
+) -> Result<(), CertificationFailure> {
     if depth == vars.len() {
+        // Amortized deadline check: every 4096th materialized instance.
+        // Without this, multi-million-instance groundings burn unbounded
+        // wall time with no fail-closed trigger (found via gate straggler
+        // forensics: workers living 80+s on a 10 s budget).
+        if output.len() & 0xFFF == 0 && Instant::now() >= deadline {
+            return Err(CertificationFailure::Limit(
+                "certification time limit exceeded",
+            ));
+        }
         let literals = clause
             .literals
             .iter()
@@ -685,7 +712,7 @@ fn instantiate_clause(
         );
         grounded.distance = clause.distance;
         output.push(grounded);
-        return;
+        return Ok(());
     }
 
     for &constant in constants {
@@ -698,8 +725,10 @@ fn instantiate_clause(
             substitution,
             id_gen,
             output,
-        );
+            deadline,
+        )?;
     }
+    Ok(())
 }
 
 fn is_kbo(ordering: &TermOrdering) -> bool {

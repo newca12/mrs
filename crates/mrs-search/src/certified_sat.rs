@@ -22,12 +22,62 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use mrs_cadical::{SolveResult, Solver};
+use mrs_cadical::{ProofEvent, SolveResult, Solver, TraceConfig, check_proof_trace};
 use mrs_core::clause::Clause;
 use mrs_core::formula::Atom;
 
 use crate::certified::{CertificationFailure, CertifiedGroundReport, trace_certify};
 use crate::{CompletenessWitness, SearchResult, SearchStats};
+
+/// Cap on CaDiCaL proof-trace events per Tier-2 run. The tracer stops
+/// appending past the cap (memory stays bounded) and disconnect reports
+/// overflow; both fail closed. Sized generously for measurement: corpus
+/// UNSAT proofs are counted first, tuned later.
+const SAT_TRACE_MAX_EVENTS: usize = 1_000_000;
+
+/// Outcome of capturing and independently re-checking a solver UNSAT proof.
+pub(crate) struct UnsatTraceReport {
+    /// Total recorded events.
+    pub events: usize,
+    /// Original-clause events (should match the encoded input count).
+    pub originals: usize,
+    /// Derived-clause events.
+    pub derived: usize,
+    /// Result of the independent RUP-chain re-check (`Err` carries the
+    /// checker's display string: RAT witnesses and malformed steps land
+    /// here and fail closed downstream).
+    pub check: Result<(), String>,
+}
+
+/// Disconnect a traced solver after UNSAT and run the independent RUP
+/// re-check. Capture problems (disconnect failure, event-limit overflow)
+/// return `Err` and fail closed; a failed re-check is RECORDED, not
+/// returned as error, because the caller maps every UNSAT outcome to
+/// `Tier2Unsat` identically (capture-first measurement must not change
+/// verdicts — only TRACE gains lines).
+pub(crate) fn capture_and_check(
+    solver: &mut Solver,
+) -> Result<UnsatTraceReport, CertificationFailure> {
+    let trace = solver
+        .disconnect_trace()
+        .map_err(|_| CertificationFailure::Limit("sat trace capture failed or overflowed"))?;
+    let mut originals = 0usize;
+    let mut derived = 0usize;
+    for event in &trace.events {
+        match event {
+            ProofEvent::OriginalClause { .. } => originals += 1,
+            ProofEvent::DerivedClause { .. } => derived += 1,
+            _ => {}
+        }
+    }
+    let check = check_proof_trace(&trace).map_err(|e| format!("{e}"));
+    Ok(UnsatTraceReport {
+        events: trace.events.len(),
+        originals,
+        derived,
+        check,
+    })
+}
 
 /// Encode a grounded clause set as signed-integer SAT clauses under a
 /// deterministic atom ordering. Tautologies are skipped (valid in any
@@ -36,6 +86,7 @@ use crate::{CompletenessWitness, SearchResult, SearchStats};
 pub(crate) fn encode_sat(
     grounded: &[Clause],
     atoms: &[Atom],
+    deadline: Instant,
 ) -> Result<(Vec<Vec<i32>>, usize), CertificationFailure> {
     let mut ordered: Vec<&Atom> = atoms.iter().collect();
     ordered.sort_by_key(|atom| format!("{atom:?}"));
@@ -44,7 +95,14 @@ pub(crate) fn encode_sat(
         var_of.insert(atom, index as i32 + 1);
     }
     let mut encoded = Vec::with_capacity(grounded.len());
-    for clause in grounded {
+    for (index, clause) in grounded.iter().enumerate() {
+        // Amortized deadline check: encoding millions of clauses must not
+        // burn unbounded wall time past the budget.
+        if index & 0xFFF == 0 && Instant::now() >= deadline {
+            return Err(CertificationFailure::Limit(
+                "certification time limit exceeded",
+            ));
+        }
         if clause.is_empty() {
             // An empty grounded clause means unsatisfiability without a
             // TSTP-ancestry proof: Tier-3-eligible, like solver UNSAT.
@@ -94,7 +152,7 @@ pub(crate) fn certify_sat_backed(
     time_limit: Duration,
 ) -> Result<CertifiedGroundReport, CertificationFailure> {
     let deadline = Instant::now() + time_limit;
-    let (encoded, var_count) = encode_sat(grounded, atoms)?;
+    let (encoded, var_count) = encode_sat(grounded, atoms, deadline)?;
     trace_certify(format!(
         "sat_encoded vars={var_count} clauses={} skipped={}",
         encoded.len(),
@@ -112,6 +170,19 @@ pub(crate) fn certify_sat_backed(
         });
     }
     let mut solver = Solver::new();
+    // Always-trace (deterministic, simpler): the SAT path pays the tracing
+    // overhead too, and the UNSAT path needs the events. Capture failures
+    // fail closed; they never change the verdict mapping below.
+    if solver
+        .connect_trace(TraceConfig {
+            antecedents: true,
+            finalize_clauses: true,
+            max_events: SAT_TRACE_MAX_EVENTS,
+        })
+        .is_err()
+    {
+        return Err(CertificationFailure::Limit("sat trace capture failed"));
+    }
     for clause in &encoded {
         if Instant::now() >= deadline {
             trace_certify("sat_outcome=add_timeout".to_string());
@@ -123,6 +194,9 @@ pub(crate) fn certify_sat_backed(
     }
     match solver.solve_until(deadline) {
         SolveResult::Sat => {
+            // The trace is unneeded on the SAT path (the verified model is
+            // the certificate); disconnect errors are irrelevant here.
+            let _ = solver.disconnect_trace();
             let model_ok = verify_model(&encoded, &|literal| solver.value(literal));
             trace_certify(format!(
                 "sat_outcome=sat vars={var_count} clauses={} model_ok={model_ok}",
@@ -146,6 +220,26 @@ pub(crate) fn certify_sat_backed(
                 "sat_outcome=unsat vars={var_count} clauses={}",
                 encoded.len(),
             ));
+            // Capture-first measurement: disconnect, count, and
+            // independently re-check the proof. Every outcome below still
+            // maps to Tier2Unsat (verdicts unchanged — only TRACE gains
+            // lines); the measurements size the later emission phase.
+            match capture_and_check(&mut solver) {
+                Ok(report) => {
+                    let check = match &report.check {
+                        Ok(()) => "ok".to_string(),
+                        Err(reason) => format!("rejected:{reason}"),
+                    };
+                    trace_certify(format!(
+                        "sat_trace_capture events={} originals={} derived={} check={check}",
+                        report.events, report.originals, report.derived
+                    ));
+                }
+                Err(CertificationFailure::Limit(reason)) => {
+                    trace_certify(format!("sat_trace_capture failed:{reason}"));
+                }
+                Err(other) => return Err(other),
+            }
             // Sound but proof-less: the router may still try Tier-3 subset
             // search for a TSTP-ancestry refutation.
             Err(CertificationFailure::Tier2Unsat)
@@ -220,8 +314,9 @@ mod tests {
                 Literal::neg(Atom::pred(p, vec![Term::constant(a)])),
             ],
         ));
-        let (first, vars) = encode_sat(&clauses, &atoms).expect("encodable");
-        let (second, _) = encode_sat(&clauses, &atoms).expect("encodable");
+        let far = Instant::now() + Duration::from_secs(5);
+        let (first, vars) = encode_sat(&clauses, &atoms, far).expect("encodable");
+        let (second, _) = encode_sat(&clauses, &atoms, far).expect("encodable");
         assert_eq!(first, second, "encoding must be deterministic");
         assert_eq!(vars, 2);
         assert_eq!(
@@ -247,9 +342,31 @@ mod tests {
             },
         );
         assert!(matches!(
-            encode_sat(std::slice::from_ref(&empty), &[]),
+            encode_sat(
+                std::slice::from_ref(&empty),
+                &[],
+                Instant::now() + Duration::from_secs(5)
+            ),
             Err(CertificationFailure::Tier2Unsat)
         ));
+    }
+
+    #[test]
+    fn solver_value_reports_variable_assignment_regardless_of_sign() {
+        // Locks the FFI convention verify_model depends on: value()
+        // reports the VARIABLE assignment even for negative arguments
+        // (value(-1) is Some(true) when v1 is true, although the literal
+        // ¬v1 is false). Hence verify_model must compare polarity itself —
+        // passing signed literals straight through would invert every
+        // negative literal. Forces v1=true, v2=false.
+        let mut solver = mrs_cadical::Solver::new();
+        solver.add_clause([1]);
+        solver.add_clause([-2]);
+        assert_eq!(solver.solve(), mrs_cadical::SolveResult::Sat);
+        assert_eq!(solver.value(1), Some(true));
+        assert_eq!(solver.value(-1), Some(true));
+        assert_eq!(solver.value(2), Some(false));
+        assert_eq!(solver.value(-2), Some(false));
     }
 
     #[test]
@@ -298,6 +415,31 @@ mod tests {
             SearchResult::Saturated(witness)
                 if witness.reason() == crate::SaturationReason::SatBackedGrounding
         ));
+    }
+
+    #[test]
+    fn unsat_capture_records_checkable_proof() {
+        // Capture-first contract: a tiny UNSAT solve yields originals plus
+        // an independently re-checked proof (no RAT witnesses from a plain
+        // unit-conflict solve).
+        let mut solver = mrs_cadical::Solver::new();
+        solver
+            .connect_trace(mrs_cadical::TraceConfig {
+                antecedents: true,
+                finalize_clauses: true,
+                max_events: 1024,
+            })
+            .expect("trace must connect");
+        solver.add_clause([1]);
+        solver.add_clause([-1]);
+        assert_eq!(solver.solve(), mrs_cadical::SolveResult::Unsat);
+        let report = capture_and_check(&mut solver).expect("capture must succeed");
+        assert_eq!(report.originals, 2);
+        assert!(
+            report.check.is_ok(),
+            "plain unit-conflict proof must re-check, got {:?}",
+            report.check
+        );
     }
 
     #[test]

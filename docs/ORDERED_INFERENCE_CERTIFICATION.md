@@ -114,12 +114,13 @@ allowed (fail-closed). Every problem runs under both certified orderings
 
 Last measured outcome (2026-09-20, `casc-30` corpus):
 
-Fast gate, 10 s per problem:
+Fast gate, 10 s per problem (latest run; EPS counts wobble 5–6 across
+runs — see note below):
 
 | Division | Ordering | Total | Certified | Fail-closed | False positives |
 |----------|----------|-------|-----------|-------------|-----------------|
-| EPS | KBO (s1) | 100 | 5 | 95 | 0 |
-| EPS | LPO (s7) | 100 | 5 | 95 | 0 |
+| EPS | KBO (s1) | 100 | 6 | 94 | 0 |
+| EPS | LPO (s7) | 100 | 6 | 94 | 0 |
 | EPU | KBO (s1) | 100 | 0 | 100 | 0 |
 | EPU | LPO (s7) | 100 | 0 | 100 | 0 |
 
@@ -134,9 +135,10 @@ Deep gate (`--deep`, 120 s per problem):
 
 (The fast-gate jump from 3 EPS is the Tier-2 SAT path converting
 closure-bound groundings — e.g. NLP116-1: 200 034 clauses over 5 211
-atoms, verified model. Single-count wobble at the fast budget (6 vs 5 on
-s1 across runs) is budget-edge flakiness: problems saturating within
-milliseconds of the deadline flip with load; both outcomes are sound.
+atoms, verified model. Counts wobble by ±1 across runs (5–6 on either
+ordering) — budget-edge flakiness: problems deciding within milliseconds
+of the deadline flip with load; both outcomes are sound. The Tier-3 and
+capture instrumentation did not move the fast counts outside that band.
 EPU stays zero throughout: the SAT tier certifies satisfiability only,
 Tier 3 found no small cores at either budget, and EPU problems otherwise
 die at grounding size or real equality content before any closure runs.
@@ -240,6 +242,57 @@ fragment errors (equality, function terms, formula/AVATAR clauses).
 Vocabulary restriction could in principle drop offending clauses and still
 refute soundly, but that would smuggle non-EPR reasoning into an
 EPR-only tier — explicitly out of scope; such inputs stay `GaveUp`.
+
+## UNSAT Capture-First Measurement (Phase 5a Outcome)
+
+Tier-2 UNSAT outcomes currently fail closed (`Tier2Unsat` → Tier-3 subset
+search → usually exhausted) because no FRAT-to-TSTP elaborator exists yet.
+Before building emission, the UNSAT path is instrumented for measurement
+only — verdicts are unchanged, TRACE gains lines:
+
+- The solver runs always-traced (`connect_trace` with antecedents and
+  finalize, 1M event cap that bounds memory and fails closed on overflow),
+  so SAT runs pay tracing overhead deterministically instead of depending
+  on re-solve reproducibility.
+- On UNSAT, `capture_and_check` disconnects, counts original/derived
+  events, and runs the independent RUP re-check (`check_proof_trace`);
+  `sat_trace_capture events=… originals=… derived=… check=…` records the
+  outcome. RAT witnesses, malformed steps, and capture failures all fail
+  closed; the verdict still maps to `Tier2Unsat` in every case.
+- A contract test pins the `Solver::value` FFI convention the model
+  verifier depends on (variable assignment regardless of sign — proven by
+  test after the polarity-bug episode, where passing signed literals
+  through inverted every negative literal).
+
+End-to-end proof that the pieces compose: a synthetic 5 002-clause
+Tier-2-window UNSAT problem yields `sat_trace_capture events=10009
+originals=5002 derived=1 check=ok`, falls through to Tier 3, refutes via
+the `{core}` singleton on try 1 with agreement, and reports `% SZS status
+Unsatisfiable`.
+
+Corpus measurement outcome (deep TRACE pass, 200 problems, s1): **zero**
+Tier-2 UNSAT completions — every corpus UNSAT either refuses before the
+solver (grounding/equality) or outlasts the budget inside it — so RAT
+frequency is unmeasurable on this corpus and the synthetic probe
+(`check=ok`, no RAT witnesses) remains the only UNSAT-capture datum. The
+emission phase must therefore validate RAT handling on synthesized
+hard-UNSAT Tier-2-window fixtures (e.g. pigeonhole EPR encodings), not on
+corpus problems. Related harness finding: 22 deep runs exceeded even a
+200 s wall wrapper (killed, no claim — fail-closed); the gate wrapper
+margin is now budget + 120 s, and kills count as fail-closed, never error.
+Always-trace overhead did not move gate outcomes (fast gate re-verified
+green after the change).
+
+## Deadline Hardening (Straggler Forensics)
+
+Gate forensics caught workers living 80 s+ on a 10 s budget: grounding
+materialization (`instantiate_clause` recursion) and SAT encoding had no
+deadline checks, so multi-million-instance inputs burned unbounded wall
+time before any capped loop ran. Both now carry amortized checks (every
+4096th instance/clause) failing closed past the deadline. Rule of thumb
+going forward: every unbounded loop in the certification path — including
+test-only and telemetry-adjacent code — needs a deadline or count check;
+the gate's long tail is bounded by the per-problem wrapper otherwise.
 
 ## SAT-Backed Tier 2 (Phase 4 Outcome)
 
