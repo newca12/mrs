@@ -268,8 +268,15 @@ pub fn check_proof_trace(trace: &ProofTrace) -> Result<(), TraceError> {
                 ));
             }
             ProofEvent::OriginalClause { id, clause, .. } => {
-                if *id <= 0 || clauses.insert(*id, clause.clone()).is_some() {
-                    return Err(TraceError::FfiFailure);
+                if *id <= 0 {
+                    return Err(TraceError::Malformed(
+                        "original clause has a non-positive ID".into(),
+                    ));
+                }
+                if clauses.insert(*id, clause.clone()).is_some() {
+                    return Err(TraceError::Malformed(format!(
+                        "duplicate original clause ID {id}"
+                    )));
                 }
             }
             ProofEvent::DerivedClause {
@@ -280,7 +287,9 @@ pub fn check_proof_trace(trace: &ProofTrace) -> Result<(), TraceError> {
                 ..
             } => {
                 if *id <= 0 || clauses.contains_key(id) {
-                    return Err(TraceError::FfiFailure);
+                    return Err(TraceError::Malformed(format!(
+                        "derived clause has a duplicate or non-positive ID {id}"
+                    )));
                 }
                 if *witness != 0 {
                     return Err(TraceError::Malformed(
@@ -293,7 +302,10 @@ pub fn check_proof_trace(trace: &ProofTrace) -> Result<(), TraceError> {
                     ));
                 }
                 if !antecedents.is_empty() && !rup_check(&clauses, clause, antecedents) {
-                    return Err(TraceError::FfiFailure);
+                    return Err(TraceError::Malformed(format!(
+                        "RUP check failed for derived clause {id} with {} antecedents",
+                        antecedents.len()
+                    )));
                 }
                 clauses.insert(*id, clause.clone());
             }
@@ -301,8 +313,22 @@ pub fn check_proof_trace(trace: &ProofTrace) -> Result<(), TraceError> {
                 clauses.remove(id);
             }
             ProofEvent::FinalizeClause { id, clause } => {
-                if clauses.get(id) != Some(clause) {
-                    return Err(TraceError::FfiFailure);
+                // Multiset comparison: CaDiCaL reports finalized clauses
+                // with literals in internal order, which may differ from
+                // insertion order (observed: [10,11,12] vs [11,10,12]).
+                // Clauses are sets, so order must not matter.
+                let tracked = clauses.get(id);
+                let same = tracked.is_some_and(|tracked| {
+                    let mut expected = tracked.clone();
+                    let mut actual = clause.clone();
+                    expected.sort_unstable();
+                    actual.sort_unstable();
+                    expected == actual
+                });
+                if !same {
+                    return Err(TraceError::Malformed(format!(
+                        "finalized clause {id} does not match the tracked clause"
+                    )));
                 }
                 finalized_empty |= clause.is_empty();
             }
@@ -311,7 +337,9 @@ pub fn check_proof_trace(trace: &ProofTrace) -> Result<(), TraceError> {
     if finalized_empty {
         Ok(())
     } else {
-        Err(TraceError::FfiFailure)
+        Err(TraceError::Malformed(
+            "trace concludes without a finalized empty clause".into(),
+        ))
     }
 }
 
@@ -324,38 +352,49 @@ fn rup_check(
     for &literal in conclusion {
         assignment.insert(-literal);
     }
-    for &id in antecedents {
-        let Some(clause) = clauses.get(&id) else {
-            return false;
-        };
-        let mut satisfied = false;
-        let mut unassigned = None;
-        let mut multiple_unassigned = false;
-        for &literal in clause {
-            if assignment.contains(&literal) {
-                satisfied = true;
-                break;
+    // Fixpoint unit propagation over the antecedents in listed order,
+    // repeated until no new unit is learned. A single pass is incomplete
+    // here: a clause visited before its unit became known would spuriously
+    // fail (real CaDiCaL proofs list multi-literal antecedents before the
+    // units that simplify them). Termination is guaranteed: every round
+    // either learns a previously unseen literal or stops.
+    loop {
+        let mut progressed = false;
+        for &id in antecedents {
+            let Some(clause) = clauses.get(&id) else {
+                return false;
+            };
+            let mut satisfied = false;
+            let mut unassigned = None;
+            let mut multiple_unassigned = false;
+            for &literal in clause {
+                if assignment.contains(&literal) {
+                    satisfied = true;
+                    break;
+                }
+                if !assignment.contains(&-literal) && unassigned.replace(literal).is_some() {
+                    multiple_unassigned = true;
+                }
             }
-            if !assignment.contains(&-literal) && unassigned.replace(literal).is_some() {
-                multiple_unassigned = true;
+            if satisfied {
+                continue;
+            }
+            if clause.is_empty() {
+                return true;
+            }
+            if multiple_unassigned {
+                continue;
+            }
+            if let Some(unit) = unassigned {
+                progressed |= assignment.insert(unit);
+            } else {
+                return true;
             }
         }
-        if satisfied {
-            continue;
-        }
-        if clause.is_empty() {
-            return true;
-        }
-        if multiple_unassigned {
+        if !progressed {
             return false;
-        }
-        if let Some(unit) = unassigned {
-            assignment.insert(unit);
-        } else {
-            return true;
         }
     }
-    false
 }
 
 /// Parse the ASCII FRAT dialect emitted by [`ProofFormat::FratLrat`] or
@@ -1037,6 +1076,74 @@ mod tests {
         assert!(trace.events.iter().any(|event| {
             matches!(event, ProofEvent::DerivedClause { clause, .. } if clause.is_empty())
         }));
+    }
+
+    #[test]
+    fn rup_check_needs_chained_propagation() {
+        // [] follows from [1,2,3], [-1], [-2], [-3], but only if the
+        // multi-literal antecedent is revisited after the units are
+        // learned: a single ordered pass fails it. CaDiCaL lists
+        // antecedents in exactly such orders on real proofs.
+        let mut clauses = std::collections::HashMap::new();
+        clauses.insert(1, vec![1, 2, 3]);
+        clauses.insert(2, vec![-1]);
+        clauses.insert(3, vec![-2]);
+        clauses.insert(4, vec![-3]);
+        assert!(super::rup_check(&clauses, &[], &[1, 2, 3, 4]));
+        // A non-consequence still fails: drop [-3] so the antecedents stay
+        // satisfiable (1=F, 2=F, 3=T), and [9] is forced by nothing.
+        clauses.remove(&4);
+        assert!(!super::rup_check(&clauses, &[9], &[1, 2, 3]));
+        // Unknown antecedent IDs fail closed.
+        assert!(!super::rup_check(&clauses, &[], &[1, 99]));
+    }
+
+    #[test]
+    fn finalize_tolerates_reordered_literals() {
+        // Regression: CaDiCaL reports finalized clauses in internal
+        // literal order, which may differ from insertion order (observed
+        // original [10,11,12] vs finalized [11,10,12] on PHP(4,3)). The
+        // checker must compare multisets, not sequences.
+        let mut solver = Solver::new();
+        solver
+            .connect_trace(TraceConfig::default())
+            .expect("connect trace");
+        // PHP(4,3) core, ground (unsatisfiable by theorem).
+        for p in 0..4 {
+            solver.add_clause([10 + p * 10, 10 + p * 10 + 1, 10 + p * 10 + 2]);
+        }
+        for h in 0..3 {
+            for p1 in 0..4 {
+                for p2 in p1 + 1..4 {
+                    solver.add_clause([-(10 + p1 * 10 + h), -(10 + p2 * 10 + h)]);
+                }
+            }
+        }
+        assert_eq!(solver.solve(), SolveResult::Unsat);
+        let trace = solver.disconnect_trace().expect("disconnect trace");
+        // Non-vacuity: id 1 must actually exhibit the reorder.
+        let original = trace.events.iter().find_map(|event| match event {
+            ProofEvent::OriginalClause { id: 1, clause, .. } => Some(clause.clone()),
+            _ => None,
+        });
+        let finalized = trace.events.iter().find_map(|event| match event {
+            ProofEvent::FinalizeClause { id: 1, clause } => Some(clause.clone()),
+            _ => None,
+        });
+        let (original, finalized) = (
+            original.expect("id 1 original"),
+            finalized.expect("id 1 finalized"),
+        );
+        assert_ne!(
+            original, finalized,
+            "expected CaDiCaL to reorder literals on finalize"
+        );
+        let mut sorted_original = original;
+        let mut sorted_finalized = finalized;
+        sorted_original.sort_unstable();
+        sorted_finalized.sort_unstable();
+        assert_eq!(sorted_original, sorted_finalized);
+        check_proof_trace(&trace).expect("reordered finalize must verify");
     }
 
     #[test]

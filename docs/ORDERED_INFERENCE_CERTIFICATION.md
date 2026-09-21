@@ -124,7 +124,7 @@ runs — see note below):
 | EPU | KBO (s1) | 100 | 0 | 100 | 0 |
 | EPU | LPO (s7) | 100 | 0 | 100 | 0 |
 
-Deep gate (`--deep`, 120 s per problem):
+Deep gate (`--deep`, 120 s per problem; with Tier-2 UNSAT emission live):
 
 | Division | Ordering | Total | Certified | Fail-closed | False positives |
 |----------|----------|-------|-----------|-------------|-----------------|
@@ -135,15 +135,17 @@ Deep gate (`--deep`, 120 s per problem):
 
 (The fast-gate jump from 3 EPS is the Tier-2 SAT path converting
 closure-bound groundings — e.g. NLP116-1: 200 034 clauses over 5 211
-atoms, verified model. Counts wobble by ±1 across runs (5–6 on either
-ordering) — budget-edge flakiness: problems deciding within milliseconds
-of the deadline flip with load; both outcomes are sound. The Tier-3 and
-capture instrumentation did not move the fast counts outside that band.
-EPU stays zero throughout: the SAT tier certifies satisfiability only,
-Tier 3 found no small cores at either budget, and EPU problems otherwise
-die at grounding size or real equality content before any closure runs.
-No Tier-3 refutation ever fired on EPS — as required for truly
-satisfiable problems.)
+atoms, verified model. Counts wobble by ±1 across runs (5–6 fast, 8–10
+deep) — budget-edge flakiness: problems deciding within milliseconds of
+the deadline flip with load; both outcomes are sound. Emission, Tier-3,
+and capture instrumentation did not move the counts outside that band:
+no corpus EPU problem completes a Tier-2 UNSAT proof within budget, so
+the emitted-refutation path has zero corpus conversions to date (proven
+working end-to-end on synthetic Tier-2-window UNSAT instead). EPU stays
+zero throughout: Tier 3 found no small cores at either budget, and EPU
+problems otherwise die at grounding size or real equality content before
+any closure runs. No Tier-3 refutation ever fired on EPS — as required
+for truly satisfiable problems.)
 
 Dominant fail-closed reasons are resource bounds (`ground instance limit
 exceeded` on 66 problems, `ground atom limit exceeded` on 23) and
@@ -294,22 +296,68 @@ going forward: every unbounded loop in the certification path — including
 test-only and telemetry-adjacent code — needs a deadline or count check;
 the gate's long tail is bounded by the per-problem wrapper otherwise.
 
-## SAT-Backed Tier 2 (Phase 4 Outcome)
+## UNSAT Emission: FRAT-to-TSTP Pipeline (Phase 5b/c Outcome)
+
+Tier-2 UNSAT no longer stops at `Tier2Unsat`: the captured proof is
+emitted as a TSTP refutation under a new `sat_backed_refutation` rule and
+verified by a new strict-kernel validator. Design points:
+
+- **Manifest binding by content, not solver ids**: each trace original is
+  mapped to its grounded clause by multiset-normalized literals (both
+  sides sorted — CaDiCaL reorders/dedupes internally, proven by a failing
+  multiset test before the fix). Unmapped originals fail closed.
+- **Cross-run-stable numbering**: atoms sort by predicate/argument *name*
+  strings, never interning indices or `Debug` output — the kernel
+  re-derives the identical ordering from TSTP text alone (cross-tested by
+  an interning-order unit test plus end-to-end acceptance).
+- **Kernel checks, in order**: `$false` conclusion; trace payload present;
+  parents are inputs or kernel-validated instantiations; annotation inputs
+  match the parent list; recomputed parent encodings equal the manifest as
+  sets; variable bound matches the atom count; digest matches; FRAT/LRAT
+  replay passes. Size overruns are `Inconclusive`, never accept.
+- **Tier-2-scoped limits** (manifest ≤ 4M, trace ≤ 512MB, events ≤ 64M):
+  shared kernel defaults stay conservative per the approved raise-limits
+  decision; oversize proofs fail closed into Tier-3 search.
+- Two checker bugs fixed along the way, both caught by failing tests
+  first: single-pass RUP checking is incomplete on chained propagation
+  (now fixpoint), and finalize comparison was order-sensitive in *both*
+  the callback checker and the kernel replay (now multiset).
+
+End-to-end (small): a 5 002-clause Tier-2-window UNSAT problem reports
+`% SZS status Unsatisfiable` with a 5 003-node / 863KB proof that strict
+self-check certifies in ~0.5 s (`cert_kernel_ms=571`). Kernel unit tests
+cover acceptance plus digest/parent/trace/missing-payload mutations (all
+reject).
+
+End-to-end (Tier-2 scale): PHP(6,5) core + fluff, 614 754 grounded
+clauses — capture reports 1.2M events with 184 derived RUP steps and
+`check=ok`; emission produces an 83MB TSTP proof (31 565 cited instances
+after permutation-collapse + empty) that strict self-check certifies in
+~115 s with `% SZS status Unsatisfiable`. Debugging that run fixed two
+more real bugs, both fail-closed: the proof store omitted input leaves
+(instance nodes cite them; surfaced as a bogus "missing parent"
+topological failure), and kernel deletion replay was order-sensitive like
+finalize (multiset compare now).
+
+Trust structure without `--self-check` (same as Tier-1 TSTP proofs): the
+verdict rests on solver soundness + encoder tests + the in-process RUP
+re-check that gates emission; the emitted trace is evidence for external
+checkers, and `--self-check` additionally kernel-verifies in-process
+before the status line is printed.
+
+## SAT-Backed Tier 2 (Phase 4 Outcome, Extended by Phase 5b/c)
 
 Groundings too large for either closure (up to 2M instances / 16 384
-atoms) are encoded propositionally and decided by CaDiCaL. The model is
-then re-verified clause by clause; only a passing re-check yields
-`Saturated`. During development the re-check caught a real polarity bug
-(`Solver::value` reports variable assignment even for negative arguments —
-passing signed literals through inverted every negative literal), which
-would otherwise have kept Tier-2 coverage at zero behind a passing solver
-verdict. Tier-2 UNSAT fails closed by design (no FRAT-to-TSTP elaborator);
-ordering validation is skipped (vacuous for model checking, quadratic at
-16k atoms). Encoder, verifier, asymmetry, and Tier-1-vs-Tier-2 differential
-agreement are unit-tested; the canary gate re-validates empirically
-(EPU zero-FP is the backstop: any unsound SAT claim there fails loudly).
-Measured peak RSS on the largest Tier-2 grounding is ~524 MB. Remaining
-EPR coverage needs lazy/incremental grounding (the 66 instance-limit + 19
-overflow problems never materialize) or the UNSAT proof pipeline —
-both declared future work, not regressions: Tier 1 behavior is unchanged
+atoms) are encoded propositionally and decided by CaDiCaL. Satisfiable
+outcomes yield `Saturated` only after clause-by-clause model
+re-verification (which once caught a real polarity bug in development).
+Unsatisfiable outcomes now emit FRAT-backed TSTP refutations instead of
+failing closed (see above). Ordering validation is skipped in Tier 2
+(vacuous for model checking, quadratic at 16k atoms). Encoder, verifier,
+emission, and Tier-1-vs-Tier-2 differential agreement are unit-tested;
+the canary gate re-validates empirically (EPU zero-FP is the backstop).
+Measured peak RSS on Tier-2 groundings is ~524 MB (SAT) with multi-GB
+transients possible on million-event UNSAT proofs. Remaining EPR coverage
+needs lazy/incremental grounding (problems that never materialize) —
+declared future work, not a regression: Tier 1 behavior is unchanged
 where closures terminate.

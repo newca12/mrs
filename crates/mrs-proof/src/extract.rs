@@ -69,6 +69,13 @@ pub fn extract_proof<S: BuildHasher>(
                             }
                         }
                     }
+                    ClauseCertificate::SatBackedRefutation { inputs, .. } => {
+                        for &input_id in inputs {
+                            if visited.insert(input_id) {
+                                queue.push_back(input_id);
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -129,6 +136,13 @@ pub fn extract_proof_ids<S: BuildHasher>(
                         for &branch_id in branch_roots {
                             if visited.insert(branch_id) {
                                 queue.push_back(branch_id);
+                            }
+                        }
+                    }
+                    ClauseCertificate::SatBackedRefutation { inputs, .. } => {
+                        for &input_id in inputs {
+                            if visited.insert(input_id) {
+                                queue.push_back(input_id);
                             }
                         }
                     }

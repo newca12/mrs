@@ -146,6 +146,17 @@ pub enum ClauseCertificate {
         branch_roots: Vec<ClauseId>,
         sat_trace: Option<AvatarSatTrace>,
     },
+    /// A SAT-backed refutation of a large grounded EPR set with no AVATAR
+    /// splits: every cited input is a ground instance (or ground input) and
+    /// the attached trace is a FRAT/LRAT proof of their propositional
+    /// inconsistency, checked by the kernel with fresh RUP replay. The
+    /// `sat_trace` payload reuses [`AvatarSatTrace`]; unlike the AVATAR
+    /// roll-up there are no split/branch nodes, so every manifest entry is
+    /// cited and every parent must be an input or an `instantiation` of one.
+    SatBackedRefutation {
+        inputs: Vec<ClauseId>,
+        sat_trace: Option<AvatarSatTrace>,
+    },
 }
 
 /// A bounded SAT manifest and proof trace associated with an AVATAR roll-up.

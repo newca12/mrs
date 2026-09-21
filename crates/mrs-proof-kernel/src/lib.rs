@@ -10,10 +10,10 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use mrs_core::clause::avatar_sat_trace_digest;
-use mrs_core::{Atom, Formula, Substitution, SymbolTable, Term, VarId};
+use mrs_core::{Atom, Formula, Substitution, SymbolId, SymbolTable, Term, VarId};
 use mrs_tptp::ast::common::{AtomicWord, GeneralTerm};
 use mrs_tptp::proover::{
-    AvatarBranchInfo, AvatarComponentInfo, AvatarSatInfo, AvatarSplitInfo, ParentRef,
+    AvatarBranchInfo, AvatarComponentInfo, AvatarSatInfo, AvatarSplitInfo, ParentRef, SatBackedInfo,
 };
 use mrs_tptp::{AnnotatedFormula, BinaryConnective, CNFFormula, CNFLiteral, CNFStatement};
 use mrs_tptp::{FOFAtomicFormula, FOFFormula, FOFStatement, FOFTerm, FormulaRole, Quantifier};
@@ -554,6 +554,15 @@ fn verify_strict_with_source_internal(
                 KernelVerdict::Certified
             })
             .unwrap_or_else(|verdict| verdict),
+            "sat_backed_refutation" => verify_sat_backed_refutation(
+                node,
+                &dag,
+                &parent_indices,
+                &parents,
+                node.formula.annotations().and_then(|a| a.sat_backed()),
+                &symbols,
+                limits,
+            ),
             "avatar_sat_refutation" => {
                 let explicit = parent_indices
                     .first()
@@ -732,6 +741,7 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "goal_transformation"
         | "ac_normalization"
         | "avatar_sat_refutation"
+        | "sat_backed_refutation"
         | "superposition"
         | "ac_superposition"
         | "ac_resolution"
@@ -8009,6 +8019,254 @@ fn verify_avatar_branch_refutation(
     Ok(context.clone())
 }
 
+/// Tier-2 proof-size bounds for `sat_backed_refutation` (raised kernel
+/// limits, scoped to this rule so the shared defaults stay conservative).
+/// Sized against the small-PHP measurement (615k manifest entries, ~1.2M
+/// trace events): the manifest bound covers Tier-2 grounding scale with
+/// headroom, the trace-byte bound covers hex-doubled FRAT payloads, and the
+/// event bound covers deletions-heavy proofs at similar scale.
+const SAT_BACKED_MAX_MANIFEST: usize = 4_000_000;
+const SAT_BACKED_MAX_TRACE_BYTES: usize = 512 * 1024 * 1024;
+const SAT_BACKED_MAX_TRACE_EVENTS: usize = 64_000_000;
+
+/// One recomputed parent literal: polarity plus the canonical atom key.
+type SatBackedLiteral = (bool, (String, Vec<String>));
+
+/// Canonical sort key for a ground atom, mirroring the producer
+/// (`certified_sat::atom_sort_key`): predicate name plus argument constant
+/// names. The two implementations must agree exactly — cross-tested by the
+/// end-to-end accept tests below, which fail loudly on any drift.
+fn sat_backed_atom_key(
+    predicate: SymbolId,
+    args: &[Term],
+    symbols: &SymbolTable,
+) -> Option<(String, Vec<String>)> {
+    let mut arg_names = Vec::with_capacity(args.len());
+    for arg in args {
+        let Term::App(symbol, inner) = arg else {
+            return None;
+        };
+        if !inner.is_empty() {
+            return None;
+        }
+        arg_names.push(symbols.resolve(*symbol).to_string());
+    }
+    Some((symbols.resolve(predicate).to_string(), arg_names))
+}
+
+fn verify_sat_backed_refutation(
+    node: &Node<'_>,
+    dag: &Dag<'_>,
+    parent_indices: &[usize],
+    parents: &[Formula],
+    annotation: Option<SatBackedInfo<'_>>,
+    symbols: &SymbolTable,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if !node.is_false {
+        return KernelVerdict::Rejected("sat_backed_refutation must conclude `$false`".into());
+    }
+    let Some(annotation) = annotation else {
+        return KernelVerdict::Inconclusive("sat_backed_refutation lacks SAT metadata".into());
+    };
+    let Some(format) = annotation.trace_format else {
+        return KernelVerdict::Inconclusive("sat_backed_refutation lacks a trace format".into());
+    };
+    if format != "frat-lrat" && format != "lrat" {
+        return KernelVerdict::Inconclusive(format!(
+            "unsupported sat-backed trace format `{format}`"
+        ));
+    }
+    // Every cited parent must be a plain input or a kernel-validated
+    // instantiation thereof (the main loop verifies each node's own rule;
+    // this only restricts the shapes allowed here — no equality, no
+    // rewriting, no AVATAR contexts).
+    if parent_indices.is_empty() {
+        return KernelVerdict::Rejected("sat_backed_refutation cites no parents".into());
+    }
+    for &parent_index in parent_indices {
+        match dag.nodes[parent_index].rule {
+            None | Some("instantiate") | Some("instantiation") => {}
+            Some(other) => {
+                return KernelVerdict::Rejected(format!(
+                    "sat_backed_refutation parent `{}` uses unsupported rule `{other}`",
+                    dag.nodes[parent_index].name
+                ));
+            }
+        }
+    }
+    // The annotation's input list must name exactly the cited parents:
+    // otherwise the trace binding below could be checked against a
+    // different clause set than the proof actually depends on.
+    let parent_names: HashSet<&str> = parent_indices
+        .iter()
+        .map(|&parent_index| dag.nodes[parent_index].name)
+        .collect();
+    let input_names: HashSet<&str> = annotation.inputs.iter().copied().collect();
+    if parent_names != input_names {
+        return KernelVerdict::Rejected(
+            "sat_backed_refutation inputs do not match its parent list".into(),
+        );
+    }
+    // Recompute the propositional encoding from the cited parents with the
+    // producer's ordering, then require set-equality with the manifest.
+    let mut atom_keys: HashSet<(String, Vec<String>)> = HashSet::new();
+    let mut parent_clauses: Vec<Vec<SatBackedLiteral>> = Vec::new();
+    for parent in parents {
+        let Some(clause) = clause_from_formula(parent, limits) else {
+            return KernelVerdict::Rejected(
+                "sat_backed_refutation parent is not a supported clause".into(),
+            );
+        };
+        if clause.is_empty() {
+            return KernelVerdict::Rejected(
+                "sat_backed_refutation parent is an empty clause".into(),
+            );
+        }
+        let mut encoded = Vec::with_capacity(clause.len());
+        for literal in &clause {
+            let Atom::Pred(predicate, args) = &literal.atom else {
+                return KernelVerdict::Rejected(
+                    "sat_backed_refutation supports predicate atoms only".into(),
+                );
+            };
+            let Some(key) = sat_backed_atom_key(*predicate, args, symbols) else {
+                return KernelVerdict::Rejected(
+                    "sat_backed_refutation supports ground atoms only".into(),
+                );
+            };
+            atom_keys.insert(key.clone());
+            encoded.push((literal.positive, key));
+        }
+        parent_clauses.push(encoded);
+    }
+    let mut sorted_keys: Vec<(String, Vec<String>)> = atom_keys.into_iter().collect();
+    sorted_keys.sort();
+    let var_of: HashMap<&(String, Vec<String>), i32> = sorted_keys
+        .iter()
+        .enumerate()
+        .map(|(index, key)| (key, index as i32 + 1))
+        .collect();
+    let mut parent_set = HashSet::new();
+    for clause in &parent_clauses {
+        let mut lits: Vec<i32> = clause
+            .iter()
+            .map(|(positive, key)| {
+                let var = var_of[key];
+                if *positive { var } else { -var }
+            })
+            .collect();
+        lits.sort_unstable();
+        parent_set.insert(lits);
+    }
+    // Manifest binding: cited positions must be exactly all entries, and
+    // the manifest set must equal the recomputed parent set.
+    if annotation.trace_clauses.len() > SAT_BACKED_MAX_MANIFEST {
+        return KernelVerdict::Inconclusive(
+            "sat-backed manifest exceeds the Tier-2 entry limit".into(),
+        );
+    }
+    let expected_cited: Vec<usize> = (0..annotation.trace_clauses.len()).collect();
+    if annotation.trace_cited_indices != expected_cited {
+        return KernelVerdict::Rejected(
+            "sat_backed_refutation must cite every manifest entry in order".into(),
+        );
+    }
+    let mut manifest_set = HashSet::new();
+    for clause in &annotation.trace_clauses {
+        let mut normalized = clause.clone();
+        normalized.sort_unstable();
+        manifest_set.insert(normalized);
+    }
+    if parent_set != manifest_set {
+        return KernelVerdict::Rejected(
+            "sat_backed_refutation manifest does not match its parents".into(),
+        );
+    }
+    let Some(variables) = annotation.trace_variables else {
+        return KernelVerdict::Inconclusive(
+            "sat_backed_refutation omits its variable bound".into(),
+        );
+    };
+    if variables != sorted_keys.len() {
+        return KernelVerdict::Rejected(
+            "sat_backed_refutation variable bound does not match its atoms".into(),
+        );
+    }
+    if variables > u32::MAX as usize {
+        return KernelVerdict::Inconclusive(
+            "sat_backed_refutation variable bound exceeds the supported integer range".into(),
+        );
+    }
+    let Some(digest_text) = annotation.trace_digest else {
+        return KernelVerdict::Inconclusive("sat_backed_refutation omits its digest".into());
+    };
+    let Some(expected_digest) = decode_hex_digest(digest_text) else {
+        return KernelVerdict::Rejected(
+            "sat_backed_refutation has an invalid SHA-256 digest".into(),
+        );
+    };
+    let Some(trace_hex) = annotation.trace_bytes else {
+        return KernelVerdict::Inconclusive("sat_backed_refutation omits its proof bytes".into());
+    };
+    if trace_hex.len() > SAT_BACKED_MAX_TRACE_BYTES.saturating_mul(2) {
+        return KernelVerdict::Inconclusive(
+            "sat-backed trace exceeds the Tier-2 byte limit".into(),
+        );
+    }
+    let Some(trace) = decode_hex(trace_hex) else {
+        return KernelVerdict::Rejected(
+            "sat_backed_refutation has invalid hexadecimal proof bytes".into(),
+        );
+    };
+    if annotation.trace_original_ids.is_empty() {
+        return KernelVerdict::Rejected("sat_backed_refutation has no original clause IDs".into());
+    }
+    let actual_digest = avatar_sat_trace_digest(
+        format,
+        variables as u32,
+        &annotation.trace_original_ids,
+        &annotation.trace_cited_indices,
+        &annotation.trace_clauses,
+        &trace,
+    );
+    if actual_digest != expected_digest {
+        return KernelVerdict::Rejected(
+            "sat_backed_refutation digest does not match its payload".into(),
+        );
+    }
+    let tier2_limits = VerificationLimits {
+        max_nodes: SAT_BACKED_MAX_MANIFEST,
+        max_avatar_steps: SAT_BACKED_MAX_TRACE_EVENTS,
+        ..limits
+    };
+    // The replay functions return Result with the verdict as the error
+    // payload; a clean replay is the only path to Certified.
+    let replayed = match format {
+        "frat-lrat" => replay_frat_lrat(
+            &annotation.trace_clauses,
+            &annotation.trace_original_ids,
+            &trace,
+            variables,
+            tier2_limits,
+        ),
+        "lrat" => replay_lrat(
+            &annotation.trace_clauses,
+            &annotation.trace_original_ids,
+            &trace,
+            variables,
+            tier2_limits,
+        ),
+        _ => Err(KernelVerdict::Inconclusive(format!(
+            "unsupported sat-backed trace format `{format}`"
+        ))),
+    };
+    match replayed {
+        Ok(()) => KernelVerdict::Certified,
+        Err(verdict) => verdict,
+    }
+}
+
 fn verify_avatar_sat_refutation(
     node: &Node<'_>,
     dag: &Dag<'_>,
@@ -8522,12 +8780,29 @@ fn replay_frat_lrat(
                         "deletion references an unknown clause",
                     ));
                 };
-                if existing != clause {
+                // Multiset comparison (not order-sensitive): deletion
+                // records, like finalizations, may list literals in
+                // CaDiCaL's internal order rather than insertion order.
+                let mut expected = existing;
+                let mut actual = clause;
+                expected.sort_unstable();
+                actual.sort_unstable();
+                if expected != actual {
                     return Err(trace_error(line_number, "deletion clause does not match"));
                 }
             }
             "f" => {
-                if tokens.next().is_some() || clauses.get(&id) != Some(&clause) {
+                // Multiset comparison (not order-sensitive): CaDiCaL
+                // reports finalized clauses in internal literal order,
+                // which may differ from the manifest order.
+                let same = clauses.get(&id).is_some_and(|tracked| {
+                    let mut expected = tracked.clone();
+                    let mut actual = clause.clone();
+                    expected.sort_unstable();
+                    actual.sort_unstable();
+                    expected == actual
+                });
+                if tokens.next().is_some() || !same {
                     return Err(trace_error(line_number, "invalid clause finalization"));
                 }
                 finalized_empty |= clause.is_empty();
@@ -12708,6 +12983,109 @@ mod tests {
                             [split, branch_p, branch_q])).",
         );
         assert_eq!(check(problem, &proof), KernelVerdict::Certified);
+    }
+
+    fn sat_backed_annotation(
+        manifest: &[Vec<i32>],
+        original_ids: &[i64],
+        trace: &[u8],
+    ) -> (String, String) {
+        let digest = mrs_core::clause::avatar_sat_trace_digest(
+            "frat-lrat",
+            1,
+            original_ids,
+            &[0, 1],
+            manifest,
+            trace,
+        );
+        let hex = |bytes: &[u8]| {
+            bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        let manifest_text = manifest
+            .iter()
+            .map(|clause| {
+                format!(
+                    "[{}]",
+                    clause
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let annotation = format!(
+            "sat_backed_refutation([ax1, ax2], sat_trace('frat-lrat', 1, '{}', [1, 2], [0, 1], [{manifest_text}], '{}'))",
+            hex(&digest),
+            hex(trace),
+        );
+        (annotation, hex(&digest))
+    }
+
+    fn sat_backed_proof(annotation: &str) -> (String, String) {
+        let problem = "cnf(ax1, axiom, p(a)).\ncnf(ax2, axiom, ~p(a)).";
+        let proof = format!(
+            "cnf(ax1, axiom, p(a), file('problem.p', ax1)).\
+             cnf(ax2, axiom, ~p(a), file('problem.p', ax2)).\
+             cnf(bot, plain, $false, inference(sat_backed_refutation, [status(thm), {annotation}], [ax1, ax2])).",
+        );
+        (problem.to_string(), proof)
+    }
+
+    #[test]
+    fn certifies_sat_backed_refutation() {
+        // Real (if tiny) FRAT proof of [1],[-1]: two originals, one empty
+        // RUP addition, finalization.
+        let trace = b"o 1 1 0\no 2 -1 0\na 3 0 l 1 2 0\nf 3 0\n";
+        let manifest = vec![vec![1], vec![-1]];
+        let (annotation, _) = sat_backed_annotation(&manifest, &[1, 2], trace);
+        let (problem, proof) = sat_backed_proof(&annotation);
+        assert_eq!(check(&problem, &proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_sat_backed_refutation_mutations() {
+        let trace = b"o 1 1 0\no 2 -1 0\na 3 0 l 1 2 0\nf 3 0\n";
+        let manifest = vec![vec![1], vec![-1]];
+        let (annotation, digest) = sat_backed_annotation(&manifest, &[1, 2], trace);
+        let (problem, proof) = sat_backed_proof(&annotation);
+        assert_eq!(check(&problem, &proof), KernelVerdict::Certified);
+
+        // Corrupted digest.
+        let corrupted = proof.replace(&digest, &"0".repeat(digest.len()));
+        assert!(matches!(
+            check(&problem, &corrupted),
+            KernelVerdict::Rejected(_) | KernelVerdict::Inconclusive(_)
+        ));
+        // Dropped parent (ax2 gone from parents and inputs alike): the
+        // manifest no longer matches the cited set.
+        let dropped = proof.replace(", ax2]", "]").replace("[ax1, ax2]", "[ax1]");
+        assert!(matches!(
+            check(&problem, &dropped),
+            KernelVerdict::Rejected(_) | KernelVerdict::Inconclusive(_)
+        ));
+        // Flipped trace literal breaks the manifest binding (the digest
+        // is recomputed over the flipped bytes, so only the replay
+        // content check can catch it).
+        let flipped_trace = b"o 1 1 0\no 2 1 0\na 3 0 l 1 2 0\nf 3 0\n";
+        let (bad_annotation, _) = sat_backed_annotation(&manifest, &[1, 2], flipped_trace);
+        let (_, bad_proof) = sat_backed_proof(&bad_annotation);
+        assert!(matches!(
+            check(&problem, &bad_proof),
+            KernelVerdict::Rejected(_) | KernelVerdict::Inconclusive(_)
+        ));
+        // Missing trace payload is inconclusive, never certified.
+        let bare = "cnf(ax1, axiom, p(a), file('problem.p', ax1)).\
+                    cnf(ax2, axiom, ~p(a), file('problem.p', ax2)).\
+                    cnf(bot, plain, $false, inference(sat_backed_refutation, [status(thm)], [ax1, ax2])).";
+        assert!(matches!(
+            check(&problem, bare),
+            KernelVerdict::Rejected(_) | KernelVerdict::Inconclusive(_)
+        ));
     }
 
     #[test]

@@ -621,6 +621,9 @@ pub fn topological_sort(clauses: &[Clause]) -> Result<Vec<Clause>, ElaborationEr
                     parents.extend_from_slice(split_nodes);
                     parents.extend_from_slice(branch_roots);
                 }
+                ClauseCertificate::SatBackedRefutation { inputs, .. } => {
+                    parents.extend_from_slice(inputs);
+                }
                 _ => {}
             }
         }

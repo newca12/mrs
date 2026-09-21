@@ -238,61 +238,69 @@ fn format_certificate(certificate: &ClauseCertificate) -> String {
             branch_roots,
             sat_trace,
         } => {
-            let split_nodes = split_nodes
-                .iter()
-                .map(|id| format!("c{}", id.0))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let branch_roots = branch_roots
-                .iter()
-                .map(|id| format!("c{}", id.0))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let trace = sat_trace
-                .as_ref()
-                .map(|trace| {
-                    let ids = trace
-                        .original_ids
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let clauses = trace
-                        .clauses
-                        .iter()
-                        .map(|clause| {
-                            format!(
-                                "[{}]",
-                                clause
-                                    .iter()
-                                    .map(ToString::to_string)
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let cited_indices = trace
-                        .cited_indices
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    format!(
-                        ", sat_trace('{}', {}, '{}', [{}], [{}], [{}], '{}')",
-                        trace.format,
-                        trace.variables,
-                        hex_encode(&trace.digest),
-                        ids,
-                        cited_indices,
-                        clauses,
-                        hex_encode(&trace.trace)
-                    )
-                })
-                .unwrap_or_default();
+            let split_nodes = clause_id_list(split_nodes);
+            let branch_roots = clause_id_list(branch_roots);
+            let trace = format_sat_trace(sat_trace);
             format!("avatar_sat_refutation([{split_nodes}], [{branch_roots}]{trace})")
         }
+        ClauseCertificate::SatBackedRefutation { inputs, sat_trace } => {
+            let inputs = clause_id_list(inputs);
+            let trace = format_sat_trace(sat_trace);
+            format!("sat_backed_refutation([{inputs}]{trace})")
+        }
     }
+}
+
+fn clause_id_list(ids: &[mrs_core::clause::ClauseId]) -> String {
+    ids.iter()
+        .map(|id| format!("c{}", id.0))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn format_sat_trace(sat_trace: &Option<mrs_core::clause::AvatarSatTrace>) -> String {
+    sat_trace
+        .as_ref()
+        .map(|trace| {
+            let ids = trace
+                .original_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let clauses = trace
+                .clauses
+                .iter()
+                .map(|clause| {
+                    format!(
+                        "[{}]",
+                        clause
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let cited_indices = trace
+                .cited_indices
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                ", sat_trace('{}', {}, '{}', [{}], [{}], [{}], '{}')",
+                trace.format,
+                trace.variables,
+                hex_encode(&trace.digest),
+                ids,
+                cited_indices,
+                clauses,
+                hex_encode(&trace.trace)
+            )
+        })
+        .unwrap_or_default()
 }
 
 fn hex_encode(bytes: &[u8]) -> String {

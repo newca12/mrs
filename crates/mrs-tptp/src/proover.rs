@@ -72,6 +72,24 @@ pub struct AvatarBranchInfo<'a> {
     pub context: Vec<&'a str>,
 }
 
+/// Metadata carried by a `sat_backed_refutation` step: a SAT-backed
+/// refutation of a large grounded EPR set with no AVATAR splits. Unlike
+/// [`AvatarSatInfo`], there are no split/branch nodes — `inputs` names every
+/// cited ground instance and the trace payload is mandatory for a
+/// `Certified` verdict (the kernel demands it; the parser tolerates its
+/// absence so the kernel, not the parser, classifies the gap).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SatBackedInfo<'a> {
+    pub inputs: Vec<&'a str>,
+    pub trace_format: Option<&'a str>,
+    pub trace_variables: Option<usize>,
+    pub trace_digest: Option<&'a str>,
+    pub trace_original_ids: Vec<i64>,
+    pub trace_cited_indices: Vec<usize>,
+    pub trace_clauses: Vec<Vec<i32>>,
+    pub trace_bytes: Option<&'a str>,
+}
+
 /// Metadata carried by the final `avatar_sat_refutation` step.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AvatarSatInfo<'a> {
@@ -345,6 +363,58 @@ impl<'a> Annotations<'a> {
         Some(AvatarSatInfo {
             split_nodes,
             branch_roots,
+            trace_format,
+            trace_variables,
+            trace_digest,
+            trace_original_ids,
+            trace_cited_indices,
+            trace_clauses,
+            trace_bytes,
+        })
+    }
+
+    /// Parse the self-contained SAT payload carried by a SAT-backed
+    /// refutation certificate.
+    ///
+    /// The supported shape is
+    /// `sat_backed_refutation([Inputs], sat_trace(frat-lrat, Variables,
+    /// Digest, [Ids], [Cited], [[Clauses]], HexBytes))`.
+    pub fn sat_backed(&self) -> Option<SatBackedInfo<'a>> {
+        let args = self.info_function("sat_backed_refutation")?;
+        if args.is_empty() || args.len() > 2 {
+            return None;
+        }
+        let inputs = term_list(args.first()?)?;
+        let (
+            trace_format,
+            trace_variables,
+            trace_digest,
+            trace_original_ids,
+            trace_cited_indices,
+            trace_clauses,
+            trace_bytes,
+        ) = match args.get(1) {
+            Some(GeneralTerm::Function(name, trace_args))
+                if word_is(name, "sat_trace") && trace_args.len() == 7 =>
+            {
+                let original_ids = number_list_i64(trace_args.get(3)?)?;
+                let cited_indices = number_list(trace_args.get(4)?)?;
+                let clauses = clause_list(trace_args.get(5)?)?;
+                (
+                    Some(word_value(trace_args.first()?)?),
+                    Some(number_value(trace_args.get(1)?)?),
+                    Some(word_value(trace_args.get(2)?)?),
+                    original_ids,
+                    cited_indices,
+                    clauses,
+                    Some(word_value(trace_args.get(6)?)?),
+                )
+            }
+            None => (None, None, None, Vec::new(), Vec::new(), Vec::new(), None),
+            _ => return None,
+        };
+        Some(SatBackedInfo {
+            inputs,
             trace_format,
             trace_variables,
             trace_digest,

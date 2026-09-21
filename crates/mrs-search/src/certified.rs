@@ -118,10 +118,10 @@ pub(crate) fn certify_ground_ordered_resolution(
         TIER2_MAX_GROUND_INSTANCES,
         deadline,
     ) {
-            Err(CertificationFailure::Limit(_)) => None,
-            Err(other) => return Err(other),
-            Ok(grounded) => Some(grounded),
-        };
+        Err(CertificationFailure::Limit(_)) => None,
+        Err(other) => return Err(other),
+        Ok(grounded) => Some(grounded),
+    };
     if let Some(grounded) = grounded {
         let atoms = collect_fragment_atoms(&grounded.clauses)?;
         // Tier router. Tier 1 (double ordered-resolution closure) handles
@@ -154,7 +154,11 @@ pub(crate) fn certify_ground_ordered_resolution(
             ));
             match crate::certified_sat::certify_sat_backed(
                 &grounded.clauses,
+                &grounded.originals,
+                provenance,
                 &atoms,
+                &proof_symbols,
+                &mut *id_gen,
                 deadline.saturating_duration_since(Instant::now()),
             ) {
                 Err(CertificationFailure::Tier2Unsat) => {
@@ -677,6 +681,7 @@ fn collect_epr_constants(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn instantiate_clause(
     clause: &Clause,
     vars: &[mrs_core::term::VarId],

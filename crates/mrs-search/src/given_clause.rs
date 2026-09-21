@@ -160,6 +160,13 @@ fn remap_shared_clause_ids(clause: &mut LegacyClause, mapping: &HashMap<ClauseId
                     }
                 }
             }
+            ClauseCertificate::SatBackedRefutation { inputs, .. } => {
+                for id in inputs.iter_mut() {
+                    if let Some(&mapped) = mapping.get(id) {
+                        *id = mapped;
+                    }
+                }
+            }
             ClauseCertificate::AvatarSplit { .. }
             | ClauseCertificate::AvatarBranchRefutation { .. } => {}
         }
