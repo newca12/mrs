@@ -96,6 +96,32 @@ would silently break its isolation. Successful certifications carry
 only, never a tier. First full-harness run (casc-30 EPS+EPU, 10 s):
 6 certified all `ok`, 194 unknown, **0 `ko`**.
 
+## Remote Validation Campaign (R0–R6)
+
+For machines beyond the 2-core local box, `crates/mrs-bench/remote-cert-campaign.sh`
+runs the full validation program against a complete TPTP checkout:
+
+| Phase | What | Why |
+|-------|------|-----|
+| R0 | Vendored casc-30, both orderings, 10 s | Calibration: must reproduce the local gate |
+| R1 | All TPTP EPS+EPU, both orderings, 10 s | Soundness at scale — zero `ko` is the primary metric |
+| R2 | Fail-closed subsets at 60/300/600 s | Coverage-vs-budget curves per tier |
+| R3 | EPU deep + TRACE + `--self-check` | Emission validation: kernel-accept rate, proof sizes, RAT incidence |
+| R4 | Full EPU fail-closed set, deep budget | Tier-3 small-core conversion count |
+| R5 | Default portfolio at CASC times | Price of certification (coverage Venn + cost ratio) |
+| R6 | 3× stratified sample | Verdict stability, wobble quantification |
+
+Setup on remote: full TPTP checkout in `TPTP_ROOT`, plain cargo/rustup
+(no nix — pin rustc to the local gate's version, currently 1.98.1; the
+campaign records the actual toolchain and warns on mismatch), then
+`./crates/mrs-bench/remote-cert-campaign.sh r0` (or `all`). Reference
+answers generate from TPTP `% Status` headers with division-label
+fallback. Each phase writes `results/remote-cert/<phase>/` plus
+`PHASE_SUMMARY.md`; any `ko` fails the phase. Supporting harness pieces
+(also used locally and covered by the mini-edition end-to-end test):
+`CASC_PROBLEMS_ROOT` / `CASC_ANSWERS_FILE` overrides in `casc.sh`,
+`MRS_SELF_CHECK=1` in `mrs-certify`, staged symlinked subset editions.
+
 ## Required Expansion Before Broader Enablement
 
 The next certification layers require independent proofs and tests for:

@@ -27,6 +27,18 @@
 #   --output      <dir>          Output directory
 #                                (default: crates/mrs-bench/results/<edition>/TIMESTAMP)
 #
+# Environment:
+#   CASC_PROBLEMS_ROOT  Override the problem corpus root (default:
+#                       crates/mrs-bench/problems/<edition>). Point it at a
+#                       full TPTP checkout to benchmark outside the vendored
+#                       corpus; division discovery accepts both EPS/ and
+#                       Problems/EPS/ layouts, and TPTP defaults to it for
+#                       %include resolution.
+#   CASC_ANSWERS_FILE   Override the reference-answers TSV (default:
+#                       systems/reference/answers_<edition>.tsv, fallback
+#                       answers.tsv). Needed when the corpus root holds
+#                       problems the shipped answers files do not cover.
+#
 # Output:
 #   <output>/run.csv    — one row per (problem, system)
 #   <output>/run.log    — harness stderr
@@ -193,7 +205,7 @@ EOF
 # Redirect harness stderr to run.log (tee so it still shows on terminal)
 exec 2> >(tee -a "${OUTPUT}/run.log" >&2)
 
-PROBLEMS_DIR="${SCRIPT_DIR}/problems/${EDITION}"
+PROBLEMS_DIR="${CASC_PROBLEMS_ROOT:-${SCRIPT_DIR}/problems/${EDITION}}"
 LISTS_DIR="${PROBLEMS_DIR}/lists"
 PROBLEMS_ROOT="${PROBLEMS_DIR}"
 
@@ -247,7 +259,7 @@ IFS=',' read -ra DIVISION_LIST <<< "${DIVISIONS}"
 
 # Reference answers file. Used inline by the worker to grade each
 # system run. Missing file → every verdict is `unknown`.
-ANSWERS="${SCRIPT_DIR}/systems/reference/answers_${EDITION}.tsv"
+ANSWERS="${CASC_ANSWERS_FILE:-${SCRIPT_DIR}/systems/reference/answers_${EDITION}.tsv}"
 if [[ ! -f "${ANSWERS}" ]]; then
     ANSWERS="${SCRIPT_DIR}/systems/reference/answers.tsv"
 fi

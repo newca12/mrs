@@ -60,7 +60,14 @@ esac
 # The certifier is single-strategy by construction: one worker, one
 # strategy, no shared pool. MRS_WORKERS is deliberately ignored here so a
 # harness-wide worker setting cannot silently parallelize (and de-isolate)
-# a certification run.
-exec "${BINARY}" --time "${TIME_LIMIT}" --workers 1 \
-    --schedule "${SCHEDULE}" --strategy "${STRATEGY_NUM}" \
-    --certify-ordered "${PROBLEM}"
+# a certification run. MRS_SELF_CHECK=1 appends --self-check so the strict
+# kernel verifies emitted proofs in-process (needed to validate Tier-2
+# UNSAT emission at scale: only a kernel-accepted refutation keeps its
+# Unsatisfiable status).
+ARGS=(--time "${TIME_LIMIT}" --workers 1
+    --schedule "${SCHEDULE}" --strategy "${STRATEGY_NUM}"
+    --certify-ordered)
+if [[ "${MRS_SELF_CHECK:-0}" == "1" ]]; then
+    ARGS+=(--self-check)
+fi
+exec "${BINARY}" "${ARGS[@]}" "${PROBLEM}"
