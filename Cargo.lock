@@ -3556,6 +3556,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mrs-book-labs"
+version = "0.2.3"
+dependencies = [
+ "mrs-calculus",
+ "mrs-cnf",
+ "mrs-core",
+ "mrs-search",
+ "mrs-tptp",
+ "mrs-unify",
+]
+
+[[package]]
 name = "mrs-cadical"
 version = "0.2.3"
 dependencies = [

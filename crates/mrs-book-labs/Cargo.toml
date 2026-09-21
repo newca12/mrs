@@ -1,0 +1,17 @@
+[package]
+name = "mrs-book-labs"
+version.workspace = true
+edition.workspace = true
+description = "Runnable gallery examples for the mrs book (0 to superposition)"
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+mrs-core = { workspace = true }
+mrs-tptp = { workspace = true }
+mrs-cnf = { workspace = true }
+mrs-unify = { workspace = true }
+mrs-calculus = { workspace = true }
+mrs-search = { workspace = true }
