@@ -9,20 +9,26 @@ The prover has two distinct ordered-inference modes:
 - `--certify-ordered`, which runs the bounded certifier described here.
 
 The certifier currently covers only the following fragment (EPR focus is
-retained by design):
+retained by design, extended with ground equality — Phase 6):
 
-- function-free relational EPR clauses, exhaustively grounded over the finite
-  constants in the input (or one fresh domain constant when the input has no
-  constants);
-- predicate atoms only, with equality excluded;
+- function-free EPR clauses (relational predicates plus ground equality),
+  exhaustively grounded over the finite constants in the input (or one
+  fresh domain constant when the input has no constants); ground
+  equalities are decided by congruence expansion (union-find
+  normalization, reflexivity fast paths, transitivity cubes — see
+  "Ground Equality Certification" below), not by superposition;
 - no AVATAR assertions or formula-level clauses;
 - KBO with positive symbol weights and a total precedence on the input
   signature, then LPO with a total precedence (weights are irrelevant to
   LPO and are not required); AC orderings are explicitly unsupported; and
-- no pruning, AC normalization, simplification, indexing, or portfolio sharing.
+- no pruning, AC normalization, simplification, or portfolio sharing.
+  Partner retrieval is indexed (Phase 3), with a local exact-match map
+  for ground equality literals alongside the predicate
+  discrimination-tree index.
 
-`Saturated` is enabled for this EPR fragment only: the certifier re-checks
-the pre-grounding inputs for pure relational EPR before returning
+`Saturated` is enabled for this EPR-with-equality fragment only: the
+certifier re-checks the pre-grounding inputs for function-free EPR with
+equality before returning
 `CompletenessWitness::GroundOrderedResolution`. Non-EPR inputs fail closed
 with `GaveUp` and never certify saturation.
 
@@ -52,17 +58,19 @@ Large groundings that exceed the closure tier take a second path instead:
 Tier 2 encodes the grounded set propositionally and asks CaDiCaL to decide
 it (`crates/mrs-search/src/certified_sat.rs`). A satisfiable verdict plus
 an independently re-verified model produces
-`CompletenessWitness::SatBackedGrounding`; unsatisfiable, unknown, and
-failed-model outcomes all fail closed. Tier 2 is SAT-direction only by
-design (there is no FRAT-to-TSTP elaborator for UNSAT proofs) and skips
-ordering validation (meaningless for model checking). Tiers are selected by
-grounding size with no CLI change; where both tiers run, their verdicts
-must agree (tested differentially).
+`CompletenessWitness::SatBackedGrounding`; unsatisfiable outcomes emit
+FRAT-backed TSTP refutations (Phase 5b/c below) while unknown and
+failed-model outcomes fail closed. Tier 2 skips ordering validation
+(meaningless for model checking). Tiers are selected by grounding size
+with no CLI change; where both tiers run, their verdicts must agree
+(tested differentially).
 
 If the closures disagree, or a resource limit is reached, certification fails
 closed with `GaveUp`.
 
-The implementation is in `crates/mrs-search/src/certified.rs`.
+The implementation is in `crates/mrs-search/src/certified.rs`
+(router, closures, Tier 3), `certified_eq.rs` (ground equality
+expansion), and `certified_sat.rs` (SAT-backed Tier 2).
 
 ## Usage
 
@@ -76,8 +84,11 @@ nix develop -c cargo run -- --workers 1 --strategy 7 --certify-ordered problems/
 ```
 
 The current CLI path is diagnostic. It does not alter the default CASC
-portfolio, and it does not certify equality, function terms, AC, AVATAR, or
-heuristically simplified searches. Variable-bearing relational EPR inputs are
+portfolio, and it does not certify function terms, AC, AVATAR, or
+heuristically simplified searches. Ground equality is certified via
+congruence expansion (Phase 6); non-ground equality and equality
+reasoning beyond the grounding (superposition side conditions,
+demodulation) remain out of scope. Variable-bearing EPR inputs are
 accepted only when their finite exhaustive grounding stays within the
 certifier's resource bounds.
 
@@ -127,7 +138,10 @@ fallback. Each phase writes `results/remote-cert/<phase>/` plus
 The next certification layers require independent proofs and tests for:
 
 - non-ground ordered resolution and factoring;
-- ordered superposition side conditions and equality resolution/factoring;
+- kernel equality rules (`equality_normalization`,
+  `equality_transitivity` validators) plus ordered superposition side
+  conditions and equality resolution/factoring — ground congruence
+  expansion (Phase 6) is done, kernel-checked Eq inference is not;
 - KBO/LPO substitution stability and valid custom signatures (ground
   totality/transitivity plus KBO weight and KBO/LPO precedence validation
   are certified; lifted stability is still open);
@@ -140,8 +154,8 @@ The next certification layers require independent proofs and tests for:
 
 Until those layers are complete, `SearchResult::Saturated` from the ordinary
 given-clause portfolio remains disabled. The only certified positive
-saturation is the EPR `GroundOrderedResolution` witness produced by the
-double-closure certifier described here.
+saturation is the EPR-with-equality `GroundOrderedResolution` witness
+produced by the double-closure certifier described here.
 
 ## EPR Reference Canaries
 
@@ -184,14 +198,17 @@ no corpus EPU problem completes a Tier-2 UNSAT proof within budget, so
 the emitted-refutation path has zero corpus conversions to date (proven
 working end-to-end on synthetic Tier-2-window UNSAT instead). EPU stays
 zero throughout: Tier 3 found no small cores at either budget, and EPU
-problems otherwise die at grounding size or real equality content before
-any closure runs. No Tier-3 refutation ever fired on EPS — as required
-for truly satisfiable problems.)
+problems otherwise die at grounding size or (pre-Phase-6) real equality
+content before any closure runs. No Tier-3 refutation ever fired on EPS —
+as required for truly satisfiable problems.)
 
 Dominant fail-closed reasons are resource bounds (`ground instance limit
 exceeded` on 66 problems, `ground atom limit exceeded` on 23) and
-out-of-fragment inputs (`equality is outside the certified fragment` where
-an axiom file uses real equality, plus function terms).
+out-of-fragment inputs (function terms; pre-Phase-6, real equality in
+included axiom files refused with `equality is outside the certified
+fragment` — that refusal is removed, and ground equalities now proceed
+to congruence expansion). The counts above predate Phase 6; re-measure
+before comparing.
 
 Cap-sizing experiment (same corpus, `TRACE_CERTIFY=1` refusal telemetry):
 raising `MAX_ATOMS` 64 → 4096 and `MAX_GROUND_INSTANCES` 100k → 500k moved
@@ -254,8 +271,9 @@ reaches ~100k clauses with ~460k inferences), but the remaining EPS
 problems have genuinely enormous ground closures — 300 s probes still time
 out at ~90k clauses, and PUZ028-4 hits the 1M inference cap, correctly
 fail-closed. EPU never reaches closure at all: roughly half its problems
-refuse on grounding size and half on real equality content in (included)
-axiom files, which is outside the predicate-only fragment. Peak RSS on the
+refuse on grounding size and half (pre-Phase-6) on real equality content
+in (included) axiom files, then outside the predicate-only fragment.
+Peak RSS on the
 largest explored grounding is ~524 MB. Conclusion: retrieval speed is no
 longer the coverage bottleneck; closure *size* is — which is what the
 SAT-backed Tier 2 below addresses for the satisfiable side.
@@ -309,17 +327,20 @@ as bridges) is a documented possible refinement if a converting case
 ever needs it — not implemented, per measure-first discipline.
 
 Boundary: Tier 3 fires only on size refusals and Tier-2 UNSAT, never on
-fragment errors (equality, function terms, formula/AVATAR clauses).
-Vocabulary restriction could in principle drop offending clauses and still
-refute soundly, but that would smuggle non-EPR reasoning into an
-EPR-only tier — explicitly out of scope; such inputs stay `GaveUp`.
+fragment errors (function terms, AC orderings, formula/AVATAR clauses).
+Ground equality is no longer a fragment error (Phase 6: each subset try
+expands equalities the same way). Vocabulary restriction could in
+principle drop offending clauses and still refute soundly, but that
+would smuggle non-EPR reasoning into an EPR-only tier — explicitly out
+of scope; such inputs stay `GaveUp`.
 
 ## UNSAT Capture-First Measurement (Phase 5a Outcome)
 
-Tier-2 UNSAT outcomes currently fail closed (`Tier2Unsat` → Tier-3 subset
-search → usually exhausted) because no FRAT-to-TSTP elaborator exists yet.
-Before building emission, the UNSAT path is instrumented for measurement
-only — verdicts are unchanged, TRACE gains lines:
+Before emission existed, Tier-2 UNSAT outcomes failed closed
+(`Tier2Unsat` → Tier-3 subset search → usually exhausted). The UNSAT path
+was therefore instrumented for measurement only — verdicts unchanged,
+TRACE gains lines (still live under the emission phase, which reuses the
+same capture):
 
 - The solver runs always-traced (`connect_trace` with antecedents and
   finalize, 1M event cap that bounds memory and fails closed on overflow),
@@ -430,3 +451,52 @@ transients possible on million-event UNSAT proofs. Remaining EPR coverage
 needs lazy/incremental grounding (problems that never materialize) —
 declared future work, not a regression: Tier 1 behavior is unchanged
 where closures terminate.
+
+## Ground Equality Certification (Phase 6 Outcome)
+
+Grounded equality literals are decided by congruence expansion in
+`crates/mrs-search/src/certified_eq.rs`, applied to every tier's input
+before routing. Predicate-only inputs pass through byte-identical, so the
+legacy fragment observes no change. Design points:
+
+- **Union-find over grounding constants** (`EqClasses`): positive unit
+  equalities between ground constants build the classes; every other Eq
+  literal is then normalized by representative replacement, with the
+  unit's clause id recorded as the explanation parent.
+- **Canonical orientation** (`canonical_eq_order`): Eq sides are ordered
+  by the validated KBO/LPO comparison, so each ground equality has one
+  representation. Ordering temporaries use
+  `SymbolId::RESERVED_EQ_ORDER` (`u32::MAX`), which is reserved for this
+  purpose and never interned from problem text.
+- **Reflexivity fast paths**: same-class positive units are tautologies
+  (dropped silently, like subsumed clauses); same-class *negative* units
+  are immediate contradictions, refuted from ancestry with the explains
+  as parents — no closure needed.
+- **Transitivity cubes**: for each representative triple, the clause
+  `~Eq(a,b) | ~Eq(b,c) | Eq(a,c)` is added (canonically oriented), so
+  pure ordered resolution derives the congruence consequences.
+- **Local Eq partner map**: `LiteralIndex::get_unifiable_resolution_partners`
+  is predicate-only (the general engine handles equalities by
+  superposition instead), so Eq literals found no partners and both
+  closures agreed on a false saturation — caught by the transitivity
+  unit test failing with `ordered_inferences=0`. `closure_indexed` now
+  keeps an exact-match side map keyed on the legacy `Atom` (the same
+  value `resolve_ground_pair` compares), recall-complete for ground
+  canonical inputs by construction; the general index is untouched.
+- **Vacuous saturation**: if expansion drops every clause (all
+  reflexivity-valid), the empty set saturates without running a
+  closure — still behind the EPR-with-equality gate, so non-EPR inputs
+  cannot take this path.
+- **Fragment gates** (`collect_grounding_constants`,
+  `collect_fragment_atoms`, saturation gate) accept ground Eq sides;
+  function terms and AC orderings still refuse as before. The
+  `equality is outside the certified fragment` refusal is removed.
+
+Unit tests cover union-find merge/explain paths, canonical-orientation
+symmetry, reflexivity accept/drop, the transitivity chain refuting
+without unit assumptions, and the updated fragment boundary (ground Eq
+accepted, functions still rejected). Full workspace gate green
+(check, clippy `-D warnings`, fmt, all tests). Open: kernel
+`equality_normalization` / `equality_transitivity` validators, F2 Tier-4
+InstGen wrapper, and a canary re-measure (pre-Phase-6 counts above show
+equality refuses that no longer occur).
