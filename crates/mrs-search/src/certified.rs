@@ -922,12 +922,11 @@ fn count_constants(
 /// restriction: kept clauses ground over the subset using only subset
 /// constants, so their instances are a subset of the full instances.
 fn clause_mentions_only(clause: &Clause, subset: &[SymbolId]) -> bool {
-    clause.literals.iter().all(|literal| {
-        let args: &[Term] = match &literal.atom {
-            Atom::Pred(_, args) => args,
-            Atom::Eq(..) => return false,
-        };
-        args.iter().all(|arg| term_mentions_only(arg, subset))
+    clause.literals.iter().all(|literal| match &literal.atom {
+        Atom::Pred(_, args) => args.iter().all(|arg| term_mentions_only(arg, subset)),
+        Atom::Eq(left, right) => {
+            term_mentions_only(left, subset) && term_mentions_only(right, subset)
+        }
     })
 }
 
