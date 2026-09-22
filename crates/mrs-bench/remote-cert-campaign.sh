@@ -141,7 +141,7 @@ write_summary() {
         echo "- date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
         echo "- git: $(git -C "${WORKSPACE_ROOT}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
         echo "- rustc: $(rustc --version 2>/dev/null || echo unknown)"
-        echo "- binary: $("${MRS_BIN}" --version 2>/dev/null || echo "${MRS_BIN}")"
+        echo "- binary: ${MRS_BIN} (sha256: $(sha256sum "${MRS_BIN}" 2>/dev/null | cut -d' ' -f1 || echo unknown))"
         echo "- notes: ${notes}"
     } > "${dir}/PHASE_SUMMARY.md"
     log "summary: ${dir}/PHASE_SUMMARY.md"
