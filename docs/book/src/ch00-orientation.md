@@ -8,7 +8,7 @@
 ## Try it
 
 ```bash
-nix develop -c cargo run -- problems/socrates.p
+nix develop -c cargo run --bin mrs -- problems/socrates.p
 ```
 
 Expected: a line starting with `% SZS status Theorem`.
