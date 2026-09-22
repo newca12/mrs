@@ -343,6 +343,109 @@ fn term_is_epr_constant_or_var(term: &Term) -> bool {
     }
 }
 
+/// SInE-style tolerance ladder for Tier-3b clause subsets, strict first.
+/// Mirrors the portfolio's proven tolerance points; each rung is estimated
+/// and tried independently, so a rung that keeps everything is simply free.
+const TIER3B_TOLERANCES: [f64; 4] = [1.0, 1.5, 2.0, 3.5];
+
+/// Goal-relevance filter for Tier-3b clause subsets: SInE trigger logic
+/// anchored on distance-0 (negated-conjecture) clauses instead of
+/// role-conjecture inputs, which the clausifier turns into literalless
+/// formula steps that plain SInE cannot start from. Empty clauses are
+/// always kept (free proof material); with no distance-0 clauses the
+/// filter is the identity (caller skips it). Output preserves input order
+/// for determinism.
+fn relevance_filter(clauses: &[Clause], tolerance: f64) -> Vec<Clause> {
+    // Symbol sets per clause (literals only) plus frequencies. Crate
+    // FxHash collections throughout (a std RandomState set would not
+    // typecheck against the shared helpers).
+    let mut item_syms: Vec<HashSet<SymbolId>> = Vec::with_capacity(clauses.len());
+    let mut sym_counts: StdHashMap<SymbolId, usize> = StdHashMap::new();
+    for clause in clauses {
+        let mut syms = HashSet::default();
+        for literal in &clause.literals {
+            let Atom::Pred(predicate, args) = &literal.atom else {
+                continue;
+            };
+            syms.insert(*predicate);
+            for arg in args {
+                collect_filter_symbols(arg, &mut syms);
+            }
+        }
+        for &symbol in &syms {
+            *sym_counts.entry(symbol).or_insert(0) += 1;
+        }
+        item_syms.push(syms);
+    }
+    // Trigger map exactly like SInE: a symbol triggers the items whose own
+    // minimum generality it satisfies.
+    let mut triggers: StdHashMap<SymbolId, Vec<usize>> = StdHashMap::new();
+    for (index, syms) in item_syms.iter().enumerate() {
+        if syms.is_empty() {
+            continue;
+        }
+        let min_g = syms.iter().map(|s| sym_counts[s]).min().unwrap() as f64;
+        let threshold = min_g * tolerance;
+        for &symbol in syms {
+            if let Some(count) = sym_counts.get(&symbol)
+                && (*count as f64) <= threshold
+            {
+                triggers.entry(symbol).or_default().push(index);
+            }
+        }
+    }
+    // Anchor on goal-connected clauses (distance 0), always keeping empty
+    // clauses alongside them.
+    let mut active: HashSet<usize> = HashSet::default();
+    let mut active_syms: HashSet<SymbolId> = HashSet::default();
+    let mut frontier: HashSet<SymbolId> = HashSet::default();
+    for (index, clause) in clauses.iter().enumerate() {
+        if clause.literals.is_empty() || clause.distance == 0 {
+            active.insert(index);
+            for &symbol in &item_syms[index] {
+                if active_syms.insert(symbol) {
+                    frontier.insert(symbol);
+                }
+            }
+        }
+    }
+    if active_syms.is_empty() {
+        return clauses.to_vec();
+    }
+    while !frontier.is_empty() {
+        let mut next = HashSet::default();
+        for symbol in std::mem::take(&mut frontier) {
+            if let Some(triggered) = triggers.get(&symbol) {
+                for &index in triggered {
+                    if active.insert(index) {
+                        for &new_symbol in &item_syms[index] {
+                            if active_syms.insert(new_symbol) {
+                                next.insert(new_symbol);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        frontier = next;
+    }
+    clauses
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| active.contains(index))
+        .map(|(_, clause)| clause.clone())
+        .collect()
+}
+
+fn collect_filter_symbols(term: &Term, syms: &mut HashSet<SymbolId>) {
+    if let Term::App(symbol, args) = term {
+        syms.insert(*symbol);
+        for arg in args {
+            collect_filter_symbols(arg, syms);
+        }
+    }
+}
+
 /// Tier 3: constant-subset unsatisfiability search for groundings that are
 /// infeasible in full (size refusals) or proved UNSAT without a proof
 /// (Tier-2 SAT outcomes).
@@ -374,6 +477,94 @@ fn tier3_subset_unsat(
     // Ordering applies to every Tier-1 subset run: reject once here instead
     // of once per subset.
     validate_ordering_kind(ordering)?;
+    // Tier-3b first: goal-relevant clause subsets over the FULL domain.
+    // Dropping premises preserves unsatisfiability, so a refutation here
+    // is a valid whole-problem proof; saturation proves nothing and is
+    // skipped like everywhere in this tier. Strict tolerances first: each
+    // rung is estimated against Tier-1 caps and skipped when oversized or
+    // when the filter is a no-op.
+    for tolerance in TIER3B_TOLERANCES {
+        if Instant::now() >= deadline {
+            trace_certify("tier3_exhausted tries=0 (deadline)".to_string());
+            return Err(CertificationFailure::Limit(
+                "certification time limit exceeded",
+            ));
+        }
+        let filtered = relevance_filter(clauses, tolerance);
+        if filtered.len() == clauses.len() {
+            trace_certify(format!("tier3b_rung tolerance={tolerance} kept=all noop"));
+            continue;
+        }
+        let mut estimated = 0usize;
+        let mut fits = true;
+        for clause in &filtered {
+            let vars = clause.free_vars().len();
+            match constants
+                .len()
+                .checked_pow(vars as u32)
+                .and_then(|instances| estimated.checked_add(instances))
+            {
+                Some(total) if total <= MAX_GROUND_INSTANCES => {
+                    estimated = total;
+                }
+                _ => {
+                    fits = false;
+                    break;
+                }
+            }
+        }
+        if !fits {
+            trace_certify(format!(
+                "tier3b_rung tolerance={tolerance} kept={} oversize",
+                filtered.len()
+            ));
+            continue;
+        }
+        trace_certify(format!(
+            "tier3b_rung tolerance={tolerance} kept={} estimated={estimated}",
+            filtered.len()
+        ));
+        let filtered_grounded = match ground_with_constants(
+            &filtered,
+            constants,
+            id_gen,
+            MAX_GROUND_INSTANCES,
+            deadline,
+        ) {
+            Ok(grounded) => grounded,
+            Err(_) => continue,
+        };
+        match run_tier1(
+            &filtered_grounded,
+            provenance,
+            ordering,
+            proof_symbols,
+            id_gen,
+            deadline,
+            "tier3b-sub",
+        ) {
+            Ok(mut report) if matches!(report.result, SearchResult::Refutation(..)) => {
+                trace_certify(format!(
+                    "tier3b_found tolerance={tolerance} kept={}",
+                    filtered.len()
+                ));
+                report.tier = CertifiedTier::Three;
+                return Ok(report);
+            }
+            Ok(_) => {
+                trace_certify(format!(
+                    "tier3b_rung tolerance={tolerance} kept={} saturated",
+                    filtered.len()
+                ));
+            }
+            Err(reason) => {
+                trace_certify(format!(
+                    "tier3b_rung tolerance={tolerance} kept={} failed:{reason:?}",
+                    filtered.len()
+                ));
+            }
+        }
+    }
     let biased = bias_order_constants(clauses, constants);
     // Per-clause variable counts, computed once: subset estimates stay
     // arithmetic, never materialized speculatively.
@@ -2118,6 +2309,171 @@ mod tests {
         )
         .expect("vocabulary-restricted core must certify after Tier-2 UNSAT");
         assert!(matches!(report.result, SearchResult::Refutation(..)));
+    }
+
+    fn goal_clause(id_gen: &mut ClauseIdGen, literals: Vec<mrs_core::clause::Literal>) -> Clause {
+        let mut clause = input_clause(id_gen, literals);
+        clause.distance = 0;
+        clause
+    }
+
+    /// Direct filter checks: goal-anchored SInE-style selection keeps the
+    /// relevant core and drops disconnected junk; empty clauses are always
+    /// kept; without a goal the filter is the identity; loosening the
+    /// tolerance only ever adds clauses.
+    #[test]
+    fn relevance_filter_selects_goal_connected_core() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let r = symbols.intern("r");
+        let q = symbols.intern("q");
+        let a = symbols.intern("a");
+        let mut ids = ClauseIdGen::new();
+        // Goal shares `p` with the core and `r` with nothing else.
+        let goal = goal_clause(
+            &mut ids,
+            vec![
+                mrs_core::clause::Literal::neg(Atom::pred(p, vec![Term::constant(a)])),
+                mrs_core::clause::Literal::pos(Atom::pred(r, vec![Term::constant(a)])),
+            ],
+        );
+        let core_pos = ground_pos(&mut ids, p, a);
+        let core_neg = input_clause(
+            &mut ids,
+            vec![mrs_core::clause::Literal::neg(Atom::pred(
+                r,
+                vec![Term::constant(a)],
+            ))],
+        );
+        let junk_unit = ground_pos(&mut ids, q, symbols.intern("junk_c"));
+        let junk_var = input_clause(
+            &mut ids,
+            vec![mrs_core::clause::Literal::pos(Atom::pred(
+                q,
+                vec![Term::var(0), Term::var(1)],
+            ))],
+        );
+        let clauses = vec![
+            goal.clone(),
+            core_pos.clone(),
+            core_neg.clone(),
+            junk_unit.clone(),
+            junk_var.clone(),
+        ];
+        let strict = relevance_filter(&clauses, 1.0);
+        let strict_ids: Vec<_> = strict.iter().map(|c| c.id).collect();
+        // Goal + core kept; both junk shapes dropped.
+        assert!(strict_ids.contains(&goal.id));
+        assert!(strict_ids.contains(&core_pos.id));
+        assert!(strict_ids.contains(&core_neg.id));
+        assert!(!strict_ids.contains(&junk_unit.id));
+        assert!(!strict_ids.contains(&junk_var.id));
+        // Loosening never drops: strict output is a subset of loose output.
+        for tolerance in [1.5, 2.0, 3.5] {
+            let loose = relevance_filter(&clauses, tolerance);
+            let loose_ids: Vec<_> = loose.iter().map(|c| c.id).collect();
+            for id in &strict_ids {
+                assert!(
+                    loose_ids.contains(id),
+                    "tolerance {tolerance} must keep strict subset"
+                );
+            }
+        }
+        // Empty clauses are always kept, even with no shared symbols.
+        let mut empty = Clause::new(
+            ids.next(),
+            Vec::<mrs_core::clause::Literal>::new(),
+            ClauseSource::Input {
+                name: "empty".into(),
+                role: "axiom".into(),
+            },
+        );
+        empty.distance = 100;
+        let mut with_empty = clauses.clone();
+        with_empty.push(empty.clone());
+        let filtered = relevance_filter(&with_empty, 1.0);
+        assert!(filtered.iter().any(|c| c.id == empty.id));
+        // No distance-0 clause: identity (caller skips the rung).
+        let no_goal: Vec<Clause> = clauses
+            .iter()
+            .map(|c| {
+                let mut rewritten = c.clone();
+                rewritten.distance = 100;
+                rewritten
+            })
+            .collect();
+        let identity = relevance_filter(&no_goal, 1.0);
+        assert_eq!(identity.len(), no_goal.len());
+    }
+
+    /// End-to-end Tier-3b: many constants plus a variable-heavy junk
+    /// clause refuse the full grounding, but the relevance ladder keeps
+    /// exactly the goal-connected core and Tier 1 refutes it.
+    #[test]
+    fn tier3b_finds_relevance_core() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let r = symbols.intern("r");
+        let q = symbols.intern("q");
+        let big = symbols.intern("big");
+        let a = symbols.intern("core3_a");
+        let mut ids = ClauseIdGen::new();
+        let mut clauses = vec![
+            goal_clause(
+                &mut ids,
+                vec![
+                    mrs_core::clause::Literal::neg(Atom::pred(p, vec![Term::constant(a)])),
+                    mrs_core::clause::Literal::pos(Atom::pred(r, vec![Term::constant(a)])),
+                ],
+            ),
+            ground_pos(&mut ids, p, a),
+            input_clause(
+                &mut ids,
+                vec![mrs_core::clause::Literal::neg(Atom::pred(
+                    r,
+                    vec![Term::constant(a)],
+                ))],
+            ),
+        ];
+        // Junk: 300 disconnected ground units plus an 8-variable clause
+        // over all 301 constants (301^8 refuses the full grounding).
+        for i in 0..300 {
+            let c = symbols.intern(&format!("tier3b_c{i}"));
+            clauses.push(ground_pos(&mut ids, q, c));
+        }
+        clauses.push(input_clause(
+            &mut ids,
+            vec![mrs_core::clause::Literal::pos(Atom::pred(
+                big,
+                vec![
+                    Term::var(0),
+                    Term::var(1),
+                    Term::var(2),
+                    Term::var(3),
+                    Term::var(4),
+                    Term::var(5),
+                    Term::var(6),
+                    Term::var(7),
+                ],
+            ))],
+        ));
+        for ordering in [TermOrdering::KBO, TermOrdering::LPO] {
+            let mut ids = ids.clone();
+            let report = certify_ground_ordered_resolution(
+                &clauses,
+                &[],
+                &symbols,
+                &ordering,
+                &mut ids,
+                Duration::from_secs(10),
+            )
+            .expect("relevance core must certify");
+            assert!(
+                matches!(report.result, SearchResult::Refutation(..)),
+                "Tier-3b must refute via the relevance core under {ordering:?}"
+            );
+            assert_eq!(report.tier, CertifiedTier::Three);
+        }
     }
 
     fn ground_pos(id_gen: &mut ClauseIdGen, pred: SymbolId, constant: SymbolId) -> Clause {

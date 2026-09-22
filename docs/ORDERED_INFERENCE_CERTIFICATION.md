@@ -260,25 +260,53 @@ largest explored grounding is ~524 MB. Conclusion: retrieval speed is no
 longer the coverage bottleneck; closure *size* is — which is what the
 SAT-backed Tier 2 below addresses for the satisfiable side.
 
-## Tier 3: Constant-Subset Unsatisfiability Search
+## Tier 3: Lazy-Grounding Unsatisfiability Search
 
 Groundings that are infeasible in full (size refusals) or proved UNSAT
-without a proof (Tier-2 outcomes) fall through to a bounded search over
-small constant subsets (singletons, then biased pairs/triples with try
-caps). Each subset grounds with vocabulary restriction — only clauses
-whose constants lie in the subset are kept, which is sound for the
-refutation direction — and runs the full Tier-1 double closure with
-agreement and TSTP ancestry. A subset refutation is a valid whole-problem
-refutation (subset instances ⊆ full instances); subset saturation proves
-nothing and is skipped. The tier can only refute, never certify
-satisfiability, and shares the run deadline. Constants are tried in
-goal-biased order (negated-conjecture vocabulary first, then frequency).
+without a proof (Tier-2 outcomes) fall through to two bounded lazy
+searches, clause-subsets first, then constant subsets. Both rest on the
+same soundness argument — dropping premises preserves unsatisfiability,
+so a refutation from any subproblem (with full Tier-1 agreement and TSTP
+ancestry) is a valid whole-problem refutation — and both can only refute,
+never certify satisfiability. Subset saturation proves nothing and is
+skipped; everything shares the run deadline.
 
-Measured: unit tests cover small-core refutation, saturation-never,
-zero-budget instant failure, bias order, and the Tier-2-UNSAT fallthrough.
-Whether corpus EPU problems yield small cores is empirical (deep-gate
-numbers below); pigeonhole-style problems needing many constants stay
-fail-closed by design (documented incompleteness, not a regression).
+- **Tier-3b (clause subsets):** goal-relevance filter (SInE trigger logic
+  anchored on distance-0 negated-conjecture clauses, which plain SInE
+  cannot start from since the clausifier leaves them literalless;
+  tolerance ladder 1.0 → 3.5, strict first), each rung estimated and
+  grounded over the full domain, then decided by Tier 1. Covers small
+  *clause* cores over many constants, where constant enumeration is
+  hopeless.
+- **Tier-3a (constant subsets):** singletons, then biased pairs/triples
+  with try caps, each grounded with vocabulary restriction (only clauses
+  whose constants lie in the subset are kept). Constants are tried in
+  goal-biased order (negated-conjecture vocabulary first, then
+  frequency). Covers small *constant* cores.
+
+Why no lazy SAT: subset satisfiability does not imply whole-problem
+satisfiability in either direction (fewer instances *and* fewer premises
+both weaken the constraint set), so any SAT verdict from a subproblem
+would be unsound by construction. Lazy grounding in this architecture is
+refutation-only, permanently — SAT-side coverage comes only from Tiers
+1–2 over complete groundings. That asymmetry is load-bearing and
+unit-tested (`tier3_never_claims_saturation_from_subsets`).
+
+Measured: unit tests cover relevance filtering (core kept, junk dropped,
+empty-kept, no-goal identity, tolerance monotonicity), small-core and
+relevance-core refutations, saturation-never, zero-budget instant
+failure, bias order, and the Tier-2-UNSAT fallthrough. Corpus outcome
+(fast and deep gates): zero Tier-3b conversions — rung telemetry
+(`tier3b_rung` lines) shows why: on most problems every tolerance rung
+keeps everything (`kept=all noop`), because small-signature EPR shares
+goal symbols across the whole input (or the goal set itself is enormous,
+e.g. SYN-style with 1800+ negated-conjecture clauses), so relevance
+cannot discriminate; the rungs that do keep subsets (21–98 clauses)
+saturate. Pigeonhole-style problems needing many constants *and* many
+clauses stay fail-closed by design (documented incompleteness, not a
+regression). A predicate-only filter variant (dropping shared constants
+as bridges) is a documented possible refinement if a converting case
+ever needs it — not implemented, per measure-first discipline.
 
 Boundary: Tier 3 fires only on size refusals and Tier-2 UNSAT, never on
 fragment errors (equality, function terms, formula/AVATAR clauses).
