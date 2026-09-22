@@ -113,10 +113,10 @@ pub(crate) fn capture_and_check(
 /// deterministic atom ordering. Tautologies are skipped (valid in any
 /// model); an empty clause means the set is unsatisfiable, which this tier
 /// cannot certify — that fails closed via the SAT-only rule.
-/// Canonical sort key for a ground atom: predicate name plus argument
-/// constant names. Ground equality uses the reserved `\x01eq` predicate key
-/// and its two sorted constant names. Name strings (not interning indices or
-/// `Debug` output)
+/// Canonical sort key for a predicate ground atom: predicate name plus
+/// argument constant names. Equality atoms are deliberately rejected here;
+/// Tier 2 remains predicate-only until equality encoding and kernel replay are
+/// supported end to end. Name strings (not interning indices or `Debug` output)
 /// keep the var numbering stable across runs and checkable by the kernel,
 /// which re-derives the identical ordering from TSTP text alone. Ground
 /// atoms only (Tier-2 inputs are fully grounded); anything else fails the
