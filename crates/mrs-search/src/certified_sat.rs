@@ -114,26 +114,30 @@ pub(crate) fn capture_and_check(
 /// model); an empty clause means the set is unsatisfiable, which this tier
 /// cannot certify — that fails closed via the SAT-only rule.
 /// Canonical sort key for a ground atom: predicate name plus argument
-/// constant names. Name strings (not interning indices or `Debug` output)
+/// constant names. Ground equality uses the reserved `\x01eq` predicate key
+/// and its two sorted constant names. Name strings (not interning indices or
+/// `Debug` output)
 /// keep the var numbering stable across runs and checkable by the kernel,
 /// which re-derives the identical ordering from TSTP text alone. Ground
 /// atoms only (Tier-2 inputs are fully grounded); anything else fails the
 /// encoding loudly instead of silently misordering.
 pub(crate) fn atom_sort_key(atom: &Atom, symbols: &SymbolTable) -> Option<(String, Vec<String>)> {
-    let Atom::Pred(predicate, args) = atom else {
-        return None;
-    };
-    let mut arg_names = Vec::with_capacity(args.len());
-    for arg in args {
-        let mrs_core::term::Term::App(symbol, inner) = arg else {
-            return None;
-        };
-        if !inner.is_empty() {
-            return None;
+    match atom {
+        Atom::Pred(predicate, args) => {
+            let mut arg_names = Vec::with_capacity(args.len());
+            for arg in args {
+                let mrs_core::term::Term::App(symbol, inner) = arg else {
+                    return None;
+                };
+                if !inner.is_empty() {
+                    return None;
+                }
+                arg_names.push(symbols.resolve(*symbol).to_string());
+            }
+            Some((symbols.resolve(*predicate).to_string(), arg_names))
         }
-        arg_names.push(symbols.resolve(*symbol).to_string());
+        Atom::Eq(_, _) => None,
     }
-    Some((symbols.resolve(*predicate).to_string(), arg_names))
 }
 
 pub(crate) fn encode_sat(

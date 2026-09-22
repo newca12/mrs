@@ -17,20 +17,20 @@
 //! 3. **Reflexivity fast paths**: positive `Eq(r, r)` clauses are valid and
 //!    dropped silently (like subsumed clauses); a negative `Eq(r, r)`
 //!    elaborates to the empty clause with path ancestry (the UEQ killer).
-//! 4. **Transitivity cubes** `~Eq(a,b) | ~Eq(b,c) | Eq(a,c)` over distinct
-//!    representatives (parentless validities, rule `equality_transitivity`).
-//!    Symmetry needs no cubes: canonical orientation makes `Eq(a,b)` and
-//!    `Eq(b,a)` syntactically identical. Predicate congruence needs no
-//!    cubes either: with no function symbols, distinct representatives are
-//!    fully uninterpreted.
+//! 4. Positive equality clauses must be unit clauses. This is a deliberate
+//!    certification boundary: unit equalities can be applied as a complete
+//!    congruence normalization before closure. A non-unit positive equality
+//!    may be derived later by resolution; supporting that case would require
+//!    predicate-congruence axioms throughout the closure, so it fails closed.
 //!
-//! Why this is complete: the expanded set is a finite ground equational
-//! problem — plain ground resolution (Tier 1, both closures) and
-//! propositional SAT (Tier 2, equality as atoms) decide it, and the
-//! double-closure agreement plus model re-check carry over verbatim.
+//! Why this is complete: the supported expanded set is a finite ground
+//! equational problem with unit equality definitions — plain ground
+//! resolution (Tier 1, both closures) and propositional SAT (Tier 2, equality
+//! as atoms) decide it, and the double-closure agreement plus model re-check
+//! carry over verbatim.
 //! Everything beyond the expansion caps fails closed as `Limit`.
 
-use std::collections::{HashMap as StdHashMap, HashSet as StdHashSet, VecDeque};
+use std::collections::{HashMap as StdHashMap, VecDeque};
 
 use crate::TermOrdering;
 use crate::certified::CertificationFailure;
@@ -38,11 +38,6 @@ use mrs_calculus::ordering::TermComparison;
 use mrs_core::clause::{Clause, ClauseId, ClauseIdGen, ClauseSource, Literal};
 use mrs_core::formula::Atom;
 use mrs_core::term::Term;
-
-/// Cap on generated transitivity-cube clauses: `reps^3` grows fast, and
-/// anything past this fails closed downstream via the clause ceiling
-/// anyway. Estimated arithmetically before materializing.
-const MAX_TRANSITIVITY_CUBES: usize = 100_000;
 
 /// Union-find over ground terms with proof-carrying merges: every union
 /// records the unit-equation clause that justified it, so any derived
@@ -163,20 +158,6 @@ impl EqClasses {
         }
         None
     }
-
-    /// Distinct class representatives currently known.
-    pub(crate) fn representatives(&mut self) -> Vec<Term> {
-        let terms: Vec<Term> = self.parent.keys().cloned().collect();
-        let mut seen = StdHashSet::new();
-        let mut reps = Vec::new();
-        for term in &terms {
-            let root = self.find_root(term);
-            if seen.insert(root.clone()) {
-                reps.push(root);
-            }
-        }
-        reps
-    }
 }
 
 /// Canonical equality orientation: heavier side first under the active
@@ -224,39 +205,42 @@ fn normalize_clause_eq(
     let mut literals = Vec::with_capacity(clause.literals.len());
     let mut explains: Vec<ClauseId> = Vec::new();
     for literal in &clause.literals {
-        let Atom::Eq(left, right) = &literal.atom else {
-            literals.push(literal.clone());
-            continue;
-        };
-        let mut new_left = classes.representative(left);
-        let mut new_right = classes.representative(right);
-        if new_left != *left || new_right != *right {
-            changed = true;
-            if let Some(mut path) = classes.explain(left, &new_left) {
-                explains.append(&mut path);
+        match &literal.atom {
+            Atom::Pred(predicate, args) => {
+                let new_args = args
+                    .iter()
+                    .map(|arg| normalize_term_eq(arg, classes, &mut explains, &mut changed))
+                    .collect();
+                literals.push(Literal {
+                    positive: literal.positive,
+                    atom: Atom::Pred(*predicate, new_args),
+                });
             }
-            if let Some(mut path) = classes.explain(right, &new_right) {
-                explains.append(&mut path);
+            Atom::Eq(left, right) => {
+                let mut new_left = normalize_term_eq(left, classes, &mut explains, &mut changed);
+                let mut new_right = normalize_term_eq(right, classes, &mut explains, &mut changed);
+                let class_changed = new_left != *left || new_right != *right;
+                if new_left == new_right {
+                    if literal.positive {
+                        return Normalized::Tautology;
+                    }
+                    changed = true;
+                    continue;
+                }
+                // A pure orientation change has no equality parent to cite.
+                // Preserve the original orientation in that case; when a
+                // unit equality changed a side, the unit parents justify the
+                // canonical reorientation as part of the same normalization.
+                if class_changed {
+                    (new_left, new_right) = canonical_eq_order(&new_left, &new_right, ordering);
+                    changed = true;
+                }
+                literals.push(Literal {
+                    positive: literal.positive,
+                    atom: Atom::Eq(new_left, new_right),
+                });
             }
         }
-        if new_left == new_right {
-            if literal.positive {
-                // Positive reflexive equality: the clause is valid.
-                return Normalized::Tautology;
-            }
-            // Negative reflexive equality: this literal is false; the
-            // remaining literals decide. Handled below by filtering.
-            changed = true;
-            continue;
-        }
-        (new_left, new_right) = canonical_eq_order(&new_left, &new_right, ordering);
-        if new_left != *left || new_right != *right {
-            changed = true;
-        }
-        literals.push(Literal {
-            positive: literal.positive,
-            atom: Atom::Eq(new_left, new_right),
-        });
     }
     if !changed {
         return Normalized::Unchanged;
@@ -273,8 +257,33 @@ fn normalize_clause_eq(
     Normalized::Rewritten { literals, explains }
 }
 
+fn normalize_term_eq(
+    term: &Term,
+    classes: &mut EqClasses,
+    explains: &mut Vec<ClauseId>,
+    changed: &mut bool,
+) -> Term {
+    let normalized = match term {
+        Term::Var(_) => term.clone(),
+        Term::App(symbol, args) if args.is_empty() => classes.representative(term),
+        Term::App(symbol, args) => Term::app(
+            *symbol,
+            args.iter()
+                .map(|arg| normalize_term_eq(arg, classes, explains, changed))
+                .collect(),
+        ),
+    };
+    if &normalized != term {
+        *changed = true;
+        if let Some(mut path) = classes.explain(term, &normalized) {
+            explains.append(&mut path);
+        }
+    }
+    normalized
+}
+
 /// Result of [`expand_equality`]: normalized clauses (with derivation
-/// steps), transitivity cubes, and an optional immediate refutation.
+/// steps) and an optional immediate refutation.
 pub(crate) struct ExpandedEq {
     pub clauses: Vec<Clause>,
     /// `Some` empty clause when a unit disequality contradicts its own
@@ -284,9 +293,8 @@ pub(crate) struct ExpandedEq {
 }
 
 /// Expand a grounded clause set with ground equational reasoning:
-/// union-find normalization (derived `equality_normalization` steps),
-/// reflexivity fast paths, and transitivity cubes over distinct
-/// representatives (`equality_transitivity` validities). Predicate-only
+/// unit-equality union-find normalization (derived
+/// `equality_normalization` steps) and reflexivity fast paths. Predicate-only
 /// inputs pass through byte-identical (no Eq atoms anywhere): the legacy
 /// fragment observes zero behavior change.
 pub(crate) fn expand_equality(
@@ -294,6 +302,22 @@ pub(crate) fn expand_equality(
     ordering: &TermOrdering,
     id_gen: &mut ClauseIdGen,
 ) -> Result<ExpandedEq, CertificationFailure> {
+    // The closure does not generate predicate-congruence axioms for positive
+    // equality clauses derived later by resolution. Accepting a non-unit
+    // positive equality could therefore turn an equality-dependent
+    // contradiction into a false saturation claim.
+    if clauses.iter().any(|clause| {
+        clause.literals.len() != 1
+            && clause
+                .literals
+                .iter()
+                .any(|literal| literal.positive && matches!(literal.atom, Atom::Eq(_, _)))
+    }) {
+        return Err(CertificationFailure::Unsupported(
+            "non-unit positive equality is outside the certified fragment",
+        ));
+    }
+
     // Seed every constant occurring in an equality literal so the
     // representative enumeration below covers the whole equational
     // vocabulary, then union the ground positive unit equalities.
@@ -339,8 +363,7 @@ pub(crate) fn expand_equality(
             Normalized::Contradiction { explains } => {
                 let mut parents = vec![clause.id];
                 parents.extend(explains.iter().copied());
-                parents.sort_unstable_by_key(|id| id.0);
-                parents.dedup();
+                dedup_clause_ids_preserving_order(&mut parents);
                 let empty = Clause::new(
                     id_gen.next(),
                     Vec::new(),
@@ -357,8 +380,7 @@ pub(crate) fn expand_equality(
             Normalized::Rewritten { literals, explains } => {
                 let mut parents = vec![clause.id];
                 parents.extend(explains.iter().copied());
-                parents.sort_unstable_by_key(|id| id.0);
-                parents.dedup();
+                dedup_clause_ids_preserving_order(&mut parents);
                 expanded.push(Clause::new(
                     id_gen.next(),
                     literals,
@@ -370,59 +392,15 @@ pub(crate) fn expand_equality(
             }
         }
     }
-    // Transitivity cubes over pairwise-distinct representatives. Degenerate
-    // triples (repeated reps) are valid-but-useless: normalization already
-    // covers reflexivity, so only distinct triples are generated.
-    let reps = classes.representatives();
-    let cube_estimate = reps
-        .len()
-        .checked_mul(reps.len())
-        .and_then(|square| square.checked_mul(reps.len()));
-    if let Some(estimate) = cube_estimate
-        && estimate > MAX_TRANSITIVITY_CUBES
-    {
-        return Err(CertificationFailure::Limit(
-            "equality transitivity cube limit exceeded",
-        ));
-    }
-    for (i, first) in reps.iter().enumerate() {
-        for (j, second) in reps.iter().enumerate() {
-            if i == j {
-                continue;
-            }
-            for (k, third) in reps.iter().enumerate() {
-                if k == i || k == j {
-                    continue;
-                }
-                let mut lits = vec![
-                    Literal::neg(Atom::Eq(first.clone(), second.clone())),
-                    Literal::neg(Atom::Eq(second.clone(), third.clone())),
-                    Literal::pos(Atom::Eq(first.clone(), third.clone())),
-                ];
-                // Canonical orientation per literal (same convention as
-                // normalization, so cubes resolve against rewritten sets).
-                for lit in &mut lits {
-                    let Atom::Eq(left, right) = &lit.atom else {
-                        continue;
-                    };
-                    let (ordered_left, ordered_right) = canonical_eq_order(left, right, ordering);
-                    lit.atom = Atom::Eq(ordered_left, ordered_right);
-                }
-                expanded.push(Clause::new(
-                    id_gen.next(),
-                    lits,
-                    ClauseSource::Inference {
-                        rule: "equality_transitivity",
-                        parents: smallvec::SmallVec::new(),
-                    },
-                ));
-            }
-        }
-    }
     Ok(ExpandedEq {
         clauses: expanded,
         contradiction: None,
     })
+}
+
+fn dedup_clause_ids_preserving_order(ids: &mut Vec<ClauseId>) {
+    let mut seen = std::collections::HashSet::new();
+    ids.retain(|id| seen.insert(*id));
 }
 
 #[cfg(test)]
@@ -463,9 +441,16 @@ mod tests {
         for term in &terms {
             classes.singleton(term);
         }
-        assert_eq!(classes.representatives().len(), 3);
+        assert_eq!(classes.parent.len(), 3);
         classes.union(&terms[0], &terms[1], ClauseId(7));
-        assert_eq!(classes.representatives().len(), 2);
+        let keys: Vec<_> = classes.parent.keys().cloned().collect();
+        assert_eq!(
+            keys.iter()
+                .map(|term| classes.find_root(term))
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            2
+        );
     }
 
     #[test]

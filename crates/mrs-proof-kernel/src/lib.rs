@@ -10,7 +10,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use mrs_core::clause::avatar_sat_trace_digest;
-use mrs_core::{Atom, Formula, Substitution, SymbolId, SymbolTable, Term, VarId};
+use mrs_core::{Atom, Formula, Substitution, SymbolTable, Term, VarId};
 use mrs_tptp::ast::common::{AtomicWord, GeneralTerm};
 use mrs_tptp::proover::{
     AvatarBranchInfo, AvatarComponentInfo, AvatarSatInfo, AvatarSplitInfo, ParentRef, SatBackedInfo,
@@ -459,6 +459,7 @@ fn verify_strict_with_source_internal(
             }
             "ac_normalization" => verify_ac_normalization(&parents, conclusion, limits),
             "equality_factoring" => verify_equality_factoring(&parents, conclusion, limits),
+            "equality_normalization" => verify_equality_normalization(&parents, conclusion, limits),
             "condensation" => verify_condensation(&parents, conclusion, limits),
             "demodulation" => match verify_demodulation(&parents, conclusion, limits) {
                 KernelVerdict::Inconclusive(msg) => {
@@ -736,6 +737,7 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "equality_resolution"
         | "destructive_equality_resolution"
         | "equality_factoring"
+        | "equality_normalization"
         | "condensation"
         | "demodulation"
         | "goal_transformation"
@@ -3266,6 +3268,148 @@ fn verify_reflexivity(parents: &[Formula], conclusion: &Formula) -> KernelVerdic
     } else {
         KernelVerdict::Rejected("reflexivity conclusion is not t = t".into())
     }
+}
+
+/// Verify the ground unit-equality normalization emitted by the certified
+/// EPR+Eq path. The first parent is the clause being normalized; remaining
+/// parents are positive ground unit equalities that justify representative
+/// replacement. This deliberately excludes non-ground and non-unit equality
+/// rewriting until the broader superposition certificate is implemented.
+fn verify_equality_normalization(
+    parents: &[Formula],
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if parents.len() < 2 {
+        return KernelVerdict::Rejected(
+            "equality_normalization requires a target and equality parents".into(),
+        );
+    }
+    if parents
+        .iter()
+        .any(|parent| formula_size(parent) > limits.max_formula_nodes)
+        || formula_size(conclusion) > limits.max_formula_nodes
+    {
+        return KernelVerdict::Inconclusive(
+            "equality_normalization exceeded strict formula-size limit".into(),
+        );
+    }
+    let Some(target) = clause_from_formula(&parents[0], limits) else {
+        return KernelVerdict::Inconclusive(
+            "equality_normalization target is not a supported clause".into(),
+        );
+    };
+    let Some(goal) = clause_from_formula(conclusion, limits) else {
+        return KernelVerdict::Inconclusive(
+            "equality_normalization conclusion is not a supported clause".into(),
+        );
+    };
+    let mut classes = GroundEqualityClasses::default();
+    for parent in &parents[1..] {
+        let Some(clause) = clause_from_formula(parent, limits) else {
+            return KernelVerdict::Inconclusive(
+                "equality_normalization parent is not a supported clause".into(),
+            );
+        };
+        if clause.len() != 1 || !clause[0].positive {
+            return KernelVerdict::Rejected(
+                "equality_normalization parents must be positive unit equalities".into(),
+            );
+        }
+        let Atom::Eq(left, right) = &clause[0].atom else {
+            return KernelVerdict::Rejected(
+                "equality_normalization parent is not an equality".into(),
+            );
+        };
+        if term_var_set(left).is_empty()
+            && term_var_set(right).is_empty()
+            && is_ground_constant_term(left)
+            && is_ground_constant_term(right)
+        {
+            classes.union(left, right);
+        } else {
+            return KernelVerdict::Inconclusive(
+                "equality_normalization requires ground constant equalities".into(),
+            );
+        }
+    }
+    let mut normalized = Vec::with_capacity(target.len());
+    for literal in &target {
+        let atom = match &literal.atom {
+            Atom::Pred(predicate, args) => Atom::Pred(
+                *predicate,
+                args.iter()
+                    .map(|term| classes.representative(term))
+                    .collect(),
+            ),
+            Atom::Eq(left, right) => {
+                let left = classes.representative(left);
+                let right = classes.representative(right);
+                if left == right {
+                    if literal.positive {
+                        return KernelVerdict::Rejected(
+                            "equality_normalization cannot derive from a positive reflexive target"
+                                .into(),
+                        );
+                    }
+                    continue;
+                }
+                Atom::Eq(left, right)
+            }
+        };
+        normalized.push(Literal {
+            positive: literal.positive,
+            atom,
+        });
+    }
+    if clause_alpha_equiv(&normalized, &goal) {
+        KernelVerdict::Certified
+    } else {
+        KernelVerdict::Rejected(
+            "equality_normalization conclusion is not the normalized target".into(),
+        )
+    }
+}
+
+#[derive(Default)]
+struct GroundEqualityClasses {
+    parent: HashMap<Term, Term>,
+}
+
+impl GroundEqualityClasses {
+    fn find(&mut self, term: &Term) -> Term {
+        let Some(parent) = self.parent.get(term).cloned() else {
+            return term.clone();
+        };
+        if parent == *term {
+            return parent;
+        }
+        let root = self.find(&parent);
+        self.parent.insert(term.clone(), root.clone());
+        root
+    }
+
+    fn union(&mut self, left: &Term, right: &Term) {
+        let left_root = self.find(left);
+        let right_root = self.find(right);
+        self.parent
+            .entry(left_root.clone())
+            .or_insert(left_root.clone());
+        self.parent
+            .entry(right_root.clone())
+            .or_insert(right_root.clone());
+        if left_root != right_root {
+            self.parent.insert(right_root, left_root);
+        }
+    }
+
+    fn representative(&mut self, term: &Term) -> Term {
+        self.find(term)
+    }
+}
+
+fn is_ground_constant_term(term: &Term) -> bool {
+    matches!(term, Term::App(_, args) if args.is_empty())
 }
 
 fn verify_transitivity(
@@ -8036,22 +8180,23 @@ type SatBackedLiteral = (bool, (String, Vec<String>));
 /// (`certified_sat::atom_sort_key`): predicate name plus argument constant
 /// names. The two implementations must agree exactly — cross-tested by the
 /// end-to-end accept tests below, which fail loudly on any drift.
-fn sat_backed_atom_key(
-    predicate: SymbolId,
-    args: &[Term],
-    symbols: &SymbolTable,
-) -> Option<(String, Vec<String>)> {
-    let mut arg_names = Vec::with_capacity(args.len());
-    for arg in args {
-        let Term::App(symbol, inner) = arg else {
-            return None;
-        };
-        if !inner.is_empty() {
-            return None;
+fn sat_backed_atom_key(atom: &Atom, symbols: &SymbolTable) -> Option<(String, Vec<String>)> {
+    match atom {
+        Atom::Pred(predicate, args) => {
+            let mut arg_names = Vec::with_capacity(args.len());
+            for arg in args {
+                let Term::App(symbol, inner) = arg else {
+                    return None;
+                };
+                if !inner.is_empty() {
+                    return None;
+                }
+                arg_names.push(symbols.resolve(*symbol).to_string());
+            }
+            Some((symbols.resolve(*predicate).to_string(), arg_names))
         }
-        arg_names.push(symbols.resolve(*symbol).to_string());
+        Atom::Eq(_, _) => None,
     }
-    Some((symbols.resolve(predicate).to_string(), arg_names))
 }
 
 fn verify_sat_backed_refutation(
@@ -8125,12 +8270,7 @@ fn verify_sat_backed_refutation(
         }
         let mut encoded = Vec::with_capacity(clause.len());
         for literal in &clause {
-            let Atom::Pred(predicate, args) = &literal.atom else {
-                return KernelVerdict::Rejected(
-                    "sat_backed_refutation supports predicate atoms only".into(),
-                );
-            };
-            let Some(key) = sat_backed_atom_key(*predicate, args, symbols) else {
+            let Some(key) = sat_backed_atom_key(&literal.atom, symbols) else {
                 return KernelVerdict::Rejected(
                     "sat_backed_refutation supports ground atoms only".into(),
                 );
