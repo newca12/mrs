@@ -146,16 +146,54 @@ pub(crate) fn certify_ground_ordered_resolution(
         Ok(grounded) => Some(grounded),
     };
     if let Some(grounded) = grounded {
-        let atoms = collect_fragment_atoms(&grounded.clauses)?;
-        // Tier router. Tier 1 (double ordered-resolution closure) handles
-        // small groundings; Tier 2 (SAT-backed satisfiability, no ordering
-        // needed) handles the next size slice.
-        let tier1 = atoms.len() <= MAX_ATOMS && grounded.clauses.len() <= MAX_GROUND_INSTANCES;
-        let tier2 =
-            atoms.len() <= TIER2_MAX_ATOMS && grounded.clauses.len() <= TIER2_MAX_GROUND_INSTANCES;
+        // Equality expansion (union-find normalization, reflexivity fast
+        // paths, transitivity cubes). Predicate-only inputs pass through
+        // byte-identical, so the legacy fragment observes no change.
+        let (expanded_inputs, contradiction) =
+            expand_for_certification(grounded, ordering, id_gen)?;
+        if let Some(empty) = contradiction {
+            trace_certify("eq_contradiction: unit disequality in its own class".to_string());
+            return Ok(refute_from_ancestry(
+                &empty,
+                &expanded_inputs.originals,
+                provenance,
+                &proof_symbols,
+                expanded_inputs.clauses.len() as u64,
+            ));
+        }
+        // Expansion may delete every clause (all reflexivity-valid
+        // tautologies). The empty set is vacuously saturated; the EPR
+        // gate still applies so non-EPR inputs cannot take this path.
+        if expanded_inputs.clauses.is_empty() {
+            if !is_epr_with_equality_input(&expanded_inputs.originals) {
+                return Err(CertificationFailure::Unsupported(
+                    "saturation is certified for EPR inputs only",
+                ));
+            }
+            trace_certify(
+                "eq_expansion: all inputs reflexivity-valid, vacuous saturation".to_string(),
+            );
+            return Ok(CertifiedGroundReport {
+                result: SearchResult::Saturated(CompletenessWitness::ground_ordered_resolution()),
+                stats: SearchStats {
+                    processed: 0,
+                    generated: 0,
+                    ..SearchStats::default()
+                },
+                tier: CertifiedTier::One,
+            });
+        }
+        let atoms = collect_fragment_atoms(&expanded_inputs.clauses)?;
+        // Tier router on the expanded set. Tier 1 (double
+        // ordered-resolution closure) handles small groundings; Tier 2
+        // (SAT-backed, no ordering needed) handles the next size slice.
+        let tier1 =
+            atoms.len() <= MAX_ATOMS && expanded_inputs.clauses.len() <= MAX_GROUND_INSTANCES;
+        let tier2 = atoms.len() <= TIER2_MAX_ATOMS
+            && expanded_inputs.clauses.len() <= TIER2_MAX_GROUND_INSTANCES;
         if tier1 {
             return run_tier1(
-                &grounded,
+                &expanded_inputs,
                 provenance,
                 ordering,
                 &proof_symbols,
@@ -165,19 +203,19 @@ pub(crate) fn certify_ground_ordered_resolution(
             );
         }
         if tier2 {
-            if !is_pure_relational_epr_input(&grounded.originals) {
+            if !is_epr_with_equality_input(&expanded_inputs.originals) {
                 return Err(CertificationFailure::Unsupported(
                     "saturation is certified for EPR inputs only",
                 ));
             }
             trace_certify(format!(
                 "sat_tier=2 grounded={} atoms={}",
-                grounded.clauses.len(),
+                expanded_inputs.clauses.len(),
                 atoms.len()
             ));
             match crate::certified_sat::certify_sat_backed(
-                &grounded.clauses,
-                &grounded.originals,
+                &expanded_inputs.clauses,
+                &expanded_inputs.originals,
                 provenance,
                 &atoms,
                 &proof_symbols,
@@ -193,7 +231,7 @@ pub(crate) fn certify_ground_ordered_resolution(
         } else {
             trace_certify(format!(
                 "refuse=tier_size grounded={} atoms={}",
-                grounded.clauses.len(),
+                expanded_inputs.clauses.len(),
                 atoms.len()
             ));
         }
@@ -209,6 +247,57 @@ pub(crate) fn certify_ground_ordered_resolution(
         id_gen,
         deadline,
     )
+}
+
+/// Expand a grounded set for certification routing: union-find
+/// normalization, reflexivity fast paths, transitivity cubes. Returns the
+/// expanded inputs (originals preserved for proof ancestry) plus any
+/// immediate contradiction. Predicate-only inputs pass through
+/// byte-identical.
+fn expand_for_certification(
+    grounded: GroundedInputs,
+    ordering: &TermOrdering,
+    id_gen: &mut ClauseIdGen,
+) -> Result<(GroundedInputs, Option<Clause>), CertificationFailure> {
+    let expanded = crate::certified_eq::expand_equality(&grounded.clauses, ordering, id_gen)?;
+    let contradiction = expanded.contradiction;
+    Ok((
+        GroundedInputs {
+            clauses: expanded.clauses,
+            originals: grounded.originals,
+        },
+        contradiction,
+    ))
+}
+
+/// Assemble a refutation from an empty clause derived outside the
+/// closures (equality-contradiction fast path): provenance plus the full
+/// originals plus the empty clause, extracted and rendered as TSTP.
+fn refute_from_ancestry(
+    empty: &Clause,
+    originals: &[Clause],
+    provenance: &[Clause],
+    proof_symbols: &SymbolTable,
+    processed: u64,
+) -> CertifiedGroundReport {
+    let mut store: StdHashMap<ClauseId, Clause> = StdHashMap::new();
+    for clause in provenance {
+        store.insert(clause.id, clause.clone());
+    }
+    for clause in originals {
+        store.insert(clause.id, clause.clone());
+    }
+    store.insert(empty.id, empty.clone());
+    let proof = mrs_proof::extract::extract_proof(empty.id, &store);
+    let tstp = mrs_proof::tstp::format_tstp(&proof, proof_symbols);
+    CertifiedGroundReport {
+        result: SearchResult::Refutation(empty.id, tstp),
+        stats: SearchStats {
+            processed,
+            ..SearchStats::default()
+        },
+        tier: CertifiedTier::One,
+    }
 }
 
 /// Tier 1: double ordered-resolution closure with agreement over an
@@ -301,12 +390,12 @@ fn run_tier1(
             })
         }
         ClosureStatus::Saturated => {
-            // `Saturated` is enabled for the EPR fragment only. The fragment
-            // checks above already reject equality, function terms, and
-            // formula/AVATAR clauses, but re-check the pre-grounding inputs
-            // here so a future refactor cannot accidentally certify
-            // saturation for a non-EPR problem.
-            if !is_pure_relational_epr_input(&grounded.originals) {
+            // `Saturated` is enabled for the function-free EPR fragment
+            // (with equality) only. The fragment checks above already
+            // reject function terms and formula/AVATAR clauses, but
+            // re-check the pre-grounding inputs here so a future refactor
+            // cannot accidentally certify saturation for a non-EPR problem.
+            if !is_epr_with_equality_input(&grounded.originals) {
                 return Err(CertificationFailure::Unsupported(
                     "saturation is certified for EPR inputs only",
                 ));
@@ -320,10 +409,13 @@ fn run_tier1(
     }
 }
 
-/// Returns `true` iff every input clause is pure relational EPR: predicate
-/// atoms only, with each argument a variable or a constant. Formula-level
-/// and AVATAR clauses are not EPR for certification purposes.
-fn is_pure_relational_epr_input(clauses: &[Clause]) -> bool {
+/// Returns `true` iff every input clause is function-free EPR with
+/// equality: predicate or equality atoms only, with each argument a
+/// variable or a constant. Formula-level and AVATAR clauses are not EPR
+/// for certification purposes. This is the saturation gate: the
+/// double-closure certificate (plus equality expansion) covers exactly
+/// this fragment.
+fn is_epr_with_equality_input(clauses: &[Clause]) -> bool {
     !clauses.is_empty()
         && clauses.iter().all(|clause| {
             clause.formula.is_none()
@@ -331,7 +423,9 @@ fn is_pure_relational_epr_input(clauses: &[Clause]) -> bool {
                 && !clause.literals.is_empty()
                 && clause.literals.iter().all(|literal| match &literal.atom {
                     Atom::Pred(_, args) => args.iter().all(term_is_epr_constant_or_var),
-                    Atom::Eq(_, _) => false,
+                    Atom::Eq(left, right) => {
+                        term_is_epr_constant_or_var(left) && term_is_epr_constant_or_var(right)
+                    }
                 })
         })
 }
@@ -446,6 +540,62 @@ fn collect_filter_symbols(term: &Term, syms: &mut HashSet<SymbolId>) {
     }
 }
 
+/// Outcome of one Tier-3 subset try: a certified refutation (returned
+/// immediately), a saturation (proves nothing — try the next subset), or
+/// a failure of the subset attempt itself (limits, mismatch — likewise
+/// only rules out this subset).
+enum Tier3Try {
+    Refuted(CertifiedGroundReport),
+    Saturated,
+    Failed,
+}
+
+/// Expand one subset grounding and run Tier 1 on it, handling the
+/// contradiction fast path. Shared by the Tier-3b clause-subset ladder
+/// and the Tier-3a constant-subset loop so both carry identical
+/// guarantees (agreement, TSTP ancestry, EPR+Eq fragment).
+#[allow(clippy::too_many_arguments)]
+fn tier3_try_grounded(
+    subset_grounded: GroundedInputs,
+    provenance: &[Clause],
+    ordering: &TermOrdering,
+    proof_symbols: &SymbolTable,
+    id_gen: &mut ClauseIdGen,
+    deadline: Instant,
+    context: &'static str,
+) -> Tier3Try {
+    let (expanded_inputs, contradiction) =
+        match expand_for_certification(subset_grounded, ordering, id_gen) {
+            Ok(expanded) => expanded,
+            Err(_) => return Tier3Try::Failed,
+        };
+    if let Some(empty) = contradiction {
+        let report = refute_from_ancestry(
+            &empty,
+            &expanded_inputs.originals,
+            provenance,
+            proof_symbols,
+            expanded_inputs.clauses.len() as u64,
+        );
+        return Tier3Try::Refuted(report);
+    }
+    match run_tier1(
+        &expanded_inputs,
+        provenance,
+        ordering,
+        proof_symbols,
+        id_gen,
+        deadline,
+        context,
+    ) {
+        Ok(report) if matches!(report.result, SearchResult::Refutation(..)) => {
+            Tier3Try::Refuted(report)
+        }
+        Ok(_) => Tier3Try::Saturated,
+        Err(_) => Tier3Try::Failed,
+    }
+}
+
 /// Tier 3: constant-subset unsatisfiability search for groundings that are
 /// infeasible in full (size refusals) or proved UNSAT without a proof
 /// (Tier-2 SAT outcomes).
@@ -534,8 +684,8 @@ fn tier3_subset_unsat(
             Ok(grounded) => grounded,
             Err(_) => continue,
         };
-        match run_tier1(
-            &filtered_grounded,
+        match tier3_try_grounded(
+            filtered_grounded,
             provenance,
             ordering,
             proof_symbols,
@@ -543,7 +693,7 @@ fn tier3_subset_unsat(
             deadline,
             "tier3b-sub",
         ) {
-            Ok(mut report) if matches!(report.result, SearchResult::Refutation(..)) => {
+            Tier3Try::Refuted(mut report) => {
                 trace_certify(format!(
                     "tier3b_found tolerance={tolerance} kept={}",
                     filtered.len()
@@ -551,15 +701,15 @@ fn tier3_subset_unsat(
                 report.tier = CertifiedTier::Three;
                 return Ok(report);
             }
-            Ok(_) => {
+            Tier3Try::Saturated => {
                 trace_certify(format!(
                     "tier3b_rung tolerance={tolerance} kept={} saturated",
                     filtered.len()
                 ));
             }
-            Err(reason) => {
+            Tier3Try::Failed => {
                 trace_certify(format!(
-                    "tier3b_rung tolerance={tolerance} kept={} failed:{reason:?}",
+                    "tier3b_rung tolerance={tolerance} kept={} failed",
                     filtered.len()
                 ));
             }
@@ -658,8 +808,10 @@ fn tier3_subset_unsat(
             Ok(grounded) => grounded,
             Err(_) => continue,
         };
-        match run_tier1(
-            &subset_grounded,
+        // Subset saturation proves nothing about the full problem, and
+        // subset failures (limits, mismatch) only rule out this subset.
+        if let Tier3Try::Refuted(mut report) = tier3_try_grounded(
+            subset_grounded,
             provenance,
             ordering,
             proof_symbols,
@@ -667,17 +819,12 @@ fn tier3_subset_unsat(
             deadline,
             "tier3-sub",
         ) {
-            Ok(mut report) if matches!(report.result, SearchResult::Refutation(..)) => {
-                trace_certify(format!(
-                    "tier3_found subset_size={} tries={tries}",
-                    subset.len()
-                ));
-                report.tier = CertifiedTier::Three;
-                return Ok(report);
-            }
-            // Subset saturation proves nothing about the full problem, and
-            // subset failures (limits, mismatch) only rule out this subset.
-            _ => {}
+            trace_certify(format!(
+                "tier3_found subset_size={} tries={tries}",
+                subset.len()
+            ));
+            report.tier = CertifiedTier::Three;
+            return Ok(report);
         }
     }
     trace_certify(format!("tier3_exhausted tries={tries}"));
@@ -796,13 +943,19 @@ fn collect_grounding_constants(
             ));
         }
         for literal in &clause.literals {
-            let Atom::Pred(_, args) = &literal.atom else {
-                return Err(CertificationFailure::Unsupported(
-                    "equality is outside the certified fragment",
-                ));
-            };
-            for arg in args {
-                collect_epr_constants(arg, &mut constants, &mut seen_constants)?;
+            match &literal.atom {
+                Atom::Pred(_, args) => {
+                    for arg in args {
+                        collect_epr_constants(arg, &mut constants, &mut seen_constants)?;
+                    }
+                }
+                // Equality sides contribute constants like predicate
+                // arguments; function terms inside are still rejected by
+                // `collect_epr_constants`, variables contribute nothing.
+                Atom::Eq(left, right) => {
+                    collect_epr_constants(left, &mut constants, &mut seen_constants)?;
+                    collect_epr_constants(right, &mut constants, &mut seen_constants)?;
+                }
             }
         }
     }
@@ -992,14 +1145,17 @@ fn collect_fragment_atoms(clauses: &[Clause]) -> Result<Vec<Atom>, Certification
             ));
         }
         for literal in &clause.literals {
-            let Atom::Pred(predicate, args) = &literal.atom else {
-                return Err(CertificationFailure::Unsupported(
-                    "equality is outside the certified fragment",
-                ));
-            };
-            record_arity(&mut arities, *predicate, args.len())?;
-            for arg in args {
-                record_term_arities(arg, &mut arities)?;
+            match &literal.atom {
+                Atom::Pred(predicate, args) => {
+                    record_arity(&mut arities, *predicate, args.len())?;
+                    for arg in args {
+                        record_term_arities(arg, &mut arities)?;
+                    }
+                }
+                Atom::Eq(left, right) => {
+                    record_term_arities(left, &mut arities)?;
+                    record_term_arities(right, &mut arities)?;
+                }
             }
             atoms.insert(literal.atom.clone());
         }
@@ -1092,12 +1248,21 @@ fn validate_symbol_config(
     }
     let mut symbols = HashSet::default();
     for atom in atoms {
-        let Atom::Pred(predicate, args) = atom else {
-            unreachable!("ground validation rejects equality before ordering validation")
-        };
-        symbols.insert(*predicate);
-        for arg in args {
-            collect_term_symbols(arg, &mut symbols);
+        match atom {
+            Atom::Pred(predicate, args) => {
+                symbols.insert(*predicate);
+                for arg in args {
+                    collect_term_symbols(arg, &mut symbols);
+                }
+            }
+            // Equality sides contribute their constants; the reserved
+            // ordering pseudo-symbol is deliberately never collected (it
+            // lives only inside ordering temporaries, validated through
+            // the config fallbacks).
+            Atom::Eq(left, right) => {
+                collect_term_symbols(left, &mut symbols);
+                collect_term_symbols(right, &mut symbols);
+            }
         }
     }
     let mut precedence = HashSet::default();
@@ -1126,10 +1291,7 @@ fn collect_term_symbols(term: &Term, symbols: &mut HashSet<SymbolId>) {
 }
 
 fn atom_term(atom: &Atom) -> Term {
-    let Atom::Pred(predicate, args) = atom else {
-        unreachable!("ground validation rejects equality before atom ordering")
-    };
-    Term::app(*predicate, args.clone())
+    crate::certified_eq::atom_term_eq(atom)
 }
 
 /// Linear all-pairs closure. Retained as the independent reference for the
@@ -1271,6 +1433,12 @@ fn closure_linear(
 /// the linear run when the index over-approximates — the agreement check
 /// compares statuses, and proof parents are tracked by id either way).
 ///
+/// Equality literals bypass the [`LiteralIndex`] (whose resolution-partner
+/// retrieval is predicate-only; the general engine handles equalities by
+/// superposition instead) through a local exact-match map. All certified
+/// inputs are ground and all `Eq` literals canonically oriented, so exact
+/// matching on the legacy [`Atom`] is recall-complete here by construction.
+///
 /// Both the ordered and the reference closure use this implementation: the
 /// linear scan provably cannot close mid-size groundings on practical
 /// budgets (see the cap-sizing experiment in
@@ -1288,6 +1456,11 @@ fn closure_indexed(
     let mut bank = TermBank::new();
     let mut index = LiteralIndex::new();
     let mut id_to_pos: StdHashMap<ClauseId, usize> = StdHashMap::new();
+    // Exact-match partners for ground equality literals: (atom, polarity)
+    // maps to the positions of clauses containing that literal. Keyed on
+    // the legacy atom — the same value `resolve_ground_pair` compares —
+    // so recall is exact for the ground canonically-oriented inputs here.
+    let mut eq_index: StdHashMap<(Atom, bool), Vec<usize>> = StdHashMap::new();
     let mut clauses = Vec::new();
     let mut seen = HashSet::default();
     for clause in input {
@@ -1318,6 +1491,14 @@ fn closure_indexed(
             id_to_pos.insert(normalized.id, clauses.len());
             let twin = bank.clause_from_legacy(&normalized);
             index.insert(twin, &bank);
+            for literal in &normalized.literals {
+                if matches!(literal.atom, Atom::Eq(..)) {
+                    eq_index
+                        .entry((literal.atom.clone(), literal.positive))
+                        .or_default()
+                        .push(clauses.len());
+                }
+            }
             clauses.push(normalized);
         }
     }
@@ -1345,6 +1526,19 @@ fn closure_indexed(
         // ascending reproduces the linear scan order.
         let mut partner_pos = Vec::new();
         for &lit_idx in &current_selection {
+            // Ground equality literals resolve through the local exact-match
+            // map (same atom value `resolve_ground_pair` compares below);
+            // predicates go through the discrimination-tree index.
+            if matches!(current.literals[lit_idx].atom, Atom::Eq(..)) {
+                let key = (
+                    current.literals[lit_idx].atom.clone(),
+                    !current.literals[lit_idx].positive,
+                );
+                if let Some(positions) = eq_index.get(&key) {
+                    partner_pos.extend(positions.iter().filter(|&&p| p < pos));
+                }
+                continue;
+            }
             let query = &current_twin.literals[lit_idx];
             for hit in index.get_unifiable_resolution_partners(&query.atom, query.positive, &bank) {
                 if let Some(&p) = id_to_pos.get(&hit.id)
@@ -1398,6 +1592,14 @@ fn closure_indexed(
                     id_to_pos.insert(derived.id, clauses.len());
                     let twin = bank.clause_from_legacy(&derived);
                     index.insert(twin, &bank);
+                    for literal in &derived.literals {
+                        if matches!(literal.atom, Atom::Eq(..)) {
+                            eq_index
+                                .entry((literal.atom.clone(), literal.positive))
+                                .or_default()
+                                .push(clauses.len());
+                        }
+                    }
                     clauses.push(derived);
                     if clauses.len() > MAX_CLAUSES {
                         trace_certify(format!(
@@ -1627,7 +1829,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_variables_but_rejects_equality_and_functions() {
+    fn accepts_variables_and_ground_equality_but_rejects_functions() {
         let mut symbols = SymbolTable::new();
         let p = symbols.intern("p");
         let a = symbols.intern("a");
@@ -1658,7 +1860,10 @@ mod tests {
                 Term::constant(a),
             ))],
         );
-        assert!(matches!(
+        // Ground equality is now inside the certified fragment (congruence
+        // expansion + union-find normalization); a reflexive unit normalizes
+        // away and the remaining empty set saturates.
+        assert!(
             certify_ground_ordered_resolution(
                 &[equality_clause],
                 &[],
@@ -1666,11 +1871,9 @@ mod tests {
                 &TermOrdering::KBO,
                 &mut ids,
                 Duration::from_secs(1),
-            ),
-            Err(CertificationFailure::Unsupported(
-                "equality is outside the certified fragment"
-            ))
-        ));
+            )
+            .is_ok()
+        );
 
         let f = symbols.intern("f");
         let function_clause = input_clause(
@@ -1893,10 +2096,11 @@ mod tests {
     }
 
     #[test]
-    fn saturation_is_epr_only() {
+    fn saturation_is_epr_with_equality_only() {
         let mut symbols = SymbolTable::new();
         let p = symbols.intern("p");
         let a = symbols.intern("a");
+        let b = symbols.intern("b");
         let f = symbols.intern("f");
         let mut ids = ClauseIdGen::new();
         let epr = input_clause(
@@ -1906,35 +2110,28 @@ mod tests {
                 vec![Term::constant(a)],
             ))],
         );
-        assert!(is_pure_relational_epr_input(std::slice::from_ref(&epr)));
-        assert!(is_pure_relational_epr_input(&[epr.clone(), epr.clone()]));
+        assert!(is_epr_with_equality_input(std::slice::from_ref(&epr)));
 
-        let with_var = Clause::new(
-            ids.next(),
-            vec![mrs_core::clause::Literal::pos(Atom::pred(
-                p,
-                vec![Term::var(0)],
-            ))],
-            ClauseSource::Input {
-                name: "test".into(),
-                role: "axiom".into(),
-            },
-        );
-        assert!(is_pure_relational_epr_input(std::slice::from_ref(
-            &with_var
-        )));
-
-        let equality = input_clause(
+        // Ground and variable equalities are fragment members now.
+        let ground_eq = input_clause(
             &mut ids,
             vec![mrs_core::clause::Literal::pos(Atom::Eq(
                 Term::constant(a),
+                Term::constant(b),
+            ))],
+        );
+        assert!(is_epr_with_equality_input(std::slice::from_ref(&ground_eq)));
+        let var_eq = input_clause(
+            &mut ids,
+            vec![mrs_core::clause::Literal::pos(Atom::Eq(
+                Term::var(0),
                 Term::constant(a),
             ))],
         );
-        assert!(!is_pure_relational_epr_input(std::slice::from_ref(
-            &equality
-        )));
+        assert!(is_epr_with_equality_input(std::slice::from_ref(&var_eq)));
 
+        // Function terms (inside predicates or equalities), formula
+        // steps, and AVATAR clauses stay outside the fragment.
         let function = input_clause(
             &mut ids,
             vec![mrs_core::clause::Literal::pos(Atom::pred(
@@ -1942,12 +2139,18 @@ mod tests {
                 vec![Term::app(f, vec![Term::constant(a)])],
             ))],
         );
-        assert!(!is_pure_relational_epr_input(std::slice::from_ref(
-            &function
+        assert!(!is_epr_with_equality_input(std::slice::from_ref(&function)));
+        let function_eq = input_clause(
+            &mut ids,
+            vec![mrs_core::clause::Literal::pos(Atom::Eq(
+                Term::app(f, vec![Term::constant(a)]),
+                Term::constant(b),
+            ))],
+        );
+        assert!(!is_epr_with_equality_input(std::slice::from_ref(
+            &function_eq
         )));
-
-        assert!(!is_pure_relational_epr_input(&[]));
-
+        assert!(!is_epr_with_equality_input(&[]));
         let formula = Clause::new_formula_step(
             ids.next(),
             mrs_core::Formula::True,
@@ -1956,10 +2159,7 @@ mod tests {
                 role: "axiom".into(),
             },
         );
-        assert!(!is_pure_relational_epr_input(std::slice::from_ref(
-            &formula
-        )));
-
+        assert!(!is_epr_with_equality_input(std::slice::from_ref(&formula)));
         let avatar = Clause::new_avatar(
             ids.next(),
             vec![mrs_core::clause::Literal::pos(Atom::pred(
@@ -1972,27 +2172,113 @@ mod tests {
             },
             vec![1],
         );
-        assert!(!is_pure_relational_epr_input(std::slice::from_ref(&avatar)));
+        assert!(!is_epr_with_equality_input(std::slice::from_ref(&avatar)));
 
-        // Non-EPR inputs must fail closed, never saturate.
-        let equality_saturation = certify_ground_ordered_resolution(
-            &[equality],
+        // A satisfiable equality problem now certifies saturation (Tier 1):
+        // p(a), a=b has the model {a=b, p true}.
+        let report = certify_ground_ordered_resolution(
+            &[epr, ground_eq],
             &[],
             &symbols,
             &TermOrdering::KBO,
             &mut ids,
             Duration::from_secs(1),
-        );
-        assert!(
-            !matches!(
-                equality_saturation,
-                Ok(ref report) if matches!(
-                    report.result,
-                    SearchResult::Saturated(_)
-                )
+        )
+        .expect("equality SAT must certify");
+        assert!(matches!(report.result, SearchResult::Saturated(_)));
+    }
+
+    /// A unit disequality contradicting its own class refutes immediately
+    /// through the fast path, with TSTP ancestry (no closure needed).
+    #[test]
+    fn equality_contradiction_refutes_fast() {
+        let mut symbols = SymbolTable::new();
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let mut ids = ClauseIdGen::new();
+        let clauses = vec![
+            input_clause(
+                &mut ids,
+                vec![mrs_core::clause::Literal::pos(Atom::Eq(
+                    Term::constant(a),
+                    Term::constant(b),
+                ))],
             ),
-            "equality input must never certify saturation"
-        );
+            input_clause(
+                &mut ids,
+                vec![mrs_core::clause::Literal::neg(Atom::Eq(
+                    Term::constant(a),
+                    Term::constant(b),
+                ))],
+            ),
+        ];
+        for ordering in [TermOrdering::KBO, TermOrdering::LPO] {
+            let mut ids = ids.clone();
+            let report = certify_ground_ordered_resolution(
+                &clauses,
+                &[],
+                &symbols,
+                &ordering,
+                &mut ids,
+                Duration::from_secs(5),
+            )
+            .expect("unit contradiction must certify");
+            assert!(
+                matches!(report.result, SearchResult::Refutation(..)),
+                "equality contradiction must refute under {ordering:?}"
+            );
+        }
+    }
+
+    /// Transitivity completeness end-to-end: no unit equations exist (so
+    /// neither merging nor the fast path applies), yet the set is UNSAT
+    /// and only refutes once transitivity cubes are present.
+    /// A: ~q(a)|Eq(a,b), B: ~q(b)|Eq(b,c), C: q(a), D: q(b), E: ~Eq(a,c).
+    #[test]
+    fn equality_transitivity_refutes_without_units() {
+        let mut symbols = SymbolTable::new();
+        let q = symbols.intern("q");
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let c = symbols.intern("c");
+        let mut ids = ClauseIdGen::new();
+        let eq = |positive: bool, l: SymbolId, r: SymbolId| {
+            if positive {
+                mrs_core::clause::Literal::pos(Atom::Eq(Term::constant(l), Term::constant(r)))
+            } else {
+                mrs_core::clause::Literal::neg(Atom::Eq(Term::constant(l), Term::constant(r)))
+            }
+        };
+        let pred = |positive: bool, sym: SymbolId, constant: SymbolId| {
+            if positive {
+                mrs_core::clause::Literal::pos(Atom::pred(sym, vec![Term::constant(constant)]))
+            } else {
+                mrs_core::clause::Literal::neg(Atom::pred(sym, vec![Term::constant(constant)]))
+            }
+        };
+        let clauses = vec![
+            input_clause(&mut ids, vec![pred(false, q, a), eq(true, a, b)]),
+            input_clause(&mut ids, vec![pred(false, q, b), eq(true, b, c)]),
+            input_clause(&mut ids, vec![pred(true, q, a)]),
+            input_clause(&mut ids, vec![pred(true, q, b)]),
+            input_clause(&mut ids, vec![eq(false, a, c)]),
+        ];
+        for ordering in [TermOrdering::KBO, TermOrdering::LPO] {
+            let mut ids = ids.clone();
+            let report = certify_ground_ordered_resolution(
+                &clauses,
+                &[],
+                &symbols,
+                &ordering,
+                &mut ids,
+                Duration::from_secs(10),
+            )
+            .expect("transitivity UNSAT must certify");
+            assert!(
+                matches!(report.result, SearchResult::Refutation(..)),
+                "transitivity UNSAT must refute under {ordering:?}"
+            );
+        }
     }
 
     /// Regression canary for the historical false-`Satisfiable` shape

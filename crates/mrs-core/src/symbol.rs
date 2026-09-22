@@ -19,6 +19,19 @@ impl SymbolId {
     pub fn index(self) -> u32 {
         self.0
     }
+
+    /// Reserved pseudo-symbol for ordering ground equality atoms as terms.
+    ///
+    /// The certified EPR+Eq path compares `Eq(l, r)` atoms by wrapping them
+    /// as `RESERVED_EQ_ORDER(l, r)` terms inside ordering computations only
+    /// (maximal-literal selection, totality validation). This id can never
+    /// collide with an interned symbol (tables grow up from zero), and the
+    /// pseudo-term must never be interned, rendered, collected into
+    /// signatures, or stored in clauses: ordering configs resolve it
+    /// through their unknown-symbol fallbacks (variable weight,
+    /// index-derived precedence), which keeps it positive-weighted and
+    /// precedence-distinct by construction. See `certified_eq`.
+    pub const RESERVED_EQ_ORDER: SymbolId = SymbolId(u32::MAX);
 }
 
 /// Bidirectional mapping between symbol names and [`SymbolId`]s.
