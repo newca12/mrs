@@ -255,6 +255,86 @@ Append-only log of CASC and ProoVer benchmark runs, newest first. Each entry
 records the mrs commit and the exact command used.
 
 
+## VerifiedBad audit recheck — 2026-09-23
+
+Branch `fix/verified-bad-20260921` (base `0f69b22`). Full forced re-audit of
+the `*-W8J2-20260921` runs after closing every prior `VerifiedBad` row.
+
+### Fixes landed on this branch
+
+1. **Kernel `condensation`**: both equality orientations of the removed /
+   matched pair; raw *and* condensed expected clauses compared against the
+   exported conclusion (CSR015+1, CSR115+6, GEO111+1, SEV606+1).
+2. **Kernel `equality_resolution`**: condensed-goal fallback when the
+   parent resolvent or export is condensed (CSR117+1).
+3. **Kernel `factoring`**: condense both intermediate factors and the
+   exported conclusion (MGT079+1).
+4. **Kernel `subsumption_resolution`**: standardized-apart *set* matching
+   with `allow_target_reuse` so one target literal may witness several
+   active literals (MGT005+1).
+5. **Kernel background AC**: unit commutativity/associativity from problem
+   axioms *and* the NNF of the negated conjecture accepted during
+   superposition replay (SWX217+1 strict).
+6. **Kernel `avatar_sat_refutation`**: when no LRAT/SAT-trace payload is
+   present, rebuild the propositional instance from validated split contexts
+   and discharge it with in-process CaDiCaL instead of returning
+   `Inconclusive` for missing metadata.
+7. **Ladder background AC**: competition-mode superposition ATP queries append
+   the same problem-level AC unit equalities to the premise list while
+   keeping `parents_len` at the original parent count (SWX217+1 ladder).
+
+### Forced re-audit
+
+```text
+target/release/audit_casc_proofs --run /home/hack/crates/mrs-bench/results/casc-30-W8J2-20260921 --problems-dir crates/mrs-bench/problems/casc-30 --checks strict,mrs,ladder --strict-time 60 --mrs-time 60 --ladder-time 60 --ladder-workers 8 --jobs 4 --force --output /home/hack/crates/mrs-bench/results/casc-30-W8J2-20260921/proof-audit
+
+target/release/audit_casc_proofs --run /home/hack/crates/mrs-bench/results/casc-j13-W8J2-20260921 --problems-dir crates/mrs-bench/problems/casc-j13 --checks strict,mrs,ladder --strict-time 60 --mrs-time 60 --ladder-time 60 --ladder-workers 8 --jobs 4 --force --output /home/hack/crates/mrs-bench/results/casc-j13-W8J2-20260921/proof-audit
+```
+
+### Results (refutation-applicable rows only)
+
+| Run | Mode | Applicable | VerifiedGood | VerifiedBad | Unknown | Timeout |
+|-----|------|-----------:|-------------:|------------:|--------:|--------:|
+| casc-30 | strict | 255 | 214 | **0** | 40 | 1 |
+| casc-30 | mrs | 255 | 96 | **0** | 83 | 76 |
+| casc-30 | ladder | 255 | 125 | **0** | 55 | 75 |
+| casc-j13 | strict | 182 | 167 | **0** | 14 | 1 |
+| casc-j13 | mrs | 182 | 70 | **0** | 54 | 58 |
+| casc-j13 | ladder | 182 | 90 | **0** | 36 | 56 |
+
+**Before:** casc-30 strict VB = 2 (`CSR015+1`, `CSR115+6`); casc-j13 strict
+VB = 6 (`CSR117+1`, `GEO111+1`, `MGT005+1`, `MGT079+1`, `SEV606+1`,
+`SWX217+1`) plus cascade-ladder VB = 1 (`SWX217+1`).
+
+**After:** **0 VerifiedBad** in every mode of both runs.
+
+### Previously-bad target rows (strict)
+
+| Problem | Run | strict | mrs | ladder |
+|---------|-----|--------|-----|--------|
+| CSR015+1 | casc-30 | VerifiedGood | Unknown | VerifiedGood |
+| CSR115+6 | casc-30 | VerifiedGood | Unknown | Unknown |
+| CSR117+1 | casc-j13 | VerifiedGood | Unknown | Unknown |
+| GEO111+1 | casc-j13 | VerifiedGood | Unknown | Unknown |
+| MGT005+1 | casc-j13 | VerifiedGood | Timeout | Timeout |
+| MGT079+1 | casc-j13 | VerifiedGood | Timeout | Unknown |
+| SEV606+1 | casc-j13 | VerifiedGood | Unknown | Unknown |
+| SWX217+1 | casc-j13 | VerifiedGood | Unknown | **VerifiedGood** |
+
+`mrs`/`ladder` remain `Unknown`/`Timeout` (never `VerifiedBad`) on the
+avatar_sat-heavy rows because the competition ladder still enforces the
+200-variable SAT limit; the strict kernel certifies them via the CaDiCaL
+fallback. Non-`VerifiedGood` mrs/ladder outcomes are 0 pts, not −1, so they
+do not re-introduce VerifiedBad.
+
+### Gates
+
+`cargo check --workspace`, `cargo clippy --all -- -D warnings`,
+`cargo fmt --all --check`, and `cargo test --workspace` all passed with zero
+errors before commit.
+
+---
+
 ## ProoVer 2026 PRV Corpus — 2026-08-22
 
 Recorded local evaluation at commit `bcc9918` (`fix(proover): disable avatar in MrsAtp step checks`) using a 30-second per-proof budget and 8 workers:

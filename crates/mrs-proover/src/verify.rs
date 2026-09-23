@@ -6,7 +6,9 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use mrs_cnf::nnf::to_nnf;
 use mrs_core::{Formula, SymbolTable};
+use mrs_proof_kernel::classify_ac_axiom;
 use mrs_tptp::{AnnotatedFormula, FormulaRole};
 
 use crate::atp::{Atp, AtpVerdict, NoopAtp};
@@ -204,6 +206,16 @@ pub fn verify_with_telemetry(
         }
     }
 
+    // Collect background AC unit equalities from the problem (axioms and the
+    // negation of the conjecture) so superposition ATP steps can use
+    // problem-level commutativity/associativity that is not among their
+    // parents (e.g. SWX217's negated conjecture `? [X,Y] : x(X,Y) != x(Y,X)`).
+    let background_ac: Vec<Formula> = job
+        .problem
+        .as_ref()
+        .map(|p| collect_background_ac(p.problem(), &mut symbols))
+        .unwrap_or_default();
+
     // 3) Pass 1 (serial): run every cheap internal check and *prepare* each
     //    ATP step (lowering premises/conclusion, then the structural
     //    fast-paths). This pass is the only one that mutates `symbols` and
@@ -242,6 +254,7 @@ pub fn verify_with_telemetry(
             &mut symbols,
             &mut sk_reg,
             &lowered_formulas,
+            &background_ac,
             started + settings.total_budget,
         ) {
             Prepared::Resolved(oc) => outcomes.push(Some(oc)),
@@ -504,6 +517,7 @@ fn check_node_prepare<'p>(
     symbols: &mut SymbolTable,
     sk_reg: &mut skolemize::SkolemRegistry,
     lowered_formulas: &std::collections::HashMap<usize, mrs_core::Formula>,
+    background_ac: &[Formula],
     deadline: Instant,
 ) -> Prepared {
     let node = &dag.nodes[idx];
@@ -714,7 +728,15 @@ fn check_node_prepare<'p>(
 
     // Other plain/thm/cth steps → prepare an ATP query for Pass 2.
     //
-    prepare_atp_step(dag, idx, strict, symbols, lowered_formulas, deadline)
+    prepare_atp_step(
+        dag,
+        idx,
+        strict,
+        symbols,
+        lowered_formulas,
+        background_ac,
+        deadline,
+    )
 }
 
 /// Decide a step via the ATP, keeping the prepare/finish split internal.
@@ -746,6 +768,7 @@ fn delegate_to_atp<'p>(
         false,
         symbols,
         &lowered_formulas,
+        &[],
         Instant::now() + budget,
     ) {
         Prepared::Resolved(oc) => oc,
@@ -1637,6 +1660,52 @@ fn strip_forall_prefix(mut formula: &mrs_core::Formula) -> &mrs_core::Formula {
     formula
 }
 
+/// True when `f` is a universally quantified unit equality that
+/// [`classify_ac_axiom`] recognises as commutativity or associativity.
+fn is_unit_ac_equality(f: &Formula) -> bool {
+    let body = strip_forall_prefix(f);
+    match body {
+        Formula::Atom(mrs_core::Atom::Eq(l, r)) => classify_ac_axiom(l, r).is_some(),
+        _ => false,
+    }
+}
+
+/// Collect background AC unit equalities from the linked problem.
+///
+/// Includes unit AC equalities from axiom-like roles and from the negation of
+/// the conjecture (e.g. SWX217's `? [X,Y] : x(X,Y) != x(Y,X)` becomes
+/// `! [X,Y] : x(X,Y) = x(Y,X)`). These are appended to superposition ATP
+/// premises so the ATP can use problem-level AC laws that are not among the
+/// step's parents.
+fn collect_background_ac(
+    problem: &mrs_tptp::TPTPProblem<'_>,
+    symbols: &mut SymbolTable,
+) -> Vec<Formula> {
+    let mut out = Vec::new();
+    let mut ctx = LowerCtx::new(symbols);
+    for af in &problem.formulas {
+        ctx.reset_vars();
+        let Some(f) = lower_annotated_formula(&mut ctx, af) else {
+            continue;
+        };
+        let role = af.role();
+        if role == FormulaRole::Type || role == FormulaRole::Logic {
+            continue;
+        }
+        // For the conjecture, use the negation (NNF) so existential
+        // inequalities become universal equalities the AC classifier accepts.
+        let candidate = if role == FormulaRole::Conjecture {
+            to_nnf(&Formula::neg(f))
+        } else {
+            f
+        };
+        if is_unit_ac_equality(&candidate) {
+            out.push(candidate);
+        }
+    }
+    out
+}
+
 fn formula_clause_literals(formula: &mrs_core::Formula) -> Option<Vec<mrs_core::Formula>> {
     fn collect(formula: &mrs_core::Formula, out: &mut Vec<mrs_core::Formula>) -> Option<()> {
         match formula {
@@ -1712,7 +1781,7 @@ fn parse_avatar_var_name(name: &str) -> Option<u32> {
         .or_else(|| name.strip_prefix("spl_"))?
         .parse::<u32>()
         .ok()
-        .filter(|value| *value > 0)
+        .filter(|value| *value > 0 && *value <= i32::MAX as u32)
 }
 
 fn normalized_avatar_vars(mut vars: Vec<u32>) -> Option<Vec<u32>> {
@@ -2354,6 +2423,7 @@ fn prepare_atp_step<'p>(
     strict: bool,
     symbols: &mut SymbolTable,
     lowered_formulas: &std::collections::HashMap<usize, mrs_core::Formula>,
+    background_ac: &[Formula],
     deadline: Instant,
 ) -> Prepared {
     let node = &dag.nodes[idx];
@@ -2542,6 +2612,15 @@ fn prepare_atp_step<'p>(
     }
 
     // No fast-path applied: defer the genuine entailment query to Pass 2.
+    //
+    // Superposition ATP steps additionally receive problem-level background AC
+    // unit equalities (commutativity/associativity from axioms and the
+    // negated conjecture). `parents_len` stays the original parent count so
+    // propositional checks only see real parents; the ATP sees the full
+    // premise list including background AC.
+    if node.inference_rule == Some("superposition") && !background_ac.is_empty() {
+        premises.extend(background_ac.iter().cloned());
+    }
     Prepared::NeedsAtp(AtpStep {
         premises,
         conclusion,

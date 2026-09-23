@@ -29,8 +29,13 @@ not call:
 - E prover
 - Vampire
 - a finite-model finder
-- another theorem prover
-- an external process for positive proof acceptance
+- an external process or ATP for positive proof acceptance
+
+The kernel may use the workspace's in-process CaDiCaL SAT solver only for the
+bounded propositional consistency check of an explicit `avatar_sat_refutation`
+certificate that has no replayable SAT trace. This is not used to validate
+first-order inference steps; the split, branch, provenance, and SAT-variable
+bounds are checked by the kernel first.
 
 The kernel may accept only rules for which it recomputes the conclusion from
 the cited parents or checks a precisely defined conservative transformation.
@@ -42,13 +47,29 @@ external ATPs, specialized Vampire/E checks, and conservative modulo-assumption
 behavior to maximize ProoVer score. These facilities are not part of the strict
 self-verification claim.
 
+Competition-mode `superposition` ATP queries may append problem-level background
+AC unit equalities (commutativity/associativity from axioms and the NNF of the
+negated conjecture) to the step's premise list. `parents_len` stays the original
+parent count so propositional checks only see real parents; the ATP sees the
+full premise list. This mirrors the strict kernel's background-AC replay for
+steps whose parents do not cite the AC law the rewrite used (e.g. SWX217's
+negated conjecture).
+
 Explicit AVATAR certificates are checked structurally in competition mode before
 the ATP fallback: split metadata must cover the source clause, each component
 must match its declared branch and SAT context, each branch refutation must
 derive `$false` under a cited component context, and the final roll-up must
-cover every satisfiable assignment of the cited split constraints. Legacy
-`avatar_sat_refutation` nodes without explicit metadata remain ATP-fallback
-inputs and are not treated as self-contained certificates.
+cover every satisfiable assignment of the cited split constraints. When a
+verified LRAT/SAT-trace payload binds the certificate to the original SAT
+instance, the kernel returns `Certified` after structure + binding checks and
+skips re-solving. Without a replayable payload, structure validation still
+binds every SAT variable to a real split component; the kernel then rebuilds
+the propositional instance from those split contexts and asks the in-process
+CaDiCaL solver for unsatisfiability. A SAT model at that point is positive
+evidence against the certificate (`Rejected`); solver `Unknown` remains
+`Inconclusive`. Legacy `avatar_sat_refutation` nodes without explicit
+metadata are no longer plain ATP-fallback inputs — they follow this
+structure + CaDiCaL path.
 
 ### Diagnostic mode
 
@@ -108,12 +129,19 @@ The first strict kernel implementation certifies only:
   clause expansion are recomputed, while missing/unrelated witness parents
   remain inconclusive or rejected
 - first-order `resolution`
-- first-order `subsumption_resolution` with standardized-apart multiset
-  matching and exact target-literal deletion
-- `factoring` over same-polarity predicate literals
-- bounded `equality_resolution`
+- first-order `subsumption_resolution` with standardized-apart set matching
+  (the same target literal may witness several active literals once they
+  coincide under the substitution) and exact target-literal deletion; sound
+  because set inclusion of σ(active) in the flipped target still yields
+  `active ∧ target ⊨ target \ {L}`
+- `factoring` over same-polarity predicate literals, accepted modulo
+  condensation of both intermediate factors and the exported conclusion
+- bounded `equality_resolution` modulo condensation of both parent resolvent
+  and exported conclusion
 - bounded `equality_factoring`
-- bounded `condensation`
+- bounded `condensation` trying both equality orientations of the removed /
+  matched pair and comparing both the raw and condensed expected clauses
+  against the exported conclusion
 - bounded formula equivalence after independent NNF and AC/idempotent
   canonicalization
 - bounded universal `instantiate` steps with exact substitutions and rigid
@@ -148,7 +176,10 @@ The first strict kernel implementation certifies only:
 - `paramodulation` through bounded superposition recomputation in either
   parent order
 - bounded `demodulation` from cited positive unit equalities
-- bounded `superposition` into a cited target clause
+- bounded `superposition` into a cited target clause, with background
+  associative/commutative replay when the problem (or its negated
+  conjecture, which is a premise of every refutation of that conjecture)
+  supplies the AC law the rewrite used
 
 Incomplete or multi-parent E-style `skolemize` forms and general directional
 multi-parent CNF transformations remain inconclusive until their kernel rules
@@ -181,6 +212,7 @@ Resource exhaustion is never positive proof evidence. The kernel returns
 - maximum parent count
 - maximum clause literals
 - maximum term depth
+- maximum AVATAR SAT variables
 - maximum subsumption matching steps
 - maximum Skolemization matching steps
 
