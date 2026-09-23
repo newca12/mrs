@@ -20,6 +20,9 @@
 //!   $\sigma$, the resolvent $(C \setminus \{L\})\sigma \cup (D \setminus \{L'\})\sigma$
 //!   is a tautology. Eliminating blocked clauses is satisfiability-preserving:
 //!   $F \setminus \{C\}$ is SAT $\iff F$ is SAT.
+//!   That guarantee covers resolution only: with equality present,
+//!   paramodulation can use a "blocked" literal, so BCE is skipped entirely
+//!   whenever any clause contains an equality literal.
 //!
 //! - **Conjecture Protection**: Conjectures and negated conjectures
 //!   (`clause.distance == 0` or input role `conjecture` / `negated_conjecture`)
@@ -361,6 +364,20 @@ pub fn preprocess_clauses(
     }
 
     // Phase 2: Interleaved PLE and BCE until fixpoint or resource limits
+    //
+    // BCE is disabled whenever any clause contains an equality literal. The
+    // blocked-literal check only considers binary resolution partners, but an
+    // equality clause elsewhere can enable paramodulation/superposition
+    // through the "blocked" literal. Deleting it then turns UNSAT into SAT:
+    // in {a = b, p(a), ~p(b)}, `p(a)` has no unifiable `~p` partner (a and b
+    // do not unify) so it looks blocked, yet removing it leaves the
+    // satisfiable {a = b, ~p(b)}. (PLE and tautology elimination remain
+    // sound with equality: a pure predicate persists in every descendant,
+    // and valid clauses can never contribute to a refutation.)
+    let has_equality = clauses
+        .iter()
+        .any(|c| c.literals.iter().any(|l| matches!(l.atom, Atom::Eq(..))));
+    let enable_bce = config.enable_bce && !has_equality;
     let start_time = Instant::now();
     let time_limit = Duration::from_millis(config.time_limit_ms);
 
@@ -382,7 +399,7 @@ pub fn preprocess_clauses(
             break;
         }
 
-        if config.enable_bce {
+        if enable_bce {
             let bce_removed = run_bce_pass(clauses, &mut alive, config);
             if bce_removed > 0 {
                 stats.blocked_clauses_removed += bce_removed;
@@ -610,7 +627,43 @@ mod tests {
     }
 
     #[test]
-    fn test_equality_reflexivity_resolvent_blocking() {
+    fn test_bce_skipped_with_equality() {
+        // BCE only checks binary resolution partners, so with equality
+        // present it can delete a clause needed for a paramodulation step.
+        // Regression case: {a = b, p(a), ~p(b)} is UNSAT, but `p(a)` looks
+        // blocked (a and b do not unify) and deleting it leaves SAT.
+        // BCE must not run at all when any clause contains equality.
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+
+        // c1: a = b
+        let c1 = make_clause(
+            1,
+            vec![Literal::pos(Atom::eq(Term::constant(a), Term::constant(b)))],
+            100,
+        );
+        // c2: p(a)
+        let c2 = make_clause(
+            2,
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            100,
+        );
+        // c3: ~p(b) (negated conjecture, protected)
+        let c3 = make_clause(
+            3,
+            vec![Literal::neg(Atom::pred(p, vec![Term::constant(b)]))],
+            0,
+        );
+
+        let (res, stats) = preprocess_clauses(&[c1, c2, c3], &PreprocessingConfig::default());
+        assert_eq!(stats.blocked_clauses_removed, 0);
+        assert_eq!(res.len(), 3);
+    }
+
+    #[test]
+    fn test_equality_clauses_never_blocked_eliminated() {
         let mut syms = SymbolTable::new();
         let p = syms.intern("p");
         let a = syms.intern("a");
@@ -620,8 +673,10 @@ mod tests {
 
         // c1: p(X) | X = a
         // c2: ~p(a) | b = c
-        // Resolvent on p: a = a | b = c is an equality reflexivity tautology!
-        // So c1 is blocked on p!
+        // The only binary resolvent on p is the tautology a = a | b = c, so
+        // resolution-only BCE would call c1 blocked. But superposition from
+        // b = c into X = a yields non-tautological conclusions, so neither
+        // clause may be eliminated while equality is present.
         let c1 = make_clause(
             1,
             vec![
@@ -640,9 +695,9 @@ mod tests {
         );
 
         let (res, stats) = preprocess_clauses(&[c1, c2], &PreprocessingConfig::default());
-        // c1 is eliminated because the only resolvent is a tautology (a = a).
-        // Once c1 is eliminated, ~p in c2 has no positive partner, so p is pure negative and c2 is also eliminated!
-        assert_eq!(res.len(), 0);
-        assert_eq!(stats.total_removed, 2);
+        // BCE is skipped with equality: both clauses are retained.
+        assert_eq!(stats.blocked_clauses_removed, 0);
+        assert_eq!(res.len(), 2);
+        assert_eq!(stats.total_removed, 0);
     }
 }

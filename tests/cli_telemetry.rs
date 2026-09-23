@@ -77,6 +77,33 @@ fn unsupported_formula_in_include_is_not_reported_satisfiable() {
 }
 
 #[test]
+fn ordinary_search_proves_ground_unit_equality() {
+    // Regression test: BCE once deleted `p(a)` as "blocked" (a and b do not
+    // unify, so no binary resolvent exists), ignoring the paramodulation
+    // step through `a = b`. Ordinary search then gave up with generated=0.
+    // BCE is now skipped whenever equality is present.
+    let problem = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("problems/eq_unit_ground.p");
+    let output = Command::new(env!("CARGO_BIN_EXE_mrs"))
+        .args(["--workers", "1", "--strategy", "1", "--time", "10"])
+        .arg(&problem)
+        .output()
+        .expect("mrs CLI should run");
+
+    assert!(
+        output.status.success(),
+        "mrs exited with {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("% SZS status Theorem for eq_unit_ground"),
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
 fn certify_ordered_ground_eq_self_check_certifies() {
     let problem = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("problems/eq_unit_ground.p");
     let output = Command::new(env!("CARGO_BIN_EXE_mrs"))
