@@ -88,7 +88,7 @@ Strict verification requires:
 - unique formula names
 - resolved parent references
 - an acyclic parent graph
-- exactly one reachable, unparented `$false` root
+- at least one unparented `$false` root
 - every proof node reachable from that root
 - every input leaf tied to a named formula in the linked problem
 
@@ -110,13 +110,16 @@ certification in the first kernel version.
 
 The first strict kernel implementation certifies only:
 
-- named problem axiom/hypothesis/conjecture leaves
+- named problem axiom/hypothesis/conjecture leaves, matched by exact
+  formula name first, then file-source provenance
 - direct `negated_conjecture` / `assume_negation`
-- exact alpha-equivalent variable-renaming and identity rewrites
+- exact alpha-equivalent variable-renaming and identity rewrites, over one
+  or more identical parents
 - NNF rewrites whose conclusion equals independently computed NNF
 - single-parent `skolemisation` with exact fresh witnesses, scope, arity,
   bounded associative matrix matching, and effective quantifier polarity under
-  negation; complete single-parent E-style `skolemize` metadata is also
+  negation; steps may skolemize a subset of existentials while preserving the
+  rest, and complete single-parent E-style `skolemize` metadata is also
   checked when supplied
 - bounded Vampire-style multi-parent `skolemisation` with validated
   `skolem_symbol_introduction` axiom parents, dependent rewrite ordering,
@@ -159,16 +162,20 @@ The first strict kernel implementation certifies only:
 - bounded multi-parent `conjunction` steps with exact parent-part coverage
   modulo associative/commutative conjunction order and bounded matching work
 - bounded single-parent `split_conjunct` projection with preserved universal
-  prefixes
-- structural `copy`, rename/alpha, and double-negation aliases checked as
-  identity or equivalence with bounded canonicalization, never by rule name alone
-- bounded single-parent `excluded_middle` construction of `A | ~A`
+  prefixes, checking direct conjuncts before quantifier stripping
+- structural `copy`, `duplicate`, rename/alpha, and double-negation aliases
+  checked as identity (over one or more identical parents) or equivalence
+  with bounded canonicalization, never by rule name alone; `alpha`
+  additionally accepts a direct conjunct projection
+- bounded single-parent `excluded_middle` steps concluding a tautological
+  `A | ~A`
 - bounded two-parent `modus_ponens` with exact implication matching and outer
   universal instantiation
 - bounded `horn` forward chaining over direct single-antecedent implications
   and fact parents; unsupported conjunction antecedents remain inconclusive
-- `consequence` only when its cited parents and conclusion recompute as a
-  bounded two-parent resolution step
+- `consequence` when a cited parent pair recomputes as a bounded resolution
+  step, or when a cited `$false` parent derives `$false`; the pair search is
+  step-bounded and exhausts to `Inconclusive`
 - exact one-parent identity aliases for `assume` and `rewrite`
 - `ex_falso` only from a cited `$false` parent or a recomputed two-parent
   contradiction
@@ -177,8 +184,8 @@ The first strict kernel implementation certifies only:
 - exact one-parent `reflexivity` steps whose conclusion is `t = t`
 - bounded ground `transitivity` steps with explicit equality orientation and
   common-middle-term checks; variable-bearing chains remain inconclusive
-- `commute` through bounded formula-equivalence checking and `instantiate_mp`
-  through exact modus-ponens recomputation
+- `commute` and `reassociate` through bounded formula-equivalence checking
+  and `instantiate_mp` through exact modus-ponens recomputation
 - bounded `contrapositive` implication steps and `disjunctive_syllogism`
   disjunct deletion, both recomputed from their cited parents
 - `paramodulation` through bounded superposition recomputation in either
@@ -189,7 +196,7 @@ The first strict kernel implementation certifies only:
   conjecture, which is a premise of every refutation of that conjecture)
   supplies the AC law the rewrite used
 
-Incomplete or multi-parent E-style `skolemize` forms and general directional
+Unannotated multi-parent E-style `skolemize` forms and general directional
 multi-parent CNF transformations remain inconclusive until their kernel rules
 are implemented. Bounded explicit AVATAR certificates may include a
 replayable `frat-lrat` payload; unsupported RAT, incremental, and other SAT

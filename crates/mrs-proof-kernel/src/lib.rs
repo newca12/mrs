@@ -6028,6 +6028,7 @@ fn verify_consequence(
     if parents.is_empty() {
         return KernelVerdict::Rejected("consequence must have at least one parent".into());
     }
+    let mut attempts = 0usize;
     let is_conclusion_false = matches!(conclusion, Formula::False)
         || clause_from_formula(conclusion, limits)
             .map(|c| c.is_empty())
@@ -6044,6 +6045,16 @@ fn verify_consequence(
     }
     for i in 0..parents.len() {
         for j in (i + 1)..parents.len() {
+            // Pairwise resolution is quadratic in the parent count, and the
+            // parent count is bounded only by proof-text size. Cap the
+            // attempts so one crafted node cannot consume the whole
+            // verification budget; exhaustion fails open.
+            if attempts >= limits.max_equivalence_steps {
+                return KernelVerdict::Inconclusive(
+                    "consequence exceeded strict matching-step limit".into(),
+                );
+            }
+            attempts += 1;
             let pair = [parents[i].clone(), parents[j].clone()];
             if matches!(
                 verify_resolution(&pair, conclusion, limits),
@@ -12238,6 +12249,60 @@ mod tests {
         let proof = "fof(p, axiom, p(a), file('problem.p', p)).\
                      fof(bot, plain, $false, inference(consequence, [status(thm)], [p])).";
         assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn certifies_consequence_from_resolving_pair() {
+        // Three parents where one pair resolves: extra cited parents are
+        // harmless by monotonicity.
+        let problem = "fof(p, axiom, p(a)).\nfof(np, axiom, ~p(a)).\nfof(q, axiom, q(a)).";
+        let proof = "fof(p, axiom, p(a), file('problem.p', p)).\
+                     fof(np, axiom, ~p(a), file('problem.p', np)).\
+                     fof(q, axiom, q(a), file('problem.p', q)).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [p,np,q])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_consequence_ex_falso_single_parent() {
+        let problem = "fof(p, axiom, p(a)).\nfof(np, axiom, ~p(a)).";
+        let proof = "fof(p, axiom, p(a), file('problem.p', p)).\
+                     fof(np, axiom, ~p(a), file('problem.p', np)).\
+                     fof(f, plain, $false, inference(resolution, [status(thm)], [p,np])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [f])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_consequence_when_no_pair_resolves() {
+        let problem = "fof(a, axiom, p(a)).\nfof(b, axiom, p(b)).\nfof(c, axiom, q(a)).";
+        let proof = "fof(a, axiom, p(a), file('problem.p', a)).\
+                     fof(b, axiom, p(b), file('problem.p', b)).\
+                     fof(c, axiom, q(a), file('problem.p', c)).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [a,b,c])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn consequence_pair_search_is_step_bounded() {
+        // Six pairs but a budget of two: exhaustion must fail open
+        // (Inconclusive) instead of running the full quadratic scan.
+        let problem = "fof(a, axiom, p(a)).\nfof(b, axiom, p(b)).\nfof(c, axiom, q(a)).\nfof(d, axiom, q(b)).";
+        let proof = "fof(a, axiom, p(a), file('problem.p', a)).\
+                     fof(b, axiom, p(b), file('problem.p', b)).\
+                     fof(c, axiom, q(a), file('problem.p', c)).\
+                     fof(d, axiom, q(b), file('problem.p', d)).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [a,b,c,d])).";
+        let problem = parse_tptp(problem).expect("problem parses");
+        let proof = parse_tptp(proof).expect("proof parses");
+        let limits = VerificationLimits {
+            max_equivalence_steps: 2,
+            ..VerificationLimits::default()
+        };
+        assert!(matches!(
+            verify_strict(&problem, &proof, limits),
+            KernelVerdict::Inconclusive(_)
+        ));
     }
 
     #[test]
