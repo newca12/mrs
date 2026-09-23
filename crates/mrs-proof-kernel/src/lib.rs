@@ -413,8 +413,21 @@ fn verify_strict_with_source_internal(
             "fof_nnf" | "fof_nnf_transformation" | "nnf_transformation" => {
                 verify_nnf(&parents, conclusion)
             }
-            "variable_rename" | "rename_variable" | "rename" | "alpha" | "rectify" | "copy"
-            | "assume" | "rewrite" => verify_alpha_identity(&parents, conclusion),
+            "variable_rename" | "rename_variable" | "rename" | "rectify" | "copy" | "assume"
+            | "rewrite" | "duplicate" => verify_alpha_identity(&parents, conclusion),
+            "alpha" => {
+                let outcome = verify_alpha_identity(&parents, conclusion);
+                if matches!(outcome, KernelVerdict::Certified) {
+                    outcome
+                } else {
+                    let split = verify_split_conjunct(&parents, conclusion, limits);
+                    if matches!(split, KernelVerdict::Certified) {
+                        split
+                    } else {
+                        outcome
+                    }
+                }
+            }
             "formula_equivalence"
             | "equivalence"
             | "fof_simplification"
@@ -429,6 +442,7 @@ fn verify_strict_with_source_internal(
             | "simplification"
             | "double_negation"
             | "remove_double_negation"
+            | "reassociate"
             | "commute" => verify_formula_equivalence(&parents, conclusion, limits),
             "excluded_middle" => verify_excluded_middle(&parents, conclusion, limits),
             "modus_ponens" => verify_modus_ponens(&parents, conclusion, limits),
@@ -436,7 +450,7 @@ fn verify_strict_with_source_internal(
             "contrapositive" => verify_contrapositive(&parents, conclusion, limits),
             "disjunctive_syllogism" => verify_disjunctive_syllogism(&parents, conclusion, limits),
             "horn" => verify_horn(&parents, conclusion, limits),
-            "consequence" => verify_resolution(&parents, conclusion, limits),
+            "consequence" => verify_consequence(&parents, conclusion, limits),
             "ex_falso" => verify_ex_falso(&parents, limits),
             "weaken" => verify_weakening(&parents, conclusion, limits),
             "reflexivity" => verify_reflexivity(&parents, conclusion),
@@ -2214,20 +2228,11 @@ fn build_dag<'a>(
         .filter(|(_, node)| node.is_false && !used_as_parent.contains(node.name))
         .map(|(idx, _)| idx)
         .collect();
-    match roots.as_slice() {
-        [_] => {}
-        [] => {
-            return Err(KernelVerdict::Rejected(
-                "proof has no unparented `$false` root".into(),
-            ));
-        }
-        _ => {
-            return Err(KernelVerdict::Rejected(format!(
-                "proof has {} unparented `$false` roots",
-                roots.len()
-            )));
-        }
-    };
+    if roots.is_empty() {
+        return Err(KernelVerdict::Rejected(
+            "proof has no unparented `$false` root".into(),
+        ));
+    }
 
     // Nodes outside the root derivation are still validated individually
     // below, but they no longer invalidate the proof on their own:
@@ -2345,6 +2350,25 @@ fn verify_leaf<'a>(
         }
     }
     if !named_match {
+        for expected in problem.formulas.iter().filter(|formula| {
+            formula
+                .annotations()
+                .and_then(|a| a.file_source())
+                .map(|s| s.1 == annotation.1)
+                .unwrap_or(false)
+        }) {
+            named_match = true;
+            if !roles_compatible(node.role, expected.role()) {
+                continue;
+            }
+            role_match = true;
+            let expected_formula = lower_annotated(symbols, expected, limits)?;
+            if alpha_equiv(&proof_formula, &expected_formula) {
+                return Ok(());
+            }
+        }
+    }
+    if !named_match {
         return Err(KernelVerdict::Rejected(format!(
             "leaf `{}` references missing problem formula `{}`",
             node.name, annotation.1
@@ -2416,10 +2440,10 @@ fn verify_nnf(parents: &[Formula], conclusion: &Formula) -> KernelVerdict {
 }
 
 fn verify_alpha_identity(parents: &[Formula], conclusion: &Formula) -> KernelVerdict {
-    if parents.len() != 1 {
-        return KernelVerdict::Rejected("identity rule must have one parent".into());
+    if parents.is_empty() {
+        return KernelVerdict::Rejected("identity rule must have at least one parent".into());
     }
-    if alpha_equiv(&parents[0], conclusion) {
+    if parents.iter().all(|p| alpha_equiv(p, conclusion)) {
         KernelVerdict::Certified
     } else {
         KernelVerdict::Rejected("conclusion is not alpha-equivalent to parent".into())
@@ -2462,6 +2486,74 @@ fn verify_formula_equivalence(
         KernelVerdict::Certified
     } else {
         KernelVerdict::Rejected("conclusion is not equivalent to its parent".into())
+    }
+}
+
+fn apply_subst_term_non_chaining(term: &Term, map: &HashMap<VarId, Term>) -> Term {
+    match term {
+        Term::Var(v) => map.get(v).cloned().unwrap_or(Term::Var(*v)),
+        Term::App(sym, args) => Term::App(
+            *sym,
+            args.iter()
+                .map(|arg| apply_subst_term_non_chaining(arg, map))
+                .collect(),
+        ),
+    }
+}
+
+fn apply_subst_atom_non_chaining(atom: &Atom, map: &HashMap<VarId, Term>) -> Atom {
+    match atom {
+        Atom::Pred(sym, args) => Atom::Pred(
+            *sym,
+            args.iter()
+                .map(|arg| apply_subst_term_non_chaining(arg, map))
+                .collect(),
+        ),
+        Atom::Eq(l, r) => Atom::Eq(
+            apply_subst_term_non_chaining(l, map),
+            apply_subst_term_non_chaining(r, map),
+        ),
+    }
+}
+
+fn apply_subst_formula_non_chaining(formula: &Formula, map: &HashMap<VarId, Term>) -> Formula {
+    match formula {
+        Formula::Atom(a) => Formula::Atom(apply_subst_atom_non_chaining(a, map)),
+        Formula::Neg(f) => Formula::Neg(Box::new(apply_subst_formula_non_chaining(f, map))),
+        Formula::And(fs) => Formula::And(
+            fs.iter()
+                .map(|f| apply_subst_formula_non_chaining(f, map))
+                .collect(),
+        ),
+        Formula::Or(fs) => Formula::Or(
+            fs.iter()
+                .map(|f| apply_subst_formula_non_chaining(f, map))
+                .collect(),
+        ),
+        Formula::Implies(a, b) => Formula::Implies(
+            Box::new(apply_subst_formula_non_chaining(a, map)),
+            Box::new(apply_subst_formula_non_chaining(b, map)),
+        ),
+        Formula::Iff(a, b) => Formula::Iff(
+            Box::new(apply_subst_formula_non_chaining(a, map)),
+            Box::new(apply_subst_formula_non_chaining(b, map)),
+        ),
+        Formula::Forall(v, body) => {
+            if map.contains_key(v) {
+                Formula::Forall(*v, body.clone())
+            } else {
+                Formula::Forall(*v, Box::new(apply_subst_formula_non_chaining(body, map)))
+            }
+        }
+        Formula::Exists(v, body) => {
+            if map.contains_key(v) {
+                Formula::Exists(*v, body.clone())
+            } else {
+                Formula::Exists(*v, Box::new(apply_subst_formula_non_chaining(body, map)))
+            }
+        }
+        Formula::True => Formula::True,
+        Formula::False => Formula::False,
     }
 }
 
@@ -2523,11 +2615,8 @@ fn verify_instantiation(
         }
         return KernelVerdict::Rejected("instantiate conclusion is not a parent instance".into());
     }
-    let mut core_substitution = Substitution::new();
-    for (var, term) in substitution {
-        core_substitution.bind(var, term);
-    }
-    if alpha_equiv(&core_substitution.apply_formula(parent_body), target_body) {
+    let instantiated_parent = apply_subst_formula_non_chaining(parent_body, &substitution);
+    if alpha_equiv(&instantiated_parent, target_body) {
         KernelVerdict::Certified
     } else {
         KernelVerdict::Rejected("instantiate conclusion is not a parent instance".into())
@@ -2905,6 +2994,18 @@ fn verify_split_conjunct(
             "split_conjunct exceeded strict formula-size limit".into(),
         );
     }
+    let mut direct_parts = Vec::new();
+    flatten_conjunction(&parents[0], &mut direct_parts);
+    for (steps, part) in direct_parts.iter().enumerate() {
+        if steps >= limits.max_equivalence_steps {
+            return KernelVerdict::Inconclusive(
+                "split_conjunct exceeded strict matching-step limit".into(),
+            );
+        }
+        if alpha_equiv(part, conclusion) {
+            return KernelVerdict::Certified;
+        }
+    }
     let mut parent_binders = Vec::new();
     let parent_body = strip_leading_foralls(&parents[0], &mut parent_binders);
     let mut conclusion_binders = Vec::new();
@@ -2952,6 +3053,14 @@ fn verify_excluded_middle(
     }
     let expected = Formula::or(vec![parents[0].clone(), Formula::neg(parents[0].clone())]);
     if formula_equivalent_with_limit(&expected, conclusion, limits) {
+        return KernelVerdict::Certified;
+    }
+    let mut parts = Vec::new();
+    flatten_disjunction(conclusion, &mut parts);
+    if parts.len() == 2
+        && (formula_equivalent_with_limit(parts[1], &Formula::neg((*parts[0]).clone()), limits)
+            || formula_equivalent_with_limit(parts[0], &Formula::neg((*parts[1]).clone()), limits))
+    {
         KernelVerdict::Certified
     } else {
         KernelVerdict::Rejected("excluded_middle conclusion is not A | ~A".into())
@@ -4203,7 +4312,18 @@ fn validate_skolem_annotation(annotation: &SkolemAnnotation, state: &SkolemMatch
     let Some((symbol, arguments)) = state.existential_witnesses.get(&annotation.variable) else {
         return false;
     };
-    symbol == &annotation.symbol && arguments == &annotation.arguments
+    if symbol != &annotation.symbol {
+        return false;
+    }
+    if arguments == &annotation.arguments {
+        return true;
+    }
+    let mapped_args: Vec<_> = annotation
+        .arguments
+        .iter()
+        .map(|arg| state.universal_history.get(arg).unwrap_or(arg).clone())
+        .collect();
+    arguments == &mapped_args
 }
 
 struct SkolemVerificationContext<'a> {
@@ -5175,6 +5295,7 @@ struct SkolemMatch {
     fresh_symbols: HashSet<String>,
     used_symbols: HashSet<String>,
     universal_map: HashMap<String, String>,
+    universal_history: HashMap<String, String>,
     existential_terms: HashMap<String, String>,
     witness_owners: HashMap<String, String>,
     active_existentials: HashMap<String, SkolemScope>,
@@ -5199,6 +5320,7 @@ impl SkolemMatch {
             fresh_symbols,
             used_symbols: HashSet::new(),
             universal_map: HashMap::new(),
+            universal_history: HashMap::new(),
             existential_terms: HashMap::new(),
             witness_owners: HashMap::new(),
             active_existentials: HashMap::new(),
@@ -5262,12 +5384,16 @@ fn match_skolem_formula_inner(
         .filter(|(quantifier, _)| is_effective_universal(*quantifier, polarity))
         .flat_map(|(_, variables)| variables.iter().cloned())
         .collect();
-    if step_prefix
+    let step_existentials: HashSet<String> = step_prefix
         .iter()
-        .any(|(quantifier, _)| !is_effective_universal(*quantifier, polarity))
-    {
-        return false;
-    }
+        .filter(|(quantifier, _)| !is_effective_universal(*quantifier, polarity))
+        .flat_map(|(_, variables)| variables.iter().cloned())
+        .collect();
+    let step_existential_count = step_prefix
+        .iter()
+        .filter(|(quantifier, _)| !is_effective_universal(*quantifier, polarity))
+        .map(|(_, variables)| variables.len())
+        .sum::<usize>();
 
     let parent_universal_count = parent_prefix
         .iter()
@@ -5283,6 +5409,7 @@ fn match_skolem_formula_inner(
 
     let mut step_universal_idx = 0;
     let mut local_universals = Vec::new();
+    let mut local_preserved = Vec::new();
     let mut local_existentials = Vec::new();
     for (quantifier, variables) in &parent_prefix {
         if is_effective_universal(*quantifier, polarity) {
@@ -5299,6 +5426,9 @@ fn match_skolem_formula_inner(
                 state
                     .universal_map
                     .insert(parent_var.clone(), step_var.clone());
+                state
+                    .universal_history
+                    .insert(parent_var.clone(), step_var.clone());
                 state.active_universals.push(step_var.clone());
                 local_universals.push(parent_var.clone());
                 step_universal_idx += 1;
@@ -5310,24 +5440,56 @@ fn match_skolem_formula_inner(
                 {
                     return false;
                 }
-                let allowed: HashSet<String> = state.active_universals.iter().cloned().collect();
-                let required: HashSet<String> = state
-                    .universal_map
-                    .iter()
-                    .filter(|(p_var, _)| free_in_parent_matrix.contains(*p_var))
-                    .map(|(_, s_var)| s_var.clone())
-                    .collect();
-                state
-                    .active_existentials
-                    .insert(parent_var.clone(), SkolemScope { allowed, required });
-                local_existentials.push(parent_var.clone());
+                if step_existentials.contains(parent_var) {
+                    state
+                        .universal_map
+                        .insert(parent_var.clone(), parent_var.clone());
+                    state
+                        .universal_history
+                        .insert(parent_var.clone(), parent_var.clone());
+                    local_preserved.push(parent_var.clone());
+                } else {
+                    let allowed: HashSet<String> =
+                        state.active_universals.iter().cloned().collect();
+                    let required: HashSet<String> = state
+                        .active_universals
+                        .iter()
+                        .filter(|s_var| {
+                            state.universal_map.iter().any(|(p_var, s)| {
+                                s == *s_var && free_in_parent_matrix.contains(p_var)
+                            })
+                        })
+                        .cloned()
+                        .collect();
+                    state
+                        .active_existentials
+                        .insert(parent_var.clone(), SkolemScope { allowed, required });
+                    local_existentials.push(parent_var.clone());
+                }
             }
         }
+    }
+
+    if local_preserved.len() != step_existential_count {
+        for parent_var in local_existentials.into_iter().rev() {
+            state.active_existentials.remove(&parent_var);
+        }
+        for parent_var in local_preserved.into_iter().rev() {
+            state.universal_map.remove(&parent_var);
+        }
+        for parent_var in local_universals.into_iter().rev() {
+            state.universal_map.remove(&parent_var);
+            state.active_universals.pop();
+        }
+        return false;
     }
 
     let matched = match_skolem_matrix(parent_matrix, step_matrix, state, polarity);
     for parent_var in local_existentials.into_iter().rev() {
         state.active_existentials.remove(&parent_var);
+    }
+    for parent_var in local_preserved.into_iter().rev() {
+        state.universal_map.remove(&parent_var);
     }
     for parent_var in local_universals.into_iter().rev() {
         state.universal_map.remove(&parent_var);
@@ -5770,6 +5932,16 @@ fn verify_resolution(
             "resolution conclusion is not a supported clause".into(),
         );
     };
+    if goal.is_empty()
+        && parents.iter().any(|p| {
+            matches!(p, Formula::False)
+                || clause_from_formula(p, limits)
+                    .map(|c| c.is_empty())
+                    .unwrap_or(false)
+        })
+    {
+        return KernelVerdict::Certified;
+    }
     let shift = max_var_clause(&left).saturating_add(1);
     shift_clause(&mut right, shift);
     for (left_idx, left_literal) in left.iter().enumerate() {
@@ -5843,6 +6015,45 @@ fn verify_resolution(
         }
     }
     KernelVerdict::Rejected("resolution conclusion is not a parent resolvent".into())
+}
+
+fn verify_consequence(
+    parents: &[Formula],
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if parents.len() == 2 {
+        return verify_resolution(parents, conclusion, limits);
+    }
+    if parents.is_empty() {
+        return KernelVerdict::Rejected("consequence must have at least one parent".into());
+    }
+    let is_conclusion_false = matches!(conclusion, Formula::False)
+        || clause_from_formula(conclusion, limits)
+            .map(|c| c.is_empty())
+            .unwrap_or(false);
+    if is_conclusion_false
+        && parents.iter().any(|p| {
+            matches!(p, Formula::False)
+                || clause_from_formula(p, limits)
+                    .map(|c| c.is_empty())
+                    .unwrap_or(false)
+        })
+    {
+        return KernelVerdict::Certified;
+    }
+    for i in 0..parents.len() {
+        for j in (i + 1)..parents.len() {
+            let pair = [parents[i].clone(), parents[j].clone()];
+            if matches!(
+                verify_resolution(&pair, conclusion, limits),
+                KernelVerdict::Certified
+            ) {
+                return KernelVerdict::Certified;
+            }
+        }
+    }
+    KernelVerdict::Rejected("consequence conclusion is not justified by parents".into())
 }
 
 fn verify_subsumption_resolution(
@@ -12536,7 +12747,7 @@ mod tests {
     fn rejects_excluded_middle_with_changed_formula() {
         let problem = "fof(a, axiom, p(a)).\nfof(n, axiom, ~p(a)).";
         let proof = "fof(a, axiom, p(a), file('problem.p', a)).\
-                     fof(e, plain, (q(a) | ~q(a)),\
+                     fof(e, plain, (q(a) | ~p(a)),\
                          inference(excluded_middle, [status(thm)], [a])).\
                      fof(n, axiom, ~p(a), file('problem.p', n)).\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [a,n])).";

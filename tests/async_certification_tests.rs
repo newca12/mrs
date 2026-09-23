@@ -35,7 +35,10 @@ fn async_certified_flag_with_adequate_budget_certifies() {
     assert!(stdout.contains("Candidates received:"));
     assert!(stdout.contains("Certified candidate index: 1"));
 
-    assert!(stderr.contains("self_check=Certified"));
+    assert!(
+        stderr.contains("self_check=Certified"),
+        "stderr did not contain self_check=Certified:\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
     assert!(stderr.contains("cert_oversubscribed=false"));
     assert!(stderr.contains("cert_search_workers=1"));
     assert!(stderr.contains("cert_workers=1"));
