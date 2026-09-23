@@ -136,9 +136,11 @@ fallback. Each phase writes `results/remote-cert/<phase>/` plus
 The next certification layers require independent proofs and tests for:
 
 - non-ground ordered resolution and factoring;
-- kernel `equality_normalization` validation plus ordered superposition side
-  conditions and equality resolution/factoring — ground congruence
-  expansion (Phase 6) is done, kernel-checked Eq inference is not;
+- broader non-ground equality normalization and ordered superposition side
+  conditions beyond the certified ground-constant unit fragment — kernel
+  checks for unit `equality_normalization`, bounded `equality_resolution`,
+  `equality_factoring`, `superposition`, `paramodulation`, and `demodulation`
+  are in place, and ground congruence expansion (Phase 6) is done;
 - KBO/LPO substitution stability and valid custom signatures (ground
   totality/transitivity plus KBO weight and KBO/LPO precedence validation
   are certified; lifted stability is still open);

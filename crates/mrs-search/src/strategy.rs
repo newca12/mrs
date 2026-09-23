@@ -1296,6 +1296,13 @@ fn run_certified_ordered_fragment(
         crate::TermOrdering::CustomACKBO(_, _) => Some("ac-kbo".to_string()),
     };
 
+    // Keep the raw search outcome for schedule-report telemetry: a
+    // submitted-but-not-yet-certified (or later-rejected) candidate must
+    // still surface as `result=Refutation` so `self_check=Rejected` is
+    // distinguishable from `Unchecked`. The returned value reflects only
+    // what the coordinator has already certified (or the raw outcome when
+    // there is no receiver).
+    let search_outcome = result.clone();
     let result = if let SearchResult::Refutation(id, ref tstp) = result {
         if let Some(receiver) = candidate_receiver {
             let candidate = CandidateRefutation {
@@ -1306,11 +1313,8 @@ fn run_certified_ordered_fragment(
                 elapsed_ms: schedule_start.elapsed().as_millis() as u64,
                 time_remaining: config.time_limit.saturating_sub(schedule_start.elapsed()),
             };
-            if receiver.submit_candidate(candidate) {
-                receiver.certified_result().unwrap_or(SearchResult::GaveUp)
-            } else {
-                SearchResult::GaveUp
-            }
+            receiver.submit_candidate(candidate);
+            receiver.certified_result().unwrap_or(SearchResult::GaveUp)
         } else {
             result
         }
@@ -1324,7 +1328,7 @@ fn run_certified_ordered_fragment(
         strategies: vec![crate::StrategyReport {
             strategy_idx: 0,
             strategy_id: config.strategy_id,
-            result: result.clone(),
+            result: search_outcome,
             stats,
             elapsed_ms: schedule_start.elapsed().as_millis() as u64,
         }],

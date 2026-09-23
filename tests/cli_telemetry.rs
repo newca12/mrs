@@ -77,6 +77,51 @@ fn unsupported_formula_in_include_is_not_reported_satisfiable() {
 }
 
 #[test]
+fn certify_ordered_ground_eq_self_check_certifies() {
+    let problem = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("problems/eq_unit_ground.p");
+    let output = Command::new(env!("CARGO_BIN_EXE_mrs"))
+        .args([
+            "--self-check",
+            "--certify-ordered",
+            "--workers",
+            "1",
+            "--strategy",
+            "1",
+            "--time",
+            "10",
+        ])
+        .arg(&problem)
+        .output()
+        .expect("mrs CLI should run");
+
+    assert!(
+        output.status.success(),
+        "mrs exited with {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stdout.contains("% SZS status Theorem for eq_unit_ground"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("equality_normalization"),
+        "proof must contain equality_normalization step: {stdout}"
+    );
+    assert!(
+        stdout.contains("% SZS output start Proof for eq_unit_ground"),
+        "stdout: {stdout}"
+    );
+    assert!(stderr.contains("result=Refutation"), "stderr: {stderr}");
+    assert!(stderr.contains("self_check=Certified"), "stderr: {stderr}");
+    assert!(stderr.contains("cert_idx=1"), "stderr: {stderr}");
+}
+
+#[test]
 fn ordered_certifier_accepts_ground_sat_and_rejects_equality() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let sat = root.join("problems/certified_epr_sat.p");

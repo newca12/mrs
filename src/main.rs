@@ -991,6 +991,7 @@ fn main() {
             final_cert_telemetry.as_ref(),
             self_check,
             proof_certified,
+            &result,
         );
     }
 }
@@ -1015,6 +1016,7 @@ fn print_statistics(
     cert_telemetry: Option<&coordinator::CertificationTelemetry>,
     self_check: bool,
     proof_certified: bool,
+    final_result: &mrs_search::SearchResult,
 ) {
     let termination_reason = match status {
         SzsStatus::Theorem | SzsStatus::Unsatisfiable => "Refutation",
@@ -1073,22 +1075,30 @@ fn print_statistics(
     // Format: "% SZS detail <key=value> ..."
     // Always emitted (even on success) so casc.sh can parse it uniformly.
     let raw_search_result = report.raw_search_result();
-    let search_result_name = match &raw_search_result {
-        SearchResult::Refutation(..) => "Refutation",
-        SearchResult::Saturated(_) => "Saturation",
-        SearchResult::GaveUp => "GaveUp",
-        SearchResult::Timeout => "Timeout",
-        SearchResult::ResourceOut => "ResourceOut",
+    // Prefer the post-coordinator result when it is a refutation: the
+    // async path (and --certify-ordered) may leave GaveUp in the schedule
+    // report even after a candidate was strictly certified. Fall back to
+    // the raw schedule result so a rejected candidate still reports
+    // `result=Refutation` with `self_check=Rejected`.
+    let final_is_refutation = matches!(final_result, SearchResult::Refutation(..));
+    let search_result_name = if final_is_refutation {
+        "Refutation"
+    } else {
+        match &raw_search_result {
+            SearchResult::Refutation(..) => "Refutation",
+            SearchResult::Saturated(_) => "Saturation",
+            SearchResult::GaveUp => "GaveUp",
+            SearchResult::Timeout => "Timeout",
+            SearchResult::ResourceOut => "ResourceOut",
+        }
     };
 
     let mut detail_str = report.telemetry_detail(search_result_name);
     if self_check {
-        let self_check_status = if matches!(raw_search_result, SearchResult::Refutation(..)) {
-            if proof_certified {
-                "Certified"
-            } else {
-                "Rejected"
-            }
+        let self_check_status = if final_is_refutation && proof_certified {
+            "Certified"
+        } else if matches!(raw_search_result, SearchResult::Refutation(..)) {
+            "Rejected"
         } else {
             "Unchecked"
         };

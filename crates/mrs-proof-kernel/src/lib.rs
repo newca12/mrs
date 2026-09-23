@@ -12211,6 +12211,117 @@ mod tests {
     }
 
     #[test]
+    fn certifies_equality_normalization_predicate_rewrite() {
+        let problem = "fof(ab, axiom, a = b).\n\
+                       fof(p, axiom, p(a)).\n\
+                       fof(n, axiom, ~p(b)).";
+        let proof = "fof(ab, axiom, a = b, file('problem.p', ab)).\
+                     fof(p, axiom, p(a), file('problem.p', p)).\
+                     fof(n, axiom, ~p(b), file('problem.p', n)).\
+                     fof(na, plain, ~p(a), inference(equality_normalization, [status(thm)], [n,ab])).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [na,p])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_equality_normalization_multi_parent_chain() {
+        let problem = "fof(ab, axiom, a = b).\n\
+                       fof(bc, axiom, b = c).\n\
+                       fof(p, axiom, p(a)).\n\
+                       fof(n, axiom, ~p(c)).";
+        let proof = "fof(ab, axiom, a = b, file('problem.p', ab)).\
+                     fof(bc, axiom, b = c, file('problem.p', bc)).\
+                     fof(p, axiom, p(a), file('problem.p', p)).\
+                     fof(n, axiom, ~p(c), file('problem.p', n)).\
+                     fof(na, plain, ~p(a), inference(equality_normalization, [status(thm)], [n,ab,bc])).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [na,p])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_equality_normalization_to_empty_clause() {
+        let problem = "fof(ab, axiom, a = b).\n\
+                       fof(neq, axiom, ~(a = b)).";
+        let proof = "fof(ab, axiom, a = b, file('problem.p', ab)).\
+                     fof(neq, axiom, ~(a = b), file('problem.p', neq)).\
+                     fof(bot, plain, $false, inference(equality_normalization, [status(thm)], [neq,ab])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_equality_normalization_forged_conclusion() {
+        let problem = "fof(ab, axiom, a = b).\n\
+                       fof(p, axiom, p(a)).\n\
+                       fof(n, axiom, ~p(b)).\n\
+                       fof(nr, axiom, ~r(a)).";
+        let proof = "fof(ab, axiom, a = b, file('problem.p', ab)).\
+                     fof(p, axiom, p(a), file('problem.p', p)).\
+                     fof(n, axiom, ~p(b), file('problem.p', n)).\
+                     fof(bad, plain, ~r(a), inference(equality_normalization, [status(thm)], [n,ab])).\
+                     fof(nr, axiom, ~r(a), file('problem.p', nr)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [p,n])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn rejects_equality_normalization_non_unit_equality_parent() {
+        let problem = "fof(dis, axiom, (a = b | c = d)).\n\
+                       fof(n, axiom, ~p(a)).";
+        let proof = "fof(dis, axiom, (a = b | c = d), file('problem.p', dis)).\
+                     fof(n, axiom, ~p(a), file('problem.p', n)).\
+                     fof(bad, plain, ~p(b), inference(equality_normalization, [status(thm)], [n,dis])).\
+                     fof(p, axiom, p(a), file('problem.p', p)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [p,n])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn rejects_equality_normalization_non_equality_parent() {
+        let problem = "fof(q, axiom, q(a)).\n\
+                       fof(n, axiom, ~p(b)).";
+        let proof = "fof(q, axiom, q(a), file('problem.p', q)).\
+                     fof(n, axiom, ~p(b), file('problem.p', n)).\
+                     fof(bad, plain, ~p(b), inference(equality_normalization, [status(thm)], [n,q])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [n,n])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn rejects_equality_normalization_positive_reflexive_target() {
+        let problem = "fof(ab, axiom, a = b).";
+        let proof = "fof(ab, axiom, a = b, file('problem.p', ab)).\
+                     fof(bad, plain, a = b, inference(equality_normalization, [status(thm)], [ab,ab])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [bad,bad])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn rejects_equality_normalization_missing_equality_parents() {
+        let problem = "fof(n, axiom, ~p(b)).";
+        let proof = "fof(n, axiom, ~p(b), file('problem.p', n)).\
+                     fof(bad, plain, ~p(b), inference(equality_normalization, [status(thm)], [n])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [n,n])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn equality_normalization_non_ground_parent_is_inconclusive() {
+        let problem =
+            parse_tptp("fof(ab, axiom, X = b).\nfof(n, axiom, ~p(X)).").expect("problem parses");
+        let proof = parse_tptp(
+            "fof(ab, axiom, X = b, file('problem.p', ab)).\
+             fof(n, axiom, ~p(b), file('problem.p', n)).\
+             fof(bad, plain, ~p(b), inference(equality_normalization, [status(thm)], [n,ab])).\
+             fof(bot, plain, $false, inference(consequence, [status(thm)], [n,n])).",
+        )
+        .expect("proof parses");
+        assert!(matches!(
+            verify_strict(&problem, &proof, VerificationLimits::default()),
+            KernelVerdict::Inconclusive(_) | KernelVerdict::Rejected(_)
+        ));
+    }
+
+    #[test]
     fn certifies_commute_and_instantiate_mp_aliases() {
         let problem = "fof(rule, axiom, ![X] : (p(X) => q(X))).\n\
                        fof(fact, axiom, p(a)).\n\
