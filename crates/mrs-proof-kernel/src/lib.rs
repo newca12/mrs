@@ -3290,10 +3290,17 @@ fn verify_reflexivity(parents: &[Formula], conclusion: &Formula) -> KernelVerdic
 }
 
 /// Verify the ground unit-equality normalization emitted by the certified
-/// EPR+Eq path. The first parent is the clause being normalized; remaining
-/// parents are positive ground unit equalities that justify representative
-/// replacement. This deliberately excludes non-ground and non-unit equality
-/// rewriting until the broader superposition certificate is implemented.
+/// EPR+Eq path. One parent is the clause being normalized (the target);
+/// the remaining parents are positive ground unit equalities that justify
+/// congruence replacement. The target is identified by shape — the parent
+/// that is not a positive ground unit equality — rather than by position,
+/// and both the target and the conclusion are normalized with the same
+/// classes before comparison, so the verdict does not depend on which
+/// class representative either side happened to pick (the search-side
+/// union-find is rank-based while this checker is left-biased; both agree
+/// on connectivity but may elect different representatives). This
+/// deliberately excludes non-ground and non-unit equality rewriting until
+/// the broader superposition certificate is implemented.
 fn verify_equality_normalization(
     parents: &[Formula],
     conclusion: &Formula,
@@ -3313,63 +3320,98 @@ fn verify_equality_normalization(
             "equality_normalization exceeded strict formula-size limit".into(),
         );
     }
-    let Some(target) = clause_from_formula(&parents[0], limits) else {
-        return KernelVerdict::Inconclusive(
-            "equality_normalization target is not a supported clause".into(),
-        );
-    };
     let Some(goal) = clause_from_formula(conclusion, limits) else {
         return KernelVerdict::Inconclusive(
             "equality_normalization conclusion is not a supported clause".into(),
         );
     };
-    let mut classes = GroundEqualityClasses::default();
-    for parent in &parents[1..] {
+    let mut parsed = Vec::with_capacity(parents.len());
+    for parent in parents {
         let Some(clause) = clause_from_formula(parent, limits) else {
             return KernelVerdict::Inconclusive(
                 "equality_normalization parent is not a supported clause".into(),
             );
         };
-        if clause.len() != 1 || !clause[0].positive {
-            return KernelVerdict::Rejected(
-                "equality_normalization parents must be positive unit equalities".into(),
-            );
+        parsed.push(clause);
+    }
+    let mut saw_inconclusive = false;
+    for target_idx in 0..parsed.len() {
+        let mut classes = GroundEqualityClasses::default();
+        let mut others_valid = true;
+        for (idx, clause) in parsed.iter().enumerate() {
+            if idx == target_idx {
+                continue;
+            }
+            if clause.len() != 1 || !clause[0].positive {
+                others_valid = false;
+                break;
+            }
+            let Atom::Eq(left, right) = &clause[0].atom else {
+                others_valid = false;
+                break;
+            };
+            if term_var_set(left).is_empty()
+                && term_var_set(right).is_empty()
+                && is_ground_constant_term(left)
+                && is_ground_constant_term(right)
+            {
+                classes.union(left, right);
+            } else {
+                // A non-ground equality parent is outside the strict
+                // fragment: fail open so the candidate is discarded without
+                // claiming unsoundness.
+                saw_inconclusive = true;
+                others_valid = false;
+                break;
+            }
         }
-        let Atom::Eq(left, right) = &clause[0].atom else {
-            return KernelVerdict::Rejected(
-                "equality_normalization parent is not an equality".into(),
-            );
+        if !others_valid {
+            continue;
+        }
+        let Ok(normalized_target) = normalize_eq_clause(&parsed[target_idx], &mut classes) else {
+            // A positive reflexive target is a dropped tautology, never an
+            // emitted normalization step.
+            continue;
         };
-        if term_var_set(left).is_empty()
-            && term_var_set(right).is_empty()
-            && is_ground_constant_term(left)
-            && is_ground_constant_term(right)
-        {
-            classes.union(left, right);
-        } else {
-            return KernelVerdict::Inconclusive(
-                "equality_normalization requires ground constant equalities".into(),
-            );
+        let Ok(normalized_goal) = normalize_eq_clause(&goal, &mut classes) else {
+            continue;
+        };
+        if clause_alpha_equiv(&normalized_target, &normalized_goal) {
+            return KernelVerdict::Certified;
         }
     }
-    let mut normalized = Vec::with_capacity(target.len());
-    for literal in &target {
+    if saw_inconclusive {
+        return KernelVerdict::Inconclusive(
+            "equality_normalization requires ground constant equalities".into(),
+        );
+    }
+    KernelVerdict::Rejected("equality_normalization conclusion is not the normalized target".into())
+}
+
+/// Normalize a clause by class representatives, recursing into nested
+/// function arguments so congruence under function symbols is honored.
+/// Negative reflexive equalities are deleted (false disjuncts); a positive
+/// reflexive equality signals a tautology (`Err(())`), which the search
+/// side drops silently instead of emitting as a step.
+fn normalize_eq_clause(
+    clause: &[Literal],
+    classes: &mut GroundEqualityClasses,
+) -> Result<Vec<Literal>, ()> {
+    let mut normalized = Vec::with_capacity(clause.len());
+    for literal in clause {
         let atom = match &literal.atom {
             Atom::Pred(predicate, args) => Atom::Pred(
                 *predicate,
                 args.iter()
-                    .map(|term| classes.representative(term))
+                    .map(|term| normalize_eq_term(term, classes))
                     .collect(),
             ),
             Atom::Eq(left, right) => {
-                let left = classes.representative(left);
-                let right = classes.representative(right);
+                let left = normalize_eq_term(left, classes);
+                let right = normalize_eq_term(right, classes);
                 if left == right {
                     if literal.positive {
-                        return KernelVerdict::Rejected(
-                            "equality_normalization cannot derive from a positive reflexive target"
-                                .into(),
-                        );
+                        return Err(());
                     }
                     continue;
                 }
@@ -3381,12 +3423,19 @@ fn verify_equality_normalization(
             atom,
         });
     }
-    if clause_alpha_equiv(&normalized, &goal) {
-        KernelVerdict::Certified
-    } else {
-        KernelVerdict::Rejected(
-            "equality_normalization conclusion is not the normalized target".into(),
-        )
+    Ok(normalized)
+}
+
+fn normalize_eq_term(term: &Term, classes: &mut GroundEqualityClasses) -> Term {
+    match term {
+        Term::Var(_) => term.clone(),
+        Term::App(symbol, args) if args.is_empty() => classes.representative(term),
+        Term::App(symbol, args) => Term::App(
+            *symbol,
+            args.iter()
+                .map(|arg| normalize_eq_term(arg, classes))
+                .collect(),
+        ),
     }
 }
 
@@ -12234,6 +12283,41 @@ mod tests {
                      fof(p, axiom, p(a), file('problem.p', p)).\
                      fof(n, axiom, ~p(c), file('problem.p', n)).\
                      fof(na, plain, ~p(a), inference(equality_normalization, [status(thm)], [n,ab,bc])).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [na,p])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_equality_normalization_any_representative() {
+        // The search-side union-find is rank-based while the kernel is
+        // left-biased: both agree on connectivity but may elect different
+        // class representatives. A conclusion using the `b` representative
+        // must certify just like the `a` form above.
+        let problem = "fof(bc, axiom, b = c).\n\
+                       fof(ab, axiom, a = b).\n\
+                       fof(p, axiom, p(a)).\n\
+                       fof(n, axiom, ~p(c)).";
+        let proof = "fof(bc, axiom, b = c, file('problem.p', bc)).\
+                     fof(ab, axiom, a = b, file('problem.p', ab)).\
+                     fof(p, axiom, p(a), file('problem.p', p)).\
+                     fof(n, axiom, ~p(c), file('problem.p', n)).\
+                     fof(nb, plain, ~p(b), inference(equality_normalization, [status(thm)], [n,bc])).\
+                     fof(pb, plain, p(b), inference(equality_normalization, [status(thm)], [p,ab])).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [nb,pb])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_equality_normalization_target_last() {
+        // Parent order must not matter: the target is the parent that is
+        // not a positive ground unit equality.
+        let problem = "fof(ab, axiom, a = b).\n\
+                       fof(p, axiom, p(a)).\n\
+                       fof(n, axiom, ~p(b)).";
+        let proof = "fof(ab, axiom, a = b, file('problem.p', ab)).\
+                     fof(p, axiom, p(a), file('problem.p', p)).\
+                     fof(n, axiom, ~p(b), file('problem.p', n)).\
+                     fof(na, plain, ~p(a), inference(equality_normalization, [status(thm)], [ab,n])).\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [na,p])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
     }
