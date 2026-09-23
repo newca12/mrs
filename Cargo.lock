@@ -3660,6 +3660,7 @@ dependencies = [
 name = "mrs-proof-kernel"
 version = "0.2.3"
 dependencies = [
+ "mrs-cadical",
  "mrs-core",
  "mrs-tptp",
  "serde",

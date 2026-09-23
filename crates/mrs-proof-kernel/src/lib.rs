@@ -275,6 +275,31 @@ fn verify_strict_with_source_internal(
                     }
                 }
             }
+            // A conjecture that is the negation of an AC law (e.g. SWX217+1
+            // `? [X,Y] : x(X,Y) != x(Y,X)`) becomes `x(X,Y) = x(Y,X)` once
+            // negated for refutation. Search detects that unit in the clause
+            // store and superposes modulo commutativity, then strips the
+            // negated-conjecture provenance from the exported DAG. Replay the
+            // same background: negating a conjecture is a premise of every
+            // refutation of that conjecture, so accepting remains sound.
+            if formula.role() == FormulaRole::Conjecture {
+                let negated = to_nnf(&Formula::neg(lowered.clone()));
+                if let Some(clause) = clause_from_formula(&negated, limits)
+                    && clause.len() == 1
+                    && clause[0].positive
+                    && let Atom::Eq(left, right) = &clause[0].atom
+                    && let Some((symbol, kind)) = classify_ac_axiom(left, right)
+                {
+                    match kind {
+                        AcAxiomKind::Commutative => {
+                            background_commutative.insert(symbol);
+                        }
+                        AcAxiomKind::Associative => {
+                            background_associative.insert(symbol);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -5813,7 +5838,7 @@ fn verify_subsumption_resolution(
 
     // Try both orderings: (target=c0, active=c1) and (target=c1, active=c0)
     for (target, active) in [(&c0, &c1), (&c1, &c0)] {
-        if active.is_empty() || active.len() > target.len() {
+        if active.is_empty() {
             continue;
         }
 
@@ -5821,7 +5846,7 @@ fn verify_subsumption_resolution(
         for removed_idx in 0..target.len() {
             let mut modified_target = target.clone();
             modified_target[removed_idx].positive = !modified_target[removed_idx].positive;
-            match clause_subsumes(
+            match clause_subsumes_set(
                 active,
                 &modified_target,
                 &mut matching_steps,
@@ -5864,7 +5889,33 @@ fn clause_subsumes(
     steps: &mut usize,
     step_limit: usize,
 ) -> Result<bool, ()> {
-    if pattern.len() > target.len() {
+    match_subsumes(pattern, target, steps, step_limit, false)
+}
+
+/// Set-style subsumption for `subsumption_resolution`: the same target
+/// literal may witness several pattern literals once they coincide under σ.
+/// Search's `match_literals` already allows this; multiset matching rejects
+/// valid steps such as MGT005+1 c1709 where both active literals become
+/// `~greater(X7,X7)` and the flipped target holds only one copy. Sound:
+/// set inclusion of σ(active) in the flipped target still yields
+/// `active ∧ target ⊨ target \ {L}`.
+fn clause_subsumes_set(
+    pattern: &[Literal],
+    target: &[Literal],
+    steps: &mut usize,
+    step_limit: usize,
+) -> Result<bool, ()> {
+    match_subsumes(pattern, target, steps, step_limit, true)
+}
+
+fn match_subsumes(
+    pattern: &[Literal],
+    target: &[Literal],
+    steps: &mut usize,
+    step_limit: usize,
+    allow_target_reuse: bool,
+) -> Result<bool, ()> {
+    if pattern.len() > target.len() && !allow_target_reuse {
         return Ok(false);
     }
 
@@ -5873,37 +5924,41 @@ fn clause_subsumes(
     let shift = max_var_clause(target).saturating_add(1);
     let mut pattern = pattern.to_vec();
     shift_clause(&mut pattern, shift);
-    let mut used = vec![false; target.len()];
-    match_subsumption_literals(
-        &pattern,
-        target,
-        &HashMap::new(),
-        shift,
-        &mut used,
+    let mut state = SubsumptionMatch {
+        min_bindable: shift,
+        used: vec![false; target.len()],
         steps,
         step_limit,
-    )
+        allow_target_reuse,
+    };
+    match_subsumption_literals(&pattern, target, &HashMap::new(), &mut state)
+}
+
+/// Shared mutable state for one subsumption search.
+struct SubsumptionMatch<'a> {
+    min_bindable: VarId,
+    used: Vec<bool>,
+    steps: &'a mut usize,
+    step_limit: usize,
+    allow_target_reuse: bool,
 }
 
 fn match_subsumption_literals(
     remaining: &[Literal],
     target: &[Literal],
     substitution: &HashMap<VarId, Term>,
-    min_bindable: VarId,
-    used: &mut [bool],
-    steps: &mut usize,
-    step_limit: usize,
+    state: &mut SubsumptionMatch<'_>,
 ) -> Result<bool, ()> {
     let Some((literal, rest)) = remaining.split_first() else {
         return Ok(true);
     };
-    if *steps >= step_limit {
+    if *state.steps >= state.step_limit {
         return Err(());
     }
-    *steps += 1;
+    *state.steps += 1;
 
     for (target_idx, target_literal) in target.iter().enumerate() {
-        if used[target_idx] {
+        if !state.allow_target_reuse && state.used[target_idx] {
             continue;
         }
         if literal.positive != target_literal.positive {
@@ -5913,19 +5968,11 @@ fn match_subsumption_literals(
             &literal.atom,
             &target_literal.atom,
             substitution,
-            min_bindable,
+            state.min_bindable,
         ) {
-            used[target_idx] = true;
-            let matched = match_subsumption_literals(
-                rest,
-                target,
-                &next,
-                min_bindable,
-                used,
-                steps,
-                step_limit,
-            );
-            used[target_idx] = false;
+            state.used[target_idx] = true;
+            let matched = match_subsumption_literals(rest, target, &next, state);
+            state.used[target_idx] = false;
             match matched {
                 Ok(true) => return Ok(true),
                 Ok(false) => {}
@@ -6033,6 +6080,7 @@ fn verify_factoring(
     // once). Accept any conclusion reachable by repeated single-factor
     // steps: each step removes exactly one literal, so the search depth is
     // bounded by the parent size.
+    let goal_condensed = condense_clause(&goal);
     let step_cap = limits.max_subsumption_steps.max(5_000);
     let mut visited: usize = 0;
     let mut stack: Vec<Vec<Literal>> = Vec::new();
@@ -6067,7 +6115,7 @@ fn verify_factoring(
                 .filter(|(idx, _)| *idx != second)
                 .map(|(_, literal)| apply_substitution_literal(literal, &substitution))
                 .collect();
-            if expected.len() < goal.len() {
+            if condense_clause(&expected).len() < goal_condensed.len() {
                 continue;
             }
             stack.push(expected);
@@ -6078,10 +6126,15 @@ fn verify_factoring(
         if visited > step_cap {
             return KernelVerdict::Inconclusive("factoring search exceeded step limit".into());
         }
-        if clause_alpha_equiv(&state, &goal) {
+        // The prover condenses intermediate factors before export (MGT079+1
+        // c9135 collapses a duplicate after the predicate merge).
+        let condensed_state = condense_clause(&state);
+        if clause_alpha_equiv(&state, &goal)
+            || clause_alpha_equiv(&condensed_state, &goal_condensed)
+        {
             return KernelVerdict::Certified;
         }
-        if state.len() <= goal.len() {
+        if condensed_state.len() <= goal_condensed.len() {
             continue;
         }
         for first in 0..state.len() {
@@ -6113,7 +6166,7 @@ fn verify_factoring(
                     .filter(|(idx, _)| *idx != second)
                     .map(|(_, literal)| apply_substitution_literal(literal, &substitution))
                     .collect();
-                if expected.len() < goal.len() {
+                if condense_clause(&expected).len() < goal_condensed.len() {
                     continue;
                 }
                 stack.push(expected);
@@ -6158,7 +6211,11 @@ fn verify_equality_resolution(
             .filter(|(idx, _)| *idx != removed)
             .map(|(_, literal)| apply_substitution_literal(literal, &substitution))
             .collect();
-        if clause_alpha_equiv(&expected, &goal) {
+        // The prover may emit a condensed conclusion while the parent still
+        // carries duplicate literals (CSR117+1); compare modulo condensation.
+        if clause_alpha_equiv(&expected, &goal)
+            || clause_alpha_equiv(&condense_clause(&expected), &condense_clause(&goal))
+        {
             return KernelVerdict::Certified;
         }
     }
@@ -6254,52 +6311,62 @@ fn verify_condensation(
         return KernelVerdict::Rejected("condensation must remove at least one literal".into());
     }
 
+    let goal_condensed = condense_clause(&goal);
     for removed in 0..parent.len() {
         for matched in 0..parent.len() {
             if removed == matched || parent[removed].positive != parent[matched].positive {
                 continue;
             }
-            let Some(substitution) =
-                unify_atoms_for_condensation(&parent[removed].atom, &parent[matched].atom)
-            else {
-                continue;
-            };
-            let mut expected = Vec::with_capacity(parent.len() - 1);
-            for (index, literal) in parent.iter().enumerate() {
-                if index == removed {
-                    continue;
+            // Try every unifier of the removed/matched pair (both Eq
+            // orientations). The prover matches one-way like search, so a
+            // direct unifier can succeed with a substitution that does not
+            // reach the goal while the flipped unifier does (CSR015+1).
+            for substitution in
+                unifiers_for_condensation(&parent[removed].atom, &parent[matched].atom)
+            {
+                let mut expected = Vec::with_capacity(parent.len() - 1);
+                for (index, literal) in parent.iter().enumerate() {
+                    if index == removed {
+                        continue;
+                    }
+                    expected.push(apply_substitution_literal(literal, &substitution));
                 }
-                let substituted = apply_substitution_literal(literal, &substitution);
-                if !expected.contains(&substituted) {
-                    expected.push(substituted);
+                // Search deduplicates the factor before the subsumption and
+                // goal checks; keep the same shape here so conclusions that
+                // retain duplicate literals still compare equal after
+                // condensing both sides (CSR115+6, SEV606+1, GEO111+1).
+                let condensed_expected = condense_clause(&expected);
+                let mut matching_steps = 0;
+                let subsumes_parent = match clause_subsumes(
+                    &condensed_expected,
+                    &parent,
+                    &mut matching_steps,
+                    limits.max_subsumption_steps,
+                ) {
+                    Ok(value) => value,
+                    Err(()) => {
+                        return KernelVerdict::Inconclusive(
+                            "condensation exceeded strict matching-step limit".into(),
+                        );
+                    }
+                };
+                if subsumes_parent
+                    && (clause_alpha_equiv(&expected, &goal)
+                        || clause_alpha_equiv(&condensed_expected, &goal_condensed))
+                {
+                    return KernelVerdict::Certified;
                 }
-            }
-            if expected.len() >= parent.len() {
-                continue;
-            }
-            let mut matching_steps = 0;
-            let subsumes_parent = match clause_subsumes(
-                &expected,
-                &parent,
-                &mut matching_steps,
-                limits.max_subsumption_steps,
-            ) {
-                Ok(value) => value,
-                Err(()) => {
-                    return KernelVerdict::Inconclusive(
-                        "condensation exceeded strict matching-step limit".into(),
-                    );
-                }
-            };
-            if subsumes_parent && clause_alpha_equiv(&expected, &goal) {
-                return KernelVerdict::Certified;
             }
         }
     }
     KernelVerdict::Rejected("condensation conclusion is not a valid condensed clause".into())
 }
 
-fn unify_atoms_for_condensation(left: &Atom, right: &Atom) -> Option<HashMap<VarId, Term>> {
+/// All unifiers of `left` and `right` worth trying for condensation.
+/// Equality tries both orientations independently: the direct unifier may
+/// bind a variable in a way that misses the goal while the flipped unifier
+/// is the identity the prover used (CSR015+1).
+fn unifiers_for_condensation(left: &Atom, right: &Atom) -> Vec<HashMap<VarId, Term>> {
     match (left, right) {
         (Atom::Pred(left_symbol, left_args), Atom::Pred(right_symbol, right_args))
             if left_symbol == right_symbol && left_args.len() == right_args.len() =>
@@ -6310,27 +6377,28 @@ fn unify_atoms_for_condensation(left: &Atom, right: &Atom) -> Option<HashMap<Var
                 .zip(right_args)
                 .all(|(left, right)| unify_terms(left, right, &mut substitution))
             {
-                Some(substitution)
+                vec![substitution]
             } else {
-                None
+                Vec::new()
             }
         }
         (Atom::Eq(left_left, left_right), Atom::Eq(right_left, right_right)) => {
+            let mut unifiers = Vec::new();
             let mut substitution = HashMap::new();
             if unify_terms(left_left, right_left, &mut substitution)
                 && unify_terms(left_right, right_right, &mut substitution)
             {
-                return Some(substitution);
+                unifiers.push(substitution);
             }
             let mut substitution = HashMap::new();
             if unify_terms(left_left, right_right, &mut substitution)
                 && unify_terms(left_right, right_left, &mut substitution)
             {
-                return Some(substitution);
+                unifiers.push(substitution);
             }
-            None
+            unifiers
         }
-        _ => None,
+        _ => Vec::new(),
     }
 }
 
@@ -6554,13 +6622,18 @@ fn verify_ac_normalization(
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-enum AcAxiomKind {
+/// Shape of a unit equality axiom recognised as commutativity or associativity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AcAxiomKind {
     Commutative,
     Associative,
 }
 
-fn classify_ac_axiom(left: &Term, right: &Term) -> Option<(mrs_core::SymbolId, AcAxiomKind)> {
+/// Classify a binary-function equation as commutativity or associativity.
+///
+/// Returns the function symbol and the axiom kind when `left = right` matches
+/// `f(X,Y) = f(Y,X)` (commutative) or the nested associativity pattern.
+pub fn classify_ac_axiom(left: &Term, right: &Term) -> Option<(mrs_core::SymbolId, AcAxiomKind)> {
     let (Term::App(left_symbol, left_args), Term::App(right_symbol, right_args)) = (left, right)
     else {
         return None;
@@ -8433,11 +8506,6 @@ fn verify_avatar_sat_refutation(
         || !annotation.trace_cited_indices.is_empty()
         || !annotation.trace_clauses.is_empty()
         || annotation.trace_bytes.is_some();
-    if !has_trace_payload {
-        return KernelVerdict::Inconclusive(
-            "avatar_sat_refutation lacks a replayable SAT proof trace".into(),
-        );
-    }
     if has_trace_payload && let Err(verdict) = verify_avatar_sat_trace(&annotation, limits) {
         return verdict;
     }
@@ -8478,8 +8546,7 @@ fn verify_avatar_sat_refutation(
         );
     }
 
-    let mut split_contexts = Vec::new();
-    let mut variables = HashSet::new();
+    let mut split_contexts: Vec<&AvatarSplitContext> = Vec::new();
     for split_index in &split_indices {
         if dag.nodes[*split_index].rule != Some("avatar_split_clause") {
             return KernelVerdict::Rejected("avatar_sat_refutation cites a non-split node".into());
@@ -8489,8 +8556,6 @@ fn verify_avatar_sat_refutation(
                 "avatar_sat_refutation cites an unvalidated split".into(),
             );
         };
-        variables.extend(split.inherited_vars.iter().copied());
-        variables.extend(split.branch_vars.iter().copied());
         split_contexts.push(split);
     }
 
@@ -8544,7 +8609,6 @@ fn verify_avatar_sat_refutation(
                 "avatar_sat_refutation contains a duplicate branch context".into(),
             );
         }
-        variables.extend(normalized_context.iter().copied());
         branch_context_list.push(normalized_context);
     }
     if has_trace_payload
@@ -8558,57 +8622,43 @@ fn verify_avatar_sat_refutation(
     {
         return verdict;
     }
-    let mut variables: Vec<_> = variables.into_iter().collect();
-    variables.sort_unstable();
-    if variables.len() >= usize::BITS as usize {
-        return KernelVerdict::Inconclusive(
-            "avatar_sat_refutation has too many SAT variables".into(),
-        );
+    // With a verified LRAT trace bound to this certificate's manifest, the
+    // SAT instance is already proved unsatisfiable; enumeration would only
+    // re-check the same fact.
+    if has_trace_payload {
+        return KernelVerdict::Certified;
     }
-    let assignments = 1usize << variables.len();
-    if assignments > limits.max_avatar_steps {
-        return KernelVerdict::Inconclusive(
-            "avatar_sat_refutation exceeded strict AVATAR enumeration limit".into(),
-        );
-    }
-    let position: HashMap<u32, usize> = variables
-        .iter()
-        .enumerate()
-        .map(|(index, variable)| (*variable, index))
-        .collect();
-    let mut steps = 0usize;
-    for mask in 0..assignments {
-        steps += 1;
-        let sat = split_contexts.iter().all(|split| {
-            !split
-                .inherited_vars
-                .iter()
-                .all(|variable| mask & (1usize << position[variable]) != 0)
-                || split
-                    .branch_vars
-                    .iter()
-                    .any(|variable| mask & (1usize << position[variable]) != 0)
-        });
-        if !sat {
-            continue;
+    // No stored trace: reconstruct the SAT instance from the validated
+    // splits/branch contexts and check unsatisfiability with CaDiCaL.
+    // Structure validation above still binds every variable to a real split
+    // component, so a forged certificate cannot invent free variables.
+    let mut solver = mrs_cadical::Solver::new();
+    for split in &split_contexts {
+        let mut clause = Vec::with_capacity(split.branch_vars.len() + split.inherited_vars.len());
+        for &var in &split.branch_vars {
+            clause.push(var as i32);
         }
-        let covered = branch_context_list.iter().any(|context| {
-            context
-                .iter()
-                .all(|variable| mask & (1usize << position[variable]) != 0)
-        });
-        if !covered {
-            return KernelVerdict::Rejected(
-                "avatar_sat_refutation leaves a satisfiable SAT assignment unrefuted".into(),
-            );
+        for &var in &split.inherited_vars {
+            clause.push(-(var as i32));
         }
+        solver.add_clause(&clause);
     }
-    if steps > limits.max_avatar_steps {
-        return KernelVerdict::Inconclusive(
-            "avatar_sat_refutation exceeded strict AVATAR step limit".into(),
-        );
+    for context in &branch_context_list {
+        let mut clause = Vec::with_capacity(context.len());
+        for &var in context {
+            clause.push(-(var as i32));
+        }
+        solver.add_clause(&clause);
     }
-    KernelVerdict::Certified
+    match solver.solve() {
+        mrs_cadical::SolveResult::Unsat => KernelVerdict::Certified,
+        mrs_cadical::SolveResult::Unknown => KernelVerdict::Inconclusive(
+            "avatar_sat_refutation SAT verification inconclusive".into(),
+        ),
+        mrs_cadical::SolveResult::Sat => KernelVerdict::Rejected(
+            "avatar_sat_refutation leaves a satisfiable SAT assignment unrefuted".into(),
+        ),
+    }
 }
 
 fn verify_avatar_sat_manifest_binding(
@@ -11118,16 +11168,36 @@ mod tests {
     }
 
     #[test]
-    fn rejects_subsumption_resolution_reusing_a_target_literal() {
+    fn certifies_subsumption_resolution_reusing_a_target_literal() {
+        // Set-style matching: both active literals may witness the same
+        // flipped target literal once they coincide under σ. Sound because
+        // σ(active) set-inclusion still yields `active ∧ target ⊨ target\{L}`
+        // (`p(X)|p(Y)` entails `p(a)`, so `~p(a)|r(a)` reduces to `r(a)`).
         let input = "cnf(target, axiom, ~p(a) | r(a)).\n\
                      cnf(active, axiom, p(X) | p(Y)).\n\
                      cnf(nr, axiom, ~r(a)).";
         let proof = "cnf(target, axiom, ~p(a) | r(a), file('problem.p', target)).\n\
                      cnf(active, axiom, p(X) | p(Y), file('problem.p', active)).\n\
-                     cnf(forged, plain, r(a), inference(subsumption_resolution, [status(thm)], [target,active])).\n\
+                     cnf(cut, plain, r(a), inference(subsumption_resolution, [status(thm)], [target,active])).\n\
                      cnf(nr, axiom, ~r(a), file('problem.p', nr)).\n\
-                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [forged,nr])).";
-        assert!(matches!(check(input, proof), KernelVerdict::Rejected(_)));
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [cut,nr])).";
+        assert_eq!(check(input, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_subsumption_resolution_shared_flipped_literal() {
+        // MGT005+1 c1709 shape: active `~g(X,Y)|~g(Y,X)` becomes two copies
+        // of `~g(a,a)` under σ, but the flipped target holds only one.
+        let input = "cnf(target, axiom, g(a,a) | r(a)).\n\
+                     cnf(active, axiom, ~g(X,Y) | ~g(Y,X)).\n\
+                     cnf(nr, axiom, ~r(a)).\n\
+                     cnf(ng, axiom, ~g(a,a)).";
+        let proof = "cnf(target, axiom, g(a,a) | r(a), file('problem.p', target)).\n\
+                     cnf(active, axiom, ~g(X,Y) | ~g(Y,X), file('problem.p', active)).\n\
+                     cnf(cut, plain, r(a), inference(subsumption_resolution, [status(thm)], [target,active])).\n\
+                     cnf(nr, axiom, ~r(a), file('problem.p', nr)).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [cut,nr])).";
+        assert_eq!(check(input, proof), KernelVerdict::Certified);
     }
 
     #[test]
@@ -12739,6 +12809,22 @@ mod tests {
     }
 
     #[test]
+    fn certifies_factoring_condensed_conclusion() {
+        // MGT079+1 c257→c9135 shape: merge two negative `is_v` lits, which
+        // leaves a duplicate the prover condenses before export.
+        let problem = "fof(a, axiom, ~is_v(X) | ~is_v(Y) | ~is_v(X) | q(X)).\n\
+                       fof(n1, axiom, is_v(a)).\n\
+                       fof(n2, axiom, ~q(a)).";
+        let proof = "fof(a, axiom, ~is_v(X) | ~is_v(Y) | ~is_v(X) | q(X), file('problem.p', a)).\n\
+                     fof(n1, axiom, is_v(a), file('problem.p', n1)).\n\
+                     fof(n2, axiom, ~q(a), file('problem.p', n2)).\n\
+                     fof(s, plain, ~is_v(X) | q(X), inference(factoring, [status(thm)], [a])).\n\
+                     fof(mid, plain, q(a), inference(resolution, [status(thm)], [s,n1])).\n\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [mid,n2])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
     fn certifies_multi_literal_factoring() {
         // SYN353+1 shape: three literals collapse at once via X1 = X2 = X3.
         let problem = "fof(a, axiom, ~p(X1,X2,X3) | ~p(X2,X3,X1) | ~p(X3,X1,X2) | ~q(X1,X2,X3)).\n\
@@ -12768,6 +12854,44 @@ mod tests {
     }
 
     #[test]
+    fn certifies_condensation_equality_flipped_orientation() {
+        // CSR015+1 c10797→c10798 shape: unify `push = X0` with `X0 = push`.
+        // The direct unifier binds X0↦push and misses the goal; the flipped
+        // unifier is the identity and yields exactly the exported clause.
+        let problem = "fof(a, axiom, r(X) | push = X | pl = X | X = push).\n\
+                       fof(n, axiom, ~r(push)).\n\
+                       fof(nq, axiom, pl != push).\n\
+                       fof(np, axiom, ~(push = push)).";
+        let proof = "fof(a, axiom, r(X) | push = X | pl = X | X = push, file('problem.p', a)).\
+                     fof(n, axiom, ~r(push), file('problem.p', n)).\
+                     fof(nq, axiom, pl != push, file('problem.p', nq)).\
+                     fof(np, axiom, ~(push = push), file('problem.p', np)).\
+                     cnf(c, plain, r(X) | pl = X | X = push, inference(condensation, [status(thm)], [a])).\
+                     cnf(m1, plain, pl = push | push = push, inference(resolution, [status(thm)], [c,n])).\
+                     cnf(m2, plain, push = push, inference(resolution, [status(thm)], [m1,nq])).\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [m2,np])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_condensation_retaining_duplicates() {
+        // CSR115+6 c41390→c648782 shape: the factor substitutes one variable
+        // into another, so the exported conclusion still holds two syntactic
+        // copies of a literal the parent had only once under different vars.
+        let problem = "fof(a, axiom, p(X) | p(Y) | p(X) | q(X)).\n\
+                       fof(n, axiom, ~p(a)).\n\
+                       fof(nq, axiom, ~q(a)).";
+        let proof = "fof(a, axiom, p(X) | p(Y) | p(X) | q(X), file('problem.p', a)).\
+                     fof(n, axiom, ~p(a), file('problem.p', n)).\
+                     fof(nq, axiom, ~q(a), file('problem.p', nq)).\
+                     cnf(c, plain, p(Y) | p(Y) | q(Y), inference(condensation, [status(thm)], [a])).\
+                     cnf(mid1, plain, p(a) | q(a), inference(resolution, [status(thm)], [c,n])).\
+                     cnf(mid2, plain, q(a), inference(resolution, [status(thm)], [mid1,n])).\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [mid2,nq])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
     fn rejects_forged_condensation_conclusion() {
         let problem = "fof(a, axiom, p(X) | p(a) | q(X)).";
         let proof = "fof(a, axiom, p(X) | p(a) | q(X), file('problem.p', a)).\
@@ -12782,6 +12906,20 @@ mod tests {
         let proof = "fof(a, axiom, ~(X = X) | p(a), file('problem.p', a)).\n\
                      fof(n, axiom, ~p(a), file('problem.p', n)).\n\
                      fof(s, plain, p(a), inference(equality_resolution, [status(thm)], [a])).\n\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [s,n])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_equality_resolution_condensed_conclusion() {
+        // CSR117+1 c15639 shape: resolving `~(X = Y)` instantiates the rest
+        // into three copies of the same literal; the exported conclusion is
+        // the condensed single copy.
+        let problem = "fof(a, axiom, ~(X = Y) | p(X) | p(Y) | p(X)).\n\
+                       fof(n, axiom, ~p(a)).";
+        let proof = "fof(a, axiom, ~(X = Y) | p(X) | p(Y) | p(X), file('problem.p', a)).\n\
+                     fof(n, axiom, ~p(a), file('problem.p', n)).\n\
+                     fof(s, plain, p(X), inference(equality_resolution, [status(thm)], [a])).\n\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [s,n])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
     }
@@ -12978,6 +13116,29 @@ mod tests {
                      fof(n2, axiom, ~q(one), file('problem.p', n2)).\n\
                      cnf(s, plain, p(plus(sk0,sk(sk0))) | q(one), inference(superposition, [status(thm)], [eq,target])).\n\
                      cnf(m1, plain, q(one), inference(resolution, [status(thm)], [s,n1])).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [m1,n2])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_superposition_with_negated_conjecture_commutativity() {
+        // SWX217+1 shape: commutativity of `x` is the *negated conjecture*
+        // itself (`? [X,Y] : x(X,Y) != x(Y,X)`), not a cited axiom. Negating
+        // a conjecture is a premise of every refutation of it, so the kernel
+        // loads the flipped equality as background AC and replays the plain
+        // superposition that used `unify_comm`.
+        let problem = "fof(goal, conjecture, ? [X,Y] : x(X,Y) != x(Y,X)).\n\
+                       fof(eq, axiom, x(suc(zero), a) = b).\n\
+                       fof(target, axiom, p(x(a, suc(zero))) | q(a)).\n\
+                       fof(n1, axiom, ~p(b)).\n\
+                       fof(n2, axiom, ~q(a)).";
+        let proof = "fof(goal, conjecture, ? [X,Y] : x(X,Y) != x(Y,X), file('problem.p', goal)).\n\
+                     fof(eq, axiom, x(suc(zero), a) = b, file('problem.p', eq)).\n\
+                     fof(target, axiom, p(x(a, suc(zero))) | q(a), file('problem.p', target)).\n\
+                     fof(n1, axiom, ~p(b), file('problem.p', n1)).\n\
+                     fof(n2, axiom, ~q(a), file('problem.p', n2)).\n\
+                     cnf(s, plain, p(b) | q(a), inference(superposition, [status(thm)], [eq,target])).\n\
+                     cnf(m1, plain, q(a), inference(resolution, [status(thm)], [s,n1])).\n\
                      cnf(bot, plain, $false, inference(resolution, [status(thm)], [m1,n2])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
     }
