@@ -140,9 +140,13 @@ The first strict kernel implementation certifies only:
   and exported conclusion
 - bounded `equality_factoring`
 - ground-unit `equality_normalization` over positive ground constant
-  equalities (union-find representative replacement of a cited target
-  clause; non-ground equality parents remain inconclusive, and a positive
-  target that becomes reflexive is rejected)
+  equalities (the target is the parent that is not a positive ground unit
+  equality, regardless of parent order; both target and conclusion are
+  normalized with the same union-find classes — recursing into nested
+  function arguments — before comparison, so the verdict does not depend on
+  which class representative either side picked; non-ground equality parents
+  remain inconclusive, and a positive target that becomes reflexive is
+  rejected)
 - bounded `condensation` trying both equality orientations of the removed /
   matched pair and comparing both the raw and condensed expected clauses
   against the exported conclusion
