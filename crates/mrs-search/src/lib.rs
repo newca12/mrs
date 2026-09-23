@@ -563,7 +563,9 @@ pub struct SearchConfig {
     /// Optional Twee-style goal-directed preprocessing transformation.
     pub goal_transformation: Option<GoalTransformMode>,
     /// Number of given-clause iterations between shared-pool polls.
-    /// `0` disables cross-strategy clause sharing.
+    /// `0` disables cross-strategy clause sharing (the default: every named
+    /// `casc_*` schedule inherits this unless it sets an explicit interval).
+    /// Set `MRS_SHARED_POOL_INTERVAL=<N>` to re-enable sharing experimentally.
     pub shared_pool_poll_interval: u64,
     /// Scheme used to compute problem-specific symbol precedence for reduction orderings.
     pub precedence_scheme: PrecedenceScheme,
@@ -657,7 +659,10 @@ impl Default for SearchConfig {
             sine_depth_limit: None,
             goal_transformation: None,
             lrs_policy: LrsPolicy::WallClock,
-            shared_pool_poll_interval: 500,
+            // Default: no cross-strategy clause sharing. Sharing stays
+            // available opt-in via `MRS_SHARED_POOL_INTERVAL=<N>` or an
+            // explicit per-schedule `shared_pool_poll_interval`.
+            shared_pool_poll_interval: 0,
             precedence_scheme: PrecedenceScheme::InvFreq,
             symbol_weight_scheme: SymbolWeightScheme::Uniform,
             resource_limits: ResourceLimits::default(),
