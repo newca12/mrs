@@ -10,11 +10,15 @@ familiar or because another theorem prover agrees with it.
 `mrs-proof-kernel` deliberately depends only on:
 
 - `mrs-core` for lowered formulas, terms, clauses, symbols, and substitutions;
-- `mrs-tptp` for the parsed TPTP/TSTP representation.
+- `mrs-tptp` for the parsed TPTP/TSTP representation;
+- `mrs-cadical` for the bounded in-process SAT consistency check used by
+  explicit AVATAR roll-ups that do not carry a replayable SAT trace.
 
 It does not depend on `mrs-search`, `mrs-proover`, ATP adapters, external
 processes, global mutable verifier state, or network services. Search may
-generate a proof, but it is not trusted by the kernel.
+generate a proof, but it is not trusted by the kernel. CaDiCaL is used only
+after the kernel has validated the AVATAR split, branch, and provenance
+metadata; it does not verify first-order inference steps.
 
 ## API
 
@@ -63,11 +67,13 @@ The current kernel checks:
   bounded formula equivalence, subsumption resolution, demodulation, and
   superposition;
 - explicit CWA-style `split_component` and `avatar_sat_refutation`
-  certificates with complete branch coverage and linked fixture coverage.
+  certificates with complete branch coverage and linked fixture coverage;
+  replayable SAT traces are checked independently, while trace-less explicit
+  roll-ups use the bounded in-process CaDiCaL consistency check.
 
-Subsumption resolution uses standardized-apart, one-way multiset matching and
-requires the conclusion to be exactly the target clause with one justified
-literal removed.
+Subsumption resolution uses standardized-apart, one-way set matching and
+requires the conclusion to be the target clause with one justified literal
+removed, modulo syntactic duplicate literals.
 
 ## Unsupported Shapes
 
@@ -79,6 +85,7 @@ The kernel returns `Inconclusive` for, among other cases:
 - multi-parent CNF transformations and definitional CNF outside the bounded
   clause-extraction fragment;
 - general AVATAR SAT proofs without explicit complete case-split certificates;
+  explicit certificates remain bounded by the AVATAR variable limit;
 - unsupported TPTP dialects, sequents, or formula shapes.
 
 These boundaries are deliberate. Expanding the accepted rule set requires a

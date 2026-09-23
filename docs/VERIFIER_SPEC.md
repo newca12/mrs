@@ -29,8 +29,13 @@ not call:
 - E prover
 - Vampire
 - a finite-model finder
-- another theorem prover
-- an external process for positive proof acceptance
+- an external process or ATP for positive proof acceptance
+
+The kernel may use the workspace's in-process CaDiCaL SAT solver only for the
+bounded propositional consistency check of an explicit `avatar_sat_refutation`
+certificate that has no replayable SAT trace. This is not used to validate
+first-order inference steps; the split, branch, provenance, and SAT-variable
+bounds are checked by the kernel first.
 
 The kernel may accept only rules for which it recomputes the conclusion from
 the cited parents or checks a precisely defined conservative transformation.
@@ -207,6 +212,7 @@ Resource exhaustion is never positive proof evidence. The kernel returns
 - maximum parent count
 - maximum clause literals
 - maximum term depth
+- maximum AVATAR SAT variables
 - maximum subsumption matching steps
 - maximum Skolemization matching steps
 

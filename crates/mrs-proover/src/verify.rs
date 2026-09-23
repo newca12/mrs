@@ -1781,7 +1781,7 @@ fn parse_avatar_var_name(name: &str) -> Option<u32> {
         .or_else(|| name.strip_prefix("spl_"))?
         .parse::<u32>()
         .ok()
-        .filter(|value| *value > 0)
+        .filter(|value| *value > 0 && *value <= i32::MAX as u32)
 }
 
 fn normalized_avatar_vars(mut vars: Vec<u32>) -> Option<Vec<u32>> {

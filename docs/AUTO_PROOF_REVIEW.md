@@ -31,7 +31,7 @@ flowchart TD
 | Component | Crate | Primary Role | Search / External Dependencies | Trust Boundary |
 |---|---|---|---|---|
 | **Proof Recording & Extraction** | `mrs-proof` | Records inferences, extracts minimal DAGs from `$false`, formats standard TSTP. | None | Search engine producer |
-| **Strict Micro-Kernel** | `mrs-proof-kernel` | Independent, zero-search, purely functional mathematical proof checker. | **None** (Only depends on `mrs-core` & `mrs-tptp`) | **Zero-trust gate** (`--self-check`) |
+| **Strict Micro-Kernel** | `mrs-proof-kernel` | Independent, zero-search proof checker with a bounded propositional AVATAR discharge. | `mrs-core`, `mrs-tptp`, and in-process `mrs-cadical` for explicit AVATAR SAT consistency | **Zero-trust gate** (`--self-check`) |
 | **Competition Verifier** | `mrs-proover` | Standalone competition verifier targeting ProoVer 2026 (leaderboard 1st: 148/150 pts). | CaDiCaL SAT solver, in-process `mrs`, external E/Vampire ladder | Scored competition entry |
 | **Batch Verifier & Auditor** | `mrs-codex` | Parallel SQLite-backed corpus auditor supporting `--verify-mode kernel` & `competition`. | SQLite, Rayon | Offline benchmarking |
 
@@ -72,7 +72,12 @@ In `mrs`, every clause maintains immutable ancestry data via `ClauseSource`:
 
 ## 3. Layer 2: The Strict Verification Micro-Kernel (`mrs-proof-kernel`)
 
-The strict kernel is designed to eliminate false trust. It contains **no heuristics**, **no search loop**, and **no external dependencies**.
+The strict kernel is designed to eliminate false trust. It contains **no
+heuristics**, **no first-order search loop**, and **no external process or ATP
+dependency**. Explicit AVATAR roll-ups without a replayable SAT trace may use
+the workspace's in-process CaDiCaL SAT solver, but only after the kernel has
+validated the complete split/branch certificate and bounded its SAT-variable
+count.
 
 ### 3.1 Trust Policy & Verdicts
 The kernel returns one of three mutually exclusive outcomes:
@@ -86,7 +91,7 @@ The kernel returns one of three mutually exclusive outcomes:
 The kernel recomputes conclusions from cited parents:
 - **FOL First Principles**:
   - `resolution`: Full Robinson unification and resolvent reconstruction.
-  - `subsumption_resolution`: Multiset matching with exact target literal deletion.
+  - `subsumption_resolution`: Set matching with exact target literal deletion.
   - `factoring`: Multi-literal unification and condensation.
   - `equality_resolution` & `equality_factoring`: Reflexivity elimination and conditional paramodulation.
   - `superposition` & `demodulation`: Subterm rewriting under matching substitutions.

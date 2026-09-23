@@ -1,14 +1,18 @@
 //! Deterministic, dependency-light proof kernel for a strict subset of TSTP.
 //!
 //! This crate deliberately does not depend on `mrs-search`, external ATPs, or
-//! the competition verifier. Unsupported proof rules return `Inconclusive`;
-//! they are never accepted by guessing or by an inference-rule name.
+//! the competition verifier. It may use the workspace-owned CaDiCaL wrapper
+//! for bounded propositional AVATAR roll-up checks after validating their
+//! explicit certificate metadata. Unsupported proof rules return
+//! `Inconclusive`; they are never accepted by guessing or by an inference-rule
+//! name.
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use mrs_cadical::SolveResult;
 use mrs_core::clause::avatar_sat_trace_digest;
 use mrs_core::{Atom, Formula, Substitution, SymbolTable, Term, VarId};
 use mrs_tptp::ast::common::{AtomicWord, GeneralTerm};
@@ -79,6 +83,10 @@ pub struct VerificationLimits {
     pub max_equivalence_steps: usize,
     pub max_avatar_steps: usize,
 }
+
+// CaDiCaL literals use signed i32 values. Keep parsed AVATAR variable names
+// within that representation before any conversion to a SAT clause.
+const MAX_CADICAL_VARIABLE: u32 = i32::MAX as u32;
 
 impl Default for VerificationLimits {
     fn default() -> Self {
@@ -260,7 +268,18 @@ fn verify_strict_with_source_internal(
                     "problem has inconsistent symbol signature: {reason}"
                 ));
             }
-            if let Some(clause) = clause_from_formula(&lowered, limits)
+            let ac_candidate = if formula.role() == FormulaRole::Conjecture {
+                Some(to_nnf(&Formula::neg(lowered.clone())))
+            } else if formula.role().is_premise()
+                || formula.role() == FormulaRole::NegatedConjecture
+            {
+                Some(lowered.clone())
+            } else {
+                None
+            };
+            if let Some(clause) = ac_candidate
+                .as_ref()
+                .and_then(|candidate| clause_from_formula(candidate, limits))
                 && clause.len() == 1
                 && clause[0].positive
                 && let Atom::Eq(left, right) = &clause[0].atom
@@ -272,31 +291,6 @@ fn verify_strict_with_source_internal(
                     }
                     AcAxiomKind::Associative => {
                         background_associative.insert(symbol);
-                    }
-                }
-            }
-            // A conjecture that is the negation of an AC law (e.g. SWX217+1
-            // `? [X,Y] : x(X,Y) != x(Y,X)`) becomes `x(X,Y) = x(Y,X)` once
-            // negated for refutation. Search detects that unit in the clause
-            // store and superposes modulo commutativity, then strips the
-            // negated-conjecture provenance from the exported DAG. Replay the
-            // same background: negating a conjecture is a premise of every
-            // refutation of that conjecture, so accepting remains sound.
-            if formula.role() == FormulaRole::Conjecture {
-                let negated = to_nnf(&Formula::neg(lowered.clone()));
-                if let Some(clause) = clause_from_formula(&negated, limits)
-                    && clause.len() == 1
-                    && clause[0].positive
-                    && let Atom::Eq(left, right) = &clause[0].atom
-                    && let Some((symbol, kind)) = classify_ac_axiom(left, right)
-                {
-                    match kind {
-                        AcAxiomKind::Commutative => {
-                            background_commutative.insert(symbol);
-                        }
-                        AcAxiomKind::Associative => {
-                            background_associative.insert(symbol);
-                        }
                     }
                 }
             }
@@ -8632,6 +8626,19 @@ fn verify_avatar_sat_refutation(
     // splits/branch contexts and check unsatisfiability with CaDiCaL.
     // Structure validation above still binds every variable to a real split
     // component, so a forged certificate cannot invent free variables.
+    let mut variables = HashSet::new();
+    for split in &split_contexts {
+        variables.extend(split.branch_vars.iter().copied());
+        variables.extend(split.inherited_vars.iter().copied());
+    }
+    for context in &branch_context_list {
+        variables.extend(context.iter().copied());
+    }
+    if variables.len() > limits.max_avatar_steps {
+        return KernelVerdict::Inconclusive(
+            "avatar_sat_refutation exceeded strict SAT-variable limit".into(),
+        );
+    }
     let mut solver = mrs_cadical::Solver::new();
     for split in &split_contexts {
         let mut clause = Vec::with_capacity(split.branch_vars.len() + split.inherited_vars.len());
@@ -8651,11 +8658,11 @@ fn verify_avatar_sat_refutation(
         solver.add_clause(&clause);
     }
     match solver.solve() {
-        mrs_cadical::SolveResult::Unsat => KernelVerdict::Certified,
-        mrs_cadical::SolveResult::Unknown => KernelVerdict::Inconclusive(
+        SolveResult::Unsat => KernelVerdict::Certified,
+        SolveResult::Unknown => KernelVerdict::Inconclusive(
             "avatar_sat_refutation SAT verification inconclusive".into(),
         ),
-        mrs_cadical::SolveResult::Sat => KernelVerdict::Rejected(
+        SolveResult::Sat => KernelVerdict::Rejected(
             "avatar_sat_refutation leaves a satisfiable SAT assignment unrefuted".into(),
         ),
     }
@@ -9267,7 +9274,7 @@ fn parse_avatar_var(name: &str) -> Option<u32> {
         .or_else(|| name.strip_prefix("spl_"))?
         .parse()
         .ok()
-        .filter(|var| *var > 0)
+        .filter(|var| *var > 0 && *var <= MAX_CADICAL_VARIABLE)
 }
 
 fn normalize_avatar_vars(vars: &mut Vec<u32>) {
@@ -13186,6 +13193,44 @@ mod tests {
                      fof(b0, plain, p, inference(split_component, [status(esa)], [top])).\n\
                      fof(f0, plain, $false, inference(resolution, [status(thm)], [b0,np])).\n\
                      fof(bot, plain, $false, inference(avatar_sat_refutation, [status(thm)], [top,f0])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn rejects_avatar_variable_that_overflows_cadical_literal() {
+        let problem = "fof(top, axiom, p | q).\n\
+                       fof(np, axiom, ~p).\n\
+                       fof(nq, axiom, ~q).";
+        let proof = "fof(top, axiom, p | q, file('problem.p', top)).\n\
+                     fof(np, axiom, ~p, file('problem.p', np)).\n\
+                     fof(nq, axiom, ~q, file('problem.p', nq)).\n\
+                     fof(split, plain, spl0_2147483648 | spl0_2,\
+                         inference(avatar_split_clause,\
+                           [status(esa),\
+                            avatar_split([branch(0, spl0_2147483648, [0]),\
+                                         branch(1, spl0_2, [1])], [])],\
+                           [top])).\n\
+                     fof(comp_p, plain, p | ~spl0_2147483648,\
+                         inference(avatar_component_clause,\
+                           [status(esa), avatar_component(split, 0, spl0_2147483648)],\
+                           [split])).\n\
+                     fof(comp_q, plain, q | ~spl0_2,\
+                         inference(avatar_component_clause,\
+                           [status(esa), avatar_component(split, 1, spl0_2)],\
+                           [split])).\n\
+                     fof(empty_p, plain, ~spl0_2147483648,\
+                         inference(resolution, [status(thm)], [comp_p, np])).\n\
+                     fof(empty_q, plain, ~spl0_2,\
+                         inference(resolution, [status(thm)], [comp_q, nq])).\n\
+                     fof(branch_p, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(esa), avatar_context([spl0_2147483648])], [empty_p])).\n\
+                     fof(branch_q, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(esa), avatar_context([spl0_2])], [empty_q])).\n\
+                     fof(bot, plain, $false,\
+                         inference(avatar_sat_refutation, [status(thm)],\
+                           [split, branch_p, branch_q])).";
         assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
     }
 
