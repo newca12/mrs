@@ -306,16 +306,12 @@ fn estimate_grounding_size(clauses: &[Clause], n_constants: usize) -> u64 {
     total
 }
 
-/// Select an InstGen pre-pass budget from problem shape.
-///
-/// Inputs: clause count, distinct constants, per-clause variables, and the
-/// estimated naive SAT grounding size. Small problems keep the full baseline
-/// budget; huge estimated groundings get a fail-fast tier so the pre-pass
-/// yields quickly to the portfolio instead of inflating CaDiCaL.
-///
-/// Env overrides (experiments only): `MRS_INSTGEN_TIMEOUT_MS`,
-/// `MRS_INSTGEN_MAX_ROUNDS`, `MRS_INSTGEN_MAX_INSTANCES`.
-pub fn adaptive_instgen_budget(clauses: &[Clause]) -> (InstGenBudget, u64) {
+fn adaptive_instgen_budget_with_overrides(
+    clauses: &[Clause],
+    timeout_ms: Option<u64>,
+    max_rounds: Option<usize>,
+    max_instances: Option<usize>,
+) -> (InstGenBudget, u64) {
     let constants = collect_constants(clauses);
     let n_constants = constants.len();
     let est = estimate_grounding_size(clauses, n_constants);
@@ -345,22 +341,38 @@ pub fn adaptive_instgen_budget(clauses: &[Clause]) -> (InstGenBudget, u64) {
         }
     };
 
-    if let Ok(v) = std::env::var("MRS_INSTGEN_TIMEOUT_MS")
-        && let Ok(ms) = v.parse::<u64>()
-    {
+    if let Some(ms) = timeout_ms {
         budget.timeout = Duration::from_millis(ms);
     }
-    if let Ok(v) = std::env::var("MRS_INSTGEN_MAX_ROUNDS")
-        && let Ok(r) = v.parse::<usize>()
-    {
-        budget.max_rounds = r;
+    if let Some(rounds) = max_rounds {
+        budget.max_rounds = rounds;
     }
-    if let Ok(v) = std::env::var("MRS_INSTGEN_MAX_INSTANCES")
-        && let Ok(m) = v.parse::<usize>()
-    {
-        budget.max_instances = m;
+    if let Some(instances) = max_instances {
+        budget.max_instances = instances;
     }
     (budget, est)
+}
+
+/// Select an InstGen pre-pass budget from problem shape.
+///
+/// Inputs: clause count, distinct constants, per-clause variables, and the
+/// estimated naive SAT grounding size. Small problems keep the full baseline
+/// budget; huge estimated groundings get a fail-fast tier so the pre-pass
+/// yields quickly to the portfolio instead of inflating CaDiCaL.
+///
+/// Env overrides (experiments only): `MRS_INSTGEN_TIMEOUT_MS`,
+/// `MRS_INSTGEN_MAX_ROUNDS`, `MRS_INSTGEN_MAX_INSTANCES`.
+pub fn adaptive_instgen_budget(clauses: &[Clause]) -> (InstGenBudget, u64) {
+    let timeout_ms = std::env::var("MRS_INSTGEN_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok());
+    let max_rounds = std::env::var("MRS_INSTGEN_MAX_ROUNDS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok());
+    let max_instances = std::env::var("MRS_INSTGEN_MAX_INSTANCES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok());
+    adaptive_instgen_budget_with_overrides(clauses, timeout_ms, max_rounds, max_instances)
 }
 
 /// Ground atom key in EPR: predicate symbol + list of constant SymbolIds.
@@ -700,6 +712,14 @@ pub fn try_instgen_epr_with_telemetry(
     }
 
     tele.attempted = true;
+    // Enforce the cap before constructing the SAT solver or copying the input
+    // into the active InstGen set. The cap includes the input clauses, so a
+    // large ground EPR corpus cannot bypass the adaptive fail-fast tier.
+    if clauses.len() > budget.max_instances {
+        tele.fallback_reason = Some("max_instances_exceeded");
+        tele.return_reason = Some("fallback");
+        return (None, tele);
+    }
     let trace = std::env::var("TRACE_INSTGEN").is_ok();
     let start_time = Instant::now();
 
@@ -888,6 +908,15 @@ pub fn try_instgen_epr_with_telemetry(
                 if trace {
                     eprintln!("[InstGen] Running given-clause proof extraction fallback...");
                 }
+                let fallback_time = budget
+                    .timeout
+                    .saturating_sub(start_time.elapsed())
+                    .min(Duration::from_secs(2));
+                if fallback_time.is_zero() {
+                    tele.fallback_reason = Some("timeout");
+                    tele.return_reason = Some("fallback");
+                    return (None, tele);
+                }
                 let mut state = crate::state::SearchState::new_with_ml(
                     all_clauses.clone(),
                     provenance.to_vec(),
@@ -900,7 +929,7 @@ pub fn try_instgen_epr_with_telemetry(
                     crate::ClauseWeightFn::Standard,
                 );
                 let config = SearchConfig {
-                    time_limit: Duration::from_secs(2),
+                    time_limit: fallback_time,
                     ordering: crate::TermOrdering::KBO,
                     literal_selection: crate::LiteralSelection::AllNegative,
                     selection: crate::SelectionStrategy::SmallestFirst,
@@ -1740,15 +1769,9 @@ mod tests {
         assert_eq!(budget_big.max_instances, 20_000);
         assert_eq!(budget_big.timeout, Duration::from_millis(750));
 
-        // Env override wins for experiments.
-        // SAFETY: single-threaded test process; restored immediately.
-        unsafe {
-            std::env::set_var("MRS_INSTGEN_MAX_ROUNDS", "7");
-        }
-        let (budget_override, _) = adaptive_instgen_budget(&small);
+        // Explicit overrides win for experiments.
+        let (budget_override, _) =
+            adaptive_instgen_budget_with_overrides(&small, None, Some(7), None);
         assert_eq!(budget_override.max_rounds, 7);
-        unsafe {
-            std::env::remove_var("MRS_INSTGEN_MAX_ROUNDS");
-        }
     }
 }

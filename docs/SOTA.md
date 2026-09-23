@@ -20,7 +20,7 @@ The foundation of modern first-order logic provers.
     *   ✅ **Implemented:** Fully integrated with `varisat`. EPR-structured problems are now handled lazily by AVATAR instead of naive pre-expansion.
 *   **Instantiation-Based Methods (InstGen)**: Highly efficient algorithms tailored specifically for the Effectively Propositional (EPR) fragment.
     *   *Paper:* [New Directions in Instantiation-Based Theorem Proving (Ganzinger & Korovin, 2003)](https://link.springer.com/chapter/10.1007/3-540-45085-8_6)
-    *   ⚠️ **Superseded:** Naive ground pre-expansion (`preprocess_epr`) was disabled after causing OOM on large EPR problems. AVATAR now handles EPR dynamically. True lazy InstGen remains unimplemented.
+    *   ✅ **Implemented (fail-closed SAT boundary):** Lazy SAT-guided InstGen now handles pure relational EPR with adaptive pre-pass budgets, MGU-driven instance generation, refutation proof extraction, and route/budget telemetry. Naive ground pre-expansion (`preprocess_epr`) remains disabled for large EPR inputs; variable-bearing satisfiability models still return `GaveUp` until a certified finite-model path exists.
 
 ### 2. Term Indexing Data Structures
 Without highly optimized indices, linear scans cause the prover to time out instantly.

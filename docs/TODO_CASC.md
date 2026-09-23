@@ -116,20 +116,25 @@ coverage.
 
 ### P0: EPR / InstGen Coverage
 
-InstGen already exists in `mrs-search/src/instgen.rs`; the work is to extend
-coverage and instrumentation rather than build a second grounder blindly.
+The core instrumentation and adaptive pre-pass budget are implemented. The
+remaining work is validation and coverage improvement, not a second grounder.
+
+InstGen exists in `mrs-search/src/instgen.rs`; telemetry now records route,
+invocation, rounds, instances, SAT size, elapsed time, return reason, fallback
+reason, estimated grounding size, and selected budget tier.
 
 - Separate pure relational EPR, EPR with equality, ground EPR, and non-EPR
   rows inside EPS/EPU result divisions.
-- Record InstGen invocation, rounds, instances, SAT size, elapsed time, return
-  reason, and fallback reason.
-- Replace the single fixed pre-pass budget with an adaptive budget based on
-  constants, variables, clauses, and estimated SAT size.
+- Validate those telemetry fields against benchmark CSVs and compare adaptive
+  tiers against bounded exhaustive-grounding canaries.
+- Tune the adaptive budget based on constants, variables, clauses, and
+  estimated grounding size without weakening the fail-fast cap.
 - Keep variable-bearing satisfiability conclusions fail-closed and preserve
   UNSAT proof extraction.
 
 **Exit gate:** improve EPS/EPU definitive coverage without wrong definitive
-statuses or uncertified satisfiable results.
+statuses or uncertified satisfiable results. Variable-bearing SAT remains
+explicitly fail-closed until a certified model path exists.
 
 ### P0: Large-Theory SInE Experiments
 

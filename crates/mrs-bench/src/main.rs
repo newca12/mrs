@@ -231,7 +231,7 @@ struct DetailStats {
     instgen_clauses: u64,
     instgen_ms: u64,
     instgen_fallback: String,
-    instgen_attempted: u64,
+    instgen_attempted: bool,
     instgen_result: String,
     instgen_est: u64,
     instgen_budget_ms: u64,
@@ -270,7 +270,7 @@ fn parse_detail(detail: &str) -> DetailStats {
                 "instgen_clauses" => s.instgen_clauses = v.parse().unwrap_or(0),
                 "instgen_ms" => s.instgen_ms = v.parse().unwrap_or(0),
                 "instgen_fallback" => s.instgen_fallback = v.to_string(),
-                "instgen_attempted" => s.instgen_attempted = v.parse().unwrap_or(0),
+                "instgen_attempted" => s.instgen_attempted = matches!(v, "true" | "1"),
                 "instgen_result" => s.instgen_result = v.to_string(),
                 "instgen_est" => s.instgen_est = v.parse().unwrap_or(0),
                 "instgen_budget_ms" => s.instgen_budget_ms = v.parse().unwrap_or(0),
@@ -905,5 +905,25 @@ fn main() {
                 r.expected,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_detail;
+
+    #[test]
+    fn parses_instgen_boolean_telemetry() {
+        let detail = parse_detail(
+            "result=GaveUp instgen_attempted=true instgen_result=fallback \
+             instgen_est=810000 instgen_budget_ms=750 instgen_budget_rounds=80 \
+             instgen_budget_instances=20000",
+        );
+        assert!(detail.instgen_attempted);
+        assert_eq!(detail.instgen_result, "fallback");
+        assert_eq!(detail.instgen_est, 810_000);
+        assert_eq!(detail.instgen_budget_ms, 750);
+        assert_eq!(detail.instgen_budget_rounds, 80);
+        assert_eq!(detail.instgen_budget_instances, 20_000);
     }
 }
