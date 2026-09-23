@@ -62,14 +62,14 @@ mrs [--time <seconds>] [--workers <N>] [--schedule <name>] [--self-check] [--cer
 ### Reproducible single-strategy runs
 
 With `--workers N>1` (the default), every strategy in the schedule runs
-concurrently in its own thread and shares a pool of derived unit
-equalities with the others ("cross-strategy clause sharing" — see
-[Architecture](#architecture)). This is by design: it lets the portfolio
-solve more problems in aggregate than any strategy could alone. A direct
-consequence is that **per-strategy telemetry (`processed`/`generated`/
-`lrs_discarded` in the `% SZS detail` line) is not reproducible run-to-run
-in this mode** — how much material a strategy receives from its siblings,
-and how CPU contention affects timing-sensitive heuristics like LRS
+concurrently in its own thread. Cross-strategy sharing of derived unit
+equalities is disabled by default; set `MRS_SHARED_POOL_INTERVAL` to a
+positive iteration count to enable it (see [Architecture](#architecture)).
+When sharing is enabled, it lets the portfolio solve more problems in
+aggregate than any strategy could alone, but **per-strategy telemetry
+(`processed`/`generated`/`lrs_discarded` in the `% SZS detail` line) is not
+reproducible run-to-run** — how much material a strategy receives from its
+siblings, and how CPU contention affects timing-sensitive heuristics like LRS
 pruning, both depend on real-time thread scheduling.
 
 To get a fully deterministic, reproducible result for a *single* strategy
@@ -120,7 +120,10 @@ The pipeline for each problem:
 
 ### Strategy portfolio
 
-15 active strategies run in parallel, each with a fresh search state but sharing a pool of globally discovered unit equalities. Time is distributed from the total budget to bound execution:
+15 active strategies run in parallel, each with a fresh search state. They can
+share a pool of globally discovered unit equalities when
+`MRS_SHARED_POOL_INTERVAL` is set to a positive value; sharing is disabled by
+default. Time is distributed from the total budget to bound execution:
 
 | # | Selection | Weight fn | Literal selection | Ordering | Time share | Notes |
 |---|-----------|-----------|-------------------|----------|------------|-------|

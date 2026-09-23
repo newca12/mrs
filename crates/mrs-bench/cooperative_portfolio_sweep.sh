@@ -8,9 +8,9 @@
 #   cooperative_portfolio_sweep.sh casc-30 feq 11,12,1,6,10,8,14,4 30 4 results/coop-feq
 #
 # Unlike run_codex_sweep.sh/run_strategy_sweep.sh, this launches one mrs
-# process per problem with the requested number of workers. The workers share
-# the equality pool exactly as the competition run does. Set
-# MRS_SHARED_POOL_INTERVAL=0 for the no-sharing control.
+# process per problem with the requested number of workers. Set
+# MRS_SHARED_POOL_INTERVAL to a positive value to enable equality sharing, or
+# set it to 0 for the no-sharing control.
 
 set -euo pipefail
 
@@ -39,7 +39,7 @@ mkdir -p "${OUTPUT}"
 
 echo "[coop] edition=${EDITION} division=${DIVISION} portfolio=${PORTFOLIO}" >&2
 echo "[coop] time=${TIME_LIMIT}s jobs=${JOBS} workers=${WORKERS}" >&2
-echo "[coop] shared_pool_interval=${MRS_SHARED_POOL_INTERVAL:-500}" >&2
+echo "[coop] shared_pool_interval=${MRS_SHARED_POOL_INTERVAL:-0}" >&2
 
 export MRS_PORTFOLIO="${PORTFOLIO}"
 export MRS_WORKERS="${WORKERS}"

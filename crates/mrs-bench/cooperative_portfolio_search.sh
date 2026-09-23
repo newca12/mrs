@@ -20,6 +20,12 @@ TIME_LIMIT="${3:-30}"
 JOBS="${4:-1}"
 ROUNDS="${5:-1}"
 OUTPUT="${6:-${SCRIPT_DIR}/results/${EDITION}/cooperative-search-${DIVISION}-$(date +%Y%m%d_%H%M%S)}"
+SHARED_INTERVAL="${MRS_SHARED_POOL_INTERVAL:-500}"
+
+if ! [[ "${SHARED_INTERVAL}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Error: MRS_SHARED_POOL_INTERVAL must be a positive integer for shared portfolio search." >&2
+    exit 1
+fi
 
 case "${DIVISION,,}" in
     feq) CURRENT=(11 12 1 6 10 8 14 4) ;;
@@ -74,7 +80,8 @@ evaluate() {
             "${EDITION}" "${DIVISION}" "${portfolio}" "${TIME_LIMIT}" "${JOBS}" "${run_dir}" \
             > "${run_dir}.out" 2> "${run_dir}.err"
     else
-        "${SCRIPT_DIR}/cooperative_portfolio_sweep.sh" \
+        MRS_SHARED_POOL_INTERVAL="${SHARED_INTERVAL}" \
+            "${SCRIPT_DIR}/cooperative_portfolio_sweep.sh" \
             "${EDITION}" "${DIVISION}" "${portfolio}" "${TIME_LIMIT}" "${JOBS}" "${run_dir}" \
             > "${run_dir}.out" 2> "${run_dir}.err"
     fi

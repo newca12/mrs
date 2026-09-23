@@ -123,9 +123,9 @@ nix develop -c cargo run --release -- --list-schedules
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--time <seconds>` | `30` | Wall-clock time limit |
-| `--workers <N>` | physical cores | Max parallel search threads. **Reproducibility note:** with `N>1` (the default), strategies run concurrently and share a pool of derived unit equalities (see "Architecture notes" below), so per-run telemetry (`processed`/`generated`/`lrs_discarded`) and even the pass/fail outcome on borderline problems are not bit-reproducible — sibling-thread timing and CPU contention both feed into the wall-clock-sensitive LRS pruning heuristic. Use `--workers 1` for a fully deterministic, sequential single-strategy run (no clause-pool cross-talk, no contention) when diagnosing or reproducing a specific strategy's behavior. |
+| `--workers <N>` | physical cores | Max parallel search threads. **Reproducibility note:** with `N>1` (the default), strategies run concurrently and may share a pool of derived unit equalities when `MRS_SHARED_POOL_INTERVAL` is positive; sharing is disabled by default (see "Architecture notes" below). With sharing enabled, per-run telemetry (`processed`/`generated`/`lrs_discarded`) and even the pass/fail outcome on borderline problems are not bit-reproducible — sibling-thread timing and CPU contention both feed into the wall-clock-sensitive LRS pruning heuristic. Use `--workers 1` for a fully deterministic, sequential single-strategy run (no clause-pool cross-talk, no contention) when diagnosing or reproducing a specific strategy's behavior. |
 | `--strategy <N>` | — | Run exact base strategy `N` (1–15) from the selected CASC division schedule for the full budget; diagnostic solo coverage only. |
-| `--portfolio <IDs>` | — | Run an explicit cooperative portfolio, e.g. `11,12,1,6,10,8,14,4`; one ID is required per worker and shared equality exchange remains enabled. |
+| `--portfolio <IDs>` | — | Run an explicit cooperative portfolio, e.g. `11,12,1,6,10,8,14,4`; one ID is required per worker. Set `MRS_SHARED_POOL_INTERVAL` to a positive value to enable shared equality exchange. |
 | `--schedule <name>` | `casc` | Strategy schedule; see registry below |
 | `--auto-schedule` | — | Rule-based division detection (EPR/UEQ/FNE/FEQ) picks the matching `casc_*` portfolio; an explicit `--schedule` wins. Replaces the retired ML schedule classifier (`--ml-schedule` is a deprecated alias). |
 | `--list-schedules` | — | Print known schedule names and exit |
@@ -207,7 +207,7 @@ The root `Cargo.toml` is both `[workspace]` and `[package]` — valid but unusua
 
 ## 10. Architecture notes
 
-- **Strategy portfolio:** 15 active strategies run **in parallel**, sharing a pool of derived unit equalities. A 16th diagnostic strategy (`MRS_SINGLE_STRATEGY=16`) gets `Duration::ZERO` in normal runs.
+- **Strategy portfolio:** 15 active strategies run **in parallel**. When `MRS_SHARED_POOL_INTERVAL` is positive they share a pool of derived unit equalities; sharing is disabled by default. A 16th diagnostic strategy (`MRS_SINGLE_STRATEGY=16`) gets `Duration::ZERO` in normal runs.
 - **Default time budget:** 30 seconds; overridable with `--time <seconds>`.
 - **LRS (Limited Resource Strategy):** every 100 given-clause iterations, the prover estimates the remaining iteration budget from `elapsed/iteration` and prunes the passive queue to that size (min 2000). This prevents memory explosion and teardown latency on hard problems. Set `TRACE_LRS=1` to see per-prune log lines on stderr.
 - **Refutation-based:** conjectures are negated before search. A problem with no `conjecture` role checks satisfiability (outputs `Unsatisfiable`/`Satisfiable`).
@@ -273,7 +273,8 @@ nix develop -c cargo run --release --bin greedy_set_cover -- results/sweep-fne-*
 
 ```bash
 # One mrs process per problem, eight workers, shared equality pool enabled.
-MRS_WORKERS=8 ./crates/mrs-bench/cooperative_portfolio_sweep.sh \
+MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=500 \
+./crates/mrs-bench/cooperative_portfolio_sweep.sh \
     casc-30 fne 11,4,12,1,6,8,2,3 30 4 \
     results/cooperative-fne-$(date +%Y%m%d)
 
@@ -301,8 +302,9 @@ search over candidate portfolios.
 
 The `casc_feq`, `casc_fne`, `casc_ueq`, `casc_epr`, `casc_eps`, `casc_epu`, and
 `casc_icu` schedules have candidate priority orders derived from solo
-strategy-sweep data. Solo coverage is diagnostic only because the normal
-portfolio shares derived unit equalities through a cross-strategy pool. Use
+strategy-sweep data. Solo coverage is diagnostic only; when enabled, the
+cooperative portfolio can also share derived unit equalities through a
+cross-strategy pool. Use
 `cooperative_portfolio_sweep.sh` and `cooperative_portfolio_search.sh` to
 validate or replace these orders against the actual 8-worker objective. See
 `docs/DIVISIONS.md` for the workflow and telemetry details.

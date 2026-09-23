@@ -31,9 +31,10 @@ subtree of a clause that is later found to be subsumed).
 mrs runs a portfolio of independent search strategies concurrently on
 separate threads, one per available CPU core, each maintaining its own
 clause set; the first strategy to find a refutation signals the others to
-stop via a shared atomic flag. Strategies additionally share a pool of
-derived unit equalities across threads to accelerate sibling searches
-without duplicating work; each shared entry carries its full justifying
+stop via a shared atomic flag. Strategies can additionally share a pool of
+derived unit equalities across threads to accelerate sibling searches when
+sharing is enabled; sharing is disabled by default. Each shared entry carries
+its full justifying
 ancestor chain back to the original problem's axioms, so a clause
 adopted from a sibling thread is spliced into the receiving thread's own
 proof record with a complete, locally self-consistent derivation rather

@@ -7,7 +7,7 @@ CASC benchmark harness and report tool for `mrs`.
 | Path | Purpose |
 |------|---------|
 | `casc.sh` | Run a full benchmark: invoke each system on each problem, collect SZS status and wall time, archive raw stdout/stderr and hashes, and write `results/<edition>/*/run.csv` |
-| `cooperative_portfolio_sweep.sh` | Measure an explicit multi-worker portfolio with shared equality-clause exchange enabled (or disabled with `MRS_SHARED_POOL_INTERVAL=0`) |
+| `cooperative_portfolio_sweep.sh` | Measure an explicit multi-worker portfolio; enable shared equality exchange with a positive `MRS_SHARED_POOL_INTERVAL`, or use `0` for a no-sharing control |
 | `cooperative_portfolio_search.sh` | Run one-swap local search over portfolios using cooperative solved-count coverage |
 | `setup.sh` | Download and extract the CASC problem and axiom archives from tptp.org |
 | `systems/` | Per-system `invoke.sh` scripts (add a new directory here to register a competitor) |
@@ -63,7 +63,7 @@ model the cross-strategy unit-equality pool used by `casc_*` schedules.
 Measure the actual cooperative portfolio instead:
 
 ```bash
-MRS_WORKERS=8 \
+MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=500 \
 crates/mrs-bench/cooperative_portfolio_sweep.sh \
   casc-30 feq 11,12,1,6,10,8,14,4 30 4 \
   results/cooperative-feq

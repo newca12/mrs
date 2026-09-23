@@ -43,7 +43,7 @@ This document tracks what remains to be built in `mrs` (the prover) to maximise 
 #### 2. Deterministic Clause Sharing (RwLock Crosstalk)
 - **Problem**: Parallel strategies share derived unit equalities via a shared `RwLock<Vec<Clause>>`. Because threads poll and import these clauses asynchronously on every iteration, CPU scheduling fluctuations change the exact iteration at which a thread learns a new unit, leading to divergent, non-reproducible search paths.
 - **Proposed Mitigations**:
-  - **Interval-based Importing**: Implemented. Shared units are published with logical epochs and imported only at fixed `SearchConfig::shared_pool_poll_interval` boundaries (default 500 iterations). Set `MRS_SHARED_POOL_INTERVAL=0` to disable sharing or use another interval for experiments.
+  - **Interval-based Importing**: Implemented. Shared units are published with logical epochs and imported only at fixed `SearchConfig::shared_pool_poll_interval` boundaries. Sharing is disabled by default; set `MRS_SHARED_POOL_INTERVAL` to a positive interval to enable it, or set it to `0` explicitly for no-sharing controls.
   - **Logical Epochs**: Implemented. Imports are stable-key sorted and deduplicated per search state.
 
 ### Implemented: AVATAR proof self-containedness and incomplete splitting citations

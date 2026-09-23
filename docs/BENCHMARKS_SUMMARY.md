@@ -37,7 +37,8 @@ The normal `casc.sh --systems mrs` run is already cooperative:
 
 - Workers run different strategy configurations concurrently.
 - Each worker owns its own `SearchState` and `TermBank`.
-- Workers share derived positive unit equalities through the shared pool.
+- Workers share derived positive unit equalities when
+  `MRS_SHARED_POOL_INTERVAL` is positive; sharing is disabled by default.
 - Workers exchange complete ancestor chains, not parent-less clause stubs.
 - A shared stop flag ends sibling searches after a refutation or genuinely definitive result.
 
@@ -76,20 +77,20 @@ An explicit portfolio makes the strategy IDs and slot order independently
 testable without editing `named.rs`:
 
 ```bash
-mrs --schedule casc_feq \
+MRS_SHARED_POOL_INTERVAL=500 mrs --schedule casc_feq \
     --workers 8 \
     --portfolio 11,12,1,6,10,8,14,4 \
     problem.p
 ```
 
 The portfolio must contain exactly one ID per worker. It runs the same
-cooperative machinery as the normal portfolio, including shared equality
-exchange and complete proof ancestry.
+cooperative machinery as the normal portfolio, including complete proof
+ancestry; the command above explicitly enables shared equality exchange.
 
 The benchmark wrapper is:
 
 ```bash
-MRS_WORKERS=8 \
+MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=500 \
 crates/mrs-bench/cooperative_portfolio_sweep.sh \
   casc-30 feq 11,12,1,6,10,8,14,4 240 1 \
   results/cooperative-feq
@@ -130,7 +131,8 @@ addition.
 
 The current pool transports positive unit equalities with complete ancestor
 chains. Symbols are transferred by name and re-interned in the receiving
-worker. The default poll interval is 500 given-clause iterations:
+worker. Sharing is disabled by default. A positive interval opts in to polling
+and publishing, for example:
 
 ```text
 MRS_SHARED_POOL_INTERVAL=500
@@ -233,8 +235,9 @@ One CASC-30 UEQ interval sweep produced:
 | 250 | 222/300 | 11.549 s |
 
 All reported zero disagreements, zero polarity violations, and zero reference
-violations. Interval 100 is the current UEQ candidate, not a proven global
-default. Include `0` and `500` controls and repeat before changing defaults.
+violations. Interval 100 is a historical UEQ candidate, not a proven global
+default. The runtime default is now no sharing; retain explicit `0` and
+positive-interval controls such as `500` when repeating this experiment.
 
 ## 5. Runtime Profile And ML Direction
 

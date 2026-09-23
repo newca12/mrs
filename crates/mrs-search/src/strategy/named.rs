@@ -855,6 +855,24 @@ mod tests {
     }
 
     #[test]
+    fn named_schedules_default_to_no_sharing() {
+        for name in [
+            "casc", "default", "casc_fne", "casc_feq", "casc_ueq", "casc_epr", "casc_eps",
+            "casc_epu", "casc_icu", "fast", "mini", "ml", "ml_feq", "ml_fne", "ml_ueq", "ml_epr",
+            "mq",
+        ] {
+            let schedule = by_name(name, Duration::from_secs(8), 8).unwrap();
+            assert!(
+                schedule
+                    .strategies
+                    .iter()
+                    .all(|(config, _)| config.shared_pool_poll_interval == 0),
+                "{name} should default to disabled cross-strategy sharing"
+            );
+        }
+    }
+
+    #[test]
     fn all_names_resolve() {
         for name in ALL {
             assert!(

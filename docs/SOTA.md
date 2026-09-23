@@ -71,4 +71,4 @@ Deciding *which* clause to process next.
     *   ✅ **Partially Implemented:** `mrs` detects AC axioms at search startup, eliminates the permutation axiom clauses from the passive set, and uses a heuristic AC-unification (`unify_ac_id`) that flattens associative chains and tries both orderings for commutativity.
     *   ❌ **Missing:** Full AC-Superposition requires AC-compatible term orderings (AC-RPO or AC-KBO). The current standard LPO/KBO cannot soundly orient terms modulo AC, so some necessary search paths may still be pruned incorrectly.
 *   **Clause Sharing**:
-    *   ✅ **Implemented:** When a strategy derives a unit equality it broadcasts it to a shared `Arc<RwLock<Vec<Clause>>>` pool; sibling strategies ingest from the pool at the start of each iteration and add the shared unit equalities to their own demodulation index.
+    *   ✅ **Implemented:** When cross-strategy sharing is enabled with a positive `MRS_SHARED_POOL_INTERVAL`, a strategy's derived unit equalities are broadcast to a shared `Arc<RwLock<Vec<Clause>>>` pool; sibling strategies ingest them at polling epochs and add them to their own demodulation indexes. Sharing is disabled by default.

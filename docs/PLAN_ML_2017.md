@@ -6,7 +6,7 @@ This specification outlines the integration of an Automated Heuristic Discovery 
 
 ## 1. Background & Technical Motivation
 
-In the CASC competition environment, solvers are bound to an exactly 8-core hardware specification. Standard parallel portfolios run 8 concurrent strategies, sharing derived unit equalities. However:
+In the CASC competition environment, solvers are bound to an exactly 8-core hardware specification. Standard parallel portfolios run 8 concurrent strategies and may share derived unit equalities when enabled. However:
 1. **Memory Bus Saturation**: In highly equational domains (e.g., **UEQ**), heavy rewriting and pointer-chasing on terms can saturate the memory bus. Spawning 8 concurrent threads actually slows down individual search paths due to L3 cache thrashing.
 2. **SAT-Splitting Contention**: In SAT-splitting domains (e.g., **EPR**), AVATAR spawns independent instances of the `CaDiCaL` SAT solver. Running 8 concurrent CDCL solvers leads to heavy context-switching and cache eviction.
 

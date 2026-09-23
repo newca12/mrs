@@ -56,6 +56,7 @@ export TPTP=/path/to/TPTP-v9.x.x
 # Step 3: measure the actual cooperative portfolio with shared clauses
 # The eight IDs must match MRS_WORKERS. This launches one 8-worker mrs
 # process per problem, as competition runs do.
+MRS_SHARED_POOL_INTERVAL=500 \
 ./crates/mrs-bench/cooperative_portfolio_sweep.sh \
     casc-30 fne 11,4,12,1,6,8,2,3 30 4 \
     results/cooperative-fne

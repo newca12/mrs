@@ -683,6 +683,11 @@ mod tests {
     }
 
     #[test]
+    fn default_configuration_disables_cross_strategy_sharing() {
+        assert_eq!(SearchConfig::default().shared_pool_poll_interval, 0);
+    }
+
+    #[test]
     fn completeness_audit_rejects_ordered_inference() {
         let config = SearchConfig {
             ordered_inferences: true,
