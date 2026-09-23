@@ -89,7 +89,8 @@ Strict verification requires:
 - resolved parent references
 - an acyclic parent graph
 - at least one unparented `$false` root
-- every proof node reachable from that root
+- every proof node is structurally validated; nodes outside a root derivation
+  cannot affect the accepted refutation
 - every input leaf tied to a named formula in the linked problem
 
 Anonymous `file(_,unknown)` provenance is not sufficient for strict

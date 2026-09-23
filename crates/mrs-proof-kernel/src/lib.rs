@@ -731,6 +731,8 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "copy"
         | "assume"
         | "rewrite"
+        | "duplicate"
+        | "reassociate"
         | "formula_equivalence"
         | "equivalence"
         | "fof_simplification"
@@ -2350,6 +2352,7 @@ fn verify_leaf<'a>(
         }
     }
     if !named_match {
+        let mut provenance_match = false;
         for expected in problem.formulas.iter().filter(|formula| {
             formula
                 .annotations()
@@ -2357,7 +2360,7 @@ fn verify_leaf<'a>(
                 .map(|s| s.1 == annotation.1)
                 .unwrap_or(false)
         }) {
-            named_match = true;
+            provenance_match = true;
             if !roles_compatible(node.role, expected.role()) {
                 continue;
             }
@@ -2367,12 +2370,12 @@ fn verify_leaf<'a>(
                 return Ok(());
             }
         }
-    }
-    if !named_match {
-        return Err(KernelVerdict::Rejected(format!(
-            "leaf `{}` references missing problem formula `{}`",
-            node.name, annotation.1
-        )));
+        if !provenance_match {
+            return Err(KernelVerdict::Rejected(format!(
+                "leaf `{}` references missing problem formula `{}`",
+                node.name, annotation.1
+            )));
+        }
     }
     if !role_match {
         return Err(KernelVerdict::Rejected(format!(
@@ -3057,9 +3060,12 @@ fn verify_excluded_middle(
     }
     let mut parts = Vec::new();
     flatten_disjunction(conclusion, &mut parts);
+    let parent_negation = Formula::neg(parents[0].clone());
     if parts.len() == 2
-        && (formula_equivalent_with_limit(parts[1], &Formula::neg((*parts[0]).clone()), limits)
-            || formula_equivalent_with_limit(parts[0], &Formula::neg((*parts[1]).clone()), limits))
+        && ((formula_equivalent_with_limit(&parents[0], parts[0], limits)
+            && formula_equivalent_with_limit(&parent_negation, parts[1], limits))
+            || (formula_equivalent_with_limit(&parents[0], parts[1], limits)
+                && formula_equivalent_with_limit(&parent_negation, parts[0], limits)))
     {
         KernelVerdict::Certified
     } else {
@@ -5394,6 +5400,54 @@ fn match_skolem_formula_inner(
         .filter(|(quantifier, _)| !is_effective_universal(*quantifier, polarity))
         .map(|(_, variables)| variables.len())
         .sum::<usize>();
+
+    // A Skolem step may remove effective existential binders, but it must not
+    // reorder the binders that remain. In particular, moving a preserved
+    // existential in front of a universal changes the quantifier scope and is
+    // not a Skolemization of the parent. Preserved existential names are kept
+    // as-is here; rejecting alpha-renamed variants is conservative, while
+    // accepting a reordered scope would be unsound.
+    let parent_prefix_vars = parent_prefix
+        .iter()
+        .flat_map(|(_, variables)| variables.iter())
+        .collect::<HashSet<_>>();
+    if step_existentials
+        .iter()
+        .any(|variable| !parent_prefix_vars.contains(variable))
+    {
+        return false;
+    }
+    let expected_prefix = parent_prefix
+        .iter()
+        .flat_map(|(quantifier, variables)| {
+            variables
+                .iter()
+                .map(move |variable| (*quantifier, variable))
+        })
+        .filter(|(quantifier, variable)| {
+            is_effective_universal(*quantifier, polarity) || step_existentials.contains(*variable)
+        })
+        .collect::<Vec<_>>();
+    let step_prefix_vars = step_prefix
+        .iter()
+        .flat_map(|(quantifier, variables)| {
+            variables
+                .iter()
+                .map(move |variable| (*quantifier, variable))
+        })
+        .collect::<Vec<_>>();
+    if expected_prefix.len() != step_prefix_vars.len()
+        || expected_prefix.iter().zip(&step_prefix_vars).any(
+            |((parent_quantifier, parent_variable), (step_quantifier, step_variable))| {
+                is_effective_universal(*parent_quantifier, polarity)
+                    != is_effective_universal(*step_quantifier, polarity)
+                    || (!is_effective_universal(*parent_quantifier, polarity)
+                        && parent_variable != step_variable)
+            },
+        )
+    {
+        return false;
+    }
 
     let parent_universal_count = parent_prefix
         .iter()
@@ -12812,11 +12866,21 @@ mod tests {
     fn rejects_excluded_middle_with_changed_formula() {
         let problem = "fof(a, axiom, p(a)).\nfof(n, axiom, ~p(a)).";
         let proof = "fof(a, axiom, p(a), file('problem.p', a)).\
-                     fof(e, plain, (q(a) | ~p(a)),\
+                     fof(e, plain, (q(a) | ~q(a)),\
                          inference(excluded_middle, [status(thm)], [a])).\
                      fof(n, axiom, ~p(a), file('problem.p', n)).\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [a,n])).";
         assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn matches_leaf_by_provenance_after_name_mismatch() {
+        let problem =
+            "fof(alias, axiom, p(a)).\nfof(source_name, axiom, q(a)).\nfof(n, axiom, ~q(a)).";
+        let proof = "fof(alias, axiom, q(a), file('problem.p', source_name)).\
+                     fof(n, axiom, ~q(a), file('problem.p', n)).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [alias,n])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
     }
 
     #[test]
@@ -12919,6 +12983,15 @@ mod tests {
                      fof(n, axiom, ![X] : ~p(a, X), file('problem.p', n)).\n\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [s,n])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_skolemization_that_reorders_preserved_existential_scope() {
+        let problem = "fof(a, axiom, ![X] : ?[Y] : ?[Z] : p(X, Y, Z)).";
+        let proof = "fof(a, axiom, ![X] : ?[Y] : ?[Z] : p(X, Y, Z), file('problem.p', a)).\
+                     fof(s, plain, ?[Y] : ![X] : p(X, Y, sk0(X)), inference(skolemisation, [status(esa)], [a])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [s,s])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
     }
 
     #[test]

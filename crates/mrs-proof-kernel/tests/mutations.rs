@@ -77,7 +77,7 @@ fn newly_certified_rule_mutations_never_certify() {
             "excluded_middle",
             "fof(a, axiom, p(a)).\nfof(n, axiom, ~p(a)).",
             "fof(a, axiom, p(a), file('problem.p', a)).\
-             fof(e, plain, (q(a) | ~p(a)), inference(excluded_middle, [status(thm)], [a])).\
+             fof(e, plain, (q(a) | ~q(a)), inference(excluded_middle, [status(thm)], [a])).\
              fof(n, axiom, ~p(a), file('problem.p', n)).\
              fof(bot, plain, $false, inference(resolution, [status(thm)], [a,n])).",
         ),
