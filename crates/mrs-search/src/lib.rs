@@ -211,9 +211,13 @@ impl ScheduleReport {
 
         if let Some(ig) = &self.instgen {
             detail.push_str(&format!(
-                " instgen_route={} instgen_rounds={} instgen_instances={} instgen_vars={} instgen_clauses={} instgen_ms={}",
-                ig.route, ig.rounds, ig.generated_instances, ig.sat_vars, ig.sat_clauses, ig.elapsed_ms
+                " instgen_attempted={} instgen_route={} instgen_rounds={} instgen_instances={} instgen_vars={} instgen_clauses={} instgen_ms={} instgen_est={} instgen_budget_ms={} instgen_budget_rounds={} instgen_budget_instances={}",
+                ig.attempted, ig.route, ig.rounds, ig.generated_instances, ig.sat_vars, ig.sat_clauses, ig.elapsed_ms,
+                ig.est_instances, ig.budget_ms, ig.budget_rounds, ig.budget_instances
             ));
+            if let Some(result) = ig.return_reason {
+                detail.push_str(&format!(" instgen_result={}", result));
+            }
             if let Some(reason) = ig.fallback_reason {
                 detail.push_str(&format!(" instgen_fallback={}", reason));
             }

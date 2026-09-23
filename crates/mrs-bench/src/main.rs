@@ -231,6 +231,12 @@ struct DetailStats {
     instgen_clauses: u64,
     instgen_ms: u64,
     instgen_fallback: String,
+    instgen_attempted: u64,
+    instgen_result: String,
+    instgen_est: u64,
+    instgen_budget_ms: u64,
+    instgen_budget_rounds: u64,
+    instgen_budget_instances: u64,
 }
 
 fn parse_detail(detail: &str) -> DetailStats {
@@ -264,6 +270,12 @@ fn parse_detail(detail: &str) -> DetailStats {
                 "instgen_clauses" => s.instgen_clauses = v.parse().unwrap_or(0),
                 "instgen_ms" => s.instgen_ms = v.parse().unwrap_or(0),
                 "instgen_fallback" => s.instgen_fallback = v.to_string(),
+                "instgen_attempted" => s.instgen_attempted = v.parse().unwrap_or(0),
+                "instgen_result" => s.instgen_result = v.to_string(),
+                "instgen_est" => s.instgen_est = v.parse().unwrap_or(0),
+                "instgen_budget_ms" => s.instgen_budget_ms = v.parse().unwrap_or(0),
+                "instgen_budget_rounds" => s.instgen_budget_rounds = v.parse().unwrap_or(0),
+                "instgen_budget_instances" => s.instgen_budget_instances = v.parse().unwrap_or(0),
                 _ => {}
             }
         }
