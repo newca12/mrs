@@ -768,7 +768,11 @@ pub fn try_instgen_epr_with_telemetry(
         tele.sat_clauses = prop_clauses.len();
         tele.generated_instances = all_clauses.len().saturating_sub(clauses.len());
 
-        match solver.solve() {
+        // CaDiCaL's solve call can dominate the InstGen pre-pass on large EPR
+        // inputs. Use the pre-pass deadline inside CDCL as well as between
+        // rounds; checking `start_time` only at the loop boundary lets one
+        // solve run far beyond the selected per-problem budget.
+        match solver.solve_until(start_time + budget.timeout) {
             SolveResult::Unsat => {
                 if trace {
                     eprintln!(
@@ -955,6 +959,12 @@ pub fn try_instgen_epr_with_telemetry(
                 let mut neg_by_sym: HashMap<SymbolId, Vec<(usize, usize)>> = HashMap::default();
 
                 for (c_idx, c) in all_clauses.iter().enumerate() {
+                    if start_time.elapsed() >= budget.timeout {
+                        tele.elapsed_ms = start_time.elapsed().as_millis() as u64;
+                        tele.fallback_reason = Some("timeout");
+                        tele.return_reason = Some("fallback");
+                        return (None, tele);
+                    }
                     for (l_idx, lit) in c.literals.iter().enumerate() {
                         let Atom::Pred(sym, args) = &lit.atom else {
                             continue;
@@ -987,12 +997,30 @@ pub fn try_instgen_epr_with_telemetry(
                 let mut new_instances: Vec<Clause> = Vec::new();
 
                 for (sym, pos_list) in &pos_by_sym {
+                    if start_time.elapsed() >= budget.timeout {
+                        tele.elapsed_ms = start_time.elapsed().as_millis() as u64;
+                        tele.fallback_reason = Some("timeout");
+                        tele.return_reason = Some("fallback");
+                        return (None, tele);
+                    }
                     let Some(neg_list) = neg_by_sym.get(sym) else {
                         continue;
                     };
                     for &(c1_idx, l1_idx) in pos_list {
+                        if start_time.elapsed() >= budget.timeout {
+                            tele.elapsed_ms = start_time.elapsed().as_millis() as u64;
+                            tele.fallback_reason = Some("timeout");
+                            tele.return_reason = Some("fallback");
+                            return (None, tele);
+                        }
                         let c1 = &all_clauses[c1_idx];
                         for &(c2_idx, l2_idx) in neg_list {
+                            if start_time.elapsed() >= budget.timeout {
+                                tele.elapsed_ms = start_time.elapsed().as_millis() as u64;
+                                tele.fallback_reason = Some("timeout");
+                                tele.return_reason = Some("fallback");
+                                return (None, tele);
+                            }
                             let c2 = &all_clauses[c2_idx];
                             if c1_idx == c2_idx && l1_idx == l2_idx {
                                 continue;
