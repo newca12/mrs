@@ -2305,7 +2305,13 @@ fn parsed_optional_f64(value: String) -> Option<f64> {
 
 fn sha256_file(path: &Path) -> std::io::Result<String> {
     let bytes = std::fs::read(path)?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    let digest = Sha256::digest(bytes);
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
+        use std::fmt::Write as _;
+        write!(&mut hex, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    Ok(hex)
 }
 
 fn main() {

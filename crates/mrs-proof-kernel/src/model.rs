@@ -110,7 +110,12 @@ impl ModelCertificate {
         for (name, pred) in &self.predicates {
             hasher.update(format!("pred {}/{}={:?}\n", name, pred.arity, pred.table).as_bytes());
         }
-        format!("{:x}", hasher.finalize())
+        let mut digest = String::with_capacity(64);
+        for byte in hasher.finalize() {
+            use std::fmt::Write as _;
+            write!(&mut digest, "{byte:02x}").expect("writing to a String cannot fail");
+        }
+        digest
     }
 
     /// Formats the certificate as a standard TPTP SZS output block.
