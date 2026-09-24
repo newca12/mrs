@@ -12,7 +12,7 @@ TIME_LIMIT="${2:?Usage: invoke.sh <problem_path> <time_limit_secs>}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
 
-BINARY="${WORKSPACE_ROOT}/target/release/mrs"
+BINARY="${MRS_BINARY:-${WORKSPACE_ROOT}/target/release/mrs}"
 if [[ ! -x "${BINARY}" ]]; then
     echo "% SZS status Error (mrs binary not found; run: cargo build --release)"
     exit 1
@@ -72,6 +72,109 @@ ulimit -s unlimited 2>/dev/null || true
 # negligible cost (thread stacks are lazily-committed virtual memory, not
 # counted against RSS until used).
 export RUST_MIN_STACK=67108864
+
+# EPS is measured with both the fail-closed certified path and the ordinary
+# cooperative portfolio. Keep the normal worker allotment by running one
+# certifier worker plus MRS_WORKERS-1 portfolio workers concurrently; both
+# receive the full budget. The certified result can add sound EPS coverage,
+# while the established portfolio continues searching as before.
+if [[ "${DIV_LOWER}" == "eps" && "${MRS_EPS_CERTIFY:-1}" != "0" ]]; then
+    TOTAL_WORKERS="${MRS_WORKERS:-8}"
+    if ! [[ "${TOTAL_WORKERS}" =~ ^[0-9]+$ ]] || (( TOTAL_WORKERS < 2 )); then
+        echo "% SZS status Error (EPS certification requires MRS_WORKERS >= 2)"
+        exit 1
+    fi
+    CERTIFY_STRATEGY="${MRS_CERTIFY_STRATEGY:-1}"
+    if ! [[ "${CERTIFY_STRATEGY}" =~ ^(1|7)$ ]]; then
+        echo "% SZS status Error (MRS_CERTIFY_STRATEGY must be 1 (KBO) or 7 (LPO))"
+        exit 1
+    fi
+
+    TMP_DIR="$(mktemp -d)"
+    trap 'rm -rf "${TMP_DIR}"' EXIT
+
+    "${BINARY}" --time "${SOFT_TIME}" --workers 1 --schedule casc_eps \
+        --strategy "${CERTIFY_STRATEGY}" --certify-ordered "${PROBLEM}" \
+        >"${TMP_DIR}/cert.stdout" 2>"${TMP_DIR}/cert.stderr" &
+    CERT_PID=$!
+
+    PORTFOLIO_WORKERS=$((TOTAL_WORKERS - 1))
+    PORTFOLIO_ARGS=(--time "${SOFT_TIME}" --workers "${PORTFOLIO_WORKERS}" --schedule "${SCHEDULE}")
+    if [[ -n "${MRS_PORTFOLIO:-}" ]]; then
+        PORTFOLIO_ARGS+=(--portfolio "${MRS_PORTFOLIO}")
+    fi
+    "${BINARY}" "${PORTFOLIO_ARGS[@]}" "${PROBLEM}" \
+        >"${TMP_DIR}/portfolio.stdout" 2>"${TMP_DIR}/portfolio.stderr" &
+    PORTFOLIO_PID=$!
+
+    CERT_RC=0
+    if wait "${CERT_PID}"; then CERT_RC=0; else CERT_RC=$?; fi
+    PORTFOLIO_RC=0
+    if wait "${PORTFOLIO_PID}"; then PORTFOLIO_RC=0; else PORTFOLIO_RC=$?; fi
+
+    status_from() {
+        local status=""
+        local line
+        while IFS= read -r line || [[ -n "${line}" ]]; do
+            case "${line}" in
+                "% SZS status "*)
+                    status="${line#% SZS status }"
+                    status="${status%% *}"
+                    ;;
+            esac
+        done <"$1"
+        printf '%s' "${status}"
+    }
+
+    is_definitive() {
+        case "$1" in
+            Theorem|Unsatisfiable|Satisfiable|CounterSatisfiable) return 0 ;;
+            *) return 1 ;;
+        esac
+    }
+
+    CERT_STATUS="$(status_from "${TMP_DIR}/cert.stdout")"
+    PORTFOLIO_STATUS="$(status_from "${TMP_DIR}/portfolio.stdout")"
+    CERT_TIER="$(grep -m1 -o 'cert_tier=[^ ]*' "${TMP_DIR}/cert.stderr" || true)"
+    CERT_ORDERING="$(grep -m1 -o 'cert_ordering=[^ ]*' "${TMP_DIR}/cert.stderr" || true)"
+
+    printf '%% mrs EPS dual search: certification status=%s exit=%s; portfolio status=%s exit=%s workers=%s+1 time=%ss\n' \
+        "${CERT_STATUS:-missing}" "${CERT_RC}" "${PORTFOLIO_STATUS:-missing}" \
+        "${PORTFOLIO_RC}" "${PORTFOLIO_WORKERS}" "${SOFT_TIME}" >&2
+
+    if is_definitive "${CERT_STATUS}" && is_definitive "${PORTFOLIO_STATUS}" \
+        && [[ "${CERT_STATUS}" != "${PORTFOLIO_STATUS}" ]]; then
+        printf '%% SZS detail eps_cert_status=%s eps_portfolio_status=%s selected=disagreement %s %s\n' \
+            "${CERT_STATUS}" "${PORTFOLIO_STATUS}" "${CERT_TIER}" "${CERT_ORDERING}" >&2
+        echo "% SZS status Error (certified and portfolio searches disagree: ${CERT_STATUS} vs ${PORTFOLIO_STATUS})"
+        exit 0
+    fi
+
+    if is_definitive "${CERT_STATUS}"; then
+        SELECTED="cert"
+    elif is_definitive "${PORTFOLIO_STATUS}"; then
+        SELECTED="portfolio"
+    elif [[ -n "${PORTFOLIO_STATUS}" ]]; then
+        SELECTED="portfolio"
+    elif [[ -n "${CERT_STATUS}" ]]; then
+        SELECTED="cert"
+    else
+        echo "% SZS status Error (neither EPS search emitted an SZS status)"
+        exit 0
+    fi
+
+    printf '%% SZS detail eps_cert_status=%s eps_portfolio_status=%s selected=%s workers=%s+1 time=%ss %s %s\n' \
+        "${CERT_STATUS:-missing}" "${PORTFOLIO_STATUS:-missing}" "${SELECTED}" \
+        "${PORTFOLIO_WORKERS}" "${SOFT_TIME}" "${CERT_TIER}" "${CERT_ORDERING}" >&2
+    cat "${TMP_DIR}/cert.stderr" >&2
+    cat "${TMP_DIR}/portfolio.stderr" >&2
+    if [[ "${SELECTED}" == "cert" ]]; then
+        cat "${TMP_DIR}/cert.stdout"
+    else
+        cat "${TMP_DIR}/portfolio.stdout"
+    fi
+    exit 0
+fi
 
 ARGS=(--time "${SOFT_TIME}" --workers "${MRS_WORKERS:-8}" --schedule "${SCHEDULE}")
 if [[ -n "${MRS_PORTFOLIO:-}" ]]; then

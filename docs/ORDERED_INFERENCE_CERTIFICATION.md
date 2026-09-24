@@ -105,6 +105,35 @@ would silently break its isolation. Successful certifications carry
 only, never a tier. First full-harness run (casc-30 EPS+EPU, 10 s):
 6 certified all `ok`, 194 unknown, **0 `ko`**.
 
+### EPS Certification in the Normal MRS Route
+
+The normal `crates/mrs-bench/systems/mrs/invoke.sh` path now runs an isolated,
+fail-closed EPS certifier concurrently with the ordinary `casc_eps` portfolio.
+One worker is reserved for certification and the remaining
+`MRS_WORKERS - 1` workers run the portfolio; both receive the full per-problem
+budget. A certified result is used when the portfolio is inconclusive. If both
+return definitive but disagree, the wrapper reports `Error` rather than
+selecting either verdict. Other divisions keep their existing single-
+portfolio invocation. Set `MRS_EPS_CERTIFY=0` to disable this EPS behavior for
+diagnostic comparisons; `MRS_CERTIFY_STRATEGY=7` selects the LPO certifier
+instead of default KBO strategy 1.
+
+The wrapper records both component statuses, the selected result, and the
+certification tier/ordering in its first `% SZS detail` line. For the 16-core
+remote servers, the regular EPS benchmark command is:
+
+```bash
+nix develop -c cargo build --release
+MRS_WORKERS=8 crates/mrs-bench/casc.sh \
+  --edition casc-30 --systems mrs --divisions eps \
+  --casc-times --jobs 2 \
+  --output crates/mrs-bench/results/casc-30-eps-certified-$(date +%Y%m%d)
+```
+
+This runs at most 16 search workers across two problem jobs. Inspect the
+per-problem detail to distinguish certification wins from portfolio wins, and
+require zero reference/polarity violations.
+
 ## Remote Validation Campaign (R0–R6)
 
 For machines beyond the 2-core local box, `crates/mrs-bench/remote-cert-campaign.sh`
