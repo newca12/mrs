@@ -717,7 +717,13 @@ pub fn run_schedule_with_candidate_receiver(
             symbols,
         );
         instgen_telemetry = Some(tele.clone());
-        if let Some(result) = instgen_result {
+        // A variable-bearing SAT abstraction deliberately returns GaveUp:
+        // that is an inconclusive pre-pass outcome, not a result for the full
+        // problem. Fall through to the ordinary portfolio so EPS search can
+        // continue after InstGen refuses to claim a model.
+        if let Some(result) = instgen_result
+            && !matches!(result, SearchResult::GaveUp)
+        {
             let single_stats = crate::SearchStats {
                 processed: tele.sat_clauses as u64,
                 generated: tele.generated_instances as u64,
@@ -1510,6 +1516,65 @@ mod tests {
             matches!(result, SearchResult::Saturated(_) | SearchResult::GaveUp),
             "expected Saturated or GaveUp, got {result:?}"
         );
+    }
+
+    #[test]
+    fn instgen_gaveup_falls_through_to_portfolio() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let mut id_gen = ClauseIdGen::new();
+        let clauses = vec![
+            input_clause(
+                &mut id_gen,
+                vec![Literal::pos(Atom::pred(
+                    p,
+                    vec![Term::var(0), Term::var(0)],
+                ))],
+                "same",
+            )
+            .with_distance(0),
+            input_clause(
+                &mut id_gen,
+                vec![Literal::neg(Atom::pred(
+                    p,
+                    vec![Term::constant(a), Term::constant(b)],
+                ))],
+                "different",
+            )
+            .with_distance(0),
+        ];
+        let schedule = StrategySchedule {
+            strategies: vec![(
+                SearchConfig {
+                    time_limit: Duration::from_millis(100),
+                    max_term_weight: None,
+                    use_avatar: false,
+                    ..SearchConfig::default()
+                },
+                Duration::from_millis(100),
+            )],
+        };
+        let (result, report) = run_schedule(
+            &clauses,
+            &[],
+            id_gen,
+            &schedule,
+            &syms,
+            MlOptions::default(),
+            Some(1),
+        );
+        assert!(matches!(
+            result,
+            SearchResult::GaveUp | SearchResult::Timeout
+        ));
+        assert_eq!(
+            report.instgen.as_ref().map(|tele| tele.return_reason),
+            Some(Some("gaveup_variable_model"))
+        );
+        assert_eq!(report.strategies.len(), 1);
+        assert!(report.strategies[0].stats.iterations > 0);
     }
 
     #[test]

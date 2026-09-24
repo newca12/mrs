@@ -175,3 +175,22 @@ fn ordered_certifier_accepts_ground_sat_and_rejects_equality() {
             .contains("% SZS status GaveUp for eq_simple")
     );
 }
+
+#[test]
+fn raw_epr_sat_gives_up_only_after_instgen_falls_through() {
+    let problem = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("problems/certified_epr_sat.p");
+    let output = Command::new(env!("CARGO_BIN_EXE_mrs"))
+        .args(["--workers", "1", "--schedule", "casc_eps", "--time", "1"])
+        .env("MRS_NO_BCE", "1")
+        .env("MRS_NO_PLE", "1")
+        .arg(&problem)
+        .output()
+        .expect("mrs CLI should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains("% SZS status GaveUp for certified_epr_sat"));
+    assert!(stderr.contains("instgen_result=gaveup_variable_model"));
+    assert!(stderr.contains("processed="));
+}
