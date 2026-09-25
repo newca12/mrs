@@ -43,9 +43,20 @@ the cited parents or checks a precisely defined conservative transformation.
 ### Competition checker
 
 `mrs-proover` competition mode supports a broader TSTP ecosystem. It may use
-external ATPs, specialized Vampire/E checks, and conservative modulo-assumption
-behavior to maximize ProoVer score. These facilities are not part of the strict
-self-verification claim.
+external ATPs, specialized Vampire/E checks, and conservative re-checks of
+prover-specific preprocessing to maximise ProoVer score. These facilities are
+not part of the strict self-verification claim.
+
+Competition mode does **not** verify a proof modulo assumptions. A leaf whose
+provenance cannot be checked — because the `% Proof :` link did not resolve to
+a parseable problem file — is inconclusive, and the run-level aggregation
+additionally pins the invariant that a proof without a loaded problem can
+never be reported `VerifiedGood`. Accepting unchecked leaves would make an
+unresolvable header link a free pass for every axiom in the proof, which is
+exactly how ProoVer-2026 `PRV051+1` and `PRV074+1` were reported
+`VerifiedGood` from an unrelated working directory. The ProoVer rules always
+supply the problem file, so refusing here can only cost coverage on proof
+sets that ship none.
 
 Competition-mode `superposition` ATP queries may append problem-level background
 AC unit equalities (commutativity/associativity from axioms and the NNF of the

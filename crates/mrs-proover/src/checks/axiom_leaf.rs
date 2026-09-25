@@ -43,16 +43,20 @@ pub fn check_leaf<'p>(
         return StepOutcome::Unknown("leaf source is not file(_,_)".into());
     };
     let Some((problem, index)) = problem else {
-        if strict {
-            return StepOutcome::Unknown(
-                "strict mode requires a linked problem for leaf provenance".into(),
-            );
-        }
-        // If no problem file is loaded (e.g. Otter subset of Zenodo benchmark),
-        // we cannot verify if the leaf is a valid axiom in the problem file.
-        // We fallback to treating the leaf as Sound (verifying the proof
-        // modulo assumptions).
-        return StepOutcome::Sound;
+        // Fail closed in every mode. Accepting a leaf we cannot check is
+        // "verify modulo assumptions", which turns an unresolvable
+        // `% Proof :` link into a free pass for *every* axiom of the proof:
+        // the evil ProoVer-2026 fixtures PRV051+1 (leaf declared with the
+        // problem's `conjecture` role) and PRV074+1 (Skolem symbol clashing
+        // with a problem symbol) are both reported `VerifiedGood` when the
+        // problem file cannot be located, and `VerifiedBad` when it can.
+        // The competition always supplies the problem, so refusing here can
+        // only cost a `VerifiedGood` on proof sets that ship no problem file
+        // (e.g. the Zenodo Otter half); it can never cost soundness.
+        let _ = strict;
+        return StepOutcome::Unknown(
+            "leaf provenance unverifiable: the linked problem file could not be loaded".into(),
+        );
     };
 
     // Lower the proof leaf formula once for either matching strategy.
@@ -690,13 +694,17 @@ mod tests {
     }
 
     #[test]
-    fn competition_mode_keeps_modulo_assumption_leaf_behavior() {
+    fn competition_mode_also_requires_linked_problem_for_leaf() {
+        // Accepting an unchecked leaf would make the whole proof
+        // "verified modulo assumptions", which turns an unresolvable
+        // `% Proof :` link into a free pass for every axiom. Fail closed in
+        // both modes.
         let node = leaf("fof(a, axiom, p(a), file('problem.p', a)).");
         let mut symbols = SymbolTable::new();
-        assert_eq!(
+        assert!(matches!(
             check_leaf(node, None, &mut symbols, false),
-            StepOutcome::Sound
-        );
+            StepOutcome::Unknown(_)
+        ));
     }
 
     #[test]
