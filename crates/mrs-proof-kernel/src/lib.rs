@@ -1634,8 +1634,9 @@ fn definition_direction_clauses(
     // `~head | <conjunct-clauses>` group, and the converse
     // `head | ~C_1 | ... | ~C_n` is attempted best-effort: every emitted
     // clause is a genuine consequence, so a skipped converse only costs
-    // coverage (fail-closed), never soundness. Non-conjunctive bodies
-    // keep the direct IFF expansion, which cannot blow up on them.
+    // coverage (fail-closed), never soundness. Bound the NNF conversion as
+    // well as clause expansion: `to_nnf` can itself distribute nested IFFs
+    // exponentially before `cnf_expand` enforces its limits.
     if let Formula::And(parts) = &definition.rhs {
         let neg_head = Literal {
             positive: false,
@@ -1650,14 +1651,14 @@ fn definition_direction_clauses(
             for mut clause in sub {
                 clause.insert(0, neg_head.clone());
                 out.push(clause);
+                if out.len() > limits.max_nodes {
+                    return None;
+                }
             }
         }
-        let mut negated = vec![Formula::atom(definition.head.clone())];
-        for part in parts {
-            negated.push(Formula::neg(part.clone()));
-        }
-        let mut converse = Vec::new();
-        if cnf_expand(&to_nnf(&Formula::or(negated)), &mut converse, limits) {
+        if let Some(converse) = factored_definition_converse(definition, parts, limits)
+            && out.len().saturating_add(converse.len()) <= limits.max_nodes
+        {
             out.extend(converse);
         }
         return Some(out);
@@ -1667,11 +1668,174 @@ fn definition_direction_clauses(
         definition.rhs.clone(),
     );
     let mut clauses = Vec::new();
-    if !cnf_expand(&to_nnf(&definition_formula), &mut clauses, limits) {
+    let nnf = to_nnf_bounded(
+        &definition_formula,
+        limits.max_formula_nodes,
+        limits.max_term_depth,
+    )?;
+    if !cnf_expand(&nnf, &mut clauses, limits) {
         None
     } else {
         Some(clauses)
     }
+}
+
+fn factored_definition_converse(
+    definition: &CoreDefinition,
+    parts: &[Formula],
+    limits: VerificationLimits,
+) -> Option<Vec<Vec<Literal>>> {
+    let mut negated = Vec::with_capacity(parts.len().saturating_add(1));
+    negated.push(Formula::atom(definition.head.clone()));
+    negated.extend(parts.iter().cloned().map(Formula::neg));
+    let nnf = to_nnf_bounded(
+        &Formula::or(negated),
+        limits.max_formula_nodes,
+        limits.max_term_depth,
+    )?;
+    let mut clauses = Vec::new();
+    if cnf_expand(&nnf, &mut clauses, limits) {
+        Some(clauses)
+    } else {
+        None
+    }
+}
+
+/// Convert to NNF while charging each generated formula node before
+/// constructing it. Unlike [`to_nnf`], this never materializes an
+/// exponentially expanded IFF formula beyond `max_nodes`.
+fn to_nnf_bounded(formula: &Formula, max_nodes: usize, max_depth: usize) -> Option<Formula> {
+    fn visit(
+        formula: &Formula,
+        negated: bool,
+        nodes: &mut usize,
+        max_nodes: usize,
+        depth: usize,
+        max_depth: usize,
+    ) -> Option<Formula> {
+        if depth > max_depth {
+            return None;
+        }
+        *nodes = nodes.checked_add(1)?;
+        if *nodes > max_nodes {
+            return None;
+        }
+        let make = |node: Formula, nodes: &mut usize| {
+            *nodes = nodes.checked_add(1)?;
+            (*nodes <= max_nodes).then_some(node)
+        };
+        match formula {
+            Formula::Atom(atom) => {
+                let atom = Formula::Atom(atom.clone());
+                if negated {
+                    make(Formula::neg(atom), nodes)
+                } else {
+                    Some(atom)
+                }
+            }
+            Formula::True => Some(if negated {
+                Formula::False
+            } else {
+                Formula::True
+            }),
+            Formula::False => Some(if negated {
+                Formula::True
+            } else {
+                Formula::False
+            }),
+            Formula::Neg(inner) => visit(inner, !negated, nodes, max_nodes, depth + 1, max_depth),
+            Formula::And(parts) | Formula::Or(parts) => {
+                let is_and = matches!(formula, Formula::And(_)) != negated;
+                let mut converted = Vec::with_capacity(parts.len());
+                for part in parts {
+                    converted.push(visit(
+                        part,
+                        negated,
+                        nodes,
+                        max_nodes,
+                        depth + 1,
+                        max_depth,
+                    )?);
+                }
+                let result = if is_and {
+                    Formula::and(converted)
+                } else {
+                    Formula::or(converted)
+                };
+                make(result, nodes)
+            }
+            Formula::Implies(left, right) => {
+                if negated {
+                    let left = visit(left, false, nodes, max_nodes, depth + 1, max_depth)?;
+                    let right = visit(right, true, nodes, max_nodes, depth + 1, max_depth)?;
+                    make(Formula::and(vec![left, right]), nodes)
+                } else {
+                    let left = visit(left, true, nodes, max_nodes, depth + 1, max_depth)?;
+                    let right = visit(right, false, nodes, max_nodes, depth + 1, max_depth)?;
+                    make(Formula::or(vec![left, right]), nodes)
+                }
+            }
+            Formula::Iff(left, right) => {
+                let (
+                    first_left_negated,
+                    first_right_negated,
+                    second_left_negated,
+                    second_right_negated,
+                ) = if negated {
+                    (false, false, true, true)
+                } else {
+                    (true, false, false, true)
+                };
+                let first_left = visit(
+                    left,
+                    first_left_negated,
+                    nodes,
+                    max_nodes,
+                    depth + 1,
+                    max_depth,
+                )?;
+                let first_right = visit(
+                    right,
+                    first_right_negated,
+                    nodes,
+                    max_nodes,
+                    depth + 1,
+                    max_depth,
+                )?;
+                let first = make(Formula::or(vec![first_left, first_right]), nodes)?;
+                let second_left = visit(
+                    left,
+                    second_left_negated,
+                    nodes,
+                    max_nodes,
+                    depth + 1,
+                    max_depth,
+                )?;
+                let second_right = visit(
+                    right,
+                    second_right_negated,
+                    nodes,
+                    max_nodes,
+                    depth + 1,
+                    max_depth,
+                )?;
+                let second = make(Formula::or(vec![second_left, second_right]), nodes)?;
+                make(Formula::and(vec![first, second]), nodes)
+            }
+            Formula::Forall(variable, body) | Formula::Exists(variable, body) => {
+                let is_forall = matches!(formula, Formula::Forall(..)) != negated;
+                let body = visit(body, negated, nodes, max_nodes, depth + 1, max_depth)?;
+                let result = if is_forall {
+                    Formula::forall(*variable, body)
+                } else {
+                    Formula::exists(*variable, body)
+                };
+                make(result, nodes)
+            }
+        }
+    }
+
+    visit(formula, false, &mut 0, max_nodes, 0, max_depth)
 }
 
 fn replace_definition_subformulas(
@@ -2101,6 +2265,9 @@ fn cnf_expand(
                 if !cnf_expand(part, output, limits) {
                     return false;
                 }
+                if output.len() > limits.max_nodes {
+                    return false;
+                }
             }
             true
         }
@@ -2127,10 +2294,16 @@ fn cnf_expand(
                 }
                 clauses = next;
             }
+            if output.len().saturating_add(clauses.len()) > limits.max_nodes {
+                return false;
+            }
             output.extend(clauses);
             true
         }
         Formula::Atom(atom) => {
+            if output.len() >= limits.max_nodes {
+                return false;
+            }
             output.push(vec![Literal {
                 positive: true,
                 atom: atom.clone(),
@@ -2139,6 +2312,9 @@ fn cnf_expand(
         }
         Formula::Neg(inner) => match inner.as_ref() {
             Formula::Atom(atom) => {
+                if output.len() >= limits.max_nodes {
+                    return false;
+                }
                 output.push(vec![Literal {
                     positive: false,
                     atom: atom.clone(),
@@ -2148,6 +2324,9 @@ fn cnf_expand(
             _ => false,
         },
         Formula::False => {
+            if output.len() >= limits.max_nodes {
+                return false;
+            }
             output.push(Vec::new());
             true
         }
@@ -11588,6 +11767,22 @@ mod tests {
             && clause[1].atom == target_t
             && clause[2].positive
             && clause[2].atom == target_p));
+    }
+
+    #[test]
+    fn bounded_definition_nnf_rejects_explosive_iff_before_materializing() {
+        // A small nested IFF tree has exponential NNF growth; the bounded
+        // conversion must stop before building the full cross-product.
+        let atom = |symbol| Formula::atom(Atom::Pred(symbol, vec![]));
+        let mut symbols = SymbolTable::new();
+        let a = atom(symbols.intern("a"));
+        let b = atom(symbols.intern("b"));
+        let mut nested = a;
+        for _ in 0..12 {
+            nested = Formula::iff(nested, b.clone());
+        }
+        assert!(to_nnf_bounded(&nested, 256, 256).is_none());
+        assert!(to_nnf_bounded(&nested, 100_000, 256).is_some());
     }
 
     fn flat_definition_proof() -> &'static str {
