@@ -37,10 +37,10 @@ pub struct Settings {
     pub workers: usize,
     /// Require strict provenance for self-verification.
     ///
-    /// Competition mode may verify a proof modulo assumptions when the linked
-    /// problem is unavailable. Strict mode never does that: a missing problem
-    /// or unverifiable leaf is inconclusive and therefore cannot certify the
-    /// proof.
+    /// A missing or unresolvable linked problem is inconclusive in *both*
+    /// modes: competition mode no longer verifies a proof modulo assumptions,
+    /// because accepting unchecked leaves would turn an unresolvable
+    /// `% Proof :` link into a free pass for every axiom of the proof.
     pub strict: bool,
 }
 
@@ -306,6 +306,17 @@ pub fn verify_with_telemetry(
             .zip(outcomes.iter())
             .map(|(name, outcome)| (*name, outcome.clone().expect("every step resolved"))),
     );
+    // Structural fail-closed invariant, independent of the per-check policy:
+    // without the linked problem there is nothing to check a leaf against, so
+    // a proof can never be certified. Individual checks already return
+    // `Unknown` for unverifiable leaves, but pinning the rule here means a
+    // future check that trusts a leaf (or a proof shape with no `file(...)`
+    // leaf at all) cannot silently reintroduce "verified modulo assumptions".
+    let verdict = if matches!(verdict, Verdict::VerifiedGood) && job.problem.is_none() {
+        Verdict::Unknown("no linked problem file: the proof cannot be certified without it".into())
+    } else {
+        verdict
+    };
     telemetry.step_outcomes = names
         .iter()
         .zip(outcomes.iter())

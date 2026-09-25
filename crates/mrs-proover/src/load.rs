@@ -185,14 +185,24 @@ fn resolve_includes_recursive(
     Ok(())
 }
 
+/// Resolve the `% Proof :` header path to an existing problem file.
+///
+/// Candidate order matters: a relative header such as `Problems/foo.p` is
+/// resolved *against the proof's own directory* first, then against an
+/// explicit `--problems-dir` root. Only if neither matches do we fall back to
+/// the bare relative path, i.e. against the process working directory. Putting
+/// the cwd-relative candidate last means a proof verified from an unrelated
+/// working directory cannot silently bind to a same-named `Problems/foo.p` in
+/// that directory, and a genuinely missing problem is now reported as missing
+/// (and refused by the verifier) instead of binding to whatever happens to
+/// sit in the caller's cwd.
 pub fn resolve_problem_path_with_base(
     proof_path: &Path,
     problems_root: Option<&Path>,
     base_dir: &Path,
     rel: &str,
 ) -> Option<PathBuf> {
-    let mut v = vec![PathBuf::from(rel)];
-    v.push(base_dir.join(rel));
+    let mut v: Vec<PathBuf> = Vec::new();
     if let Some(parent) = proof_path.parent() {
         v.push(parent.join(rel));
         v.push(parent.join(base_dir).join(rel));
@@ -212,5 +222,8 @@ pub fn resolve_problem_path_with_base(
             v.push(root.join(name));
         }
     }
+    // Last resort: the header path as given, relative to the process cwd.
+    v.push(PathBuf::from(rel));
+    v.push(base_dir.join(rel));
     v.into_iter().find(|p| p.is_file())
 }
