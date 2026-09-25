@@ -26,7 +26,7 @@ TIME_LIMIT="${2:?Usage: invoke.sh <problem_path> <time_limit_secs>}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
 
-BINARY="${WORKSPACE_ROOT}/target/release/mrs"
+BINARY="${MRS_BINARY:-${WORKSPACE_ROOT}/target/release/mrs}"
 if [[ ! -x "${BINARY}" ]]; then
     echo "% SZS status Error (mrs binary not found; run: cargo build --release)"
     exit 1
@@ -60,5 +60,15 @@ case "${DIV_LOWER}" in
     *) SCHEDULE="casc" ;;
 esac
 
+# EPS solo-strategy measurements use the bounded ordered certifier for every
+# strategy ID. This makes the EPS greedy set-cover input count only positive
+# Satisfiable results certified for the full instance. Other divisions retain
+# the ordinary strategy-sweep behavior.
+CERTIFY_ARGS=()
+if [[ "${DIV_LOWER}" == "eps" ]]; then
+    CERTIFY_ARGS+=(--certify-ordered)
+fi
+
 exec "${BINARY}" --time "${TIME_LIMIT}" --workers 1 \
-    --schedule "${SCHEDULE}" --strategy "${STRATEGY_NUM}" "${PROBLEM}"
+    --schedule "${SCHEDULE}" --strategy "${STRATEGY_NUM}" \
+    "${CERTIFY_ARGS[@]}" "${PROBLEM}"

@@ -134,6 +134,13 @@ This runs at most 16 search workers across two problem jobs. Inspect the
 per-problem detail to distinguish certification wins from portfolio wins, and
 require zero reference/polarity violations.
 
+`run_strategy_sweep.sh --divisions eps` also enables `--certify-ordered` for
+each of `mrs-s01` through `mrs-s15`. Its EPS CSV and `greedy_set_cover` result
+therefore count certified full-instance satisfiability results, rather than
+ordinary solo-search outcomes. This lets the 8-strategy greedy diagnostic use
+the certifier's EPS coverage; it remains a diagnostic candidate, not the
+cooperative portfolio score.
+
 ## Remote Validation Campaign (R0–R6)
 
 For machines beyond the 2-core local box, `crates/mrs-bench/remote-cert-campaign.sh`

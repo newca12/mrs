@@ -2,9 +2,10 @@
 # crates/mrs-bench/run_strategy_sweep.sh
 #
 # Run all mrs strategies (s01–s15) as independent "systems" on a set of
-# CASC problems and produce a diagnostic solo-coverage run.csv.  This is useful
-# for strategy profiling, but it does not model the cooperative shared-pool
-# portfolio used by competition runs.
+# CASC problems and produce a diagnostic solo-coverage run.csv. EPS entries
+# invoke the bounded ordered certifier; other divisions use ordinary search.
+# This is useful for strategy profiling, but it does not model the cooperative
+# shared-pool portfolio used by competition runs.
 #
 # This is the first step in the per-division portfolio optimisation workflow:
 #
@@ -31,7 +32,7 @@
 #   ./crates/mrs-bench/run_strategy_sweep.sh \
 #       --divisions fne --time 30 --jobs 4
 #
-#   # All main divisions at CASC times:
+#   # All main divisions at CASC times (EPS rows use --certify-ordered):
 #   ./crates/mrs-bench/run_strategy_sweep.sh \
 #       --divisions fne,feq,ueq,eps --casc-times --jobs 4
 #
