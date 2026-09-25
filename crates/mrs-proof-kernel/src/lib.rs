@@ -6895,11 +6895,31 @@ fn verify_demodulation(
             }
             visited.push(current.clone());
             let mut changed = false;
+            let mut rewrite_hit_size_limit = false;
+            let current_size: usize = current
+                .iter()
+                .map(|literal| atom_term_size(&literal.atom))
+                .sum();
             for literal in &mut current {
-                if rewrite_atom(&mut literal.atom, &rules, &mut steps, limits) {
+                let literal_size = atom_term_size(&literal.atom);
+                let literal_budget = size_cap
+                    .saturating_sub(current_size.saturating_sub(literal_size))
+                    .min(limits.max_formula_nodes);
+                if rewrite_atom(
+                    &mut literal.atom,
+                    &rules,
+                    &mut steps,
+                    limits,
+                    literal_budget,
+                    &mut rewrite_hit_size_limit,
+                ) {
                     changed = true;
                     break;
                 }
+            }
+            if rewrite_hit_size_limit && !changed {
+                hit_size_limit = true;
+                break;
             }
             if !changed {
                 break;
@@ -9885,18 +9905,44 @@ fn rewrite_atom(
     rules: &[(Term, Term)],
     steps: &mut usize,
     limits: VerificationLimits,
+    max_term_size: usize,
+    hit_size_limit: &mut bool,
 ) -> bool {
+    let atom_size = atom_term_size(atom);
     match atom {
         Atom::Pred(_, args) => {
             for term in args {
-                if rewrite_term(term, rules, steps, limits) {
+                let available =
+                    max_term_size.saturating_sub(atom_size.saturating_sub(term_size(term)));
+                if rewrite_term(term, rules, steps, limits, available, 0, hit_size_limit) {
                     return true;
                 }
             }
             false
         }
         Atom::Eq(left, right) => {
-            rewrite_term(left, rules, steps, limits) || rewrite_term(right, rules, steps, limits)
+            let available_left = max_term_size.saturating_sub(term_size(right));
+            if rewrite_term(
+                left,
+                rules,
+                steps,
+                limits,
+                available_left,
+                0,
+                hit_size_limit,
+            ) {
+                return true;
+            }
+            let available_right = max_term_size.saturating_sub(term_size(left));
+            rewrite_term(
+                right,
+                rules,
+                steps,
+                limits,
+                available_right,
+                0,
+                hit_size_limit,
+            )
         }
     }
 }
@@ -9906,6 +9952,9 @@ fn rewrite_term(
     rules: &[(Term, Term)],
     steps: &mut usize,
     limits: VerificationLimits,
+    max_term_size: usize,
+    depth: usize,
+    hit_size_limit: &mut bool,
 ) -> bool {
     for (left, right) in rules {
         if *steps >= limits.max_rewrite_steps {
@@ -9913,19 +9962,130 @@ fn rewrite_term(
         }
         let mut substitution = HashMap::new();
         if match_pattern(left, term, &mut substitution) {
-            *term = apply_substitution_term(right, &substitution);
+            let Some(rewritten) = instantiate_term_bounded(
+                right,
+                &substitution,
+                max_term_size,
+                limits.max_term_depth.saturating_sub(depth),
+            ) else {
+                *hit_size_limit = true;
+                continue;
+            };
+            *term = rewritten;
             *steps += 1;
             return true;
         }
     }
     if let Term::App(_, args) = term {
+        let parent_size = 1 + args.iter().map(term_size).sum::<usize>();
         for arg in args {
-            if rewrite_term(arg, rules, steps, limits) {
+            let child_budget =
+                max_term_size.saturating_sub(parent_size.saturating_sub(term_size(arg)));
+            if rewrite_term(
+                arg,
+                rules,
+                steps,
+                limits,
+                child_budget,
+                depth.saturating_add(1),
+                hit_size_limit,
+            ) {
                 return true;
             }
         }
     }
     false
+}
+
+/// Instantiate a rewrite right-hand side without ever constructing a term
+/// larger or deeper than the caller's limits. The node budget is charged for
+/// every copied substitution occurrence, so rules such as `f(X) = g(X,X)`
+/// cannot allocate an unbounded expansion before the replay loop checks its
+/// intermediate-clause bound.
+fn instantiate_term_bounded(
+    term: &Term,
+    substitution: &HashMap<VarId, Term>,
+    max_nodes: usize,
+    max_depth: usize,
+) -> Option<Term> {
+    fn build(
+        term: &Term,
+        substitution: &HashMap<VarId, Term>,
+        nodes: &mut usize,
+        max_nodes: usize,
+        depth: usize,
+        max_depth: usize,
+    ) -> Option<Term> {
+        match term {
+            Term::Var(var) => {
+                if let Some(replacement) = substitution.get(var) {
+                    return copy_term_bounded(replacement, nodes, max_nodes, depth, max_depth);
+                }
+                *nodes = nodes.checked_add(1)?;
+                (*nodes <= max_nodes).then_some(Term::Var(*var))
+            }
+            Term::App(symbol, args) => {
+                let child_depth = depth.checked_add(1)?;
+                if child_depth > max_depth {
+                    return None;
+                }
+                *nodes = nodes.checked_add(1)?;
+                if *nodes > max_nodes {
+                    return None;
+                }
+                let mut copied_args = Vec::with_capacity(args.len());
+                for arg in args {
+                    copied_args.push(build(
+                        arg,
+                        substitution,
+                        nodes,
+                        max_nodes,
+                        child_depth,
+                        max_depth,
+                    )?);
+                }
+                Some(Term::App(*symbol, copied_args))
+            }
+        }
+    }
+
+    build(term, substitution, &mut 0, max_nodes, 0, max_depth)
+}
+
+fn copy_term_bounded(
+    term: &Term,
+    nodes: &mut usize,
+    max_nodes: usize,
+    depth: usize,
+    max_depth: usize,
+) -> Option<Term> {
+    match term {
+        Term::Var(var) => {
+            *nodes = nodes.checked_add(1)?;
+            (*nodes <= max_nodes).then_some(Term::Var(*var))
+        }
+        Term::App(symbol, args) => {
+            let child_depth = depth.checked_add(1)?;
+            if child_depth > max_depth {
+                return None;
+            }
+            *nodes = nodes.checked_add(1)?;
+            if *nodes > max_nodes {
+                return None;
+            }
+            let mut copied_args = Vec::with_capacity(args.len());
+            for arg in args {
+                copied_args.push(copy_term_bounded(
+                    arg,
+                    nodes,
+                    max_nodes,
+                    child_depth,
+                    max_depth,
+                )?);
+            }
+            Some(Term::App(*symbol, copied_args))
+        }
+    }
 }
 
 fn match_pattern(pattern: &Term, target: &Term, substitution: &mut HashMap<VarId, Term>) -> bool {
@@ -11622,6 +11782,33 @@ mod tests {
                      fof(bot, plain, $false, inference(consequence, [status(thm)], [s])).";
         assert!(matches!(
             check(problem, proof),
+            KernelVerdict::Inconclusive(detail) if detail.contains("size bound")
+        ));
+    }
+
+    #[test]
+    fn rejects_single_step_demodulation_expansion_before_materializing_it() {
+        // A single right-hand side duplicates a huge matched subterm. The
+        // replay must account for each copied occurrence against the clause
+        // budget before constructing the expanded result.
+        let mut nested = "a".to_string();
+        for _ in 0..120 {
+            nested = format!("f({nested})");
+        }
+        let expanded_args = std::iter::repeat_n("X", 12).collect::<Vec<_>>().join(",");
+        let rule = format!("![X] : f(X) = g({expanded_args})");
+        let problem = format!(
+            "fof(rule, axiom, {rule}).\n\
+             fof(target, axiom, p(f({nested})))."
+        );
+        let proof = format!(
+            "fof(rule, axiom, {rule}, file('problem.p', rule)).\
+             fof(target, axiom, p(f({nested})), file('problem.p', target)).\
+             fof(s, plain, p(q(a)), inference(demodulation, [status(thm)], [target,rule])).\
+             fof(bot, plain, $false, inference(consequence, [status(thm)], [s]))."
+        );
+        assert!(matches!(
+            check(&problem, &proof),
             KernelVerdict::Inconclusive(detail) if detail.contains("size bound")
         ));
     }
