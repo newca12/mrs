@@ -4,7 +4,7 @@ use mrs_core::clause::{Clause, ClauseId, ClauseIdGen, ClauseSource, Literal};
 use mrs_core::formula::Atom;
 use mrs_core::subst::Substitution;
 use mrs_core::term::Term;
-use mrs_core::witness::{ProofNodeId, ProofWitness};
+use mrs_core::witness::{DemodStepWitness, ProofNodeId, ProofWitness};
 use mrs_unify::matching::match_term;
 
 /// Performs forward demodulation on a clause using the provided index of unit equalities.
@@ -77,6 +77,11 @@ pub fn demodulate(
         derived.witness = Some(ProofWitness::Demodulation {
             target: clause.proof_id.unwrap_or(ProofNodeId(clause.id.0)),
             rule_parents,
+            // This legacy term-keyed entry point is only used by the unit tests
+            // below; the given-clause loop calls `demodulate_id`, which records
+            // every rewrite it applies. An empty step list simply means the
+            // emitted proof carries no `demodulation_steps` annotation and a
+            // verifier has to reconstruct the rewrite sequence itself.
             steps: Vec::new(),
         });
         Some(derived)
@@ -197,6 +202,11 @@ pub fn demodulate_id(
     let mut changed = false;
     let mut used_unit_ids = Vec::new();
     let mut passes = 0usize;
+    // Every applied rewrite is recorded in application order so the emitted
+    // proof can replay the fixpoint instead of forcing a verifier to search
+    // for a rewrite sequence (see `mrs-proof`'s `demodulation_steps`
+    // annotation and the strict kernel's recorded-replay path).
+    let mut steps: Vec<DemodStepWitness> = Vec::new();
 
     loop {
         // Equational problems can generate cyclic rewrite rules (a→b and b→a).
@@ -208,14 +218,16 @@ pub fn demodulate_id(
         }
         passes += 1;
         let mut changed_this_pass = false;
-        for lit in &mut current_lits {
+        for (lit_idx, lit) in current_lits.iter_mut().enumerate() {
             if rewrite_literal_id(
                 lit,
+                lit_idx,
                 &clause.avatar,
                 bank,
                 demod_index,
                 clause_store,
                 &mut used_unit_ids,
+                &mut steps,
                 ac_syms,
             ) {
                 changed = true;
@@ -261,7 +273,7 @@ pub fn demodulate_id(
         derived.witness = Some(ProofWitness::Demodulation {
             target: clause.proof_id.unwrap_or(ProofNodeId(clause.id.0)),
             rule_parents,
-            steps: Vec::new(),
+            steps,
         });
         Some(derived)
     } else {
@@ -269,13 +281,16 @@ pub fn demodulate_id(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn rewrite_literal_id(
     lit: &mut IdLiteral,
+    lit_idx: usize,
     target_avatar: &[u32],
     bank: &mut TermBank,
     demod_index: &mrs_index::stree::STreeId<(TermId, TermId, ClauseId)>,
     clause_store: &HashMap<ClauseId, IdClause>,
     used_unit_ids: &mut Vec<ClauseId>,
+    steps: &mut Vec<DemodStepWitness>,
     ac_syms: &HashSet<SymbolId>,
 ) -> bool {
     let mut changed = false;
@@ -283,14 +298,24 @@ fn rewrite_literal_id(
         IdAtom::Pred(p, args) => {
             let new_args: smallvec::SmallVec<[TermId; 4]> = args
                 .iter()
-                .map(|arg| {
+                .enumerate()
+                .map(|(arg_idx, arg)| {
+                    // The recorded path is the full chain of argument indices
+                    // from the literal's atom down to the rewritten subterm, so
+                    // it is threaded down the recursion rather than rebuilt at
+                    // each level.
+                    let mut path = TermPath::new();
+                    path.push(arg_idx);
                     let (new_arg, ch) = rewrite_term_id(
                         *arg,
+                        lit_idx,
+                        &mut path,
                         target_avatar,
                         bank,
                         demod_index,
                         clause_store,
                         used_unit_ids,
+                        steps,
                         ac_syms,
                     );
                     if ch {
@@ -302,22 +327,32 @@ fn rewrite_literal_id(
             IdAtom::Pred(*p, new_args)
         }
         IdAtom::Eq(l, r) => {
+            let mut left_path = TermPath::new();
+            left_path.push(0);
             let (new_l, ch_l) = rewrite_term_id(
                 *l,
+                lit_idx,
+                &mut left_path,
                 target_avatar,
                 bank,
                 demod_index,
                 clause_store,
                 used_unit_ids,
+                steps,
                 ac_syms,
             );
+            let mut right_path = TermPath::new();
+            right_path.push(1);
             let (new_r, ch_r) = rewrite_term_id(
                 *r,
+                lit_idx,
+                &mut right_path,
                 target_avatar,
                 bank,
                 demod_index,
                 clause_store,
                 used_unit_ids,
+                steps,
                 ac_syms,
             );
             if ch_l || ch_r {
@@ -332,13 +367,24 @@ fn rewrite_literal_id(
     changed
 }
 
+/// Position of `term` inside its literal: an argument index for a predicate
+/// atom, `0`/`1` for the left/right side of an equality atom.
+type TermPath = Vec<usize>;
+
+/// `path` is the position of `term` inside its literal: the chain of argument
+/// indices from the literal's atom (or `0`/`1` for the left/right side of an
+/// equality atom) down to this subterm.
+#[allow(clippy::too_many_arguments)]
 fn rewrite_term_id(
     term: TermId,
+    lit_idx: usize,
+    path: &mut TermPath,
     target_avatar: &[u32],
     bank: &mut TermBank,
     demod_index: &mrs_index::stree::STreeId<(TermId, TermId, ClauseId)>,
     clause_store: &HashMap<ClauseId, IdClause>,
     used_unit_ids: &mut Vec<ClauseId>,
+    steps: &mut Vec<DemodStepWitness>,
     _ac_syms: &HashSet<SymbolId>,
 ) -> (TermId, bool) {
     let rules = demod_index.get_generalizations(term, bank);
@@ -354,6 +400,12 @@ fn rewrite_term_id(
                     used_unit_ids.push(unit_id);
                 }
                 let rewritten = apply_matching_subst_id(&sigma, to, bank);
+                steps.push(DemodStepWitness {
+                    rule_parent: proof_node_id_of(clause_store, unit_id),
+                    lit_idx,
+                    term_path: path.clone(),
+                    substitution: None,
+                });
                 return (rewritten, true);
             }
         }
@@ -362,16 +414,21 @@ fn rewrite_term_id(
     if let mrs_core::term_bank::TermNode::App(sym, args) = bank.get(term).clone() {
         let mut changed = false;
         let mut new_args = Vec::with_capacity(args.len());
-        for arg in args {
+        for (arg_idx, arg) in args.into_iter().enumerate() {
+            path.push(arg_idx);
             let (new_arg, ch) = rewrite_term_id(
                 arg,
+                lit_idx,
+                path,
                 target_avatar,
                 bank,
                 demod_index,
                 clause_store,
                 used_unit_ids,
+                steps,
                 _ac_syms,
             );
+            path.pop();
             if ch {
                 changed = true;
             }
@@ -384,6 +441,16 @@ fn rewrite_term_id(
     }
 
     (term, false)
+}
+
+/// Proof-node identity of a cited unit equality, using the same convention as
+/// the step's `rule_parents` list so a recorded rewrite can be mapped back to
+/// its position in that list.
+fn proof_node_id_of(clause_store: &HashMap<ClauseId, IdClause>, unit_id: ClauseId) -> ProofNodeId {
+    clause_store
+        .get(&unit_id)
+        .and_then(|clause| clause.proof_id)
+        .unwrap_or(ProofNodeId(unit_id.0))
 }
 
 fn apply_matching_subst_id(
@@ -613,5 +680,195 @@ mod tests {
 
         let result = demodulate(&target, &demod_index, &clause_store, &mut id_gen);
         assert!(result.is_none());
+    }
+
+    /// Run `demodulate_id` with a single unit-equality rule `lhs -> rhs` and
+    /// return the derived clause together with its recorded rewrite trace.
+    fn demodulate_id_with_rule(
+        bank: &mut TermBank,
+        lhs: TermId,
+        rhs: TermId,
+        target_lits: Vec<IdLiteral>,
+    ) -> (IdClause, Vec<DemodStepWitness>) {
+        let mut id_gen = ClauseIdGen::new();
+        let unit = IdClause::new(
+            id_gen.next(),
+            vec![IdLiteral {
+                positive: true,
+                atom: IdAtom::Eq(lhs, rhs),
+            }],
+            ClauseSource::Input {
+                name: "unit".into(),
+                role: "axiom".into(),
+            },
+        );
+        let unit_id = unit.id;
+        let target = IdClause::new(
+            id_gen.next(),
+            target_lits,
+            ClauseSource::Input {
+                name: "target".into(),
+                role: "axiom".into(),
+            },
+        );
+
+        let mut clause_store = HashMap::default();
+        clause_store.insert(unit_id, unit);
+        let mut index = mrs_index::stree::STreeId::new();
+        index.insert(lhs, bank, (lhs, rhs, unit_id));
+
+        let derived = demodulate_id(
+            &target,
+            bank,
+            &index,
+            &clause_store,
+            &mut id_gen,
+            &Default::default(),
+        )
+        .expect("demodulation applies");
+        let mrs_core::witness::ProofWitness::Demodulation {
+            steps,
+            rule_parents,
+            ..
+        } = derived
+            .witness
+            .as_ref()
+            .expect("demodulation records a witness")
+        else {
+            panic!("expected a demodulation witness")
+        };
+        assert_eq!(rule_parents.len(), 1);
+        for step in steps {
+            assert_eq!(step.rule_parent, rule_parents[0]);
+        }
+        let steps = steps.clone();
+        (derived, steps)
+    }
+
+    #[test]
+    fn demodulate_id_records_the_literal_and_subterm_it_rewrote() {
+        // p(f(a), g(f(a))) with rule f(X) = b rewrites the *first* argument,
+        // i.e. subterm [0] of literal 0 — not the whole atom, and not the
+        // nested f(a) inside the second argument.
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("f");
+        let g = syms.intern("g");
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let mut bank = TermBank::new();
+        let ca = bank.intern_app(a, smallvec::SmallVec::<[TermId; 4]>::new());
+        let cb = bank.intern_app(b, smallvec::SmallVec::<[TermId; 4]>::new());
+        let fa = bank.intern_app(f, smallvec::smallvec![ca]);
+        let gfa = bank.intern_app(g, smallvec::smallvec![fa]);
+
+        let (derived, steps) = demodulate_id_with_rule(
+            &mut bank,
+            fa,
+            cb,
+            vec![IdLiteral {
+                positive: true,
+                atom: IdAtom::Pred(p, smallvec::smallvec![fa, gfa]),
+            }],
+        );
+        // Both occurrences of f(a) are rewritten: the first argument, and the
+        // nested one inside g(...). Each is recorded at its own position.
+        assert_eq!(steps.len(), 2, "both f(a) occurrences are rewritten");
+        let mut paths: Vec<Vec<usize>> = steps.iter().map(|s| s.term_path.clone()).collect();
+        paths.sort();
+        assert_eq!(paths, vec![vec![0], vec![1, 0]]);
+        for step in &steps {
+            assert_eq!(step.lit_idx, 0);
+        }
+        let IdAtom::Pred(_, args) = &derived.literals[0].atom else {
+            panic!("expected a predicate atom")
+        };
+        assert_eq!(args[0], cb);
+        let mrs_core::term_bank::TermNode::App(_, nested) = bank.get(args[1]).clone() else {
+            panic!("expected an application argument")
+        };
+        assert_eq!(
+            nested[0], cb,
+            "the nested f(a) inside g(...) is rewritten too"
+        );
+    }
+
+    #[test]
+    fn demodulate_id_records_the_full_nested_path() {
+        // q(f(f(a))) with rule f(X) = b: the rewrite is the *inner* f, whose
+        // path from the literal is [0, 0]. A path that lost its ancestors
+        // would replay the rewrite at the outer f and produce q(f(b)) — which
+        // is the clause we assert against here.
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("f");
+        let q = syms.intern("q");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let mut bank = TermBank::new();
+        let ca = bank.intern_app(a, smallvec::SmallVec::<[TermId; 4]>::new());
+        let cb = bank.intern_app(b, smallvec::SmallVec::<[TermId; 4]>::new());
+        let fa = bank.intern_app(f, smallvec::smallvec![ca]);
+        let ffa = bank.intern_app(f, smallvec::smallvec![fa]);
+        let ffb = bank.intern_app(f, smallvec::smallvec![cb]);
+
+        let (derived, steps) = demodulate_id_with_rule(
+            &mut bank,
+            fa,
+            cb,
+            vec![IdLiteral {
+                positive: true,
+                atom: IdAtom::Pred(q, smallvec::smallvec![ffa]),
+            }],
+        );
+        assert!(!steps.is_empty());
+        for step in &steps {
+            assert!(
+                step.term_path.len() >= 2,
+                "a nested rewrite must keep its ancestor path, got {:?}",
+                step.term_path
+            );
+            assert_eq!(step.term_path[0], 0, "argument 0 of the predicate");
+        }
+        let IdAtom::Pred(_, args) = &derived.literals[0].atom else {
+            panic!("expected a predicate atom")
+        };
+        assert_eq!(args[0], ffb, "q(f(b)): only the inner f was rewritten");
+    }
+
+    #[test]
+    fn demodulate_id_records_the_equality_side_it_rewrote() {
+        // f(a) = f(b) with rule f(X) = g(X): path 0 is the left side and 1 the
+        // right side, so a recorded path is always a single side selector here.
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("f");
+        let g = syms.intern("g");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let mut bank = TermBank::new();
+        let ca = bank.intern_app(a, smallvec::SmallVec::<[TermId; 4]>::new());
+        let cb = bank.intern_app(b, smallvec::SmallVec::<[TermId; 4]>::new());
+        let fa = bank.intern_app(f, smallvec::smallvec![ca]);
+        let fb = bank.intern_app(f, smallvec::smallvec![cb]);
+        let ga = bank.intern_app(g, smallvec::smallvec![ca]);
+
+        let (_derived, steps) = demodulate_id_with_rule(
+            &mut bank,
+            fa,
+            ga,
+            vec![IdLiteral {
+                positive: true,
+                atom: IdAtom::Eq(fa, fb),
+            }],
+        );
+        assert!(!steps.is_empty());
+        for step in &steps {
+            assert_eq!(step.lit_idx, 0);
+            assert_eq!(
+                step.term_path.len(),
+                1,
+                "an equality side is selected by a single index"
+            );
+            assert!(step.term_path[0] <= 1);
+        }
     }
 }
