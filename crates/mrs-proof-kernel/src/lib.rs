@@ -230,7 +230,7 @@ fn verify_strict_with_source_internal(
     // symbols). The second step sees no fresh symbols and would fail
     // even though it re-derives an already-established consequence from
     // an identical parent, so memoize exact pairs for re-certification.
-    let mut certified_skolemisations: HashSet<(Formula, Formula)> = HashSet::new();
+    let mut certified_skolemisations: HashSet<(String, String)> = HashSet::new();
 
     // NOTE: duplicate problem formula names are tolerated, not rejected.
     // The TPTP library contains includes that define the same name twice
@@ -4289,7 +4289,11 @@ fn verify_skolemisation(
         // re-derived identically create no new witness roles, while a
         // reused symbol for a different existential still falls through
         // to the fail-closed path below.
-        if certified_skolemisations.contains(&(parents[0].clone(), conclusion.clone())) {
+        let pair = (
+            format!("{}", parent_fof.formula),
+            format!("{}", node_fof.formula),
+        );
+        if certified_skolemisations.contains(&pair) {
             return KernelVerdict::Certified;
         }
         return verify_existential_free_identity(parents, conclusion);
@@ -4338,7 +4342,10 @@ fn verify_skolemisation(
             node.name
         ));
     }
-    certified_skolemisations.insert((parents[0].clone(), conclusion.clone()));
+    certified_skolemisations.insert((
+        format!("{}", parent_fof.formula),
+        format!("{}", node_fof.formula),
+    ));
     KernelVerdict::Certified
 }
 
@@ -4364,7 +4371,7 @@ struct SkolemVerificationContext<'a> {
     symbols: &'a SymbolTable,
     known_function_symbols: &'a HashSet<String>,
     skolem_axioms: &'a HashMap<usize, OwnedSkolemAxiom>,
-    certified_skolemisations: &'a mut HashSet<(Formula, Formula)>,
+    certified_skolemisations: &'a mut HashSet<(String, String)>,
     limits: VerificationLimits,
 }
 
@@ -13280,13 +13287,29 @@ mod tests {
         // symbols (COM127+1 derives c361 from c360 and the identical
         // c106967 from c106959). The repeat re-derives an established
         // pair and creates no new witness roles.
-        let problem = "fof(a, axiom, ?[X] : p(X)).\nfof(n, axiom, ![X] : ~p(X)).";
+        let problem = "fof(a, axiom, ?[X] : p(X)).\nfof(n, axiom, ![Y] : ~p(Y)).";
         let proof = "fof(a, axiom, ?[X] : p(X), file('problem.p', a)).\n\
                      fof(s1, plain, p(sk0), inference(skolemisation, [status(esa)], [a])).\n\
                      fof(s2, plain, p(sk0), inference(skolemisation, [status(esa)], [a])).\n\
-                     fof(n, axiom, ![X] : ~p(X), file('problem.p', n)).\n\
+                     fof(n, axiom, ![Y] : ~p(Y), file('problem.p', n)).\n\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [s2,n])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn duplicate_skolemization_cannot_reassign_existing_witnesses() {
+        // Reusing the same symbol for a different existential position is
+        // not an identical re-derivation, even when the source formula is
+        // unchanged. The exact certified pair memo must fail closed.
+        let problem = "fof(a, axiom, ?[X,Y] : p(X,Y)).";
+        let proof = "fof(a, axiom, ?[X,Y] : p(X,Y), file('problem.p', a)).\
+                     fof(s1, plain, p(sk0,sk1), inference(skolemisation, [status(esa)], [a])).\
+                     fof(s2, plain, p(sk1,sk0), inference(skolemisation, [status(esa)], [a])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [s2])).";
+        assert!(matches!(
+            check(problem, proof),
+            KernelVerdict::Inconclusive(_)
+        ));
     }
 
     #[test]

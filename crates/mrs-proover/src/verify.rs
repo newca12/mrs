@@ -580,7 +580,7 @@ fn check_node_prepare<'p>(
                     let mut ctx_sk = crate::lower::LowerCtx::new(&mut sym_tab_sk);
                     let parent_core = crate::lower::lower_fof_formula(&mut ctx_sk, pf);
                     for s in &fresh {
-                        sk_reg.record_skolem_source(s, parent_core.clone(), pf);
+                        sk_reg.record_skolem_source(s, parent_core.clone(), pf, sf);
                     }
                     return Prepared::Resolved(StepOutcome::Sound);
                 }
@@ -704,7 +704,7 @@ fn check_node_prepare<'p>(
                 let mut ctx_sk = crate::lower::LowerCtx::new(&mut sym_tab_sk);
                 let parent_core = crate::lower::lower_fof_formula(&mut ctx_sk, pf);
                 for s in &fresh {
-                    sk_reg.record_skolem_source(s, parent_core.clone(), pf);
+                    sk_reg.record_skolem_source(s, parent_core.clone(), pf, sf);
                 }
                 return Prepared::Resolved(StepOutcome::Sound);
             }
@@ -3401,10 +3401,10 @@ mod mrs_skolemisation_tests {
         // metadata). They must resolve structurally: the ATP cannot
         // prove an equisatisfiable step as an entailment. Only the
         // final instantiation+resolution reaches the ATP here.
-        let problem = "fof(a, axiom, ?[X] : p(X)).\nfof(n, axiom, ![X] : ~p(X)).";
+        let problem = "fof(a, axiom, ?[X] : p(X)).\nfof(n, axiom, ![Y] : ~p(Y)).";
         let proof = "fof(a, axiom, ?[X] : p(X), file('problem.p', a)).\n\
                      fof(s, plain, p(sk0), inference(skolemisation, [status(esa)], [a])).\n\
-                     fof(n, axiom, ![X] : ~p(X), file('problem.p', n)).\n\
+                     fof(n, axiom, ![Y] : ~p(Y), file('problem.p', n)).\n\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [s,n])).";
         let job = load_text(problem.to_string(), proof.to_string(), Path::new(".")).expect("load");
         let atp = CountingAtp {
@@ -3432,6 +3432,24 @@ mod mrs_skolemisation_tests {
         };
         assert_eq!(verify_with(&job, &settings(), &atp), Verdict::VerifiedGood);
         assert_eq!(atp.calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn repeated_mrs_skolemisation_cannot_reassign_witness_symbols() {
+        // Each step is a valid Skolemisation of the parent in isolation, but
+        // swapping the already-introduced symbols would let their joint use
+        // imply more than the existential source formula.
+        let problem = "fof(a, axiom, ?[X,Y] : p(X,Y)).\n\
+                       fof(asym, axiom, ![X,Y] : (~p(X,Y) | ~p(Y,X))).";
+        let proof = "fof(a, axiom, ?[X,Y] : p(X,Y), file('problem.p', a)).\
+                     fof(s1, plain, p(sk0,sk1), inference(skolemisation, [status(esa)], [a])).\
+                     fof(s2, plain, p(sk1,sk0), inference(skolemisation, [status(esa)], [a])).\
+                     fof(asym, axiom, ![X,Y] : (~p(X,Y) | ~p(Y,X)), file('problem.p', asym)).\
+                     fof(c1, plain, ~p(sk1,sk0), inference(resolution, [status(thm)], [asym,s1])).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [c1,s2])).";
+        let job = load_text(problem.to_string(), proof.to_string(), Path::new("."))
+            .expect("load witness-reassignment fixture");
+        assert!(matches!(verify(&job, &settings()), Verdict::Unknown(_)));
     }
 
     #[test]
