@@ -223,6 +223,14 @@ fn verify_strict_with_source_internal(
     let mut avatar_splits: HashMap<usize, AvatarSplitContext> = HashMap::new();
     let mut defined_symbols = HashSet::new();
     let mut skolem_axioms: HashMap<usize, OwnedSkolemAxiom> = HashMap::new();
+    // Certified single-parent skolemisation (parent, conclusion) pairs.
+    // The prover exports the same skolemisation twice when one source
+    // formula is clausified along two paths (COM127+1 derives c361 from
+    // c360 and the identical c106967 from c106959 with the same Skolem
+    // symbols). The second step sees no fresh symbols and would fail
+    // even though it re-derives an already-established consequence from
+    // an identical parent, so memoize exact pairs for re-certification.
+    let mut certified_skolemisations: HashSet<(Formula, Formula)> = HashSet::new();
 
     // NOTE: duplicate problem formula names are tolerated, not rejected.
     // The TPTP library contains includes that define the same name twice
@@ -472,6 +480,7 @@ fn verify_strict_with_source_internal(
                     symbols: &symbols,
                     known_function_symbols: &known_function_symbols,
                     skolem_axioms: &skolem_axioms,
+                    certified_skolemisations: &mut certified_skolemisations,
                     limits,
                 },
             ),
@@ -4189,6 +4198,7 @@ fn verify_skolemisation(
         symbols,
         known_function_symbols,
         skolem_axioms,
+        certified_skolemisations,
         limits,
     } = context;
     let declared_symbols = node
@@ -4272,6 +4282,16 @@ fn verify_skolemisation(
                 "`skolemize` conclusion introduces no fresh witness symbol".into(),
             );
         }
+        // The Skolem symbols were introduced by an earlier step in this
+        // proof (duplicate skolemisation of one source along two
+        // clausification paths). Re-certify only the exact already
+        // established (parent, conclusion) pair: identical premises
+        // re-derived identically create no new witness roles, while a
+        // reused symbol for a different existential still falls through
+        // to the fail-closed path below.
+        if certified_skolemisations.contains(&(parents[0].clone(), conclusion.clone())) {
+            return KernelVerdict::Certified;
+        }
         return verify_existential_free_identity(parents, conclusion);
     }
     if is_e_skolemize && !contains_skolemizable_existential(parent_formula, true) {
@@ -4318,6 +4338,7 @@ fn verify_skolemisation(
             node.name
         ));
     }
+    certified_skolemisations.insert((parents[0].clone(), conclusion.clone()));
     KernelVerdict::Certified
 }
 
@@ -4343,6 +4364,7 @@ struct SkolemVerificationContext<'a> {
     symbols: &'a SymbolTable,
     known_function_symbols: &'a HashSet<String>,
     skolem_axioms: &'a HashMap<usize, OwnedSkolemAxiom>,
+    certified_skolemisations: &'a mut HashSet<(Formula, Formula)>,
     limits: VerificationLimits,
 }
 
@@ -13249,6 +13271,39 @@ mod tests {
                      fof(n, axiom, ![X] : ~p(X), file('problem.p', n)).\n\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [s,n])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_duplicate_skolemization_of_identical_parent() {
+        // The prover exports one skolemisation per clausification path,
+        // so the same parent can be skolemised twice with the same
+        // symbols (COM127+1 derives c361 from c360 and the identical
+        // c106967 from c106959). The repeat re-derives an established
+        // pair and creates no new witness roles.
+        let problem = "fof(a, axiom, ?[X] : p(X)).\nfof(n, axiom, ![X] : ~p(X)).";
+        let proof = "fof(a, axiom, ?[X] : p(X), file('problem.p', a)).\n\
+                     fof(s1, plain, p(sk0), inference(skolemisation, [status(esa)], [a])).\n\
+                     fof(s2, plain, p(sk0), inference(skolemisation, [status(esa)], [a])).\n\
+                     fof(n, axiom, ![X] : ~p(X), file('problem.p', n)).\n\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [s2,n])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn skolemization_symbol_reuse_for_different_existential_stays_inconclusive() {
+        // Reusing one witness constant for two different existentials
+        // must stay fail-closed: the memoized pair does not match, and
+        // the fresh-symbol path is unavailable.
+        let problem = "fof(a, axiom, ?[X] : p(X)).\nfof(b, axiom, ?[Y] : q(Y)).";
+        let proof = "fof(a, axiom, ?[X] : p(X), file('problem.p', a)).\n\
+                     fof(b, axiom, ?[Y] : q(Y), file('problem.p', b)).\n\
+                     fof(s1, plain, p(sk0), inference(skolemisation, [status(esa)], [a])).\n\
+                     fof(s2, plain, q(sk0), inference(skolemisation, [status(esa)], [b])).\n\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [s2])).";
+        assert!(matches!(
+            check(problem, proof),
+            KernelVerdict::Inconclusive(_)
+        ));
     }
 
     #[test]

@@ -675,6 +675,40 @@ fn check_node_prepare<'p>(
         if outcome == StepOutcome::Sound {
             return Prepared::Resolved(outcome);
         }
+        // MRS `skolemisation` without `new_symbols` metadata: the Vampire
+        // shape check above needs declarations and the E-style check needs
+        // `skolemize(...)` metadata, so MRS's own single-parent FOF steps
+        // otherwise fall through to the ATP, which cannot prove an
+        // equisatisfiable step as an entailment (COM127+1 c361 and the
+        // repeated c325 clausification steps go `Unknown` in mrs mode and
+        // hit the esa counter-model carve-out in ladder mode). Run the
+        // same exact positive-skolemisation match as the esa fast-path;
+        // on success record the witness sources so an identical repeat
+        // skolemisation of the same parent stays accepted. Status-gated
+        // to esa with a single parent, mirroring the esa fast-path, so
+        // thm steps and multi-parent steps keep their existing paths.
+        if node.status == Some("esa")
+            && node.parents.len() == 1
+            && let (Some(parent_fof), Some(step_fof)) =
+                (parent_fof.and_then(|p| p.as_fof()), node.formula.as_fof())
+            && let (mrs_tptp::FOFStatement::Logical(pf), mrs_tptp::FOFStatement::Logical(sf)) =
+                (&parent_fof.formula, &step_fof.formula)
+        {
+            let mut step_syms = HashSet::new();
+            let mut parent_syms = HashSet::new();
+            crate::checks::introduced_definition::collect_fun_syms(sf, &mut step_syms);
+            crate::checks::introduced_definition::collect_fun_syms(pf, &mut parent_syms);
+            let fresh: Vec<&str> = step_syms.difference(&parent_syms).copied().collect();
+            if !fresh.is_empty() && skolemize::try_positive_skolemize(pf, sf, &fresh, sk_reg) {
+                let mut sym_tab_sk = SymbolTable::new();
+                let mut ctx_sk = crate::lower::LowerCtx::new(&mut sym_tab_sk);
+                let parent_core = crate::lower::lower_fof_formula(&mut ctx_sk, pf);
+                for s in &fresh {
+                    sk_reg.record_skolem_source(s, parent_core.clone(), pf);
+                }
+                return Prepared::Resolved(StepOutcome::Sound);
+            }
+        }
         if parents.len() == 1 {
             let mut ctx = LowerCtx::new(symbols);
             ctx.reset_vars();
@@ -3311,6 +3345,107 @@ mod telemetry_tests {
         let second_calls = atp.calls.load(Ordering::Relaxed) - first_calls;
         assert_eq!(second.mrs_reports.len(), second_calls);
         assert_eq!(second_calls, first_calls);
+    }
+}
+
+#[cfg(test)]
+mod mrs_skolemisation_tests {
+    use super::*;
+    use crate::atp::{Atp, AtpVerdict};
+    use crate::load::load_text;
+    use std::path::Path;
+    use std::sync::atomic::AtomicUsize;
+
+    fn settings() -> Settings {
+        Settings {
+            total_budget: Duration::from_secs(5),
+            per_step_budget: Duration::from_secs(1),
+            workers: 1,
+            strict: false,
+            verbose: false,
+        }
+    }
+
+    /// ATP stub that accepts every queried step while counting queries.
+    /// Asserting the query count proves which steps resolved structurally.
+    struct CountingAtp {
+        calls: AtomicUsize,
+    }
+
+    impl Atp for CountingAtp {
+        fn name(&self) -> &'static str {
+            "counting"
+        }
+
+        fn check_step(
+            &self,
+            _symbols: &SymbolTable,
+            _premises: &[Formula],
+            _conclusion: &Formula,
+            _budget: Duration,
+            _cancel: &std::sync::atomic::AtomicBool,
+        ) -> AtpVerdict {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            AtpVerdict::Sound
+        }
+
+        fn search_reports(&self) -> Vec<mrs_search::ScheduleReport> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn mrs_skolemisation_without_declarations_verifies_structurally() {
+        // MRS emits single-parent `skolemisation` steps with only
+        // `[status(esa)]` (no `new_symbols`, no `skolemize(...)`
+        // metadata). They must resolve structurally: the ATP cannot
+        // prove an equisatisfiable step as an entailment. Only the
+        // final instantiation+resolution reaches the ATP here.
+        let problem = "fof(a, axiom, ?[X] : p(X)).\nfof(n, axiom, ![X] : ~p(X)).";
+        let proof = "fof(a, axiom, ?[X] : p(X), file('problem.p', a)).\n\
+                     fof(s, plain, p(sk0), inference(skolemisation, [status(esa)], [a])).\n\
+                     fof(n, axiom, ![X] : ~p(X), file('problem.p', n)).\n\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [s,n])).";
+        let job = load_text(problem.to_string(), proof.to_string(), Path::new(".")).expect("load");
+        let atp = CountingAtp {
+            calls: AtomicUsize::new(0),
+        };
+        assert_eq!(verify_with(&job, &settings(), &atp), Verdict::VerifiedGood);
+        assert_eq!(atp.calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn repeated_mrs_skolemisation_of_same_parent_stays_sound() {
+        // Duplicate skolemisation of one source along two clausification
+        // paths (COM127+1 c361 / c106967): the second step reuses witness
+        // symbols for the identical parent and must stay accepted without
+        // ATP help.
+        let problem = "fof(a, axiom, ?[X] : p(X)).\nfof(n, axiom, ![X] : ~p(X)).";
+        let proof = "fof(a, axiom, ?[X] : p(X), file('problem.p', a)).\n\
+                     fof(s1, plain, p(sk0), inference(skolemisation, [status(esa)], [a])).\n\
+                     fof(s2, plain, p(sk0), inference(skolemisation, [status(esa)], [a])).\n\
+                     fof(n, axiom, ![X] : ~p(X), file('problem.p', n)).\n\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [s2,n])).";
+        let job = load_text(problem.to_string(), proof.to_string(), Path::new(".")).expect("load");
+        let atp = CountingAtp {
+            calls: AtomicUsize::new(0),
+        };
+        assert_eq!(verify_with(&job, &settings(), &atp), Verdict::VerifiedGood);
+        assert_eq!(atp.calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn mrs_skolemisation_reuse_for_different_existential_is_not_sound() {
+        // One witness constant for two different existentials must not
+        // verify structurally; without an ATP it stays Unknown (fail-closed).
+        let problem = "fof(a, axiom, ?[X] : p(X)).\nfof(b, axiom, ?[Y] : q(Y)).";
+        let proof = "fof(a, axiom, ?[X] : p(X), file('problem.p', a)).\n\
+                     fof(b, axiom, ?[Y] : q(Y), file('problem.p', b)).\n\
+                     fof(s1, plain, p(sk0), inference(skolemisation, [status(esa)], [a])).\n\
+                     fof(s2, plain, q(sk0), inference(skolemisation, [status(esa)], [b])).\n\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [s2])).";
+        let job = load_text(problem.to_string(), proof.to_string(), Path::new(".")).expect("load");
+        assert_ne!(verify(&job, &settings()), Verdict::VerifiedGood);
     }
 }
 
