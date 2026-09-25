@@ -65,7 +65,9 @@ pub use mrs_calculus::literal_selection::LiteralSelection;
 pub use mrs_calculus::ordering::TermOrdering;
 pub use mrs_cnf::goal_transform::GoalTransformMode;
 pub use preprocessing::{PreprocessingConfig, PreprocessingStats, preprocess_clauses};
-pub use resource::{ResourceLimits, current_memory_mb, system_memory_limit_mb};
+pub use resource::{
+    RAM_PER_WORKER_MB, ResourceLimits, current_memory_mb, default_worker_count, memory_budget_mb,
+};
 pub use select::{QueueType, SelectionStrategy};
 pub use strategy::{CandidateReceiver, CandidateRefutation, run_schedule_with_candidate_receiver};
 pub use symbol_config::{PrecedenceScheme, SymbolWeightScheme, compute_symbol_config};
@@ -521,6 +523,28 @@ pub struct SearchConfig {
     /// This prevents unbounded term growth during superposition.
     /// `None` means no limit.
     pub max_term_weight: Option<u32>,
+    /// Maximum number of literals for which subsumption resolution is attempted.
+    ///
+    /// `subsumption_resolution_id` builds a modified copy of the target clause
+    /// for every literal it tries to remove, so one attempt against a target of
+    /// width `w` costs `O(w^2)` literal copies, and a forward pass repeats that
+    /// for every candidate in the index. On a wide clause that is quadratic work
+    /// to remove a single literal, which is a negligible simplification gain.
+    ///
+    /// Subsumption resolution is a redundancy criterion, so skipping it on wide
+    /// clauses only weakens redundancy elimination: the clause is still
+    /// generated and the calculus stays refutationally complete. `None` means no
+    /// width limit.
+    pub max_subsumption_resolution_literals: Option<usize>,
+    /// Maximum number of literals for which condensation is attempted.
+    ///
+    /// `condense_id` tries every pair of literals and, for each pair, runs a
+    /// backtracking subsumption test, so the cost is quadratic in the clause
+    /// width with an expensive constant. Condensation is a redundancy
+    /// criterion, so skipping it on wide clauses only weakens redundancy
+    /// elimination; the clause is still generated and the calculus stays
+    /// refutationally complete. `None` means no width limit.
+    pub max_condensation_literals: Option<usize>,
     /// Whether to enable AVATAR clause splitting via an embedded SAT solver.
     pub use_avatar: bool,
     /// Emit a replayable CaDiCaL SAT trace for the final AVATAR certificate.
@@ -650,6 +674,8 @@ impl Default for SearchConfig {
             literal_selection: LiteralSelection::AllNegative,
             ordering: TermOrdering::KBO,
             max_term_weight: Some(200),
+            max_subsumption_resolution_literals: Some(20),
+            max_condensation_literals: Some(10),
             use_avatar: true,
             emit_avatar_trace: false,
             unit_only_resolution: false,

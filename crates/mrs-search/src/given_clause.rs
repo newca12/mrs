@@ -1037,6 +1037,21 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
     // saturation result is rejected by the completeness audit below.
     let ordered_inferences = config.ordered_inferences_enabled();
 
+    // Subsumption resolution is quadratic in the width of the clause being
+    // simplified, so it is only attempted while the target is narrow enough for
+    // the simplification gain to be worth the cost. Skipping it is a loss of
+    // redundancy elimination, never a loss of refutational completeness.
+    let sr_width_ok = |width: usize| {
+        config
+            .max_subsumption_resolution_literals
+            .is_none_or(|max| width <= max)
+    };
+    let condense_allowed = |width: usize| {
+        config
+            .max_condensation_literals
+            .is_none_or(|max| width <= max)
+    };
+
     let (comm_syms, assoc_syms, to_remove, ac_axiom_symbols) = detect_ac_symbols(state);
     state.comm_symbols = comm_syms.clone();
     state.assoc_symbols = assoc_syms.clone();
@@ -1245,10 +1260,12 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 // re-selected.
                 if let Some(id_clause) = head {
                     let fv = FeatureVector::from_id_clause(&id_clause, &state.term_bank);
-                    let candidates = state.processed.get_subsumption_candidates(&fv);
-                    if !candidates.iter().any(|p| {
-                        p.avatar_is_subset_of(&id_clause)
-                            && subsumption::subsumes_id(p, &id_clause, &mut state.term_bank)
+                    let candidates = state.processed.subsumption_candidate_ids(&fv);
+                    if !candidates.iter().any(|id| {
+                        state.processed.get(*id).is_some_and(|p| {
+                            p.avatar_is_subset_of(&id_clause)
+                                && subsumption::subsumes_id(p, &id_clause, &mut state.term_bank)
+                        })
                     }) {
                         #[cfg(feature = "ml-guidance")]
                         let score = state.get_ml_score(&id_clause);
@@ -1268,12 +1285,25 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 lrs_target_size(config.lrs_policy, iteration, elapsed, config.time_limit)
             {
                 let active = state.unprocessed.active_count();
+                // Start pruning early once the process is using a large enough
+                // share of its memory budget to be at risk. The share is a
+                // fraction of the configured ceiling rather than a fixed 1 GB,
+                // so a memory-constrained run prunes early and a large-memory
+                // run does not prune at a threshold that is irrelevant to it.
+                let mem_pressure = match (
+                    crate::current_memory_mb(),
+                    config.resource_limits.max_memory_mb,
+                ) {
+                    (Some(mem_mb), Some(limit)) if limit > 0 => {
+                        mem_mb >= limit.saturating_mul(4) / 5
+                    }
+                    (Some(mem_mb), None) => mem_mb > 1024,
+                    _ => false,
+                };
                 let should_prune = if active > 10_000 {
                     active > target_size.saturating_add(1000)
-                } else if let Some(mem_mb) = crate::current_memory_mb() {
-                    mem_mb > 1024 && active > target_size.saturating_add(1000)
                 } else {
-                    false
+                    mem_pressure && active > target_size.saturating_add(1000)
                 };
 
                 if should_prune {
@@ -1351,6 +1381,19 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
         let given = state.clause_store.get(&given_id).unwrap().clone();
         let mut given = state.ac_normalize_for_search(given, &ac_syms);
 
+        let trace_progress = std::env::var("TRACE_PROGRESS").is_ok();
+        if trace_progress {
+            eprintln!(
+                "[PROGRESS] iter={} given={} lits={} terms={} processed={} passive={}",
+                iteration,
+                given.id.0,
+                given.literals.len(),
+                state.term_bank.len(),
+                state.stats.processed,
+                state.unprocessed.active_count()
+            );
+        }
+
         if !state.is_active(&given) {
             state.dormant_unprocessed.insert(given.id, given);
             continue;
@@ -1374,12 +1417,18 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
 
         // Forward Subsumption Resolution
         let mut given_fv = FeatureVector::from_id_clause(&given, &state.term_bank);
-        loop {
+        while sr_width_ok(given.literals.len()) {
+            if start.elapsed() >= config.time_limit {
+                return SearchResult::Timeout;
+            }
             let candidates = state
                 .processed
-                .get_subsumption_resolution_candidates(&given_fv);
+                .subsumption_resolution_candidates_for(&given, &given_fv);
             let mut changed = false;
-            for p in candidates {
+            for candidate_id in candidates {
+                let Some(p) = state.processed.get(candidate_id).cloned() else {
+                    continue;
+                };
                 if p.avatar_is_subset_of(&given)
                     && let Some(removed_idx) =
                         subsumption::subsumption_resolution_id(&p, &given, &mut state.term_bank)
@@ -1451,10 +1500,12 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
 
         // Forward subsumption: skip if given is subsumed by a processed clause
         {
-            let candidates = state.processed.get_subsumption_candidates(&given_fv);
-            if candidates.iter().any(|p| {
-                p.avatar_is_subset_of(&given)
-                    && subsumption::subsumes_id(p, &given, &mut state.term_bank)
+            let candidates = state.processed.subsumption_candidate_ids(&given_fv);
+            if candidates.iter().any(|id| {
+                state.processed.get(*id).is_some_and(|p| {
+                    p.avatar_is_subset_of(&given)
+                        && subsumption::subsumes_id(p, &given, &mut state.term_bank)
+                })
             }) {
                 state.stats.forward_subsumed += 1;
                 iteration += 1;
@@ -1509,8 +1560,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
         };
 
         // Condensation
-        let given = if let Some(condensed) =
-            subsumption::condense_id(&given, &mut state.term_bank, &mut state.id_gen)
+        let given = if condense_allowed(given.literals.len())
+            && let Some(condensed) =
+                subsumption::condense_id(&given, &mut state.term_bank, &mut state.id_gen)
         {
             state.register_clause(&given);
             condensed
@@ -1653,7 +1705,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                             base
                         }
                     };
-                    let sp = superposition::superpose_selected_id(
+                    let sp = superposition::superpose_selected_id_until(
                         &given,
                         active,
                         &mut state.term_bank,
@@ -1662,6 +1714,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         Some(&active_sel),
                         &state.comm_symbols,
                         &state.assoc_symbols,
+                        state.search_deadline,
                     );
                     new_clauses.extend(sp.into_iter().map(|mut clause| {
                         mark_ac_superposition(&mut clause, &state.ac_axiom_ids);
@@ -1672,6 +1725,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     }
                 }
                 // self-superposition
+                if start.elapsed() >= config.time_limit {
+                    return SearchResult::Timeout;
+                }
                 if config.sos_depth == u32::MAX || given.distance < config.sos_depth {
                     let given_sel_local = {
                         let base = selected_literals_id(
@@ -1685,7 +1741,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                             base
                         }
                     };
-                    let sp = superposition::superpose_selected_id(
+                    let sp = superposition::superpose_selected_id_until(
                         &given,
                         &given,
                         &mut state.term_bank,
@@ -1694,6 +1750,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         Some(&given_sel_local),
                         &state.comm_symbols,
                         &state.assoc_symbols,
+                        state.search_deadline,
                     );
                     new_clauses.extend(sp.into_iter().map(|mut clause| {
                         mark_ac_superposition(&mut clause, &state.ac_axiom_ids);
@@ -1712,10 +1769,23 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                             IdAtom::Pred(_, args) => {
                                 for &arg in args {
                                     for u in state.term_bank.non_variable_subterms(arg) {
-                                        for src in state
+                                        let __st = std::time::Instant::now();
+                                        let __srcs = state
                                             .processed
-                                            .get_superposition_sources(u, &state.term_bank)
+                                            .get_superposition_sources(u, &state.term_bank);
+                                        if trace_progress
+                                            && __st.elapsed()
+                                                > std::time::Duration::from_millis(200)
                                         {
+                                            eprintln!(
+                                                "[PROGRESS] iter={} slow_source_query n={} took={:?} terms={}",
+                                                iteration,
+                                                __srcs.len(),
+                                                __st.elapsed(),
+                                                state.term_bank.len()
+                                            );
+                                        }
+                                        for src in __srcs {
                                             if seen_ids.insert(src.id) {
                                                 candidate_sources.push(src);
                                             }
@@ -1726,10 +1796,23 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                             IdAtom::Eq(l, r) => {
                                 for &side in &[l, r] {
                                     for u in state.term_bank.non_variable_subterms(*side) {
-                                        for src in state
+                                        let __st = std::time::Instant::now();
+                                        let __srcs = state
                                             .processed
-                                            .get_superposition_sources(u, &state.term_bank)
+                                            .get_superposition_sources(u, &state.term_bank);
+                                        if trace_progress
+                                            && __st.elapsed()
+                                                > std::time::Duration::from_millis(200)
                                         {
+                                            eprintln!(
+                                                "[PROGRESS] iter={} slow_source_query n={} took={:?} terms={}",
+                                                iteration,
+                                                __srcs.len(),
+                                                __st.elapsed(),
+                                                state.term_bank.len()
+                                            );
+                                        }
+                                        for src in __srcs {
                                             if seen_ids.insert(src.id) {
                                                 candidate_sources.push(src);
                                             }
@@ -1749,7 +1832,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     {
                         continue;
                     }
-                    let sp = superposition::superpose_selected_id(
+                    let sp = superposition::superpose_selected_id_until(
                         active,
                         &given,
                         &mut state.term_bank,
@@ -1758,6 +1841,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         Some(&given_sel),
                         &state.comm_symbols,
                         &state.assoc_symbols,
+                        state.search_deadline,
                     );
                     new_clauses.extend(sp.into_iter().map(|mut clause| {
                         mark_ac_superposition(&mut clause, &state.ac_axiom_ids);
@@ -1773,6 +1857,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
         // Unary inferences: Factoring, Equality Resolution, and Equality Factoring
         // are crucial simplification rules. They are always applied unconditionally,
         // even under SOS, to preserve the refutational completeness of the calculus.
+        if start.elapsed() >= config.time_limit {
+            return SearchResult::Timeout;
+        }
         new_clauses.extend(factoring::factor_id(
             &given,
             &mut state.term_bank,
@@ -1793,8 +1880,11 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
         // Backward subsumption: remove processed clauses subsumed by the given
         let mut to_remove_from_processed = Vec::new();
         {
-            let candidates = state.processed.get_subsumed_candidates(&given_fv);
-            for p in candidates {
+            let candidates = state.processed.subsumed_candidate_ids(&given_fv);
+            for candidate_id in candidates {
+                let Some(p) = state.processed.get(candidate_id).cloned() else {
+                    continue;
+                };
                 if given.avatar_is_subset_of(&p)
                     && subsumption::subsumes_id(&given, &p, &mut state.term_bank)
                 {
@@ -1814,10 +1904,17 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
         // Backward Subsumption Resolution: simplify processed clauses using `given`
         let mut backward_sr_simplified = Vec::new();
         {
-            let candidates = state
-                .processed
-                .get_backward_subsumption_resolution_candidates(&given_fv);
-            for p in candidates {
+            let candidates = if sr_width_ok(given.literals.len()) {
+                state
+                    .processed
+                    .backward_subsumption_resolution_candidates_for(&given, &given_fv)
+            } else {
+                Vec::new()
+            };
+            for candidate_id in candidates {
+                let Some(p) = state.processed.get(candidate_id).cloned() else {
+                    continue;
+                };
                 if given.avatar_is_subset_of(&p)
                     && let Some(removed_idx) =
                         subsumption::subsumption_resolution_id(&given, &p, &mut state.term_bank)
@@ -2202,7 +2299,24 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
             }
         }
 
-        for mut clause in final_new_clauses {
+        if trace_progress {
+            eprintln!(
+                "[PROGRESS] iter={} generated={} t={:?}",
+                iteration,
+                final_new_clauses.len(),
+                start.elapsed()
+            );
+        }
+
+        for (new_index, mut clause) in final_new_clauses.into_iter().enumerate() {
+            // The simplification pipeline below is a sequence of unbounded-cost
+            // stages (subsumption resolution, demodulation, condensation). A
+            // single given clause can produce many new clauses, so the deadline
+            // is enforced per new clause as well as per given clause.
+            if start.elapsed() >= config.time_limit {
+                return SearchResult::Timeout;
+            }
+            let new_started = std::time::Instant::now();
             // Propagate goal-distance from parent clauses so that GoalDirected
             // and SOS strategies can reward descendants of the negated conjecture.
             // distance = min(parent distances) + 1; defaults to 1000 if no parent
@@ -2262,6 +2376,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
             }
 
             if !clause.is_tautology() {
+                let stage_mark = std::time::Instant::now();
                 // Forward demodulation on new clauses
                 let clause = if let Some(simplified) = demodulation::demodulate_id(
                     &clause,
@@ -2352,6 +2467,8 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 state.register_clause(&clause);
                 let clause = state.ac_normalize_for_search(clause, &ac_syms);
 
+                trace_stage(trace_progress, iteration, new_index, "demod", &stage_mark);
+                let stage_mark = std::time::Instant::now();
                 // Destructive Equality Resolution (DER)
                 let clause = if let Some((simplified, steps)) =
                     crate::der::destructive_equality_resolution_id(
@@ -2398,9 +2515,12 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     continue;
                 }
 
+                trace_stage(trace_progress, iteration, new_index, "der", &stage_mark);
+                let stage_mark = std::time::Instant::now();
                 // Condensation
-                let clause = if let Some(condensed) =
-                    subsumption::condense_id(&clause, &mut state.term_bank, &mut state.id_gen)
+                let clause = if condense_allowed(clause.literals.len())
+                    && let Some(condensed) =
+                        subsumption::condense_id(&clause, &mut state.term_bank, &mut state.id_gen)
                 {
                     state.register_clause(&clause);
                     condensed
@@ -2421,6 +2541,14 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     continue;
                 }
 
+                trace_stage(
+                    trace_progress,
+                    iteration,
+                    new_index,
+                    "condense",
+                    &stage_mark,
+                );
+                let stage_mark = std::time::Instant::now();
                 // Forward Subsumption Resolution: simplify clause using processed clauses
                 // Register the pre-simplification clause before creating a
                 // destructive child. The child cites this clause as its
@@ -2431,11 +2559,25 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 let mut clause_fv = FeatureVector::from_id_clause(&clause, &state.term_bank);
                 let mut clause = clause;
                 loop {
-                    let candidates = state
-                        .processed
-                        .get_subsumption_resolution_candidates(&clause_fv);
+                    // One pass over the subsumption-resolution candidates can be
+                    // expensive on wide clauses with a weakly selective feature
+                    // vector, and the loop repeats once per literal removed. Check
+                    // the deadline per pass so a single clause cannot run away.
+                    if start.elapsed() >= config.time_limit {
+                        return SearchResult::Timeout;
+                    }
+                    let candidates = if sr_width_ok(clause.literals.len()) {
+                        state
+                            .processed
+                            .subsumption_resolution_candidates_for(&clause, &clause_fv)
+                    } else {
+                        Vec::new()
+                    };
                     let mut changed = false;
-                    for p in candidates {
+                    for candidate_id in candidates {
+                        let Some(p) = state.processed.get(candidate_id).cloned() else {
+                            continue;
+                        };
                         if p.avatar_is_subset_of(&clause)
                             && let Some(removed_idx) = subsumption::subsumption_resolution_id(
                                 &p,
@@ -2465,6 +2607,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     }
                 }
 
+                trace_stage(trace_progress, iteration, new_index, "fwd_sr", &stage_mark);
                 if clause.is_empty() {
                     if clause.avatar.is_empty() || !config.use_avatar {
                         if std::env::var("TRACE_SEARCH").is_ok() {
@@ -2494,10 +2637,12 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
 
                 // Forward subsumption: skip if subsumed by a processed clause
                 {
-                    let candidates = state.processed.get_subsumption_candidates(&clause_fv);
-                    if candidates.iter().any(|p| {
-                        p.avatar_is_subset_of(&clause)
-                            && subsumption::subsumes_id(p, &clause, &mut state.term_bank)
+                    let candidates = state.processed.subsumption_candidate_ids(&clause_fv);
+                    if candidates.iter().any(|id| {
+                        state.processed.get(*id).is_some_and(|p| {
+                            p.avatar_is_subset_of(&clause)
+                                && subsumption::subsumes_id(p, &clause, &mut state.term_bank)
+                        })
                     }) {
                         continue;
                     }
@@ -2511,6 +2656,14 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 let w = state.compute_weight(&clause);
                 state.push_unprocessed(&clause, w, score);
                 state.stats.generated += 1;
+                if trace_progress && new_started.elapsed() > std::time::Duration::from_millis(50) {
+                    eprintln!(
+                        "[PROGRESS] iter={} new#{} total={:?}",
+                        iteration,
+                        new_index,
+                        new_started.elapsed()
+                    );
+                }
             }
         }
 
@@ -2541,6 +2694,26 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
     // indexing, simplification, preprocessing, AC handling, and cancellation.
     // Only `certified.rs` may return positive saturation evidence.
     SearchResult::GaveUp
+}
+
+/// Logs a slow simplification stage when `TRACE_PROGRESS` is set.
+fn trace_stage(
+    enabled: bool,
+    iteration: u64,
+    new_index: usize,
+    stage: &str,
+    mark: &std::time::Instant,
+) {
+    if !enabled {
+        return;
+    }
+    let elapsed = mark.elapsed();
+    if elapsed > std::time::Duration::from_millis(50) {
+        eprintln!(
+            "[PROGRESS] iter={} new#{} stage={} took={:?}",
+            iteration, new_index, stage, elapsed
+        );
+    }
 }
 
 /// Returns true if a clause is a unit positive equality (used for demodulation).
@@ -3435,6 +3608,80 @@ mod tests {
             "ordered_inferences must not cause premature saturation on \
              unsatisfiable all-positive EPR clauses (got {result:?})"
         );
+    }
+
+    /// A wide clause must not stall the search inside the new-clause
+    /// simplification pipeline. Regresses the EPS/HWV042-1 hang, where a
+    /// 202-literal ground clause made one given-clause iteration take minutes
+    /// because subsumption resolution rebuilt a modified copy of the target
+    /// for every literal against every candidate.
+    #[test]
+    fn wide_clause_search_terminates_and_does_not_refute() {
+        let mut syms = SymbolTable::new();
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+
+        // A wide disjunction of distinct ground atoms: no pair of literals
+        // unifies, so this is satisfiable and must never be refuted.
+        let wide: Vec<Literal> = (0..60)
+            .map(|i| {
+                let p = syms.intern(&format!("p{i}"));
+                Literal::pos(Atom::pred(p, vec![Term::constant(a)]))
+            })
+            .collect();
+        let clauses = vec![input_clause(&mut id_gen, wide, "wide", "axiom")];
+
+        let mut state = crate::state::SearchState::new(
+            clauses,
+            id_gen.clone(),
+            std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+            std::sync::Arc::new(syms.clone()),
+            false,
+        );
+        let config = SearchConfig {
+            time_limit: Duration::from_secs(5),
+            ..SearchConfig::default()
+        };
+        let started = std::time::Instant::now();
+        let result = search(&mut state, &config);
+        assert!(
+            !matches!(result, SearchResult::Refutation(..)),
+            "a satisfiable ground input must not be refuted, got {:?}",
+            result
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "search must respect its time limit, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// The subsumption-resolution width bound is config driven, and a wide
+    /// clause is exempt from the check when the bound is disabled.
+    #[test]
+    fn subsumption_resolution_width_bound_is_configurable() {
+        assert_eq!(
+            SearchConfig::default().max_subsumption_resolution_literals,
+            Some(20)
+        );
+
+        let sr_width_ok = |width: usize, max: Option<usize>| max.is_none_or(|m| width <= m);
+        assert!(sr_width_ok(20, Some(20)));
+        assert!(!sr_width_ok(21, Some(20)));
+        assert!(sr_width_ok(10_000, None));
+    }
+
+    /// Condensation is quadratic in clause width with a backtracking subsumption
+    /// test per literal pair, so it is bounded the same way. The bound must be
+    /// configurable and must not reject narrow clauses.
+    #[test]
+    fn condensation_width_bound_is_configurable() {
+        assert_eq!(SearchConfig::default().max_condensation_literals, Some(10));
+
+        let condense_allowed = |width: usize, max: Option<usize>| max.is_none_or(|m| width <= m);
+        assert!(condense_allowed(10, Some(10)));
+        assert!(!condense_allowed(11, Some(10)));
+        assert!(condense_allowed(1_000, None));
     }
 
     #[test]

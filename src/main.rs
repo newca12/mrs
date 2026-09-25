@@ -702,7 +702,12 @@ fn main() {
             None,
         )
     } else {
-        let actual_workers = workers.unwrap_or_else(|| num_cpus::get_physical().max(1));
+        // Default to one worker per physical core, bounded by what the
+        // available memory can support: every worker holds its own term
+        // bank and indexes, so one-per-core is the wrong default on a small
+        // host.
+        let actual_workers =
+            workers.unwrap_or_else(|| mrs_search::default_worker_count(num_cpus::get_physical()));
         if certify_ordered && (actual_workers != 1 || exact_strategy.is_none()) {
             eprintln!("Error: --certify-ordered requires --workers 1 and --strategy N");
             process::exit(1);
