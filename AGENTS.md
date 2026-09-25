@@ -307,7 +307,8 @@ cooperative portfolio can also share derived unit equalities through a
 cross-strategy pool. Use
 `cooperative_portfolio_sweep.sh` and `cooperative_portfolio_search.sh` to
 validate or replace these orders against the actual 8-worker objective. See
-`docs/DIVISIONS.md` for the workflow and telemetry details.
+`docs/reports/benchmarks/divisions-2026-09.md` for the workflow and telemetry
+details.
 
 ---
 

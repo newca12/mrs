@@ -123,7 +123,7 @@ fn check_base(_root: &Path, base: &str) -> Result<(), String> {
 }
 
 fn check_phase_manifest(root: &Path) -> Result<(), String> {
-    let path = root.join("docs/RELEASE_PHASES.tsv");
+    let path = root.join("docs/policies/release-phases.tsv");
     let text =
         fs::read_to_string(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
     let mut rows = 0;

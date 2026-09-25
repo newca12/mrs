@@ -25,7 +25,7 @@ DIV_LOWER="${DIVISION,,}"
 
 # Route to the division portfolio directly from the problem path; the ML
 # schedule classifier is frozen (degenerate majority-class model + label
-# mismatch, see docs/BENCHMARKS.md) and intentionally NOT used here.
+# mismatch, see docs/research/ml.md) and intentionally NOT used here.
 case "${DIV_LOWER}" in
     fne|feq|ueq|epr|eps|epu|icu) SCHEDULE="casc_${DIV_LOWER}" ;;
     *)                           SCHEDULE="casc" ;;

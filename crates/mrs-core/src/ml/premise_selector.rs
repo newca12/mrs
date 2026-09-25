@@ -320,7 +320,7 @@ impl<B: Backend> PremiseSelector<B> {
     /// axiom-heavy problems (FEQ/UEQ problems pulling in large `%include`d
     /// background theories can have thousands of axioms) this turned into a
     /// real, uniform per-problem tax charged against the search time budget
-    /// (see docs/BENCHMARKS.md). Stacking all feature vectors into one
+    /// (see docs/history/benchmark-log.md). Stacking all feature vectors into one
     /// `[n, PREMISE_FEATURE_DIM]` tensor and running a single forward pass
     /// removes that per-axiom overhead entirely.
     pub fn evaluate_scores_batch(&self, features: &[[f32; PREMISE_FEATURE_DIM]]) -> Vec<f32> {

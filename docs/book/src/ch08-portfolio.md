@@ -24,4 +24,5 @@ nix develop -c cargo run -p mrs-book-labs --example ch08_portfolio
 ## Exercises
 
 1. Compare `--workers 1 --strategy 1` vs the full schedule on `problems/group.p`.
-2. Read `docs/DIVISIONS.md` and explain what makes `casc_fne` differ from `casc_feq`.
+2. Read [`reference/schedules`](../../reference/schedules.md) and explain what
+   makes `casc_fne` differ from `casc_feq`.

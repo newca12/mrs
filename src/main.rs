@@ -684,7 +684,8 @@ fn main() {
     }
 
     // Rule-based schedule auto-detection (replaces the retired ML schedule
-    // classifier). An explicit --schedule always wins. Works in any build.
+    // classifier; see docs/research/ml.md). An explicit --schedule always
+    // wins. Works in any build.
     if auto_schedule && schedule_name.is_none() {
         let assigned = mrs_search::strategy::auto_schedule_name(&all_clauses);
         schedule_name = Some(assigned.to_string());

@@ -15,7 +15,7 @@
 # annotation shapes and rejects several standard E/Vampire rules even with the
 # `--relax-*` flags this harness passes, so its VerifiedBad/Unknown
 # counts reflect format/config friction, NOT a definitive quality gap. Do not
-# read the raw totals as an mrs-proover "win". See docs/PROOVER_HARNESS.md.
+# read the raw totals as an mrs-proover "win". See docs/guides/proover.md.
 
 set -euo pipefail
 

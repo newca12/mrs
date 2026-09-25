@@ -1,6 +1,8 @@
 # mrs — Mechanical Reasoning System
 
-> ⚠️ **CRITICAL WARNING**: Version 0.2.0 contains critical bugs (including Skolem symbol compliance issues and proof verification gaps under AVATAR) that are fully resolved in **v0.2.3**. Please use **v0.2.3** for any stable deployments or evaluations.
+Current workspace version: **0.2.3**. For stable deployments, use the current
+release source and follow the validation rules in
+[`docs/policies/release.md`](docs/policies/release.md).
 
 [![Crates.io](https://img.shields.io/crates/v/mrs.svg)](https://crates.io/crates/mrs)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
@@ -17,7 +19,9 @@ The easiest way to get `mrs` is via [crates.io](https://crates.io/crates/mrs):
 cargo install mrs
 ```
 
-This requires a Rust toolchain ≥ 1.85 (`rustup update stable` if needed).
+This requires a Rust toolchain compatible with the workspace's current
+`rust-version` (`1.98.1`). The repository development shell provides it via
+the Nix flake.
 
 Pre-built binaries are not yet provided; see [Building from source](#building-from-source) if you prefer not to use `cargo install`.
 
@@ -47,16 +51,19 @@ fof(goal, conjecture, mortal(socrates)).
 ## Options
 
 ```
-mrs [--time <seconds>] [--workers <N>] [--schedule <name>] [--self-check] [--certify-ordered] <file.p>
+mrs [options] <file.p>
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--time <n>` | `30` | Wall-clock time limit in seconds |
 | `--workers <N>` | physical cores | Maximum number of parallel search threads |
-| `--schedule <name>` | `casc` | Strategy schedule to run. Built-ins: `casc` (the default CASC portfolio; aliases `default`, `casc_feq`), `casc_fne`/`casc_ueq`/`casc_epr` (division-tuned portfolios, one strategy per worker), `fast` (single KBO strategy for short budgets), `mini` (3-strategy compact portfolio), and `ml*` variants for ML-guided selection (require an `ml-guidance` build and `--ml-weights`). |
-| `--self-check` | off | Require the generated refutation to be positively verified before emitting a theorem and proof; inconclusive verification becomes `GaveUp`. |
-| `--certify-ordered` | off | Run the bounded function-free EPR ordered-resolution certifier; requires `--workers 1 --strategy N`, and unsupported equality/function inputs return `GaveUp`. |
+| `--schedule <name>` | `casc` | Select a named schedule. See [`docs/reference/schedules.md`](docs/reference/schedules.md). |
+| `--auto-schedule` | off | Select a division schedule from clause shape. An explicit schedule wins. |
+| `--strategy <N>` | — | Run one base strategy for the full budget. Valid IDs are 1 through 15. |
+| `--portfolio <IDs>` | — | Run one explicit base strategy per worker, for example `11,12,1,6,10,8,14,4`. |
+| `--self-check` | off | Strict-check candidate refutations before emitting theorem/proof output. Rejection or inconclusive verification becomes `GaveUp`. |
+| `--certify-ordered` | off | Run bounded ordered-resolution certification; requires `--workers 1 --strategy N`. |
 | `--list-schedules` | — | Print known schedule names and exit |
 
 ### Reproducible single-strategy runs
@@ -79,7 +86,7 @@ sequentially with no sibling threads, no clause-pool cross-talk, and no
 CPU contention, so the same command always produces the same result:
 
 ```bash
-mrs --workers 1 --schedule casc_eps problem.p
+nix develop -c cargo run -- --workers 1 --schedule casc_eps problem.p
 ```
 
 ## TPTP `%include` directives
@@ -96,7 +103,9 @@ When reading a problem from stdin, pass an explicit include root so strict
 self-verification can resolve external files:
 
 ```bash
-cat problem.p | TPTP=/path/to/TPTP-v9.x.x mrs --self-check --include-root /path/to/TPTP-v9.x.x -
+cat problem.p | TPTP=/path/to/TPTP-v9.x.x \
+  nix develop -c cargo run --features proover -- \
+  --self-check --include-root /path/to/TPTP-v9.x.x -
 ```
 
 ## Building from source
@@ -104,9 +113,12 @@ cat problem.p | TPTP=/path/to/TPTP-v9.x.x mrs --self-check --include-root /path/
 ```bash
 git clone https://github.com/newca12/mrs
 cd mrs
-cargo build --release      # binary at target/release/mrs
-cargo test --workspace     # run all tests
+nix develop -c cargo build --release      # binary at target/release/mrs
+nix develop -c cargo test --workspace     # run all tests
 ```
+
+The complete current CLI, environment-variable, and feature reference is in
+[`docs/reference/cli.md`](docs/reference/cli.md).
 
 ## Architecture
 
@@ -115,12 +127,14 @@ The pipeline for each problem:
 1. **Parse** — `mrs-tptp` converts TPTP text to a zero-copy AST.
 2. **Lower** — `src/lowering.rs` maps the AST to `mrs-core` types.
 3. **Clausify** — `mrs-cnf` transforms formulas to CNF (NNF → Skolemization → definitional CNF). Conjectures are negated for refutation-based proving.
-4. **Search** — `mrs-search` runs a given-clause loop with a strategy portfolio of 15 active configurations tried in parallel; the first refutation found wins.
+4. **Search** — `mrs-search` runs a given-clause loop with 15 active base configurations plus a diagnostic slot in the generic schedule; division schedules scale selected configurations to the requested workers.
 5. **Output** — `mrs-szs` formats the SZS status line; `mrs-proof` extracts and formats the TSTP proof on refutation.
 
 ### Strategy portfolio
 
-15 active strategies run in parallel, each with a fresh search state. They can
+The generic schedule contains 15 active strategies plus a zero-time diagnostic
+slot. Division schedules select from the 15 base strategies. Workers use fresh
+search states. They can
 share a pool of globally discovered unit equalities when
 `MRS_SHARED_POOL_INTERVAL` is set to a positive value; sharing is disabled by
 default. Time is distributed from the total budget to bound execution:
@@ -143,7 +157,9 @@ default. Time is distributed from the total budget to bound execution:
 | 14 | SmallestFirst | ConjSymbolBoost | All | KBO | 2% | FEQ: goal-symbol + All selection |
 | 15 | AgeWeight(4) | SymbolWeight | AllNegative | KBO | ~1% | precedence-based symbol weight |
 
-Each strategy runs until its time slice expires or the search space is exhausted.
+Each launched strategy runs within the shared wall-clock budget. The schedule
+scales nominal slices for concurrent workers; it is not a sequential sum of all
+15 slices.
 LRS (Limited Resource Strategy) periodically prunes the passive queue to stay within the time budget.
 
 ### Workspace layout
@@ -163,8 +179,13 @@ mrs/
     ├── mrs-index/     discrimination tree indexing
     ├── mrs-proof/     proof extraction + TSTP output
     ├── mrs-search/    given-clause loop, clause weighting, strategy scheduler
-    └── mrs-tptp/      zero-copy TPTP parser
+    ├── mrs-tptp/      zero-copy TPTP parser
+    ├── mrs-proof-kernel/ independent proof/model kernel
+    ├── mrs-proover/   standalone TSTP verifier
+    └── mrs-bench/     CASC and ProoVer harnesses
 ```
+
+For the organized documentation map, see [`docs/README.md`](docs/README.md).
 
 ## License
 
