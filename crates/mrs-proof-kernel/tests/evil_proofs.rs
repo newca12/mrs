@@ -6,11 +6,9 @@ use mrs_proof_kernel::{KernelVerdict, VerificationLimits, verify_strict};
 use mrs_tptp::parse_tptp;
 
 /// Outcome of checking one committed evil-proof case.
-enum CaseOutcome {
-    /// Problem or proof did not parse; skipped, as in the serial version.
-    Skipped(String),
-    /// Parsed and kernel-checked; carries whether it wrongly certified.
-    Checked { name: String, certified: bool },
+struct CaseOutcome {
+    name: String,
+    result: Result<bool, String>,
 }
 
 #[test]
@@ -72,16 +70,18 @@ fn committed_evil_proofs_never_certify() {
                         break;
                     }
                     let (name, problem_text, proof_text) = &inputs[i];
-                    let (Ok(problem), Ok(proof)) =
-                        (parse_tptp(problem_text), parse_tptp(proof_text))
-                    else {
-                        local.push(CaseOutcome::Skipped(name.clone()));
-                        continue;
-                    };
-                    let verdict = verify_strict(&problem, &proof, VerificationLimits::default());
-                    local.push(CaseOutcome::Checked {
+                    let result = (|| {
+                        let problem = parse_tptp(problem_text)
+                            .map_err(|error| format!("problem parse failed: {error}"))?;
+                        let proof = parse_tptp(proof_text)
+                            .map_err(|error| format!("proof parse failed: {error}"))?;
+                        let verdict =
+                            verify_strict(&problem, &proof, VerificationLimits::default());
+                        Ok(matches!(verdict, KernelVerdict::Certified))
+                    })();
+                    local.push(CaseOutcome {
                         name: name.clone(),
-                        certified: matches!(verdict, KernelVerdict::Certified),
+                        result,
                     });
                 }
                 if !local.is_empty() {
@@ -92,32 +92,23 @@ fn committed_evil_proofs_never_certify() {
     });
 
     let outcomes = outcomes.into_inner().expect("outcomes mutex");
-    let mut parsed_cases = 0;
     let mut certified = Vec::new();
-    for outcome in outcomes {
-        match outcome {
-            CaseOutcome::Skipped(_) => {}
-            CaseOutcome::Checked {
-                name,
-                certified: true,
-            } => {
-                parsed_cases += 1;
-                certified.push(name);
-            }
-            CaseOutcome::Checked {
-                certified: false, ..
-            } => {
-                parsed_cases += 1;
-            }
+    let mut failures = Vec::new();
+    for CaseOutcome { name, result } in outcomes {
+        match result {
+            Ok(true) => certified.push(name),
+            Ok(false) => {}
+            Err(error) => failures.push(format!("{name}: {error}")),
         }
     }
+    assert!(
+        failures.is_empty(),
+        "committed evil proof cases failed to parse: {}",
+        failures.join("; ")
+    );
     assert!(
         certified.is_empty(),
         "strict kernel certified committed evil proofs: {}",
         certified.join(", ")
-    );
-    assert!(
-        parsed_cases > 0,
-        "evil proof corpus contained no parseable cases"
     );
 }

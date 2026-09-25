@@ -744,4 +744,50 @@ mod tests {
             StepOutcome::Unsound(_)
         ));
     }
+
+    #[test]
+    fn indexed_named_lookup_preserves_first_duplicate_name_match() {
+        let problem = parse_tptp(
+            "fof(dup, axiom, p(a)).\n\
+             fof(dup, axiom, q(a)).",
+        )
+        .expect("problem parses");
+        let mut proof =
+            parse_tptp("fof(dup, axiom, q(a), file('problem.p', dup)).").expect("proof parses");
+        let proof_node = proof.formulas.pop().expect("proof formula");
+        let mut symbols = SymbolTable::new();
+        let index = ProblemLeafIndex::new(&problem, &mut symbols);
+        assert!(matches!(
+            check_leaf(&proof_node, Some((&problem, &index)), &mut symbols, true),
+            StepOutcome::Unsound(_)
+        ));
+    }
+
+    #[test]
+    fn indexed_missing_name_keeps_formula_fallback() {
+        let problem = parse_tptp("fof(actual, axiom, p(a)).").expect("problem parses");
+        let mut proof = parse_tptp("fof(other, axiom, p(a), file('problem.p', absent)).")
+            .expect("proof parses");
+        let proof_node = proof.formulas.pop().expect("proof formula");
+        let mut symbols = SymbolTable::new();
+        let index = ProblemLeafIndex::new(&problem, &mut symbols);
+        assert_eq!(
+            check_leaf(&proof_node, Some((&problem, &index)), &mut symbols, true),
+            StepOutcome::Sound
+        );
+    }
+
+    #[test]
+    fn indexed_lookup_does_not_match_compatible_but_wrong_role() {
+        let problem = parse_tptp("fof(goal, conjecture, p(a)).").expect("problem parses");
+        let mut proof =
+            parse_tptp("fof(goal, axiom, p(a), file('problem.p', goal)).").expect("proof parses");
+        let proof_node = proof.formulas.pop().expect("proof formula");
+        let mut symbols = SymbolTable::new();
+        let index = ProblemLeafIndex::new(&problem, &mut symbols);
+        assert!(matches!(
+            check_leaf(&proof_node, Some((&problem, &index)), &mut symbols, true),
+            StepOutcome::Unsound(_)
+        ));
+    }
 }
