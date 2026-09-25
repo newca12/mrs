@@ -43,8 +43,8 @@ pub const ALL: &[&str] = &[
 
 const DEFAULT_CASC_ORDER: [usize; 15] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 const CASC_FEQ_ORDER: [usize; 15] = [11, 12, 1, 6, 10, 8, 14, 4, 5, 2, 3, 7, 9, 13, 15];
-const CASC_FNE_ORDER: [usize; 15] = [11, 4, 12, 1, 6, 8, 2, 3, 5, 7, 9, 10, 13, 14, 15];
-const CASC_UEQ_ORDER: [usize; 15] = [11, 4, 2, 8, 14, 1, 15, 3, 5, 6, 7, 9, 10, 12, 13];
+const CASC_FNE_ORDER: [usize; 15] = [11, 8, 4, 15, 10, 3, 12, 1, 6, 2, 5, 7, 9, 13, 14];
+const CASC_UEQ_ORDER: [usize; 15] = [4, 8, 12, 11, 2, 14, 15, 1, 3, 5, 6, 7, 9, 10, 13];
 const CASC_EPR_ORDER: [usize; 15] = [6, 2, 1, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 const CASC_EPS_ORDER: [usize; 15] = [2, 3, 1, 8, 11, 12, 9, 14, 7, 10, 5, 13, 15, 6, 4];
 const CASC_EPU_ORDER: [usize; 15] = [1, 6, 14, 11, 4, 2, 3, 7, 5, 8, 10, 9, 12, 13, 15];
@@ -557,9 +557,9 @@ fn build_casc_schedule_inner(
 }
 
 /// A purely static schedule optimized for FNE (First-Order No Equality).
-/// Tunes the portfolio according to CASC-30 priority sweeps. FNE has no
-/// equality, so resolution dominates; single-negative literal selection avoids
-/// the all-negative resolution blow-up.
+/// Tunes the portfolio as a CASC-30/CASC-J13 compromise based on solo priority
+/// sweeps. FNE has no equality, so resolution dominates; single-negative
+/// literal selection avoids the all-negative resolution blow-up.
 pub fn casc_fne(total_time: Duration, workers: usize) -> StrategySchedule {
     build_casc_schedule_inner(
         total_time,
@@ -576,8 +576,9 @@ pub fn casc_feq(total_time: Duration, workers: usize) -> StrategySchedule {
 }
 
 /// A purely static schedule optimized for UEQ (Unit Equality).
-/// Tunes the portfolio according to CASC-30 priority sweeps, interleaved
-/// with Twee-style goal-directed subterm flattening on complementary workers.
+/// Tunes the portfolio as a CASC-30/CASC-J13 compromise based on solo priority
+/// sweeps, interleaved with Twee-style goal-directed subterm flattening on
+/// complementary workers.
 pub fn casc_ueq(total_time: Duration, workers: usize) -> StrategySchedule {
     let mut schedule = build_casc_schedule(total_time, workers, &CASC_UEQ_ORDER);
     for (i, (cfg, _)) in schedule.strategies.iter_mut().enumerate() {
@@ -912,9 +913,9 @@ mod tests {
     #[test]
     fn canonical_orders_match_named_division_schedules() {
         for (name, expected) in [
-            ("casc_feq", &CASC_FEQ_ORDER),
-            ("casc_fne", &CASC_FNE_ORDER),
-            ("casc_ueq", &CASC_UEQ_ORDER),
+            ("casc_feq", &CASC_FEQ_ORDER[..8]),
+            ("casc_fne", &[11, 8, 4, 15, 10, 3, 12, 1][..]),
+            ("casc_ueq", &[4, 8, 12, 11, 2, 14, 15, 1][..]),
         ] {
             let schedule = by_name(name, Duration::from_secs(8), 8).unwrap();
             let actual = schedule
@@ -922,16 +923,16 @@ mod tests {
                 .iter()
                 .map(|(config, _)| config.strategy_id)
                 .collect::<Vec<_>>();
-            assert_eq!(actual, expected[..8]);
+            assert_eq!(actual, expected);
         }
     }
 
     #[test]
     fn exact_strategy_uses_division_slot_configuration() {
-        let schedule = single_strategy("casc_ueq", Duration::from_secs(5), 4)
+        let schedule = single_strategy("casc_ueq", Duration::from_secs(5), 8)
             .expect("strategy should be valid");
         assert_eq!(schedule.strategies.len(), 1);
-        assert_eq!(schedule.strategies[0].0.strategy_id, 4);
+        assert_eq!(schedule.strategies[0].0.strategy_id, 8);
         assert!(matches!(
             schedule.strategies[0].0.goal_transformation,
             Some(crate::GoalTransformMode::RecursiveSubterms)

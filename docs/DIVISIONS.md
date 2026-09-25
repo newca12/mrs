@@ -72,22 +72,29 @@ MRS_SHARED_POOL_INTERVAL=0 \
 
 ---
 
-## 3. Current Data-Driven Priority Orders (CASC-30)
+## 3. Current Data-Driven Priority Orders
 
-Based on historical 30 s per-strategy solo sweeps over the CASC-30 problem set;
-these figures are diagnostic and are not cooperative portfolio coverage:
+Based on historical 30 s per-strategy solo sweeps; these orders and coverage
+figures are diagnostic and are not cooperative portfolio measurements. FNE
+and UEQ use CASC-30/CASC-J13 compromise orders; other rows retain their prior
+CASC-30 candidates:
 
 | Division | 8-core candidate order | Solo union diagnostic coverage |
 |:---------|:----------------------|:---------------------------|
-| **FNE** | s11, s4, s12, s1, s6, s8, s2, s3 | 35 problems solved at 6 cores |
+| **FNE** | s11, s8, s4, s15, s10, s3, s12, s1 | CASC-30: 42/42 with s8,s15,s11,s3,s4; J13: 35/35 with s11,s4,s10 |
 | **FEQ** | s11, s12, s1, s6, s10, s8, s14, s4 | 90 problems solved at 8 cores |
-| **UEQ** | s11, s4, s2, s8, s14, s1, s15, s3 | 68/68 (100%) at 7 cores |
+| **UEQ** | s4, s8, s12, s11, s2, s14, s15, s1 | J13: 122/124; CASC-30 original greedy order: 136/139 |
 | **EPU** | s1, s6, s14, s11, s4, s2, s3, s7 | 16/16 (100%) at 2 cores |
 | **EPS** | s2, s3, s1, s8, s11, s12, s9, s14 | 38/38 (100%) at 1 core |
 | **ICU** | s12, s1, s2, s3, s4, s5, s6, s7 | 0 problems solved |
 
 Beyond the minimum coverage point, extra slots cycle through remaining
 strategies so no core is idle.
+
+The FNE and UEQ orders are compromise candidates based on both CASC-30 and
+CASC-J13 solo-strategy sweeps. These results are diagnostics, not cooperative
+portfolio measurements. The UEQ CASC-30 coverage refers to its original greedy
+order; the exact coverage for the compromise order has not been measured.
 
 ---
 
