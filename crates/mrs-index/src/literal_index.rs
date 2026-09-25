@@ -40,6 +40,18 @@ pub struct LiteralIndex {
     fv_map: HashMap<ClauseId, FeatureVector>,
     /// Maps (predicate, polarity) -> STree of clause IDs.
     pred_index: HashMap<LitKey, crate::stree::STreeId<ClauseId>>,
+    /// Maps predicate symbol -> clause IDs containing at least one literal with
+    /// that symbol, of either polarity.
+    ///
+    /// Subsumption resolution between `active` and `target` is only possible
+    /// when `active` contains a literal whose symbol also occurs in `target`:
+    /// every literal of `active` must match a distinct literal of
+    /// `(target \ {L}) ∪ {~L}`, and the symbols of that set are exactly the
+    /// symbols of `target`. This posting list turns the candidate set for a
+    /// subsumption-resolution query from "every processed clause" into "the
+    /// clauses sharing a symbol with the query", which is what makes the
+    /// check affordable on problems whose clauses all use the same symbols.
+    pred_clauses: HashMap<SymbolId, HashSet<ClauseId>>,
     /// Clause IDs that contain at least one positive equality.
     pos_eq_clauses: HashSet<ClauseId>,
     /// Clause IDs that contain at least one negative equality.
@@ -58,6 +70,7 @@ impl LiteralIndex {
             fvt: FeatureVectorTree::new(),
             fv_map: HashMap::default(),
             pred_index: HashMap::default(),
+            pred_clauses: HashMap::default(),
             pos_eq_clauses: HashSet::default(),
             neg_eq_clauses: HashSet::default(),
             pos_eq_lhs_index: crate::stree::STreeId::new(),
@@ -82,6 +95,7 @@ impl LiteralIndex {
                         })
                         .or_default()
                         .insert_atom(&lit.atom, bank, id);
+                    self.pred_clauses.entry(*sym).or_default().insert(id);
                     for &arg in args {
                         for subterm in bank.non_variable_subterms(arg) {
                             self.subterm_index.insert(subterm, bank, id);
@@ -126,6 +140,19 @@ impl LiteralIndex {
                             positive: lit.positive,
                         }) {
                             tree.remove_atom(&lit.atom, bank, &id);
+                        }
+                        // Only drop the posting-list entry once no remaining
+                        // literal of this clause still uses the symbol.
+                        if !clause
+                            .literals
+                            .iter()
+                            .any(|l| matches!(&l.atom, IdAtom::Pred(s, _) if s == sym))
+                            && let Some(set) = self.pred_clauses.get_mut(sym)
+                        {
+                            set.remove(&id);
+                            if set.is_empty() {
+                                self.pred_clauses.remove(sym);
+                            }
                         }
                         for &arg in args {
                             for subterm in bank.non_variable_subterms(arg) {
@@ -200,28 +227,157 @@ impl LiteralIndex {
         res
     }
 
-    /// Returns clauses that could potentially subsume the target (cloned).
-    pub fn get_subsumption_candidates(&self, target_fv: &FeatureVector) -> Vec<IdClause> {
+    /// Returns the IDs of clauses that could potentially subsume the target.
+    ///
+    /// Callers borrow the clause with [`LiteralIndex::get`]. This avoids
+    /// cloning every candidate, which dominated the cost of forward and
+    /// backward subsumption once a search had processed thousands of clauses.
+    pub fn subsumption_candidate_ids(&self, target_fv: &FeatureVector) -> Vec<ClauseId> {
         let mut candidate_ids = Vec::new();
         self.fvt.query_subsumers(target_fv, &mut candidate_ids);
-        let mut res: Vec<IdClause> = candidate_ids
+        candidate_ids.sort_unstable();
+        candidate_ids
+    }
+
+    /// Returns the IDs of clauses that could potentially BE subsumed by the
+    /// given clause. See [`LiteralIndex::subsumption_candidate_ids`].
+    pub fn subsumed_candidate_ids(&self, subsumer_fv: &FeatureVector) -> Vec<ClauseId> {
+        let mut candidate_ids = Vec::new();
+        self.fvt.query_subsumed(subsumer_fv, &mut candidate_ids);
+        candidate_ids.sort_unstable();
+        candidate_ids
+    }
+
+    /// Returns the IDs of clauses that could potentially subsumption-resolve
+    /// the target. See [`LiteralIndex::subsumption_candidate_ids`].
+    pub fn subsumption_resolution_candidate_ids(&self, target_fv: &FeatureVector) -> Vec<ClauseId> {
+        let mut candidate_ids = Vec::new();
+        self.fvt
+            .query_subsumption_resolution(target_fv, &mut candidate_ids);
+        candidate_ids.sort_unstable();
+        candidate_ids
+    }
+
+    /// Returns the IDs of clauses in the index that could potentially BE
+    /// subsumption-resolved by `simplifier_fv`. See
+    /// [`LiteralIndex::subsumption_candidate_ids`].
+    pub fn backward_subsumption_resolution_candidate_ids(
+        &self,
+        simplifier_fv: &FeatureVector,
+    ) -> Vec<ClauseId> {
+        let mut candidate_ids = Vec::new();
+        self.fvt
+            .query_backward_subsumption_resolution(simplifier_fv, &mut candidate_ids);
+        candidate_ids.sort_unstable();
+        candidate_ids
+    }
+
+    /// Returns the IDs of processed clauses that could subsumption-resolve
+    /// `target`.
+    ///
+    /// Combines the symbol-sharing filter described on
+    /// [`LiteralIndex::pred_clauses`] with the feature-vector test, so the
+    /// result is a superset of the clauses that can actually simplify
+    /// `target` while being proportional to the clauses that share a symbol
+    /// with it rather than to the whole processed set.
+    pub fn subsumption_resolution_candidates_for(
+        &self,
+        target: &IdClause,
+        target_fv: &FeatureVector,
+    ) -> Vec<ClauseId> {
+        let mut ids = HashSet::default();
+        let mut has_equality = false;
+        for lit in &target.literals {
+            match &lit.atom {
+                IdAtom::Pred(sym, _) => {
+                    if let Some(set) = self.pred_clauses.get(sym) {
+                        ids.extend(set.iter().copied());
+                    }
+                }
+                IdAtom::Eq(..) => has_equality = true,
+            }
+        }
+        if has_equality {
+            // A literal of `target` is an equality, so the flipped position is
+            // an equality too, and the active clause must contain an equality
+            // literal of some polarity to match it.
+            ids.extend(self.pos_eq_clauses.iter().copied());
+            ids.extend(self.neg_eq_clauses.iter().copied());
+        }
+        let mut out: Vec<ClauseId> = ids
+            .into_iter()
+            .filter(|id| {
+                self.fv_map
+                    .get(id)
+                    .is_some_and(|fv| fv.can_subsumption_resolve(target_fv))
+            })
+            .collect();
+        out.sort_unstable();
+        out
+    }
+
+    /// Returns the IDs of processed clauses that `simplifier` could
+    /// subsumption-resolve.
+    ///
+    /// Mirror image of [`LiteralIndex::subsumption_resolution_candidates_for`]:
+    /// the candidate `target` is simplified by removing a literal `L` and
+    /// matching the rest, so it must contain a literal whose symbol also occurs
+    /// in `simplifier`.
+    ///
+    /// The feature-vector test is oriented the way the search loop uses it:
+    /// `subsumption::subsumption_resolution_id(candidate, simplifier)` requires
+    /// `candidate` to be no wider than `simplifier`, because it is the active
+    /// clause of that call. The feature-vector-tree query
+    /// `query_backward_subsumption_resolution` filters the other way round,
+    /// which matches a call with the arguments the other way, so it cannot be
+    /// reused here.
+    pub fn backward_subsumption_resolution_candidates_for(
+        &self,
+        simplifier: &IdClause,
+        simplifier_fv: &FeatureVector,
+    ) -> Vec<ClauseId> {
+        let mut ids = HashSet::default();
+        let mut has_equality = false;
+        for lit in &simplifier.literals {
+            match &lit.atom {
+                IdAtom::Pred(sym, _) => {
+                    if let Some(set) = self.pred_clauses.get(sym) {
+                        ids.extend(set.iter().copied());
+                    }
+                }
+                IdAtom::Eq(..) => has_equality = true,
+            }
+        }
+        if has_equality {
+            ids.extend(self.pos_eq_clauses.iter().copied());
+            ids.extend(self.neg_eq_clauses.iter().copied());
+        }
+        let mut out: Vec<ClauseId> = ids
+            .into_iter()
+            .filter(|id| {
+                self.fv_map
+                    .get(id)
+                    .is_some_and(|fv| fv.can_subsumption_resolve(simplifier_fv))
+            })
+            .collect();
+        out.sort_unstable();
+        out
+    }
+
+    /// Returns clauses that could potentially subsume the target (cloned).
+    pub fn get_subsumption_candidates(&self, target_fv: &FeatureVector) -> Vec<IdClause> {
+        self.subsumption_candidate_ids(target_fv)
             .into_iter()
             .filter_map(|id| self.clauses.get(&id).cloned())
-            .collect();
-        res.sort_unstable_by_key(|c| c.id);
-        res
+            .collect()
     }
 
     /// Returns clauses that could potentially BE subsumed by the given clause (cloned).
     pub fn get_subsumed_candidates(&self, subsumer_fv: &FeatureVector) -> Vec<IdClause> {
-        let mut candidate_ids = Vec::new();
-        self.fvt.query_subsumed(subsumer_fv, &mut candidate_ids);
-        let mut res: Vec<IdClause> = candidate_ids
+        self.subsumed_candidate_ids(subsumer_fv)
             .into_iter()
             .filter_map(|id| self.clauses.get(&id).cloned())
-            .collect();
-        res.sort_unstable_by_key(|c| c.id);
-        res
+            .collect()
     }
 
     /// Returns clauses that could potentially subsumption-resolve the target (cloned).
@@ -229,15 +385,10 @@ impl LiteralIndex {
         &self,
         target_fv: &FeatureVector,
     ) -> Vec<IdClause> {
-        let mut candidate_ids = Vec::new();
-        self.fvt
-            .query_subsumption_resolution(target_fv, &mut candidate_ids);
-        let mut res: Vec<IdClause> = candidate_ids
+        self.subsumption_resolution_candidate_ids(target_fv)
             .into_iter()
             .filter_map(|id| self.clauses.get(&id).cloned())
-            .collect();
-        res.sort_unstable_by_key(|c| c.id);
-        res
+            .collect()
     }
 
     /// Returns clauses in the index that could potentially BE subsumption-resolved by `simplifier_fv` (cloned).
@@ -245,15 +396,10 @@ impl LiteralIndex {
         &self,
         simplifier_fv: &FeatureVector,
     ) -> Vec<IdClause> {
-        let mut candidate_ids = Vec::new();
-        self.fvt
-            .query_backward_subsumption_resolution(simplifier_fv, &mut candidate_ids);
-        let mut res: Vec<IdClause> = candidate_ids
+        self.backward_subsumption_resolution_candidate_ids(simplifier_fv)
             .into_iter()
             .filter_map(|id| self.clauses.get(&id).cloned())
-            .collect();
-        res.sort_unstable_by_key(|c| c.id);
-        res
+            .collect()
     }
 
     /// Returns a reference to a specific clause by ID.

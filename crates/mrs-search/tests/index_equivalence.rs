@@ -512,6 +512,13 @@ fn check_subsumption_recall(
             .into_iter()
             .map(|c| c.id)
             .collect();
+        // The symbol-filtered query the search loop actually uses. It must
+        // also never miss an exact SR partner: a miss would silently drop a
+        // simplification, which is a soundness-of-redundancy regression.
+        let got_sr_filtered: HashSet<ClauseId> = index
+            .subsumption_resolution_candidates_for(target, &target_fv)
+            .into_iter()
+            .collect();
         for cand in index.iter() {
             if !live.contains(&cand.id) || cand.id == target.id {
                 continue;
@@ -533,7 +540,21 @@ fn check_subsumption_recall(
                     cand.id,
                     target.id
                 );
+                assert!(
+                    got_sr_filtered.contains(&cand.id),
+                    "{tag}: symbol-filtered SR query missed exact partner {:?} of {:?}",
+                    cand.id,
+                    target.id
+                );
             }
+        }
+        // The filtered query is a subset of the unfiltered one.
+        for id in &got_sr_filtered {
+            assert!(
+                got_sr.contains(id),
+                "{tag}: symbol-filtered SR query returned {:?} which the feature-vector query rejects",
+                id
+            );
         }
     }
     for subsumer in index.iter() {
@@ -548,9 +569,22 @@ fn check_subsumption_recall(
             .into_iter()
             .map(|c| c.id)
             .collect();
+        let got_bsr_filtered: HashSet<ClauseId> = index
+            .backward_subsumption_resolution_candidates_for(subsumer, &subsumer_fv)
+            .into_iter()
+            .collect();
         for cand in index.iter() {
             if !live.contains(&cand.id) || cand.id == subsumer.id {
                 continue;
+            }
+            if subsumption_resolution_id(cand, subsumer, bank).is_some() {
+                exact_bsr += 1;
+                assert!(
+                    got_bsr_filtered.contains(&cand.id),
+                    "{tag}: symbol-filtered backward SR query missed exact partner {:?} of {:?}",
+                    cand.id,
+                    subsumer.id
+                );
             }
             if subsumes_id(subsumer, cand, bank) {
                 exact_subsumed += 1;

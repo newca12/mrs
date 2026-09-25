@@ -124,6 +124,34 @@ pub fn superpose_selected_id(
     comm: &HashSet<SymbolId>,
     assoc: &HashSet<SymbolId>,
 ) -> Vec<IdClause> {
+    superpose_selected_id_until(
+        eq_clause, target, bank, ordering, id_gen, target_sel, comm, assoc, None,
+    )
+}
+
+/// Superposition with an optional deadline.
+///
+/// The caller may pass `deadline`; the routine then returns as soon as the
+/// instant passes, possibly with a partial result set. Callers must treat a
+/// return after the deadline as "search over budget" and discard the partial
+/// results, because a partial resolvent set is not a sound basis for any
+/// conclusion. The unbounded variant [`superpose_selected_id`] passes `None`.
+///
+/// The bound is checked in the innermost position loop, so a single call can no
+/// longer run past the search deadline no matter how many rewrite positions it
+/// would otherwise examine.
+#[allow(clippy::too_many_arguments)]
+pub fn superpose_selected_id_until(
+    eq_clause: &IdClause,
+    target: &IdClause,
+    bank: &mut TermBank,
+    ordering: &TermOrdering,
+    id_gen: &mut ClauseIdGen,
+    target_sel: Option<&[usize]>,
+    comm: &HashSet<SymbolId>,
+    assoc: &HashSet<SymbolId>,
+    deadline: Option<std::time::Instant>,
+) -> Vec<IdClause> {
     let offset = max_var_id(eq_clause, bank);
     let target_r = rename_clause_id(target, offset, bank);
     let mut results = Vec::new();
@@ -155,6 +183,7 @@ pub fn superpose_selected_id(
                 comm,
                 assoc,
                 &mut results,
+                deadline,
             );
         }
     }
@@ -177,6 +206,7 @@ fn superpose_with_id(
     comm: &HashSet<SymbolId>,
     assoc: &HashSet<SymbolId>,
     results: &mut Vec<IdClause>,
+    deadline: Option<std::time::Instant>,
 ) {
     for (j, target_lit) in target.literals.iter().enumerate() {
         if let Some(sel) = target_sel
@@ -188,6 +218,11 @@ fn superpose_with_id(
 
         for (arg_idx, base_term, positions) in term_positions {
             for pos in positions {
+                if let Some(limit) = deadline
+                    && std::time::Instant::now() >= limit
+                {
+                    return;
+                }
                 let subterm = match bank.subterm_at(base_term, &pos) {
                     Some(t) => t,
                     None => continue,
