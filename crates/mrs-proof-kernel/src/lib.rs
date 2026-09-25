@@ -4082,6 +4082,13 @@ fn term_size(term: &Term) -> usize {
     }
 }
 
+fn atom_term_size(atom: &Atom) -> usize {
+    match atom {
+        Atom::Pred(_, args) => args.iter().map(term_size).sum(),
+        Atom::Eq(left, right) => term_size(left) + term_size(right),
+    }
+}
+
 fn canonicalize_equivalence(
     formula: &Formula,
     steps: &mut usize,
@@ -6783,18 +6790,27 @@ fn verify_demodulation(
         if left == right {
             continue;
         }
-        let left_vars = term_var_set(left);
-        let right_vars = term_var_set(right);
-        let left_weight = term_weight(left);
-        let right_weight = term_weight(right);
+        // Admit both orientations of a non-trivial cited equality. Each
+        // replay step instantiates a cited unit premise, hence is sound by
+        // equality symmetry in either direction; certification still
+        // requires reaching exactly the cited conclusion, and the bounded
+        // rewrite loop below (step limit plus visited-state guard) keeps
+        // the search terminating so failures stay fail-closed. Restricting
+        // replay to weight-non-increasing orientations rejected valid
+        // prover output: the search emits expanding demodulations such as
+        // `multiply(X,Y)` to `divide(X,inverse(Y))` (GRP472-1 c39) or
+        // `domain(X)` to `antidomain(antidomain(X))` (KLE113+1 c3781),
+        // which the ATP fallback checkers accept but the kernel could not
+        // replay. Bare-variable patterns stay excluded on both sides since
+        // they match every subterm and only enlarge the greedy search.
         let mut parent_orientations = Vec::new();
-        if right_vars.is_subset(&left_vars) && left_weight >= right_weight {
-            parent_orientations.push((left.clone(), right.clone()));
-        }
-        if left_vars.is_subset(&right_vars) && right_weight >= left_weight {
-            let rev = (right.clone(), left.clone());
-            if !parent_orientations.contains(&rev) {
-                parent_orientations.push(rev);
+        for (from, to) in [(left, right), (right, left)] {
+            if matches!(from, Term::Var(_)) {
+                continue;
+            }
+            let orientation = (from.clone(), to.clone());
+            if !parent_orientations.contains(&orientation) {
+                parent_orientations.push(orientation);
             }
         }
         if parent_orientations.is_empty() {
@@ -6826,6 +6842,22 @@ fn verify_demodulation(
     }
 
     let mut hit_step_limit = false;
+    let mut hit_size_limit = false;
+    // Bound intermediate rewrite states relative to the cited conclusion.
+    // Admitting expanding orientations above lets a greedy walk grow terms
+    // without bound on proofs the kernel still cannot replay (REL031-1,
+    // TOP052-1: hundreds of seconds and runaway memory instead of a fast
+    // fail-closed verdict). Genuine demodulations stay near the conclusion
+    // size, so exceeding a generous multiple fails fast without giving up
+    // real conversions.
+    let goal_size: usize = goal
+        .iter()
+        .map(|literal| atom_term_size(&literal.atom))
+        .sum();
+    let size_cap = goal_size
+        .saturating_mul(4)
+        .max(goal_size.saturating_add(1024))
+        .max(1);
     for rules in candidate_rule_sets {
         let mut current = target.clone();
         current.extend(condition_literals.iter().cloned());
@@ -6853,6 +6885,14 @@ fn verify_demodulation(
             if visited.iter().any(|v| v == &current) {
                 break;
             }
+            let current_size: usize = current
+                .iter()
+                .map(|literal| atom_term_size(&literal.atom))
+                .sum();
+            if current_size > size_cap {
+                hit_size_limit = true;
+                break;
+            }
             visited.push(current.clone());
             let mut changed = false;
             for literal in &mut current {
@@ -6868,6 +6908,10 @@ fn verify_demodulation(
     }
     if hit_step_limit {
         KernelVerdict::Inconclusive("demodulation exceeded strict rewrite-step limit".into())
+    } else if hit_size_limit {
+        KernelVerdict::Inconclusive(
+            "demodulation intermediate clause exceeded strict size bound".into(),
+        )
     } else {
         KernelVerdict::Inconclusive(
             "demodulation replay could not reach the conclusion within the implemented search"
@@ -10234,13 +10278,6 @@ fn atom_alpha_equiv(
     }
 }
 
-fn term_weight(term: &Term) -> usize {
-    match term {
-        Term::Var(_) => 1,
-        Term::App(_, args) => 1 + args.iter().map(term_weight).sum::<usize>(),
-    }
-}
-
 fn term_alpha_equiv(
     left: &Term,
     right: &Term,
@@ -11550,6 +11587,58 @@ mod tests {
             check(input, proof),
             KernelVerdict::Inconclusive(_)
         ));
+    }
+
+    #[test]
+    fn certifies_expanding_demodulation() {
+        // The prover emits weight-increasing demodulations such as
+        // `multiply(X,Y)` to `divide(X,inverse(Y))` (GRP472-1 c39), which
+        // the ATP fallback checkers accept. The kernel replays either
+        // orientation of a cited non-trivial equality.
+        let problem = "fof(rule, axiom, ![X] : f(X) = g(X,h(X))).\n\
+                       fof(target, axiom, p(f(a))).\n\
+                       fof(neg, axiom, ~p(g(a,h(a)))).";
+        let proof = "fof(rule, axiom, ![X] : f(X) = g(X,h(X)), file('problem.p', rule)).\n\
+                     fof(target, axiom, p(f(a)), file('problem.p', target)).\n\
+                     fof(s, plain, p(g(a,h(a))), inference(demodulation, [status(thm)], [target,rule])).\n\
+                     fof(n, axiom, ~p(g(a,h(a))), file('problem.p', neg)).\n\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [s,n])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn expanding_demodulation_walk_fails_fast_on_size_blowup() {
+        // Two compounding expanding rules with an unreachable conclusion
+        // must fail closed via the size bound, not wander the full step
+        // budget while cloning ever-larger clauses (REL031-1/TOP052-1
+        // class, which previously ran hundreds of seconds).
+        let problem = "fof(r1, axiom, ![X] : f(X) = g(X,X)).\n\
+                       fof(r2, axiom, ![X,Y] : g(X,Y) = f(h(X,Y))).\n\
+                       fof(target, axiom, p(f(a))).";
+        let proof = "fof(r1, axiom, ![X] : f(X) = g(X,X), file('problem.p', r1)).\
+                     fof(r2, axiom, ![X,Y] : g(X,Y) = f(h(X,Y)), file('problem.p', r2)).\
+                     fof(target, axiom, p(f(a)), file('problem.p', target)).\
+                     fof(s, plain, p(q(a)), inference(demodulation, [status(thm)], [target,r1,r2])).\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [s])).";
+        assert!(matches!(
+            check(problem, proof),
+            KernelVerdict::Inconclusive(detail) if detail.contains("size bound")
+        ));
+    }
+
+    #[test]
+    fn certifies_nested_expanding_demodulation() {
+        // Doubly-nested expansion with one rule applied twice, mirroring
+        // `domain(X)` to `antidomain(antidomain(X))` (KLE113+1 c3781).
+        let problem = "fof(rule, axiom, ![X] : d(X) = a(a(X))).\n\
+                       fof(target, axiom, p(d(f),d(b))).\n\
+                       fof(neg, axiom, ~p(a(a(f)),a(a(b)))).";
+        let proof = "fof(rule, axiom, ![X] : d(X) = a(a(X)), file('problem.p', rule)).\n\
+                     fof(target, axiom, p(d(f),d(b)), file('problem.p', target)).\n\
+                     fof(s, plain, p(a(a(f)),a(a(b))), inference(demodulation, [status(thm)], [target,rule])).\n\
+                     fof(n, axiom, ~p(a(a(f)),a(a(b))), file('problem.p', neg)).\n\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [s,n])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
     }
 
     #[test]
