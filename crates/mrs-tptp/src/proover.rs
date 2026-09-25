@@ -104,6 +104,23 @@ pub struct AvatarSatInfo<'a> {
     pub trace_bytes: Option<&'a str>,
 }
 
+/// One recorded rewrite of a `demodulation` step.
+///
+/// A demodulation step collapses a whole fixpoint of unit-equality rewriting
+/// into a single proof node, so the intermediate positions are not visible in
+/// the parent/conclusion pair. The prover records them, in application order,
+/// as `rule_parent(literal, [term_path])` inside
+/// `demodulation_steps(...)`, where `rule_parent` is the *index* of the cited
+/// unit equality in the step's own parent list (index 0 is the rewritten
+/// clause) and `term_path` selects a subterm: an argument index for a
+/// predicate atom, and `0`/`1` for the left/right side of an equality atom.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DemodStepRef {
+    pub rule_parent: usize,
+    pub literal: usize,
+    pub term_path: Vec<usize>,
+}
+
 impl<'a> Annotations<'a> {
     /// Extract the inference rule name from `inference(rule, …, …)` source.
     pub fn inference_rule(&self) -> Option<&'a str> {
@@ -432,6 +449,30 @@ impl<'a> Annotations<'a> {
             }
             _ => None,
         })
+    }
+
+    /// Parse `demodulation_steps(rule(1, 0, [0]), rule(1, 1, [1, 0]), …)`.
+    ///
+    /// Returns the recorded rewrites in application order, or `None` when the
+    /// annotation is absent or malformed. An absent annotation is not a
+    /// failure: a verifier then has to reconstruct the rewrite sequence itself.
+    pub fn demodulation_steps(&self) -> Option<Vec<DemodStepRef>> {
+        let args = self.info_function("demodulation_steps")?;
+        args.iter()
+            .map(|item| {
+                let GeneralTerm::Function(name, args) = item else {
+                    return None;
+                };
+                if !word_is(name, "rule") || args.len() != 3 {
+                    return None;
+                }
+                Some(DemodStepRef {
+                    rule_parent: number_value(args.first()?)?,
+                    literal: number_value(args.get(1)?)?,
+                    term_path: number_list(args.get(2)?)?,
+                })
+            })
+            .collect()
     }
 
     /// Extract `skolemize(Var, sk(args…))` if present.

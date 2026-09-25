@@ -12,6 +12,7 @@ use mrs_core::clause::{Clause, ClauseCertificate, ClauseId, ClauseSource, Litera
 use mrs_core::formula::Atom;
 use mrs_core::symbol::SymbolTable;
 use mrs_core::term::{Term, VarId};
+use mrs_core::witness::{DemodStepWitness, ProofNodeId, ProofWitness};
 use mrs_unify::matching::match_term;
 
 /// An elaborated proof with explicit, fine-grained intermediate inference steps.
@@ -538,6 +539,11 @@ pub fn reconstruct_demodulation(
 
     let mut generated_clauses = Vec::with_capacity(steps.len());
     let mut prev_id = target.id;
+    let mut prev_proof_id = target.proof_id.unwrap_or(ProofNodeId(target.id.0));
+    let rule_clauses: HashMap<ClauseId, &Clause> = rule_parents
+        .iter()
+        .map(|clause| (clause.id, clause))
+        .collect();
 
     for (i, step) in steps.iter().enumerate() {
         let is_last = i + 1 == steps.len();
@@ -569,17 +575,49 @@ pub fn reconstruct_demodulation(
                 None
             },
             proof_id: if is_last { conclusion.proof_id } else { None },
-            witness: if is_last {
-                conclusion.witness.clone()
-            } else {
-                None
-            },
+            // Each expanded node is exactly one rewrite by one cited equality,
+            // which is recorded so a verifier can replay it instead of
+            // searching. The collapsed step's own witness must not be copied
+            // here: its recorded positions address the *collapsed* step's
+            // target, not this chain node's parent.
+            witness: rule_clauses
+                .get(&step.rule_parent_id)
+                .map(|rule| single_rewrite_witness(rule, &step.position, prev_proof_id)),
         };
+        prev_proof_id = clause.proof_id.unwrap_or(ProofNodeId(clause_id.0));
         prev_id = clause_id;
         generated_clauses.push(clause);
     }
 
     Ok(generated_clauses)
+}
+
+/// Witness recording "this node is the cited equality applied at this exact
+/// literal and subterm", in the encoding `mrs-proof`'s TSTP output uses and
+/// the strict kernel replays.
+fn single_rewrite_witness(
+    rule: &Clause,
+    position: &RewritePosition,
+    target: ProofNodeId,
+) -> ProofWitness {
+    let rule_node = rule.proof_id.unwrap_or(ProofNodeId(rule.id.0));
+    let mut term_path = Vec::with_capacity(position.term_path.len() + 1);
+    match position.atom_side {
+        AtomSide::EqLeft => term_path.push(0),
+        AtomSide::EqRight => term_path.push(1),
+        AtomSide::PredArg(index) => term_path.push(index),
+    }
+    term_path.extend(position.term_path.iter().copied());
+    ProofWitness::Demodulation {
+        target,
+        rule_parents: vec![rule_node],
+        steps: vec![DemodStepWitness {
+            rule_parent: rule_node,
+            lit_idx: position.lit_idx,
+            term_path,
+            substitution: None,
+        }],
+    }
 }
 
 /// Topologically sorts clauses by actual parent dependency edges.

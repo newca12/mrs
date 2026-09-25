@@ -140,6 +140,10 @@ pub fn format_tstp(proof: &[Clause], symbols: &SymbolTable) -> String {
                     info.push_str(", ");
                     info.push_str(&format_certificate(certificate));
                 }
+                if let Some(steps) = format_demodulation_steps(clause) {
+                    info.push_str(", ");
+                    info.push_str(&steps);
+                }
                 format!(
                     "inference({}, [{}], [{}])",
                     rule,
@@ -258,6 +262,71 @@ fn clause_id_list(ids: &[mrs_core::clause::ClauseId]) -> String {
         .join(", ")
 }
 
+/// Emit the recorded rewrite sequence of a `demodulation` step as
+/// `demodulation_steps(rule(1, 0, [0]), …)`.
+///
+/// A demodulation step collapses a whole fixpoint of unit-equality rewriting
+/// into one node, so the parent/conclusion pair alone does not say *where* or
+/// *with which* equality each rewrite happened. Recording it lets a verifier
+/// replay the step deterministically instead of searching for a rewrite
+/// sequence — which is what the strict kernel has to fall back to for proofs
+/// from other provers, and what made MRS's own equational proofs unverifiable.
+///
+/// Each entry's `rule_parent` is the position of the cited unit equality in
+/// this step's parent list (0 is the rewritten clause). A rewrite that cannot
+/// be mapped to a cited parent suppresses the whole annotation rather than
+/// emitting a reference a verifier would have to reject.
+fn format_demodulation_steps(clause: &Clause) -> Option<String> {
+    let ClauseSource::Inference { rule, parents } = &clause.source else {
+        return None;
+    };
+    if *rule != "demodulation" {
+        return None;
+    }
+    let mrs_core::witness::ProofWitness::Demodulation {
+        rule_parents,
+        steps,
+        ..
+    } = clause.witness.as_ref()?
+    else {
+        return None;
+    };
+    if steps.is_empty() {
+        return None;
+    }
+    // Parent index 0 is the clause being rewritten; the unit equalities
+    // follow in citation order.
+    let position = |node: mrs_core::witness::ProofNodeId| -> Option<usize> {
+        if node
+            == clause
+                .proof_id
+                .unwrap_or(mrs_core::witness::ProofNodeId(clause.id.0))
+        {
+            return Some(0);
+        }
+        rule_parents
+            .iter()
+            .position(|p| *p == node)
+            .map(|index| index + 1)
+    };
+    let mut entries = Vec::with_capacity(steps.len());
+    for step in steps {
+        let index = position(step.rule_parent)?;
+        debug_assert!(
+            parents.get(index).is_some(),
+            "recorded parent index must be inside the step's parents"
+        );
+        let path = step
+            .term_path
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        entries.push(format!("rule({index}, {}, [{path}])", step.lit_idx));
+    }
+    Some(format!("demodulation_steps({})", entries.join(", ")))
+}
+
 fn format_sat_trace(sat_trace: &Option<mrs_core::clause::AvatarSatTrace>) -> String {
     sat_trace
         .as_ref()
@@ -319,8 +388,16 @@ mod tests {
     use mrs_core::clause::{Clause, ClauseId, ClauseSource};
     use mrs_core::{Atom, Literal, Term};
 
+    /// `PROBLEM_PATH` is a process-global `OnceLock`, so any test that reads or
+    /// writes it must hold this lock. Without it, a test asserting on the
+    /// placeholder path can observe `"input"` from `format_tstp` and then read
+    /// the path the other test has just installed, which is an intermittent
+    /// failure rather than a real one.
+    static PROBLEM_PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn format_input_clause_path_annotation() {
+        let _guard = PROBLEM_PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // PROBLEM_PATH is a process-global OnceLock (matches mrs's
         // one-problem-per-process model), so both the "unset" and "set"
         // behaviours are asserted within a single test, in order, rather
@@ -442,6 +519,7 @@ mod tests {
     #[test]
     fn format_formula_step_uses_fof_wrapper() {
         use mrs_core::Formula;
+        let _guard = PROBLEM_PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut syms = SymbolTable::new();
         let p = syms.intern("p");

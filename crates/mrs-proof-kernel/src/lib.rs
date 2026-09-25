@@ -17,7 +17,8 @@ use mrs_core::clause::avatar_sat_trace_digest;
 use mrs_core::{Atom, Formula, Substitution, SymbolTable, Term, VarId};
 use mrs_tptp::ast::common::{AtomicWord, GeneralTerm};
 use mrs_tptp::proover::{
-    AvatarBranchInfo, AvatarComponentInfo, AvatarSatInfo, AvatarSplitInfo, ParentRef, SatBackedInfo,
+    AvatarBranchInfo, AvatarComponentInfo, AvatarSatInfo, AvatarSplitInfo, DemodStepRef, ParentRef,
+    SatBackedInfo,
 };
 use mrs_tptp::{AnnotatedFormula, BinaryConnective, CNFFormula, CNFLiteral, CNFStatement};
 use mrs_tptp::{FOFAtomicFormula, FOFFormula, FOFStatement, FOFTerm, FormulaRole, Quantifier};
@@ -503,12 +504,33 @@ fn verify_strict_with_source_internal(
             "equality_factoring" => verify_equality_factoring(&parents, conclusion, limits),
             "equality_normalization" => verify_equality_normalization(&parents, conclusion, limits),
             "condensation" => verify_condensation(&parents, conclusion, limits),
-            "demodulation" => match verify_demodulation(&parents, conclusion, limits) {
-                KernelVerdict::Inconclusive(msg) => {
-                    KernelVerdict::Inconclusive(format!("node {}: {}", node.name, msg))
+            "demodulation" => {
+                let recorded = node
+                    .formula
+                    .annotations()
+                    .and_then(|a| a.demodulation_steps());
+                let verdict =
+                    verify_demodulation(&parents, conclusion, limits, recorded.as_deref());
+                // A recorded trace is an accelerator, not the only way in. If
+                // it does not replay — a foreign prover's annotation, or a
+                // defect in MRS's own recorder — fall back to the bounded
+                // search, so a bad trace can slow certification down but can
+                // never make a checkable step uncheckable. Acceptance still
+                // requires the conclusion to be recomputed one way or the
+                // other.
+                let verdict = match verdict {
+                    KernelVerdict::Inconclusive(_) if recorded.is_some() => {
+                        verify_demodulation(&parents, conclusion, limits, None)
+                    }
+                    other => other,
+                };
+                match verdict {
+                    KernelVerdict::Inconclusive(msg) => {
+                        KernelVerdict::Inconclusive(format!("node {}: {}", node.name, msg))
+                    }
+                    other => other,
                 }
-                other => other,
-            },
+            }
             "goal_transformation" => verify_goal_transformation(&parents, conclusion, limits),
             "superposition" => verify_superposition(
                 &parents,
@@ -7043,6 +7065,7 @@ fn verify_demodulation(
     parents: &[Formula],
     conclusion: &Formula,
     limits: VerificationLimits,
+    recorded: Option<&[DemodStepRef]>,
 ) -> KernelVerdict {
     if parents.len() < 2 {
         return KernelVerdict::Rejected(
@@ -7057,6 +7080,16 @@ fn verify_demodulation(
             "demodulation conclusion is not a supported clause".into(),
         );
     };
+    // A recorded rewrite sequence is replayed exactly: each entry names the
+    // cited unit equality, the literal, and the subterm position, and the
+    // rewrite itself is recomputed by matching that equality against the
+    // subterm. Nothing is searched, so the cost is linear in the number of
+    // recorded rewrites and a step never fails for want of a search budget.
+    if let Some(steps) = recorded
+        && !steps.is_empty()
+    {
+        return replay_recorded_demodulation(parents, &target, &goal, steps, limits);
+    }
     let mut orientation_choices: Vec<Vec<(Term, Term)>> = Vec::new();
     let mut condition_literals = Vec::new();
     for parent in parents[1..].iter() {
@@ -7843,6 +7876,234 @@ fn ac_match_priority(
     }
 }
 
+/// Both orientations of the single positive unit equality carried by a cited
+/// demodulation parent.
+///
+/// Returns `None` when the parent is not a single-positive-equality clause,
+/// which the caller treats as inconclusive.
+fn unit_equality_orientations(
+    formula: &Formula,
+    limits: VerificationLimits,
+) -> Option<Vec<(Term, Term)>> {
+    let clause = clause_from_formula(formula, limits)?;
+    let mut eq_idx = None;
+    for (idx, lit) in clause.iter().enumerate() {
+        if lit.positive && matches!(lit.atom, Atom::Eq(_, _)) {
+            if eq_idx.is_some() {
+                return None;
+            }
+            eq_idx = Some(idx);
+        }
+    }
+    let eq_idx = eq_idx?;
+    if clause.len() != 1 {
+        // Condition literals beyond the equality are handled by the search
+        // path; a recorded trace replays the equality only.
+        return None;
+    }
+    let Atom::Eq(left, right) = &clause[eq_idx].atom else {
+        unreachable!()
+    };
+    if left == right {
+        return Some(Vec::new());
+    }
+    Some(vec![
+        (left.clone(), right.clone()),
+        (right.clone(), left.clone()),
+    ])
+}
+
+/// Replace the subterm selected by `path` in `literal` with `replacement`.
+///
+/// The path mirrors the prover's record: an argument index for a predicate
+/// atom, and `0`/`1` for the left/right side of an equality atom.
+fn replace_lit_subterm(literal: &mut Literal, path: &[usize], replacement: Term) -> bool {
+    let mut cursor = match &mut literal.atom {
+        Atom::Pred(_, args) => match path.first() {
+            Some(&index) => match args.get_mut(index) {
+                Some(term) => term,
+                None => return false,
+            },
+            None => return false,
+        },
+        Atom::Eq(left, right) => match path.first() {
+            Some(0) => left,
+            Some(1) => right,
+            _ => return false,
+        },
+    };
+    for step in &path[1..] {
+        cursor = match cursor {
+            Term::App(_, args) => match args.get_mut(*step) {
+                Some(term) => term,
+                None => return false,
+            },
+            Term::Var(_) => return false,
+        };
+    }
+    *cursor = replacement;
+    true
+}
+
+/// Replay a prover-recorded demodulation trace.
+///
+/// Each recorded entry names the cited unit equality, the literal, and the
+/// subterm; the rewrite is recomputed by matching that equality against the
+/// subterm. A cited equality is symmetric, so either orientation may be the
+/// one the prover used — the step is *contracting* under one and *expanding*
+/// under the other — and only the orientation that reproduces the exported
+/// conclusion is the right one. The replay therefore backtracks over
+/// orientations, bounded by a fixed trial budget, and undoes each rewrite by
+/// restoring the subterm it replaced.
+///
+/// Acceptance requires the replayed clause to equal the exported conclusion
+/// exactly, so a wrong or incomplete trace can only produce `Inconclusive` —
+/// it never certifies.
+fn replay_recorded_demodulation(
+    parents: &[Formula],
+    target: &[Literal],
+    goal: &[Literal],
+    steps: &[DemodStepRef],
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if steps.len() > limits.max_equivalence_steps {
+        return KernelVerdict::Inconclusive("demodulation replay exceeds strict step limit".into());
+    }
+    // Orientation table, resolved once: `None` for the rewritten clause and for
+    // a parent that is not a plain positive unit equality.
+    let mut orientations: Vec<Option<Vec<(Term, Term)>>> = Vec::with_capacity(parents.len());
+    for (index, parent) in parents.iter().enumerate() {
+        if index == 0 {
+            orientations.push(None);
+            continue;
+        }
+        orientations.push(unit_equality_orientations(parent, limits));
+    }
+    for (position, step) in steps.iter().enumerate() {
+        if step.rule_parent == 0 || step.rule_parent >= parents.len() {
+            return KernelVerdict::Inconclusive(format!(
+                "demodulation replay step {position} cites parent {} outside the step's parents",
+                step.rule_parent
+            ));
+        }
+        let Some(Some(rules)) = orientations.get(step.rule_parent) else {
+            return KernelVerdict::Inconclusive(format!(
+                "demodulation replay step {position} cites a parent that is not a unit equality"
+            ));
+        };
+        if rules.is_empty() {
+            return KernelVerdict::Inconclusive(format!(
+                "demodulation replay step {position} cites a trivial equality"
+            ));
+        }
+        if step.term_path.len() > limits.max_term_depth {
+            return KernelVerdict::Inconclusive(
+                "demodulation replay term path exceeds strict depth".into(),
+            );
+        }
+        if step.literal >= target.len() {
+            return KernelVerdict::Inconclusive(format!(
+                "demodulation replay step {position} names literal {} of a {}-literal clause",
+                step.literal,
+                target.len()
+            ));
+        }
+    }
+
+    // Bounded backtracking search over per-step orientation choices.
+    const MAX_ORIENTATION_TRIALS: usize = 4096;
+    let mut current: Vec<Literal> = target.to_vec();
+    // Per step: the subterm that step replaced (for undo) and the next
+    // orientation index to try.
+    let mut undo: Vec<Option<Term>> = vec![None; steps.len()];
+    let mut choice: Vec<usize> = vec![0; steps.len()];
+    let mut trials = 0usize;
+    let mut index = 0usize;
+
+    loop {
+        let exhausted = index < steps.len()
+            && choice[index]
+                >= orientations[steps[index].rule_parent]
+                    .as_ref()
+                    .map_or(0, |rules| rules.len());
+        if !exhausted && index < steps.len() {
+            if trials >= MAX_ORIENTATION_TRIALS {
+                return KernelVerdict::Inconclusive(
+                    "demodulation replay exceeded strict orientation trials".into(),
+                );
+            }
+            let step = &steps[index];
+            let rules = orientations[steps[index].rule_parent]
+                .as_ref()
+                .expect("validated above");
+            let (left, right) = &rules[choice[index]];
+            let literal = &mut current[step.literal];
+            let Some(subterm) = lit_subterm(&literal.atom, &step.term_path) else {
+                choice[index] += 1;
+                continue;
+            };
+            let mut substitution = HashMap::new();
+            if match_pattern(left, &subterm, &mut substitution) {
+                let budget = limits.max_formula_nodes.min(
+                    atom_term_size(&literal.atom)
+                        .saturating_mul(4)
+                        .saturating_add(1024),
+                );
+                if let Some(instantiated) =
+                    instantiate_term_bounded(right, &substitution, budget, limits.max_term_depth)
+                    && replace_lit_subterm(literal, &step.term_path, instantiated)
+                {
+                    undo[index] = Some(subterm);
+                    trials += 1;
+                    index += 1;
+                    if index < steps.len() {
+                        choice[index] = 0;
+                    }
+                    continue;
+                }
+            }
+            choice[index] += 1;
+            continue;
+        }
+
+        if index == steps.len() && clause_alpha_equiv(&current, goal) {
+            return KernelVerdict::Certified;
+        }
+        if index == 0 {
+            return KernelVerdict::Inconclusive(
+                "demodulation replay did not reproduce the exported conclusion".into(),
+            );
+        }
+        // Undo the last applied rewrite and try its next orientation.
+        index -= 1;
+        let step = &steps[index];
+        if let Some(previous) = undo[index].take()
+            && let Some(literal) = current.get_mut(step.literal)
+        {
+            let _ = replace_lit_subterm(literal, &step.term_path, previous);
+        }
+        choice[index] += 1;
+    }
+}
+
+/// Borrow the subterm selected by `path` inside `atom`.
+fn lit_subterm(atom: &Atom, path: &[usize]) -> Option<Term> {
+    let mut cursor = match atom {
+        Atom::Pred(_, args) => args.get(*path.first()?)?,
+        Atom::Eq(left, right) => match path.first()? {
+            0 => left,
+            _ => right,
+        },
+    };
+    for step in &path[1..] {
+        cursor = match cursor {
+            Term::App(_, args) => args.get(*step)?,
+            Term::Var(_) => return None,
+        };
+    }
+    Some(cursor.clone())
+}
+
 fn verify_goal_transformation(
     parents: &[Formula],
     conclusion: &Formula,
@@ -7854,7 +8115,7 @@ fn verify_goal_transformation(
     if parents.len() == 1 {
         return verify_alpha_identity(parents, conclusion);
     }
-    verify_demodulation(parents, conclusion, limits)
+    verify_demodulation(parents, conclusion, limits, None)
 }
 
 fn verify_superposition(
@@ -12167,6 +12428,181 @@ mod tests {
             check(input, proof),
             KernelVerdict::Inconclusive(_)
         ));
+    }
+
+    #[test]
+    fn certifies_recorded_demodulation_replay() {
+        // MRS records the rewrite it applied: which cited equality was used,
+        // in which literal, at which subterm. Replaying that trace needs no
+        // search, so a chain of rewrites that no bounded search could order
+        // still certifies.
+        let problem = "fof(r1, axiom, ![X] : f(X) = g(X)).\n\
+                       fof(r2, axiom, ![X] : g(X) = h(X)).\n\
+                       fof(r3, axiom, ![X] : h(X) = k(X)).\n\
+                       fof(target, axiom, p(f(a))).\n\
+                       fof(neg, axiom, ~p(k(a))).";
+        let proof = "fof(r1, axiom, ![X] : f(X) = g(X), file('problem.p', r1)).\n\
+                     fof(r2, axiom, ![X] : g(X) = h(X), file('problem.p', r2)).\n\
+                     fof(r3, axiom, ![X] : h(X) = k(X), file('problem.p', r3)).\n\
+                     fof(target, axiom, p(f(a)), file('problem.p', target)).\n\
+                     fof(s, plain, p(k(a)), inference(demodulation, [status(thm), \
+                       demodulation_steps(rule(1, 0, [0]), rule(2, 0, [0]), rule(3, 0, [0]))], \
+                       [target,r1,r2,r3])).\n\
+                     fof(n, axiom, ~p(k(a)), file('problem.p', neg)).\n\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [s,n])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn recorded_demodulation_replay_handles_expanding_rule() {
+        // Weight-increasing rules (GRP472-1 c39 shape) are emitted by the
+        // prover and must replay with the recorded orientation, not only the
+        // contracting one.
+        let problem = "fof(rule, axiom, ![X] : f(X) = g(X,h(X))).\n\
+                       fof(target, axiom, p(f(a))).\n\
+                       fof(neg, axiom, ~p(g(a,h(a)))).";
+        let proof = "fof(rule, axiom, ![X] : f(X) = g(X,h(X)), file('problem.p', rule)).\n\
+                     fof(target, axiom, p(f(a)), file('problem.p', target)).\n\
+                     fof(s, plain, p(g(a,h(a))), inference(demodulation, [status(thm), \
+                       demodulation_steps(rule(1, 0, [0]))], [target,rule])).\n\
+                     fof(n, axiom, ~p(g(a,h(a))), file('problem.p', neg)).\n\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [s,n])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn recorded_demodulation_rewrites_an_equality_side() {
+        // Path element 0/1 selects the left/right side of an equality atom.
+        let problem = "fof(rule, axiom, ![X] : f(X) = a).\n\
+                       fof(left, axiom, ~ f(b) = a).\n\
+                       fof(left_neg, axiom, a = a).\n\
+                       fof(right, axiom, ~ b = f(b)).\n\
+                       fof(right_neg, axiom, b = a).";
+        let proof = "fof(rule, axiom, ![X] : f(X) = a, file('problem.p', rule)).\n\
+                     fof(left, axiom, ~ f(b) = a, file('problem.p', left)).\n\
+                     fof(left_neg, axiom, a = a, file('problem.p', left_neg)).\n\
+                     fof(sl, plain, ~ a = a, inference(demodulation, [status(thm), \
+                       demodulation_steps(rule(1, 0, [0]))], [left,rule])).\n\
+                     fof(bl, plain, $false, inference(resolution, [status(thm)], [sl,left_neg])).\n\
+                     fof(right, axiom, ~ b = f(b), file('problem.p', right)).\n\
+                     fof(right_neg, axiom, b = a, file('problem.p', right_neg)).\n\
+                     fof(sr, plain, ~ b = a, inference(demodulation, [status(thm), \
+                       demodulation_steps(rule(1, 0, [1]))], [right,rule])).\n\
+                     fof(br, plain, $false, inference(resolution, [status(thm)], [sr,right_neg])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    /// Run only the recorded-replay path, so a guard inside it is tested
+    /// without the bounded search masking the outcome.
+    fn replay_only(proof: &str) -> KernelVerdict {
+        let parsed = mrs_tptp::parse_tptp(proof).expect("proof parses");
+        let mut symbols = SymbolTable::new();
+        let lowered: Vec<Formula> = parsed
+            .formulas
+            .iter()
+            .map(|af| {
+                lower_annotated(&mut symbols, af, VerificationLimits::default())
+                    .expect("formula lowers")
+            })
+            .collect();
+        let demod_node = parsed
+            .formulas
+            .iter()
+            .position(|af| {
+                af.annotations()
+                    .and_then(|a| a.inference_rule())
+                    .is_some_and(|rule| rule == "demodulation")
+            })
+            .expect("proof has a demodulation step");
+        let recorded = parsed.formulas[demod_node]
+            .annotations()
+            .and_then(|a| a.demodulation_steps())
+            .expect("demodulation step records its rewrites");
+        verify_demodulation(
+            &[lowered[0].clone(), lowered[1].clone()],
+            &lowered[demod_node],
+            VerificationLimits::default(),
+            Some(&recorded),
+        )
+    }
+
+    #[test]
+    fn recorded_demodulation_wrong_position_is_inconclusive() {
+        // The recorded position does not match the cited equality. The trace
+        // is only evidence, so the replay must decline it.
+        let proof = "fof(rule, axiom, ![X] : f(X) = g(X), file('problem.p', rule)).\n\
+                     fof(target, axiom, p(f(a)) | q(f(a)), file('problem.p', target)).\n\
+                     fof(s, plain, p(g(a)) | q(f(a)), inference(demodulation, [status(thm), \
+                       demodulation_steps(rule(1, 1, [0]))], [target,rule])).";
+        assert!(matches!(replay_only(proof), KernelVerdict::Inconclusive(_)));
+    }
+
+    #[test]
+    fn recorded_demodulation_cannot_skip_a_cited_equality() {
+        // A forged rule index is outside the step's parents, so it must not be
+        // read as a rule at all.
+        let proof = "fof(rule, axiom, ![X] : f(X) = g(X), file('problem.p', rule)).\n\
+                     fof(target, axiom, p(f(a)), file('problem.p', target)).\n\
+                     fof(s, plain, p(g(a)), inference(demodulation, [status(thm), \
+                       demodulation_steps(rule(7, 0, [0]))], [target,rule])).";
+        assert!(matches!(replay_only(proof), KernelVerdict::Inconclusive(_)));
+    }
+
+    #[test]
+    fn recorded_demodulation_cannot_use_the_target_as_a_rule() {
+        let proof = "fof(rule, axiom, ![X] : f(X) = g(X), file('problem.p', rule)).\n\
+                     fof(target, axiom, p(f(a)), file('problem.p', target)).\n\
+                     fof(s, plain, p(g(a)), inference(demodulation, [status(thm), \
+                       demodulation_steps(rule(0, 0, [0]))], [target,rule])).";
+        assert!(matches!(replay_only(proof), KernelVerdict::Inconclusive(_)));
+    }
+
+    #[test]
+    fn recorded_demodulation_cannot_introduce_a_step_the_prover_never_ran() {
+        // A trace longer than the single rewrite can justify never reproduces
+        // the conclusion, whatever the extra entries claim.
+        let proof = "fof(rule, axiom, ![X] : f(X) = g(X), file('problem.p', rule)).\n\
+                     fof(target, axiom, p(f(a)), file('problem.p', target)).\n\
+                     fof(s, plain, p(g(a)), inference(demodulation, [status(thm), \
+                       demodulation_steps(rule(1, 0, [0]), rule(1, 0, [0]))], [target,rule])).";
+        assert!(matches!(replay_only(proof), KernelVerdict::Inconclusive(_)));
+    }
+
+    #[test]
+    fn recorded_demodulation_cannot_certify_an_underivable_conclusion() {
+        // End to end: a bogus annotation in front of a conclusion no rewrite
+        // sequence produces must not certify. The bounded search is tried as a
+        // fallback and also declines.
+        let problem = "fof(rule, axiom, ![X] : f(X) = g(X)).\n\
+                       fof(target, axiom, p(f(a))).\n\
+                       fof(neg, axiom, ~p(g(a))).";
+        let proof = "fof(rule, axiom, ![X] : f(X) = g(X), file('problem.p', rule)).\n\
+                     fof(target, axiom, p(f(a)), file('problem.p', target)).\n\
+                     fof(s, plain, p(k(a)), inference(demodulation, [status(thm), \
+                       demodulation_steps(rule(1, 0, [0]))], [target,rule])).\n\
+                     fof(n, axiom, ~p(g(a)), file('problem.p', neg)).\n\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [s,n])).";
+        assert!(matches!(
+            check(problem, proof),
+            KernelVerdict::Inconclusive(_)
+        ));
+    }
+
+    #[test]
+    fn recorded_demodulation_survives_a_wrong_trace_via_the_search() {
+        // The recorded trace is an accelerator: when it is wrong but the step
+        // is genuinely derivable, the bounded search still certifies it. A
+        // recorder defect must cost speed, never certification.
+        let problem = "fof(rule, axiom, ![X] : f(X) = g(X)).\n\
+                       fof(target, axiom, p(f(a))).\n\
+                       fof(neg, axiom, ~p(g(a))).";
+        let proof = "fof(rule, axiom, ![X] : f(X) = g(X), file('problem.p', rule)).\n\
+                     fof(target, axiom, p(f(a)), file('problem.p', target)).\n\
+                     fof(s, plain, p(g(a)), inference(demodulation, [status(thm), \
+                       demodulation_steps(rule(1, 0, [5]))], [target,rule])).\n\
+                     fof(n, axiom, ~p(g(a)), file('problem.p', neg)).\n\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [s,n])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
     }
 
     #[test]
