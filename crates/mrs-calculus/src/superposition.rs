@@ -157,6 +157,9 @@ pub fn superpose_selected_id_until(
     let mut results = Vec::new();
 
     for (i, eq_lit) in eq_clause.literals.iter().enumerate() {
+        if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+            return results;
+        }
         if !eq_lit.positive {
             continue;
         }
@@ -166,6 +169,9 @@ pub fn superpose_selected_id_until(
         };
 
         for (from, to, is_left) in [(left, right, true), (right, left, false)] {
+            if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+                return results;
+            }
             if matches!(bank.get(from), mrs_core::term_bank::TermNode::Var(_)) {
                 continue;
             }
@@ -209,12 +215,17 @@ fn superpose_with_id(
     deadline: Option<std::time::Instant>,
 ) {
     for (j, target_lit) in target.literals.iter().enumerate() {
+        if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+            return;
+        }
         if let Some(sel) = target_sel
             && !sel.contains(&j)
         {
             continue;
         }
-        let term_positions = literal_term_positions_id(target_lit, bank);
+        let Some(term_positions) = literal_term_positions_id(target_lit, bank, deadline) else {
+            return;
+        };
 
         for (arg_idx, base_term, positions) in term_positions {
             for pos in positions {
@@ -285,21 +296,28 @@ fn superpose_with_id(
     }
 }
 
+type LiteralTermPositions = Vec<(usize, TermId, Vec<Vec<usize>>)>;
+
 fn literal_term_positions_id(
     lit: &IdLiteral,
     bank: &TermBank,
-) -> Vec<(usize, TermId, Vec<Vec<usize>>)> {
+    deadline: Option<std::time::Instant>,
+) -> Option<LiteralTermPositions> {
     match &lit.atom {
-        IdAtom::Pred(_, args) => args
-            .iter()
-            .enumerate()
-            .map(|(i, &arg)| (i, arg, bank.non_variable_positions(arg)))
-            .collect(),
+        IdAtom::Pred(_, args) => {
+            let mut positions = Vec::with_capacity(args.len());
+            for (i, &arg) in args.iter().enumerate() {
+                if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+                    return None;
+                }
+                positions.push((i, arg, bank.non_variable_positions_until(arg, deadline)?));
+            }
+            Some(positions)
+        }
         IdAtom::Eq(l, r) => {
-            vec![
-                (0, *l, bank.non_variable_positions(*l)),
-                (1, *r, bank.non_variable_positions(*r)),
-            ]
+            let left = bank.non_variable_positions_until(*l, deadline)?;
+            let right = bank.non_variable_positions_until(*r, deadline)?;
+            Some(vec![(0, *l, left), (1, *r, right)])
         }
     }
 }

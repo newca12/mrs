@@ -35,29 +35,84 @@ pub fn current_memory_mb() -> Option<u64> {
 /// headroom, and CASC StarExec allows 128 GiB per run. On a small host the 80%
 /// policy already yields a small ceiling, so the clamp was never needed there.
 pub fn memory_budget_mb() -> Option<u64> {
-    if let Ok(val) = std::env::var("MRS_MAX_MEMORY_MB")
-        && let Ok(mb) = val.parse::<u64>()
-    {
+    let override_mb = std::env::var("MRS_MAX_MEMORY_MB").ok();
+    let meminfo = std::fs::read_to_string("/proc/meminfo").ok();
+    let cgroup_headroom = cgroup_memory_headroom_mb();
+    memory_budget_from_sources(override_mb.as_deref(), &meminfo, cgroup_headroom)
+}
+
+fn memory_budget_from_sources(
+    override_mb: Option<&str>,
+    meminfo: &Option<String>,
+    cgroup_headroom_mb: Option<u64>,
+) -> Option<u64> {
+    if let Some(mb) = override_mb.and_then(|value| value.parse::<u64>().ok()) {
         return Some(mb);
     }
+    let host_available_mb = meminfo.as_deref().and_then(parse_available_memory_mb);
+    let available_mb = match (host_available_mb, cgroup_headroom_mb) {
+        (Some(host), Some(cgroup)) => host.min(cgroup),
+        (Some(host), None) => host,
+        (None, Some(cgroup)) => cgroup,
+        (None, None) => return None,
+    };
+    // Do not raise a genuinely small budget to a convenient minimum: the
+    // watchdog must respect small containers as well as small physical hosts.
+    Some(((available_mb as u128 * 80) / 100).min(u64::MAX as u128) as u64)
+}
 
-    if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
-        let mut available_kb: Option<u64> = None;
-        let mut total_kb: Option<u64> = None;
-        for line in content.lines() {
-            if let Some(rest) = line.strip_prefix("MemAvailable:") {
-                available_kb = rest.split_whitespace().next().and_then(|v| v.parse().ok());
-            } else if let Some(rest) = line.strip_prefix("MemTotal:") {
-                total_kb = rest.split_whitespace().next().and_then(|v| v.parse().ok());
-            }
-        }
-        let kb = available_kb.or(total_kb);
-        if let Some(kb) = kb {
-            let mb = (kb / 1024) * 80 / 100;
-            return Some(mb.clamp(512, u64::MAX));
+fn parse_available_memory_mb(meminfo: &str) -> Option<u64> {
+    let mut available_kb = None;
+    let mut total_kb = None;
+    for line in meminfo.lines() {
+        if let Some(rest) = line.strip_prefix("MemAvailable:") {
+            available_kb = rest.split_whitespace().next().and_then(|v| v.parse().ok());
+        } else if let Some(rest) = line.strip_prefix("MemTotal:") {
+            total_kb = rest.split_whitespace().next().and_then(|v| v.parse().ok());
         }
     }
+    available_kb.or(total_kb).map(|kb: u64| kb / 1024)
+}
 
+/// Remaining cgroup memory in MiB, if a standard v1 or v2 limit is present.
+fn cgroup_memory_headroom_mb() -> Option<u64> {
+    if let (Ok(limit), Ok(current)) = (
+        std::fs::read_to_string("/sys/fs/cgroup/memory.max"),
+        std::fs::read_to_string("/sys/fs/cgroup/memory.current"),
+    ) && let (Ok(limit), Ok(current)) =
+        (limit.trim().parse::<u64>(), current.trim().parse::<u64>())
+    {
+        // cgroup v2 represents an unlimited memory ceiling as the text "max".
+        return Some(limit.saturating_sub(current) / (1024 * 1024));
+    }
+
+    cgroup_memory_headroom_from(&[
+        std::path::Path::new("/sys/fs/cgroup/memory"),
+        std::path::Path::new("/sys/fs/cgroup"),
+        std::path::Path::new("/sys/fs/cgroup/memory.slice"),
+    ])
+}
+
+fn cgroup_memory_headroom_from(bases: &[&std::path::Path]) -> Option<u64> {
+    for base in bases {
+        let Ok(limit) = std::fs::read_to_string(base.join("memory.limit_in_bytes")) else {
+            continue;
+        };
+        let Ok(limit) = limit.trim().parse::<u64>() else {
+            continue;
+        };
+        // cgroup v1 uses a very large sentinel for "unlimited".
+        if limit >= (1u64 << 60) {
+            continue;
+        }
+        let Ok(current) = std::fs::read_to_string(base.join("memory.usage_in_bytes")) else {
+            continue;
+        };
+        let Ok(current) = current.trim().parse::<u64>() else {
+            continue;
+        };
+        return Some(limit.saturating_sub(current) / (1024 * 1024));
+    }
     None
 }
 
@@ -137,44 +192,57 @@ mod tests {
 
     #[test]
     fn explicit_override_wins() {
-        // Safety: single-threaded test touching only process-local environment.
-        let previous = std::env::var("MRS_MAX_MEMORY_MB").ok();
-        // SAFETY: no other thread in this test binary reads the environment.
-        unsafe { std::env::set_var("MRS_MAX_MEMORY_MB", "7777") };
-        assert_eq!(memory_budget_mb(), Some(7777));
-        match previous {
-            Some(value) => unsafe { std::env::set_var("MRS_MAX_MEMORY_MB", value) },
-            None => unsafe { std::env::remove_var("MRS_MAX_MEMORY_MB") },
-        }
+        let meminfo = Some("MemAvailable: 2048000 kB\nMemTotal: 4096000 kB".to_owned());
+        assert_eq!(
+            memory_budget_from_sources(Some("7777"), &meminfo, Some(100)),
+            Some(7777)
+        );
     }
 
     #[test]
     fn worker_count_is_bounded_by_memory_budget() {
-        let previous = std::env::var("MRS_MAX_MEMORY_MB").ok();
-        // SAFETY: no other thread in this test binary reads the environment.
-        unsafe { std::env::set_var("MRS_MAX_MEMORY_MB", "4096") };
         // 2 GiB per worker over a 4 GiB budget allows 2 workers, however many
         // cores the host has.
-        assert_eq!(default_worker_count(64), 2);
-        // SAFETY: no other thread in this test binary reads the environment.
-        unsafe { std::env::set_var("MRS_MAX_MEMORY_MB", "65536") };
-        assert_eq!(default_worker_count(4), 4);
-        match previous {
-            Some(value) => unsafe { std::env::set_var("MRS_MAX_MEMORY_MB", value) },
-            None => unsafe { std::env::remove_var("MRS_MAX_MEMORY_MB") },
-        }
+        assert_eq!(workers_for_budget(64, Some(4096)), 2);
+        assert_eq!(workers_for_budget(4, Some(65536)), 4);
+        assert_eq!(workers_for_budget(64, Some(512)), 1);
     }
 
     #[test]
     fn budget_is_not_clamped_to_a_small_host_assumption() {
-        let previous = std::env::var("MRS_MAX_MEMORY_MB").ok();
-        // SAFETY: no other thread in this test binary reads the environment.
-        unsafe { std::env::set_var("MRS_MAX_MEMORY_MB", "1048576") };
         // A 1 TiB budget must survive; the old policy clamped this to 14 GB.
-        assert_eq!(memory_budget_mb(), Some(1_048_576));
-        match previous {
-            Some(value) => unsafe { std::env::set_var("MRS_MAX_MEMORY_MB", value) },
-            None => unsafe { std::env::remove_var("MRS_MAX_MEMORY_MB") },
-        }
+        assert_eq!(
+            memory_budget_from_sources(Some("1048576"), &None, None),
+            Some(1_048_576)
+        );
+    }
+
+    #[test]
+    fn budget_uses_container_headroom_and_does_not_raise_small_limits() {
+        let meminfo = Some("MemAvailable: 16777216 kB\nMemTotal: 33554432 kB".to_owned());
+        assert_eq!(
+            memory_budget_from_sources(None, &meminfo, Some(256)),
+            Some(204)
+        );
+        assert_eq!(memory_budget_from_sources(None, &None, Some(100)), Some(80));
+    }
+
+    #[test]
+    fn ignores_cgroup_v1_unlimited_sentinel() {
+        let dir = std::env::temp_dir().join(format!("mrs-cgroup-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create test cgroup dir");
+        std::fs::write(dir.join("memory.limit_in_bytes"), (1u64 << 62).to_string())
+            .expect("write v1 unlimited sentinel");
+        std::fs::write(dir.join("memory.usage_in_bytes"), "0").expect("write usage");
+        assert_eq!(cgroup_memory_headroom_from(&[dir.as_path()]), None);
+        std::fs::remove_dir_all(dir).expect("remove test cgroup dir");
+    }
+
+    fn workers_for_budget(cores: usize, budget_mb: Option<u64>) -> usize {
+        let cores = cores.max(1);
+        let by_memory = budget_mb
+            .map(|budget| (budget / RAM_PER_WORKER_MB).max(1) as usize)
+            .unwrap_or(cores);
+        cores.min(by_memory).max(1)
     }
 }

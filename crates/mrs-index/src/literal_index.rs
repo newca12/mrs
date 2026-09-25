@@ -81,6 +81,11 @@ impl LiteralIndex {
     /// Inserts an `IdClause` into the index.
     pub fn insert(&mut self, clause: IdClause, bank: &TermBank) {
         let id = clause.id;
+        // Replacing an existing ID must remove all old postings first; simply
+        // overwriting `clauses` would leave stale predicate/equality entries.
+        if self.clauses.contains_key(&id) {
+            self.remove(id, bank);
+        }
         let fv = FeatureVector::from_id_clause(&clause, bank);
         self.fvt.insert(id, fv);
         self.fv_map.insert(id, fv);
@@ -132,6 +137,26 @@ impl LiteralIndex {
             self.fvt.remove(id, &fv);
         }
         if let Some(clause) = self.clauses.remove(&id) {
+            // Remove the clause from each unique predicate posting once.
+            let predicate_symbols: HashSet<SymbolId> = clause
+                .literals
+                .iter()
+                .filter_map(|literal| match &literal.atom {
+                    IdAtom::Pred(symbol, _) => Some(*symbol),
+                    IdAtom::Eq(..) => None,
+                })
+                .collect();
+            for symbol in predicate_symbols {
+                let remove_posting = if let Some(set) = self.pred_clauses.get_mut(&symbol) {
+                    set.remove(&id);
+                    set.is_empty()
+                } else {
+                    false
+                };
+                if remove_posting {
+                    self.pred_clauses.remove(&symbol);
+                }
+            }
             for lit in &clause.literals {
                 match &lit.atom {
                     IdAtom::Pred(sym, args) => {
@@ -140,19 +165,6 @@ impl LiteralIndex {
                             positive: lit.positive,
                         }) {
                             tree.remove_atom(&lit.atom, bank, &id);
-                        }
-                        // Only drop the posting-list entry once no remaining
-                        // literal of this clause still uses the symbol.
-                        if !clause
-                            .literals
-                            .iter()
-                            .any(|l| matches!(&l.atom, IdAtom::Pred(s, _) if s == sym))
-                            && let Some(set) = self.pred_clauses.get_mut(sym)
-                        {
-                            set.remove(&id);
-                            if set.is_empty() {
-                                self.pred_clauses.remove(sym);
-                            }
                         }
                         for &arg in args {
                             for subterm in bank.non_variable_subterms(arg) {
@@ -357,7 +369,7 @@ impl LiteralIndex {
             .filter(|id| {
                 self.fv_map
                     .get(id)
-                    .is_some_and(|fv| fv.can_subsumption_resolve(simplifier_fv))
+                    .is_some_and(|candidate_fv| simplifier_fv.can_subsumption_resolve(candidate_fv))
             })
             .collect();
         out.sort_unstable();
@@ -451,6 +463,7 @@ impl LiteralIndex {
     /// Drains all clauses from the index, returning them as a Vec.
     pub fn drain(&mut self) -> Vec<IdClause> {
         self.pred_index.clear();
+        self.pred_clauses.clear();
         self.pos_eq_clauses.clear();
         self.neg_eq_clauses.clear();
         self.pos_eq_lhs_index = crate::stree::STreeId::new();
@@ -656,5 +669,106 @@ mod tests {
         index.remove(ClauseId(1), &bank);
         let subsumers_after = index.get_subsumption_candidates(&c2_fv);
         assert!(!subsumers_after.iter().any(|c| c.id == ClauseId(1)));
+    }
+
+    #[test]
+    fn predicate_postings_remove_deleted_ids_including_duplicate_literals() {
+        let mut index = LiteralIndex::new();
+        let mut bank = TermBank::new();
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a_sym = syms.intern("a");
+        let a = bank.intern_app(a_sym, smallvec![]);
+        let clause = IdClause::new(
+            ClauseId(1),
+            vec![
+                IdLiteral {
+                    positive: true,
+                    atom: IdAtom::Pred(p, smallvec![a]),
+                },
+                IdLiteral {
+                    positive: false,
+                    atom: IdAtom::Pred(p, smallvec![a]),
+                },
+            ],
+            ClauseSource::Inference {
+                rule: "input",
+                parents: vec![].into(),
+            },
+        );
+        index.insert(clause, &bank);
+
+        let query = IdClause::new(
+            ClauseId(2),
+            vec![
+                IdLiteral {
+                    positive: true,
+                    atom: IdAtom::Pred(p, smallvec![a]),
+                },
+                IdLiteral {
+                    positive: false,
+                    atom: IdAtom::Pred(p, smallvec![a]),
+                },
+            ],
+            ClauseSource::Inference {
+                rule: "input",
+                parents: vec![].into(),
+            },
+        );
+        let fv = FeatureVector::from_id_clause(&query, &bank);
+        assert!(
+            index
+                .subsumption_resolution_candidates_for(&query, &fv)
+                .contains(&ClauseId(1))
+        );
+
+        index
+            .remove(ClauseId(1), &bank)
+            .expect("remove indexed clause");
+        assert!(
+            index
+                .subsumption_resolution_candidates_for(&query, &fv)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn replacement_id_updates_predicate_postings() {
+        let mut index = LiteralIndex::new();
+        let mut bank = TermBank::new();
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+        let a = bank.intern_app(syms.intern("a"), smallvec![]);
+        let make = |symbol| {
+            IdClause::new(
+                ClauseId(1),
+                vec![IdLiteral {
+                    positive: true,
+                    atom: IdAtom::Pred(symbol, smallvec![a]),
+                }],
+                ClauseSource::Inference {
+                    rule: "input",
+                    parents: vec![].into(),
+                },
+            )
+        };
+        index.insert(make(p), &bank);
+        index.insert(make(q), &bank);
+
+        let p_query = make(p);
+        let p_fv = FeatureVector::from_id_clause(&p_query, &bank);
+        assert!(
+            !index
+                .subsumption_resolution_candidates_for(&p_query, &p_fv)
+                .contains(&ClauseId(1))
+        );
+        let q_query = make(q);
+        let q_fv = FeatureVector::from_id_clause(&q_query, &bank);
+        assert!(
+            index
+                .subsumption_resolution_candidates_for(&q_query, &q_fv)
+                .contains(&ClauseId(1))
+        );
     }
 }

@@ -1426,6 +1426,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 .subsumption_resolution_candidates_for(&given, &given_fv);
             let mut changed = false;
             for candidate_id in candidates {
+                if start.elapsed() >= config.time_limit {
+                    return SearchResult::Timeout;
+                }
                 let Some(p) = state.processed.get(candidate_id).cloned() else {
                     continue;
                 };
@@ -1453,6 +1456,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
             if !changed || given.is_empty() {
                 break;
             }
+        }
+        if start.elapsed() >= config.time_limit {
+            return SearchResult::Timeout;
         }
 
         if given.is_empty() {
@@ -1912,9 +1918,18 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 Vec::new()
             };
             for candidate_id in candidates {
+                if start.elapsed() >= config.time_limit {
+                    return SearchResult::Timeout;
+                }
                 let Some(p) = state.processed.get(candidate_id).cloned() else {
                     continue;
                 };
+                // Here `p` is the target being simplified. SR's quadratic
+                // target-copy cost depends on its width, not on `given` (the
+                // active simplifier), so gate each target independently.
+                if !sr_width_ok(p.literals.len()) {
+                    continue;
+                }
                 if given.avatar_is_subset_of(&p)
                     && let Some(removed_idx) =
                         subsumption::subsumption_resolution_id(&given, &p, &mut state.term_bank)
@@ -2011,7 +2026,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 }
 
                 if start.elapsed() >= config.time_limit {
-                    break;
+                    return SearchResult::Timeout;
                 }
 
                 let mut temp_demod_index: mrs_index::stree::STreeId<(
@@ -2020,6 +2035,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     mrs_core::clause::ClauseId,
                 )> = mrs_index::stree::STreeId::new();
                 for u in &new_units {
+                    if start.elapsed() >= config.time_limit {
+                        return SearchResult::Timeout;
+                    }
                     if let IdAtom::Eq(l, r) = &u.literals[0].atom {
                         use mrs_calculus::ordering::TermComparison;
                         if ordering.compare_id(*l, *r, &state.term_bank) == TermComparison::Greater
@@ -2052,6 +2070,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                             .processed
                             .get_superposition_targets(from, &state.term_bank)
                         {
+                            if start.elapsed() >= config.time_limit {
+                                return SearchResult::Timeout;
+                            }
                             if target.id != u.id {
                                 candidate_ids.insert(target.id);
                             }
@@ -2063,7 +2084,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
 
                 for cid in candidate_ids {
                     if start.elapsed() >= config.time_limit {
-                        break;
+                        return SearchResult::Timeout;
                     }
                     let Some(proc) = state.processed.get(cid).cloned() else {
                         continue;
@@ -2575,6 +2596,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     };
                     let mut changed = false;
                     for candidate_id in candidates {
+                        if start.elapsed() >= config.time_limit {
+                            return SearchResult::Timeout;
+                        }
                         let Some(p) = state.processed.get(candidate_id).cloned() else {
                             continue;
                         };

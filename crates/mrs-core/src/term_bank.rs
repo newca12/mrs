@@ -429,6 +429,41 @@ impl TermBank {
         positions
     }
 
+    /// Deadline-aware non-variable position enumeration. Returns `None` once
+    /// the deadline is reached, discarding any partial set of positions.
+    pub fn non_variable_positions_until(
+        &self,
+        term: TermId,
+        deadline: Option<std::time::Instant>,
+    ) -> Option<Vec<Vec<usize>>> {
+        let mut positions = Vec::new();
+        let mut path = Vec::new();
+        self.collect_non_var_positions_until(term, &mut path, &mut positions, deadline)?;
+        Some(positions)
+    }
+
+    fn collect_non_var_positions_until(
+        &self,
+        term: TermId,
+        path: &mut Vec<usize>,
+        positions: &mut Vec<Vec<usize>>,
+        deadline: Option<std::time::Instant>,
+    ) -> Option<()> {
+        if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+            return None;
+        }
+        if let TermNode::App(_, args) = self.get(term) {
+            positions.push(path.clone());
+            for (index, &arg) in args.iter().enumerate() {
+                path.push(index);
+                let result = self.collect_non_var_positions_until(arg, path, positions, deadline);
+                path.pop();
+                result?;
+            }
+        }
+        Some(())
+    }
+
     fn collect_non_var_positions(
         &self,
         term: TermId,

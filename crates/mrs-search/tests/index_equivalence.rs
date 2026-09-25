@@ -577,15 +577,6 @@ fn check_subsumption_recall(
             if !live.contains(&cand.id) || cand.id == subsumer.id {
                 continue;
             }
-            if subsumption_resolution_id(cand, subsumer, bank).is_some() {
-                exact_bsr += 1;
-                assert!(
-                    got_bsr_filtered.contains(&cand.id),
-                    "{tag}: symbol-filtered backward SR query missed exact partner {:?} of {:?}",
-                    cand.id,
-                    subsumer.id
-                );
-            }
             if subsumes_id(subsumer, cand, bank) {
                 exact_subsumed += 1;
                 assert!(
@@ -597,6 +588,12 @@ fn check_subsumption_recall(
             }
             if subsumption_resolution_id(subsumer, cand, bank).is_some() {
                 exact_bsr += 1;
+                assert!(
+                    got_bsr_filtered.contains(&cand.id),
+                    "{tag}: symbol-filtered backward SR query missed exact partner {:?} of {:?}",
+                    cand.id,
+                    subsumer.id
+                );
                 assert!(
                     got_bsr.contains(&cand.id),
                     "{tag}: index missed exact backward-SR target {:?} of {:?}",
