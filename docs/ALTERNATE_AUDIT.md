@@ -305,6 +305,113 @@ solo set-cover systematically overstates portfolio coverage.
 
 ---
 
+## 3a. Low-RAM work log (branch `perf/low-ram-and-redundancy-bounds`)
+
+Work done against the low-RAM deployment goal, after the analysis above.
+Commit `ac62d0f`. Local measurements are from the 2-core NUC and are
+**throughput/failure-mode measurements, not score predictions**; the CASC
+score effect still has to be measured on a benchmark host.
+
+### Silent hangs, the dominant EPS failure mode
+
+CASC-30 EPS `noshare-20260922` records **10 of 100 problems at 120 s wall,
+0 MB peak, no telemetry** — no SZS status line at all. Bisected on
+`EPS/HWV042-1` (889 CNF clauses, 76 KB):
+
+* **6 of the 15 strategies do not terminate** (s4, s7, s8, s11, s12, s15).
+* The EPS portfolio order `2,3,1,8,11,12,9,14` contains **three of them**
+  (8, 11, 12), and one non-terminating worker blocks the whole portfolio
+  through the `thread::scope` join, discarding the results of the seven
+  workers that finished in 10 ms.
+* The cause was the new-clause simplification pipeline
+  (`given_clause.rs`) and the unary-inference block having **no deadline
+  check at all**, so a single given-clause iteration could run for minutes.
+
+Deadline checks are now enforced per new clause, per subsumption-resolution
+pass, and inside the resolution/superposition candidate-collection loops.
+Result: **49 of 50 sampled problems across FNE/FEQ/UEQ/EPS/EPU always emit
+a status**; the 10 archived EPS cases now report `GaveUp` or `Timeout`.
+
+### The quadratic stage behind it
+
+Instrumenting the per-stage cost of the new-clause pipeline on
+`EPS/HWV042-1` attributed the stall to forward subsumption resolution:
+**410 ms per new clause**, 235 new clauses in one iteration, i.e. ~96 s for
+a single given-clause iteration. The trace also showed the actual cause: a
+**202-literal clause** with **321 SR candidates**.
+`subsumption_resolution_id` builds a modified copy of the target for every
+literal it tries to remove, so one pass costs `O(width^2)` per candidate and
+repeats per literal removed — about 13 M literal copies per pass.
+
+Three changes, all in the redundancy path and none of which can affect
+refutational completeness:
+
+| Change | Effect on the pathological iteration |
+|---|---|
+| candidate retrieval returns IDs, callers borrow (no clone + sort) | 410 ms → 205 ms |
+| per-predicate posting list restricts SR candidates to clauses sharing a symbol with the target (a necessary condition for SR) | included above |
+| `SearchConfig::max_subsumption_resolution_literals` (default 20) skips SR on wider clauses | 205 ms → **0.7 s total** |
+
+`FNE/LCL682+1.020` had the same shape via condensation
+(`condense_id`: a backtracking subsumption test per literal pair, guarded
+only by a fixed 50-literal cap whose comment claimed cubic cost). It is now
+`SearchConfig::max_condensation_literals` (default 10) and returns a clean
+`Timeout` instead of never returning at any `--time`.
+
+### Backward subsumption resolution was dead code
+
+The new differential assertion in `index_equivalence.rs` cross-checks the
+symbol-filtered queries against the exact oracle and **failed against the
+existing code**. The search calls
+`subsumption_resolution_id(candidate, given)`, which requires the candidate
+to be no wider than `given`, but the feature-vector query filtered for the
+opposite direction, so backward SR only ever fired on equal-width clauses.
+The criterion is restored. This is a **correctness repair, not a speedup**:
+the measured clause-count effect on `UEQ/ALG213-10` is within noise
+(26 370 vs 26 328 generated), and it is reported as such.
+
+### Memory policy for constrained hosts
+
+| Before | After |
+|---|---|
+| `system_memory_limit_mb` clamped the ceiling to **14 GB** ("standard 16GB CASC node"), terminating runs with tens of GB of headroom on the 64 GB host | `memory_budget_mb`: `MRS_MAX_MEMORY_MB`, else **80% of `MemAvailable`**, no upper clamp |
+| default workers = physical cores, so a 4 GB host runs one full state per core into the watchdog | `default_worker_count(cores)`, bounded by `memory_budget_mb / 2 GiB` per worker; explicit `--workers` still wins, so competition runs are unchanged |
+| LRS memory pressure triggered at a hard-coded **1 GB** | triggers at 80% of the configured ceiling |
+
+### Verification
+
+* `cargo test --workspace`: 63 test binaries, 0 failures.
+* `cargo clippy --all -- -D warnings`: clean. `cargo fmt --all --check`: clean.
+* Controlled before/after, 40 CASC-30 FNE problems, single strategy, 10 s,
+  same machine: **8 → 9 refutations**, with all 8 previously solved problems
+  still solved (`KRS258+1` gained).
+
+### Open item: one remaining non-termination
+
+`UEQ/GRP655-14` (6 CNF clauses) still never returns under strategy 8, and
+is now the only problem in the 50-problem sample that emits no status.
+Localisation is complete but the fix is not:
+
+* 100% CPU, single thread, flat RSS (~36 MB), no AVATAR activity.
+* Dies in the **superposition** phase of one given-clause iteration.
+* Collection completes: 51 candidates, sorted fine; candidates 0–43 each
+  take **microseconds**; candidate 44 does not return.
+* Both clauses are small: the equation source has **expanded** term size 9,
+  the target 85. Not term-size explosion, and not the symbol-sharing filter.
+* The hang is *inside* one call to `superpose_selected_id`, and adding a
+  deadline check to its innermost position loop did not fire, so a single
+  position's work never returns.
+
+Next step for whoever picks this up: reduce `EPS`/`UEQ/GRP655-14` to a unit
+test by capturing the (equation source, candidate 44) pair, then instrument
+`unify_ac_id`, `sigma.apply_term`, `bank.replace_at` and
+`ordering.compare_id` inside `superpose_with_id` to find which one loops.
+`superpose_selected_id_until` is in place so that a fix can return partial
+results at the deadline, and callers already treat that as search over
+budget.
+
+---
+
 ## 4. Plan
 
 Ordered by measured effect per unit of risk. Each phase has a gate that can
