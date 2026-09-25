@@ -1218,7 +1218,47 @@ fn verify_cnf_transformation(
         return verdict;
     }
 
-    let Some(named_source) = replace_definition_subformulas(source, &definitions, limits) else {
+    // Fast path: the goal may already be a definition direction clause
+    // (e.g. `~def | C` for one conjunct `C` of a conjunctive body).
+    // Checking these before the source expansion certifies
+    // definition-heavy steps such as ALG102+1 c103 without expanding a
+    // huge source that would exceed strict limits; such steps previously
+    // died in the expansion below even though the answer needs no
+    // source reasoning at all. Definitions whose direction clauses
+    // cannot be computed are skipped here: the full path below reports
+    // them exactly as before, so previously certified steps are
+    // unaffected.
+    {
+        let condensed_goal = condense_clause(&goal);
+        let mut direction_hit = false;
+        for definition in &definitions {
+            let Some(direction) = definition_direction_clauses(definition, limits) else {
+                continue;
+            };
+            if direction
+                .iter()
+                .any(|clause| clause_alpha_equiv(&condense_clause(clause), &condensed_goal))
+            {
+                direction_hit = true;
+                break;
+            }
+        }
+        if direction_hit {
+            return KernelVerdict::Certified;
+        }
+    }
+
+    let Some(named_source) = (if definitions.is_empty() {
+        // No definitions cited: quantifier hoisting below only reorders
+        // quantifiers to help definition bodies match across quantifier
+        // boundaries, and the normalizer re-prenexes anyway, so running
+        // the shared fixpoint loop would burn the rewrite budget (up to
+        // 64 full traversals) on huge definition-free sources such as
+        // LCL642+1.010 c3 before failing. Skip it outright.
+        Some(source.clone())
+    } else {
+        replace_definition_subformulas(source, &definitions, limits)
+    }) else {
         return KernelVerdict::Inconclusive(
             "CNF definition replacement exceeded strict limits".into(),
         );
@@ -1585,6 +1625,43 @@ fn definition_direction_clauses(
     definition: &CoreDefinition,
     limits: VerificationLimits,
 ) -> Option<Vec<Vec<Literal>>> {
+    // Direction clauses of `head <=> rhs`, computed in factored form.
+    // Expanding the NNF IFF directly cross-products the body conjuncts
+    // against the negated body, which explodes on definitions such as
+    // the 12-conjunct Coq ring body behind SEV678+1 c14914 (the negated
+    // body alone distributes into hundreds of thousands of clauses).
+    // Instead each top-level conjunct contributes its own
+    // `~head | <conjunct-clauses>` group, and the converse
+    // `head | ~C_1 | ... | ~C_n` is attempted best-effort: every emitted
+    // clause is a genuine consequence, so a skipped converse only costs
+    // coverage (fail-closed), never soundness. Non-conjunctive bodies
+    // keep the direct IFF expansion, which cannot blow up on them.
+    if let Formula::And(parts) = &definition.rhs {
+        let neg_head = Literal {
+            positive: false,
+            atom: definition.head.clone(),
+        };
+        let mut out = Vec::new();
+        for part in parts {
+            let mut sub = Vec::new();
+            if !cnf_expand(part, &mut sub, limits) {
+                return None;
+            }
+            for mut clause in sub {
+                clause.insert(0, neg_head.clone());
+                out.push(clause);
+            }
+        }
+        let mut negated = vec![Formula::atom(definition.head.clone())];
+        for part in parts {
+            negated.push(Formula::neg(part.clone()));
+        }
+        let mut converse = Vec::new();
+        if cnf_expand(&to_nnf(&Formula::or(negated)), &mut converse, limits) {
+            out.extend(converse);
+        }
+        return Some(out);
+    }
     let definition_formula = Formula::iff(
         Formula::atom(definition.head.clone()),
         definition.rhs.clone(),
@@ -1603,6 +1680,12 @@ fn replace_definition_subformulas(
     limits: VerificationLimits,
 ) -> Option<Formula> {
     let mut current = source.clone();
+    // Hoisting is only a matching aid (the normalizer re-prenexes
+    // anyway), so it gets its own small budget: wide sources such as
+    // LCL642+1.010 c3 otherwise keep hoisting without ever reaching
+    // replacement. Replacement keeps the full shared budget and the two
+    // stay interleaved, since folding can expose further hoists.
+    let mut hoist_passes = 0;
     let mut steps = 0;
     loop {
         if steps >= limits.max_rewrite_steps {
@@ -1611,13 +1694,16 @@ fn replace_definition_subformulas(
         steps += 1;
         let mut changed = false;
         // Hoist quantifiers that bind nothing outside their conjunct /
-        // disjunct first: the prover generalises definition bodies across
+        // disjunct: the prover generalises definition bodies across
         // quantifier boundaries (`(A & ![x]B(x))` with body `(A & B(x))`,
         // e.g. SYO606+1 `def_nc5_11`), so the source block only matches
         // after the vacuous placement is floated outward.
-        let (moved, moved_changed) = pull_vacuous_quantifiers_once(&current);
-        current = moved;
-        changed |= moved_changed;
+        if hoist_passes < 16 {
+            hoist_passes += 1;
+            let (moved, moved_changed) = pull_vacuous_quantifiers_once(&current);
+            current = moved;
+            changed |= moved_changed;
+        }
         // Canonical sites first: apply identity matches for every
         // definition before falling back to permuting matches, so
         // symmetric blocks are claimed by their own definitions.
@@ -1637,10 +1723,12 @@ fn replace_definition_subformulas(
     }
 }
 
-/// Floats one level of vacuously-placed quantifiers outward:
+/// Floats vacuously-placed quantifiers outward:
 /// `(A & Qx.B(x)) ≡ Qx.(A & B(x))` (likewise `|`) when `x ∉ FV(A)`.
-/// Recurses bottom-up so nested placements surface in one pass; the
-/// caller iterates to a fixpoint. All rewrites are logical equivalences.
+/// Recurses bottom-up so nested placements surface in one pass, hoisting
+/// every eligible quantifier at each node; the caller iterates to a
+/// fixpoint for placements exposed by deeper hoists. All rewrites are
+/// logical equivalences.
 fn pull_vacuous_quantifiers_once(formula: &Formula) -> (Formula, bool) {
     match formula {
         Formula::And(parts) | Formula::Or(parts) => {
@@ -1652,12 +1740,19 @@ fn pull_vacuous_quantifiers_once(formula: &Formula) -> (Formula, bool) {
                 changed |= part_changed;
                 rewritten.push(part);
             }
-            // Hoist at most one quantifier per pass; the fixpoint loop in
-            // the caller handles the rest.
-            for index in 0..rewritten.len() {
-                let (variable, body, universal) = match &rewritten[index] {
-                    Formula::Forall(variable, body) => (*variable, body.as_ref(), true),
-                    Formula::Exists(variable, body) => (*variable, body.as_ref(), false),
+            // Hoist every vacuously-placed quantifier at this node in one
+            // pass (outermost-hoisted first, matching sequential
+            // application order): hoisting one part does not change the
+            // free variables of the others, so batching reaches the same
+            // fixpoint in depth-bounded rather than count-bounded passes.
+            // The old one-per-pass shape burned the caller's shared
+            // 64-step budget on wide sources such as LCL642+1.010 c3
+            // before definition replacement ever ran.
+            let mut hoistable: Vec<(usize, VarId, Formula, bool)> = Vec::new();
+            for (index, part) in rewritten.iter().enumerate() {
+                let (variable, body, universal) = match part {
+                    Formula::Forall(variable, body) => (*variable, body.as_ref().clone(), true),
+                    Formula::Exists(variable, body) => (*variable, body.as_ref().clone(), false),
                     _ => continue,
                 };
                 let mut others_free = HashSet::new();
@@ -1669,24 +1764,32 @@ fn pull_vacuous_quantifiers_once(formula: &Formula) -> (Formula, bool) {
                 if others_free.contains(&variable) {
                     continue;
                 }
+                hoistable.push((index, variable, body, universal));
+            }
+            if !hoistable.is_empty() {
                 let mut hoisted: Vec<Formula> = Vec::with_capacity(rewritten.len());
-                for (other_index, other) in rewritten.iter().enumerate() {
-                    if other_index != index {
-                        hoisted.push(other.clone());
+                for (index, part) in rewritten.iter().enumerate() {
+                    if hoistable.iter().any(|(hoisted, _, _, _)| *hoisted == index) {
+                        continue;
                     }
+                    hoisted.push(part.clone());
                 }
-                hoisted.push(body.clone());
-                let combined = if is_conjunction {
+                for (_, _, body, _) in &hoistable {
+                    hoisted.push(body.clone());
+                }
+                let mut combined = if is_conjunction {
                     Formula::And(hoisted)
                 } else {
                     Formula::Or(hoisted)
                 };
-                let lifted = if universal {
-                    Formula::forall(variable, combined)
-                } else {
-                    Formula::exists(variable, combined)
-                };
-                return (lifted, true);
+                for (_, variable, _, universal) in hoistable.iter().rev() {
+                    combined = if *universal {
+                        Formula::forall(*variable, combined)
+                    } else {
+                        Formula::exists(*variable, combined)
+                    };
+                }
+                return (combined, true);
             }
             let rebuilt = if is_conjunction {
                 Formula::And(rewritten)
@@ -11392,6 +11495,99 @@ mod tests {
                      cnf(m4, plain, ordered_by(a,c,d), inference(resolution, [status(thm)], [m3,w1])).\n\
                      cnf(bot, plain, $false, inference(resolution, [status(thm)], [m4,f2])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_definition_piece_without_expanding_huge_source() {
+        // ALG102+1 c103 shape: the goal is a definition direction
+        // clause (`~def | <conjunct piece>`), while the cited source is
+        // a 17-way case split whose full distribution (2^17 clauses)
+        // exceeds strict limits. Checking direction clauses first
+        // certifies without expanding the source at all.
+        let mut disjuncts = Vec::new();
+        for i in 1..=17 {
+            disjuncts.push(format!("(a{i} & b{i})"));
+        }
+        let source = disjuncts.join(" | ");
+        let problem = format!(
+            "fof(src, axiom, {source}).\n\
+             fof(na, axiom, ~a1).\n\
+             fof(pa, axiom, a1).\n\
+             fof(pb, axiom, b1)."
+        );
+        let proof = format!(
+            "fof(src, axiom, {source}, file('problem.p', src)).\n\
+             fof(d, definition, (def0 <=> (a1 & b1)), introduced(definition, [new_symbols(definition, [def0])])).\n\
+             fof(na, axiom, ~a1, file('problem.p', na)).\n\
+             fof(pa, axiom, a1, file('problem.p', pa)).\n\
+             fof(pb, axiom, b1, file('problem.p', pb)).\n\
+             cnf(w, plain, ~def0 | a1, inference(cnf_transformation, [status(thm)], [src,d])).\n\
+             cnf(v, plain, def0 | ~a1 | ~b1, inference(cnf_transformation, [status(thm)], [src,d])).\n\
+             cnf(m1, plain, ~def0, inference(resolution, [status(thm)], [w,na])).\n\
+             cnf(m2, plain, ~a1 | ~b1, inference(resolution, [status(thm)], [m1,v])).\n\
+             cnf(m3, plain, ~b1, inference(resolution, [status(thm)], [m2,pa])).\n\
+             cnf(bot, plain, $false, inference(resolution, [status(thm)], [m3,pb]))."
+        );
+        assert_eq!(check(&problem, &proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn skips_definition_replacement_loop_without_definitions() {
+        // LCL642+1.010 c246 shape: a huge definition-free source whose
+        // vacuous quantifier placements need more hoist passes than the
+        // shared 64-step replacement budget, failing the old path even
+        // though no definition is cited at all. The goal is one ground
+        // unit conjunct of the source.
+        let mut conjuncts = vec!["ptarget".to_string()];
+        for i in 1..=70 {
+            conjuncts.push(format!("![X{i}] : (r{i} | ~p{i})"));
+        }
+        let source = conjuncts.join(" & ");
+        let problem = format!("fof(src, axiom, {source}).\nfof(n, axiom, ~ptarget).");
+        let proof = format!(
+            "fof(src, axiom, {source}, file('problem.p', src)).\n\
+             fof(n, axiom, ~ptarget, file('problem.p', n)).\n\
+             cnf(w, plain, ptarget, inference(cnf_transformation, [status(thm)], [src])).\n\
+             cnf(bot, plain, $false, inference(resolution, [status(thm)], [w,n]))."
+        );
+        assert_eq!(check(&problem, &proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn factored_definition_directions_survive_explosive_converse() {
+        // SEV678+1 c14914 shape: 17 Horn conjuncts whose converse
+        // distributes to 2^17 clauses, so the direct IFF expansion
+        // returns None. The forward (`~head | <conjunct piece>`) clauses
+        // must still come back.
+        let mut symbols = SymbolTable::new();
+        let head_symbol = symbols.intern("d0");
+        let mut parts = Vec::new();
+        for i in 0..17 {
+            let left = symbols.intern(&format!("t{i}"));
+            let right = symbols.intern(&format!("p{i}"));
+            parts.push(Formula::or(vec![
+                Formula::neg(Formula::atom(Atom::Pred(left, vec![]))),
+                Formula::atom(Atom::Pred(right, vec![])),
+            ]));
+        }
+        let head = Atom::Pred(head_symbol, vec![]);
+        let definition = CoreDefinition {
+            head: head.clone(),
+            rhs: Formula::and(parts),
+        };
+        let directions = definition_direction_clauses(&definition, VerificationLimits::default())
+            .expect("forward pieces survive an explosive converse");
+        // One (~d0 | ~t9 | p9) piece; the converse is skipped best-effort.
+        assert_eq!(directions.len(), 17);
+        let target_t = Atom::Pred(symbols.intern("t9"), vec![]);
+        let target_p = Atom::Pred(symbols.intern("p9"), vec![]);
+        assert!(directions.iter().any(|clause| clause.len() == 3
+            && !clause[0].positive
+            && clause[0].atom == head
+            && !clause[1].positive
+            && clause[1].atom == target_t
+            && clause[2].positive
+            && clause[2].atom == target_p));
     }
 
     fn flat_definition_proof() -> &'static str {
