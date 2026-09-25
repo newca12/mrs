@@ -1,4 +1,10 @@
 //! Regression coverage for the adversarial CASC-J13 ProoVer corpus.
+//!
+//! One `#[test]` per proof ID so the libtest harness runs them in parallel
+//! across all available cores (`--test-threads` defaults to the core count).
+//! Each proof still verifies with `workers: 1`: the mock ATP backend answers
+//! immediately, so inner parallelism would only add thread-spawn overhead
+//! while outer parallelism over proofs is where the wall-time win is.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -46,17 +52,31 @@ fn run(root: &Path, id: &str) -> Verdict {
     verify_with(&job, &settings, &AlwaysUnsound)
 }
 
-#[test]
-fn formerly_unsoundly_accepted_evil_proofs_are_not_verified_good() {
+fn check_evil_rejected(id: &str) {
     let root = corpus_root();
-    for id in [
-        "PRV006+1", "PRV008+1", "PRV056+1", "PRV057+1", "PRV068+1", "PRV072+1", "PRV075+1",
-        "PRV077+1", "PRV090+1", "PRV094+1",
-    ] {
-        let verdict = run(&root, id);
-        assert!(
-            matches!(verdict, Verdict::VerifiedBad(_)),
-            "evil regression {id} must be positively rejected: {verdict:?}"
-        );
-    }
+    let verdict = run(&root, id);
+    assert!(
+        matches!(verdict, Verdict::VerifiedBad(_)),
+        "evil regression {id} must be positively rejected: {verdict:?}"
+    );
 }
+
+macro_rules! evil_regression_test {
+    ($test_name:ident, $id:literal) => {
+        #[test]
+        fn $test_name() {
+            check_evil_rejected($id);
+        }
+    };
+}
+
+evil_regression_test!(prv006_rejected, "PRV006+1");
+evil_regression_test!(prv008_rejected, "PRV008+1");
+evil_regression_test!(prv056_rejected, "PRV056+1");
+evil_regression_test!(prv057_rejected, "PRV057+1");
+evil_regression_test!(prv068_rejected, "PRV068+1");
+evil_regression_test!(prv072_rejected, "PRV072+1");
+evil_regression_test!(prv075_rejected, "PRV075+1");
+evil_regression_test!(prv077_rejected, "PRV077+1");
+evil_regression_test!(prv090_rejected, "PRV090+1");
+evil_regression_test!(prv094_rejected, "PRV094+1");

@@ -13,6 +13,8 @@
 //! the leaf still has to be α-equivalent to *some* declared axiom of the
 //! problem, which is exactly the same standard as the named-axiom check.
 
+use std::collections::HashMap;
+
 use mrs_core::alpha::alpha_equiv;
 use mrs_core::{SymbolId, SymbolTable};
 use mrs_tptp::{AnnotatedFormula, FormulaRole, TPTPProblem};
@@ -22,13 +24,14 @@ use crate::verdict::StepOutcome;
 
 /// Check a single proof leaf whose source is `file('…', name)`.
 ///
-/// `problem` is the parsed linked problem file. The proof-node's `name` is
-/// looked up in `problem` and compared α-equivalently. If the recorded name
-/// is the literal `unknown` (common in Vampire output), we instead try every
-/// axiom-role formula in the problem and accept the leaf if any α-matches.
+/// `problem` is the parsed linked problem file along with its precomputed
+/// [`ProblemLeafIndex`]. The proof-node's `name` is looked up in the index
+/// and compared α-equivalently. If the recorded name is the literal
+/// `unknown` (common in Vampire output), we instead try every axiom-role
+/// formula in the problem and accept the leaf if any α-matches.
 pub fn check_leaf<'p>(
     node: &AnnotatedFormula<'p>,
-    problem: Option<&TPTPProblem<'_>>,
+    problem: Option<(&TPTPProblem<'p>, &ProblemLeafIndex<'p>)>,
     symbols: &mut SymbolTable,
     strict: bool,
 ) -> StepOutcome {
@@ -39,7 +42,7 @@ pub fn check_leaf<'p>(
     let Some((_path, expected_name)) = ann.file_source() else {
         return StepOutcome::Unknown("leaf source is not file(_,_)".into());
     };
-    let Some(problem) = problem else {
+    let Some((problem, index)) = problem else {
         if strict {
             return StepOutcome::Unknown(
                 "strict mode requires a linked problem for leaf provenance".into(),
@@ -58,7 +61,7 @@ pub fn check_leaf<'p>(
     let Some(proof_f) = lower_annotated_formula(&mut ctx, node) else {
         return StepOutcome::Unknown("unsupported proof leaf formula type".into());
     };
-    let algebraic_symbols = explicit_algebraic_symbols(problem, ctx.symbols);
+    let algebraic_symbols = &index.algebraic;
 
     // --- Anonymous-provenance fallback (Vampire's `file(_, unknown)`) -----
     if expected_name == "unknown" {
@@ -81,7 +84,7 @@ pub fn check_leaf<'p>(
                     &prob_f,
                     Some(ctx.symbols),
                 )
-                || ac_alpha_equiv(&proof_f, &prob_f, &algebraic_symbols)
+                || ac_alpha_equiv(&proof_f, &prob_f, algebraic_symbols)
             {
                 return StepOutcome::Sound;
             }
@@ -95,7 +98,7 @@ pub fn check_leaf<'p>(
                     &proof_f,
                     &c_form,
                     Some(ctx.symbols),
-                ) || ac_alpha_equiv(&proof_f, &c_form, &algebraic_symbols)
+                ) || ac_alpha_equiv(&proof_f, &c_form, algebraic_symbols)
                 {
                     return StepOutcome::Sound;
                 }
@@ -143,16 +146,14 @@ pub fn check_leaf<'p>(
     // --- Named-axiom path -------------------------------------------------
     // Look up the named entry in either dialect (the prover may have
     // converted a CNF problem to FOF in the proof, or vice versa). We
-    // accept the entry whose name matches, regardless of dialect.
-    let mut target_af: Option<&AnnotatedFormula<'_>> = None;
-    let mut prob_role = None;
-    for af in &problem.formulas {
-        if af.name() == expected_name {
-            target_af = Some(af);
-            prob_role = Some(af.role());
-            break;
-        }
-    }
+    // accept the entry whose name matches, regardless of dialect. The
+    // lookup is O(1) via the precomputed per-run index; a linear scan here
+    // would make proofs with many leaves quadratic (e.g. PRV072+1's 5000
+    // axioms × 5000 leaves).
+    let (target_af, prob_role) = match index.lookup(expected_name) {
+        Some(af) => (Some(af), Some(af.role())),
+        None => (None, None),
+    };
     if target_af.is_none() {
         for af in &problem.formulas {
             let role = af.role();
@@ -169,7 +170,7 @@ pub fn check_leaf<'p>(
                     &prob_f,
                     Some(ctx.symbols),
                 )
-                || ac_alpha_equiv(&proof_f, &prob_f, &algebraic_symbols)
+                || ac_alpha_equiv(&proof_f, &prob_f, algebraic_symbols)
             {
                 return StepOutcome::Sound;
             }
@@ -199,7 +200,7 @@ pub fn check_leaf<'p>(
             std::slice::from_ref(&prob_f),
             &proof_f,
         ) == Some(crate::checks::propositional_sat::PropOutcome::Sound)
-        || ac_alpha_equiv(&proof_f, &prob_f, &algebraic_symbols)
+        || ac_alpha_equiv(&proof_f, &prob_f, algebraic_symbols)
     {
         StepOutcome::Sound
     } else {
@@ -212,9 +213,62 @@ pub fn check_leaf<'p>(
 }
 
 #[derive(Default)]
-struct AlgebraicSymbols {
+pub struct AlgebraicSymbols {
     commutative: std::collections::HashSet<SymbolId>,
     associative: std::collections::HashSet<SymbolId>,
+}
+
+impl AlgebraicSymbols {
+    /// Lower every axiom/hypothesis/definition formula in the problem once
+    /// and record explicitly-declared commutativity/associativity axioms.
+    /// This is O(problem size) and must be computed once per verification
+    /// run (see [`ProblemLeafIndex`]), never once per leaf.
+    pub fn collect(problem: &TPTPProblem<'_>, symbols: &mut SymbolTable) -> Self {
+        let mut algebraic = AlgebraicSymbols::default();
+        let mut ctx = LowerCtx::new(symbols);
+        for annotated in &problem.formulas {
+            let role = annotated.role();
+            if !matches!(
+                role,
+                FormulaRole::Axiom | FormulaRole::Hypothesis | FormulaRole::Definition
+            ) {
+                continue;
+            }
+            ctx.reset_vars();
+            if let Some(formula) = lower_annotated_formula(&mut ctx, annotated) {
+                collect_algebraic_axiom(&formula, &mut algebraic);
+            }
+        }
+        algebraic
+    }
+}
+
+/// Per-run lookup structures for leaf checks, built once in `verify` and
+/// shared across all leaves of a proof.
+///
+/// Both the by-name lookup and the algebraic-symbol collection are
+/// O(problem size) to build; rebuilding either per leaf turns proofs with
+/// many leaves quadratic (PRV072+1: 5000 leaves × 5000 problem formulas).
+pub struct ProblemLeafIndex<'p> {
+    by_name: HashMap<&'p str, &'p AnnotatedFormula<'p>>,
+    algebraic: AlgebraicSymbols,
+}
+
+impl<'p> ProblemLeafIndex<'p> {
+    pub fn new(problem: &'p TPTPProblem<'p>, symbols: &mut SymbolTable) -> Self {
+        let mut by_name = HashMap::with_capacity(problem.formulas.len());
+        for af in &problem.formulas {
+            // Keep the first entry on duplicate names, matching the old
+            // linear scan's first-match behaviour.
+            by_name.entry(af.name()).or_insert(af);
+        }
+        let algebraic = AlgebraicSymbols::collect(problem, symbols);
+        Self { by_name, algebraic }
+    }
+
+    fn lookup(&self, name: &str) -> Option<&'p AnnotatedFormula<'p>> {
+        self.by_name.get(name).copied()
+    }
 }
 
 impl AlgebraicSymbols {
@@ -225,28 +279,6 @@ impl AlgebraicSymbols {
     fn is_ac(&self, symbol: SymbolId) -> bool {
         self.commutative.contains(&symbol) && self.associative.contains(&symbol)
     }
-}
-
-fn explicit_algebraic_symbols(
-    problem: &TPTPProblem<'_>,
-    symbols: &mut SymbolTable,
-) -> AlgebraicSymbols {
-    let mut algebraic = AlgebraicSymbols::default();
-    let mut ctx = LowerCtx::new(symbols);
-    for annotated in &problem.formulas {
-        let role = annotated.role();
-        if !matches!(
-            role,
-            FormulaRole::Axiom | FormulaRole::Hypothesis | FormulaRole::Definition
-        ) {
-            continue;
-        }
-        ctx.reset_vars();
-        if let Some(formula) = lower_annotated_formula(&mut ctx, annotated) {
-            collect_algebraic_axiom(&formula, &mut algebraic);
-        }
-    }
-    algebraic
 }
 
 fn collect_algebraic_axiom(formula: &mrs_core::Formula, symbols: &mut AlgebraicSymbols) {
@@ -674,8 +706,9 @@ mod tests {
         let mut proof =
             parse_tptp("fof(a, axiom, p(f(b,a)), file('problem.p', a)).").expect("proof parses");
         let proof_node = proof.formulas.pop().expect("proof formula");
+        let index = ProblemLeafIndex::new(&problem, &mut symbols);
         assert!(matches!(
-            check_leaf(&proof_node, Some(&problem), &mut symbols, true),
+            check_leaf(&proof_node, Some((&problem, &index)), &mut symbols, true),
             StepOutcome::Unsound(_)
         ));
     }
@@ -691,8 +724,9 @@ mod tests {
             parse_tptp("fof(a, axiom, p(f(b,a)), file('problem.p', a)).").expect("proof parses");
         let proof_node = proof.formulas.pop().expect("proof formula");
         let mut symbols = SymbolTable::new();
+        let index = ProblemLeafIndex::new(&problem, &mut symbols);
         assert_eq!(
-            check_leaf(&proof_node, Some(&problem), &mut symbols, true),
+            check_leaf(&proof_node, Some((&problem, &index)), &mut symbols, true),
             StepOutcome::Sound
         );
     }
@@ -704,8 +738,9 @@ mod tests {
             parse_tptp("fof(a, axiom, ?[X]: p(X), file('problem.p', a)).").expect("proof parses");
         let proof_node = proof.formulas.pop().expect("proof formula");
         let mut symbols = SymbolTable::new();
+        let index = ProblemLeafIndex::new(&problem, &mut symbols);
         assert!(matches!(
-            check_leaf(&proof_node, Some(&problem), &mut symbols, true),
+            check_leaf(&proof_node, Some((&problem, &index)), &mut symbols, true),
             StepOutcome::Unsound(_)
         ));
     }

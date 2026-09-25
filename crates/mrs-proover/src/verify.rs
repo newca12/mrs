@@ -216,6 +216,15 @@ pub fn verify_with_telemetry(
         .map(|p| collect_background_ac(p.problem(), &mut symbols))
         .unwrap_or_default();
 
+    // Build the leaf-check index once per run: by-name lookup plus the
+    // algebraic-symbol collection are each O(problem size), and rebuilding
+    // either per leaf turns proofs with many leaves quadratic (PRV072+1:
+    // 5000 leaves × 5000 problem formulas dominated the whole suite).
+    let leaf_index: Option<crate::checks::axiom_leaf::ProblemLeafIndex<'_>> = job
+        .problem
+        .as_ref()
+        .map(|p| crate::checks::axiom_leaf::ProblemLeafIndex::new(p.problem(), &mut symbols));
+
     // 3) Pass 1 (serial): run every cheap internal check and *prepare* each
     //    ATP step (lowering premises/conclusion, then the structural
     //    fast-paths). This pass is the only one that mutates `symbols` and
@@ -255,6 +264,7 @@ pub fn verify_with_telemetry(
             &mut sk_reg,
             &lowered_formulas,
             &background_ac,
+            leaf_index.as_ref(),
             started + settings.total_budget,
         ) {
             Prepared::Resolved(oc) => outcomes.push(Some(oc)),
@@ -518,6 +528,7 @@ fn check_node_prepare<'p>(
     sk_reg: &mut skolemize::SkolemRegistry,
     lowered_formulas: &std::collections::HashMap<usize, mrs_core::Formula>,
     background_ac: &[Formula],
+    leaf_index: Option<&crate::checks::axiom_leaf::ProblemLeafIndex<'_>>,
     deadline: Instant,
 ) -> Prepared {
     let node = &dag.nodes[idx];
@@ -538,7 +549,12 @@ fn check_node_prepare<'p>(
     {
         return Prepared::Resolved(axiom_leaf::check_leaf(
             node.formula,
-            job.problem.as_ref().map(|p| p.problem()),
+            job.problem.as_ref().map(|p| {
+                (
+                    p.problem(),
+                    leaf_index.expect("leaf index built with problem"),
+                )
+            }),
             symbols,
             strict,
         ));
