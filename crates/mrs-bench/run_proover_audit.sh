@@ -25,7 +25,7 @@ fi
 
 BIN="${WORKSPACE_ROOT}/target/release/audit_proover"
 if [[ ! -x "${BIN}" ]]; then
-    (cd "${WORKSPACE_ROOT}" && nix develop -c cargo build --release -p mrs-bench --bin audit_proover)
+    (cd "${WORKSPACE_ROOT}" && cargo build --release -p mrs-bench --bin audit_proover)
 fi
 
 MODE_ARG="--competition"

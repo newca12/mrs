@@ -60,7 +60,7 @@ for i in $(seq 1 15); do
 
     # Each mrs process runs one strategy on one worker. Combined with --jobs,
     # this runs independent strategy/problem jobs in parallel.
-    if ! nix develop -c cargo run --manifest-path "${WORKSPACE_ROOT}/Cargo.toml" --release -p mrs-codex -- \
+    if ! cargo run --manifest-path "${WORKSPACE_ROOT}/Cargo.toml" --release -p mrs-codex -- \
         "${PROBLEMS_DIR}" \
         --db "${DB_PATH}" \
         --system "${STRAT_NAME}" \

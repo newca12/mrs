@@ -93,7 +93,7 @@ The CSV records those paths and SHA-256 hashes. Use the archived output later
 without contaminating CASC generation timing:
 
 ```bash
-nix develop -c cargo run --release -p mrs-bench --bin audit_casc_proofs -- \
+cargo run --release -p mrs-bench --bin audit_casc_proofs -- \
   --run crates/mrs-bench/results/casc-30/<run> \
   --problems-dir crates/mrs-bench/problems/casc-30 \
   --checks strict,mrs,ladder \
@@ -109,7 +109,7 @@ resumable, writes `proof-audit/audit-summary.txt` as a per-division ASCII
 console report, and can be imported after the original CASC results:
 
 ```bash
-nix develop -c cargo run --release -p mrs-codex -- \
+cargo run --release -p mrs-codex -- \
   --db codex-casc30.db \
   --import-proof-audit crates/mrs-bench/results/casc-30/<run>/proof-audit/audit.csv
 ```

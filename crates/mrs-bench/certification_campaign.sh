@@ -94,7 +94,7 @@ done
 # campaign re-audited with a pre-fix `audit_casc_proofs` and reported every
 # model as invalid, which is indistinguishable from "the prover emitted none".
 AUDIT_BIN="${ROOT}/target/release/audit_casc_proofs"
-(cd "${ROOT}" && nix develop -c cargo build --release -p mrs-bench --bin audit_casc_proofs)
+(cd "${ROOT}" && cargo build --release -p mrs-bench --bin audit_casc_proofs)
 [[ -x "${AUDIT_BIN}" ]] || { echo "campaign: ${AUDIT_BIN} not built" >&2; exit 2; }
 
 echo "== phase 1/2: search (normal route, no self-check) =="

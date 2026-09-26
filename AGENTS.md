@@ -37,6 +37,12 @@ To maintain the highest repository standards, any AI agent working in this works
    - **Format**: `nix develop -c cargo fmt --all --check`
    - **Tests**: `nix develop -c cargo test --workspace`
 
+   These wrappers are local developer/CI verification commands. Do not add
+   `nix develop` invocations to runtime or benchmark scripts: those scripts
+   must work on ordinary Linux hosts that provide Cargo/Rust but do not install
+   Nix. Script-triggered builds should invoke `cargo` directly; developers in
+   this NixOS WSL workspace can source `.envrc`/use `direnv` before running them.
+
 2. **Git Commits**: You are permitted to create Git commits autonomously to checkpoint stable stages of development. Ensure the commit messages conform to the repository's convention (e.g., `feat: ...`, `fix: ...`, `refactor: ...`).
 
 3. **No Pushing**: You are **strictly forbidden from pushing** commits to the remote tracking branch or any remote repositories. Never run `git push`.
