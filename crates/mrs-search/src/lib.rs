@@ -372,6 +372,12 @@ pub enum SaturationReason {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompletenessWitness {
     reason: SaturationReason,
+    /// A complete finite model of the input, when the certifying tier produced
+    /// one. CASC credits a satisfiability result only when the system also
+    /// outputs a model, so the model travels with the verdict instead of
+    /// being verified and dropped. `None` means the claim rests on the
+    /// completeness argument alone, which is sound but earns no model credit.
+    model: Option<mrs_core::model::ModelCertificate>,
 }
 
 impl CompletenessWitness {
@@ -379,6 +385,7 @@ impl CompletenessWitness {
     pub(crate) fn ground() -> Self {
         Self {
             reason: SaturationReason::Ground,
+            model: None,
         }
     }
 
@@ -386,6 +393,7 @@ impl CompletenessWitness {
     pub(crate) fn ground_ordered_resolution() -> Self {
         Self {
             reason: SaturationReason::GroundOrderedResolution,
+            model: None,
         }
     }
 
@@ -393,12 +401,24 @@ impl CompletenessWitness {
     pub(crate) fn sat_backed_grounding() -> Self {
         Self {
             reason: SaturationReason::SatBackedGrounding,
+            model: None,
         }
+    }
+
+    /// Attach a finite model certificate produced by the certifying tier.
+    pub(crate) fn with_model(mut self, model: Option<mrs_core::model::ModelCertificate>) -> Self {
+        self.model = model;
+        self
     }
 
     /// Return the evidence category.
     pub fn reason(&self) -> SaturationReason {
         self.reason
+    }
+
+    /// The finite model certificate, when the certifying tier produced one.
+    pub fn model(&self) -> Option<&mrs_core::model::ModelCertificate> {
+        self.model.as_ref()
     }
 }
 

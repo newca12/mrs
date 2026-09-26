@@ -311,6 +311,12 @@ fn refute_from_ancestry(
 /// tries (each subset carries full Tier-1 guarantees, including the
 /// agreement check and TSTP-ancestry proofs).
 #[allow(clippy::too_many_arguments)]
+/// Wall-clock budget for recovering a finite model after a Tier-1 saturation.
+/// The model is a bonus for the competition's model credit, never a
+/// precondition of the verdict, so this is a small slice of the deadline
+/// rather than the whole of it.
+const MODEL_EXTRACTION_BUDGET: Duration = Duration::from_millis(500);
+
 fn run_tier1(
     grounded: &GroundedInputs,
     provenance: &[Clause],
@@ -406,8 +412,20 @@ fn run_tier1(
                     "saturation is certified for EPR inputs only",
                 ));
             }
+            // The closure agreement certifies satisfiability but yields no
+            // model, and an unprinted model earns no credit. Recover one from
+            // the same grounded set; a failure here cannot affect the verdict.
+            let model = crate::certified_sat::extract_model(
+                &grounded.clauses,
+                &grounded.originals,
+                &atoms,
+                proof_symbols,
+                Instant::now() + MODEL_EXTRACTION_BUDGET,
+            );
             Ok(CertifiedGroundReport {
-                result: SearchResult::Saturated(CompletenessWitness::ground_ordered_resolution()),
+                result: SearchResult::Saturated(
+                    CompletenessWitness::ground_ordered_resolution().with_model(model),
+                ),
                 stats,
                 tier: CertifiedTier::One,
             })

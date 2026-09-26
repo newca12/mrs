@@ -11494,6 +11494,9 @@ mod tests {
         verify_strict(&problem, &proof, VerificationLimits::default())
     }
 
+    #[allow(unused_imports)]
+    use super::model::ModelEvaluation as _;
+
     #[test]
     fn rejects_model_with_missing_predicate_interpretation() {
         let problem = parse_tptp("fof(a, axiom, p(a)).").expect("problem parses");
