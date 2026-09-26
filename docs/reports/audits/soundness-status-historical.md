@@ -1,3 +1,8 @@
+> **Historical.** This is a competition-mode audit of an older build over a
+> wider problem set. The current strict-kernel self-certification
+> measurement, and the reason histogram behind it, are in
+> [`CERTIFICATION_STATUS.md`](./CERTIFICATION_STATUS.md) §2.
+
 # Soundness Status Audit Report
 
 > Status: Historical remote audit on the `sanitize-skolems` branch. Use the

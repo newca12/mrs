@@ -1,3 +1,10 @@
+> **Superseded in part.** The authoritative score, the self-certification
+> measurement, and the current policy notes live in
+> [`CERTIFICATION_STATUS.md`](./CERTIFICATION_STATUS.md). The leaderboards
+> below are kept as the historical record of what was measured on 8-core
+> competition hardware; they are not what this repository reproduces on a
+> smaller machine. See §5 of `CERTIFICATION_STATUS.md` for the corrections.
+
 # ProoVer 2026 Competition: Official CASC-J13 Panel Decision vs. Current HEAD Benchmarks
 
 > Status: Dated ProoVer corpus report. “Current HEAD” refers to the commit used
