@@ -98,8 +98,8 @@ a reason histogram. The `audit_casc_proofs` report is the raw data.
 
 | strict verdict | 2026-09-23 (build of that day) | HEAD |
 |---|---:|---:|
-| `Certified` | 152 | **192** (89.3 %) |
-| `Unknown` | 57 | 22 |
+| `Certified` | 152 | **189** (87.9 %) |
+| `Unknown` | 57 | 25 |
 | `VerifiedBad` | 5 | **0** |
 | killed (wall clock) | 0 | 1 |
 
@@ -109,15 +109,31 @@ SWX217+1 — equality resolution, condensation, subsumption resolution and
 superposition shapes) are all fixed at HEAD; SWX217+1 had also been reported
 `VerifiedBad` by the ATP ladder, and now passes both.
 
-### The residual 23, and what closes them
+An earlier revision of this table claimed 192 at HEAD. That figure predates the
+bounded-NNF work, which moved 3 problems from `Certified` to `Unknown` by design
+— the trade is named below, and the honest total is 189, not 192.
+
+### The residual 25, and what closes them
+
+Reasons as reported at HEAD for the 25 `Unknown` (one row per proof):
 
 | count | reason | status |
 |---:|---|---|
-| 18 | `demodulation` steps the kernel could not replay | **fixed, awaiting re-measurement** |
+| 10 | `demodulation` node exceeds the strict rewrite-step limit | **fixed, awaiting re-measurement** |
+| 5 | `demodulation` replay could not reach the conclusion within the implemented search | **fixed, awaiting re-measurement** |
+| 3 | `demodulation` intermediate clause exceeds the strict size bound | **fixed, awaiting re-measurement** |
 | 3 | proof exceeds the kernel's 100 000-node limit (`SET017+1` 119 k, `KRS234+1` 103 k, `MGT079+1` 228 k) | open |
 | 3 | a `fof_nnf` step whose parent's NNF exceeds the 100 000-node budget (`BIO006+1`, `CSR115+8`, `CSR116+19`) | open, deliberate |
 | 1 | `ac_superposition` replay incomplete | open |
-| 1 | killed on wall clock (`feq/SWV406+1`, 170 MB proof) | open |
+
+The 26th proof, `feq/SWV406+1` (170 MB), was killed on the 70 s wall clock, so it
+never produced a verdict at all.
+
+The 18 demodulation rows are one gap seen three ways: the trace-replay work
+lands them in a bounded search, and the bounds added afterwards (rewrite steps,
+intermediate clause size) then split the residue by which bound fired first.
+They are fixed in code and unmeasured, which is exactly why the next step is a
+fresh campaign rather than another edit.
 
 The NNF-budget row is the price of bounding that conversion, and it is a price
 worth paying: those three problems have IFF structures whose unbounded NNF was
@@ -148,7 +164,7 @@ falls back to the bounded search, so a foreign prover's annotation or a recorder
 defect costs speed, never certification.
 
 Those archived proofs predate the annotation, so they still exercise the search
-path and the 192/215 figure is the *fallback* number. The post-change figure
+path and the 189/215 figure is the *fallback* number. The post-change figure
 needs a fresh run on 8-core hardware:
 
 ```bash
@@ -158,7 +174,10 @@ MRS_WORKERS=8 crates/mrs-bench/certification_campaign.sh \
 ```
 
 Expect the 18 demodulation rows to move to `Certified`; if they do not, the
-reason histogram names the shape that still fails.
+reason histogram names the shape that still fails. `--subset <file>` restricts a
+campaign to named problems when only a division or a regression is being
+re-measured, and the campaign resolves the corpus from the run's own
+`run_meta.txt` rather than from `--output`.
 
 ### Fast invariant
 
@@ -178,6 +197,20 @@ re-verified assignment into a complete `ModelCertificate`, the ordered-closure
 tier recovers one from the same grounded set, and `mrs` prints it in an SZS
 `FiniteInterpretation` block that `mrs-proover` validates as `VerifiedGood`.
 Under `--self-check` the kernel re-validates it before the status line stands.
+
+The status/polarity convention matters here, and a first implementation got it
+wrong in the direction that hides results. A problem supplied directly as
+`negated_conjecture` clauses — the shape the CASC EPR divisions are made of —
+has no conjecture to falsify, so a model of it is a `Satisfiable` answer, not a
+counter-model. The kernel's per-formula checks always had that right; its
+summary check for the status did not, and treated any `negated_conjecture` role
+as a conjecture. `mrs --self-check` on `EPS/SYN322-1.p` therefore reported
+`GaveUp` for a model that `mrs-proover` independently accepted, and a campaign
+reported every EPS model as `invalid_model` — indistinguishable from "the prover
+emitted no models". Now: `Satisfiable` requires no `conjecture` role,
+`CounterSatisfiable` requires one, and the same problem under `--self-check`
+answers `Satisfiable` with a kernel-certified model. `crates/mrs-proover/tests/model_certification.rs`
+pins all four cells of that matrix.
 
 ---
 
