@@ -27,22 +27,38 @@ Gate: `crates/mrs-bench/certification_gate.sh` (default 20 s per proof,
 
 | measurement | result |
 |---|---|
-| score, 20 s/proof, 4 workers, 4-core WSL box | **149 / 150** |
-| score, 10 s/proof, same box | 146 / 150 |
+| full corpus, 20 s/proof, 4 workers, 4-core WSL box | **150 / 150** |
+| official panel subset of 91 (138 available) | **138 / 138** |
 | `VerifiedGood` on a valid proof (false rejection, −1) | **0** |
 | `VerifiedGood` on an evil proof (−10) | **0** |
-| `Unknown` | 1 |
-| after the panel's nine removals (138 available) | ~135 / 138 |
+| `Unknown` | 0 |
 
-The spread between runs is entirely three giant proofs — `PRV043+1`,
-`PRV071+1`, `PRV073+1`, the 5 000-step modus-ponens chains — which are decided
-by wall clock, not by any judgement the verifier makes. On 8-core competition
-hardware at the announced CASC-J13 time limits they are expected to decide; the
-earlier `150/150` and `148/150` figures in the repository were measured there.
+Reproduce with the canonical scorer:
 
-Anything at or near this level is a corpus-shaped ceiling, not headroom. The
-remaining work is therefore not score: it is robustness on proofs the corpus
-does not contain (§3).
+```bash
+nix develop -c cargo run --release -p mrs-bench --bin score_proover2026 -- \
+    crates/mrs-bench/proover-corpus/Proover2026 --competition \
+    --proover target/release/mrs-proover --time 20 --workers 4 \
+    --output reports/proover-2026.tsv
+# score=150 good=60 bad=40 unknown=0 false_rejection=0 unsound=0
+```
+
+Getting the last point took a real fix rather than more time: `PRV043+1` used
+to hang. It is a valid five-step proof whose axiom and conjecture are 100-term
+right-nested `<=>` chains, and NNF *distributes* nested biconditionals, so
+normalising one is exponential in the chain depth. Both the kernel and the
+competition verifier normalised such formulas unconditionally — in the kernel's
+case in its own problem preparation, before any step was examined — so the
+verifier ran past 90 s under `--time 20` and returned nothing. Every NNF
+conversion in both crates is now bounded (`mrs_cnf::nnf::to_nnf_bounded`), and
+the shape decides in 0.0 s. The same class of input is a denial-of-service
+vector for anything that normalises proof or problem text, so
+`deep_biconditional_chain_is_decided_within_budget` pins it.
+
+At this level the corpus is the ceiling, not the verifier. The remaining work is
+therefore not score: it is robustness on proofs the corpus does not contain
+(§3), and the three problems that need 8-core hardware to decide inside a
+tighter budget.
 
 ### Scoring policy, and one change worth knowing about
 
@@ -101,6 +117,10 @@ superposition shapes) are all fixed at HEAD; SWX217+1 had also been reported
 | 3 | proof exceeds the kernel's 100 000-formula limit | open |
 | 1 | `ac_superposition` replay incomplete | open |
 | 1 | killed on wall clock (`feq/SWV406+1`, 170 MB proof) | open |
+
+The same bounded-NNF work also removes a hang class that no corpus score would
+have shown: any proof or problem containing a long biconditional chain used to
+be undecidable in any budget. `PRV043+1` is the committed example.
 
 The demodulation gap was 75 % of everything the kernel could not certify, and
 it was not a budget problem: raising `max_rewrite_steps` from 64 to 10⁶ and the
@@ -191,9 +211,10 @@ with a diagnostic instead of letting it be killed, and proof size is now in the
 
 Corrected here so they are not read as current:
 
-- `docs/PROOVER_2026.md` claims `138/138` and `150/150`. Those were measured on
-  8-core competition hardware; the numbers above are what this repository
-  reproduces on a 4-core box, and the corpus ceiling is wall clock.
+- `docs/PROOVER_2026.md` claims `138/138` and `150/150`. Both figures are now
+  reproduced on a 4-core box at 20 s per proof, but the earlier ones were
+  measured on 8-core competition hardware; treat the hardware line in §1 as part
+  of the number.
 - `docs/AUTO_PROOF_REVIEW.md` names `PRV067+1` as the last 2-point gap. It is
   `VerifiedBad` at HEAD, and that document's `max_equivalence_steps` figure
   (200 000) is wrong: the default is 5 000.
