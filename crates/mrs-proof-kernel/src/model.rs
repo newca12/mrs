@@ -785,7 +785,14 @@ impl ModelEvaluation for ModelCertificate {
         // 5. Evaluate all formulas in problem
         let mut formulas_evaluated = 0;
         let mut ground_clauses_evaluated = 0;
-        let mut has_conjecture = false;
+        // Whether the *status* depends on falsifying something, i.e. whether
+        // the input carries a `conjecture`-role formula. A `negated_conjecture`
+        // formula is a premise of the refutation (the prover's clause set
+        // already has the conjecture negated), so a model of it is a
+        // `Satisfiable` answer, not a counter-model. The per-formula polarity
+        // checks below enforce both cases separately; this flag only drives
+        // the status cross-check in step 6.
+        let mut has_conjecture_role = false;
 
         for input in &problem.formulas {
             if !model_formula_role(input.role()) {
@@ -838,7 +845,7 @@ impl ModelEvaluation for ModelCertificate {
 
                     match fof_annotated.role {
                         FormulaRole::Conjecture => {
-                            has_conjecture = true;
+                            has_conjecture_role = true;
                             // For CounterSatisfiable, the model must FALSIFY the conjecture!
                             if val {
                                 return ModelVerdict::Rejected(format!(
@@ -848,7 +855,6 @@ impl ModelEvaluation for ModelCertificate {
                             }
                         }
                         FormulaRole::NegatedConjecture => {
-                            has_conjecture = true;
                             // For Satisfiable with negated conjecture, model must satisfy negated conjecture
                             if !val {
                                 return ModelVerdict::Rejected(format!(
@@ -899,7 +905,7 @@ impl ModelEvaluation for ModelCertificate {
 
                     match cnf_annotated.role {
                         FormulaRole::Conjecture => {
-                            has_conjecture = true;
+                            has_conjecture_role = true;
                             if satisfied {
                                 return ModelVerdict::Rejected(format!(
                                     "model satisfies conjecture clause `{}`; not a counter-model",
@@ -908,7 +914,6 @@ impl ModelEvaluation for ModelCertificate {
                             }
                         }
                         FormulaRole::NegatedConjecture => {
-                            has_conjecture = true;
                             if !satisfied {
                                 return ModelVerdict::Rejected(format!(
                                     "model violates negated conjecture clause `{}`",
@@ -934,14 +939,21 @@ impl ModelEvaluation for ModelCertificate {
         }
 
         // 6. Polarity vs expected status
+        //
+        // `Satisfiable` is a model of the input as given, so it is only
+        // coherent when there is no `conjecture`-role formula to falsify.
+        // `CounterSatisfiable` is a model of the axioms plus the negated
+        // conjecture, so it requires one. A problem supplied directly as
+        // `negated_conjecture` clauses has no conjecture role and answers
+        // `Satisfiable`; the CASC EPR divisions are full of that shape.
         if let Some(status) = expected_status {
             match status {
-                "Satisfiable" if has_conjecture => {
+                "Satisfiable" if has_conjecture_role => {
                     return ModelVerdict::Rejected(
                         "expected Satisfiable, but the problem contains a conjecture".into(),
                     );
                 }
-                "CounterSatisfiable" if !has_conjecture => {
+                "CounterSatisfiable" if !has_conjecture_role => {
                     return ModelVerdict::Rejected(
                         "expected CounterSatisfiable, but problem has no conjecture to falsify"
                             .into(),

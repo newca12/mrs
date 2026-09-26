@@ -204,3 +204,113 @@ fn model_block_that_does_not_satisfy_the_problem_is_rejected() {
         "a model failing an axiom must be rejected, got {verdict:?}"
     );
 }
+
+/// The status/polarity matrix, which the EPR divisions depend on.
+///
+/// `Satisfiable` means "a model of the input as given". That is only coherent
+/// when the input has no `conjecture`-role formula to falsify. A problem
+/// supplied directly as `negated_conjecture` clauses — which is what the CASC
+/// EPR divisions look like — has no such role, and its model must *satisfy*
+/// those clauses. `CounterSatisfiable` is the other shape: a model of the
+/// axioms plus the negated conjecture, so it needs a `conjecture` role.
+///
+/// These two guards were once conflated, which made every `Satisfiable`
+/// answer on a `negated_conjecture` problem look like an invalid certificate —
+/// in the self-check gate and in the corpus audit alike.
+#[test]
+fn negated_conjecture_problem_certifies_as_satisfiable() {
+    // The shape of `EPS/SYN322-1.p`: two `negated_conjecture` clauses, no
+    // conjecture role, satisfiable.
+    let problem_text = r#"
+        cnf(clause1, negated_conjecture, ~ f(X,a) | f(a,X)).
+        cnf(clause2, negated_conjecture, ~ f(a,X) | ~ f(X,a)).
+    "#;
+
+    let mut constants = BTreeMap::new();
+    constants.insert("a".to_string(), 0);
+    let mut predicates = BTreeMap::new();
+    predicates.insert(
+        "f".to_string(),
+        PredicateTable {
+            arity: 2,
+            table: vec![false],
+        },
+    );
+    let mut cert = ModelCertificate {
+        domain_size: 1,
+        constants,
+        functions: BTreeMap::new(),
+        predicates,
+        equality: EqualitySemantics::StrictIdentity,
+        digest: String::new(),
+    };
+    cert.digest = cert.compute_digest();
+    let json = serde_json::to_string(&cert).unwrap();
+
+    let verdict = verify_model_text(problem_text, &json, Some("Satisfiable"));
+    assert!(
+        matches!(verdict, ModelVerdict::Certified { domain_size: 1, .. }),
+        "a model of a negated-conjecture problem is a Satisfiable answer: {verdict:?}"
+    );
+
+    // The same certificate cannot claim a counter-model: there is no
+    // conjecture to falsify.
+    let verdict = verify_model_text(problem_text, &json, Some("CounterSatisfiable"));
+    assert!(
+        matches!(verdict, ModelVerdict::Rejected(_)),
+        "CounterSatisfiable needs a conjecture role to falsify: {verdict:?}"
+    );
+}
+
+#[test]
+fn conjecture_problem_still_requires_a_counter_model() {
+    // The other shape: an explicit `conjecture` role, so the model must falsify
+    // it — while still satisfying the axioms, which is the whole point of a
+    // counter-model.
+    let problem_text = r#"
+        fof(a1, axiom, q(a)).
+        fof(c, conjecture, p(a)).
+    "#;
+
+    let mut constants = BTreeMap::new();
+    constants.insert("a".to_string(), 0);
+    let mut predicates = BTreeMap::new();
+    predicates.insert(
+        "p".to_string(),
+        PredicateTable {
+            arity: 1,
+            table: vec![false],
+        },
+    );
+    predicates.insert(
+        "q".to_string(),
+        PredicateTable {
+            arity: 1,
+            table: vec![true],
+        },
+    );
+    let mut cert = ModelCertificate {
+        domain_size: 1,
+        constants,
+        functions: BTreeMap::new(),
+        predicates,
+        equality: EqualitySemantics::StrictIdentity,
+        digest: String::new(),
+    };
+    cert.digest = cert.compute_digest();
+    let json = serde_json::to_string(&cert).unwrap();
+
+    let verdict = verify_model_text(problem_text, &json, Some("CounterSatisfiable"));
+    assert!(
+        matches!(verdict, ModelVerdict::Certified { .. }),
+        "falsifying the conjecture is a CounterSatisfiable answer: {verdict:?}"
+    );
+
+    // A `Satisfiable` claim alongside a conjecture role is incoherent, and the
+    // model would also have to satisfy the conjecture to be one.
+    let verdict = verify_model_text(problem_text, &json, Some("Satisfiable"));
+    assert!(
+        matches!(verdict, ModelVerdict::Rejected(_)),
+        "Satisfiable is not coherent for a problem with a conjecture: {verdict:?}"
+    );
+}
