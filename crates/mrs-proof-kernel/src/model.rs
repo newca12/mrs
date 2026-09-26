@@ -27,7 +27,23 @@ use std::collections::{BTreeMap, BTreeSet};
 /// entries across all symbols, rather than allowing a single table or many
 /// small tables to consume unbounded memory.
 pub use mrs_core::model::MAX_MODEL_TABLE_ENTRIES;
-const MAX_MODEL_EVALUATION_WORK: u64 = 10_000_000;
+/// Bound on the dense interpretation work one model validation may perform.
+///
+/// The real guard on this is wall clock: every caller runs under a strict time
+/// budget (`--strict-time`), and this counter exists to fail closed *inside*
+/// that budget rather than to keep validation cheap. It must therefore be sized
+/// to the work that fits the default budget, not smaller — a cap low enough to
+/// reject ordinary models discards evidence without protecting anything.
+///
+/// Measured on the 100-problem `casc-30/EPS` run `cert-eps-20260926`: the
+/// expensive models (domain 11, one clause with 6 free variables and 18
+/// argument positions, ≈3.2·10⁷ steps) certify in 1.4–1.6 s each, and the
+/// whole division audits in 1.7 s wall. At the previous 10⁷ cap those models
+/// were refused as `inconclusive`, halving the certified count (4 of 12 → 10
+/// of 12) while saving no measurable time. At the ~2·10⁷ steps/s this kernel
+/// sustains, 2·10⁹ steps is ≈90 s, i.e. just inside the default 120 s budget;
+/// anything larger is caught by the clock instead.
+const MAX_MODEL_EVALUATION_WORK: u64 = 2_000_000_000;
 const MAX_MODEL_EVALUATION_DEPTH: usize = 256;
 const MAX_MODEL_METADATA_BYTES: usize = 16 * 1024 * 1024;
 const MAX_MODEL_PROBLEM_BYTES: usize = 16 * 1024 * 1024;
@@ -2491,5 +2507,80 @@ fof(conj, conjecture, p(a)).
             certificate.validate(&problem, None),
             ModelVerdict::Certified { .. }
         ));
+    }
+
+    /// A model big enough to need real work must still certify.
+    ///
+    /// This is the shape that `casc-30/EPS/NLP115-1` and its five siblings
+    /// have: a domain of 11 and one clause carrying 6 free variables across 18
+    /// argument positions, so the dense evaluation is ≈3.2·10⁷ steps. The
+    /// previous 10⁷ cap refused every one of them as `inconclusive` — not
+    /// because they were wrong, but because counting them was judged too
+    /// expensive, while each takes ~1.5 s to check. The guard that matters is
+    /// the strict time budget, so the cap is sized to fit it.
+    #[test]
+    fn certifies_model_needing_more_than_the_old_work_cap() {
+        let domain_size = 11usize;
+        // One clause over 6 variables and 18 argument positions, plus a ground
+        // clause: 11^6 valuations x 18 positions is ≈3.2·10⁷ steps, past the
+        // 10^7 cap this test exists to keep honest.
+        let problem_text = "cnf(ground, negated_conjecture, p(kx, ky)).\n\
+             cnf(vars, negated_conjecture, ( ~ q(U,V,W) | ~ r(U,V) | ~ s(U,V) | ~ t(U,V) \
+             | ~ u(W,X) | ~ v(W,X) | ~ w(X,Y) | ~ x(X,Y) | ~ y(Y,Z) | ~ z(Y,Z) \
+             | ~ a2(U,V) | ~ b2(U,V) | ~ c2(W,X) | ~ d2(X,Y) | ~ e2(Y,Z) | ~ f2(Z,U) )).\n";
+        let problem = parse_tptp(problem_text).expect("parses");
+
+        let mut constants = BTreeMap::new();
+        constants.insert("kx".to_string(), domain_size - 1);
+        constants.insert("ky".to_string(), domain_size - 1);
+        let mut predicates = BTreeMap::new();
+        for (name, arity) in [
+            ("p", 2),
+            ("q", 3),
+            ("r", 2),
+            ("s", 2),
+            ("t", 2),
+            ("u", 2),
+            ("v", 2),
+            ("w", 2),
+            ("x", 2),
+            ("y", 2),
+            ("z", 2),
+            ("a2", 2),
+            ("b2", 2),
+            ("c2", 2),
+            ("d2", 2),
+            ("e2", 2),
+            ("f2", 2),
+        ] {
+            let table_size = domain_size.pow(arity as u32);
+            // Satisfy the ground clause with p(10,10); make every 2-ary
+            // predicate true and the 3-ary one false, so the big clause holds
+            // under every valuation rather than only some.
+            let value = name != "q";
+            predicates.insert(
+                name.to_string(),
+                PredicateTable {
+                    arity,
+                    table: vec![value; table_size],
+                },
+            );
+        }
+
+        let mut certificate = ModelCertificate {
+            domain_size,
+            constants,
+            functions: BTreeMap::new(),
+            predicates,
+            equality: EqualitySemantics::StrictIdentity,
+            digest: String::new(),
+        };
+        certificate.digest = certificate.compute_digest();
+
+        let verdict = certificate.validate(&problem, Some("Satisfiable"));
+        assert!(
+            matches!(verdict, ModelVerdict::Certified { .. }),
+            "a model costing ~3.2e7 steps must certify, not stall: {verdict:?}"
+        );
     }
 }
