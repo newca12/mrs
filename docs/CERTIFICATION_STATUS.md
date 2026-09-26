@@ -114,9 +114,16 @@ superposition shapes) are all fixed at HEAD; SWX217+1 had also been reported
 | count | reason | status |
 |---:|---|---|
 | 18 | `demodulation` steps the kernel could not replay | **fixed, awaiting re-measurement** |
-| 3 | proof exceeds the kernel's 100 000-formula limit | open |
+| 3 | proof exceeds the kernel's 100 000-node limit (`SET017+1` 119 k, `KRS234+1` 103 k, `MGT079+1` 228 k) | open |
+| 3 | a `fof_nnf` step whose parent's NNF exceeds the 100 000-node budget (`BIO006+1`, `CSR115+8`, `CSR116+19`) | open, deliberate |
 | 1 | `ac_superposition` replay incomplete | open |
 | 1 | killed on wall clock (`feq/SWV406+1`, 170 MB proof) | open |
+
+The NNF-budget row is the price of bounding that conversion, and it is a price
+worth paying: those three problems have IFF structures whose unbounded NNF was
+large but finite, while an unbounded conversion on a slightly deeper chain is
+what made `PRV043+1` undecidable in any budget. A fixed bound fails closed and
+fast; an adaptive one is possible later if those three are ever worth it.
 
 The same bounded-NNF work also removes a hang class that no corpus score would
 have shown: any proof or problem containing a long biconditional chain used to
