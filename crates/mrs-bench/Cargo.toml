@@ -9,16 +9,16 @@ rust-version.workspace = true
 description = "CASC benchmark harness and report tool for mrs"
 
 [dependencies]
-rayon = "1.12.0"
+rayon = { workspace = true }
 mrs-core = { workspace = true }
 mrs-szs = { workspace = true }
 mrs-tptp = { workspace = true }
 mrs-proof-kernel = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
-tempfile = "3.27.0"
-walkdir = "2.5.0"
-wait-timeout = "0.2.1"
+tempfile = { workspace = true }
+walkdir = { workspace = true }
+wait-timeout = { workspace = true }
 
 [[bin]]
 name = "bench_report"

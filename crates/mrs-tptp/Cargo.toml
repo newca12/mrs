@@ -19,8 +19,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 winnow = { workspace = true }
 
 [dev-dependencies]
-pretty_assertions = "1.4.1"
-rayon = "1.12.0"
+pretty_assertions = { workspace = true }
+rayon = { workspace = true }
 
 [features]
 default = []

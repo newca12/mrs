@@ -19,11 +19,11 @@ mrs-core = { workspace = true, features = ["ml"] }
 # `sys-metrics` extras; ratatui-widgets 0.3.1 fails to compile on rustc >= 1.96
 # (E0119 coherence conflict with the `time` crate), and a training TUI is not
 # needed for batch runs on the GPU server.
-burn = { version = "0.21.0", default-features = false, features = [
+burn = { workspace = true, features = [
     "std",
     "train",
     "dataset",
 ] }
 wincode = { workspace = true }
-walkdir = "2.5.0"
-rand = "0.10"
+walkdir = { workspace = true }
+rand = { workspace = true }
