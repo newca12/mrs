@@ -31,12 +31,13 @@
 #                                starting with '#' are ignored; a line may be a
 #                                bare problem name or "<DIVISION>/<problem>".
 #                                Names not present in the division are reported
-#                                and skipped, so a subset file can be reused
-#                                across editions. Intended for re-measuring a
-#                                handful of problems (a certification campaign,
-#                                a regression) without staging a subset edition.
+#                                and skipped. The default run remains exhaustive.
 #   --subset-list-out <file>     Write the subset of names that actually
 #                                resolved, for feeding back into --subset.
+#   --manifest-out <file>        Write all benchmark-list entries that resolved
+#                                to an existing problem path, before subset
+#                                filtering. Useful for generating subsets from a
+#                                complete local edition without running systems.
 #
 # Environment:
 #   CASC_PROBLEMS_ROOT  Override the problem corpus root (default:
@@ -77,6 +78,7 @@ USE_CASC_TIMES=0    # 0 = use TIME_LIMIT for all; 1 = use CASC-30 official times
 RUN_SANITY_CHECK=0  # 1 = run pre-flight dual_run_sanity_check on canaries
 SUBSET_FILE=""      # optional path to a newline-separated problem subset
 SUBSET_LIST_OUT=""  # optional path to write the resolved subset back out
+MANIFEST_OUT=""     # optional full set of paths resolved from division lists
 
 # Official CASC-30 wall-clock time limits per division (seconds).
 # SLH is CPU-time limited but we approximate with wall clock here.
@@ -121,8 +123,9 @@ while [[ $# -gt 0 ]]; do
         --sanity-check) RUN_SANITY_CHECK=1; shift ;;
         --jobs)       JOBS="$2";       shift 2 ;;
         --output)     OUTPUT="$2";     shift 2 ;;
-    --subset)     SUBSET_FILE="$2"; shift 2 ;;
-    --subset-list-out) SUBSET_LIST_OUT="$2"; shift 2 ;;
+        --subset)    SUBSET_FILE="$2"; shift 2 ;;
+        --subset-list-out) SUBSET_LIST_OUT="$2"; shift 2 ;;
+        --manifest-out) MANIFEST_OUT="$2"; shift 2 ;;
         --time-*)
             # --time-DIV N  e.g. --time-feq 240
             div_key="${1#--time-}"   # strip "--time-"
@@ -163,6 +166,18 @@ div_time() {
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 if [[ -z "${OUTPUT}" ]]; then
     OUTPUT="${SCRIPT_DIR}/results/${EDITION}/${TIMESTAMP}"
+fi
+if [[ "${OUTPUT}" != /* ]]; then
+    OUTPUT="${PWD}/${OUTPUT}"
+fi
+if [[ -n "${SUBSET_FILE}" && "${SUBSET_FILE}" != /* ]]; then
+    SUBSET_FILE="${PWD}/${SUBSET_FILE}"
+fi
+if [[ -n "${SUBSET_LIST_OUT}" && "${SUBSET_LIST_OUT}" != /* ]]; then
+    SUBSET_LIST_OUT="${PWD}/${SUBSET_LIST_OUT}"
+fi
+if [[ -n "${MANIFEST_OUT}" && "${MANIFEST_OUT}" != /* ]]; then
+    MANIFEST_OUT="${PWD}/${MANIFEST_OUT}"
 fi
 mkdir -p "${OUTPUT}"
 RAW_ROOT="${OUTPUT}/raw"
@@ -221,6 +236,9 @@ EOF
 exec 2> >(tee -a "${OUTPUT}/run.log" >&2)
 
 PROBLEMS_DIR="${CASC_PROBLEMS_ROOT:-${SCRIPT_DIR}/problems/${EDITION}}"
+if [[ -d "${PROBLEMS_DIR}" ]]; then
+    PROBLEMS_DIR="$(cd "${PROBLEMS_DIR}" && pwd -P)"
+fi
 LISTS_DIR="${PROBLEMS_DIR}/lists"
 PROBLEMS_ROOT="${PROBLEMS_DIR}"
 
@@ -322,15 +340,19 @@ JOBS_FILE="${OUTPUT}/.jobs"
 # upper-case name to the division it was requested for ("" when unqualified).
 SUBSET_WANT=()
 SUBSET_WANT_BY_DIV=()
-SUBSET_WANT_SEEN=""
+SUBSET_REQUEST_RESOLVED=()
+SUBSET_REQUEST_PATHS=()
 if [[ -n "${SUBSET_FILE}" ]]; then
     if [[ ! -f "${SUBSET_FILE}" ]]; then
         echo "ERROR: --subset file not found: ${SUBSET_FILE}" >&2
         exit 1
     fi
+    subset_line_number=0
     while IFS= read -r entry || [[ -n "${entry}" ]]; do
-        entry="${entry%%#*}"
-        entry="$(echo "${entry}" | tr -d '[:space:]')"
+        subset_line_number=$((subset_line_number + 1))
+        entry="${entry#"${entry%%[![:space:]]*}"}"
+        entry="${entry%"${entry##*[![:space:]]}"}"
+        [[ "${entry}" == \#* ]] && continue
         [[ -z "${entry}" ]] && continue
         wanted_div=""
         if [[ "${entry}" == */* ]]; then
@@ -340,9 +362,23 @@ if [[ -n "${SUBSET_FILE}" ]]; then
         entry="${entry%.p}"
         key="$(echo "${entry}" | tr '[:lower:]' '[:upper:]')"
         [[ -z "${key}" ]] && continue
+        duplicate=0
+        for ((i = 0; i < ${#SUBSET_WANT[@]}; i++)); do
+            existing_key="$(echo "${SUBSET_WANT[$i]}" | tr '[:lower:]' '[:upper:]')"
+            existing_div="$(echo "${SUBSET_WANT_BY_DIV[$i]}" | tr '[:lower:]' '[:upper:]')"
+            wanted_div_key="$(echo "${wanted_div}" | tr '[:lower:]' '[:upper:]')"
+            if [[ "${existing_key}" == "${key}" && "${existing_div}" == "${wanted_div_key}" ]]; then
+                duplicate=1
+                break
+            fi
+        done
+        if (( duplicate )); then
+            continue
+        fi
         SUBSET_WANT+=("${entry}")
         SUBSET_WANT_BY_DIV+=("${wanted_div}")
-        SUBSET_WANT_SEEN+=" ${key}"
+        SUBSET_REQUEST_RESOLVED+=(0)
+        SUBSET_REQUEST_PATHS+=("${SUBSET_FILE}:${subset_line_number}")
     done < "${SUBSET_FILE}"
     echo "[casc] subset: ${#SUBSET_WANT[@]} problem name(s) from ${SUBSET_FILE}" >&2
 fi
@@ -350,6 +386,7 @@ fi
 # Did the caller ask for this problem, in this division?
 subset_wants() {
     local div="$1" problem="$2" index=0
+    SUBSET_MATCH_INDICES=()
     [[ -z "${SUBSET_FILE}" ]] && return 0
     local key
     key="$(echo "${problem%.p}" | tr '[:lower:]' '[:upper:]')"
@@ -360,15 +397,16 @@ subset_wants() {
             # whichever division offers the problem.
             if [[ -z "${wanted}" ]] \
                || [[ "$(echo "${wanted}" | tr '[:lower:]' '[:upper:]')" == "$(echo "${div}" | tr '[:lower:]' '[:upper:]')" ]]; then
-                SUBSET_RESOLVED+=("${div}/${problem%.p}")
-                return 0
+                SUBSET_MATCH_INDICES+=("${index}")
             fi
         fi
         index=$((index + 1))
     done
-    return 1
+    ((${#SUBSET_MATCH_INDICES[@]} > 0))
 }
 SUBSET_RESOLVED=()
+MANIFEST_RESOLVED=()
+SUBSET_MATCH_INDICES=()
 
 total_problems=0
 for div in "${DIVISION_LIST[@]}"; do
@@ -423,6 +461,16 @@ for div in "${DIVISION_LIST[@]}"; do
         division_root="${PROBLEMS_ROOT}/${div_upper}"
     fi
 
+    if [[ -n "${MANIFEST_OUT}" && ( -z "${list}" || ! -s "${list}" ) && -n "${division_root}" ]]; then
+        shopt -s nullglob
+        problem_files=("${division_root}"/*.p)
+        shopt -u nullglob
+        for problem_path in "${problem_files[@]}"; do
+            problem="$(basename "${problem_path}" .p)"
+            MANIFEST_RESOLVED+=("${div}/${problem}")
+        done
+        continue
+    fi
     if [[ -z "${list}" || ! -s "${list}" ]]; then
         echo "WARNING: no list or problem directory for division '${div}' under ${PROBLEMS_ROOT}" >&2
         continue
@@ -439,6 +487,13 @@ for div in "${DIVISION_LIST[@]}"; do
             echo "WARNING: ${div}/${problem}: listed but ${prob_path} is missing" >&2
             continue
         fi
+        MANIFEST_RESOLVED+=("${div}/${problem%.p}")
+        if [[ -n "${SUBSET_FILE}" ]]; then
+            for match_index in "${SUBSET_MATCH_INDICES[@]}"; do
+                SUBSET_REQUEST_RESOLVED[${match_index}]=1
+            done
+            SUBSET_RESOLVED+=("${div}/${problem%.p}")
+        fi
         for sys in "${SYSTEMS_LIST[@]}"; do
             # Fields: div  problem  prob_path  sys  time_limit
             printf '%s\t%s\t%s\t%s\t%s\n' \
@@ -448,43 +503,48 @@ for div in "${DIVISION_LIST[@]}"; do
     done < "${list}"
 done
 
+if [[ -n "${MANIFEST_OUT}" ]]; then
+    manifest_parent="$(dirname "${MANIFEST_OUT}")"
+    mkdir -p "${manifest_parent}"
+    printf '%s\n' "${MANIFEST_RESOLVED[@]+"${MANIFEST_RESOLVED[@]}"}" | sort -u > "${MANIFEST_OUT}"
+fi
+
 # Report subset names that never matched, so a typo cannot quietly shrink a
 # run to zero problems and look like "nothing to do".
 if [[ -n "${SUBSET_FILE}" ]]; then
     missing=()
     index=0
     for name in "${SUBSET_WANT[@]}"; do
-        key="$(echo "${name}" | tr '[:lower:]' '[:upper:]')"
-        found=0
-        for resolved in "${SUBSET_RESOLVED[@]+"${SUBSET_RESOLVED[@]}"}"; do
-            if [[ "$(echo "${resolved##*/}" | tr '[:lower:]' '[:upper:]')" == "${key}" ]]; then
-                found=1
-                break
-            fi
-        done
-        (( found )) || missing+=("${name}")
+        if (( SUBSET_REQUEST_RESOLVED[index] == 0 )); then
+            [[ -n "${SUBSET_WANT_BY_DIV[index]}" ]] && name="${SUBSET_WANT_BY_DIV[index]}/${name}"
+            missing+=("${name}")
+            echo "WARNING: subset entry '${name}' from ${SUBSET_REQUEST_PATHS[index]} matched no" \
+                "problem in --edition ${EDITION} --divisions ${DIVISIONS}" >&2
+        fi
         index=$((index + 1))
-    done
-    for name in "${missing[@]+"${missing[@]}"}"; do
-        echo "WARNING: subset entry '${name}' matched no problem in --divisions ${DIVISIONS}" >&2
     done
     # Every requested name missing means the run is not the one that was asked
     # for. Proceeding would write a run.csv with no rows, which reads as a
     # successful measurement of nothing.
-    if (( ${#SUBSET_RESOLVED[@]} == 0 )); then
+    if (( total_problems == 0 )); then
         echo "ERROR: no problem in --subset ${SUBSET_FILE} matched a problem in" >&2
         echo "       --edition ${EDITION} --divisions ${DIVISIONS}." >&2
         echo "       Check the problem names, or widen --divisions/--edition." >&2
         exit 1
     fi
-    echo "[casc] subset: ${#SUBSET_RESOLVED[@]} of ${#SUBSET_WANT[@]} name(s) resolved, ${total_problems} job(s)" >&2
+    resolved_file="${OUTPUT}/subset_resolved.txt"
+    printf '%s\n' "${SUBSET_RESOLVED[@]+"${SUBSET_RESOLVED[@]}"}" | sort -u > "${resolved_file}"
+    resolved_count="$(wc -l < "${resolved_file}")"
+    echo "[casc] subset: ${resolved_count} of ${#SUBSET_WANT[@]} name(s) resolved, ${total_problems} job(s)" >&2
     if [[ -n "${SUBSET_LIST_OUT}" ]]; then
-        printf '%s\n' "${SUBSET_RESOLVED[@]+"${SUBSET_RESOLVED[@]}"}" | sort -u > "${SUBSET_LIST_OUT}"
+        if [[ "${SUBSET_LIST_OUT}" != "${resolved_file}" ]]; then
+            subset_list_parent="$(dirname "${SUBSET_LIST_OUT}")"
+            mkdir -p "${subset_list_parent}"
+            cp -- "${resolved_file}" "${SUBSET_LIST_OUT}"
+        fi
         echo "[casc] subset: resolved names written to ${SUBSET_LIST_OUT}" >&2
     fi
-    printf '%s\n' "${SUBSET_RESOLVED[@]+"${SUBSET_RESOLVED[@]}"}" | sort -u \
-        > "${OUTPUT}/subset_resolved.txt"
-    echo "subset_resolved=${OUTPUT}/subset_resolved.txt" >> "${OUTPUT}/run_meta.txt"
+    echo "subset_resolved=${resolved_file}" >> "${OUTPUT}/run_meta.txt"
 fi
 
 # Build a human-readable summary of per-division times for the log.

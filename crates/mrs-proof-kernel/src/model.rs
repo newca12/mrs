@@ -33,7 +33,10 @@ const MAX_MODEL_METADATA_BYTES: usize = 16 * 1024 * 1024;
 const MAX_MODEL_PROBLEM_BYTES: usize = 16 * 1024 * 1024;
 
 fn model_formula_role(role: FormulaRole) -> bool {
-    role.is_premise() || role.is_goal() || role == FormulaRole::Plain
+    role.is_premise()
+        || role.is_goal()
+        || role == FormulaRole::Plain
+        || role == FormulaRole::NegatedConjecture
 }
 pub use mrs_core::model::{EqualitySemantics, FunctionTable, ModelCertificate, PredicateTable};
 
@@ -792,8 +795,6 @@ impl ModelEvaluation for ModelCertificate {
         // `Satisfiable` answer, not a counter-model. The per-formula polarity
         // checks below enforce both cases separately; this flag only drives
         // the status cross-check in step 6.
-        let mut has_conjecture_role = false;
-
         for input in &problem.formulas {
             if !model_formula_role(input.role()) {
                 continue;
@@ -845,7 +846,6 @@ impl ModelEvaluation for ModelCertificate {
 
                     match fof_annotated.role {
                         FormulaRole::Conjecture => {
-                            has_conjecture_role = true;
                             // For CounterSatisfiable, the model must FALSIFY the conjecture!
                             if val {
                                 return ModelVerdict::Rejected(format!(
@@ -855,7 +855,8 @@ impl ModelEvaluation for ModelCertificate {
                             }
                         }
                         FormulaRole::NegatedConjecture => {
-                            // For Satisfiable with negated conjecture, model must satisfy negated conjecture
+                            // A direct problem stated with negated-conjecture
+                            // formulas requires the model to satisfy them.
                             if !val {
                                 return ModelVerdict::Rejected(format!(
                                     "model violates negated conjecture `{}`",
@@ -905,7 +906,6 @@ impl ModelEvaluation for ModelCertificate {
 
                     match cnf_annotated.role {
                         FormulaRole::Conjecture => {
-                            has_conjecture_role = true;
                             if satisfied {
                                 return ModelVerdict::Rejected(format!(
                                     "model satisfies conjecture clause `{}`; not a counter-model",
@@ -947,13 +947,17 @@ impl ModelEvaluation for ModelCertificate {
         // `negated_conjecture` clauses has no conjecture role and answers
         // `Satisfiable`; the CASC EPR divisions are full of that shape.
         if let Some(status) = expected_status {
+            let has_explicit_conjecture = problem
+                .formulas
+                .iter()
+                .any(|input| input.role() == FormulaRole::Conjecture);
             match status {
-                "Satisfiable" if has_conjecture_role => {
+                "Satisfiable" if has_explicit_conjecture => {
                     return ModelVerdict::Rejected(
                         "expected Satisfiable, but the problem contains a conjecture".into(),
                     );
                 }
-                "CounterSatisfiable" if !has_conjecture_role => {
+                "CounterSatisfiable" if !has_explicit_conjecture => {
                     return ModelVerdict::Rejected(
                         "expected CounterSatisfiable, but problem has no conjecture to falsify"
                             .into(),
@@ -2452,6 +2456,40 @@ fof(conj, conjecture, p(a)).
         assert!(matches!(
             cert.validate(&problem, Some("Satisfiable")),
             ModelVerdict::Rejected(reason) if reason.contains("distinct objects")
+        ));
+    }
+
+    #[test]
+    fn negated_conjecture_is_only_a_premise_for_model_validation() {
+        let problem = parse_tptp("fof(negated, negated_conjecture, ~p(a)).").unwrap();
+        let mut certificate = ModelCertificate {
+            domain_size: 1,
+            constants: [("a".to_string(), 0)].into_iter().collect(),
+            functions: BTreeMap::new(),
+            predicates: [(
+                "p".to_string(),
+                PredicateTable {
+                    arity: 1,
+                    table: vec![false],
+                },
+            )]
+            .into_iter()
+            .collect(),
+            equality: EqualitySemantics::StrictIdentity,
+            digest: String::new(),
+        };
+        certificate.digest = certificate.compute_digest();
+        assert!(matches!(
+            certificate.validate(&problem, Some("Satisfiable")),
+            ModelVerdict::Certified { .. }
+        ));
+        assert!(matches!(
+            certificate.validate(&problem, Some("CounterSatisfiable")),
+            ModelVerdict::Rejected(_)
+        ));
+        assert!(matches!(
+            certificate.validate(&problem, None),
+            ModelVerdict::Certified { .. }
         ));
     }
 }

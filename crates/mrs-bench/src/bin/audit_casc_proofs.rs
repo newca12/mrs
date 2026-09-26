@@ -78,6 +78,7 @@ struct Args {
     mrs_workers: usize,
     ladder_workers: usize,
     jobs: usize,
+    subset: Option<PathBuf>,
     force: bool,
 }
 
@@ -192,7 +193,41 @@ fn main() {
         ));
     }
 
-    let runs = load_run_csv(&args.run_csv).unwrap_or_else(|error| fail(&error));
+    let mut runs = load_run_csv(&args.run_csv).unwrap_or_else(|error| fail(&error));
+    if let Some(subset_path) = &args.subset {
+        let requested = load_subset(subset_path).unwrap_or_else(|error| fail(&error));
+        let before = runs.len();
+        runs.retain(|run| {
+            requested.contains(&run.problem)
+                || requested.contains(&format!(
+                    "{}/{}",
+                    run.division.to_ascii_lowercase(),
+                    run.problem
+                ))
+                || requested.contains(&format!(
+                    "{}/{}",
+                    run.division.to_ascii_uppercase(),
+                    run.problem
+                ))
+        });
+        if runs.is_empty() {
+            fail(&format!(
+                "subset {} matched no rows in {}",
+                subset_path.display(),
+                args.run_csv.display()
+            ));
+        }
+        let matched_keys = runs
+            .iter()
+            .map(|run| format!("{}/{}", run.division.to_ascii_lowercase(), run.problem))
+            .collect::<std::collections::HashSet<_>>();
+        eprintln!(
+            "[audit] subset selected {} of {} run rows ({} distinct problem/division keys)",
+            runs.len(),
+            before,
+            matched_keys.len()
+        );
+    }
     if runs.is_empty() {
         fail("run CSV contains no benchmark rows");
     }
@@ -259,6 +294,7 @@ fn parse_args(args: Vec<String>) -> Result<Args, String> {
     let mut mrs_workers = 1;
     let mut ladder_workers = 8;
     let mut jobs = 1;
+    let mut subset = None;
     let mut force = false;
     let mut iter = args.into_iter();
 
@@ -295,11 +331,13 @@ fn parse_args(args: Vec<String>) -> Result<Args, String> {
                     parse_usize_positive(&next(&mut iter, "--ladder-workers")?, "--ladder-workers")?
             }
             "--jobs" => jobs = parse_usize_positive(&next(&mut iter, "--jobs")?, "--jobs")?,
+            "--subset" => subset = Some(PathBuf::from(next(&mut iter, "--subset")?)),
             "--force" => force = true,
             "--help" | "-h" => {
                 println!(
                     "audit_casc_proofs --run RUN_DIR|run.csv --problems-dir DIR [options]\n\
                      options: --output DIR --checks strict,mrs,ladder --strict-time SEC\n\
+                              --subset FILE\n\
                               --mrs-time SEC --ladder-time SEC --mrs-workers N\n\
                               --ladder-workers N --jobs N --proover PATH\n\
                               --eprover PATH --vampire PATH --force"
@@ -341,6 +379,7 @@ fn parse_args(args: Vec<String>) -> Result<Args, String> {
         mrs_workers,
         ladder_workers,
         jobs,
+        subset,
         force,
     })
 }
@@ -382,6 +421,37 @@ fn parse_positive(value: &str, name: &str) -> Result<u64, String> {
 fn parse_usize_positive(value: &str, name: &str) -> Result<usize, String> {
     let parsed = parse_positive(value, name)?;
     usize::try_from(parsed).map_err(|_| format!("{name} is too large"))
+}
+
+fn load_subset(path: &Path) -> Result<std::collections::HashSet<String>, String> {
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("read subset {}: {error}", path.display()))?;
+    let mut names = std::collections::HashSet::new();
+    for raw in text.lines() {
+        let entry = raw.split('#').next().unwrap_or("").trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let (division, problem) = match entry.split_once('/') {
+            Some((division, problem)) => (
+                Some(division.to_ascii_lowercase()),
+                problem.trim_end_matches(".p"),
+            ),
+            None => (None, entry.trim_end_matches(".p")),
+        };
+        if problem.is_empty() || division.as_deref() == Some("") {
+            return Err(format!("invalid subset entry `{entry}`"));
+        }
+        let key = match division {
+            Some(division) => format!("{division}/{problem}"),
+            None => problem.to_string(),
+        };
+        names.insert(key);
+    }
+    if names.is_empty() {
+        return Err(format!("subset {} has no problem entries", path.display()));
+    }
+    Ok(names)
 }
 
 fn load_run_csv(path: &Path) -> Result<Vec<RunRow>, String> {

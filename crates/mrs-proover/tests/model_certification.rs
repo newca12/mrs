@@ -219,21 +219,20 @@ fn model_block_that_does_not_satisfy_the_problem_is_rejected() {
 /// in the self-check gate and in the corpus audit alike.
 #[test]
 fn negated_conjecture_problem_certifies_as_satisfiable() {
-    // The shape of `EPS/SYN322-1.p`: two `negated_conjecture` clauses, no
-    // conjecture role, satisfiable.
+    // A directly supplied negated conjecture clause has no explicit
+    // `conjecture` role, but is still a premise the model must satisfy.
     let problem_text = r#"
-        cnf(clause1, negated_conjecture, ~ f(X,a) | f(a,X)).
-        cnf(clause2, negated_conjecture, ~ f(a,X) | ~ f(X,a)).
+        cnf(clause1, negated_conjecture, p(a)).
     "#;
 
     let mut constants = BTreeMap::new();
     constants.insert("a".to_string(), 0);
     let mut predicates = BTreeMap::new();
     predicates.insert(
-        "f".to_string(),
+        "p".to_string(),
         PredicateTable {
-            arity: 2,
-            table: vec![false],
+            arity: 1,
+            table: vec![true],
         },
     );
     let mut cert = ModelCertificate {
@@ -246,6 +245,12 @@ fn negated_conjecture_problem_certifies_as_satisfiable() {
     };
     cert.digest = cert.compute_digest();
     let json = serde_json::to_string(&cert).unwrap();
+
+    let verdict = verify_model_text(problem_text, &json, None);
+    assert!(
+        matches!(verdict, ModelVerdict::Certified { .. }),
+        "a valid model with unspecified expected status should validate: {verdict:?}"
+    );
 
     let verdict = verify_model_text(problem_text, &json, Some("Satisfiable"));
     assert!(

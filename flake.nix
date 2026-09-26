@@ -70,6 +70,7 @@
           packages = with pkgs; [
             git
             cargo-nextest
+            python3
           ];
 
           # Make the wgpu/vulkan loader discoverable for `--features
