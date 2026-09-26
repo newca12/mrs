@@ -41,16 +41,30 @@ STRICT_TIME="${CERT_STRICT_TIME:-120}"
 JOBS="${CERT_JOBS:-4}"
 OUT=""
 
+# `--edition` and the problems root must agree with what phase 1 actually ran
+# against. Both were previously reconstructed from --output, which has no
+# relation to either: for the documented
+#     --output results/cert-j13
+# the audit was pointed at `crates/mrs-bench/problems/crates` and could not
+# resolve a single problem.
 args=("$@")
+EDITION="casc-30"
 for ((i = 0; i < ${#args[@]}; i++)); do
     case "${args[i]}" in
-        --output) OUT="${args[i + 1]:-}" ;;
+        --output)  OUT="${args[i + 1]:-}" ;;
+        --edition) EDITION="${args[i + 1]:-}" ;;
     esac
 done
 [[ -n "${OUT}" ]] || { echo "campaign: --output DIR is required" >&2; exit 2; }
 
+# Always build (cargo no-ops when up to date). Building only when the binary is
+# *missing* is not enough: the audit is a measurement of the current kernel, and
+# a stale binary silently applies yesterday's rules. That happened here -- a
+# campaign re-audited with a pre-fix `audit_casc_proofs` and reported every
+# model as invalid, which is indistinguishable from "the prover emitted none".
 AUDIT_BIN="${ROOT}/target/release/audit_casc_proofs"
-[[ -x "${AUDIT_BIN}" ]] || (cd "${ROOT}" && cargo build --release -p mrs-bench --bin audit_casc_proofs)
+(cd "${ROOT}" && cargo build --release -p mrs-bench --bin audit_casc_proofs)
+[[ -x "${AUDIT_BIN}" ]] || { echo "campaign: ${AUDIT_BIN} not built" >&2; exit 2; }
 
 echo "== phase 1/2: search (normal route, no self-check) =="
 (cd "${ROOT}" && ./crates/mrs-bench/casc.sh "${args[@]}")
@@ -60,9 +74,34 @@ if [[ ! -d "${RUN_DIR}" ]]; then RUN_DIR="${OUT}"; fi
 echo "run directory: ${RUN_DIR}"
 
 echo "== phase 2/2: strict-kernel audit of the archived proofs =="
+# Resolve the corpus the same way casc.sh does (CASC_PROBLEMS_ROOT, else
+# problems/<edition>), and prefer the run's own record over both: it is what
+# phase 1 provably used.
+PROBLEMS_DIR=""
+if [[ -f "${RUN_DIR}/run_meta.txt" ]]; then
+    PROBLEMS_DIR="$(sed -n 's/^problems_dir=//p' "${RUN_DIR}/run_meta.txt" | head -1)"
+fi
+if [[ -z "${PROBLEMS_DIR}" || ! -d "${PROBLEMS_DIR}" ]]; then
+    PROBLEMS_DIR="${CASC_PROBLEMS_ROOT:-${ROOT}/crates/mrs-bench/problems/${EDITION}}"
+fi
+# An audit that cannot see the problems would report every proof as unknown, or
+# nothing at all. Refuse to start rather than produce a coverage number.
+if [[ ! -d "${PROBLEMS_DIR}" ]]; then
+    echo "campaign: problems root '${PROBLEMS_DIR}' does not exist." >&2
+    echo "campaign: pass --edition <name> (or set CASC_PROBLEMS_ROOT) so it names a" >&2
+    echo "           corpus under crates/mrs-bench/problems/." >&2
+    exit 2
+fi
+if ! compgen -G "${PROBLEMS_DIR}/*/*.p" >/dev/null && \
+   ! compgen -G "${PROBLEMS_DIR}/*/Problems/*.p" >/dev/null; then
+    echo "campaign: no .p files under '${PROBLEMS_DIR}'; refusing to audit" >&2
+    echo "           ${#JOBS} job(s) of proofs against an empty corpus." >&2
+    exit 2
+fi
+echo "audit problems root: ${PROBLEMS_DIR}"
 "${AUDIT_BIN}" \
     --run "${RUN_DIR}" \
-    --problems-dir "${ROOT}/crates/mrs-bench/problems/$(basename "${OUT%%/*}" 2>/dev/null || echo casc-30)" \
+    --problems-dir "${PROBLEMS_DIR}" \
     --checks strict \
     --strict-time "${STRICT_TIME}" \
     --jobs "${JOBS}" \

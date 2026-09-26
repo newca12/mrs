@@ -26,6 +26,17 @@
 #   --jobs        <N>            Parallel jobs (default: 1)
 #   --output      <dir>          Output directory
 #                                (default: crates/mrs-bench/results/<edition>/TIMESTAMP)
+#   --subset      <file>         Restrict the run to the problems named in
+#                                <file>, one per line. Blank lines and lines
+#                                starting with '#' are ignored; a line may be a
+#                                bare problem name or "<DIVISION>/<problem>".
+#                                Names not present in the division are reported
+#                                and skipped, so a subset file can be reused
+#                                across editions. Intended for re-measuring a
+#                                handful of problems (a certification campaign,
+#                                a regression) without staging a subset edition.
+#   --subset-list-out <file>     Write the subset of names that actually
+#                                resolved, for feeding back into --subset.
 #
 # Environment:
 #   CASC_PROBLEMS_ROOT  Override the problem corpus root (default:
@@ -64,6 +75,8 @@ JOBS=1
 OUTPUT=""
 USE_CASC_TIMES=0    # 0 = use TIME_LIMIT for all; 1 = use CASC-30 official times
 RUN_SANITY_CHECK=0  # 1 = run pre-flight dual_run_sanity_check on canaries
+SUBSET_FILE=""      # optional path to a newline-separated problem subset
+SUBSET_LIST_OUT=""  # optional path to write the resolved subset back out
 
 # Official CASC-30 wall-clock time limits per division (seconds).
 # SLH is CPU-time limited but we approximate with wall clock here.
@@ -108,6 +121,8 @@ while [[ $# -gt 0 ]]; do
         --sanity-check) RUN_SANITY_CHECK=1; shift ;;
         --jobs)       JOBS="$2";       shift 2 ;;
         --output)     OUTPUT="$2";     shift 2 ;;
+    --subset)     SUBSET_FILE="$2"; shift 2 ;;
+    --subset-list-out) SUBSET_LIST_OUT="$2"; shift 2 ;;
         --time-*)
             # --time-DIV N  e.g. --time-feq 240
             div_key="${1#--time-}"   # strip "--time-"
@@ -272,8 +287,88 @@ fi
 CSV="${OUTPUT}/run.csv"
 echo "edition,division,problem,system,timeout,szs_status,expected,verdict,wall_time_s,peak_memory_mb,failure_detail,raw_stdout_path,raw_stderr_path,raw_stdout_sha256,raw_stderr_sha256" > "${CSV}"
 
+# Warn on a stale `mrs`. The run itself is unaffected, but a run.csv from an
+# out-of-date prover looks exactly like a measurement of the current one.
+MRS_BIN="${SCRIPT_DIR}/systems/mrs/mrs"
+if [[ ! -e "${MRS_BIN}" ]]; then
+    MRS_BIN="${ROOT:-${SCRIPT_DIR}/../..}/target/release/mrs"
+    if [[ -e "${MRS_BIN}" ]] \
+       && [[ -n "$(find "${SCRIPT_DIR}/../.." -path '*/target' -prune -o \
+                          -name '*.rs' -newer "${MRS_BIN}" -print -quit 2>/dev/null)" ]]; then
+        echo "WARNING: ${MRS_BIN} is older than the sources; run 'cargo build --release'" >&2
+        echo "         or the results below describe a stale prover." >&2
+    fi
+fi
+
+# Record how this run was resolved, so a post-hoc tool (certification_campaign.sh
+# in particular) can find the corpus it used instead of guessing from the output
+# path. The output path says nothing about the problems root: an audit pointed at
+# a directory derived from it silently replays the wrong corpus, or none at all.
+{
+    echo "edition=${EDITION}"
+    echo "problems_dir=${PROBLEMS_DIR}"
+    echo "divisions=${DIVISIONS}"
+    echo "systems=${SYSTEMS}"
+    echo "time_limit=${TIME_LIMIT}"
+    echo "use_casc_times=${USE_CASC_TIMES}"
+    echo "subset_file=${SUBSET_FILE}"
+} > "${OUTPUT}/run_meta.txt"
+
 JOBS_FILE="${OUTPUT}/.jobs"
 > "${JOBS_FILE}"
+
+# ---------- optional subset filter ----------
+# Names wanted, upper-cased for a case-insensitive match, plus a map from
+# upper-case name to the division it was requested for ("" when unqualified).
+SUBSET_WANT=()
+SUBSET_WANT_BY_DIV=()
+SUBSET_WANT_SEEN=""
+if [[ -n "${SUBSET_FILE}" ]]; then
+    if [[ ! -f "${SUBSET_FILE}" ]]; then
+        echo "ERROR: --subset file not found: ${SUBSET_FILE}" >&2
+        exit 1
+    fi
+    while IFS= read -r entry || [[ -n "${entry}" ]]; do
+        entry="${entry%%#*}"
+        entry="$(echo "${entry}" | tr -d '[:space:]')"
+        [[ -z "${entry}" ]] && continue
+        wanted_div=""
+        if [[ "${entry}" == */* ]]; then
+            wanted_div="${entry%%/*}"
+            entry="${entry##*/}"
+        fi
+        entry="${entry%.p}"
+        key="$(echo "${entry}" | tr '[:lower:]' '[:upper:]')"
+        [[ -z "${key}" ]] && continue
+        SUBSET_WANT+=("${entry}")
+        SUBSET_WANT_BY_DIV+=("${wanted_div}")
+        SUBSET_WANT_SEEN+=" ${key}"
+    done < "${SUBSET_FILE}"
+    echo "[casc] subset: ${#SUBSET_WANT[@]} problem name(s) from ${SUBSET_FILE}" >&2
+fi
+
+# Did the caller ask for this problem, in this division?
+subset_wants() {
+    local div="$1" problem="$2" index=0
+    [[ -z "${SUBSET_FILE}" ]] && return 0
+    local key
+    key="$(echo "${problem%.p}" | tr '[:lower:]' '[:upper:]')"
+    for name in "${SUBSET_WANT[@]}"; do
+        if [[ "$(echo "${name}" | tr '[:lower:]' '[:upper:]')" == "${key}" ]]; then
+            local wanted="${SUBSET_WANT_BY_DIV[$index]}"
+            # A qualified entry pins the division; an unqualified one matches
+            # whichever division offers the problem.
+            if [[ -z "${wanted}" ]] \
+               || [[ "$(echo "${wanted}" | tr '[:lower:]' '[:upper:]')" == "$(echo "${div}" | tr '[:lower:]' '[:upper:]')" ]]; then
+                SUBSET_RESOLVED+=("${div}/${problem%.p}")
+                return 0
+            fi
+        fi
+        index=$((index + 1))
+    done
+    return 1
+}
+SUBSET_RESOLVED=()
 
 total_problems=0
 for div in "${DIVISION_LIST[@]}"; do
@@ -335,7 +430,15 @@ for div in "${DIVISION_LIST[@]}"; do
     t="$(div_time "${div}")"
     while IFS= read -r problem || [[ -n "${problem}" ]]; do
         [[ -z "${problem}" ]] && continue
+        # A subset entry may name a problem that this edition does not carry.
+        if ! subset_wants "${div}" "${problem}"; then
+            continue
+        fi
         prob_path="${division_root}/${problem}.p"
+        if [[ ! -f "${prob_path}" ]]; then
+            echo "WARNING: ${div}/${problem}: listed but ${prob_path} is missing" >&2
+            continue
+        fi
         for sys in "${SYSTEMS_LIST[@]}"; do
             # Fields: div  problem  prob_path  sys  time_limit
             printf '%s\t%s\t%s\t%s\t%s\n' \
@@ -344,6 +447,45 @@ for div in "${DIVISION_LIST[@]}"; do
         done
     done < "${list}"
 done
+
+# Report subset names that never matched, so a typo cannot quietly shrink a
+# run to zero problems and look like "nothing to do".
+if [[ -n "${SUBSET_FILE}" ]]; then
+    missing=()
+    index=0
+    for name in "${SUBSET_WANT[@]}"; do
+        key="$(echo "${name}" | tr '[:lower:]' '[:upper:]')"
+        found=0
+        for resolved in "${SUBSET_RESOLVED[@]+"${SUBSET_RESOLVED[@]}"}"; do
+            if [[ "$(echo "${resolved##*/}" | tr '[:lower:]' '[:upper:]')" == "${key}" ]]; then
+                found=1
+                break
+            fi
+        done
+        (( found )) || missing+=("${name}")
+        index=$((index + 1))
+    done
+    for name in "${missing[@]+"${missing[@]}"}"; do
+        echo "WARNING: subset entry '${name}' matched no problem in --divisions ${DIVISIONS}" >&2
+    done
+    # Every requested name missing means the run is not the one that was asked
+    # for. Proceeding would write a run.csv with no rows, which reads as a
+    # successful measurement of nothing.
+    if (( ${#SUBSET_RESOLVED[@]} == 0 )); then
+        echo "ERROR: no problem in --subset ${SUBSET_FILE} matched a problem in" >&2
+        echo "       --edition ${EDITION} --divisions ${DIVISIONS}." >&2
+        echo "       Check the problem names, or widen --divisions/--edition." >&2
+        exit 1
+    fi
+    echo "[casc] subset: ${#SUBSET_RESOLVED[@]} of ${#SUBSET_WANT[@]} name(s) resolved, ${total_problems} job(s)" >&2
+    if [[ -n "${SUBSET_LIST_OUT}" ]]; then
+        printf '%s\n' "${SUBSET_RESOLVED[@]+"${SUBSET_RESOLVED[@]}"}" | sort -u > "${SUBSET_LIST_OUT}"
+        echo "[casc] subset: resolved names written to ${SUBSET_LIST_OUT}" >&2
+    fi
+    printf '%s\n' "${SUBSET_RESOLVED[@]+"${SUBSET_RESOLVED[@]}"}" | sort -u \
+        > "${OUTPUT}/subset_resolved.txt"
+    echo "subset_resolved=${OUTPUT}/subset_resolved.txt" >> "${OUTPUT}/run_meta.txt"
+fi
 
 # Build a human-readable summary of per-division times for the log.
 div_times_summary=""
