@@ -50,6 +50,9 @@ const SAT_TRACE_MAX_EVENTS: usize = 16_000_000;
 /// the kernel enforces matching Tier-2 limits on its side.
 const SAT_EMIT_MAX_MANIFEST: usize = 2_500_000;
 const SAT_EMIT_MAX_TRACE_BYTES: usize = 256 * 1024 * 1024;
+/// Avoid allocating a dense finite-model table whose size is not bounded by
+/// the SAT atom/ground-clause caps (for example, many predicates of arity 8).
+const MODEL_TABLE_MAX_ENTRIES: usize = mrs_core::model::MAX_MODEL_TABLE_ENTRIES;
 
 /// One propositionally encoded ground clause plus its source clause id.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -614,22 +617,33 @@ pub(crate) fn build_model_certificate(
         return None;
     }
     let domain_size = domain.len();
-    let position = |name: &str| domain.iter().position(|entry| entry == name);
+    let positions: BTreeMap<&str, usize> = domain
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (name.as_str(), index))
+        .collect();
 
     // Seed every table with `false`, then set the atoms the solver assigned.
-    let mut tables: BTreeMap<String, PredicateTable> = predicates
-        .iter()
-        .map(|(name, arity)| {
-            let length = domain_size.checked_pow(*arity as u32)?;
-            Some((
-                name.clone(),
-                PredicateTable {
-                    arity: *arity,
-                    table: vec![false; length],
-                },
-            ))
-        })
-        .collect::<Option<_>>()?;
+    let mut total_entries = 0usize;
+    let mut tables = BTreeMap::new();
+    for (name, arity) in &predicates {
+        let length = if *arity == 0 {
+            1
+        } else {
+            domain_size.checked_pow(u32::try_from(*arity).ok()?)?
+        };
+        total_entries = total_entries.checked_add(length)?;
+        if total_entries > MODEL_TABLE_MAX_ENTRIES {
+            return None;
+        }
+        tables.insert(
+            name.clone(),
+            PredicateTable {
+                arity: *arity,
+                table: vec![false; length],
+            },
+        );
+    }
 
     for (index, atom) in ordered_atoms.iter().enumerate() {
         let Atom::Pred(predicate, args) = atom else {
@@ -650,7 +664,7 @@ pub(crate) fn build_model_certificate(
             if !inner.is_empty() {
                 return None;
             }
-            tuple.push(position(symbols.resolve(*constant))?);
+            tuple.push(*positions.get(symbols.resolve(*constant))?);
         }
         let table = tables.get_mut(name)?;
         let index = table_index(table.arity, domain_size, &tuple)?;

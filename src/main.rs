@@ -259,6 +259,10 @@ fn main() {
                     );
                     process::exit(1);
                 });
+                if proof_bytes_limit == 0 {
+                    eprintln!("Error: --proof-bytes-limit must be greater than zero");
+                    process::exit(1);
+                }
             }
             // Deprecated alias: --fast is now --schedule fast.
             "--fast" => {
@@ -833,7 +837,6 @@ fn main() {
                     time_limit: Duration::from_secs(time_secs),
                     self_check_reserve: Duration::from_secs(2),
                     problem_path: path.clone(),
-                    problem_name: problem_name.to_string(),
                     input_text: input.clone(),
                     include_root: include_root.clone(),
                     has_includes: !problem.includes.is_empty(),
@@ -1057,8 +1060,20 @@ fn main() {
     {
         // A `% Proof :` link inside the block, so a checker holding only this
         // output can find the problem the model has to satisfy.
-        println!("% Proof : {}", path);
-        print!("{}", certificate.to_szs_block(problem_name));
+        let model_block = format!(
+            "% Proof : {}\n{}",
+            path,
+            certificate.to_szs_block(problem_name)
+        );
+        if model_block.len() > proof_bytes_limit {
+            eprintln!(
+                "% Model certificate omitted: {} bytes exceeds the --proof-bytes-limit of {} bytes",
+                model_block.len(),
+                proof_bytes_limit
+            );
+        } else {
+            print!("{model_block}");
+        }
     } else if emit_extras
         && matches!(
             status,

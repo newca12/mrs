@@ -23,7 +23,6 @@ pub struct AsyncCoordinatorConfig {
     pub time_limit: Duration,
     pub self_check_reserve: Duration,
     pub problem_path: String,
-    pub problem_name: String,
     pub input_text: String,
     pub include_root: Option<PathBuf>,
     pub has_includes: bool,
@@ -269,32 +268,34 @@ fn verify_candidate_proof(
         (verdict, reason)
     } else {
         let counter = SELF_VERIFY_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let temp_path = std::env::temp_dir().join(format!(
-            "mrs_self_verify_{}_{}_{}.p",
-            process::id(),
-            counter,
-            config.problem_name
-        ));
-        match std::fs::write(&temp_path, temp_proof_text) {
-            Ok(()) => match mrs_proover::load::load(&temp_path, tptp_root.as_deref()) {
-                Ok(job) => {
-                    let verdict = mrs_proover::strict::verify_loaded_job_default(&job);
-                    let _ = std::fs::remove_file(&temp_path);
-                    let reason = if matches!(verdict, KernelVerdict::Certified) {
-                        None
-                    } else {
-                        Some(format!("strict self-check returned {verdict}"))
-                    };
-                    (verdict, reason)
-                }
+        let temp_file = tempfile::Builder::new()
+            .prefix(&format!("mrs_self_verify_{}_{}", process::id(), counter))
+            .suffix(".p")
+            .tempfile();
+        match temp_file {
+            Ok(temp_file) => match std::fs::write(temp_file.path(), temp_proof_text) {
+                Ok(()) => match mrs_proover::load::load(temp_file.path(), tptp_root.as_deref()) {
+                    Ok(job) => {
+                        let verdict = mrs_proover::strict::verify_loaded_job_default(&job);
+                        let reason = if matches!(verdict, KernelVerdict::Certified) {
+                            None
+                        } else {
+                            Some(format!("strict self-check returned {verdict}"))
+                        };
+                        (verdict, reason)
+                    }
+                    Err(error) => {
+                        let msg = format!("strict self-check could not load proof: {error}");
+                        (KernelVerdict::Inconclusive(msg.clone()), Some(msg))
+                    }
+                },
                 Err(error) => {
-                    let _ = std::fs::remove_file(&temp_path);
-                    let msg = format!("strict self-check could not load proof: {error}");
+                    let msg = format!("strict self-check could not write proof: {error}");
                     (KernelVerdict::Inconclusive(msg.clone()), Some(msg))
                 }
             },
             Err(error) => {
-                let msg = format!("strict self-check could not write proof: {error}");
+                let msg = format!("strict self-check could not create proof file: {error}");
                 (KernelVerdict::Inconclusive(msg.clone()), Some(msg))
             }
         }

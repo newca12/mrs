@@ -4328,6 +4328,34 @@ fn atom_term_size(atom: &Atom) -> usize {
     }
 }
 
+fn clause_term_size(clause: &[Literal]) -> usize {
+    clause.iter().fold(0usize, |size, literal| {
+        size.saturating_add(atom_term_size(&literal.atom))
+    })
+}
+
+fn term_depth(term: &Term) -> usize {
+    match term {
+        Term::Var(_) => 0,
+        Term::App(_, args) => 1 + args.iter().map(term_depth).max().unwrap_or(0),
+    }
+}
+
+fn atom_term_depth(atom: &Atom) -> usize {
+    match atom {
+        Atom::Pred(_, args) => args.iter().map(term_depth).max().unwrap_or(0),
+        Atom::Eq(left, right) => term_depth(left).max(term_depth(right)),
+    }
+}
+
+fn clause_term_depth(clause: &[Literal]) -> usize {
+    clause
+        .iter()
+        .map(|literal| atom_term_depth(&literal.atom))
+        .max()
+        .unwrap_or(0)
+}
+
 fn canonicalize_equivalence(
     formula: &Formula,
     steps: &mut usize,
@@ -7895,6 +7923,13 @@ fn replay_recorded_demodulation(
     if steps.len() > limits.max_equivalence_steps {
         return KernelVerdict::Inconclusive("demodulation replay exceeds strict step limit".into());
     }
+    let target_size = clause_term_size(target);
+    let goal_size = clause_term_size(goal);
+    let size_cap = goal_size
+        .saturating_mul(4)
+        .max(goal_size.saturating_add(1024))
+        .max(target_size)
+        .min(limits.max_formula_nodes);
     // Orientation table, resolved once: `None` for the rewritten clause and for
     // a parent that is not a plain positive unit equality.
     let mut orientations: Vec<Option<Vec<(Term, Term)>>> = Vec::with_capacity(parents.len());
@@ -7959,26 +7994,64 @@ fn replay_recorded_demodulation(
                 );
             }
             let step = &steps[index];
+            if clause_term_size(&current) > size_cap {
+                return KernelVerdict::Inconclusive(
+                    "demodulation recorded state exceeds strict size bound".into(),
+                );
+            }
+            if clause_term_depth(&current) > limits.max_term_depth {
+                return KernelVerdict::Inconclusive(
+                    "demodulation recorded state exceeds strict term-depth bound".into(),
+                );
+            }
             let rules = orientations[steps[index].rule_parent]
                 .as_ref()
                 .expect("validated above");
             let (left, right) = &rules[choice[index]];
-            let literal = &mut current[step.literal];
+            let Some(literal) = current.get(step.literal) else {
+                return KernelVerdict::Inconclusive(
+                    "demodulation step selects a missing literal".into(),
+                );
+            };
             let Some(subterm) = lit_subterm(&literal.atom, &step.term_path) else {
                 choice[index] += 1;
                 continue;
             };
             let mut substitution = HashMap::new();
             if match_pattern(left, &subterm, &mut substitution) {
-                let budget = limits.max_formula_nodes.min(
-                    atom_term_size(&literal.atom)
-                        .saturating_mul(4)
-                        .saturating_add(1024),
-                );
+                let other_literals_size = current
+                    .iter()
+                    .enumerate()
+                    .filter(|(literal_index, _)| *literal_index != step.literal)
+                    .fold(0usize, |size, (_, literal)| {
+                        size.saturating_add(atom_term_size(&literal.atom))
+                    });
+                let literal_budget = size_cap.saturating_sub(other_literals_size);
+                let atom_size = atom_term_size(&literal.atom);
+                let term_budget =
+                    literal_budget.saturating_sub(atom_size.saturating_sub(term_size(&subterm)));
+                let replacement_ancestor_depth = step.term_path.len().saturating_sub(1);
+                let max_result_depth = limits
+                    .max_term_depth
+                    .saturating_sub(replacement_ancestor_depth);
                 if let Some(instantiated) =
-                    instantiate_term_bounded(right, &substitution, budget, limits.max_term_depth)
-                    && replace_lit_subterm(literal, &step.term_path, instantiated)
+                    instantiate_term_bounded(right, &substitution, term_budget, max_result_depth)
                 {
+                    let resulting_total = other_literals_size
+                        .saturating_add(atom_size.saturating_sub(term_size(&subterm)))
+                        .saturating_add(term_size(&instantiated));
+                    if resulting_total > size_cap {
+                        choice[index] += 1;
+                        continue;
+                    }
+                    if !replace_lit_subterm(
+                        &mut current[step.literal],
+                        &step.term_path,
+                        instantiated,
+                    ) {
+                        choice[index] += 1;
+                        continue;
+                    }
                     undo[index] = Some(subterm);
                     trials += 1;
                     index += 1;

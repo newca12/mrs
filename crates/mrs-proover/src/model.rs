@@ -7,16 +7,34 @@ pub use mrs_proof_kernel::model::{
 use mrs_tptp::parse_tptp;
 use std::path::Path;
 
+const MAX_MODEL_INPUT_BYTES: usize = 32 * 1024 * 1024;
+
 /// Verify a model certificate in JSON or TPTP format against a problem file.
 pub fn verify_model_file(
     problem_path: &Path,
     model_certificate_json: &str,
     expected_status: Option<&str>,
 ) -> ModelVerdict {
-    let problem_text = match std::fs::read_to_string(problem_path) {
-        Ok(t) => t,
+    let problem_text = match std::fs::File::open(problem_path).and_then(|file| {
+        use std::io::Read as _;
+        let mut bounded = file.take((MAX_MODEL_INPUT_BYTES + 1) as u64);
+        let mut text = String::new();
+        bounded.read_to_string(&mut text).map(|_| text)
+    }) {
+        Ok(text) if text.len() <= MAX_MODEL_INPUT_BYTES => text,
+        Ok(_) => {
+            return ModelVerdict::Inconclusive(
+                "problem file exceeds model verification size limit".into(),
+            );
+        }
         Err(e) => return ModelVerdict::Inconclusive(format!("read problem file: {e}")),
     };
+
+    if model_certificate_json.len() > MAX_MODEL_INPUT_BYTES {
+        return ModelVerdict::Inconclusive(
+            "model certificate exceeds model verification size limit".into(),
+        );
+    }
 
     let problem = match parse_tptp(&problem_text) {
         Ok(p) => p,
@@ -39,6 +57,13 @@ pub fn verify_model_text(
     model_certificate_json: &str,
     expected_status: Option<&str>,
 ) -> ModelVerdict {
+    if problem_text.len() > MAX_MODEL_INPUT_BYTES
+        || model_certificate_json.len() > MAX_MODEL_INPUT_BYTES
+    {
+        return ModelVerdict::Inconclusive(
+            "model verification input exceeds strict byte limit".into(),
+        );
+    }
     let problem = match parse_tptp(problem_text) {
         Ok(p) => p,
         Err(e) => return ModelVerdict::Inconclusive(format!("parse problem text: {e}")),

@@ -13,6 +13,11 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+/// Maximum aggregate number of dense interpretation entries accepted in a
+/// finite-model certificate. Shared by producers and the independent kernel
+/// so neither side constructs or scans oversized tables.
+pub const MAX_MODEL_TABLE_ENTRIES: usize = 4_000_000;
+
 /// Equality semantics required for model evaluation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EqualitySemantics {
