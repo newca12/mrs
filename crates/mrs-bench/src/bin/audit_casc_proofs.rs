@@ -2,6 +2,7 @@
 //! verification policies. This tool never invokes MRS: it consumes the raw
 //! stdout archived by `casc.sh` and runs one or more checks on that artifact.
 
+use mrs_proof_kernel::model::ModelEvaluation;
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
