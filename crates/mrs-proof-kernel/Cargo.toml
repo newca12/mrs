@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 mrs-core = { workspace = true, features = ["proover"] }
+mrs-cnf = { workspace = true }
 mrs-tptp = { workspace = true, features = ["proover"] }
 mrs-cadical = { workspace = true }
 sha2 = { workspace = true }

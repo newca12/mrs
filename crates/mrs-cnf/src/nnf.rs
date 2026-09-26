@@ -216,3 +216,148 @@ mod tests {
         assert_eq!(fmt(&result, &syms), "((~(p) | q) & (p | ~(q)))");
     }
 }
+
+/// Convert to NNF while charging each generated formula node before
+/// constructing it, and refuse past `max_nodes` or `max_depth`.
+///
+/// [`to_nnf`] is unbounded, and NNF *distributes* nested biconditionals: a
+/// right-nested `<=>` chain of depth n expands to up to 2^n nodes. Every
+/// conversion that a caller cannot afford to complete must use this instead —
+/// an exponential expansion is a denial-of-service vector for anything that
+/// normalises proof or problem text, and the ProoVer-2026 corpus contains a
+/// 100-term chain in `PRV043+1`.
+pub fn to_nnf_bounded(formula: &Formula, max_nodes: usize, max_depth: usize) -> Option<Formula> {
+    fn visit(
+        formula: &Formula,
+        negated: bool,
+        nodes: &mut usize,
+        max_nodes: usize,
+        depth: usize,
+        max_depth: usize,
+    ) -> Option<Formula> {
+        if depth > max_depth {
+            return None;
+        }
+        *nodes = nodes.checked_add(1)?;
+        if *nodes > max_nodes {
+            return None;
+        }
+        let make = |node: Formula, nodes: &mut usize| {
+            *nodes = nodes.checked_add(1)?;
+            (*nodes <= max_nodes).then_some(node)
+        };
+        match formula {
+            crate::Formula::Atom(atom) => {
+                let atom = crate::Formula::Atom(atom.clone());
+                if negated {
+                    make(crate::Formula::neg(atom), nodes)
+                } else {
+                    Some(atom)
+                }
+            }
+            crate::Formula::True => Some(if negated {
+                crate::Formula::False
+            } else {
+                crate::Formula::True
+            }),
+            crate::Formula::False => Some(if negated {
+                crate::Formula::True
+            } else {
+                crate::Formula::False
+            }),
+            crate::Formula::Neg(inner) => {
+                visit(inner, !negated, nodes, max_nodes, depth + 1, max_depth)
+            }
+            crate::Formula::And(parts) | crate::Formula::Or(parts) => {
+                let is_and = matches!(formula, crate::Formula::And(_)) != negated;
+                let mut converted = Vec::with_capacity(parts.len());
+                for part in parts {
+                    converted.push(visit(
+                        part,
+                        negated,
+                        nodes,
+                        max_nodes,
+                        depth + 1,
+                        max_depth,
+                    )?);
+                }
+                let result = if is_and {
+                    crate::Formula::and(converted)
+                } else {
+                    crate::Formula::or(converted)
+                };
+                make(result, nodes)
+            }
+            crate::Formula::Implies(left, right) => {
+                if negated {
+                    let left = visit(left, false, nodes, max_nodes, depth + 1, max_depth)?;
+                    let right = visit(right, true, nodes, max_nodes, depth + 1, max_depth)?;
+                    make(crate::Formula::and(vec![left, right]), nodes)
+                } else {
+                    let left = visit(left, true, nodes, max_nodes, depth + 1, max_depth)?;
+                    let right = visit(right, false, nodes, max_nodes, depth + 1, max_depth)?;
+                    make(crate::Formula::or(vec![left, right]), nodes)
+                }
+            }
+            crate::Formula::Iff(left, right) => {
+                let (
+                    first_left_negated,
+                    first_right_negated,
+                    second_left_negated,
+                    second_right_negated,
+                ) = if negated {
+                    (false, false, true, true)
+                } else {
+                    (true, false, false, true)
+                };
+                let first_left = visit(
+                    left,
+                    first_left_negated,
+                    nodes,
+                    max_nodes,
+                    depth + 1,
+                    max_depth,
+                )?;
+                let first_right = visit(
+                    right,
+                    first_right_negated,
+                    nodes,
+                    max_nodes,
+                    depth + 1,
+                    max_depth,
+                )?;
+                let first = make(crate::Formula::or(vec![first_left, first_right]), nodes)?;
+                let second_left = visit(
+                    left,
+                    second_left_negated,
+                    nodes,
+                    max_nodes,
+                    depth + 1,
+                    max_depth,
+                )?;
+                let second_right = visit(
+                    right,
+                    second_right_negated,
+                    nodes,
+                    max_nodes,
+                    depth + 1,
+                    max_depth,
+                )?;
+                let second = make(crate::Formula::or(vec![second_left, second_right]), nodes)?;
+                make(crate::Formula::and(vec![first, second]), nodes)
+            }
+            crate::Formula::Forall(variable, body) | crate::Formula::Exists(variable, body) => {
+                let is_forall = matches!(formula, crate::Formula::Forall(..)) != negated;
+                let body = visit(body, negated, nodes, max_nodes, depth + 1, max_depth)?;
+                let result = if is_forall {
+                    crate::Formula::forall(*variable, body)
+                } else {
+                    crate::Formula::exists(*variable, body)
+                };
+                make(result, nodes)
+            }
+        }
+    }
+
+    visit(formula, false, &mut 0, max_nodes, 0, max_depth)
+}
