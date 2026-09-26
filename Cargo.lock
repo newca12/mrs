@@ -3757,6 +3757,7 @@ name = "mrs-proof-kernel"
 version = "0.2.3"
 dependencies = [
  "mrs-cadical",
+ "mrs-cnf",
  "mrs-core",
  "mrs-tptp",
  "serde",
