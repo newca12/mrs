@@ -46,6 +46,10 @@ fn main() {
     let mut profile_json_mode = false;
     let mut goal_transform: Option<mrs_cnf::GoalTransformMode> = None;
     let mut certify_ordered = false;
+    // Default 8 MiB: below the smallest output allowance CASC has stated
+    // (10MB per system in CASC-23), so a runaway AVATAR certificate cannot
+    // get the process killed before the SZS status line is flushed.
+    let mut proof_bytes_limit: usize = 8 * 1024 * 1024;
     #[cfg(feature = "ml")]
     let mut ml_premise_weights: Option<String> = None;
 
@@ -242,6 +246,19 @@ fn main() {
             "--certify-ordered" => {
                 certify_ordered = true;
             }
+            "--proof-bytes-limit" => {
+                let val = args.next().unwrap_or_else(|| {
+                    eprintln!("Error: --proof-bytes-limit requires a byte count");
+                    process::exit(1);
+                });
+                proof_bytes_limit = val.parse().unwrap_or_else(|_| {
+                    eprintln!(
+                        "Error: --proof-bytes-limit requires a byte count, got {:?}",
+                        val
+                    );
+                    process::exit(1);
+                });
+            }
             // Deprecated alias: --fast is now --schedule fast.
             "--fast" => {
                 schedule_name = Some("fast".to_string());
@@ -281,7 +298,7 @@ fn main() {
             _ => {
                 if path.is_some() {
                     eprintln!(
-                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--goal-transform MODE] [--certify-ordered] [--no-bce] [--no-ple] [--no-instgen] [--no-lrs] [--no-sharing] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"
+                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--goal-transform MODE] [--certify-ordered] [--proof-bytes-limit N] [--no-bce] [--no-ple] [--no-instgen] [--no-lrs] [--no-sharing] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"
                     );
                     process::exit(1);
                 }
@@ -291,7 +308,7 @@ fn main() {
     }
     let Some(path) = path else {
         eprintln!(
-            "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--goal-transform MODE] [--certify-ordered] [--no-bce] [--no-ple] [--no-instgen] [--no-lrs] [--no-sharing] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"
+            "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--goal-transform MODE] [--certify-ordered] [--proof-bytes-limit N] [--no-bce] [--no-ple] [--no-instgen] [--no-lrs] [--no-sharing] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"
         );
         eprintln!("  An automated theorem prover for TPTP problems.");
         eprintln!(
@@ -979,7 +996,28 @@ fn main() {
     #[cfg(not(feature = "proover"))]
     let emit_extras = true;
 
-    if emit_extras
+    // Proof-size budget. CASC limits how much output a system may produce ("a
+    // limit, dependent on the disk space available, is imposed on the amount
+    // of stdout and stderr output"; at least 10MB per system in CASC-23), and
+    // an over-budget proof can get the process killed before it ever flushes
+    // its SZS status line — losing the solve as well as the proof. So an
+    // oversized proof is dropped with a diagnostic instead: the status line is
+    // the part the competition scores.
+    let proof_bytes = match &result {
+        SearchResult::Refutation(_, tstp) => tstp.len(),
+        _ => 0,
+    };
+    let proof_nodes = match &result {
+        SearchResult::Refutation(_, tstp) => count_proof_nodes(tstp),
+        _ => 0,
+    };
+
+    if emit_extras && proof_certified && proof_bytes > proof_bytes_limit {
+        eprintln!(
+            "% Proof omitted: {} bytes / {} nodes exceeds the --proof-bytes-limit of {} bytes",
+            proof_bytes, proof_nodes, proof_bytes_limit
+        );
+    } else if emit_extras
         && proof_certified
         && let SearchResult::Refutation(_, tstp_proof) = &result
     {
@@ -997,8 +1035,19 @@ fn main() {
             self_check,
             proof_certified,
             &result,
+            (proof_nodes, proof_bytes, proof_bytes > proof_bytes_limit),
         );
     }
+}
+
+/// Counts the TSTP steps in a formatted proof, for telemetry.
+fn count_proof_nodes(tstp: &str) -> usize {
+    tstp.lines()
+        .filter(|line| {
+            let line = line.trim_start();
+            line.starts_with("cnf(") || line.starts_with("fof(")
+        })
+        .count()
 }
 
 /// Returns peak virtual memory in MB by reading /proc/self/status (Linux only).
@@ -1014,6 +1063,7 @@ fn peak_memory_mb() -> Option<u64> {
 }
 
 /// Prints a Vampire-style statistics block to stdout.
+#[allow(clippy::too_many_arguments)]
 fn print_statistics(
     status: SzsStatus,
     elapsed: Duration,
@@ -1022,6 +1072,7 @@ fn print_statistics(
     self_check: bool,
     proof_certified: bool,
     final_result: &mrs_search::SearchResult,
+    (proof_nodes, proof_bytes, proof_omitted): (usize, usize, bool),
 ) {
     let termination_reason = match status {
         SzsStatus::Theorem | SzsStatus::Unsatisfiable => "Refutation",
@@ -1035,6 +1086,18 @@ fn print_statistics(
     println!("% Version: mrs {}", env!("CARGO_PKG_VERSION"));
     println!("% Termination reason: {}", termination_reason);
     println!("% Time elapsed: {:.3} s", elapsed.as_secs_f64());
+    if proof_bytes > 0 {
+        println!(
+            "% Proof: {} nodes, {} bytes{}",
+            proof_nodes,
+            proof_bytes,
+            if proof_omitted {
+                " (omitted: over the --proof-bytes-limit)"
+            } else {
+                ""
+            }
+        );
+    }
     if let Some(mb) = peak_memory_mb() {
         println!("% Peak memory usage: {} MB", mb);
     }
@@ -1099,6 +1162,12 @@ fn print_statistics(
     };
 
     let mut detail_str = report.telemetry_detail(search_result_name);
+    if proof_bytes > 0 {
+        detail_str = format!(
+            "{detail_str} proof_nodes={proof_nodes} proof_bytes={proof_bytes} proof_emitted={}",
+            !proof_omitted
+        );
+    }
     if self_check {
         let self_check_status = if final_is_refutation && proof_certified {
             "Certified"
