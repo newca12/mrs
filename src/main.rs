@@ -902,8 +902,16 @@ fn main() {
         // can support; `--hardware casc`/`casc-sim` pin it to the CASC count
         // instead. An explicit `--workers` already won inside the profile.
         let actual_workers = hardware_profile.workers;
-        if certify_ordered && (actual_workers != 1 || exact_strategy.is_none()) {
-            eprintln!("Error: --certify-ordered requires --workers 1 and --strategy N");
+        // `--certify-ordered` still needs `--strategy N`, because the certified
+        // fragment commits to one ordering. It no longer needs a single worker:
+        // the ordered-resolution closure is a wave-structured saturation whose
+        // positions have provably fixed partner sets, so it fans out across
+        // workers and reproduces the sequential scan exactly. That fan-out is
+        // where the certified fragment spends its time — on the 2026-09-26
+        // `casc-30/EPS` run every refusal was a closure timeout, not a grounding
+        // or SAT limit.
+        if certify_ordered && exact_strategy.is_none() {
+            eprintln!("Error: --certify-ordered requires --strategy N");
             process::exit(1);
         }
         let (search_workers, cert_oversubscribed) = if self_check && cert_reserve_worker {

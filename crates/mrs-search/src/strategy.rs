@@ -1276,6 +1276,10 @@ fn run_certified_ordered_fragment(
     candidate_receiver: Option<Arc<dyn CandidateReceiver>>,
     workers: Option<usize>,
 ) -> (SearchResult, crate::ScheduleReport) {
+    // Worker count for the closure fan-out. `workers` is the schedule-wide
+    // budget the CLI already passes down; the certified fragment was ignoring
+    // it and saturating on a single thread.
+    let cert_workers = workers.unwrap_or(1).max(1);
     let (result, stats, cert_tier) = match crate::certified::certify_ground_ordered_resolution(
         clauses,
         provenance,
@@ -1283,6 +1287,7 @@ fn run_certified_ordered_fragment(
         &config.ordering,
         &mut id_gen,
         config.time_limit,
+        cert_workers,
     ) {
         Ok(report) => (
             report.result,

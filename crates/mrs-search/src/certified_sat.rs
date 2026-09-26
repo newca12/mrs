@@ -1017,6 +1017,7 @@ mod tests {
             &crate::TermOrdering::KBO,
             &mut ClauseIdGen::new(),
             Duration::from_secs(5),
+            1,
         )
         .expect("tier 1 must decide tiny SAT");
         assert!(matches!(tier1.result, SearchResult::Saturated(_)));
@@ -1040,6 +1041,7 @@ mod tests {
             &crate::TermOrdering::KBO,
             &mut ClauseIdGen::new(),
             Duration::from_secs(5),
+            1,
         )
         .expect("tier 1 must decide tiny UNSAT");
         assert!(matches!(tier1.result, SearchResult::Refutation(..)));
