@@ -277,8 +277,12 @@ fn verify_strict_with_source_internal(
                     "problem has inconsistent symbol signature: {reason}"
                 ));
             }
+            // The AC candidate only spots background commutativity and
+            // associativity, so a conjecture whose NNF exceeds the kernel's
+            // formula budget simply has none. It must not be normalised
+            // unconditionally: see `to_nnf_checked`.
             let ac_candidate = if formula.role() == FormulaRole::Conjecture {
-                Some(to_nnf(&Formula::neg(lowered.clone())))
+                to_nnf_checked(&Formula::neg(lowered.clone()), limits)
             } else if formula.role().is_premise()
                 || formula.role() == FormulaRole::NegatedConjecture
             {
@@ -417,10 +421,10 @@ fn verify_strict_with_source_internal(
             .collect::<Vec<_>>();
         let outcome = match rule {
             "negated_conjecture" | "assume_negation" => {
-                verify_negated_conjecture(node, &parents, parent_role, conclusion)
+                verify_negated_conjecture(node, &parents, parent_role, conclusion, limits)
             }
             "fof_nnf" | "fof_nnf_transformation" | "nnf_transformation" => {
-                verify_nnf(&parents, conclusion)
+                verify_nnf(&parents, conclusion, limits)
             }
             "variable_rename" | "rename_variable" | "rename" | "rectify" | "copy" | "assume"
             | "rewrite" | "duplicate" => verify_alpha_identity(&parents, conclusion),
@@ -1385,7 +1389,11 @@ fn normalize_quantified_cnf(
     formula: &Formula,
     limits: VerificationLimits,
 ) -> Result<Formula, KernelVerdict> {
-    let normalized = to_nnf(formula);
+    let Some(normalized) = to_nnf_checked(formula, limits) else {
+        return Err(KernelVerdict::Inconclusive(
+            "quantified CNF normalization exceeded strict formula-size limit".into(),
+        ));
+    };
     if formula_size(&normalized) > limits.max_formula_nodes {
         return Err(KernelVerdict::Inconclusive(
             "quantified CNF normalization exceeded strict formula-size limit".into(),
@@ -1456,7 +1464,13 @@ fn prenex_quantified_cnf(
             Ok((prefix, Formula::neg(matrix)))
         }
         Formula::Implies(_, _) | Formula::Iff(_, _) => {
-            let normalized = to_nnf(formula);
+            let Some(normalized) = to_nnf_bounded(formula, NNF_NODE_BUDGET, NNF_DEPTH_BUDGET)
+            else {
+                *steps += 1;
+                return Err(KernelVerdict::Inconclusive(
+                    "prenex normalization of a nested biconditional exceeded strict limits".into(),
+                ));
+            };
             prenex_quantified_cnf(&normalized, next_var, steps, step_limit)
         }
         Formula::Atom(_) | Formula::True | Formula::False => Ok((Vec::new(), formula.clone())),
@@ -1724,140 +1738,11 @@ fn factored_definition_converse(
 }
 
 /// Convert to NNF while charging each generated formula node before
-/// constructing it. Unlike [`to_nnf`], this never materializes an
-/// exponentially expanded IFF formula beyond `max_nodes`.
+/// constructing it. Every NNF conversion in the kernel goes through this (via
+/// [`to_nnf_checked`]) rather than `mrs_cnf`'s unbounded `to_nnf`, so a new call
+/// site cannot reintroduce an exponential expansion.
 fn to_nnf_bounded(formula: &Formula, max_nodes: usize, max_depth: usize) -> Option<Formula> {
-    fn visit(
-        formula: &Formula,
-        negated: bool,
-        nodes: &mut usize,
-        max_nodes: usize,
-        depth: usize,
-        max_depth: usize,
-    ) -> Option<Formula> {
-        if depth > max_depth {
-            return None;
-        }
-        *nodes = nodes.checked_add(1)?;
-        if *nodes > max_nodes {
-            return None;
-        }
-        let make = |node: Formula, nodes: &mut usize| {
-            *nodes = nodes.checked_add(1)?;
-            (*nodes <= max_nodes).then_some(node)
-        };
-        match formula {
-            Formula::Atom(atom) => {
-                let atom = Formula::Atom(atom.clone());
-                if negated {
-                    make(Formula::neg(atom), nodes)
-                } else {
-                    Some(atom)
-                }
-            }
-            Formula::True => Some(if negated {
-                Formula::False
-            } else {
-                Formula::True
-            }),
-            Formula::False => Some(if negated {
-                Formula::True
-            } else {
-                Formula::False
-            }),
-            Formula::Neg(inner) => visit(inner, !negated, nodes, max_nodes, depth + 1, max_depth),
-            Formula::And(parts) | Formula::Or(parts) => {
-                let is_and = matches!(formula, Formula::And(_)) != negated;
-                let mut converted = Vec::with_capacity(parts.len());
-                for part in parts {
-                    converted.push(visit(
-                        part,
-                        negated,
-                        nodes,
-                        max_nodes,
-                        depth + 1,
-                        max_depth,
-                    )?);
-                }
-                let result = if is_and {
-                    Formula::and(converted)
-                } else {
-                    Formula::or(converted)
-                };
-                make(result, nodes)
-            }
-            Formula::Implies(left, right) => {
-                if negated {
-                    let left = visit(left, false, nodes, max_nodes, depth + 1, max_depth)?;
-                    let right = visit(right, true, nodes, max_nodes, depth + 1, max_depth)?;
-                    make(Formula::and(vec![left, right]), nodes)
-                } else {
-                    let left = visit(left, true, nodes, max_nodes, depth + 1, max_depth)?;
-                    let right = visit(right, false, nodes, max_nodes, depth + 1, max_depth)?;
-                    make(Formula::or(vec![left, right]), nodes)
-                }
-            }
-            Formula::Iff(left, right) => {
-                let (
-                    first_left_negated,
-                    first_right_negated,
-                    second_left_negated,
-                    second_right_negated,
-                ) = if negated {
-                    (false, false, true, true)
-                } else {
-                    (true, false, false, true)
-                };
-                let first_left = visit(
-                    left,
-                    first_left_negated,
-                    nodes,
-                    max_nodes,
-                    depth + 1,
-                    max_depth,
-                )?;
-                let first_right = visit(
-                    right,
-                    first_right_negated,
-                    nodes,
-                    max_nodes,
-                    depth + 1,
-                    max_depth,
-                )?;
-                let first = make(Formula::or(vec![first_left, first_right]), nodes)?;
-                let second_left = visit(
-                    left,
-                    second_left_negated,
-                    nodes,
-                    max_nodes,
-                    depth + 1,
-                    max_depth,
-                )?;
-                let second_right = visit(
-                    right,
-                    second_right_negated,
-                    nodes,
-                    max_nodes,
-                    depth + 1,
-                    max_depth,
-                )?;
-                let second = make(Formula::or(vec![second_left, second_right]), nodes)?;
-                make(Formula::and(vec![first, second]), nodes)
-            }
-            Formula::Forall(variable, body) | Formula::Exists(variable, body) => {
-                let is_forall = matches!(formula, Formula::Forall(..)) != negated;
-                let body = visit(body, negated, nodes, max_nodes, depth + 1, max_depth)?;
-                let result = if is_forall {
-                    Formula::forall(*variable, body)
-                } else {
-                    Formula::exists(*variable, body)
-                };
-                make(result, nodes)
-            }
-        }
-    }
-
-    visit(formula, false, &mut 0, max_nodes, 0, max_depth)
+    mrs_cnf::nnf::to_nnf_bounded(formula, max_nodes, max_depth)
 }
 
 fn replace_definition_subformulas(
@@ -2719,6 +2604,7 @@ fn verify_negated_conjecture(
     parents: &[Formula],
     parent_role: Option<FormulaRole>,
     conclusion: &Formula,
+    limits: VerificationLimits,
 ) -> KernelVerdict {
     if node.role != FormulaRole::NegatedConjecture || node.status() != Some("cth") {
         return KernelVerdict::Rejected(format!(
@@ -2732,8 +2618,14 @@ fn verify_negated_conjecture(
             node.name
         ));
     }
-    let expected = to_nnf(&Formula::neg(parents[0].clone()));
-    let actual = to_nnf(conclusion);
+    let (Some(expected), Some(actual)) = (
+        to_nnf_checked(&Formula::neg(parents[0].clone()), limits),
+        to_nnf_checked(conclusion, limits),
+    ) else {
+        return KernelVerdict::Inconclusive(
+            "negated_conjecture exceeds strict formula-size limit".into(),
+        );
+    };
     if alpha_equiv(&expected, &actual) {
         KernelVerdict::Certified
     } else {
@@ -2744,11 +2636,18 @@ fn verify_negated_conjecture(
     }
 }
 
-fn verify_nnf(parents: &[Formula], conclusion: &Formula) -> KernelVerdict {
+fn verify_nnf(
+    parents: &[Formula],
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> KernelVerdict {
     if parents.len() != 1 {
         return KernelVerdict::Rejected("NNF rule must have one parent".into());
     }
-    if alpha_equiv(&to_nnf(&parents[0]), conclusion) {
+    let Some(expected) = to_nnf_checked(&parents[0], limits) else {
+        return KernelVerdict::Inconclusive("NNF rule exceeded strict formula-size limit".into());
+    };
+    if alpha_equiv(&expected, conclusion) {
         KernelVerdict::Certified
     } else {
         KernelVerdict::Rejected("conclusion is not the parent's NNF".into())
@@ -2782,7 +2681,15 @@ fn verify_formula_equivalence(
         );
     }
     let mut steps = 0;
-    let left = match canonicalize_equivalence(&to_nnf(&parents[0]), &mut steps, limits) {
+    let (Some(parent_nnf), Some(conclusion_nnf)) = (
+        to_nnf_checked(&parents[0], limits),
+        to_nnf_checked(conclusion, limits),
+    ) else {
+        return KernelVerdict::Inconclusive(
+            "formula equivalence exceeded strict formula-size limit".into(),
+        );
+    };
+    let left = match canonicalize_equivalence(&parent_nnf, &mut steps, limits) {
         Some(formula) => formula,
         None => {
             return KernelVerdict::Inconclusive(
@@ -2790,7 +2697,7 @@ fn verify_formula_equivalence(
             );
         }
     };
-    let right = match canonicalize_equivalence(&to_nnf(conclusion), &mut steps, limits) {
+    let right = match canonicalize_equivalence(&conclusion_nnf, &mut steps, limits) {
         Some(formula) => formula,
         None => {
             return KernelVerdict::Inconclusive(
@@ -3517,13 +3424,21 @@ fn verify_disjunctive_syllogism(
         );
     }
     let mut steps = 0;
-    let Some(disjunction) = canonicalize_equivalence(&to_nnf(&parents[0]), &mut steps, limits)
-    else {
+    let (Some(disjunction_nnf), Some(negative_nnf), Some(conclusion_nnf)) = (
+        to_nnf_checked(&parents[0], limits),
+        to_nnf_checked(&parents[1], limits),
+        to_nnf_checked(conclusion, limits),
+    ) else {
+        return KernelVerdict::Inconclusive(
+            "disjunctive_syllogism exceeded strict formula-size limit".into(),
+        );
+    };
+    let Some(disjunction) = canonicalize_equivalence(&disjunction_nnf, &mut steps, limits) else {
         return KernelVerdict::Inconclusive(
             "disjunctive_syllogism exceeded strict matching-step limit".into(),
         );
     };
-    let Some(negative) = canonicalize_equivalence(&to_nnf(&parents[1]), &mut steps, limits) else {
+    let Some(negative) = canonicalize_equivalence(&negative_nnf, &mut steps, limits) else {
         return KernelVerdict::Inconclusive(
             "disjunctive_syllogism exceeded strict matching-step limit".into(),
         );
@@ -3540,7 +3455,7 @@ fn verify_disjunctive_syllogism(
             "disjunctive_syllogism first parent is not a disjunction".into(),
         );
     }
-    let Some(conclusion) = canonicalize_equivalence(&to_nnf(conclusion), &mut steps, limits) else {
+    let Some(conclusion) = canonicalize_equivalence(&conclusion_nnf, &mut steps, limits) else {
         return KernelVerdict::Inconclusive(
             "disjunctive_syllogism exceeded strict matching-step limit".into(),
         );
@@ -3679,10 +3594,16 @@ fn verify_weakening(
         return KernelVerdict::Inconclusive("weaken exceeded strict formula-size limit".into());
     }
     let mut steps = 0;
-    let Some(parent) = canonicalize_equivalence(&to_nnf(&parents[0]), &mut steps, limits) else {
+    let (Some(parent_nnf), Some(conclusion_nnf)) = (
+        to_nnf_checked(&parents[0], limits),
+        to_nnf_checked(conclusion, limits),
+    ) else {
+        return KernelVerdict::Inconclusive("weaken exceeded strict formula-size limit".into());
+    };
+    let Some(parent) = canonicalize_equivalence(&parent_nnf, &mut steps, limits) else {
         return KernelVerdict::Inconclusive("weaken exceeded strict matching-step limit".into());
     };
-    let Some(conclusion) = canonicalize_equivalence(&to_nnf(conclusion), &mut steps, limits) else {
+    let Some(conclusion) = canonicalize_equivalence(&conclusion_nnf, &mut steps, limits) else {
         return KernelVerdict::Inconclusive("weaken exceeded strict matching-step limit".into());
     };
     let mut parent_parts = Vec::new();
@@ -4008,10 +3929,15 @@ fn formula_equivalent_with_limit(
     limits: VerificationLimits,
 ) -> bool {
     let mut steps = 0;
-    let Some(left) = canonicalize_equivalence(&to_nnf(left), &mut steps, limits) else {
+    let (Some(left_nnf), Some(right_nnf)) =
+        (to_nnf_checked(left, limits), to_nnf_checked(right, limits))
+    else {
         return false;
     };
-    let Some(right) = canonicalize_equivalence(&to_nnf(right), &mut steps, limits) else {
+    let Some(left) = canonicalize_equivalence(&left_nnf, &mut steps, limits) else {
+        return false;
+    };
+    let Some(right) = canonicalize_equivalence(&right_nnf, &mut steps, limits) else {
         return false;
     };
     alpha_equiv(&left, &right)
@@ -11056,84 +10982,25 @@ fn alpha_equiv(left: &Formula, right: &Formula) -> bool {
     mrs_core::alpha::alpha_equiv(left, right)
 }
 
-fn to_nnf(formula: &Formula) -> Formula {
-    fn visit(formula: &Formula, negated: bool) -> Formula {
-        match formula {
-            Formula::Atom(atom) => {
-                if negated {
-                    Formula::neg(Formula::Atom(atom.clone()))
-                } else {
-                    Formula::Atom(atom.clone())
-                }
-            }
-            Formula::True => {
-                if negated {
-                    Formula::False
-                } else {
-                    Formula::True
-                }
-            }
-            Formula::False => {
-                if negated {
-                    Formula::True
-                } else {
-                    Formula::False
-                }
-            }
-            Formula::Neg(inner) => visit(inner, !negated),
-            Formula::And(parts) => {
-                let parts = parts.iter().map(|part| visit(part, negated)).collect();
-                if negated {
-                    Formula::or(parts)
-                } else {
-                    Formula::and(parts)
-                }
-            }
-            Formula::Or(parts) => {
-                let parts = parts.iter().map(|part| visit(part, negated)).collect();
-                if negated {
-                    Formula::and(parts)
-                } else {
-                    Formula::or(parts)
-                }
-            }
-            Formula::Implies(left, right) => {
-                if negated {
-                    Formula::and(vec![visit(left, false), visit(right, true)])
-                } else {
-                    Formula::or(vec![visit(left, true), visit(right, false)])
-                }
-            }
-            Formula::Iff(left, right) => {
-                if negated {
-                    Formula::and(vec![
-                        Formula::or(vec![visit(left, false), visit(right, false)]),
-                        Formula::or(vec![visit(left, true), visit(right, true)]),
-                    ])
-                } else {
-                    Formula::and(vec![
-                        Formula::or(vec![visit(left, true), visit(right, false)]),
-                        Formula::or(vec![visit(left, false), visit(right, true)]),
-                    ])
-                }
-            }
-            Formula::Forall(var, body) => {
-                if negated {
-                    Formula::exists(*var, visit(body, true))
-                } else {
-                    Formula::forall(*var, visit(body, false))
-                }
-            }
-            Formula::Exists(var, body) => {
-                if negated {
-                    Formula::forall(*var, visit(body, true))
-                } else {
-                    Formula::exists(*var, visit(body, false))
-                }
-            }
-        }
-    }
-    visit(formula, false)
+/// Node and depth ceilings for an NNF conversion that has no
+/// `VerificationLimits` in hand. Both are far above any real TPTP formula; they
+/// exist so a nested biconditional cannot expand without bound.
+const NNF_NODE_BUDGET: usize = 100_000;
+const NNF_DEPTH_BUDGET: usize = 256;
+
+/// NNF under the caller's limits, for the many sites that normalise a formula
+/// before comparing it.
+///
+/// `to_nnf` is unbounded and NNF *distributes* nested biconditionals, so a
+/// right-nested `<=>` chain of depth n expands to up to 2^n nodes. Every
+/// normalising site in the kernel therefore goes through this helper and
+/// reports `Inconclusive` when the result would be too large, instead of
+/// spending the caller's whole budget inside one conversion. The
+/// ProoVer-2026 fixture `PRV043+1` is a 100-term chain: before this bound the
+/// verifier spent unbounded time in its own problem preparation and produced no
+/// verdict at all.
+fn to_nnf_checked(formula: &Formula, limits: VerificationLimits) -> Option<Formula> {
+    to_nnf_bounded(formula, limits.max_formula_nodes, limits.max_term_depth)
 }
 
 fn lower_annotated(

@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use mrs_cnf::nnf::to_nnf;
+use mrs_cnf::nnf::to_nnf_bounded;
 use mrs_core::{Formula, SymbolTable};
 use mrs_proof_kernel::classify_ac_axiom;
 use mrs_tptp::{AnnotatedFormula, FormulaRole};
@@ -1731,6 +1731,12 @@ fn is_unit_ac_equality(f: &Formula) -> bool {
     }
 }
 
+/// Node and depth ceilings for a bounded NNF conversion in this crate. Both
+/// are far above any real TPTP formula; they exist so a nested biconditional
+/// cannot expand without bound.
+const NNF_NODE_BUDGET: usize = 100_000;
+const NNF_DEPTH_BUDGET: usize = 256;
+
 /// Collect background AC unit equalities from the linked problem.
 ///
 /// Includes unit AC equalities from axiom-like roles and from the negation of
@@ -1755,8 +1761,18 @@ fn collect_background_ac(
         }
         // For the conjecture, use the negation (NNF) so existential
         // inequalities become universal equalities the AC classifier accepts.
+        // The conversion is bounded: NNF distributes nested biconditionals, so
+        // a long `<=>` chain expands exponentially and a problem carrying one
+        // (ProoVer-2026 `PRV043+1` is a 100-term chain) would otherwise consume
+        // the whole verification budget before any step is examined. A formula
+        // too large to normalise simply carries no background AC.
         let candidate = if role == FormulaRole::Conjecture {
-            to_nnf(&Formula::neg(f))
+            match to_nnf_bounded(&Formula::neg(f), NNF_NODE_BUDGET, NNF_DEPTH_BUDGET) {
+                Some(normalized) => normalized,
+                // Too large to normalise: it carries no background AC, and the
+                // step that needs one will be declined further down.
+                None => continue,
+            }
         } else {
             f
         };

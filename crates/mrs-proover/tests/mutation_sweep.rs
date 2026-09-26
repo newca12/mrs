@@ -34,6 +34,8 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use mrs_proover::atp::NoopAtp;
+
 use mrs_proof_kernel::{KernelVerdict, VerificationLimits, verify_strict_with_source};
 use mrs_tptp::parse_tptp;
 
@@ -334,4 +336,68 @@ fn no_mutation_of_an_mrs_proof_ever_certifies() {
         canaries.len(),
         checked.load(Ordering::Relaxed)
     );
+}
+
+/// A right-nested biconditional chain must not be able to consume the
+/// verification budget.
+///
+/// NNF *distributes* nested biconditionals, so normalising a chain of depth n
+/// can produce 2^n nodes. The ProoVer-2026 fixture `PRV043+1` is a 100-term
+/// chain: before every NNF conversion in the kernel and in this crate was
+/// bounded, verifying it spent unbounded time in its own problem preparation
+/// and produced no verdict at all — a valid proof worth a point, decided by
+/// wall clock. The shape is a denial-of-service vector for anything that
+/// normalises proof or problem text, so it gets its own test.
+#[test]
+fn deep_biconditional_chain_is_decided_within_budget() {
+    /// Deep enough that an unbounded NNF cannot finish in test time, shallow
+    /// enough that the fixture text stays small.
+    const DEPTH: usize = 60;
+
+    let mut chain = format!("b{DEPTH}");
+    for index in (1..DEPTH).rev() {
+        chain = format!("( b{index} <=> ( {chain} ) )");
+    }
+
+    let problem = format!("fof(a1, axiom, {chain}, file('problem.p', a1)).");
+    let proof = format!(
+        "% Proof : problem.p\n\
+         fof(a1, axiom, {chain}, file('problem.p', a1)).\n\
+         fof(c, conjecture, {chain}, file('problem.p', c)).\n\
+         fof(negc, negated_conjecture, ~ ( {chain} ),\n\
+             inference(negated_conjecture, [status(cth)], [c])).\n\
+         fof(s, plain, {chain}, inference(reassociate, [status(thm)], [a1])).\n\
+         fof(bot, plain, $false, inference(consequence, [status(thm)], [negc, s])).\n"
+    );
+
+    let mut dir = std::env::temp_dir();
+    dir.push(format!("mrs-deep-iff-{}.p", std::process::id()));
+    std::fs::write(&dir, &proof).expect("proof writes");
+    let job = mrs_proover::load::load(&dir, None).expect("proof loads");
+    let _ = std::fs::remove_file(&dir);
+
+    let settings = mrs_proover::verify::Settings {
+        total_budget: std::time::Duration::from_secs(10),
+        per_step_budget: std::time::Duration::from_secs(2),
+        verbose: false,
+        workers: 1,
+        strict: false,
+    };
+
+    let started = std::time::Instant::now();
+    let verdict = mrs_proover::verify::verify_with(&job, &settings, &NoopAtp);
+    let elapsed = started.elapsed();
+    // The kernel declines the shape outright; the competition path may accept
+    // or decline it. What it must not do is run away.
+    assert!(
+        elapsed < std::time::Duration::from_secs(8),
+        "a {DEPTH}-term biconditional chain took {elapsed:?} to decide ({verdict:?})"
+    );
+    assert!(
+        !matches!(verdict, mrs_proover::verdict::Verdict::VerifiedBad(_)),
+        "the fixture is a valid refutation shape, so a rejection would be a false \
+         rejection: {verdict:?}"
+    );
+    // Keep the problem text alive for the reader of the failure message.
+    assert!(problem.contains("<=>"));
 }
