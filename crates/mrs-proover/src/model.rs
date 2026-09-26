@@ -1,5 +1,6 @@
 //! Model certificate verification module for `mrs-proover`.
 
+use mrs_proof_kernel::model::ModelEvaluation;
 pub use mrs_proof_kernel::model::{
     EqualitySemantics, FunctionTable, ModelCertificate, ModelVerdict, PredicateTable,
 };

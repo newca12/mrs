@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use mrs_core::Formula;
 use mrs_core::clause::{Clause, ClauseSource};
+use mrs_proof_kernel::model::ModelEvaluation;
 use mrs_search::strategy::{StrategySchedule, run_schedule};
 use mrs_search::{ScheduleReport, SearchResult};
 use mrs_szs::{SzsStatus, szs_output_end, szs_output_start, szs_status_line};
@@ -915,9 +916,10 @@ fn main() {
     let result = final_result;
 
     // A search saturation is not a certified model.  The strict release path
-    // currently certifies refutations only; model certificates are validated
-    // by a separate tool and are not produced by this binary.  Never turn an
-    // incomplete or heuristic saturation into a positive SZS model result.
+    // certifies only the two completeness witnesses produced by the ordered
+    // and SAT-backed tiers; an ordinary portfolio saturation is demoted before
+    // it can reach a positive SZS status.  Never turn an incomplete or
+    // heuristic saturation into a positive SZS model result.
     if self_check
         && matches!(
             result,
@@ -930,6 +932,39 @@ fn main() {
         )
     {
         status = SzsStatus::GaveUp;
+    }
+
+    // Model certificates are emitted by the certifying tier and, under
+    // --self-check, re-validated here before the status line claims a model:
+    // the kernel is the only thing in the process that can confirm a finite
+    // interpretation really satisfies the input.
+    let model_certificate = match &result {
+        SearchResult::Saturated(witness) => witness.model().cloned(),
+        _ => None,
+    };
+    if self_check
+        && let Some(certificate) = &model_certificate
+        && matches!(
+            status,
+            SzsStatus::Satisfiable | SzsStatus::CounterSatisfiable
+        )
+    {
+        let expected = if has_conjecture {
+            Some("CounterSatisfiable")
+        } else {
+            Some("Satisfiable")
+        };
+        match certificate.validate(&problem, expected) {
+            mrs_proof_kernel::model::ModelVerdict::Certified { .. } => {}
+            mrs_proof_kernel::model::ModelVerdict::Rejected(reason) => {
+                eprintln!("% Model certificate rejected by the strict kernel: {reason}");
+                status = SzsStatus::GaveUp;
+            }
+            mrs_proof_kernel::model::ModelVerdict::Inconclusive(reason) => {
+                eprintln!("% Model certificate inconclusive: {reason}");
+                status = SzsStatus::GaveUp;
+            }
+        }
     }
 
     #[cfg(feature = "ml")]
@@ -1012,6 +1047,29 @@ fn main() {
         SearchResult::Refutation(_, tstp) => count_proof_nodes(tstp),
         _ => 0,
     };
+
+    if emit_extras
+        && let Some(certificate) = &model_certificate
+        && matches!(
+            status,
+            SzsStatus::Satisfiable | SzsStatus::CounterSatisfiable
+        )
+    {
+        // A `% Proof :` link inside the block, so a checker holding only this
+        // output can find the problem the model has to satisfy.
+        println!("% Proof : {}", path);
+        print!("{}", certificate.to_szs_block(problem_name));
+    } else if emit_extras
+        && matches!(
+            status,
+            SzsStatus::Satisfiable | SzsStatus::CounterSatisfiable
+        )
+    {
+        eprintln!(
+            "% No model certificate: this satisfiability result rests on the completeness \
+             argument alone and earns no model credit."
+        );
+    }
 
     if emit_extras && proof_certified && proof_bytes > proof_bytes_limit {
         eprintln!(

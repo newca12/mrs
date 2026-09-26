@@ -19,7 +19,7 @@
 //! (`certified::certify_ground_ordered_resolution`); ordering validation is
 //! skipped here by design — model checking needs no ordering.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
 use mrs_cadical::{
@@ -30,6 +30,7 @@ use mrs_core::clause::{
     avatar_sat_trace_digest,
 };
 use mrs_core::formula::Atom;
+use mrs_core::model::{EqualitySemantics, ModelCertificate, PredicateTable};
 use mrs_core::symbol::SymbolTable;
 
 use crate::certified::{CertificationFailure, CertifiedGroundReport, trace_certify};
@@ -145,7 +146,7 @@ pub(crate) fn encode_sat(
     atoms: &[Atom],
     symbols: &SymbolTable,
     deadline: Instant,
-) -> Result<(Vec<EncodedSatClause>, usize), CertificationFailure> {
+) -> Result<(Vec<EncodedSatClause>, Vec<Atom>), CertificationFailure> {
     let mut ordered: Vec<&Atom> = atoms.iter().collect();
     let mut keys: HashMap<&Atom, (String, Vec<String>)> = HashMap::new();
     for atom in &ordered {
@@ -192,7 +193,7 @@ pub(crate) fn encode_sat(
             lits,
         });
     }
-    Ok((encoded, ordered.len()))
+    Ok((encoded, ordered.into_iter().cloned().collect()))
 }
 
 /// Independently re-verify a solver model: every encoded clause must have a
@@ -232,7 +233,8 @@ pub(crate) fn certify_sat_backed(
     time_limit: Duration,
 ) -> Result<CertifiedGroundReport, CertificationFailure> {
     let deadline = Instant::now() + time_limit;
-    let (encoded, var_count) = encode_sat(grounded, atoms, symbols, deadline)?;
+    let (encoded, ordered_atoms) = encode_sat(grounded, atoms, symbols, deadline)?;
+    let var_count = ordered_atoms.len();
     trace_certify(format!(
         "sat_encoded vars={var_count} clauses={} skipped={}",
         encoded.len(),
@@ -288,8 +290,23 @@ pub(crate) fn certify_sat_backed(
                     "sat model failed independent verification",
                 ));
             }
+            // The re-verified model is the certificate, so hand it out: a
+            // satisfiability claim with no model is worth nothing to a
+            // competition, and the kernel already knows how to re-check one.
+            // A model we cannot express completely is simply not reported —
+            // the saturation verdict does not depend on it.
+            let certificate =
+                build_model_certificate(&ordered_atoms, originals, symbols, &|variable| {
+                    solver.value(variable)
+                });
+            trace_certify(format!(
+                "sat_model_certificate={}",
+                if certificate.is_some() { "yes" } else { "no" }
+            ));
             Ok(CertifiedGroundReport {
-                result: SearchResult::Saturated(CompletenessWitness::sat_backed_grounding()),
+                result: SearchResult::Saturated(
+                    CompletenessWitness::sat_backed_grounding().with_model(certificate),
+                ),
                 stats: SearchStats {
                     processed: grounded.len() as u64,
                     ..SearchStats::default()
@@ -491,6 +508,194 @@ fn emit_sat_refutation(
     Ok((empty_id, tstp))
 }
 
+/// Extract a finite model of an already-grounded, satisfiable clause set.
+///
+/// The ordered-closure tier proves satisfiability by *agreement* of two
+/// closures, which yields no model: a competition satisfiability answer is only
+/// credited when a model is printed. The grounded set is finite and known to be
+/// satisfiable, so asking CaDiCaL for one and re-verifying it clause by clause
+/// is both cheap relative to the closures and the same evidence the SAT-backed
+/// tier already relies on. Any failure returns `None`: the tier's verdict does
+/// not depend on the model, it only decides whether one can be printed.
+pub(crate) fn extract_model(
+    grounded: &[Clause],
+    originals: &[Clause],
+    atoms: &[Atom],
+    symbols: &SymbolTable,
+    deadline: Instant,
+) -> Option<ModelCertificate> {
+    let (encoded, ordered_atoms) = encode_sat(grounded, atoms, symbols, deadline).ok()?;
+    let mut solver = Solver::new();
+    for clause in &encoded {
+        if Instant::now() >= deadline {
+            return None;
+        }
+        solver.add_clause(&clause.lits);
+    }
+    if solver.solve_until(deadline) != SolveResult::Sat {
+        return None;
+    }
+    if !verify_model(&encoded, &|literal| solver.value(literal)) {
+        return None;
+    }
+    build_model_certificate(&ordered_atoms, originals, symbols, &|variable| {
+        solver.value(variable)
+    })
+}
+
+/// Turn a re-verified SAT assignment into a complete finite model certificate.
+///
+/// The domain is one element per distinct input constant, which is exactly the
+/// grounding the certifier used, and every predicate of the input gets a full
+/// table over that domain. Atoms the solver left unconstrained are false,
+/// which is sound: the model only has to satisfy the problem, and the encoder
+/// re-check already proved it does.
+///
+/// Returns `None` rather than a partial certificate — a missing interpretation
+/// would be rejected by the kernel anyway, and a model is only worth emitting
+/// if it is complete.
+pub(crate) fn build_model_certificate(
+    ordered_atoms: &[Atom],
+    originals: &[Clause],
+    symbols: &SymbolTable,
+    value: &dyn Fn(i32) -> Option<bool>,
+) -> Option<ModelCertificate> {
+    // Signature of the input: every constant and every predicate with its
+    // arity, whether or not the grounding mentions it.
+    let mut constants: BTreeSet<String> = BTreeSet::new();
+    let mut predicates: BTreeMap<String, usize> = BTreeMap::new();
+    for clause in originals {
+        for literal in &clause.literals {
+            match &literal.atom {
+                Atom::Pred(predicate, args) => {
+                    let name = symbols.resolve(*predicate).to_string();
+                    match predicates.get(&name) {
+                        Some(arity) if *arity != args.len() => return None,
+                        _ => {
+                            predicates.insert(name, args.len());
+                        }
+                    }
+                    for arg in args {
+                        collect_constant_name(arg, symbols, &mut constants)?;
+                    }
+                }
+                // Equality is expanded by congruence before this tier, and a
+                // non-ground or function term is outside the fragment.
+                Atom::Eq(left, right) => {
+                    collect_constant_name(left, symbols, &mut constants)?;
+                    collect_constant_name(right, symbols, &mut constants)?;
+                }
+            }
+        }
+    }
+    // The domain must cover every ground atom the solver reasoned about, not
+    // only the constants the input clauses mention: an atom mentioning a
+    // constant outside the domain has no interpretation at all.
+    for atom in ordered_atoms {
+        let Atom::Pred(predicate, args) = atom else {
+            return None;
+        };
+        // A predicate the solver reasoned about but the input clauses do not
+        // name still needs a table: the assignment refers to it. Extra entries
+        // are harmless to a checker, a missing one is not.
+        let name = symbols.resolve(*predicate).to_string();
+        match predicates.get(&name) {
+            Some(arity) if *arity != args.len() => return None,
+            _ => {
+                predicates.insert(name, args.len());
+            }
+        }
+        for arg in args {
+            collect_constant_name(arg, symbols, &mut constants)?;
+        }
+    }
+    let domain: Vec<String> = constants.iter().cloned().collect();
+    if domain.is_empty() {
+        return None;
+    }
+    let domain_size = domain.len();
+    let position = |name: &str| domain.iter().position(|entry| entry == name);
+
+    // Seed every table with `false`, then set the atoms the solver assigned.
+    let mut tables: BTreeMap<String, PredicateTable> = predicates
+        .iter()
+        .map(|(name, arity)| {
+            let length = domain_size.checked_pow(*arity as u32)?;
+            Some((
+                name.clone(),
+                PredicateTable {
+                    arity: *arity,
+                    table: vec![false; length],
+                },
+            ))
+        })
+        .collect::<Option<_>>()?;
+
+    for (index, atom) in ordered_atoms.iter().enumerate() {
+        let Atom::Pred(predicate, args) = atom else {
+            return None;
+        };
+        let variable = index as i32 + 1;
+        // An unset variable is unconstrained; `false` is a sound choice for a
+        // model that only has to satisfy the problem.
+        if value(variable) != Some(true) {
+            continue;
+        }
+        let name = symbols.resolve(*predicate);
+        let mut tuple = Vec::with_capacity(args.len());
+        for arg in args {
+            let mrs_core::term::Term::App(constant, inner) = arg else {
+                return None;
+            };
+            if !inner.is_empty() {
+                return None;
+            }
+            tuple.push(position(symbols.resolve(*constant))?);
+        }
+        let table = tables.get_mut(name)?;
+        let index = table_index(table.arity, domain_size, &tuple)?;
+        table.table[index] = true;
+    }
+
+    let mut certificate = ModelCertificate {
+        domain_size,
+        constants: domain
+            .iter()
+            .enumerate()
+            .map(|(index, name)| (name.clone(), index))
+            .collect(),
+        functions: BTreeMap::new(),
+        predicates: tables,
+        equality: EqualitySemantics::StrictIdentity,
+        digest: String::new(),
+    };
+    certificate.digest = certificate.compute_digest();
+    Some(certificate)
+}
+
+fn collect_constant_name(
+    term: &mrs_core::term::Term,
+    symbols: &SymbolTable,
+    constants: &mut BTreeSet<String>,
+) -> Option<()> {
+    match term {
+        mrs_core::term::Term::App(symbol, args) if args.is_empty() => {
+            constants.insert(symbols.resolve(*symbol).to_string());
+            Some(())
+        }
+        mrs_core::term::Term::Var(_) => Some(()),
+        _ => None,
+    }
+}
+
+fn table_index(_arity: usize, domain_size: usize, tuple: &[usize]) -> Option<usize> {
+    let mut index = 0usize;
+    for value in tuple {
+        index = index.checked_mul(domain_size)?.checked_add(*value)?;
+    }
+    Some(index)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -556,7 +761,7 @@ mod tests {
         let (first, vars) = encode_sat(&clauses, &atoms, &symbols, far).expect("encodable");
         let (second, _) = encode_sat(&clauses, &atoms, &symbols, far).expect("encodable");
         assert_eq!(first, second, "encoding must be deterministic");
-        assert_eq!(vars, 2);
+        assert_eq!(vars.len(), 2);
         assert_eq!(
             first.len(),
             2,
@@ -840,5 +1045,98 @@ mod tests {
         )
         .expect("tier 2 must decide tiny UNSAT");
         assert!(matches!(tier2.result, SearchResult::Refutation(..)));
+    }
+
+    #[test]
+    fn model_certificate_is_complete_over_the_input_signature() {
+        // p(a), ~p(b), and a unary q the problem mentions nowhere: the
+        // certificate still has to interpret every predicate the input uses,
+        // because a partial interpretation is not a model.
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let r = syms.intern("r");
+        syms.intern("unused_symbol");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let pa = Atom::pred(p, vec![Term::constant(a)]);
+        let pb = Atom::pred(p, vec![Term::constant(b)]);
+        let ra = Atom::pred(r, vec![Term::constant(a)]);
+
+        let originals = vec![Clause::new(
+            ClauseId(1),
+            vec![Literal::pos(pa.clone())],
+            ClauseSource::Input {
+                name: "a1".into(),
+                role: "axiom".into(),
+            },
+        )];
+
+        // Variable order: 1 -> p(a), 2 -> p(b), 3 -> r(a). Only p(a) is set.
+        let ordered = vec![pa.clone(), pb.clone(), ra.clone()];
+        let certificate = build_model_certificate(&ordered, &originals, &syms, &|variable| {
+            (variable == 1).then_some(true)
+        })
+        .expect("certificate is produced");
+
+        assert_eq!(certificate.domain_size, 2);
+        assert_eq!(certificate.constants.get("a"), Some(&0));
+        assert_eq!(certificate.constants.get("b"), Some(&1));
+        // A symbol the input never uses must not be interpreted either.
+        assert!(!certificate.predicates.contains_key("unused_symbol"));
+        let p_table = &certificate.predicates["p"];
+        assert_eq!(p_table.arity, 1);
+        assert_eq!(p_table.table, vec![true, false]);
+        // Tables are complete over the whole domain, not just the tuples the
+        // solver happened to assign.
+        let r_table = &certificate.predicates["r"];
+        assert_eq!(r_table.arity, 1);
+        assert_eq!(r_table.table, vec![false, false]);
+        assert_eq!(
+            certificate.digest,
+            certificate.compute_digest(),
+            "the digest must describe the certificate it ships with"
+        );
+    }
+
+    #[test]
+    fn model_certificate_refuses_incomplete_signatures() {
+        // A predicate used with two different arities is not a model of
+        // anything; refuse rather than emit a certificate the kernel rejects.
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let pa = Atom::pred(p, vec![Term::constant(a)]);
+        let pab = Atom::pred(p, vec![Term::constant(a), Term::constant(b)]);
+        let originals = vec![Clause::new(
+            ClauseId(1),
+            vec![Literal::pos(pa.clone()), Literal::pos(pab)],
+            ClauseSource::Input {
+                name: "a1".into(),
+                role: "axiom".into(),
+            },
+        )];
+        assert!(build_model_certificate(&[pa], &originals, &syms, &|_| Some(true)).is_none());
+    }
+
+    #[test]
+    fn model_certificate_is_absent_when_the_solver_leaves_an_atom_unknown() {
+        // Unset variables are modelled as false, so a model is still produced;
+        // what must never happen is a *partial* table.
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let pa = Atom::pred(p, vec![Term::constant(a)]);
+        let originals = vec![Clause::new(
+            ClauseId(1),
+            vec![Literal::pos(pa.clone())],
+            ClauseSource::Input {
+                name: "a1".into(),
+                role: "axiom".into(),
+            },
+        )];
+        let certificate =
+            build_model_certificate(&[pa], &originals, &syms, &|_| None).expect("certificate");
+        assert_eq!(certificate.predicates["p"].table, vec![false]);
     }
 }

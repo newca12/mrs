@@ -15,6 +15,7 @@
 //! ladder ATP backend for inference steps not covered by internal checks.
 //! Use `--no-atp` to disable external ATP calls.
 
+use mrs_proof_kernel::model::ModelEvaluation;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;

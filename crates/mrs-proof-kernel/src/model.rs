@@ -10,56 +10,19 @@
 //! - Correct conjecture polarity;
 //! - Complete ground clause coverage;
 //! - Deterministic model digest (SHA-256).
+//!
+//! The certificate *data* format lives in `mrs-core::model` so a producer can
+//! emit one without depending on this crate; the checking methods below are
+//! this kernel's own and are reached through [`ModelEvaluation`].
 
 use mrs_tptp::ast::common::{BinaryConnective, DefinedWord};
 use mrs_tptp::{
     AnnotatedFormula, CNFAtomicFormula, CNFFormula, CNFLiteral, CNFStatement, FOFAtomicFormula,
     FOFFormula, FOFStatement, FOFTerm, FormulaRole, Quantifier, TPTPProblem,
 };
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Equality semantics required for model evaluation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum EqualitySemantics {
-    /// Strict identity: `d1 = d2` iff `d1 == d2`.
-    StrictIdentity,
-}
-
-/// A complete function interpretation table over domain `0..domain_size - 1`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FunctionTable {
-    pub arity: usize,
-    /// Flat row-major table of length `domain_size^arity`.
-    pub table: Vec<usize>,
-}
-
-/// A complete predicate interpretation table over domain `0..domain_size - 1`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PredicateTable {
-    pub arity: usize,
-    /// Flat row-major table of length `domain_size^arity`.
-    pub table: Vec<bool>,
-}
-
-/// A finite first-order model certificate.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ModelCertificate {
-    /// Size of the finite universe `D = {0, ..., domain_size - 1}`.
-    pub domain_size: usize,
-    /// Interpretation of individual constant symbols.
-    pub constants: BTreeMap<String, usize>,
-    /// Interpretation of function symbols (if non-nullary functions are present).
-    #[serde(default)]
-    pub functions: BTreeMap<String, FunctionTable>,
-    /// Interpretation of predicate symbols.
-    pub predicates: BTreeMap<String, PredicateTable>,
-    /// Equality semantics.
-    pub equality: EqualitySemantics,
-    /// Deterministic SHA-256 digest of this model.
-    pub digest: String,
-}
+pub use mrs_core::model::{EqualitySemantics, FunctionTable, ModelCertificate, PredicateTable};
 
 /// Result of validating a model certificate against a TPTP problem.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,78 +58,57 @@ impl std::fmt::Display for ModelVerdict {
     }
 }
 
-impl ModelCertificate {
-    /// Computes the deterministic SHA-256 digest of this model certificate.
-    pub fn compute_digest(&self) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(b"MRS_MODEL_CERTIFICATE_V1\n");
-        hasher.update(format!("domain_size={}\n", self.domain_size).as_bytes());
-        for (name, val) in &self.constants {
-            hasher.update(format!("const {}={}\n", name, val).as_bytes());
-        }
-        for (name, func) in &self.functions {
-            hasher.update(format!("func {}/{}={:?}\n", name, func.arity, func.table).as_bytes());
-        }
-        for (name, pred) in &self.predicates {
-            hasher.update(format!("pred {}/{}={:?}\n", name, pred.arity, pred.table).as_bytes());
-        }
-        let mut digest = String::with_capacity(64);
-        for byte in hasher.finalize() {
-            use std::fmt::Write as _;
-            write!(&mut digest, "{byte:02x}").expect("writing to a String cannot fail");
-        }
-        digest
-    }
-
-    /// Formats the certificate as a standard TPTP SZS output block.
-    pub fn to_szs_block(&self, problem_name: &str) -> String {
-        let json = serde_json::to_string_pretty(self).unwrap_or_default();
-        format!(
-            "% SZS output start FiniteInterpretation for {problem_name}\n\
-             {json}\n\
-             % SZS output end FiniteInterpretation for {problem_name}\n"
-        )
-    }
-
-    /// Attempts to extract and parse a model certificate from prover stdout text.
-    pub fn extract_from_text(text: &str) -> Result<Self, String> {
-        // Look for % SZS output start FiniteInterpretation / Model / ModelCertificate
-        if let Some(start_idx) = text.find("% SZS output start") {
-            let after_start = &text[start_idx..];
-            if let Some(newline_idx) = after_start.find('\n') {
-                let body = &after_start[newline_idx + 1..];
-                if let Some(end_idx) = body.find("% SZS output end") {
-                    let block = body[..end_idx].trim();
-                    return Self::from_json_or_szs(block);
-                }
-            }
-        }
-        Self::from_json_or_szs(text.trim())
-    }
-
-    /// Parses a model certificate from either JSON or TPTP text.
-    pub fn from_json_or_szs(input: &str) -> Result<Self, String> {
-        let trimmed = input.trim();
-        // If it starts with '{', deserialize as JSON directly
-        if trimmed.starts_with('{') {
-            return serde_json::from_str(trimmed)
-                .map_err(|e| format!("invalid model certificate JSON: {e}"));
-        }
-
-        // Otherwise look for first '{' and last '}'
-        if let (Some(first_brace), Some(last_brace)) = (trimmed.find('{'), trimmed.rfind('}'))
-            && first_brace < last_brace
-        {
-            let json_slice = &trimmed[first_brace..=last_brace];
-            return serde_json::from_str(json_slice)
-                .map_err(|e| format!("invalid model certificate JSON: {e}"));
-        }
-
-        Err("no model certificate JSON payload found in input".into())
-    }
-
+/// Deterministic first-order model checking.
+///
+/// Implemented for [`ModelCertificate`] (whose data format lives in
+/// `mrs-core::model`) so a producer can emit a certificate without depending
+/// on this crate, while the checking methods stay the kernel's own.
+pub trait ModelEvaluation {
     /// Validates this model certificate against a problem file on disk.
-    pub fn validate_file(
+    fn validate_file(
+        &self,
+        problem_path: &std::path::Path,
+        expected_status: Option<&str>,
+    ) -> ModelVerdict;
+
+    /// Row-major table index for the argument tuple `args`.
+    fn table_index(&self, args: &[usize]) -> Result<usize, String>;
+
+    /// Evaluates a TPTP term under `env`.
+    fn eval_term(&self, term: &FOFTerm<'_>, env: &BTreeMap<String, usize>)
+    -> Result<usize, String>;
+
+    /// Evaluates a FOF atom.
+    fn eval_fof_atomic(
+        &self,
+        atom: &FOFAtomicFormula<'_>,
+        env: &BTreeMap<String, usize>,
+    ) -> Result<bool, String>;
+
+    /// Evaluates a CNF atom.
+    fn eval_cnf_atomic(
+        &self,
+        atom: &CNFAtomicFormula<'_>,
+        env: &BTreeMap<String, usize>,
+    ) -> Result<bool, String>;
+
+    /// Evaluates a FOF formula.
+    fn eval_fof(
+        &self,
+        formula: &FOFFormula<'_>,
+        env: &mut BTreeMap<String, usize>,
+    ) -> Result<bool, String>;
+
+    /// Evaluates a CNF clause, returning `(satisfied, ground_clause_count)`.
+    fn eval_cnf_clause(&self, clause: &CNFFormula<'_>) -> Result<(bool, usize), String>;
+
+    /// Validates this model certificate against a parsed problem.
+    fn validate(&self, problem: &TPTPProblem<'_>, expected_status: Option<&str>) -> ModelVerdict;
+}
+
+impl ModelEvaluation for ModelCertificate {
+    /// Validates this model certificate against a problem file on disk.
+    fn validate_file(
         &self,
         problem_path: &std::path::Path,
         expected_status: Option<&str>,
@@ -183,7 +125,7 @@ impl ModelCertificate {
     }
 
     /// Helper to compute index into a flat row-major table for inputs `[d_0, ..., d_{k-1}]`.
-    pub fn table_index(&self, args: &[usize]) -> Result<usize, String> {
+    fn table_index(&self, args: &[usize]) -> Result<usize, String> {
         let mut idx: usize = 0;
         for &arg in args {
             if arg >= self.domain_size {
@@ -200,18 +142,8 @@ impl ModelCertificate {
         Ok(idx)
     }
 
-    fn table_len(&self, arity: usize, kind: &str, name: &str) -> Result<usize, ModelVerdict> {
-        (0..arity).try_fold(1usize, |length, _| {
-            length.checked_mul(self.domain_size).ok_or_else(|| {
-                ModelVerdict::Inconclusive(format!(
-                    "{kind} `{name}` table size overflows the host usize"
-                ))
-            })
-        })
-    }
-
     /// Evaluates a term under a variable assignment environment.
-    pub fn eval_term(
+    fn eval_term(
         &self,
         term: &FOFTerm<'_>,
         env: &BTreeMap<String, usize>,
@@ -266,7 +198,7 @@ impl ModelCertificate {
     }
 
     /// Evaluates an atomic FOF formula under a variable assignment environment.
-    pub fn eval_fof_atomic(
+    fn eval_fof_atomic(
         &self,
         atomic: &FOFAtomicFormula<'_>,
         env: &BTreeMap<String, usize>,
@@ -309,7 +241,7 @@ impl ModelCertificate {
     }
 
     /// Evaluates a CNF atomic formula under a variable assignment environment.
-    pub fn eval_cnf_atomic(
+    fn eval_cnf_atomic(
         &self,
         atomic: &CNFAtomicFormula<'_>,
         env: &BTreeMap<String, usize>,
@@ -345,7 +277,7 @@ impl ModelCertificate {
     }
 
     /// Evaluates a first-order formula under a variable assignment environment.
-    pub fn eval_fof(
+    fn eval_fof(
         &self,
         formula: &FOFFormula<'_>,
         env: &mut BTreeMap<String, usize>,
@@ -431,52 +363,13 @@ impl ModelCertificate {
                 formula,
             } => {
                 let vars: Vec<String> = variables.iter().map(|v| v.to_string()).collect();
-                self.eval_quantified(&vars, 0, *quantifier, formula, env)
-            }
-        }
-    }
-
-    fn eval_quantified(
-        &self,
-        vars: &[String],
-        idx: usize,
-        quantifier: Quantifier,
-        formula: &FOFFormula<'_>,
-        env: &mut BTreeMap<String, usize>,
-    ) -> Result<bool, String> {
-        if idx == vars.len() {
-            return self.eval_fof(formula, env);
-        }
-
-        let var = &vars[idx];
-        match quantifier {
-            Quantifier::Forall => {
-                for d in 0..self.domain_size {
-                    env.insert(var.clone(), d);
-                    let res = self.eval_quantified(vars, idx + 1, quantifier, formula, env)?;
-                    env.remove(var);
-                    if !res {
-                        return Ok(false);
-                    }
-                }
-                Ok(true)
-            }
-            Quantifier::Exists => {
-                for d in 0..self.domain_size {
-                    env.insert(var.clone(), d);
-                    let res = self.eval_quantified(vars, idx + 1, quantifier, formula, env)?;
-                    env.remove(var);
-                    if res {
-                        return Ok(true);
-                    }
-                }
-                Ok(false)
+                model_eval_quantified(self, &vars, 0, *quantifier, formula, env)
             }
         }
     }
 
     /// Evaluates a CNF clause under all valuations of its free variables.
-    pub fn eval_cnf_clause(&self, clause: &CNFFormula<'_>) -> Result<(bool, usize), String> {
+    fn eval_cnf_clause(&self, clause: &CNFFormula<'_>) -> Result<(bool, usize), String> {
         let mut vars = BTreeSet::new();
         let lits = clause.literals();
         for lit in &lits {
@@ -486,61 +379,12 @@ impl ModelCertificate {
         let mut env = BTreeMap::new();
         let mut evaluations = 0;
         let satisfied =
-            self.eval_cnf_all_valuations(&var_list, 0, &lits, &mut env, &mut evaluations)?;
+            model_eval_cnf_all_valuations(self, &var_list, 0, &lits, &mut env, &mut evaluations)?;
         Ok((satisfied, evaluations))
     }
 
-    fn eval_cnf_all_valuations(
-        &self,
-        vars: &[String],
-        idx: usize,
-        literals: &[&CNFLiteral<'_>],
-        env: &mut BTreeMap<String, usize>,
-        count: &mut usize,
-    ) -> Result<bool, String> {
-        if idx == vars.len() {
-            *count += 1;
-            // Check if any literal is satisfied under env
-            for lit in literals {
-                let sat = match lit {
-                    CNFLiteral::Positive(atom) => self.eval_cnf_atomic(atom, env)?,
-                    CNFLiteral::Negative(atom) => !self.eval_cnf_atomic(atom, env)?,
-                    CNFLiteral::Equality(left, right) => {
-                        let l_val = self.eval_term(left, env)?;
-                        let r_val = self.eval_term(right, env)?;
-                        l_val == r_val
-                    }
-                    CNFLiteral::Inequality(left, right) => {
-                        let l_val = self.eval_term(left, env)?;
-                        let r_val = self.eval_term(right, env)?;
-                        l_val != r_val
-                    }
-                };
-                if sat {
-                    return Ok(true);
-                }
-            }
-            return Ok(false);
-        }
-
-        let var = &vars[idx];
-        for d in 0..self.domain_size {
-            env.insert(var.clone(), d);
-            let ok = self.eval_cnf_all_valuations(vars, idx + 1, literals, env, count)?;
-            env.remove(var);
-            if !ok {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-
     /// Fully validates this model certificate against a TPTP problem.
-    pub fn validate(
-        &self,
-        problem: &TPTPProblem<'_>,
-        expected_status: Option<&str>,
-    ) -> ModelVerdict {
+    fn validate(&self, problem: &TPTPProblem<'_>, expected_status: Option<&str>) -> ModelVerdict {
         // 1. Finite domain non-emptiness
         if self.domain_size == 0 {
             return ModelVerdict::Rejected("domain size must be >= 1".into());
@@ -564,7 +408,7 @@ impl ModelCertificate {
 
         // 4. Function & predicate table sizes and ranges
         for (name, func) in &self.functions {
-            let expected_len = match self.table_len(func.arity, "function", name) {
+            let expected_len = match model_table_len(self, func.arity, "function", name) {
                 Ok(length) => length,
                 Err(verdict) => return verdict,
             };
@@ -586,7 +430,7 @@ impl ModelCertificate {
         }
 
         for (name, pred) in &self.predicates {
-            let expected_len = match self.table_len(pred.arity, "predicate", name) {
+            let expected_len = match model_table_len(self, pred.arity, "predicate", name) {
                 Ok(length) => length,
                 Err(verdict) => return verdict,
             };
@@ -950,6 +794,105 @@ fn collect_term_vars(term: &FOFTerm<'_>, vars: &mut BTreeSet<String>) {
         }
         _ => {}
     }
+}
+
+fn model_eval_cnf_all_valuations(
+    cert: &ModelCertificate,
+    vars: &[String],
+    idx: usize,
+    literals: &[&CNFLiteral<'_>],
+    env: &mut BTreeMap<String, usize>,
+    count: &mut usize,
+) -> Result<bool, String> {
+    if idx == vars.len() {
+        *count += 1;
+        // Check if any literal is satisfied under env
+        for lit in literals {
+            let sat = match lit {
+                CNFLiteral::Positive(atom) => cert.eval_cnf_atomic(atom, env)?,
+                CNFLiteral::Negative(atom) => !cert.eval_cnf_atomic(atom, env)?,
+                CNFLiteral::Equality(left, right) => {
+                    let l_val = cert.eval_term(left, env)?;
+                    let r_val = cert.eval_term(right, env)?;
+                    l_val == r_val
+                }
+                CNFLiteral::Inequality(left, right) => {
+                    let l_val = cert.eval_term(left, env)?;
+                    let r_val = cert.eval_term(right, env)?;
+                    l_val != r_val
+                }
+            };
+            if sat {
+                return Ok(true);
+            }
+        }
+        return Ok(false);
+    }
+
+    let var = &vars[idx];
+    for d in 0..cert.domain_size {
+        env.insert(var.clone(), d);
+        let ok = model_eval_cnf_all_valuations(cert, vars, idx + 1, literals, env, count)?;
+        env.remove(var);
+        if !ok {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn model_eval_quantified(
+    cert: &ModelCertificate,
+    vars: &[String],
+    idx: usize,
+    quantifier: Quantifier,
+    formula: &FOFFormula<'_>,
+    env: &mut BTreeMap<String, usize>,
+) -> Result<bool, String> {
+    if idx == vars.len() {
+        return cert.eval_fof(formula, env);
+    }
+
+    let var = &vars[idx];
+    match quantifier {
+        Quantifier::Forall => {
+            for d in 0..cert.domain_size {
+                env.insert(var.clone(), d);
+                let res = model_eval_quantified(cert, vars, idx + 1, quantifier, formula, env)?;
+                env.remove(var);
+                if !res {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        Quantifier::Exists => {
+            for d in 0..cert.domain_size {
+                env.insert(var.clone(), d);
+                let res = model_eval_quantified(cert, vars, idx + 1, quantifier, formula, env)?;
+                env.remove(var);
+                if res {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+    }
+}
+
+fn model_table_len(
+    cert: &ModelCertificate,
+    arity: usize,
+    kind: &str,
+    name: &str,
+) -> Result<usize, ModelVerdict> {
+    (0..arity).try_fold(1usize, |length, _| {
+        length.checked_mul(cert.domain_size).ok_or_else(|| {
+            ModelVerdict::Inconclusive(format!(
+                "{kind} `{name}` table size overflows the host usize"
+            ))
+        })
+    })
 }
 
 #[cfg(test)]
