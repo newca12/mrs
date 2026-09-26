@@ -1,3 +1,10 @@
+> **Numbers in this document are a point-in-time record.** The current
+> ProoVer score, the self-certification rate, and the open gaps are in
+> [`CERTIFICATION_STATUS.md`](./CERTIFICATION_STATUS.md). Two items below
+> are now closed: the `PRV067+1` gap (§6 Finding 3) and the AC-order issue
+> in `verify_instantiation` (§6 Finding 2), and `docs/PROOF_SIZE_BUDGET.md`
+> records the proof-size measurements this document does not have.
+
 # Architecture Review: Auto Proof & Verification in `mrs`
 
 The automated proof system in `mrs` separates high-performance theorem search from independent proof trust. While high-performance parallel superposition provers often treat proof output as an afterthought, `mrs` implements a closed-loop verification ecosystem spanning four dedicated crates:

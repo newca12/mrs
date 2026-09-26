@@ -1,3 +1,8 @@
+> **Historical.** This is a competition-mode audit of an older build over a
+> wider problem set. The current strict-kernel self-certification
+> measurement, and the reason histogram behind it, are in
+> [`CERTIFICATION_STATUS.md`](./CERTIFICATION_STATUS.md) §2.
+
 # Soundness Status Audit Report
 
 This document records the results of the final comprehensive independent proof-verification audit performed on a remote server for the updated **`sanitize-skolems`** branch.
