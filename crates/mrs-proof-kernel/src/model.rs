@@ -29,21 +29,21 @@ use std::collections::{BTreeMap, BTreeSet};
 pub use mrs_core::model::MAX_MODEL_TABLE_ENTRIES;
 /// Bound on the dense interpretation work one model validation may perform.
 ///
-/// The real guard on this is wall clock: every caller runs under a strict time
-/// budget (`--strict-time`), and this counter exists to fail closed *inside*
-/// that budget rather than to keep validation cheap. It must therefore be sized
-/// to the work that fits the default budget, not smaller — a cap low enough to
-/// reject ordinary models discards evidence without protecting anything.
+/// This bound applies to callers that invoke the model checker synchronously as
+/// well as to `mrs-proover`'s strict-time process. Keep it comfortably above
+/// the measured ordinary-model regression case, but low enough that the
+/// in-process call cannot monopolize a search run for tens of seconds.
 ///
 /// Measured on the 100-problem `casc-30/EPS` run `cert-eps-20260926`: the
 /// expensive models (domain 11, one clause with 6 free variables and 18
 /// argument positions, ≈3.2·10⁷ steps) certify in 1.4–1.6 s each, and the
 /// whole division audits in 1.7 s wall. At the previous 10⁷ cap those models
 /// were refused as `inconclusive`, halving the certified count (4 of 12 → 10
-/// of 12) while saving no measurable time. At the ~2·10⁷ steps/s this kernel
-/// sustains, 2·10⁹ steps is ≈90 s, i.e. just inside the default 120 s budget;
-/// anything larger is caught by the clock instead.
-const MAX_MODEL_EVALUATION_WORK: u64 = 2_000_000_000;
+/// of 12) while saving no measurable time. A 10⁸ cap admits that family with
+/// useful headroom while keeping a single validation below roughly 5 s at the
+/// measured throughput; importantly this remains an explicit finite ceiling,
+/// rather than assuming every caller supplies a strict-time watchdog.
+const MAX_MODEL_EVALUATION_WORK: u64 = 100_000_000;
 const MAX_MODEL_EVALUATION_DEPTH: usize = 256;
 const MAX_MODEL_METADATA_BYTES: usize = 16 * 1024 * 1024;
 const MAX_MODEL_PROBLEM_BYTES: usize = 16 * 1024 * 1024;
