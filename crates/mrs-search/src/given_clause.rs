@@ -1281,7 +1281,6 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
             }
         }
 
-        // --- Limited Resource Strategy (LRS) Periodic Pruning ---
         if iteration.is_multiple_of(100) && iteration >= 100 {
             let elapsed = start.elapsed();
             if let Some(target_size) =
@@ -1320,22 +1319,27 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     }
                 }
             }
+        }
 
-            // --- Resource Containment Ceilings & Memory Watchdog ---
-            if let Some(limit) = config.resource_limits.max_processed
-                && state.stats.processed >= limit
-            {
-                if std::env::var("TRACE_SEARCH").is_ok() {
-                    eprintln!(
-                        "[RESOURCE] Processed clause limit exceeded: {} >= {}",
-                        state.stats.processed, limit
-                    );
-                }
-                return SearchResult::ResourceOut(crate::ResourceReason::MaxProcessed {
-                    limit,
-                    processed: state.stats.processed,
-                });
+        // Hard search-resource ceilings are independent of the periodic LRS
+        // pruning cadence. The processed limit in particular must be checked
+        // after every given clause to be an exact fixed-work cap.
+        if let Some(limit) = config.resource_limits.max_processed
+            && state.stats.processed >= limit
+        {
+            if std::env::var("TRACE_SEARCH").is_ok() {
+                eprintln!(
+                    "[RESOURCE] Processed clause limit exceeded: {} >= {}",
+                    state.stats.processed, limit
+                );
             }
+            return SearchResult::ResourceOut(crate::ResourceReason::MaxProcessed {
+                limit,
+                processed: state.stats.processed,
+            });
+        }
+        if iteration.is_multiple_of(100) && iteration >= 100 {
+            // --- Resource Containment Ceilings & Memory Watchdog ---
             if let Some(limit) = config.resource_limits.max_passive {
                 let passive_count = state.unprocessed.active_count() as u64;
                 if passive_count >= limit {
@@ -3833,5 +3837,46 @@ mod tests {
             matches!(result, SearchResult::ResourceOut(_)),
             "watchdog should trigger ResourceOut when memory limit is exceeded (got {result:?})"
         );
+    }
+
+    #[test]
+    fn processed_limit_is_enforced_between_lrs_prune_epochs() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let q = symbols.intern("q");
+        let mut id_gen = ClauseIdGen::new();
+        let clauses = vec![
+            input_clause(
+                &mut id_gen,
+                vec![Literal::pos(Atom::pred(p, vec![]))],
+                "p",
+                "axiom",
+            ),
+            input_clause(
+                &mut id_gen,
+                vec![Literal::pos(Atom::pred(q, vec![]))],
+                "q",
+                "axiom",
+            ),
+        ];
+        let mut state = crate::state::SearchState::new(
+            clauses,
+            id_gen,
+            std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+            std::sync::Arc::new(symbols),
+            false,
+        );
+        let mut config = SearchConfig {
+            time_limit: Duration::from_secs(5),
+            ..SearchConfig::default()
+        };
+        config.resource_limits.max_processed = Some(1);
+        config.lrs_policy = crate::LrsPolicy::FixedIterations { budget: 1_000 };
+        let result = search(&mut state, &config);
+        assert!(matches!(
+            result,
+            SearchResult::ResourceOut(crate::ResourceReason::MaxProcessed { processed: 1, .. })
+        ));
+        assert_eq!(state.stats.processed, 1);
     }
 }

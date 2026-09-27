@@ -15,3 +15,8 @@ Every checked-in summary must identify:
 
 The existing `greedy_portfolios` files are solo set-cover diagnostics. They do
 not establish cooperative portfolio coverage.
+
+`perf/` holds the fixed-work performance bank: how fast `mrs` searches on a
+given host, with results comparable across machines. It measures throughput on
+a generated clause set, not solving ability, so it never substitutes for a CASC
+run. See [`perf/README.md`](perf/README.md).

@@ -122,6 +122,25 @@ nix develop -c cargo run --release -- --schedule fast problems/socrates.p
 nix develop -c cargo run --release -- --list-schedules
 ```
 
+### Measure search speed on this host
+
+`crates/mrs-bench/perf_probe.sh` runs a **fixed amount of work** (an
+iteration-counted clause ceiling, not a wall clock) on a generated clause set,
+for both a `native` and a `haswell` build, and appends the result to
+`docs/results/perf/bank.tsv` with a dated report. Work is what makes two hosts
+comparable: a "run it for 30 s and count clauses" number is not, because the
+search is wall-clock sensitive. The whole probe is capped at 12 GiB.
+
+```bash
+crates/mrs-bench/perf_probe.sh              # measure, bank, and report (~3 min)
+crates/mrs-bench/perf_probe.sh --no-bank    # measure only
+crates/mrs-bench/perf_probe.sh --help
+```
+
+It calls `cargo` directly rather than through `nix develop`, so `direnv exec .`
+(or a loaded shell) must already provide the toolchain. Method and comparability
+rules: `docs/results/perf/README.md`.
+
 ---
 
 ## 7. CLI flags

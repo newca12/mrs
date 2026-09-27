@@ -11,9 +11,11 @@ description = "CASC benchmark harness and report tool for mrs"
 [dependencies]
 rayon = { workspace = true }
 mrs-core = { workspace = true }
+mrs-search = { workspace = true }
 mrs-szs = { workspace = true }
 mrs-tptp = { workspace = true }
 mrs-proof-kernel = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 tempfile = { workspace = true }
@@ -59,3 +61,7 @@ path = "src/bin/dual_run_sanity_check.rs"
 [[bin]]
 name = "audit_casc_proofs"
 path = "src/bin/audit_casc_proofs.rs"
+
+[[bin]]
+name = "perf_probe"
+path = "src/bin/perf_probe.rs"
