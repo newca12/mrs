@@ -1232,7 +1232,7 @@ pub fn run_schedule_with_candidate_receiver(
                         best = res;
                     }
                 }
-                SearchResult::ResourceOut => {
+                SearchResult::ResourceOut(_) => {
                     if matches!(best, SearchResult::Timeout | SearchResult::GaveUp) {
                         best = res;
                     }

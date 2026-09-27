@@ -302,7 +302,7 @@ impl Atp for MrsAtp {
             SearchResult::Saturated(_) => AtpVerdict::Unknown,
             SearchResult::Timeout => AtpVerdict::Unknown,
             SearchResult::GaveUp => AtpVerdict::Unknown,
-            SearchResult::ResourceOut => AtpVerdict::Unknown,
+            SearchResult::ResourceOut(_) => AtpVerdict::Unknown,
         }
     }
 

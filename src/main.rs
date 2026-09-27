@@ -1020,7 +1020,7 @@ fn main() {
             }
             SearchResult::Timeout => SzsStatus::Timeout,
             SearchResult::GaveUp => SzsStatus::GaveUp,
-            SearchResult::ResourceOut => SzsStatus::ResourceOut,
+            SearchResult::ResourceOut(_) => SzsStatus::ResourceOut,
         };
 
         (result, status, schedule_report, cert_telemetry)
@@ -1270,6 +1270,14 @@ fn print_statistics(
     println!("% ------------------------------");
     println!("% Version: mrs {}", env!("CARGO_PKG_VERSION"));
     println!("% Termination reason: {}", termination_reason);
+    // Say *which* limit fired, and with what numbers. A run that stops on the
+    // memory watchdog is a statement about the hardware; one that stops on the
+    // clause ceiling is a statement about the search, and the two need different
+    // responses. Reporting a bare "ResourceOut" makes them indistinguishable in
+    // a benchmark sweep.
+    if let mrs_search::SearchResult::ResourceOut(reason) = final_result {
+        println!("% Resource limit: {}", reason.describe());
+    }
     println!("% Time elapsed: {:.3} s", elapsed.as_secs_f64());
     if proof_bytes > 0 {
         println!(
@@ -1342,11 +1350,22 @@ fn print_statistics(
             SearchResult::Saturated(_) => "Saturation",
             SearchResult::GaveUp => "GaveUp",
             SearchResult::Timeout => "Timeout",
-            SearchResult::ResourceOut => "ResourceOut",
+            SearchResult::ResourceOut(_) => "ResourceOut",
         }
     };
 
     let mut detail_str = report.telemetry_detail(search_result_name);
+    // Which limit fired goes in the detail line, which is what the benchmark
+    // harness reads as `failure_detail` and grades. A bare `ResourceOut` makes
+    // a memory-bound run indistinguishable from one that hit the clause ceiling,
+    // and only the first one says anything about the hardware.
+    if let mrs_search::SearchResult::ResourceOut(reason) = final_result {
+        detail_str = format!(
+            "{detail_str} resource_reason={} resource_detail=\"{}\"",
+            reason.as_str(),
+            reason.describe()
+        );
+    }
     if proof_bytes > 0 {
         detail_str = format!(
             "{detail_str} proof_nodes={proof_nodes} proof_bytes={proof_bytes} proof_emitted={}",
