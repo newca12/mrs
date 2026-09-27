@@ -52,9 +52,9 @@ The result is accepted only when both closures agree:
 - both saturate without the empty clause, producing
   `CompletenessWitness::GroundOrderedResolution`.
 
-Large groundings that exceed the closure tier take a second path instead:
-Tier 2 encodes the grounded set propositionally and asks CaDiCaL to decide
-it (`crates/mrs-search/src/certified_sat.rs`). A satisfiable verdict plus
+The closure tier's counterpart is Tier 2: it encodes the grounded set
+propositionally and asks CaDiCaL to decide it
+(`crates/mrs-search/src/certified_sat.rs`). A satisfiable verdict plus
 an independently re-verified model produces
 `CompletenessWitness::SatBackedGrounding`; unsatisfiable outcomes emit
 FRAT-backed TSTP refutations (Phase 5b/c below) while unknown and
@@ -62,6 +62,35 @@ failed-model outcomes fail closed. Tier 2 skips ordering validation
 (meaningless for model checking). Tiers are selected by grounding size
 with no CLI change; where both tiers run, their verdicts must agree
 (tested differentially).
+
+### Tier order (2026-09, EPS)
+
+**Tier 2 runs first.** The router used to be `if tier1 { return
+run_tier1(..) }`, and `run_tier1`'s closure is exponential in the
+grounding size — so on a grounding that cleared the Tier-1 size gate it
+could not close, and it returned its own `Limit`, which propagated out of
+the router. Tier 2 was therefore unreachable for exactly the inputs it
+was built for. GRP125-2.004 grounds to 1133 clauses; the closure reached
+11 603 clauses and 304k inferences in 15 s without closing, and CaDiCaL
+decides the same instance in 10 ms.
+
+The order is not a preference. The SAT encoding is linear in a grounding
+that has already been materialized, so the call is cheap even on the
+small groundings the closure can close; and a satisfiable verdict is
+re-checked clause by clause against the problem, so it does not depend on
+an ordering at all. Tier 1 keeps the entire remaining budget for the
+direction only it can perform — a refutation carrying TSTP ancestry —
+and Tier 2's UNSAT falls through to it, because a solver verdict carries
+no ancestry the kernel can replay.
+
+Consequence for the ordering gates: satisfiability no longer depends on
+the ordering, and that is correct rather than a hole. A *saturation* claim
+from the closure still requires a validated ordering, because a closure
+that ran under an unvalidated one has proved nothing about completeness.
+`lpo_ignores_weights_while_kbo_requires_them` and
+`rejects_ac_ordering_and_non_kbo_lpo_orderings` therefore use
+unsatisfiable inputs, where there is no ordering-independent route, and
+assert that the answer is never a saturation.
 
 If the closures disagree, or a resource limit is reached, certification fails
 closed with `GaveUp`.
@@ -485,6 +514,70 @@ needs lazy/incremental grounding (problems that never materialize) —
 declared future work, not a regression: Tier 1 behavior is unchanged
 where closures terminate.
 
+## Grounding Must Be Complete Over Distinct Induced Clauses
+
+**Do not apply restricted variable renaming to this path.** It looks like a
+large, safe win and it is neither.
+
+Renaming a clause generally induces a *different* clause, so "one
+representative per orbit of the variable-renaming group" is not "one
+representative per distinct instance". `~group_element(Y) | product(X,e_4,Y) |
+product(X,e_3,Y) | product(X,e_2,Y) | product(X,e_1,Y) | ~group_element(X)`
+over four constants (GRP123-4.004's `column_surjectivity`) has sixteen
+distinct induced clauses; the standard restriction — variables in first
+occurrence order, each value no earlier than the previous — keeps ten of them
+and silently drops six constraints.
+
+The restriction is sound for the *refutation* direction, because a resolution
+step using a renamed clause has a mirror using the representative. It is
+unsound for satisfiability, which is the entire EPS division: the ground set
+is weaker than the problem, so a model of it need not satisfy the problem.
+`audit_casc_proofs` caught exactly that, reporting
+`model violates axiom clause column_surjectivity` for a `Satisfiable` verdict
+on a problem whose reference answer is also `Satisfiable` — a wrong model
+behind a right answer, which the reference check alone would have passed.
+
+This was implemented, measured as a large win, and reverted. `grounding_is_complete_over_distinct_induced_clauses`
+and `instance_equality_is_clause_equality_not_renaming` pin the distinction.
+`ground_with_constants` therefore keeps the exact `n^k` estimate, and the
+estimate being exact is load-bearing rather than cosmetic: it is what the
+instance cap refuses on.
+
+The saving was not small, which is worth recording so the next person does not
+re-derive it as if it were unexplored. `C(n + k - 1, k)` against `n^k` is
+`2^100 → 101` for the two-constant, hundred-variable-per-clause half of the
+casc-30 EPS division (KRS, HWV-ar, SYO), and 126k against 815M for thirteen
+constants and eight variables. Taking it soundly needs the lazy route: search
+the Herbrand atoms with instances generated on demand, and then check the
+model against the *original* clause set rather than against a materialized
+instance set. That is the remaining work, and it is a tier, not a patch.
+
+## Model Certificates Must Agree With The Equality Pass
+
+`build_model_certificate` used to give every constant its own domain
+element. For a clause set containing the unit equation `a = b` — which the
+union-find pass consumes, rewriting every occurrence to one class
+representative and dropping the now-reflexive literal — that produces a
+certificate asserting `a != b`. The `Satisfiable` *verdict* was still right;
+the model that justifies it was not.
+
+The class map is now threaded from `expand_equality` to the builder, which
+interprets each constant as its class representative's element. That is the
+reading under which the disequalities the unique-name pass dropped are
+actually true, so the certificate and the routing agree by construction.
+
+The builder also re-derives the requirement from the originals rather than
+trusting its caller: a positive *unit* equality between two distinct
+constants forces them to share an element, so a certificate that gave them
+separate elements is declined. That is the check worth having, because this
+failure mode is a silent wrong answer on a `Satisfiable` verdict rather than
+a crash — and it is a bug that predates the 2026-09 work
+(`non_unit_positive_equality_fails_closed` and `saturation_is_epr_with_equality_only`
+were both asserting the old, unsound-safe behaviour: `Unsupported` and a
+class-per-constant certificate respectively).
+`certificate_interprets_merged_constants_as_one_element` is the regression
+test.
+
 ## Ground Equality Certification (Phase 6 Outcome)
 
 Grounded equality literals are decided by congruence expansion in
@@ -505,12 +598,22 @@ legacy fragment observes no change. Design points:
   (dropped silently, like subsumed clauses); same-class *negative* units
   are immediate contradictions, refuted from ancestry with the explains
   as parents — no closure needed.
-- **Certification boundary**: positive equality clauses must be unit clauses;
-  non-unit positive equality and predicate-congruence cases fail closed until
-  the full congruence/superposition certificate exists.
+- **Certification boundary**: a *ground* positive equality between two
+  distinct class representatives is false, and a *ground* negative one is
+  true. Deciding them by the unique-name axiom (distinct constants denote
+  distinct elements) is what removes the need for predicate congruence
+  entirely, so the old blanket refusal of non-unit positive equality is gone
+  — the NLP set, whose clauses carry `Y = Z` as one literal among a dozen, is
+  now decidable. What still fails closed is a positive equality with a
+  *non-ground* side, whose value the ground pass cannot determine and which
+  would have to be left to resolution. Function terms remain outside the
+  fragment on every path.
 - **Local Eq partner map**: equality remains a Tier-1-only unit-equality
-  path. Tier 2 is predicate-only until SAT encoding and kernel replay support
-  equality atoms end to end.
+  path. Tier 2 is predicate-only — but only *after* the pass above has
+  resolved every ground Eq literal, so it receives a predicate-only set. What
+  it used to receive instead was a refusal that also aborted Tier 1 and
+  Tier 3, because the EPR gate was consulted on the *originals*; it now uses
+  `is_epr_input`, which is the honest input-side check.
 - **Vacuous saturation**: if expansion drops every clause (all
   reflexivity-valid), the empty set saturates without running a
   closure — still behind the EPR-with-equality gate, so non-EPR inputs

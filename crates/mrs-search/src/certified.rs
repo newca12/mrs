@@ -40,19 +40,24 @@ use mrs_index::literal_index::LiteralIndex;
 /// Resource caps for the bounded certifier. `MAX_ATOMS` and
 /// `MAX_GROUND_INSTANCES` bound Tier 1 (double ordered-resolution closure);
 /// `TIER2_MAX_ATOMS` and `TIER2_MAX_GROUND_INSTANCES` bound Tier 2
-/// (SAT-backed satisfiability via CaDiCaL, see `certified_sat`). Tier-2
-/// bounds were sized from TRACE_CERTIFY measurements: they admit the next
-/// slice of closure-bound groundings while keeping the materialized vec and
-/// the solver arena within a few hundred MB. `MAX_CLAUSES` and
-/// `MAX_INFERENCES` bound Tier-1 closure memory and work after grounding,
+/// (SAT-backed satisfiability via CaDiCaL, see `certified_sat`). `MAX_CLAUSES`
+/// and `MAX_INFERENCES` bound Tier-1 closure memory and work after grounding,
 /// and the per-run time limit bounds everything else. Anything beyond the
 /// Tier-2 caps fails closed as `Limit`, never as saturation.
+///
+/// `TIER2_MAX_ATOMS` was raised from 16 384 to 400 000 in 2026-09, from
+/// measurement rather than taste: with the routing fixed, the *atom* count
+/// rather than the instance count became the binding limit on which
+/// groundings reached the solver, and the atom set is not what costs memory
+/// (the arena on a million-event UNSAT proof is). The instance cap is
+/// unchanged at 2 000 000, which is what the exact `n^k` estimate refuses on;
+/// raising it buys the 205-constant HWV problems at ~8 GB peak each.
 const MAX_ATOMS: usize = 4096;
 const MAX_CLAUSES: usize = 100_000;
 const MAX_INFERENCES: u64 = 1_000_000;
 const MAX_GROUND_INSTANCES: usize = 500_000;
 const TIER2_MAX_ATOMS: usize = 400_000;
-const TIER2_MAX_GROUND_INSTANCES: usize = 6_000_000;
+const TIER2_MAX_GROUND_INSTANCES: usize = 2_000_000;
 /// Tier-3 constant-subset search bounds: subset sizes, per-size try caps,
 /// and the per-subset grounding cap. Subsets stay small so each Tier-1 run
 /// is milliseconds; everything shares the run deadline.
@@ -1103,7 +1108,9 @@ fn collect_grounding_constants(
 /// Exhaustively instantiate clauses over `constants`, refusing past
 /// `instance_cap` before materializing. The estimate is exact: one output
 /// per ground input clause plus the canonical instance count per variable
-/// clause (see [`canonical_instance_count`]).
+/// clause. The count is exact, and it must stay exact: see
+/// [`instances_induce_same_clause`] for why an enumeration that dropped
+/// "duplicate" instances would not be a smaller equivalent set.
 fn ground_with_constants(
     clauses: &[Clause],
     constants: &[SymbolId],
@@ -1111,35 +1118,18 @@ fn ground_with_constants(
     instance_cap: usize,
     deadline: Instant,
 ) -> Result<GroundedInputs, CertificationFailure> {
-    // Restricted variable renaming needs a total order on the domain, and it
-    // imposes it on the *constant* order: the value of the i-th variable in
-    // first-occurrence order may not be earlier than the value of the
-    // (i-1)-th. Sorting here rather than trusting the caller removes a silent
-    // dependency — an unsorted domain produced non-canonical instances in
-    // testing, which is the one way this could ever be unsound rather than
-    // merely wrong. The set of constants is unaffected, so every caller that
-    // uses the list for something else (Tier 3's subset bookkeeping) still
-    // sees the same vocabulary.
-    let mut constants = constants.to_vec();
-    constants.sort_unstable();
-    // Distinctness matters for correctness, not just tidiness: the `low`
-    // index is a `partition_point` over this list, so a repeated constant
-    // would desynchronize the restriction from the value it is restricting.
-    // Every production caller passes a deduplicated domain, so this is
-    // belt-and-braces rather than a repair.
-    constants.dedup();
-
     let originals = clauses.to_vec();
     let mut grounded = Vec::new();
     let mut estimated_instances = 0usize;
     for clause in clauses {
-        let vars = first_occurrence_vars(clause);
+        let mut vars: Vec<_> = clause.free_vars().into_iter().collect();
+        vars.sort_unstable();
         if vars.is_empty() {
             estimated_instances = estimated_instances.saturating_add(1);
             grounded.push(clause.clone());
             continue;
         }
-        let Some(instances) = canonical_instance_count(constants.len(), vars.len()) else {
+        let Some(instances) = constants.len().checked_pow(vars.len() as u32) else {
             trace_certify(format!(
                 "refuse=instance_count_overflow vars={} constants={}",
                 vars.len(),
@@ -1169,7 +1159,7 @@ fn ground_with_constants(
         instantiate_clause(
             clause,
             &vars,
-            &constants,
+            constants,
             0,
             &mut substitution,
             id_gen,
@@ -1204,84 +1194,44 @@ fn collect_epr_constants(
     Ok(())
 }
 
-/// The clause's free variables in order of **first occurrence**, scanning
-/// literals left to right and terms in argument order.
+/// Do two instances of `clause` induce the same ground clause?
 ///
-/// Restricted variable renaming needs this order rather than the by-id order
-/// `free_vars` hands out: the renaming restricts the *i*-th variable in this
-/// order to constants no earlier than the *i-1*-th, which yields exactly one
-/// representative of every renaming orbit. A by-id order would still be a
-/// permutation of the same set, but the enumerator walks the clause's own
-/// variable order, so the restriction must be stated in those terms.
-fn first_occurrence_vars(clause: &Clause) -> Vec<mrs_core::term::VarId> {
-    let mut order: Vec<mrs_core::term::VarId> = Vec::new();
-    let mut seen: HashSet<mrs_core::term::VarId> = HashSet::default();
-    for literal in &clause.literals {
-        match &literal.atom {
-            Atom::Pred(_, args) => {
-                for arg in args {
-                    collect_vars_in_order(arg, &mut order, &mut seen);
-                }
-            }
-            Atom::Eq(left, right) => {
-                collect_vars_in_order(left, &mut order, &mut seen);
-                collect_vars_in_order(right, &mut order, &mut seen);
-            }
-        }
-    }
-    order
-}
-
-fn collect_vars_in_order(
-    term: &Term,
-    order: &mut Vec<mrs_core::term::VarId>,
-    seen: &mut HashSet<mrs_core::term::VarId>,
-) {
-    match term {
-        Term::Var(var) => {
-            if seen.insert(*var) {
-                order.push(*var);
-            }
-        }
-        Term::App(_, args) => {
-            for arg in args {
-                collect_vars_in_order(arg, order, seen);
-            }
-        }
-    }
-}
-
-/// How many distinct instances a `k`-variable clause has over an `n`-constant
-/// domain once renaming-duplicates are dropped: `C(n + k - 1, k)`, the number
-/// of non-decreasing value sequences. `None` on overflow, which the caller
-/// treats exactly as it treated the old `n^k` overflow.
+/// The grounder must materialize every *distinct induced clause*, not one
+/// representative per orbit of the variable-renaming group. Those are
+/// different things, and conflating them is a soundness hole rather than a
+/// missed optimization: `~g(Y) | p(X,e4,Y) | p(X,e3,Y) | p(X,e2,Y) |
+/// p(X,e1,Y) | ~g(X)` over four constants has sixteen distinct induced
+/// clauses, but renaming `X` and `Y` shows the clause is not symmetric in
+/// them, and the "sorted values" representative of the orbit of `(X,Y) =
+/// (0,1)` is a *different* clause. Dropping the other six leaves a ground set
+/// with fewer constraints, so a model of it need not satisfy the original —
+/// and `audit_casc_proofs` rejected exactly such a model
+/// (`model violates axiom clause column_surjectivity`).
 ///
-/// The saving over `n^k` is not marginal — it is the whole reason a
-/// two-constant problem with 100 variables per clause is groundable at all
-/// (`2^100` becomes 101) and it is what separates the feasible from the
-/// infeasible half of the 2026-09 casc-30 EPS division.
-fn canonical_instance_count(constants: usize, vars: usize) -> Option<usize> {
-    if constants == 0 {
-        return None;
-    }
-    if vars == 0 {
-        return Some(1);
-    }
-    // C(n + k - 1, k) = prod_{i=1..k} (n + i - 1) / i, accumulated with
-    // integer division kept exact by tracking the binomial directly.
-    let mut result: u128 = 1;
-    for i in 1..=vars as u128 {
-        // result = C(n + i - 1, i) from C(n + i - 2, i - 1)
-        //          = C(n + i - 2, i - 1) * (n + i - 1) / i
-        let numerator = (constants as u128) + i - 1;
-        result = result.checked_mul(numerator)?;
-        let quotient = result / i;
-        if quotient > usize::MAX as u128 {
-            return None;
-        }
-        result = quotient;
-    }
-    Some(result as usize)
+/// Restricted variable renaming is sound for the *refutation* direction,
+/// because a resolution step that uses a renamed clause has a mirror that
+/// uses the representative. It is unsound for satisfiability, which is the
+/// whole of the EPS division. This predicate is the cheap end of that
+/// assertion and `grounding_is_complete` is the test that pins it.
+#[cfg(test)]
+fn instances_induce_same_clause(
+    left: &Substitution,
+    right: &Substitution,
+    clause: &Clause,
+) -> bool {
+    let mut left_literals: Vec<String> = clause
+        .literals
+        .iter()
+        .map(|literal| format!("{:?}", left.apply_literal(literal)))
+        .collect();
+    let mut right_literals: Vec<String> = clause
+        .literals
+        .iter()
+        .map(|literal| format!("{:?}", right.apply_literal(literal)))
+        .collect();
+    left_literals.sort();
+    right_literals.sort();
+    left_literals == right_literals
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1323,32 +1273,7 @@ fn instantiate_clause(
         return Ok(());
     }
 
-    // Restricted variable renaming: `vars` is in first-occurrence order and
-    // `constants` is in ascending symbol order, so requiring the value of
-    // `vars[depth]` to be no earlier than the value of `vars[depth - 1]`
-    // enumerates exactly the non-decreasing value sequences — one
-    // representative per orbit of the variable-renaming group.
-    //
-    // This is an equivalence, not a heuristic. Every instance is a renaming of
-    // exactly one generated instance: sort the values of any instance in
-    // first-occurrence order and you have a non-decreasing sequence, so that
-    // instance is generated. Renaming-duplicates are therefore dropped without
-    // losing any resolution step (resolution is invariant under variable
-    // renaming) and without changing satisfiability of the ground set (the
-    // instances are equal as clauses up to renaming). `low` is where the
-    // previous variable's value was, so the restriction costs one index
-    // parameter rather than a per-level set.
-    let low = if depth == 0 {
-        0
-    } else {
-        let Some(Term::App(previous, _)) = substitution.lookup(vars[depth - 1]) else {
-            return Err(CertificationFailure::Unsupported(
-                "internal: unconstrained variable in restricted renaming",
-            ));
-        };
-        constants.partition_point(|candidate| *candidate < *previous)
-    };
-    for &constant in &constants[low..] {
+    for &constant in constants {
         substitution.bind(vars[depth], Term::constant(constant));
         instantiate_clause(
             clause,
@@ -2232,98 +2157,127 @@ mod tests {
         )
     }
 
-    /// Restricted variable renaming is an equivalence, not a heuristic: the
-    /// generated set must be exactly one representative per orbit of the
-    /// variable-renaming group, and it must be a *subset* of the naive `n^k`
-    /// ground instances.
+    /// The grounder must materialize every *distinct induced clause*.
     ///
-    /// This is the property the whole win rests on. If it were merely a
-    /// heuristic, a dropped instance would be a soundness hole in every tier
-    /// that consumes the grounding.
+    /// This is the test that keeps restricted variable renaming out. The
+    /// tempting optimization is to enumerate only one representative per orbit
+    /// of the variable-renaming group, which turns `n^k` into `C(n + k - 1, k)`
+    /// and makes the two-constant, hundred-variable half of the EPS division
+    /// groundable at all. It is unsound: renaming a clause generally induces a
+    /// *different* clause, so an orbit holds several distinct clauses and the
+    /// representative is not one of the constraints the problem actually
+    /// imposes. A model of the reduced set then need not satisfy the original,
+    /// and the certifier would report `Satisfiable` with a model that the
+    /// independent kernel check rejects.
+    ///
+    /// The clause below is the concrete case that exposed it: 4 constants, 2
+    /// variables, 16 distinct induced clauses, and the first-occurrence
+    /// restriction keeps only 10 of them.
     #[test]
-    fn restricted_renaming_is_one_representative_per_renaming_orbit() {
-        for (constants, vars, expected) in [
-            (1usize, 1usize, 1usize),
-            (2, 4, 5),
-            (3, 3, 10),
-            (5, 2, 15),
-            (7, 9, 5005),
-        ] {
-            assert_eq!(
-                canonical_instance_count(constants, vars),
-                Some(expected),
-                "C({constants} + {vars} - 1, {vars})"
-            );
-            assert!(
-                (constants.pow(vars as u32)) >= expected,
-                "the canonical count can only be smaller than n^k"
-            );
-        }
-        // Overflow is reported, not wrapped, so the caller still fails closed
-        // instead of materializing a truncated instance set.
-        assert!(canonical_instance_count(40, 30).is_none());
-        assert!(canonical_instance_count(usize::MAX, 2).is_none());
-    }
-
-    /// The end-to-end shape of the same claim: grounding a two-variable clause
-    /// over three constants produces exactly the six non-decreasing value
-    /// sequences, and every one of them is a genuine ground instance.
-    #[test]
-    fn restricted_renaming_grounding_is_canonical_and_complete() {
+    fn grounding_is_complete_over_distinct_induced_clauses() {
         let mut symbols = SymbolTable::new();
-        let p = symbols.intern("p");
-        let q = symbols.intern("q");
+        let g = symbols.intern("group_element");
+        let p = symbols.intern("product");
+        let e = [
+            symbols.intern("e_1"),
+            symbols.intern("e_2"),
+            symbols.intern("e_3"),
+            symbols.intern("e_4"),
+        ];
         let mut ids = ClauseIdGen::new();
-        let clause = input_clause(
-            &mut ids,
-            vec![
-                mrs_core::clause::Literal::pos(Atom::pred(p, vec![Term::var(0), Term::var(1)])),
-                mrs_core::clause::Literal::neg(Atom::pred(q, vec![Term::var(1)])),
-            ],
-        );
-        // Deliberately unsorted on the way in; `ground_with_constants` imposes
-        // the order the renaming depends on.
-        let r = symbols.intern("r");
-        let mut constants = vec![q, p, r];
-        constants.sort_unstable();
+        // ~group_element(Y) | product(X,e_4,Y) | ... | product(X,e_1,Y) | ~group_element(X)
+        // (GRP123-4.004's `column_surjectivity`, the clause the audit named.)
+        let mut literals = vec![mrs_core::clause::Literal::neg(Atom::pred(
+            g,
+            vec![Term::var(1)],
+        ))];
+        for constant in e {
+            literals.push(mrs_core::clause::Literal::pos(Atom::pred(
+                p,
+                vec![Term::var(0), Term::constant(constant), Term::var(1)],
+            )));
+        }
+        literals.push(mrs_core::clause::Literal::neg(Atom::pred(
+            g,
+            vec![Term::var(0)],
+        )));
+        let clause = input_clause(&mut ids, literals);
+
         let grounded = ground_with_constants(
             std::slice::from_ref(&clause),
-            &constants,
+            &e,
             &mut ids,
             10_000,
             Instant::now() + Duration::from_secs(5),
         )
         .expect("grounding");
-        assert_eq!(grounded.clauses.len(), 6, "C(3 + 2 - 1, 2) = 6");
+        assert_eq!(
+            grounded.clauses.len(),
+            16,
+            "every assignment induces a distinct clause here, so all 16 must be present"
+        );
 
-        // Every generated clause is ground, and the value pairs are exactly the
-        // non-decreasing ones over the constant order.
-        let mut seen: Vec<(usize, usize)> = Vec::new();
-        for instance in &grounded.clauses {
-            assert!(
-                instance.free_vars().is_empty(),
-                "grounding left a free variable behind"
-            );
-            let Atom::Pred(_, args) = &instance.literals[0].atom else {
-                panic!("expected the p literal first")
-            };
-            let position = |term: &Term| {
-                let mrs_core::term::Term::App(symbol, inner) = term else {
-                    panic!("expected a constant")
-                };
-                assert!(inner.is_empty());
-                constants.iter().position(|c| c == symbol).unwrap()
-            };
-            let pair = (position(&args[0]), position(&args[1]));
-            assert!(
-                pair.0 <= pair.1,
-                "a non-canonical instance was generated: {pair:?}"
-            );
-            seen.push(pair);
-        }
-        seen.sort_unstable();
-        seen.dedup();
-        assert_eq!(seen.len(), 6, "no duplicate representative was generated");
+        // And no two generated clauses coincide, so nothing is duplicated and
+        // nothing is a renaming that could stand in for a missing instance.
+        let mut rendered: Vec<String> = grounded
+            .clauses
+            .iter()
+            .map(|instance| {
+                let mut literals: Vec<String> = instance
+                    .literals
+                    .iter()
+                    .map(|literal| format!("{:?}", literal))
+                    .collect();
+                literals.sort();
+                literals.join(" | ")
+            })
+            .collect();
+        rendered.sort();
+        let total = rendered.len();
+        rendered.dedup();
+        assert_eq!(rendered.len(), total, "no duplicate instances");
+    }
+
+    /// Two instances of the *same* clause that induce the same ground clause
+    /// are interchangeable; two that differ are not. Pinned because the
+    /// difference is the whole argument: a grounder that treats "renaming of"
+    /// as "duplicate of" is unsound for satisfiability, and this is the
+    /// predicate that says what the difference is.
+    #[test]
+    fn instance_equality_is_clause_equality_not_renaming() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let mut ids = ClauseIdGen::new();
+        // p(X) | p(Y): symmetric in X and Y, so the two orders coincide.
+        let symmetric = input_clause(
+            &mut ids,
+            vec![
+                mrs_core::clause::Literal::pos(Atom::pred(p, vec![Term::var(0)])),
+                mrs_core::clause::Literal::pos(Atom::pred(p, vec![Term::var(1)])),
+            ],
+        );
+        // p(X,Y): swapping the arguments changes the clause.
+        let asymmetric = input_clause(
+            &mut ids,
+            vec![mrs_core::clause::Literal::pos(Atom::pred(
+                p,
+                vec![Term::var(0), Term::var(1)],
+            ))],
+        );
+        let mut forward = Substitution::new();
+        forward.bind(mrs_core::term::VarId::from(0u32), Term::constant(a));
+        forward.bind(mrs_core::term::VarId::from(1u32), Term::constant(b));
+        let mut swapped = Substitution::new();
+        swapped.bind(mrs_core::term::VarId::from(0u32), Term::constant(b));
+        swapped.bind(mrs_core::term::VarId::from(1u32), Term::constant(a));
+        assert!(instances_induce_same_clause(&forward, &swapped, &symmetric));
+        assert!(!instances_induce_same_clause(
+            &forward,
+            &swapped,
+            &asymmetric
+        ));
     }
 
     #[test]

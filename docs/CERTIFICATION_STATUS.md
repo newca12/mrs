@@ -198,6 +198,16 @@ tier recovers one from the same grounded set, and `mrs` prints it in an SZS
 `FiniteInterpretation` block that `mrs-proover` validates as `VerifiedGood`.
 Under `--self-check` the kernel re-validates it before the status line stands.
 
+That model is only sound if the certificate reads the constants the way the
+equality pass wrote them, and it did not. `build_model_certificate` gave every
+constant its own domain element, so for a clause set containing a unit
+equation `a = b` — consumed by the union-find pass, which rewrites every
+occurrence to one class representative — it emitted a certificate asserting
+`a != b`. The verdict was right and the model backing it was wrong. The class
+map is now threaded to the builder, and the builder re-derives the requirement
+from the originals itself rather than trusting its caller, since this failure
+mode is a silent wrong answer on a `Satisfiable` verdict.
+
 The status/polarity convention matters here, and a first implementation got it
 wrong in the direction that hides results. A problem supplied directly as
 `negated_conjecture` clauses — the shape the CASC EPR divisions are made of —
