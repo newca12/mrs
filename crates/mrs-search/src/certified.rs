@@ -1512,6 +1512,31 @@ fn closure_indexed(
     deadline: Instant,
     workers: usize,
 ) -> Result<Closure, CertificationFailure> {
+    closure_indexed_with_budget(
+        input,
+        ordering,
+        ordered,
+        id_gen,
+        deadline,
+        workers,
+        MAX_INFERENCES,
+    )
+}
+
+/// [`closure_indexed`] with an explicit inference budget.
+///
+/// The budget is a parameter so the "a wave cannot exceed it" invariant can be
+/// tested against a closure small enough to run in a unit test; production always
+/// passes [`MAX_INFERENCES`].
+fn closure_indexed_with_budget(
+    input: &[Clause],
+    ordering: &TermOrdering,
+    ordered: bool,
+    id_gen: &mut ClauseIdGen,
+    deadline: Instant,
+    workers: usize,
+    inference_budget: u64,
+) -> Result<Closure, CertificationFailure> {
     let mut bank = TermBank::new();
     let mut index = LiteralIndex::new();
     let mut id_to_pos: StdHashMap<ClauseId, usize> = StdHashMap::new();
@@ -1584,11 +1609,21 @@ fn closure_indexed(
         }
         let wave_end = clauses.len();
         let wave = run_closure_wave(
-            &clauses, &index, &eq_index, &id_to_pos, ordering, ordered, next_pos, wave_end, id_gen,
-            deadline, workers,
+            &clauses,
+            &index,
+            &eq_index,
+            &id_to_pos,
+            ordering,
+            ordered,
+            next_pos,
+            wave_end,
+            id_gen,
+            deadline,
+            workers,
+            inference_budget.saturating_sub(inferences),
         )?;
         inferences = inferences.saturating_add(wave.inferences);
-        if inferences > MAX_INFERENCES {
+        if inferences > inference_budget {
             trace_certify(format!(
                 "refuse=inference_limit ordered={ordered} inferences={inferences}"
             ));
@@ -1647,6 +1682,7 @@ fn closure_indexed(
 /// clause turned up. Deduplication is deliberately left to the caller so that
 /// the index and the seen-set are only ever mutated on the thread that owns
 /// them.
+#[derive(Debug)]
 struct ClosureWave {
     derived: Vec<Clause>,
     inferences: u64,
@@ -1677,6 +1713,7 @@ fn run_closure_wave(
     id_gen: &mut ClauseIdGen,
     deadline: Instant,
     workers: usize,
+    inference_budget: u64,
 ) -> Result<ClosureWave, CertificationFailure> {
     let span = range_end.saturating_sub(range_start);
     let chunks = workers.clamp(1, span.max(1)).min(span.max(1));
@@ -1692,6 +1729,7 @@ fn run_closure_wave(
             range_end,
             id_gen,
             deadline,
+            inference_budget,
         );
     }
 
@@ -1704,6 +1742,14 @@ fn run_closure_wave(
         })
         .filter(|(lo, hi)| lo < hi)
         .collect();
+
+    // Split what is left of the inference budget across the chunks rather than
+    // handing each of them the whole allowance. Per-chunk ceilings alone would
+    // let a wave spend `chunks` times `MAX_INFERENCES`, and a slightly uneven
+    // chunk could still be refused for doing its share while a third of the
+    // budget goes unused, so the remainder is carried forward.
+    let per_chunk = inference_budget / bounds.len().max(1) as u64;
+    let per_chunk = per_chunk.max(1);
 
     let mut results: Vec<Result<ClosureWave, CertificationFailure>> = Vec::new();
     std::thread::scope(|scope| {
@@ -1722,6 +1768,7 @@ fn run_closure_wave(
                     hi,
                     &mut worker_id_gen,
                     deadline,
+                    per_chunk,
                 )
             }));
         }
@@ -1769,6 +1816,7 @@ fn closure_wave_range(
     range_end: usize,
     id_gen: &mut ClauseIdGen,
     deadline: Instant,
+    inference_budget: u64,
 ) -> Result<ClosureWave, CertificationFailure> {
     let mut derived: Vec<Clause> = Vec::new();
     let mut inferences = 0u64;
@@ -1833,6 +1881,23 @@ fn closure_wave_range(
             );
             for candidate in batch {
                 inferences += 1;
+                if inferences > inference_budget {
+                    // The sequential scan refuses here, per inference, and the
+                    // fan-out must not be the weaker of the two: the derived
+                    // clauses are buffered until the wave merges, so a budget
+                    // only checked at the wave boundary would let every worker
+                    // in a wave overshoot it by the width of its chunk. That is
+                    // unbounded work *and* unbounded buffered memory, on the one
+                    // path where the ceilings are what keep a wide grounding from
+                    // exhausting the host.
+                    trace_certify(format!(
+                        "refuse=inference_limit ordered={ordered} chunk={range_start}..{range_end} \
+                         inferences={inferences} budget={inference_budget}"
+                    ));
+                    return Err(CertificationFailure::Limit(
+                        "ground inference limit exceeded",
+                    ));
+                }
                 let Some(derived_clause) = normalize_clause(candidate) else {
                     continue;
                 };
@@ -3330,6 +3395,85 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// A wave must not be able to spend more inferences than the sequential
+    /// scan would have allowed.
+    ///
+    /// The derived clauses of a wave are buffered until it merges, so a budget
+    /// checked only at the wave boundary does not bound the work or the memory:
+    /// every worker in a wave could overshoot by the width of its chunk. This
+    /// fixture is 40 pairs wide and offers 1 600 inferences, so a budget of 500
+    /// must be refused at every worker count.
+    ///
+    /// Scope: this pins that the ceiling exists and is enforced at every worker
+    /// count. It cannot isolate the *per-inference* check from the wave-boundary
+    /// one, because both refuse with the same error and the error carries no
+    /// inference count, so a run that overshoots inside a chunk and is caught at
+    /// the boundary is indistinguishable from one caught early. The placement is
+    /// argued from the buffering above, not from this test.
+    #[test]
+    fn parallel_wave_cannot_exceed_the_inference_budget() {
+        const WIDTH: usize = 40;
+
+        let mut symbols = SymbolTable::new();
+        let c = symbols.intern("c");
+        let p = symbols.intern("p");
+        let pos = |pred: SymbolId| {
+            mrs_core::clause::Literal::pos(Atom::pred(pred, vec![Term::constant(c)]))
+        };
+        let neg = |pred: SymbolId| {
+            mrs_core::clause::Literal::neg(Atom::pred(pred, vec![Term::constant(c)]))
+        };
+        let mut ids = ClauseIdGen::new();
+        let mut input = Vec::new();
+        for i in 0..WIDTH {
+            let a = symbols.intern(&format!("a{i}"));
+            let b = symbols.intern(&format!("b{i}"));
+            input.push(input_clause(&mut ids, vec![pos(p), pos(a)]));
+            input.push(input_clause(&mut ids, vec![neg(p), pos(b)]));
+        }
+
+        // Roomy budget: the closure saturates, so the refusals below are about
+        // the ceiling and nothing else.
+        let mut roomy_ids = ClauseIdGen::new();
+        let roomy = closure_indexed_with_budget(
+            &input,
+            &TermOrdering::KBO,
+            false,
+            &mut roomy_ids,
+            Instant::now() + Duration::from_secs(120),
+            1,
+            10_000_000,
+        )
+        .expect("a generous budget must saturate the fixture");
+        assert_eq!(roomy.status, ClosureStatus::Saturated);
+        assert!(
+            roomy.inferences > 500,
+            "fixture must exceed the small budget, got {}",
+            roomy.inferences
+        );
+
+        for workers in [1usize, 2, 4, 8] {
+            let result = closure_indexed_with_budget(
+                &input,
+                &TermOrdering::KBO,
+                false,
+                &mut ClauseIdGen::new(),
+                Instant::now() + Duration::from_secs(120),
+                workers,
+                500,
+            );
+            assert!(
+                matches!(
+                    result,
+                    Err(CertificationFailure::Limit(
+                        "ground inference limit exceeded"
+                    ))
+                ),
+                "workers={workers} must refuse once the 500-inference budget is spent"
+            );
         }
     }
 }
