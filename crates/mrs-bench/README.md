@@ -44,6 +44,7 @@ Notes:
 | Path | Purpose |
 |------|---------|
 | `casc.sh` | Run a full benchmark: invoke each system on each problem, collect SZS status and wall time, archive raw stdout/stderr and hashes, and write `results/<edition>/*/run.csv` |
+| `perf_probe.sh` | Measure search throughput on this host with a fixed amount of work, then append the result to the bank in `docs/results/perf/` |
 | `cooperative_portfolio_sweep.sh` | Measure an explicit multi-worker portfolio; enable shared equality exchange with a positive `MRS_SHARED_POOL_INTERVAL`, or use `0` for a no-sharing control |
 | `cooperative_portfolio_search.sh` | Run one-swap local search over portfolios using cooperative solved-count coverage |
 | `setup.sh` | Download and extract the CASC problem and axiom archives from tptp.org |
@@ -60,6 +61,7 @@ Notes:
 | `zenodo_benchmark.sh` | Evaluate `mrs-proover` (optionally Nörgler, `--with-norgler`) on the Zenodo benchmark; checks the original→never-VerifiedBad / falsified→never-VerifiedGood invariants |
 | `norgler_compare.sh` | Compare `mrs-proover` vs Nörgler on the committed deterministic corpus |
 | `audit_casc_proofs` | Replay archived CASC prover output through strict, MRS-only, and full-ladder checks without rerunning MRS |
+| `perf_probe` | The measurement tool behind `perf_probe.sh`: run a fixed-work search and emit a JSON row (`measure`), or append rows to the bank and render a report (`bank`) |
 
 ## Quick start
 

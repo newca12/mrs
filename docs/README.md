@@ -19,6 +19,7 @@ corpus, command, hardware, and environment.
 | Check current implementation status | [Current status](reference/status.md) |
 | Choose or study a schedule | [Schedule reference](reference/schedules.md) |
 | Run CASC-style experiments | [Benchmarking guide](guides/benchmarking.md) |
+| Measure search speed on this machine | [Fixed-work performance probe](results/perf/README.md) |
 | Verify TSTP proofs | [ProoVer guide](guides/proover.md) |
 | Understand the trust boundary | [Trust and verification](reference/trust-and-verification.md) |
 | Work on a soundness-sensitive change | [Development methodology](policies/methodology.md) |

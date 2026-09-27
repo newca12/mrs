@@ -3,6 +3,33 @@
 The benchmark harness is in `crates/mrs-bench`. It archives raw stdout/stderr,
 hashes, host metadata, toolchain metadata, and one CSV row per problem/system.
 
+Two different questions need two different tools:
+
+| Question | Tool |
+|---|---|
+| How many TPTP problems does `mrs` solve? | `casc.sh` (below) |
+| How fast does `mrs` search on *this* machine? | [`perf_probe.sh`](../results/perf/README.md) |
+
+A solved count is the objective the schedules were tuned for. Throughput is a
+diagnostic: it explains *why* a run is slow on a given box, and it is the only
+one of the two that can be compared across machines without a TPTP corpus.
+
+## Quick performance probe
+
+```bash
+crates/mrs-bench/perf_probe.sh            # writes docs/results/perf/bank.tsv
+crates/mrs-bench/perf_probe.sh --no-bank  # measure only, touch nothing
+```
+
+It generates a clause set, runs a fixed amount of search work on it, and banks
+the result against the host's fingerprint. Work is stopped by an
+iteration-counted ceiling rather than a clock, so the timings from two machines
+are comparable; a "run it for 30 seconds and count clauses" measurement is not,
+because the search is wall-clock sensitive. It builds both a `native` and a
+`haswell` binary so ISA effects are separable, and it caps the whole probe at
+12 GiB. See [`docs/results/perf/README.md`](../results/perf/README.md) for the
+method, the comparability rules, and how to add another host.
+
 ## Prepare the corpus
 
 ```bash
