@@ -36,6 +36,11 @@ fn main() {
     let mut ml_log_csv = false;
     let mut ml_weights: Option<String> = None;
     let mut workers: Option<usize> = None;
+    let mut hardware: Option<mrs_search::HardwareMode> = None;
+    // casc-sim only: multiple of the CASC wall clock to keep searching after.
+    // `0` means "until a resource cap", so a memory-bound failure surfaces
+    // instead of reading as a timeout.
+    let mut sim_time_factor: f64 = 2.0;
     let mut auto_schedule = false;
     let mut exact_strategy: Option<usize> = None;
     let mut portfolio: Option<Vec<usize>> = None;
@@ -47,6 +52,12 @@ fn main() {
     let mut profile_json_mode = false;
     let mut goal_transform: Option<mrs_cnf::GoalTransformMode> = None;
     let mut certify_ordered = false;
+    /// What casc-sim does with the wall clock. `Inherit` is every other mode.
+    enum SimBudget {
+        Inherit,
+        Scaled(Duration),
+        UntilResourceCap,
+    }
     // Default 8 MiB: below the smallest output allowance CASC has stated
     // (10MB per system in CASC-23), so a runaway AVATAR certificate cannot
     // get the process killed before the SZS status line is flushed.
@@ -90,6 +101,34 @@ fn main() {
                     process::exit(1);
                 }
                 workers = Some(parsed);
+            }
+            "--hardware" => {
+                let val = args.next().unwrap_or_else(|| {
+                    eprintln!("Usage: mrs [--hardware <adaptive|casc|casc-sim>] <file.p>");
+                    process::exit(1);
+                });
+                hardware = Some(mrs_search::HardwareMode::parse(&val).unwrap_or_else(|| {
+                    eprintln!("Error: --hardware expects adaptive, casc, or casc-sim, got {val:?}");
+                    process::exit(1);
+                }));
+            }
+            "--sim-time-factor" => {
+                let val = args.next().unwrap_or_else(|| {
+                    eprintln!("Usage: mrs --sim-time-factor <mult|0|unbounded>");
+                    process::exit(1);
+                });
+                sim_time_factor = match val.trim().to_ascii_lowercase().as_str() {
+                    "0" | "unbounded" | "none" | "inf" => 0.0,
+                    other => match other.parse::<f64>() {
+                        Ok(f) if f > 0.0 => f,
+                        _ => {
+                            eprintln!(
+                                "Error: --sim-time-factor expects a positive multiplier, or 0/unbounded for no wall-clock limit; got {val:?}"
+                            );
+                            process::exit(1);
+                        }
+                    },
+                };
             }
             "--strategy" => {
                 let val = args.next().unwrap_or_else(|| {
@@ -442,7 +481,73 @@ fn main() {
 
     // SInE is now performed per portfolio strategy in parallel (with threshold tuning),
     // so we do not run a single global pre-filter on LoweredFormulas anymore.
-    let total_budget = Duration::from_secs(time_secs);
+    //
+    // Hardware mode decides the worker count, the memory ceiling and (for
+    // casc-sim) the CPU set. `MRS_HARDWARE` lets the benchmark harness select a
+    // mode for a whole run without rewriting each invocation, and an explicit
+    // `--workers` / `MRS_MAX_MEMORY_MB` still wins for that dimension.
+    let hardware_mode = hardware
+        .or_else(|| {
+            std::env::var("MRS_HARDWARE")
+                .ok()
+                .and_then(|raw| mrs_search::HardwareMode::parse(&raw))
+        })
+        .unwrap_or(mrs_search::HardwareMode::Adaptive);
+    let explicit_memory_mb = std::env::var("MRS_MAX_MEMORY_MB")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok());
+    let hardware_profile = mrs_search::resolve_profile(hardware_mode, workers, explicit_memory_mb);
+
+    // In casc-sim the CASC wall clock stays the reference verdict, and the run is
+    // allowed to continue past it so a memory-bound failure surfaces instead of
+    // being recorded as a timeout. `--sim-time-factor 0` (or `unbounded`) means
+    // "until a resource cap" rather than any multiple of the limit.
+    let casc_limit = Duration::from_secs(time_secs);
+    let sim_budget = if hardware_mode == mrs_search::HardwareMode::CascSim {
+        if sim_time_factor == 0.0 {
+            SimBudget::UntilResourceCap
+        } else {
+            SimBudget::Scaled(Duration::from_secs(
+                (time_secs as f64 * sim_time_factor).ceil() as u64,
+            ))
+        }
+    } else {
+        SimBudget::Inherit
+    };
+    // `SearchConfig::time_limit` is a plain `Duration`, so "no wall-clock limit"
+    // is expressed as a sentinel far beyond any real run. One year cannot be
+    // reached: the memory, term-bank and clause ceilings still apply, which is
+    // the whole point of this mode.
+    const YEAR: Duration = Duration::from_secs(31_536_000);
+    let total_budget = match sim_budget {
+        SimBudget::Inherit => casc_limit,
+        SimBudget::Scaled(limit) => limit,
+        SimBudget::UntilResourceCap => YEAR,
+    };
+
+    for warning in &hardware_profile.warnings {
+        eprintln!("% Hardware warning: {warning}");
+    }
+    let sim_budget_note = match sim_budget {
+        SimBudget::Inherit => String::new(),
+        SimBudget::Scaled(limit) => {
+            format!(
+                " casc_limit_s={} sim_limit_s={}",
+                casc_limit.as_secs(),
+                limit.as_secs()
+            )
+        }
+        SimBudget::UntilResourceCap => {
+            format!(
+                " casc_limit_s={} sim_limit_s=unbounded",
+                casc_limit.as_secs()
+            )
+        }
+    };
+    info!(
+        "% Hardware: {}{sim_budget_note}",
+        hardware_profile.describe()
+    );
 
     // Display input summary
     let cnf_count = lowered.cnf_clauses.len();
@@ -725,12 +830,10 @@ fn main() {
             None,
         )
     } else {
-        // Default to one worker per physical core, bounded by what the
-        // available memory can support: every worker holds its own term
-        // bank and indexes, so one-per-core is the wrong default on a small
-        // host.
-        let actual_workers =
-            workers.unwrap_or_else(|| mrs_search::default_worker_count(num_cpus::get_physical()));
+        // One worker per usable physical core by default, bounded by what memory
+        // can support; `--hardware casc`/`casc-sim` pin it to the CASC count
+        // instead. An explicit `--workers` already won inside the profile.
+        let actual_workers = hardware_profile.workers;
         if certify_ordered && (actual_workers != 1 || exact_strategy.is_none()) {
             eprintln!("Error: --certify-ordered requires --workers 1 and --strategy N");
             process::exit(1);
@@ -807,6 +910,14 @@ fn main() {
         if let Some(gt) = goal_transform {
             for (config, _) in &mut schedule.strategies {
                 config.goal_transformation = Some(gt);
+            }
+        }
+        // The resolved memory ceiling, applied to every strategy. Without this
+        // the watchdog would keep using `ResourceLimits::default()`, which reads
+        // the ambient policy and so ignores the mode entirely.
+        if let Some(limit_mb) = hardware_profile.memory_budget_mb {
+            for (config, _) in &mut schedule.strategies {
+                config.resource_limits.max_memory_mb = Some(limit_mb);
             }
         }
         if certify_ordered {

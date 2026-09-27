@@ -3788,6 +3788,7 @@ name = "mrs-search"
 version = "0.2.3"
 dependencies = [
  "burn",
+ "libc",
  "mrs-cadical",
  "mrs-calculus",
  "mrs-cnf",

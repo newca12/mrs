@@ -66,7 +66,9 @@ pub use mrs_calculus::ordering::TermOrdering;
 pub use mrs_cnf::goal_transform::GoalTransformMode;
 pub use preprocessing::{PreprocessingConfig, PreprocessingStats, preprocess_clauses};
 pub use resource::{
-    RAM_PER_WORKER_MB, ResourceLimits, current_memory_mb, default_worker_count, memory_budget_mb,
+    CASC_MEMORY_MB, CASC_PHYSICAL_CORES, HardwareMode, HardwareProfile, RAM_PER_WORKER_MB,
+    ResourceLimits, current_memory_mb, default_worker_count, memory_budget_mb, resolve_profile,
+    usable_physical_cores,
 };
 pub use select::{QueueType, SelectionStrategy};
 pub use strategy::{CandidateReceiver, CandidateRefutation, run_schedule_with_candidate_receiver};
