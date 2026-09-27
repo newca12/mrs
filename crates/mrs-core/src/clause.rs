@@ -479,6 +479,17 @@ impl ClauseIdGen {
     pub fn next(&mut self) -> ClauseId {
         ClauseId(self.next.fetch_add(1, Ordering::Relaxed))
     }
+
+    /// Ensures this generator never returns an ID below `floor`.
+    ///
+    /// Derived clauses must not reuse the IDs of clauses that already exist:
+    /// anything that maps a clause ID back to a position would then resolve a
+    /// lookup to the wrong clause instead of reporting a miss. O(1), and safe
+    /// to call from several threads holding clones.
+    pub fn reserve_at_least(&mut self, floor: ClauseId) {
+        let wanted = floor.0.saturating_add(1);
+        self.next.fetch_max(wanted, Ordering::Relaxed);
+    }
 }
 
 #[cfg(test)]

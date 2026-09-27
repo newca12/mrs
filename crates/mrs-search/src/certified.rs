@@ -116,6 +116,7 @@ enum ClosureStatus {
     Refuted,
 }
 
+#[derive(Debug)]
 struct Closure {
     clauses: Vec<Clause>,
     status: ClosureStatus,
@@ -1365,6 +1366,13 @@ fn closure_linear(
     id_gen: &mut ClauseIdGen,
     deadline: Instant,
 ) -> Result<Closure, CertificationFailure> {
+    // See `closure_indexed_with_budget`: derived IDs must not reuse the
+    // input's, so a stored (id, clause) pair can never be read back as the
+    // wrong clause.
+    if let Some(highest) = input.iter().map(|clause| clause.id).max() {
+        id_gen.reserve_at_least(highest);
+    }
+
     let mut clauses = Vec::new();
     let mut seen = HashSet::default();
     for clause in input {
@@ -1423,6 +1431,19 @@ fn closure_linear(
             all_literal_indices(&current)
         };
         for previous_index in 0..index {
+            // Same per-pair deadline discipline as `closure_wave_range`: the
+            // outer check bounds one position, not the `0..index` scan inside
+            // it. The two closures are compared against each other, so they
+            // have to give up at the same granularity.
+            if Instant::now() >= deadline {
+                trace_certify(format!(
+                    "refuse=closure_time ordered={ordered} clauses={} inferences={inferences} pos={index}",
+                    clauses.len()
+                ));
+                return Err(CertificationFailure::Limit(
+                    "certification time limit exceeded",
+                ));
+            }
             // Scope the borrow so it ends before any push below.
             let derived_batch = {
                 let mut derived_batch = Vec::new();
@@ -1545,6 +1566,21 @@ fn closure_indexed_with_budget(
     workers: usize,
     inference_budget: u64,
 ) -> Result<Closure, CertificationFailure> {
+    // Derived clause IDs must not collide with the input's. Two structures are
+    // keyed by clause ID: `id_to_pos` here, and `LiteralIndex`'s own clause map
+    // behind `get_unifiable_resolution_partners`. A collision makes a partner
+    // lookup resolve to an unrelated clause instead of missing, so the closure
+    // silently stops deriving partners while still reporting `Saturated`.
+    //
+    // The production caller happens to pass a generator that already advanced
+    // past the input IDs; that is an invariant three frames away with nothing
+    // enforcing it, so enforce it here instead. Comparing the ordered run
+    // against the reference cannot catch this either: both production closures
+    // are this function, and neither is checked against a fixpoint.
+    if let Some(highest) = input.iter().map(|clause| clause.id).max() {
+        id_gen.reserve_at_least(highest);
+    }
+
     let mut bank = TermBank::new();
     let mut index = LiteralIndex::new();
     let mut id_to_pos: StdHashMap<ClauseId, usize> = StdHashMap::new();
@@ -1868,6 +1904,26 @@ fn closure_wave_range(
         partner_pos.sort_unstable();
         partner_pos.dedup();
         for previous_index in partner_pos {
+            // The position-level deadline check above cannot bound this loop:
+            // `partner_pos` holds every earlier clause that shares a selected
+            // literal, so on a wide grounding a single position can own
+            // thousands of pairs, and the run overshoots its budget by however
+            // long the remainder takes. That is not a cosmetic overshoot — a
+            // competition wall clock is enforced from outside, so the prover
+            // gets killed mid-loop and reports no SZS status at all. Checking
+            // per pair bounds the overshoot to one `resolve_ground_pair_with`,
+            // which is itself bounded by the two selections. The inference
+            // budget is a work bound rather than a time bound, so it does not
+            // stand in for this.
+            if Instant::now() >= deadline {
+                trace_certify(format!(
+                    "refuse=closure_time ordered={ordered} clauses={} inferences={inferences} pos={pos}",
+                    clauses.len()
+                ));
+                return Err(CertificationFailure::Limit(
+                    "certification time limit exceeded",
+                ));
+            }
             let previous = &clauses[previous_index];
             let previous_selection = if ordered {
                 selected_literals(previous, ordering)
@@ -3485,6 +3541,254 @@ mod tests {
                     "workers={workers} must refuse once the {budget}-inference budget is spent"
                 );
             }
+        }
+    }
+
+    /// Derived clause IDs must not collide with the input's, whoever allocated
+    /// them.
+    ///
+    /// Two structures here are keyed by clause ID: `id_to_pos`, and
+    /// `LiteralIndex`'s own clause map behind
+    /// `get_unifiable_resolution_partners`. A derived clause that reuses an
+    /// input clause's ID overwrites both, so a later partner lookup resolves to
+    /// an unrelated clause instead of missing, and the closure silently stops
+    /// deriving while still reporting `Saturated`.
+    ///
+    /// The production caller avoids this by accident — its generator has
+    /// already advanced past the input IDs — which is an invariant three frames
+    /// away with nothing documenting or checking it. Comparing the ordered run
+    /// against the reference is no help: both production closures are
+    /// `closure_indexed`, and neither is checked against a fixpoint.
+    ///
+    /// The fixture is chained on purpose. A single-wave fixture cannot expose
+    /// this: the wave buffers every derivation and merges it only after the
+    /// wave ends, so wave 0 — which is all of the input — runs against pristine
+    /// maps and does the whole job. The refutation here is only reachable in
+    /// wave 1, by a *derived* clause resolving against an input clause whose ID
+    /// a wave-0 derivation has already claimed. Without the fix that partner
+    /// lookup lands on the wrong clause, the empty clause is never derived, and
+    /// the run reports `Saturated` on an unsatisfiable input.
+    #[test]
+    fn closure_result_does_not_depend_on_the_callers_id_generator() {
+        let mut symbols = SymbolTable::new();
+        let c = symbols.intern("c");
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let pos = |pred: SymbolId| {
+            mrs_core::clause::Literal::pos(Atom::pred(pred, vec![Term::constant(c)]))
+        };
+        let neg = |pred: SymbolId| {
+            mrs_core::clause::Literal::neg(Atom::pred(pred, vec![Term::constant(c)]))
+        };
+        let mut ids = ClauseIdGen::new();
+        // Wave 0 derives `a(c)` (id 0, colliding with `~a(c)`) and `~b(c)`
+        // (id 1, colliding with `b(c)`). Wave 1 then needs `a(c)` to resolve
+        // against `~a(c)` to reach the empty clause.
+        let input = vec![
+            input_clause(&mut ids, vec![neg(a)]),
+            input_clause(&mut ids, vec![pos(b)]),
+            input_clause(&mut ids, vec![neg(b), pos(a)]),
+        ];
+
+        // A generator that has not seen the input IDs: derived IDs start at 0
+        // and collide with every input clause.
+        let mut fresh = ClauseIdGen::new();
+        // A generator that has already advanced well past them.
+        let mut advanced = ClauseIdGen::new();
+        for _ in 0..10_000 {
+            advanced.next();
+        }
+
+        let deadline = || Instant::now() + Duration::from_secs(120);
+        // Single worker and an inference ceiling the fixture cannot reach, so
+        // the caller's id generator is the only thing that varies.
+        let with_fresh = closure_indexed_with_budget(
+            &input,
+            &TermOrdering::KBO,
+            false,
+            &mut fresh,
+            deadline(),
+            1,
+            10_000_000,
+        )
+        .expect("fresh-generator closure terminates");
+        let with_advanced = closure_indexed_with_budget(
+            &input,
+            &TermOrdering::KBO,
+            false,
+            &mut advanced,
+            deadline(),
+            1,
+            10_000_000,
+        )
+        .expect("advanced-generator closure terminates");
+        // The reference scans positions rather than ids, so it is unaffected by
+        // the collision and states the true fixpoint.
+        let reference = closure_linear(
+            &input,
+            &TermOrdering::KBO,
+            false,
+            &mut ClauseIdGen::new(),
+            deadline(),
+        )
+        .expect("reference closure terminates");
+
+        assert_eq!(
+            with_fresh.status, reference.status,
+            "indexed closure disagreed with the reference on status"
+        );
+        assert_eq!(
+            with_fresh.inferences, reference.inferences,
+            "indexed closure disagreed with the reference on inference count"
+        );
+        assert_eq!(
+            closure_key_set(&with_fresh),
+            closure_key_set(&reference),
+            "indexed closure disagreed with the reference on clause set"
+        );
+
+        assert_eq!(
+            with_fresh.status, with_advanced.status,
+            "status depended on the caller's id generator"
+        );
+        assert_eq!(
+            with_fresh.inferences, with_advanced.inferences,
+            "inference count depended on the caller's id generator"
+        );
+        assert_eq!(
+            closure_key_set(&with_fresh),
+            closure_key_set(&with_advanced),
+            "clause set depended on the caller's id generator"
+        );
+
+        // And the real check: the refutation was actually reached. A collision
+        // drops the `a(c)` x `~a(c)` pair, so the closure saturates instead.
+        assert_eq!(
+            with_fresh.status,
+            ClosureStatus::Refuted,
+            "closure under-derived: a colliding id generator turned a refutation into a saturation"
+        );
+        assert!(
+            closure_key_set(&with_fresh).contains(&Vec::new()),
+            "a refuted closure must contain the empty clause"
+        );
+    }
+
+    /// The deadline has to be enforced inside a position, not only between
+    /// them.
+    ///
+    /// A position's partner set is every earlier clause sharing one of its
+    /// selected literals, so a single position can own thousands of resolution
+    /// pairs. With the deadline only sampled at position boundaries, such a
+    /// position runs to completion however far past the budget it is: the
+    /// closure then reports `Saturated` for a 1 ms budget after real work, and
+    /// under a competition wall clock the process is killed mid-loop and prints
+    /// no SZS status at all. The inference budget does not stand in for this —
+    /// it bounds work, not elapsed time.
+    ///
+    /// Scope: this pins that the deadline is honoured at all. It does not, and
+    /// cannot cheaply, isolate the *per-pair* check from the per-position one —
+    /// with a per-position check still in place a tight budget is always caught
+    /// eventually, so both variants pass. The per-pair granularity is justified
+    /// by measurement rather than by a timing test: on `casc-30/EPS` the
+    /// position-granular version overran a 100 s budget by 64 % (164 s wall),
+    /// and a competition wall clock is enforced from outside, so the prover is
+    /// killed mid-loop and reports no SZS status at all.
+    ///
+    /// The fixture puts `k` clauses of the form `p(c) | a_i(c)` opposite `k`
+    /// clauses of the form `~p(c) | b_j(c)`, all over one constant. Every
+    /// positive clause therefore has all `k` negative clauses as partners, for
+    /// `k^2` pairs, and each resolvent `a_i(c) | b_j(c)` is non-empty and
+    /// carries no negative literal, so the set saturates without a conflict.
+    /// That gives a closure whose work is seconds-to-milliseconds of real
+    /// resolution while still ending in `Saturated` — which is what makes the
+    /// deadline the only difference between the two calls below.
+    #[test]
+    fn closure_honours_the_deadline_inside_one_position() {
+        const WIDTH: usize = 40;
+
+        let mut symbols = SymbolTable::new();
+        let c = symbols.intern("c");
+        let p = symbols.intern("p");
+        let pos = |pred: SymbolId| {
+            mrs_core::clause::Literal::pos(Atom::pred(pred, vec![Term::constant(c)]))
+        };
+        let neg = |pred: SymbolId| {
+            mrs_core::clause::Literal::neg(Atom::pred(pred, vec![Term::constant(c)]))
+        };
+        let mut ids = ClauseIdGen::new();
+        let mut input = Vec::new();
+        for i in 0..WIDTH {
+            let a = symbols.intern(&format!("a{i}"));
+            let b = symbols.intern(&format!("b{i}"));
+            input.push(input_clause(&mut ids, vec![pos(p), pos(a)]));
+            input.push(input_clause(&mut ids, vec![neg(p), pos(b)]));
+        }
+        assert_eq!(
+            input.len(),
+            WIDTH * 2,
+            "fixture must present every clause to the closure"
+        );
+
+        // Roomy budget: the closure completes and saturates. The inference
+        // ceiling sits far above the fixture's 1 600 pairs so the refusals
+        // below are about the deadline and nothing else.
+        let mut roomy_ids = ClauseIdGen::new();
+        let roomy = closure_indexed_with_budget(
+            &input,
+            &TermOrdering::KBO,
+            false,
+            &mut roomy_ids,
+            Instant::now() + Duration::from_secs(120),
+            1,
+            10_000_000,
+        )
+        .expect("the fixture must saturate given room");
+        assert_eq!(
+            roomy.status,
+            ClosureStatus::Saturated,
+            "fixture must be conflict-free so the deadline is the only difference"
+        );
+        assert!(
+            roomy.inferences > (WIDTH * WIDTH / 2) as u64,
+            "fixture must actually do quadratic resolution work, got {} inferences",
+            roomy.inferences
+        );
+
+        // One millisecond: the same closure must bail out rather than finish.
+        for (label, result) in [
+            (
+                "indexed",
+                closure_indexed_with_budget(
+                    &input,
+                    &TermOrdering::KBO,
+                    false,
+                    &mut ClauseIdGen::new(),
+                    Instant::now() + Duration::from_millis(1),
+                    1,
+                    10_000_000,
+                ),
+            ),
+            (
+                "linear",
+                closure_linear(
+                    &input,
+                    &TermOrdering::KBO,
+                    false,
+                    &mut ClauseIdGen::new(),
+                    Instant::now() + Duration::from_millis(1),
+                ),
+            ),
+        ] {
+            assert!(
+                matches!(
+                    result,
+                    Err(CertificationFailure::Limit(
+                        "certification time limit exceeded"
+                    ))
+                ),
+                "{label} closure ignored a 1 ms deadline and reported {result:?}"
+            );
         }
     }
 }
