@@ -21,6 +21,9 @@ Thumbs.db
 laptop_i.err
 laptop_i.out
 
+# Benchmark run output (run.csv, raw stdout/stderr, job files)
+/results/
+
 # Profiling output
 heaptrack.*.zst
 *.zst

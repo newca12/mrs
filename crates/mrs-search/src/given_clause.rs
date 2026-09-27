@@ -1095,7 +1095,10 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 current_mb, limit_mb
             );
         }
-        return SearchResult::ResourceOut;
+        return SearchResult::ResourceOut(crate::ResourceReason::Memory {
+            limit_mb,
+            rss_mb: current_mb,
+        });
     }
 
     // Initial SAT sync
@@ -1328,7 +1331,10 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         state.stats.processed, limit
                     );
                 }
-                return SearchResult::ResourceOut;
+                return SearchResult::ResourceOut(crate::ResourceReason::MaxProcessed {
+                    limit,
+                    processed: state.stats.processed,
+                });
             }
             if let Some(limit) = config.resource_limits.max_passive {
                 let passive_count = state.unprocessed.active_count() as u64;
@@ -1339,7 +1345,10 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                             passive_count, limit
                         );
                     }
-                    return SearchResult::ResourceOut;
+                    return SearchResult::ResourceOut(crate::ResourceReason::MaxPassive {
+                        limit,
+                        passive: passive_count,
+                    });
                 }
             }
             if let Some(limit) = config.resource_limits.max_terms
@@ -1352,7 +1361,10 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         limit
                     );
                 }
-                return SearchResult::ResourceOut;
+                return SearchResult::ResourceOut(crate::ResourceReason::TermBank {
+                    limit,
+                    len: state.term_bank.len(),
+                });
             }
             if let Some(limit_mb) = config.resource_limits.max_memory_mb
                 && let Some(current_mb) = crate::current_memory_mb()
@@ -1364,7 +1376,10 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         current_mb, limit_mb
                     );
                 }
-                return SearchResult::ResourceOut;
+                return SearchResult::ResourceOut(crate::ResourceReason::Memory {
+                    limit_mb,
+                    rss_mb: current_mb,
+                });
             }
         }
 
@@ -1397,6 +1412,24 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
         if !state.is_active(&given) {
             state.dormant_unprocessed.insert(given.id, given);
             continue;
+        }
+
+        // Record where the run stood at the CASC reference wall clock, once.
+        // In casc-sim the search continues past this point, so without a record
+        // here a memory stop and a plain timeout look identical in the report.
+        if state.stats.casc_limit_state.is_none()
+            && let Some(reference) = config.casc_reference_limit
+        {
+            let elapsed = start.elapsed();
+            if elapsed >= reference {
+                state.stats.casc_limit_state = Some(crate::CascLimitState {
+                    elapsed_ms: elapsed.as_millis() as u64,
+                    iterations: state.stats.iterations,
+                    processed: state.stats.processed,
+                    generated: state.stats.generated,
+                    passive: state.stats.passive_size,
+                });
+            }
         }
 
         // Check time limit (and parallel stop-flag)
@@ -3797,7 +3830,7 @@ mod tests {
         config.resource_limits.max_memory_mb = Some(0);
         let result = search(&mut state, &config);
         assert!(
-            matches!(result, SearchResult::ResourceOut),
+            matches!(result, SearchResult::ResourceOut(_)),
             "watchdog should trigger ResourceOut when memory limit is exceeded (got {result:?})"
         );
     }

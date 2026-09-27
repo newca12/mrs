@@ -50,6 +50,26 @@
 #                       systems/reference/answers_<edition>.tsv, fallback
 #                       answers.tsv). Needed when the corpus root holds
 #                       problems the shipped answers files do not cover.
+#   MRS_HARDWARE        Hardware profile for the prover (default: adaptive).
+#                       casc       exactly a CASC entry: 8 workers, 128 GB
+#                                 allowance, never auto-adapted. The honest
+#                                 setting for anything meant to be compared
+#                                 against CASC numbers.
+#                       casc-sim   simulate that entry on this host: same workers
+#                                 and allowance, CPU set pinned to 8 physical
+#                                 cores, address space capped, and the wall clock
+#                                 extended past the CASC limit so a memory-bound
+#                                 failure surfaces instead of reading as a
+#                                 timeout. Use when the host is not the
+#                                 competition machine.
+#                       adaptive   fit the host (default).
+#                       Concurrent jobs in casc-sim all pin to the same 8 cores,
+#                       so --jobs N behaves like N problems sharing one CASC
+#                       machine -- which is what the W8J2 runs did.
+#   MRS_MAX_MEMORY_MB   Explicit per-run memory ceiling; in EPS dual-search mode
+#                       this total is divided across the certifier and portfolio.
+#   MRS_SIM_TIME_FACTOR casc-sim wall-clock multiplier (default 2); 0 means
+#                       continue until a resource cap.
 #
 # Output:
 #   <output>/run.csv    — one row per (problem, system)

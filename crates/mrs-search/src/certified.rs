@@ -23,6 +23,8 @@
 //! certification fails closed.
 
 use std::collections::HashMap as StdHashMap;
+use std::ops::ControlFlow;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::{CompletenessWitness, HashSet, SearchResult, SearchStats, TermOrdering};
@@ -128,6 +130,7 @@ pub(crate) fn certify_ground_ordered_resolution(
     ordering: &TermOrdering,
     id_gen: &mut ClauseIdGen,
     time_limit: Duration,
+    workers: usize,
 ) -> Result<CertifiedGroundReport, CertificationFailure> {
     let mut proof_symbols = symbols.clone();
     let deadline = Instant::now() + time_limit;
@@ -206,6 +209,7 @@ pub(crate) fn certify_ground_ordered_resolution(
                 id_gen,
                 deadline,
                 "tier1",
+                workers,
             );
         }
         if tier2 {
@@ -317,6 +321,7 @@ fn refute_from_ancestry(
 /// rather than the whole of it.
 const MODEL_EXTRACTION_BUDGET: Duration = Duration::from_millis(500);
 
+#[allow(clippy::too_many_arguments)]
 fn run_tier1(
     grounded: &GroundedInputs,
     provenance: &[Clause],
@@ -325,6 +330,7 @@ fn run_tier1(
     id_gen: &mut ClauseIdGen,
     deadline: Instant,
     context: &'static str,
+    workers: usize,
 ) -> Result<CertifiedGroundReport, CertificationFailure> {
     let atoms = collect_fragment_atoms(&grounded.clauses)?;
     validate_ordering_kind(ordering)?;
@@ -341,6 +347,7 @@ fn run_tier1(
         true,
         &mut ordered_id_gen,
         deadline,
+        workers,
     )?;
 
     let mut reference_id_gen = id_gen.clone();
@@ -350,6 +357,7 @@ fn run_tier1(
         false,
         &mut reference_id_gen,
         deadline,
+        workers,
     )?;
 
     if ordered.status != reference.status {
@@ -587,7 +595,11 @@ fn collect_filter_symbols(term: &Term, syms: &mut HashSet<SymbolId>) {
 /// a failure of the subset attempt itself (limits, mismatch — likewise
 /// only rules out this subset).
 enum Tier3Try {
-    Refuted(CertifiedGroundReport),
+    // Boxed: `CertifiedGroundReport` embeds a `SearchResult`, which carries the
+    // proof text and the resource reason, so inlining it here made the enum
+    // several times the size of its other variants. This path only runs when
+    // tier 3 is being tried, so the allocation is not on a hot path.
+    Refuted(Box<CertifiedGroundReport>),
     Saturated,
     Failed,
 }
@@ -619,7 +631,7 @@ fn tier3_try_grounded(
             proof_symbols,
             expanded_inputs.clauses.len() as u64,
         );
-        return Tier3Try::Refuted(report);
+        return Tier3Try::Refuted(Box::new(report));
     }
     match run_tier1(
         &expanded_inputs,
@@ -629,9 +641,14 @@ fn tier3_try_grounded(
         id_gen,
         deadline,
         context,
+        // Tier-3 subsets are bounded to a few thousand instances each and
+        // saturate in milliseconds; fanning them out would cost more in thread
+        // setup than the work, and would make the tier's failure accounting
+        // order-dependent.
+        1,
     ) {
         Ok(report) if matches!(report.result, SearchResult::Refutation(..)) => {
-            Tier3Try::Refuted(report)
+            Tier3Try::Refuted(Box::new(report))
         }
         Ok(_) => Tier3Try::Saturated,
         Err(_) => Tier3Try::Failed,
@@ -735,7 +752,8 @@ fn tier3_subset_unsat(
             deadline,
             "tier3b-sub",
         ) {
-            Tier3Try::Refuted(mut report) => {
+            Tier3Try::Refuted(boxed) => {
+                let mut report = *boxed;
                 trace_certify(format!(
                     "tier3b_found tolerance={tolerance} kept={}",
                     filtered.len()
@@ -852,7 +870,7 @@ fn tier3_subset_unsat(
         };
         // Subset saturation proves nothing about the full problem, and
         // subset failures (limits, mismatch) only rule out this subset.
-        if let Tier3Try::Refuted(mut report) = tier3_try_grounded(
+        if let Tier3Try::Refuted(boxed) = tier3_try_grounded(
             subset_grounded,
             provenance,
             ordering,
@@ -865,6 +883,7 @@ fn tier3_subset_unsat(
                 "tier3_found subset_size={} tries={tries}",
                 subset.len()
             ));
+            let mut report = *boxed;
             report.tier = CertifiedTier::Three;
             return Ok(report);
         }
@@ -1406,19 +1425,25 @@ fn closure_linear(
         for previous_index in 0..index {
             // Scope the borrow so it ends before any push below.
             let derived_batch = {
+                let mut derived_batch = Vec::new();
                 let previous = &clauses[previous_index];
                 let previous_selection = if ordered {
                     selected_literals(previous, ordering)
                 } else {
                     all_literal_indices(previous)
                 };
-                resolve_ground_pair(
+                let _ = resolve_ground_pair_with(
                     &current,
                     previous,
                     &current_selection,
                     &previous_selection,
                     id_gen,
-                )
+                    |derived| {
+                        derived_batch.push(derived);
+                        ControlFlow::Continue(())
+                    },
+                );
+                derived_batch
             };
             for derived in derived_batch {
                 inferences += 1;
@@ -1466,7 +1491,7 @@ fn closure_linear(
 /// partners come from a [`LiteralIndex`] over hash-consed clause twins
 /// instead of an all-pairs scan. Retrieval is a superset of the exact
 /// partners (recall is pinned by `tests/index_equivalence.rs`), and
-/// [`resolve_ground_pair`] still applies the exact ground-atom check, so the
+/// [`resolve_ground_pair_with`] still applies the exact ground-atom check, so the
 /// derived clause set is identical; only the pair-visit order may differ.
 /// Partner positions are restricted to already-processed clauses via
 /// `id_to_pos`, mirroring the linear `previous_index < index` scan exactly
@@ -1493,6 +1518,32 @@ fn closure_indexed(
     ordered: bool,
     id_gen: &mut ClauseIdGen,
     deadline: Instant,
+    workers: usize,
+) -> Result<Closure, CertificationFailure> {
+    closure_indexed_with_budget(
+        input,
+        ordering,
+        ordered,
+        id_gen,
+        deadline,
+        workers,
+        MAX_INFERENCES,
+    )
+}
+
+/// [`closure_indexed`] with an explicit inference budget.
+///
+/// The budget is a parameter so the "a wave cannot exceed it" invariant can be
+/// tested against a closure small enough to run in a unit test; production always
+/// passes [`MAX_INFERENCES`].
+fn closure_indexed_with_budget(
+    input: &[Clause],
+    ordering: &TermOrdering,
+    ordered: bool,
+    id_gen: &mut ClauseIdGen,
+    deadline: Instant,
+    workers: usize,
+    inference_budget: u64,
 ) -> Result<Closure, CertificationFailure> {
     let mut bank = TermBank::new();
     let mut index = LiteralIndex::new();
@@ -1544,9 +1595,17 @@ fn closure_indexed(
         }
     }
 
-    let mut inferences = 0;
-    let mut pos = 0;
-    while pos < clauses.len() {
+    let mut inferences = 0u64;
+    // Wave-structured saturation. A position's partner set is fixed by the
+    // clauses that existed *before* it (`partner_pos` keeps only `p < pos`),
+    // and every clause derived while processing a position is appended, so it
+    // lands at an index greater than any position still to be processed and can
+    // never be a partner for one of them. A wave over the positions known at
+    // its start therefore derives exactly what the sequential scan derives,
+    // which is what makes the fan-out below a scheduling change rather than a
+    // semantic one.
+    let mut next_pos = 0usize;
+    while next_pos < clauses.len() {
         if Instant::now() >= deadline {
             trace_certify(format!(
                 "refuse=closure_time ordered={ordered} clauses={} inferences={inferences}",
@@ -1556,20 +1615,237 @@ fn closure_indexed(
                 "certification time limit exceeded",
             ));
         }
-        let current = clauses[pos].clone();
-        let current_twin = bank.clause_from_legacy(&current);
+        let wave_end = clauses.len();
+        let wave = run_closure_wave(
+            &clauses,
+            &index,
+            &eq_index,
+            &id_to_pos,
+            ordering,
+            ordered,
+            next_pos,
+            wave_end,
+            id_gen,
+            deadline,
+            workers,
+            inference_budget.saturating_sub(inferences),
+        )?;
+        inferences = inferences.saturating_add(wave.inferences);
+        if inferences > inference_budget {
+            trace_certify(format!(
+                "refuse=inference_limit ordered={ordered} inferences={inferences}"
+            ));
+            return Err(CertificationFailure::Limit(
+                "ground inference limit exceeded",
+            ));
+        }
+        if let Some(empty) = wave.refuted {
+            // Same shape as the sequential scan: the empty clause goes into
+            // `clauses` so the proof store still contains it.
+            clauses.extend(wave.derived);
+            clauses.push(empty);
+            return Ok(Closure {
+                clauses,
+                status: ClosureStatus::Refuted,
+                inferences,
+            });
+        }
+        // Merge in chunk order so the resulting clause sequence is a
+        // deterministic function of the input, independent of scheduling.
+        for derived in wave.derived {
+            if seen.insert(clause_key(&derived)) {
+                id_to_pos.insert(derived.id, clauses.len());
+                let twin = bank.clause_from_legacy(&derived);
+                index.insert(twin, &bank);
+                for literal in &derived.literals {
+                    if matches!(literal.atom, Atom::Eq(..)) {
+                        eq_index
+                            .entry((literal.atom.clone(), literal.positive))
+                            .or_default()
+                            .push(clauses.len());
+                    }
+                }
+                clauses.push(derived);
+                if clauses.len() > MAX_CLAUSES {
+                    trace_certify(format!(
+                        "refuse=clause_limit ordered={ordered} clauses={} inferences={inferences}",
+                        clauses.len()
+                    ));
+                    return Err(CertificationFailure::Limit("ground clause limit exceeded"));
+                }
+            }
+        }
+        next_pos = wave_end;
+    }
+
+    Ok(Closure {
+        clauses,
+        status: ClosureStatus::Saturated,
+        inferences,
+    })
+}
+
+/// What one pass over a range of clause positions produced: the derived
+/// clauses (already normalized, not yet deduplicated) plus whether an empty
+/// clause turned up. Deduplication is deliberately left to the caller so that
+/// the index and the seen-set are only ever mutated on the thread that owns
+/// them.
+#[derive(Debug)]
+struct ClosureWave {
+    derived: Vec<Clause>,
+    inferences: u64,
+    /// The empty clause, when a worker derived one. It travels back to the
+    /// owner of `clauses` because the refutation proof is rebuilt from it.
+    refuted: Option<Clause>,
+}
+
+/// Run one wave over `range`, fanning contiguous chunks of positions across
+/// `workers` scoped threads.
+///
+/// Every worker sees the same immutable snapshot: the clause array, the
+/// literal index, the equality partner map and the id-to-position map are all
+/// read-only here, and derived clauses are buffered rather than inserted, so no
+/// worker can observe another's inferences. `id_gen` is shared through its
+/// `Arc<AtomicU64>` counter, which is what keeps derived clause ids unique
+/// across threads, and each worker interns into a term bank of its own.
+#[allow(clippy::too_many_arguments)]
+fn run_closure_wave(
+    clauses: &[Clause],
+    index: &LiteralIndex,
+    eq_index: &StdHashMap<(Atom, bool), Vec<usize>>,
+    id_to_pos: &StdHashMap<ClauseId, usize>,
+    ordering: &TermOrdering,
+    ordered: bool,
+    range_start: usize,
+    range_end: usize,
+    id_gen: &mut ClauseIdGen,
+    deadline: Instant,
+    workers: usize,
+    inference_budget: u64,
+) -> Result<ClosureWave, CertificationFailure> {
+    let span = range_end.saturating_sub(range_start);
+    let chunks = workers.clamp(1, span.max(1)).min(span.max(1));
+    let remaining_inferences = AtomicU64::new(inference_budget);
+    if chunks <= 1 {
+        return closure_wave_range(
+            clauses,
+            index,
+            eq_index,
+            id_to_pos,
+            ordering,
+            ordered,
+            range_start,
+            range_end,
+            id_gen,
+            deadline,
+            &remaining_inferences,
+        );
+    }
+
+    let chunk_size = span.div_ceil(chunks);
+    let bounds: Vec<(usize, usize)> = (0..chunks)
+        .map(|chunk| {
+            let lo = range_start + chunk * chunk_size;
+            let hi = (lo + chunk_size).min(range_end);
+            (lo, hi)
+        })
+        .filter(|(lo, hi)| lo < hi)
+        .collect();
+
+    let mut results: Vec<Result<ClosureWave, CertificationFailure>> = Vec::new();
+    std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(bounds.len());
+        for (lo, hi) in bounds {
+            let mut worker_id_gen = id_gen.clone();
+            let worker_budget = &remaining_inferences;
+            handles.push(scope.spawn(move || {
+                closure_wave_range(
+                    clauses,
+                    index,
+                    eq_index,
+                    id_to_pos,
+                    ordering,
+                    ordered,
+                    lo,
+                    hi,
+                    &mut worker_id_gen,
+                    deadline,
+                    worker_budget,
+                )
+            }));
+        }
+        for handle in handles {
+            results.push(handle.join().unwrap_or_else(|_| {
+                Err(CertificationFailure::Limit(
+                    "certification worker thread panicked",
+                ))
+            }));
+        }
+    });
+
+    let mut derived = Vec::new();
+    let mut inferences = 0u64;
+    for result in results {
+        let wave = result?;
+        inferences = inferences.saturating_add(wave.inferences);
+        derived.extend(wave.derived);
+        if let Some(empty) = wave.refuted {
+            return Ok(ClosureWave {
+                derived,
+                inferences,
+                refuted: Some(empty),
+            });
+        }
+    }
+    Ok(ClosureWave {
+        derived,
+        inferences,
+        refuted: None,
+    })
+}
+
+/// Process `range_start..range_end` sequentially, appending derived clauses to a
+/// local buffer.
+#[allow(clippy::too_many_arguments)]
+fn closure_wave_range(
+    clauses: &[Clause],
+    index: &LiteralIndex,
+    eq_index: &StdHashMap<(Atom, bool), Vec<usize>>,
+    id_to_pos: &StdHashMap<ClauseId, usize>,
+    ordering: &TermOrdering,
+    ordered: bool,
+    range_start: usize,
+    range_end: usize,
+    id_gen: &mut ClauseIdGen,
+    deadline: Instant,
+    remaining_inferences: &AtomicU64,
+) -> Result<ClosureWave, CertificationFailure> {
+    let mut derived: Vec<Clause> = Vec::new();
+    let mut inferences = 0u64;
+    // Each range owns a term bank. `clause_from_legacy` interns the terms of
+    // the clauses it converts, and the index queries only *read* the bank to
+    // flatten an id-term into cells, so a per-range bank yields exactly the
+    // same cells as a shared one without needing interior mutability.
+    let mut bank = TermBank::new();
+    for pos in range_start..range_end {
+        if Instant::now() >= deadline {
+            trace_certify(format!(
+                "refuse=closure_time ordered={ordered} clauses={} inferences={inferences}",
+                clauses.len()
+            ));
+            return Err(CertificationFailure::Limit(
+                "certification time limit exceeded",
+            ));
+        }
+        let current = &clauses[pos];
+        let current_twin = bank.clause_from_legacy(current);
         let current_selection = if ordered {
-            selected_literals(&current, ordering)
+            selected_literals(current, ordering)
         } else {
-            all_literal_indices(&current)
+            all_literal_indices(current)
         };
-        // Collect already-processed partner positions via the index. Sorting
-        // ascending reproduces the linear scan order.
         let mut partner_pos = Vec::new();
         for &lit_idx in &current_selection {
-            // Ground equality literals resolve through the local exact-match
-            // map (same atom value `resolve_ground_pair` compares below);
-            // predicates go through the discrimination-tree index.
             if matches!(current.literals[lit_idx].atom, Atom::Eq(..)) {
                 let key = (
                     current.literals[lit_idx].atom.clone(),
@@ -1592,72 +1868,66 @@ fn closure_indexed(
         partner_pos.sort_unstable();
         partner_pos.dedup();
         for previous_index in partner_pos {
-            // Scope the borrow so it ends before any push below.
-            let derived_batch = {
-                let previous = &clauses[previous_index];
-                let previous_selection = if ordered {
-                    selected_literals(previous, ordering)
-                } else {
-                    all_literal_indices(previous)
-                };
-                resolve_ground_pair(
-                    &current,
-                    previous,
-                    &current_selection,
-                    &previous_selection,
-                    id_gen,
-                )
+            let previous = &clauses[previous_index];
+            let previous_selection = if ordered {
+                selected_literals(previous, ordering)
+            } else {
+                all_literal_indices(previous)
             };
-            for derived in derived_batch {
-                inferences += 1;
-                if inferences > MAX_INFERENCES {
-                    trace_certify(format!(
-                        "refuse=inference_limit ordered={ordered} inferences={inferences}"
-                    ));
-                    return Err(CertificationFailure::Limit(
-                        "ground inference limit exceeded",
-                    ));
-                }
-                let Some(derived) = normalize_clause(derived) else {
-                    continue;
-                };
-                if derived.is_empty() {
-                    clauses.push(derived);
-                    return Ok(Closure {
-                        clauses,
-                        status: ClosureStatus::Refuted,
-                        inferences,
-                    });
-                }
-                if seen.insert(clause_key(&derived)) {
-                    id_to_pos.insert(derived.id, clauses.len());
-                    let twin = bank.clause_from_legacy(&derived);
-                    index.insert(twin, &bank);
-                    for literal in &derived.literals {
-                        if matches!(literal.atom, Atom::Eq(..)) {
-                            eq_index
-                                .entry((literal.atom.clone(), literal.positive))
-                                .or_default()
-                                .push(clauses.len());
-                        }
-                    }
-                    clauses.push(derived);
-                    if clauses.len() > MAX_CLAUSES {
+            let mut budget_exceeded = false;
+            let mut refuted = None;
+            let _ = resolve_ground_pair_with(
+                current,
+                previous,
+                &current_selection,
+                &previous_selection,
+                id_gen,
+                |candidate| {
+                    inferences += 1;
+                    if remaining_inferences
+                        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                            remaining.checked_sub(1)
+                        })
+                        .is_err()
+                    {
+                        // The resolver visits candidates incrementally, so an
+                        // over-budget batch is never materialized.
                         trace_certify(format!(
-                            "refuse=clause_limit ordered={ordered} clauses={} inferences={inferences}",
-                            clauses.len()
+                            "refuse=inference_limit ordered={ordered} chunk={range_start}..{range_end} \
+                             inferences={inferences}"
                         ));
-                        return Err(CertificationFailure::Limit("ground clause limit exceeded"));
+                        budget_exceeded = true;
+                        return ControlFlow::Break(());
                     }
-                }
+                    let Some(derived_clause) = normalize_clause(candidate) else {
+                        return ControlFlow::Continue(());
+                    };
+                    if derived_clause.is_empty() {
+                        refuted = Some(derived_clause);
+                        return ControlFlow::Break(());
+                    }
+                    derived.push(derived_clause);
+                    ControlFlow::Continue(())
+                },
+            );
+            if budget_exceeded {
+                return Err(CertificationFailure::Limit(
+                    "ground inference limit exceeded",
+                ));
+            }
+            if let Some(refuted) = refuted {
+                return Ok(ClosureWave {
+                    derived,
+                    inferences,
+                    refuted: Some(refuted),
+                });
             }
         }
-        pos += 1;
     }
-    Ok(Closure {
-        clauses,
-        status: ClosureStatus::Saturated,
+    Ok(ClosureWave {
+        derived,
         inferences,
+        refuted: None,
     })
 }
 
@@ -1681,14 +1951,14 @@ fn selected_literals(clause: &Clause, ordering: &TermOrdering) -> Vec<usize> {
         .collect()
 }
 
-fn resolve_ground_pair(
+fn resolve_ground_pair_with(
     left: &Clause,
     right: &Clause,
     left_selection: &[usize],
     right_selection: &[usize],
     id_gen: &mut ClauseIdGen,
-) -> Vec<Clause> {
-    let mut results = Vec::new();
+    mut visit: impl FnMut(Clause) -> ControlFlow<()>,
+) -> ControlFlow<()> {
     for &left_index in left_selection {
         for &right_index in right_selection {
             let left_literal = &left.literals[left_index];
@@ -1713,17 +1983,20 @@ fn resolve_ground_pair(
                         }),
                 )
                 .collect::<Vec<_>>();
-            results.push(Clause::new(
+            let clause = Clause::new(
                 id_gen.next(),
                 literals,
                 ClauseSource::Inference {
                     rule: "resolution",
                     parents: vec![left.id, right.id].into(),
                 },
-            ));
+            );
+            if let ControlFlow::Break(()) = visit(clause) {
+                return ControlFlow::Break(());
+            }
         }
     }
-    results
+    ControlFlow::Continue(())
 }
 
 fn normalize_clause(mut clause: Clause) -> Option<Clause> {
@@ -1791,6 +2064,7 @@ mod tests {
             &TermOrdering::KBO,
             &mut ids,
             Duration::from_secs(1),
+            1,
         )
         .expect("finite ground SAT closure should certify");
         assert!(matches!(
@@ -1830,6 +2104,7 @@ mod tests {
             &TermOrdering::KBO,
             &mut ids,
             Duration::from_secs(1),
+            1,
         )
         .expect("finite ground UNSAT closure should certify");
         assert!(matches!(report.result, SearchResult::Refutation(..)));
@@ -1864,6 +2139,7 @@ mod tests {
             &TermOrdering::KBO,
             &mut ids,
             Duration::from_secs(1),
+            1,
         )
         .expect("finite EPR grounding should certify the refutation");
         assert!(matches!(report.result, SearchResult::Refutation(..)));
@@ -1890,6 +2166,7 @@ mod tests {
                 &TermOrdering::KBO,
                 &mut ids,
                 Duration::from_secs(1),
+                1,
             )
             .is_ok()
         );
@@ -1912,6 +2189,7 @@ mod tests {
                 &TermOrdering::KBO,
                 &mut ids,
                 Duration::from_secs(1),
+                1,
             )
             .is_ok()
         );
@@ -1932,6 +2210,7 @@ mod tests {
                 &TermOrdering::KBO,
                 &mut ids,
                 Duration::from_secs(1),
+                1,
             ),
             Err(CertificationFailure::Unsupported(
                 "function terms are outside the certified EPR fragment"
@@ -1969,6 +2248,7 @@ mod tests {
             &TermOrdering::LPO,
             &mut ids,
             Duration::from_secs(1),
+            1,
         )
         .expect("finite ground SAT closure should certify under LPO");
         assert!(matches!(
@@ -2007,6 +2287,7 @@ mod tests {
             &TermOrdering::LPO,
             &mut ids,
             Duration::from_secs(1),
+            1,
         )
         .expect("finite ground UNSAT closure should certify under LPO");
         assert!(matches!(report.result, SearchResult::Refutation(..)));
@@ -2041,6 +2322,7 @@ mod tests {
             &TermOrdering::LPO,
             &mut ids,
             Duration::from_secs(1),
+            1,
         )
         .expect("finite EPR grounding should certify the refutation under LPO");
         assert!(matches!(report.result, SearchResult::Refutation(..)));
@@ -2086,6 +2368,7 @@ mod tests {
             &lpo,
             &mut ids.clone(),
             Duration::from_secs(1),
+            1,
         )
         .expect("LPO must not require positive weights");
         let kbo = TermOrdering::CustomKBO(config);
@@ -2097,6 +2380,7 @@ mod tests {
                 &kbo,
                 &mut ids,
                 Duration::from_secs(1),
+                1,
             ),
             Err(CertificationFailure::Unsupported(_))
         ));
@@ -2129,6 +2413,7 @@ mod tests {
                 &ac,
                 &mut ids,
                 Duration::from_secs(1),
+                1,
             ),
             Err(CertificationFailure::Unsupported(
                 "AC ordering is outside the certified fragment"
@@ -2223,6 +2508,7 @@ mod tests {
             &TermOrdering::KBO,
             &mut ids,
             Duration::from_secs(1),
+            1,
         )
         .expect("equality SAT must certify");
         assert!(matches!(report.result, SearchResult::Saturated(_)));
@@ -2237,6 +2523,7 @@ mod tests {
                 &TermOrdering::KBO,
                 &mut ids,
                 Duration::from_secs(1),
+                1,
             ),
             Err(CertificationFailure::Unsupported(_))
         ));
@@ -2275,6 +2562,7 @@ mod tests {
                 &ordering,
                 &mut ids,
                 Duration::from_secs(5),
+                1,
             )
             .expect("unit contradiction must certify");
             assert!(
@@ -2325,6 +2613,7 @@ mod tests {
                 &ordering,
                 &mut ids,
                 Duration::from_secs(10),
+                1,
             );
             assert!(
                 matches!(result, Err(CertificationFailure::Unsupported(_))),
@@ -2364,16 +2653,18 @@ mod tests {
             ),
         ];
         assert!(matches!(
-            certify_ground_ordered_resolution(
-                &clauses,
-                &[],
-                &symbols,
-                &TermOrdering::KBO,
-                &mut ids,
-                Duration::from_secs(1),
-            ),
-            Ok(report) if matches!(report.result, SearchResult::Refutation(..))
-        ));
+                    certify_ground_ordered_resolution(
+                        &clauses,
+                        &[],
+                        &symbols,
+                        &TermOrdering::KBO,
+                        &mut ids,
+                        Duration::from_secs(1),
+                    1,
+                    )
+        ,
+                    Ok(report) if matches!(report.result, SearchResult::Refutation(..))
+                ));
     }
 
     /// Regression canary for the historical false-`Satisfiable` shape
@@ -2419,6 +2710,7 @@ mod tests {
                 &ordering,
                 &mut ids,
                 Duration::from_secs(1),
+                1,
             )
             .expect("all-positive UNSAT EPR must certify");
             assert!(
@@ -2473,6 +2765,7 @@ mod tests {
                 &ordering,
                 &mut ids,
                 Duration::from_secs(1),
+                1,
             );
             // Full grounding is refused (2.98M > Tier-2 cap); Tier-3 subset
             // tries find only all-positive saturations and exhaust. Either
@@ -2527,6 +2820,7 @@ mod tests {
                 &ordering,
                 &mut ids,
                 Duration::from_secs(5),
+                1,
             )
             .expect("small core must certify");
             assert!(
@@ -2575,6 +2869,7 @@ mod tests {
                 &ordering,
                 &mut ids,
                 Duration::from_secs(5),
+                1,
             );
             assert!(
                 !matches!(
@@ -2630,6 +2925,7 @@ mod tests {
             &TermOrdering::KBO,
             &mut ids,
             Duration::ZERO,
+            1,
         );
         assert!(result.is_err(), "zero budget must fail closed");
         assert!(
@@ -2687,6 +2983,7 @@ mod tests {
             &TermOrdering::KBO,
             &mut ids,
             Duration::from_secs(30),
+            1,
         )
         .expect("vocabulary-restricted core must certify after Tier-2 UNSAT");
         assert!(matches!(report.result, SearchResult::Refutation(..)));
@@ -2847,6 +3144,7 @@ mod tests {
                 &ordering,
                 &mut ids,
                 Duration::from_secs(10),
+                1,
             )
             .expect("relevance core must certify");
             assert!(
@@ -2968,6 +3266,7 @@ mod tests {
                         ordered,
                         &mut indexed_ids,
                         Instant::now() + Duration::from_secs(5),
+                        1,
                     )
                     .expect("indexed closure must terminate on tiny inputs");
                     assert_eq!(
@@ -2987,6 +3286,204 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    /// The wave fan-out must be a scheduling change and nothing else.
+    ///
+    /// A position's partner set only ever contains clauses that existed before
+    /// it, so splitting the positions of a wave across threads and merging the
+    /// buffered derivations afterwards has to reproduce the sequential scan
+    /// exactly: same status, same clause set, same inference count. This runs
+    /// the same fixtures through 1, 2, 3 and 8 workers and demands equality,
+    /// including for the refuted cases where the empty clause has to survive
+    /// the trip back from the worker that found it.
+    #[test]
+    fn parallel_wave_matches_sequential_wave() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let q = symbols.intern("q");
+        let r = symbols.intern("r");
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let c = symbols.intern("c");
+
+        let fixtures: Vec<(&str, Vec<Clause>)> = vec![
+            (
+                "satisfiable pair",
+                vec![ground_pos(&mut ClauseIdGen::new(), p, a)],
+            ),
+            (
+                "direct conflict",
+                vec![
+                    ground_pos(&mut ClauseIdGen::new(), p, a),
+                    ground_neg(&mut ClauseIdGen::new(), p, a),
+                ],
+            ),
+            (
+                "multi-step refutation",
+                vec![
+                    ground_pos(&mut ClauseIdGen::new(), p, a),
+                    ground_neg(&mut ClauseIdGen::new(), p, b),
+                    ground_neg(&mut ClauseIdGen::new(), p, c),
+                    input_clause(&mut ClauseIdGen::new(), vec![]),
+                ],
+            ),
+            (
+                "wide saturated set",
+                vec![
+                    ground_pos(&mut ClauseIdGen::new(), p, a),
+                    ground_pos(&mut ClauseIdGen::new(), q, b),
+                    ground_pos(&mut ClauseIdGen::new(), r, c),
+                    ground_neg(&mut ClauseIdGen::new(), p, b),
+                    ground_neg(&mut ClauseIdGen::new(), q, c),
+                ],
+            ),
+        ];
+
+        let orderings = [TermOrdering::KBO, TermOrdering::LPO];
+
+        for ordering in &orderings {
+            for ordered in [true, false] {
+                for (label, template) in &fixtures {
+                    // Rebuild the fixture per run so clause ids start clean.
+                    let baseline_input = {
+                        let mut ids = ClauseIdGen::new();
+                        (*template)
+                            .clone()
+                            .into_iter()
+                            .map(|mut clause| {
+                                clause.id = ids.next();
+                                clause
+                            })
+                            .collect::<Vec<Clause>>()
+                    };
+                    let mut baseline_ids = ClauseIdGen::new();
+                    let baseline = closure_indexed(
+                        &baseline_input,
+                        ordering,
+                        ordered,
+                        &mut baseline_ids,
+                        Instant::now() + Duration::from_secs(30),
+                        1,
+                    )
+                    .expect("baseline closure terminates");
+
+                    for workers in [2usize, 3, 8] {
+                        let mut ids = ClauseIdGen::new();
+                        let input = (*template)
+                            .clone()
+                            .into_iter()
+                            .map(|mut clause| {
+                                clause.id = ids.next();
+                                clause
+                            })
+                            .collect::<Vec<Clause>>();
+                        let mut parallel_ids = ClauseIdGen::new();
+                        let parallel = closure_indexed(
+                            &input,
+                            ordering,
+                            ordered,
+                            &mut parallel_ids,
+                            Instant::now() + Duration::from_secs(30),
+                            workers,
+                        )
+                        .expect("parallel closure terminates");
+
+                        assert_eq!(
+                            baseline.status, parallel.status,
+                            "status diverged at workers={workers} case={label} \
+                             ordered={ordered} ordering={ordering:?}"
+                        );
+                        assert_eq!(
+                            baseline.inferences, parallel.inferences,
+                            "inference count diverged at workers={workers} case={label} \
+                             ordered={ordered} ordering={ordering:?}"
+                        );
+                        assert_eq!(
+                            closure_key_set(&baseline),
+                            closure_key_set(&parallel),
+                            "clause set diverged at workers={workers} case={label} \
+                             ordered={ordered} ordering={ordering:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// A wave must not be able to spend more inferences than the sequential
+    /// scan would have allowed, including when the remaining allowance is less
+    /// than the number of worker chunks.
+    ///
+    /// The derived clauses of a wave are buffered until it merges, so the
+    /// remaining budget is partitioned between chunks. This fixture is 40 pairs
+    /// wide and offers 1 600 inferences. Both a tiny residual budget (smaller
+    /// than the worker count) and a mid-wave budget must be refused at every
+    /// worker count.
+    #[test]
+    fn parallel_wave_cannot_exceed_the_inference_budget() {
+        const WIDTH: usize = 40;
+
+        let mut symbols = SymbolTable::new();
+        let c = symbols.intern("c");
+        let p = symbols.intern("p");
+        let pos = |pred: SymbolId| {
+            mrs_core::clause::Literal::pos(Atom::pred(pred, vec![Term::constant(c)]))
+        };
+        let neg = |pred: SymbolId| {
+            mrs_core::clause::Literal::neg(Atom::pred(pred, vec![Term::constant(c)]))
+        };
+        let mut ids = ClauseIdGen::new();
+        let mut input = Vec::new();
+        for i in 0..WIDTH {
+            let a = symbols.intern(&format!("a{i}"));
+            let b = symbols.intern(&format!("b{i}"));
+            input.push(input_clause(&mut ids, vec![pos(p), pos(a)]));
+            input.push(input_clause(&mut ids, vec![neg(p), pos(b)]));
+        }
+
+        // Roomy budget: the closure saturates, so the refusals below are about
+        // the ceiling and nothing else.
+        let mut roomy_ids = ClauseIdGen::new();
+        let roomy = closure_indexed_with_budget(
+            &input,
+            &TermOrdering::KBO,
+            false,
+            &mut roomy_ids,
+            Instant::now() + Duration::from_secs(120),
+            1,
+            10_000_000,
+        )
+        .expect("a generous budget must saturate the fixture");
+        assert_eq!(roomy.status, ClosureStatus::Saturated);
+        assert!(
+            roomy.inferences > 500,
+            "fixture must exceed the small budget, got {}",
+            roomy.inferences
+        );
+
+        for workers in [1usize, 2, 4, 8] {
+            for budget in [1, 500] {
+                let result = closure_indexed_with_budget(
+                    &input,
+                    &TermOrdering::KBO,
+                    false,
+                    &mut ClauseIdGen::new(),
+                    Instant::now() + Duration::from_secs(120),
+                    workers,
+                    budget,
+                );
+                assert!(
+                    matches!(
+                        result,
+                        Err(CertificationFailure::Limit(
+                            "ground inference limit exceeded"
+                        ))
+                    ),
+                    "workers={workers} must refuse once the {budget}-inference budget is spent"
+                );
             }
         }
     }

@@ -2,6 +2,43 @@
 
 CASC benchmark harness and report tool for `mrs`.
 
+## Hardware profiles
+
+A benchmark run has to say what it was measured under, or the number means
+nothing. `MRS_HARDWARE` selects the profile for the whole run and the prover
+prints the resolved one on its `% Hardware:` line, so an archived `run.csv` is
+self-describing.
+
+| `MRS_HARDWARE` | workers | memory | CPU set | wall clock |
+|---|---|---|---|---|
+| *(unset)* / `adaptive` | one per usable physical core, bounded by memory | 80 % of available RAM, cgroup-aware | unrestricted | `--time` |
+| `casc` | **8** | **128 GB** | unrestricted | `--time` |
+| `casc-sim` | **8** | **128 GB** + `RLIMIT_AS` | **pinned to 8 physical cores** | `--time` × `--sim-time-factor` (default 2), or unbounded |
+
+Use `casc` for anything whose number will be compared against CASC results: it
+never grows to the host, so a 64-core box cannot hand a schedule tuned for 8
+cores sixteen workers. Use `casc-sim` to develop against a competition-shaped
+constraint on a machine that is not the competition machine — it keeps searching
+past the CASC wall clock so a memory-bound failure surfaces instead of being
+recorded as a timeout, and reports where the run stood at the CASC limit
+(`casc_limit_passed_ms=… state_at_casc_limit=…` in `% SZS detail`). Use the
+default when the only question is whether a problem can be solved at all.
+
+Notes:
+
+- The core count is **physical** cores, detected from the kernel's affinity mask,
+  the cgroup CPU quota and SMT topology. `num_cpus::get_physical()` reports the
+  whole machine and is wrong inside a cpuset, so it is no longer the default.
+- In `casc-sim` every job pins to the same 8 cores, so `--jobs N` means N problems
+  sharing one CASC machine — which is what the archived `W8J2` runs did.
+- When the host cannot represent the profile (fewer than 8 physical cores, less
+  RAM than 128 GB) the run continues and says so, rather than silently
+  downgrading to something that only looks like a CASC entry.
+- A run that stops on a resource ceiling reports which one:
+  `% Resource limit: memory limit 131072 MB reached (rss …)`, and the same
+  reason in `resource_reason=` for the grader. `bench_report` separates
+  `resource_out_memory` from the clause-shaped ceilings.
+
 ## Contents
 
 | Path | Purpose |

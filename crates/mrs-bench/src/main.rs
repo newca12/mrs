@@ -303,6 +303,12 @@ fn classify_failure(szs: &str, detail: &str) -> &'static str {
         return "parse_error";
     }
     if szs == "ResourceOut" {
+        // Keep the memory case separable from the clause-shaped ceilings: a
+        // memory-bound run tells you the problem does not fit the target
+        // hardware, which no amount of search tuning will fix.
+        if detail.contains("resource_reason=memory") {
+            return "resource_out_memory";
+        }
         return "resource_out";
     }
     if szs == "Timeout" && detail.is_empty() {

@@ -358,7 +358,7 @@ pub fn try_componentwise_refute(
                 SearchResult::Saturated(_) => "Saturated",
                 SearchResult::Timeout => "Timeout",
                 SearchResult::GaveUp => "GaveUp",
-                SearchResult::ResourceOut => "ResourceOut",
+                SearchResult::ResourceOut(_) => "ResourceOut",
             };
             eprintln!(
                 "[CWA] branch {}/{} ({:?}, {} clauses): {}",

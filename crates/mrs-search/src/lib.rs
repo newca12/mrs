@@ -66,7 +66,10 @@ pub use mrs_calculus::ordering::TermOrdering;
 pub use mrs_cnf::goal_transform::GoalTransformMode;
 pub use preprocessing::{PreprocessingConfig, PreprocessingStats, preprocess_clauses};
 pub use resource::{
-    RAM_PER_WORKER_MB, ResourceLimits, current_memory_mb, default_worker_count, memory_budget_mb,
+    AddressSpaceLimit, CASC_MEMORY_MB, CASC_PHYSICAL_CORES, CpuPinning, HardwareMode,
+    HardwareProfile, RAM_PER_WORKER_MB, ResourceLimits, current_memory_mb, default_worker_count,
+    limit_address_space_mb, memory_budget_mb, pin_to_physical_cores, resolve_profile,
+    usable_physical_cores,
 };
 pub use select::{QueueType, SelectionStrategy};
 pub use strategy::{CandidateReceiver, CandidateRefutation, run_schedule_with_candidate_receiver};
@@ -98,6 +101,22 @@ pub struct SearchStats {
     pub shared_published: u64,
     /// Shared unit-equality chains imported by this strategy.
     pub shared_imported: u64,
+    /// Where the run stood when it crossed the CASC reference wall clock.
+    /// Recorded only in `casc-sim`, which searches past that point on purpose:
+    /// without it a later resource stop and a plain timeout are indistinguishable
+    /// in the report, and only one of them says anything about the hardware.
+    pub casc_limit_state: Option<CascLimitState>,
+}
+
+/// Where a run stood when it passed the CASC reference wall clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CascLimitState {
+    /// Milliseconds since the search started.
+    pub elapsed_ms: u64,
+    pub iterations: u64,
+    pub processed: u64,
+    pub generated: u64,
+    pub passive: u64,
 }
 
 /// Summary for one strategy in the portfolio run.
@@ -225,6 +244,22 @@ impl ScheduleReport {
             }
         }
 
+        if let Some(state) = self
+            .strategies
+            .iter()
+            .filter_map(|s| s.stats.casc_limit_state)
+            .min_by_key(|state| state.elapsed_ms)
+        {
+            detail.push_str(&format!(
+                " casc_limit_passed_ms={} state_at_casc_limit=iterations:{},processed:{},generated:{},passive:{}",
+                state.elapsed_ms,
+                state.iterations,
+                state.processed,
+                state.generated,
+                state.passive
+            ));
+        }
+
         if let Some(tier) = &self.cert_tier {
             detail.push_str(&format!(" cert_tier={tier}"));
         }
@@ -276,7 +311,7 @@ impl ScheduleReport {
         let n_resource_out = self
             .strategies
             .iter()
-            .filter(|s| matches!(s.result, SearchResult::ResourceOut))
+            .filter(|s| matches!(s.result, SearchResult::ResourceOut(_)))
             .count();
         let n_saturated = self
             .strategies
@@ -284,9 +319,26 @@ impl ScheduleReport {
             .filter(|s| matches!(s.result, SearchResult::Saturated(_)))
             .count();
 
+        // Which limit fired, aggregated across strategies. `memory` is reported
+        // separately from the clause-shaped ceilings because a memory-bound run
+        // is a statement about the hardware, not about the search.
+        let mut out_reasons: std::collections::BTreeMap<&'static str, usize> =
+            std::collections::BTreeMap::new();
+        for strategy in &self.strategies {
+            if let SearchResult::ResourceOut(reason) = strategy.result {
+                *out_reasons.entry(reason.as_str()).or_default() += 1;
+            }
+        }
+        let reason_detail = out_reasons
+            .iter()
+            .map(|(name, count)| format!("{name}={count}"))
+            .collect::<Vec<_>>()
+            .join(",");
+
         Some(format!(
             "strategies={} timeout={} resource_out={} saturated={} \
-             processed={} generated={} passive={} weight_discarded={} lrs_discarded={} fwd_subsumed={}",
+             processed={} generated={} passive={} weight_discarded={} lrs_discarded={} fwd_subsumed={} \
+             resource_reasons={reason_detail}",
             self.strategies.len(),
             n_timeout,
             n_resource_out,
@@ -314,7 +366,7 @@ impl ScheduleReport {
             }
         }
         for s in &self.strategies {
-            if matches!(s.result, SearchResult::ResourceOut) {
+            if matches!(s.result, SearchResult::ResourceOut(_)) {
                 return s.result.clone();
             }
         }
@@ -434,8 +486,58 @@ pub enum SearchResult {
     Timeout,
     /// The search gave up (e.g. saturated with an incomplete strategy).
     GaveUp,
-    /// The search exceeded resource limits (memory watchdog, clause or term ceiling).
-    ResourceOut,
+    /// The search exceeded a resource limit. The reason travels with the result
+    /// because "hit a limit" and "ran out of memory" call for different
+    /// responses: one is a tuning question, the other decides whether the
+    /// problem is reachable on the target hardware at all.
+    ResourceOut(ResourceReason),
+}
+
+/// Which resource limit stopped the search.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResourceReason {
+    /// The memory watchdog: resident set size reached the configured ceiling.
+    Memory { limit_mb: u64, rss_mb: u64 },
+    /// The term bank exceeded its ceiling.
+    TermBank { limit: usize, len: usize },
+    /// Too many clauses were processed.
+    MaxProcessed { limit: u64, processed: u64 },
+    /// The passive queue exceeded its ceiling.
+    MaxPassive { limit: u64, passive: u64 },
+    /// A limit was reached whose origin was not recorded.
+    Unknown,
+}
+
+impl ResourceReason {
+    /// A stable slug, for telemetry keys and report bucketing.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Memory { .. } => "memory",
+            Self::TermBank { .. } => "term_bank",
+            Self::MaxProcessed { .. } => "max_processed",
+            Self::MaxPassive { .. } => "max_passive",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// One-line explanation, with the numbers that fired it.
+    pub fn describe(self) -> String {
+        match self {
+            Self::Memory { limit_mb, rss_mb } => {
+                format!("memory limit {limit_mb} MB reached (rss {rss_mb} MB)")
+            }
+            Self::TermBank { limit, len } => {
+                format!("term bank limit {limit} reached ({len} interned terms)")
+            }
+            Self::MaxProcessed { limit, processed } => {
+                format!("processed-clause limit {limit} reached ({processed} processed)")
+            }
+            Self::MaxPassive { limit, passive } => {
+                format!("passive-queue limit {limit} reached ({passive} queued)")
+            }
+            Self::Unknown => "resource limit reached (origin unrecorded)".to_string(),
+        }
+    }
 }
 
 /// Policy used by the Limited Resource Strategy (LRS) passive-queue pruner.
@@ -621,6 +723,11 @@ pub struct SearchConfig {
     pub symbol_weight_scheme: SymbolWeightScheme,
     /// Resource containment limits (clause ceilings, term bank ceiling, memory watchdog).
     pub resource_limits: ResourceLimits,
+    /// The CASC wall clock, when simulating it. `casc-sim` searches past this
+    /// point so a resource-bound failure surfaces instead of being recorded as a
+    /// timeout; the search records where it stood here so the two verdicts can
+    /// be told apart afterwards. `None` in every other mode.
+    pub casc_reference_limit: Option<Duration>,
 }
 
 impl SearchConfig {
@@ -716,12 +823,89 @@ impl Default for SearchConfig {
             precedence_scheme: PrecedenceScheme::InvFreq,
             symbol_weight_scheme: SymbolWeightScheme::Uniform,
             resource_limits: ResourceLimits::default(),
+            casc_reference_limit: None,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+
+    // ---- resource-limit reasons ----
+
+    #[test]
+    fn resource_reasons_name_the_limit_that_fired() {
+        // Each reason must be self-describing: a benchmark sweep reads only
+        // `failure_detail`, so it has to be able to tell a memory-bound run from
+        // a clause-bound one without consulting anything else.
+        let cases = [
+            (
+                ResourceReason::Memory {
+                    limit_mb: 131_072,
+                    rss_mb: 131_100,
+                },
+                "memory",
+                "131072",
+            ),
+            (
+                ResourceReason::TermBank {
+                    limit: 4096,
+                    len: 4100,
+                },
+                "term_bank",
+                "4096",
+            ),
+            (
+                ResourceReason::MaxProcessed {
+                    limit: 1000,
+                    processed: 1001,
+                },
+                "max_processed",
+                "1000",
+            ),
+            (
+                ResourceReason::MaxPassive {
+                    limit: 500,
+                    passive: 640,
+                },
+                "max_passive",
+                "500",
+            ),
+        ];
+        for (reason, slug, needle) in cases {
+            assert_eq!(reason.as_str(), slug);
+            let described = reason.describe();
+            assert!(
+                described.contains(needle),
+                "{slug} description must carry its limit: {described}"
+            );
+        }
+        assert_eq!(ResourceReason::Unknown.as_str(), "unknown");
+        assert!(ResourceReason::Unknown.describe().contains("unrecorded"));
+    }
+
+    #[test]
+    fn resource_out_results_compare_by_their_reason() {
+        let memory = SearchResult::ResourceOut(ResourceReason::Memory {
+            limit_mb: 1,
+            rss_mb: 2,
+        });
+        let clauses = SearchResult::ResourceOut(ResourceReason::MaxProcessed {
+            limit: 1,
+            processed: 2,
+        });
+        // `SearchResult` deliberately is not `PartialEq` -- it carries proof
+        // text -- so the payload is inspected rather than compared.
+        assert!(matches!(
+            memory,
+            SearchResult::ResourceOut(ResourceReason::Memory { .. })
+        ));
+        assert!(matches!(
+            clauses,
+            SearchResult::ResourceOut(ResourceReason::MaxProcessed { .. })
+        ));
+    }
+
     use super::*;
 
     #[test]

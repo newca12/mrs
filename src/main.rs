@@ -36,6 +36,11 @@ fn main() {
     let mut ml_log_csv = false;
     let mut ml_weights: Option<String> = None;
     let mut workers: Option<usize> = None;
+    let mut hardware: Option<mrs_search::HardwareMode> = None;
+    // casc-sim only: multiple of the CASC wall clock to keep searching after.
+    // `0` means "until a resource cap", so a memory-bound failure surfaces
+    // instead of reading as a timeout.
+    let mut sim_time_factor: f64 = 2.0;
     let mut auto_schedule = false;
     let mut exact_strategy: Option<usize> = None;
     let mut portfolio: Option<Vec<usize>> = None;
@@ -47,6 +52,12 @@ fn main() {
     let mut profile_json_mode = false;
     let mut goal_transform: Option<mrs_cnf::GoalTransformMode> = None;
     let mut certify_ordered = false;
+    /// What casc-sim does with the wall clock. `Inherit` is every other mode.
+    enum SimBudget {
+        Inherit,
+        Scaled(Duration),
+        UntilResourceCap,
+    }
     // Default 8 MiB: below the smallest output allowance CASC has stated
     // (10MB per system in CASC-23), so a runaway AVATAR certificate cannot
     // get the process killed before the SZS status line is flushed.
@@ -90,6 +101,34 @@ fn main() {
                     process::exit(1);
                 }
                 workers = Some(parsed);
+            }
+            "--hardware" => {
+                let val = args.next().unwrap_or_else(|| {
+                    eprintln!("Usage: mrs [--hardware <adaptive|casc|casc-sim>] <file.p>");
+                    process::exit(1);
+                });
+                hardware = Some(mrs_search::HardwareMode::parse(&val).unwrap_or_else(|| {
+                    eprintln!("Error: --hardware expects adaptive, casc, or casc-sim, got {val:?}");
+                    process::exit(1);
+                }));
+            }
+            "--sim-time-factor" => {
+                let val = args.next().unwrap_or_else(|| {
+                    eprintln!("Usage: mrs --sim-time-factor <mult|0|unbounded>");
+                    process::exit(1);
+                });
+                sim_time_factor = match val.trim().to_ascii_lowercase().as_str() {
+                    "0" | "unbounded" | "none" | "inf" => 0.0,
+                    other => match other.parse::<f64>() {
+                        Ok(f) if f > 0.0 => f,
+                        _ => {
+                            eprintln!(
+                                "Error: --sim-time-factor expects a positive multiplier, or 0/unbounded for no wall-clock limit; got {val:?}"
+                            );
+                            process::exit(1);
+                        }
+                    },
+                };
             }
             "--strategy" => {
                 let val = args.next().unwrap_or_else(|| {
@@ -442,7 +481,143 @@ fn main() {
 
     // SInE is now performed per portfolio strategy in parallel (with threshold tuning),
     // so we do not run a single global pre-filter on LoweredFormulas anymore.
-    let total_budget = Duration::from_secs(time_secs);
+    //
+    // Hardware mode decides the worker count, the memory ceiling and (for
+    // casc-sim) the CPU set. `MRS_HARDWARE` lets the benchmark harness select a
+    // mode for a whole run without rewriting each invocation, and an explicit
+    // `--workers` / `MRS_MAX_MEMORY_MB` still wins for that dimension.
+    let hardware_mode = hardware
+        .or_else(|| {
+            std::env::var("MRS_HARDWARE")
+                .ok()
+                .and_then(|raw| mrs_search::HardwareMode::parse(&raw))
+        })
+        .unwrap_or(mrs_search::HardwareMode::Adaptive);
+    let explicit_memory_mb = std::env::var("MRS_MAX_MEMORY_MB")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok());
+    let hardware_profile = mrs_search::resolve_profile(hardware_mode, workers, explicit_memory_mb);
+
+    // In casc-sim the CASC wall clock stays the reference verdict, and the run is
+    // allowed to continue past it so a memory-bound failure surfaces instead of
+    // being recorded as a timeout. `--sim-time-factor 0` (or `unbounded`) means
+    // "until a resource cap" rather than any multiple of the limit.
+    let casc_limit = Duration::from_secs(time_secs);
+    // Whether the search will run past the CASC wall clock, decided before the
+    // schedule exists.
+    let sim_budget_is_extended =
+        matches!(hardware_mode, mrs_search::HardwareMode::CascSim) && sim_time_factor != 1.0;
+    let sim_budget = if hardware_mode == mrs_search::HardwareMode::CascSim {
+        if sim_time_factor == 0.0 {
+            SimBudget::UntilResourceCap
+        } else {
+            SimBudget::Scaled(Duration::from_secs(
+                (time_secs as f64 * sim_time_factor).ceil() as u64,
+            ))
+        }
+    } else {
+        SimBudget::Inherit
+    };
+    // `SearchConfig::time_limit` is a plain `Duration`, so "no wall-clock limit"
+    // is expressed as a sentinel far beyond any real run. One year cannot be
+    // reached: the memory, term-bank and clause ceilings still apply, which is
+    // the whole point of this mode.
+    const YEAR: Duration = Duration::from_secs(31_536_000);
+    let total_budget = match sim_budget {
+        SimBudget::Inherit => casc_limit,
+        SimBudget::Scaled(limit) => limit,
+        SimBudget::UntilResourceCap => YEAR,
+    };
+
+    for warning in &hardware_profile.warnings {
+        eprintln!("% Hardware warning: {warning}");
+    }
+
+    // casc-sim makes the constraint real rather than nominal. Pinning happens
+    // before any worker thread exists, so every thread inherits the mask.
+    // Both guards are held for the life of `main`; dropping them restores the
+    // inherited limits, which matters because this is a library.
+    let _cpu_pinning = if hardware_mode == mrs_search::HardwareMode::CascSim {
+        match mrs_search::pin_to_physical_cores(mrs_search::CASC_PHYSICAL_CORES) {
+            Ok(pin) => {
+                eprintln!(
+                    "% Hardware: pinned to {} logical CPU(s) across {} physical core(s)",
+                    pin.cpus().len(),
+                    mrs_search::CASC_PHYSICAL_CORES
+                );
+                Some(pin)
+            }
+            Err(reason) => {
+                eprintln!(
+                    "% Hardware warning: casc-sim could not pin to {} physical cores ({reason}); \
+                     the run is not CPU-constrained",
+                    mrs_search::CASC_PHYSICAL_CORES
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let _address_space_limit = if hardware_mode == mrs_search::HardwareMode::CascSim {
+        let address_space_budget_mb = hardware_profile
+            .memory_budget_mb
+            .unwrap_or(mrs_search::CASC_MEMORY_MB);
+        match mrs_search::limit_address_space_mb(address_space_budget_mb) {
+            Ok(limit) => {
+                let applied = limit.applied_mb();
+                if applied == u64::MAX {
+                    eprintln!(
+                        "% Hardware warning: no address-space ceiling could be applied; the \
+                         inherited limit is unlimited, so only the RSS watchdog bounds memory"
+                    );
+                } else if applied < address_space_budget_mb {
+                    eprintln!(
+                        "% Hardware warning: address-space ceiling clamped to {applied} MB by the \
+                         inherited hard limit, below the requested {address_space_budget_mb} MB allowance"
+                    );
+                }
+                Some(limit)
+            }
+            Err(reason) => {
+                eprintln!(
+                    "% Hardware warning: casc-sim could not set an address-space ceiling \
+                     ({reason}); only the RSS watchdog applies"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let mut sim_budget_note = match sim_budget {
+        SimBudget::Inherit => String::new(),
+        SimBudget::Scaled(limit) => {
+            format!(
+                " casc_limit_s={} sim_limit_s={}",
+                casc_limit.as_secs(),
+                limit.as_secs()
+            )
+        }
+        SimBudget::UntilResourceCap => {
+            format!(
+                " casc_limit_s={} sim_limit_s=unbounded",
+                casc_limit.as_secs()
+            )
+        }
+    };
+    if let Some(pin) = _cpu_pinning.as_ref() {
+        sim_budget_note.push_str(&format!(" pinned_cpus={}", pin.cpus().len()));
+    }
+    if let Some(limit) = _address_space_limit.as_ref()
+        && limit.applied_mb() != u64::MAX
+    {
+        sim_budget_note.push_str(&format!(" address_space_mb={}", limit.applied_mb()));
+    }
+    info!(
+        "% Hardware: {}{sim_budget_note}",
+        hardware_profile.describe()
+    );
 
     // Display input summary
     let cnf_count = lowered.cnf_clauses.len();
@@ -725,14 +900,20 @@ fn main() {
             None,
         )
     } else {
-        // Default to one worker per physical core, bounded by what the
-        // available memory can support: every worker holds its own term
-        // bank and indexes, so one-per-core is the wrong default on a small
-        // host.
-        let actual_workers =
-            workers.unwrap_or_else(|| mrs_search::default_worker_count(num_cpus::get_physical()));
-        if certify_ordered && (actual_workers != 1 || exact_strategy.is_none()) {
-            eprintln!("Error: --certify-ordered requires --workers 1 and --strategy N");
+        // One worker per usable physical core by default, bounded by what memory
+        // can support; `--hardware casc`/`casc-sim` pin it to the CASC count
+        // instead. An explicit `--workers` already won inside the profile.
+        let actual_workers = hardware_profile.workers;
+        // `--certify-ordered` still needs `--strategy N`, because the certified
+        // fragment commits to one ordering. It no longer needs a single worker:
+        // the ordered-resolution closure is a wave-structured saturation whose
+        // positions have provably fixed partner sets, so it fans out across
+        // workers and reproduces the sequential scan exactly. That fan-out is
+        // where the certified fragment spends its time — on the 2026-09-26
+        // `casc-30/EPS` run every refusal was a closure timeout, not a grounding
+        // or SAT limit.
+        if certify_ordered && exact_strategy.is_none() {
+            eprintln!("Error: --certify-ordered requires --strategy N");
             process::exit(1);
         }
         let (search_workers, cert_oversubscribed) = if self_check && cert_reserve_worker {
@@ -807,6 +988,21 @@ fn main() {
         if let Some(gt) = goal_transform {
             for (config, _) in &mut schedule.strategies {
                 config.goal_transformation = Some(gt);
+            }
+        }
+        // The resolved memory ceiling, applied to every strategy. Without this
+        // the watchdog would keep using `ResourceLimits::default()`, which reads
+        // the ambient policy and so ignores the mode entirely.
+        if let Some(limit_mb) = hardware_profile.memory_budget_mb {
+            for (config, _) in &mut schedule.strategies {
+                config.resource_limits.max_memory_mb = Some(limit_mb);
+            }
+        }
+        // Only casc-sim searches past the CASC wall clock, so only casc-sim needs
+        // the reference limit recorded inside the search.
+        if sim_budget_is_extended {
+            for (config, _) in &mut schedule.strategies {
+                config.casc_reference_limit = Some(casc_limit);
             }
         }
         if certify_ordered {
@@ -909,7 +1105,7 @@ fn main() {
             }
             SearchResult::Timeout => SzsStatus::Timeout,
             SearchResult::GaveUp => SzsStatus::GaveUp,
-            SearchResult::ResourceOut => SzsStatus::ResourceOut,
+            SearchResult::ResourceOut(_) => SzsStatus::ResourceOut,
         };
 
         (result, status, schedule_report, cert_telemetry)
@@ -1159,6 +1355,14 @@ fn print_statistics(
     println!("% ------------------------------");
     println!("% Version: mrs {}", env!("CARGO_PKG_VERSION"));
     println!("% Termination reason: {}", termination_reason);
+    // Say *which* limit fired, and with what numbers. A run that stops on the
+    // memory watchdog is a statement about the hardware; one that stops on the
+    // clause ceiling is a statement about the search, and the two need different
+    // responses. Reporting a bare "ResourceOut" makes them indistinguishable in
+    // a benchmark sweep.
+    if let mrs_search::SearchResult::ResourceOut(reason) = final_result {
+        println!("% Resource limit: {}", reason.describe());
+    }
     println!("% Time elapsed: {:.3} s", elapsed.as_secs_f64());
     if proof_bytes > 0 {
         println!(
@@ -1231,11 +1435,22 @@ fn print_statistics(
             SearchResult::Saturated(_) => "Saturation",
             SearchResult::GaveUp => "GaveUp",
             SearchResult::Timeout => "Timeout",
-            SearchResult::ResourceOut => "ResourceOut",
+            SearchResult::ResourceOut(_) => "ResourceOut",
         }
     };
 
     let mut detail_str = report.telemetry_detail(search_result_name);
+    // Which limit fired goes in the detail line, which is what the benchmark
+    // harness reads as `failure_detail` and grades. A bare `ResourceOut` makes
+    // a memory-bound run indistinguishable from one that hit the clause ceiling,
+    // and only the first one says anything about the hardware.
+    if let mrs_search::SearchResult::ResourceOut(reason) = final_result {
+        detail_str = format!(
+            "{detail_str} resource_reason={} resource_detail=\"{}\"",
+            reason.as_str(),
+            reason.describe()
+        );
+    }
     if proof_bytes > 0 {
         detail_str = format!(
             "{detail_str} proof_nodes={proof_nodes} proof_bytes={proof_bytes} proof_emitted={}",
