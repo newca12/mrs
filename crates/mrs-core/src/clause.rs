@@ -480,15 +480,20 @@ impl ClauseIdGen {
         ClauseId(self.next.fetch_add(1, Ordering::Relaxed))
     }
 
-    /// Ensures this generator never returns an ID below `floor`.
+    /// Reserves all IDs through `floor` so future calls return IDs above it.
     ///
     /// Derived clauses must not reuse the IDs of clauses that already exist:
     /// anything that maps a clause ID back to a position would then resolve a
     /// lookup to the wrong clause instead of reporting a miss. O(1), and safe
     /// to call from several threads holding clones.
-    pub fn reserve_at_least(&mut self, floor: ClauseId) {
-        let wanted = floor.0.saturating_add(1);
+    /// Returns `false` when `floor` is the largest representable clause ID and
+    /// there is no fresh ID available above it.
+    pub fn reserve_at_least(&mut self, floor: ClauseId) -> bool {
+        let Some(wanted) = floor.0.checked_add(1) else {
+            return false;
+        };
         self.next.fetch_max(wanted, Ordering::Relaxed);
+        true
     }
 }
 
@@ -510,6 +515,17 @@ mod tests {
         );
         assert!(c.is_empty());
         assert_eq!(c.len(), 0);
+    }
+
+    #[test]
+    fn reserve_at_least_advances_shared_generators_and_refuses_overflow() {
+        let mut generator = ClauseIdGen::new();
+        assert!(generator.reserve_at_least(ClauseId(42)));
+        let mut clone = generator.clone();
+        assert_eq!(generator.next(), ClauseId(43));
+        assert_eq!(clone.next(), ClauseId(44));
+
+        assert!(!generator.reserve_at_least(ClauseId(u64::MAX)));
     }
 
     #[test]

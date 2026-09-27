@@ -1366,15 +1366,9 @@ fn closure_linear(
     id_gen: &mut ClauseIdGen,
     deadline: Instant,
 ) -> Result<Closure, CertificationFailure> {
-    // See `closure_indexed_with_budget`: derived IDs must not reuse the
-    // input's, so a stored (id, clause) pair can never be read back as the
-    // wrong clause.
-    if let Some(highest) = input.iter().map(|clause| clause.id).max() {
-        id_gen.reserve_at_least(highest);
-    }
-
     let mut clauses = Vec::new();
     let mut seen = HashSet::default();
+    let mut highest_input_id = None;
     for clause in input {
         // The input normalization pass is linear but unbounded in the input
         // size, so it honors the same deadline as the pair loop below.
@@ -1387,6 +1381,8 @@ fn closure_linear(
                 "certification time limit exceeded",
             ));
         }
+        highest_input_id =
+            Some(highest_input_id.map_or(clause.id, |highest: ClauseId| highest.max(clause.id)));
         let Some(normalized) = normalize_clause(clause.clone()) else {
             continue;
         };
@@ -1403,6 +1399,11 @@ fn closure_linear(
             clauses.push(normalized);
         }
     }
+    if let Some(highest) = highest_input_id
+        && !id_gen.reserve_at_least(highest)
+    {
+        return Err(CertificationFailure::Limit("clause ID space exhausted"));
+    }
 
     // Pin down the exact pair-generation semantics for the optimizations
     // below: pairs are (current, previous) with previous_index < index, the
@@ -1410,8 +1411,8 @@ fn closure_linear(
     // mid-iteration are appended but never revisited within the same outer
     // iteration. Borrowing `previous` instead of cloning it, hoisting the
     // current selection out of the inner loop, and checking the deadline
-    // once per outer iteration preserve this order exactly while removing
-    // one full clause clone per pair.
+    // at bounded pair batches preserve this order exactly while removing one
+    // full clause clone per pair.
     let mut inferences = 0;
     let mut index = 0;
     while index < clauses.len() {
@@ -1453,17 +1454,23 @@ fn closure_linear(
                 } else {
                     all_literal_indices(previous)
                 };
-                let _ = resolve_ground_pair_with(
+                let result = resolve_ground_pair_with(
                     &current,
                     previous,
                     &current_selection,
                     &previous_selection,
                     id_gen,
+                    deadline,
                     |derived| {
                         derived_batch.push(derived);
                         ControlFlow::Continue(())
                     },
                 );
+                if result.is_break() && Instant::now() >= deadline {
+                    return Err(CertificationFailure::Limit(
+                        "certification time limit exceeded",
+                    ));
+                }
                 derived_batch
             };
             for derived in derived_batch {
@@ -1577,10 +1584,6 @@ fn closure_indexed_with_budget(
     // enforcing it, so enforce it here instead. Comparing the ordered run
     // against the reference cannot catch this either: both production closures
     // are this function, and neither is checked against a fixpoint.
-    if let Some(highest) = input.iter().map(|clause| clause.id).max() {
-        id_gen.reserve_at_least(highest);
-    }
-
     let mut bank = TermBank::new();
     let mut index = LiteralIndex::new();
     let mut id_to_pos: StdHashMap<ClauseId, usize> = StdHashMap::new();
@@ -1591,6 +1594,7 @@ fn closure_indexed_with_budget(
     let mut eq_index: StdHashMap<(Atom, bool), Vec<usize>> = StdHashMap::new();
     let mut clauses = Vec::new();
     let mut seen = HashSet::default();
+    let mut highest_input_id = None;
     for clause in input {
         // The input normalization pass is linear but unbounded in the input
         // size, so it honors the same deadline as the pair loop below.
@@ -1603,6 +1607,8 @@ fn closure_indexed_with_budget(
                 "certification time limit exceeded",
             ));
         }
+        highest_input_id =
+            Some(highest_input_id.map_or(clause.id, |highest: ClauseId| highest.max(clause.id)));
         let Some(normalized) = normalize_clause(clause.clone()) else {
             continue;
         };
@@ -1629,6 +1635,11 @@ fn closure_indexed_with_budget(
             }
             clauses.push(normalized);
         }
+    }
+    if let Some(highest) = highest_input_id
+        && !id_gen.reserve_at_least(highest)
+    {
+        return Err(CertificationFailure::Limit("clause ID space exhausted"));
     }
 
     let mut inferences = 0u64;
@@ -1938,6 +1949,7 @@ fn closure_wave_range(
                 &current_selection,
                 &previous_selection,
                 id_gen,
+                deadline,
                 |candidate| {
                     inferences += 1;
                     if remaining_inferences
@@ -2013,10 +2025,18 @@ fn resolve_ground_pair_with(
     left_selection: &[usize],
     right_selection: &[usize],
     id_gen: &mut ClauseIdGen,
+    deadline: Instant,
     mut visit: impl FnMut(Clause) -> ControlFlow<()>,
 ) -> ControlFlow<()> {
+    let mut pairs_examined = 0usize;
     for &left_index in left_selection {
         for &right_index in right_selection {
+            pairs_examined += 1;
+            // Amortize clock reads while bounding deadline overrun even when
+            // the literal selections have no complementary atom in common.
+            if pairs_examined.is_multiple_of(256) && Instant::now() >= deadline {
+                return ControlFlow::Break(());
+            }
             let left_literal = &left.literals[left_index];
             let right_literal = &right.literals[right_index];
             if left_literal.positive == right_literal.positive
