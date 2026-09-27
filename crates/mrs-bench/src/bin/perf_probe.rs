@@ -10,9 +10,9 @@
 //! "50k clauses/second" while having done completely different amounts of work.
 //!
 //! This probe removes the clock from the work. Every run is stopped by
-//! `resource_limits.max_processed`, an iteration-counted ceiling, and LRS is
-//! switched to `LrsPolicy::FixedIterations` so passive-queue pruning is also
-//! iteration-counted. The only remaining wall-clock dependency is the deadline
+//! `resource_limits.max_processed`, a clause-counted ceiling, and LRS is
+//! switched to `LrsPolicy::FixedIterations` with a matching per-strategy budget
+//! so passive-queue pruning is also iteration-counted. The only remaining wall-clock dependency is the deadline
 //! check, and the deadline is set far beyond any plausible run so it never
 //! fires. The counters (`iterations`, `processed`, `generated`,
 //! `fwd_subsumed`, `lrs_discarded`) are therefore identical on every machine
@@ -260,8 +260,9 @@ impl Spec {
     }
 }
 
-/// Version of the generator's output contract. Part of every workload id.
-const WORKLOAD_VERSION: u32 = 1;
+/// Version of the generator and deterministic search-environment contract.
+/// Part of every workload id; bump it when either changes the measured work.
+const WORKLOAD_VERSION: u32 = 2;
 
 fn short_digest(bytes: &[u8]) -> String {
     Sha256::digest(bytes)[..4]
@@ -831,6 +832,30 @@ fn measure(args: &MeasureArgs) -> Row {
     // process, so nothing else can observe the environment concurrently.
     unsafe {
         std::env::set_var("MRS_MAX_MEMORY_MB", args.mem_budget_mb.to_string());
+        std::env::set_var("MRS_SHARED_POOL_INTERVAL", "0");
+        for name in [
+            "MRS_NO_LRS",
+            "MRS_LRS_POLICY",
+            "MRS_ORDERED",
+            "MRS_NO_BCE",
+            "MRS_NO_PLE",
+            "MRS_NO_INSTGEN",
+            "MRS_NO_SINGLE_NEG",
+            "MRS_INSTGEN_TIMEOUT_MS",
+            "MRS_INSTGEN_MAX_ROUNDS",
+            "MRS_INSTGEN_MAX_INSTANCES",
+            "TRACE_SEARCH",
+            "TRACE_LRS",
+            "TRACE_PROGRESS",
+            "TRACE_AVATAR",
+            "TRACE_CERTIFY",
+            "TRACE_INSTGEN",
+            "TRACE_BCE",
+            "TRACE_CWA",
+            "TRACE_CWA_POLARITY",
+        ] {
+            std::env::remove_var(name);
+        }
     }
 
     let host = HostInfo::detect();
@@ -1351,47 +1376,63 @@ fn render_report(current: &[Row], bank: &[Row], command: &str) -> String {
                     .filter(|row| row.workload == workload && row.target_cpu == target_cpu)
                     .map(|row| row.workers),
             ) {
-                // Only rows that did the same work may be ranked against each
-                // other, so group by work fingerprint and keep the largest group.
-                let mut best: Vec<&Row> = Vec::new();
+                // The digest is a quick filter, not the comparability contract:
+                // search settings, budgets, and the full counter tuple must all
+                // match before timing rows are ranked.
+                let mut groups: Vec<Vec<&Row>> = Vec::new();
                 for row in bank.iter().filter(|row| {
                     row.complete == 1
                         && row.workload == workload
                         && row.target_cpu == target_cpu
                         && row.workers == workers
                 }) {
-                    match best.first() {
-                        Some(head) if head.work_sha == row.work_sha => best.push(row),
-                        None => best.push(row),
-                        _ => {}
+                    if let Some(group) = groups
+                        .iter_mut()
+                        .find(|group| rows_comparable(group[0], row))
+                    {
+                        group.push(row);
+                    } else {
+                        groups.push(vec![row]);
                     }
                 }
-                if best.len() < 2 {
-                    continue;
-                }
-                best.sort_by(|a, b| {
-                    b.processed_per_s
-                        .partial_cmp(&a.processed_per_s)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-                let fastest = best[0].processed_per_s;
-                let _ = writeln!(out, "**{target_cpu}**, {workers} worker(s):");
-                let _ = writeln!(out);
-                let _ = writeln!(out, "| Date | Host | Processed/s | Relative | Search ms |");
-                let _ = writeln!(out, "|---|---|---:|---:|---:|");
-                for row in &best {
+                for mut group in groups.into_iter().filter(|group| group.len() >= 2) {
+                    group.sort_by(|a, b| {
+                        b.processed_per_s
+                            .partial_cmp(&a.processed_per_s)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    let config = group[0];
+                    let reference_throughput =
+                        group.iter().map(|row| row.processed_per_s).sum::<f64>()
+                            / group.len() as f64;
                     let _ = writeln!(
                         out,
-                        "| {} | `{}` | {:.0} | {:.2}x | {} |",
-                        row.date,
-                        row.host_slug,
-                        row.processed_per_s,
-                        row.processed_per_s / fastest,
-                        row.search_ms,
+                        "**{target_cpu}**, {workers} worker(s), {} / {} / {} / avatar {}, cap {}, LRS {}, work `{}`:",
+                        config.selection,
+                        config.ordering,
+                        config.literals,
+                        config.avatar,
+                        config.processed_cap,
+                        config.lrs_budget,
+                        config.work_sha
                     );
+                    let _ = writeln!(out);
+                    let _ = writeln!(out, "| Date | Host | Processed/s | Relative | Search ms |");
+                    let _ = writeln!(out, "|---|---|---:|---:|---:|");
+                    for row in &group {
+                        let _ = writeln!(
+                            out,
+                            "| {} | `{}` | {:.0} | {:.2}x | {} |",
+                            row.date,
+                            row.host_slug,
+                            row.processed_per_s,
+                            row.processed_per_s / reference_throughput,
+                            row.search_ms,
+                        );
+                    }
+                    let _ = writeln!(out);
+                    ranked_any = true;
                 }
-                let _ = writeln!(out);
-                ranked_any = true;
             }
         }
     }
@@ -1459,6 +1500,32 @@ fn stop_label(row: &Row) -> String {
     } else {
         format!("{} ({})", row.result, row.stop_reason)
     }
+}
+
+/// Whether two completed rows represent the same search experiment and work.
+/// Keep this aligned with the comparability rules in `docs/results/perf/README.md`.
+fn rows_comparable(left: &Row, right: &Row) -> bool {
+    left.workload == right.workload
+        && left.work_sha == right.work_sha
+        && left.iterations == right.iterations
+        && left.processed == right.processed
+        && left.generated == right.generated
+        && left.fwd_subsumed == right.fwd_subsumed
+        && left.lrs_discarded == right.lrs_discarded
+        && left.weight_discarded == right.weight_discarded
+        && left.selection == right.selection
+        && left.ordering == right.ordering
+        && left.literals == right.literals
+        && left.avatar == right.avatar
+        && left.processed_cap == right.processed_cap
+        && left.lrs_budget == right.lrs_budget
+        && left.max_passive == right.max_passive
+        && left.max_terms == right.max_terms
+        && left.mem_budget_mb == right.mem_budget_mb
+        && left.hard_cap == right.hard_cap
+        && left.arch == right.arch
+        && left.target_cpu == right.target_cpu
+        && left.workers == right.workers
 }
 
 /// How this row's timing was obtained, and the spread it carries.
@@ -1565,6 +1632,10 @@ fn main() {
     let mode = argv.first().map(String::as_str).unwrap_or("measure");
     let rest: &[String] = if argv.is_empty() { &argv } else { &argv[1..] };
     let code = match mode {
+        "cores" => {
+            println!("{}", mrs_search::usable_physical_cores().max(1));
+            0
+        }
         "measure" => match parse_measure(rest) {
             Ok(args) => run_measure(&args),
             Err(message) => {
@@ -1738,6 +1809,18 @@ fn parse_measure(argv: &[String]) -> Result<MeasureArgs, String> {
             other => return Err(format!("unknown option: {other}\n\n{USAGE}")),
         }
         index += 1;
+    }
+    if args.spec.width < 2 {
+        return Err("--width must be at least 2".to_string());
+    }
+    if args.spec.consts == 0 {
+        return Err("--consts must be positive".to_string());
+    }
+    if args.spec.preds == 0 {
+        return Err("--preds must be positive".to_string());
+    }
+    if args.spec.shape.has_functions() {
+        args.spec.funcs = args.spec.funcs.max(2);
     }
     Ok(args)
 }
@@ -2033,11 +2116,10 @@ mod tests {
         assert_eq!(row.complete, 1, "the run did not stop at the ceiling");
         assert_eq!(row.stop_reason, "max_processed");
         assert_eq!(row.result, "ResourceOut");
-        assert!(
-            row.processed >= args.processed_cap,
-            "processed {} is below the requested ceiling {}",
-            row.processed,
-            args.processed_cap
+        assert_eq!(
+            row.processed, args.processed_cap,
+            "processed {} did not equal the requested cap {}",
+            row.processed, args.processed_cap
         );
         assert!(row.processed_per_s > 0.0, "no throughput was measured");
         assert!(row.peak_rss_mb > 0, "peak RSS was not read from VmHWM");
@@ -2057,9 +2139,9 @@ mod tests {
         };
         let row = measure(&args);
         let floor = 2 * args.processed_cap;
-        assert!(
-            row.processed >= floor,
-            "two workers processed {} clauses, expected at least {floor}",
+        assert_eq!(
+            row.processed, floor,
+            "two workers processed {} clauses, expected exactly {floor}",
             row.processed
         );
         assert_eq!(row.workers, 2);
@@ -2144,6 +2226,61 @@ mod tests {
             !report.contains("third-host"),
             "a row with different work was ranked: {report}"
         );
+    }
+
+    #[test]
+    fn rows_comparability_checks_settings_and_budgets() {
+        let base = sample_row();
+        let mut changed = base.clone();
+        changed.mem_budget_mb -= 1;
+        assert!(!rows_comparable(&base, &changed));
+        changed = base.clone();
+        changed.literals = "All".to_string();
+        assert!(!rows_comparable(&base, &changed));
+        changed = base.clone();
+        changed.iterations += 1;
+        assert!(!rows_comparable(&base, &changed));
+        changed = base.clone();
+        changed.arch = "aarch64".to_string();
+        assert!(!rows_comparable(&base, &changed));
+        assert!(rows_comparable(&base, &base));
+    }
+
+    #[test]
+    fn report_does_not_rank_identical_counters_with_different_budget() {
+        let first = sample_row();
+        let mut other_budget = first.clone();
+        other_budget.host_slug = "other-host".to_string();
+        other_budget.mem_budget_mb -= 1;
+        let rows = vec![first, other_budget];
+        let report = render_report(&rows, &rows, "cmd");
+        assert!(
+            !report.contains("| other-host |"),
+            "different memory ceilings were ranked as equivalent: {report}"
+        );
+        assert!(
+            report.contains("No workload has two or more hosts"),
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn parsed_generator_domains_keep_the_prelude_well_formed() {
+        for shape in [Shape::Mixed, Shape::Equational] {
+            let args = parse_measure(&[
+                "--shape".into(),
+                shape.as_str().into(),
+                "--funcs".into(),
+                "0".into(),
+            ])
+            .expect("domain values are raised to the minimum needed for the fixed axioms");
+            let generated = generate(&args.spec);
+            assert!(generated.symbols.len() >= 2);
+            assert!(generated.clauses.len() >= 2);
+        }
+        assert!(parse_measure(&["--width".into(), "1".into()]).is_err());
+        assert!(parse_measure(&["--consts".into(), "0".into()]).is_err());
+        assert!(parse_measure(&["--preds".into(), "0".into()]).is_err());
     }
 
     #[test]

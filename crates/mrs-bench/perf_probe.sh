@@ -7,7 +7,7 @@
 # What it measures, and why it is comparable across machines:
 #
 #   Every search is stopped by an iteration-counted ceiling (max_processed) and
-#   LRS is given a matching logical-iteration budget, so the amount of work is
+#   LRS is given a matching logical-iteration budget per strategy, so the amount of work is
 #   fixed and identical on every host. Only the elapsed time varies. That is
 #   what makes a row from one machine comparable with a row from another; a
 #   "run it for 30 seconds and count clauses" measurement is not, because the
@@ -32,7 +32,7 @@
 #   --clauses N         Generated input clauses (default: 600)
 #   --seed N            Generator seed, decimal or 0x hex
 #   --variants LIST     Comma-separated target-cpu builds (default: native,haswell)
-#   --memory-budget-mb N  Total RAM ceiling for the probe (default: 12288)
+#   --memory-budget-mb N  Process RAM ceiling (default: 12288)
 #   --hard-cap MODE     none | cgroup-memory | rlimit-as | auto (default: auto)
 #   --out-dir DIR       Where to keep the raw JSON rows (default:
 #                       crates/mrs-bench/results/perf/<timestamp>)
@@ -81,7 +81,7 @@ DO_VERIFY=1
 
 # Total RAM the probe is allowed to use across everything it runs. The phases
 # run one at a time, so this is also the per-process ceiling; `MRS_MAX_MEMORY_MB`
-# hands it to the prover's own RSS watchdog. The watchdog is a poller, so a fast
+# hands it to the process-wide RSS watchdog. The watchdog is a poller, so a fast
 # allocation burst can overshoot it slightly; `--hard-cap` adds a kernel-level
 # ceiling when an exact bound matters.
 readonly TOTAL_BUDGET_MB=12288
@@ -102,17 +102,82 @@ die() { printf '[perf] error: %s\n' "$*" >&2; exit 1; }
 
 usage() { sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//; $d'; }
 
-# Physical cores, counting unique (physical id, core id) pairs. `nproc` counts
-# logical CPUs, and SMT siblings add no capacity, so the scaling axis must be
-# built from physical cores.
+# Count process-usable physical cores from the kernel affinity mask and sysfs
+# SMT topology, then cap by any cgroup CPU quota. `nproc` alone counts logical
+# CPUs and ignores topology, so it is only the last-resort fallback.
 physical_cores() {
-    local count
-    count=$(awk -F: '/^physical id/{p=$2} /^core id/{print p":"$2}' /proc/cpuinfo 2>/dev/null | sort -u | wc -l)
-    if [[ "${count}" =~ ^[0-9]+$ ]] && (( count > 0 )); then
-        printf '%s' "${count}"
-    else
-        nproc 2>/dev/null || printf '1'
+    local cpu_list cpu sibling first path count=0 part lo hi quota period quota_cores
+    local sibling_part sibling_cpu sibling_lo sibling_hi
+    declare -A allowed=()
+    declare -A seen=()
+    cpu_list="$(awk '/^Cpus_allowed_list:/{print $2; exit}' /proc/self/status 2>/dev/null || true)"
+    if [[ -n "${cpu_list}" ]]; then
+        local -a parts=()
+        IFS=',' read -r -a parts <<<"${cpu_list}"
+        for part in "${parts[@]}"; do
+            if [[ "${part}" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+                lo="${BASH_REMATCH[1]}"
+                hi="${BASH_REMATCH[2]}"
+                for ((cpu = lo; cpu <= hi; cpu++)); do
+                    allowed["${cpu}"]=1
+                done
+            elif [[ "${part}" =~ ^[0-9]+$ ]]; then
+                allowed["${part}"]=1
+            fi
+        done
     fi
+    for cpu in "${!allowed[@]}"; do
+        path="/sys/devices/system/cpu/cpu${cpu}/topology/thread_siblings_list"
+        if [[ -r "${path}" ]]; then
+            sibling="$(<"${path}")"
+            first=""
+            local -a sibling_parts=()
+            IFS=',' read -r -a sibling_parts <<<"${sibling}"
+            for sibling_part in "${sibling_parts[@]}"; do
+                if [[ "${sibling_part}" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+                    sibling_lo="${BASH_REMATCH[1]}"
+                    sibling_hi="${BASH_REMATCH[2]}"
+                    for ((sibling_cpu = sibling_lo; sibling_cpu <= sibling_hi; sibling_cpu++)); do
+                        if [[ -n "${allowed[${sibling_cpu}]:-}" ]]; then
+                            first="${sibling_cpu}"
+                            break
+                        fi
+                    done
+                elif [[ "${sibling_part}" =~ ^[0-9]+$ ]] \
+                    && [[ -n "${allowed[${sibling_part}]:-}" ]]; then
+                    first="${sibling_part}"
+                fi
+                [[ -n "${first}" ]] && break
+            done
+            [[ -n "${first}" ]] || first="${cpu}"
+        else
+            first="${cpu}"
+        fi
+        if [[ -z "${seen[${first}]:-}" ]]; then
+            seen["${first}"]=1
+            (( count += 1 ))
+        fi
+    done
+    if (( count == 0 )); then
+        count="$(nproc 2>/dev/null || printf '1')"
+    fi
+
+    if [[ -r /sys/fs/cgroup/cpu.max ]]; then
+        read -r quota period < /sys/fs/cgroup/cpu.max
+        if [[ "${quota}" =~ ^[0-9]+$ && "${period:-0}" =~ ^[0-9]+$ ]] && (( period > 0 )); then
+            quota_cores=$(( (quota + period - 1) / period ))
+            (( quota_cores > 0 && quota_cores < count )) && count="${quota_cores}"
+        fi
+    elif [[ -r /sys/fs/cgroup/cpu/cpu.cfs_quota_us && -r /sys/fs/cgroup/cpu/cpu.cfs_period_us ]]; then
+        read -r quota < /sys/fs/cgroup/cpu/cpu.cfs_quota_us
+        read -r period < /sys/fs/cgroup/cpu/cpu.cfs_period_us
+        if [[ "${quota}" =~ ^[0-9]+$ && "${period}" =~ ^[0-9]+$ ]] && (( quota > 0 && period > 0 )); then
+            quota_cores=$(( (quota + period - 1) / period ))
+            (( quota_cores > 0 && quota_cores < count )) && count="${quota_cores}"
+        fi
+    fi
+    (( count > 0 )) || count=1
+    printf '%s' "${count}"
 }
 
 mem_available_mb() {
@@ -162,15 +227,29 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+case "${HARD_CAP}" in
+    auto|none|cgroup-memory|rlimit-as) ;;
+    *) die "--hard-cap must be auto, none, cgroup-memory, or rlimit-as" ;;
+esac
+
+if [[ -n "${MRS_PERF_BINARY:-}" && "${VARIANTS}" == *,* ]]; then
+    die "MRS_PERF_BINARY supplies one build; set --variants to exactly one target-cpu name"
+fi
+
 [[ "${PROCESSED}" =~ ^[0-9]+$ ]] && (( PROCESSED > 0 )) || die "--processed must be a positive integer"
 [[ "${REPEAT}" =~ ^[0-9]+$ ]] && (( REPEAT > 0 )) || die "--repeat must be a positive integer"
 [[ "${MEMORY_BUDGET_MB}" =~ ^[0-9]+$ ]] && (( MEMORY_BUDGET_MB > 0 )) || die "--memory-budget-mb must be a positive integer"
+[[ "${CLAUSES}" =~ ^[0-9]+$ ]] && (( CLAUSES > 0 )) || die "--clauses must be a positive integer"
 (( MEMORY_BUDGET_MB <= TOTAL_BUDGET_MB )) \
     || die "--memory-budget-mb ${MEMORY_BUDGET_MB} exceeds the ${TOTAL_BUDGET_MB} MB (12 GiB) ceiling this probe promises"
 
 CORES="$(physical_cores)"
 if [[ -z "${WORKER_LIST}" ]]; then
-    WORKER_LIST="1,${CORES}"
+    if (( CORES == 1 )); then
+        WORKER_LIST="1"
+    else
+        WORKER_LIST="1,${CORES}"
+    fi
 fi
 
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"

@@ -24,12 +24,15 @@ same work more slowly; it prunes differently and explores a *different* search
 space. Two hosts can both report "50k clauses/second" having done completely
 different amounts of work, and neither number means anything about the other.
 
-This probe removes the clock from the work:
+This probe removes the clock from the work and pins ambient settings that can
+change the search:
 
-- the run is stopped by `resource_limits.max_processed`, an **iteration-counted**
+- each worker is stopped by `resource_limits.max_processed`, a **clause-counted**
   ceiling, not by the clock;
 - LRS runs under `LrsPolicy::FixedIterations` with a budget equal to that
   ceiling, so passive-queue pruning is iteration-counted too;
+- cross-strategy sharing is disabled, and runtime overrides for LRS, ordering,
+  preprocessing, InstGen and tracing are cleared inside the probe;
 - the wall clock remains only as a safety net set far beyond any plausible run,
   so it never fires.
 
@@ -172,10 +175,16 @@ that did identical work.
 Two rows are comparable when all of these match:
 
 - `workload` (the generated clause set, including its seed and shape)
-- `work_sha` (proof that the work was identical)
+- `work_sha` plus the full work-counter tuple (`iterations`, `processed`,
+  `generated`, `fwd_subsumed`, `lrs_discarded`, `weight_discarded`)
 - `search` columns: `selection`, `ordering`, `literals`, `avatar`
 - budget columns: `processed_cap`, `lrs_budget`, `max_passive`, `max_terms`
-- `workers`, and `target_cpu` if the ISA is meant to be held constant
+- `mem_budget_mb`, `hard_cap`, `workers`, and `target_cpu` if the ISA is meant
+  to be held constant
+
+Cross-host rankings are partitioned by every search and resource-budget field,
+not just the short `work_sha`. A matching digest is a quick filter; it does not
+override differences in search settings or resource ceilings.
 
 `commit` is deliberately *not* a comparability requirement: measuring the same
 commit on two machines is exactly the point of this bank. A different commit is

@@ -27,7 +27,9 @@ iteration-counted ceiling rather than a clock, so the timings from two machines
 are comparable; a "run it for 30 seconds and count clauses" measurement is not,
 because the search is wall-clock sensitive. It builds both a `native` and a
 `haswell` binary so ISA effects are separable, and it caps the whole probe at
-12 GiB. See [`docs/results/perf/README.md`](../results/perf/README.md) for the
+12 GiB, divided across workers for the search's RSS watchdog. The driver uses
+the same affinity/cgroup-aware physical-core count as the prover for its default
+worker list. See [`docs/results/perf/README.md`](../results/perf/README.md) for the
 method, the comparability rules, and how to add another host.
 
 ## Prepare the corpus
