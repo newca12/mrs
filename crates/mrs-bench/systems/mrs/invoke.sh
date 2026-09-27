@@ -177,6 +177,11 @@ if [[ "${DIV_LOWER}" == "eps" && "${MRS_EPS_CERTIFY:-1}" != "0" ]]; then
 fi
 
 ARGS=(--time "${SOFT_TIME}" --workers "${MRS_WORKERS:-8}" --schedule "${SCHEDULE}")
+# Hardware profile: casc for a real competition-shaped run, casc-sim to simulate
+# one on a development host, adaptive (the default) to fit whatever this is.
+if [[ -n "${MRS_HARDWARE:-}" ]]; then
+    ARGS+=(--hardware "${MRS_HARDWARE}")
+fi
 if [[ -n "${MRS_PORTFOLIO:-}" ]]; then
     ARGS+=(--portfolio "${MRS_PORTFOLIO}")
 fi

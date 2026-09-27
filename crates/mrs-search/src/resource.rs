@@ -775,4 +775,327 @@ mod tests {
         }
         assert!(host_total_memory_mb().is_some_and(|mb| mb > 0));
     }
+
+    // ---- casc simulation: process constraints ----
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn address_space_ceiling_is_applied_and_restored() {
+        /// Resident+reserved address space this process already occupies, in MB.
+        fn current_address_space_mb() -> Option<u64> {
+            let status = std::fs::read_to_string("/proc/self/status").ok()?;
+            for line in status.lines() {
+                if let Some(rest) = line.strip_prefix("VmSize:") {
+                    return rest
+                        .split_whitespace()
+                        .next()?
+                        .parse::<u64>()
+                        .ok()
+                        .map(|kb| kb / 1024);
+                }
+            }
+            None
+        }
+
+        let Some(current_mb) = current_address_space_mb() else {
+            return; // not Linux, or /proc unavailable: nothing to assert
+        };
+
+        // Room to spare for the harness's own allocations, and a request well
+        // past it. The ceiling is relative to what this process already holds,
+        // so the test needs no large allocation to be meaningful.
+        let headroom_mb = 256;
+        let request_mb = current_mb + headroom_mb;
+        let over_request_mb = request_mb + headroom_mb;
+
+        let inherited = {
+            let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
+            // SAFETY: live rlimit the kernel fills in.
+            assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_AS, &mut limit) }, 0);
+            limit.rlim_cur
+        };
+
+        {
+            let guard =
+                limit_address_space_mb(request_mb).expect("setrlimit(RLIMIT_AS) must be permitted");
+            let applied = guard.applied_mb();
+            assert_ne!(applied, u64::MAX, "the ceiling must actually be in force");
+            assert!(
+                applied <= request_mb,
+                "applied ceiling {applied} MB must not exceed the {request_mb} MB request"
+            );
+            assert!(
+                applied >= current_mb,
+                "a ceiling below current usage would abort the test process: \
+                 applied {applied} MB, current {current_mb} MB"
+            );
+
+            // The mechanism itself: an allocation past the ceiling must fail
+            // rather than succeed and quietly exceed it.
+            let attempt = over_request_mb.saturating_mul(BYTES_PER_MB as u64) as usize;
+            let allocation = std::alloc::Layout::from_size_align(attempt, 1).expect("valid layout");
+            // SAFETY: `allocation` is a valid non-zero-sized layout; the pointer
+            // is only inspected, never read, and the deallocation below is
+            // reached only if the allocation succeeded.
+            let ptr = unsafe { std::alloc::alloc_zeroed(allocation) };
+            assert!(
+                ptr.is_null(),
+                "an allocation of {attempt} bytes must fail under a {applied} MB ceiling"
+            );
+        }
+
+        // Dropped: the inherited limit is back, so the rest of the suite is
+        // unaffected.
+        let mut restored: libc::rlimit = unsafe { std::mem::zeroed() };
+        // SAFETY: live rlimit the kernel fills in.
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_AS, &mut restored) },
+            0
+        );
+        assert_eq!(
+            restored.rlim_cur, inherited,
+            "dropping the guard must restore the inherited address-space limit"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pinning_refuses_rather_than_silently_downgrading() {
+        let available = sibling_groups(&allowed_logical_cpus().unwrap_or_default()).len();
+        // Asking for more cores than exist must fail: a silent smaller set would
+        // make the run look simulated when it is not.
+        let too_many = available + 1;
+        match pin_to_physical_cores(too_many) {
+            Err(reason) => assert!(
+                reason.contains("only"),
+                "the refusal must say what was available: {reason}"
+            ),
+            Ok(_) => panic!("pinning to {too_many} cores should not succeed"),
+        }
+        if available > 0 {
+            let pin = pin_to_physical_cores(1).expect("pinning to one core must work");
+            // One physical core, but both of its SMT siblings.
+            assert!(
+                !pin.cpus().is_empty(),
+                "a pin must name the CPUs it selected"
+            );
+            drop(pin);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pinning_restores_the_previous_mask() {
+        let Some(cpus) = allowed_logical_cpus() else {
+            return;
+        };
+        let before: Vec<usize> = cpus.clone();
+        {
+            let _pin = pin_to_physical_cores(1).expect("pinning to one core must work");
+        }
+        assert_eq!(
+            allowed_logical_cpus(),
+            Some(before),
+            "dropping the pin must restore the affinity mask"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CASC simulation: actually constraining the process
+// ---------------------------------------------------------------------------
+//
+// A simulated mode that only renames the worker count would measure a different
+// machine, not a smaller one. Two things make the constraint real: the CPU set
+// the kernel will schedule us on, and the address space we are allowed to
+// reserve. Both are process-wide and both are restored on drop, so the library
+// behaves for any caller that does not ask for them.
+
+/// An applied CPU affinity restriction. The previous mask is restored on drop.
+#[cfg(target_os = "linux")]
+pub struct CpuPinning {
+    previous: libc::cpu_set_t,
+    size: usize,
+    cpus: Vec<usize>,
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for CpuPinning {
+    fn drop(&mut self) {
+        // SAFETY: `previous` was filled by sched_getaffinity in the constructor
+        // and is only read here; the size matches the type it came from.
+        unsafe {
+            libc::sched_setaffinity(0, self.size, &raw const self.previous);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl CpuPinning {
+    /// The logical CPUs this process was pinned to.
+    pub fn cpus(&self) -> &[usize] {
+        &self.cpus
+    }
+}
+
+/// Restrict this process to `cores` **physical** cores.
+///
+/// Each chosen core contributes all of its SMT siblings, because CASC hardware is
+/// specified in physical cores: pinning 8 logical CPUs of an SMT machine would
+/// be simulating 4 cores, which is the opposite of the intent. If the host has
+/// fewer than `cores` physical cores available this fails rather than silently
+/// pinning a smaller set, because a silent downgrade would make the run look
+/// like a simulation when it is not.
+#[cfg(target_os = "linux")]
+pub fn pin_to_physical_cores(cores: usize) -> Result<CpuPinning, String> {
+    let allowed = allowed_logical_cpus().ok_or("cannot read the CPU affinity mask")?;
+    let groups = sibling_groups(&allowed);
+    if groups.len() < cores {
+        return Err(format!(
+            "cannot simulate {cores} physical cores: only {} available",
+            groups.len()
+        ));
+    }
+    // SAFETY: `cpu_set_t` is a plain integer bitmask, for which all-zero is the
+    // documented empty set.
+    let mut mask: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+    let mut chosen = Vec::new();
+    for group in groups.iter().take(cores) {
+        for &cpu in group {
+            // SAFETY: `cpu` comes from the affinity mask, so it indexes within
+            // the bitmask's width, and `mask` is a live, zeroed cpu_set_t.
+            unsafe { libc::CPU_SET(cpu, &mut mask) };
+            chosen.push(cpu);
+        }
+    }
+    chosen.sort_unstable();
+    let size = std::mem::size_of::<libc::cpu_set_t>();
+    // SAFETY: both masks are live cpu_set_t values and `size` matches them.
+    unsafe {
+        let mut previous: libc::cpu_set_t = std::mem::zeroed();
+        if libc::sched_getaffinity(0, size, &raw mut previous) != 0 {
+            return Err("cannot read the current CPU affinity mask".to_string());
+        }
+        if libc::sched_setaffinity(0, size, &raw const mask) != 0 {
+            return Err("sched_setaffinity was refused".to_string());
+        }
+        Ok(CpuPinning {
+            previous,
+            size,
+            cpus: chosen,
+        })
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn pin_to_physical_cores(_cores: usize) -> Result<(), String> {
+    Err("CPU pinning is only implemented on Linux".to_string())
+}
+
+/// An applied address-space ceiling. The previous limit is restored on drop.
+#[cfg(target_os = "linux")]
+pub struct AddressSpaceLimit {
+    previous: libc::rlimit,
+    applied_mb: u64,
+}
+
+/// The limit actually in force, in MB, which may be below the request if the
+/// inherited hard limit forbids it.
+#[cfg(target_os = "linux")]
+impl AddressSpaceLimit {
+    /// The ceiling actually in force, in MB.
+    pub fn applied_mb(&self) -> u64 {
+        self.applied_mb
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub struct AddressSpaceLimit;
+
+#[cfg(target_os = "linux")]
+impl Drop for AddressSpaceLimit {
+    fn drop(&mut self) {
+        // SAFETY: `previous` was filled by getrlimit in the constructor.
+        unsafe {
+            libc::setrlimit(libc::RLIMIT_AS, &raw const self.previous);
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+impl Drop for AddressSpaceLimit {
+    fn drop(&mut self) {}
+}
+
+const BYTES_PER_MB: u64 = 1024 * 1024;
+
+#[cfg(target_os = "linux")]
+fn bytes_to_mb(bytes: libc::rlim_t) -> u64 {
+    // RLIM_INFINITY is the maximum rlim_t rather than a byte count, and must not
+    // be reported as an absurd number of megabytes.
+    if bytes == libc::rlim_t::MAX {
+        return u64::MAX;
+    }
+    bytes / BYTES_PER_MB
+}
+
+/// Cap the address space at `mb`, the way an external harness would.
+///
+/// This is the backstop under the RSS watchdog. The watchdog samples resident
+/// size at given-clause boundaries and can report `ResourceOut` with a reason;
+/// `RLIMIT_AS` is what actually stops a run whose memory grows faster than the
+/// sampling interval -- the failure mode that currently shows up as an OOM kill
+/// with no SZS line at all. Bounding address space rather than RSS is the
+/// conservative direction, and it is the only per-process limit available
+/// without privileges.
+///
+/// Only the soft limit can be lowered without `CAP_SYS_RESOURCE`, so a request
+/// above the inherited hard limit is clamped and the applied value is reported
+/// rather than assumed.
+#[cfg(target_os = "linux")]
+pub fn limit_address_space_mb(mb: u64) -> Result<AddressSpaceLimit, String> {
+    let want = mb.saturating_mul(BYTES_PER_MB);
+    // SAFETY: `previous` is a live rlimit the kernel fills in.
+    unsafe {
+        let mut previous: libc::rlimit = std::mem::zeroed();
+        if libc::getrlimit(libc::RLIMIT_AS, &raw mut previous) != 0 {
+            return Err("getrlimit(RLIMIT_AS) failed".to_string());
+        }
+        let ceiling = if previous.rlim_max == libc::rlim_t::MAX {
+            want
+        } else {
+            want.min(previous.rlim_max)
+        };
+        // Never raise the soft limit: some of it may already be mapped.
+        let applied = if previous.rlim_cur == libc::rlim_t::MAX {
+            ceiling
+        } else {
+            ceiling.min(previous.rlim_cur)
+        };
+        let next = libc::rlimit {
+            rlim_cur: applied,
+            rlim_max: previous.rlim_max,
+        };
+        if libc::setrlimit(libc::RLIMIT_AS, &raw const next) != 0 {
+            return Err("setrlimit(RLIMIT_AS) was refused".to_string());
+        }
+        // Read the limit back rather than trusting the request: the kernel
+        // clamps silently, and reporting what was asked for would misstate what
+        // is in force.
+        let mut confirmed: libc::rlimit = std::mem::zeroed();
+        let applied_mb = if libc::getrlimit(libc::RLIMIT_AS, &raw mut confirmed) == 0 {
+            bytes_to_mb(confirmed.rlim_cur)
+        } else {
+            bytes_to_mb(applied)
+        };
+        Ok(AddressSpaceLimit {
+            previous,
+            applied_mb,
+        })
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn limit_address_space_mb(_mb: u64) -> Result<AddressSpaceLimit, String> {
+    Ok(AddressSpaceLimit)
 }

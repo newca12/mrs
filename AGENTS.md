@@ -129,7 +129,9 @@ nix develop -c cargo run --release -- --list-schedules
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--time <seconds>` | `30` | Wall-clock time limit |
-| `--workers <N>` | physical cores | Max parallel search threads. **Reproducibility note:** with `N>1` (the default), strategies run concurrently and may share a pool of derived unit equalities when `MRS_SHARED_POOL_INTERVAL` is positive; sharing is disabled by default (see "Architecture notes" below). With sharing enabled, per-run telemetry (`processed`/`generated`/`lrs_discarded`) and even the pass/fail outcome on borderline problems are not bit-reproducible — sibling-thread timing and CPU contention both feed into the wall-clock-sensitive LRS pruning heuristic. Use `--workers 1` for a fully deterministic, sequential single-strategy run (no clause-pool cross-talk, no contention) when diagnosing or reproducing a specific strategy's behavior. |
+| `--hardware <mode>` | `adaptive` | Hardware profile: `casc` (8 workers, 128 GB, never auto-adapted), `casc-sim` (that plus a CPU pin to 8 physical cores, an `RLIMIT_AS` ceiling, and a wall clock extended past the CASC limit), or `adaptive` (fit the host). `MRS_HARDWARE` sets it for a whole harness run. See §11 for what each is for and what its numbers mean. |
+| `--sim-time-factor <mult\|0\|unbounded>` | `2` | casc-sim only: multiple of the CASC wall clock to keep searching after, or `0`/`unbounded` to drop the wall clock and let the resource ceilings decide. The run records where it stood at the CASC limit either way. |
+| `--workers <N>` | per hardware mode | Max parallel search threads. Overrides the mode, so `casc --workers 2` really runs 2 workers. **Reproducibility note:** with `N>1` (the default), strategies run concurrently and may share a pool of derived unit equalities when `MRS_SHARED_POOL_INTERVAL` is positive; sharing is disabled by default (see "Architecture notes" below). With sharing enabled, per-run telemetry (`processed`/`generated`/`lrs_discarded`) and even the pass/fail outcome on borderline problems are not bit-reproducible — sibling-thread timing and CPU contention both feed into the wall-clock-sensitive LRS pruning heuristic. Use `--workers 1` for a fully deterministic, sequential single-strategy run (no clause-pool cross-talk, no contention) when diagnosing or reproducing a specific strategy's behavior. |
 | `--strategy <N>` | — | Run exact base strategy `N` (1–15) from the selected CASC division schedule for the full budget; diagnostic solo coverage only. |
 | `--portfolio <IDs>` | — | Run an explicit cooperative portfolio, e.g. `11,12,1,6,10,8,14,4`; one ID is required per worker. Set `MRS_SHARED_POOL_INTERVAL` to a positive value to enable shared equality exchange. |
 | `--schedule <name>` | `casc` | Strategy schedule; see registry below |
@@ -229,6 +231,42 @@ The root `Cargo.toml` is both `[workspace]` and `[package]` — valid but unusua
 with a wall-clock time limit (240 s for FEQ/FNE/UEQ, 120 s for EPS/EPU) on a
 machine with 8 physical cores. All portfolio design, strategy selection, and
 time-budget arithmetic **must treat 8 as the canonical core count**.
+
+### Canonical hardware, and the modes that reproduce it
+
+| | CASC entry | `--hardware casc` | `--hardware casc-sim` | `--hardware adaptive` (default) |
+|---|---|---|---|---|
+| workers | 8 | **8**, never auto-adapted | **8** | one per usable physical core, bounded by memory |
+| memory allowance | 128 GB | **128 GB** | **128 GB**, plus `RLIMIT_AS` | 80 % of currently available RAM, cgroup-aware |
+| CPU set | 8 physical cores | unrestricted | **pinned to 8 physical cores** (all SMT siblings of each) | unrestricted |
+| wall clock | the per-division limit | the per-division limit | the limit, then **2× longer** (`--sim-time-factor`, `0` = until a resource cap) | the caller's `--time` |
+
+- **`casc` is the honest setting for any number meant to be compared against
+  CASC results.** It never grows to the host, so a 64-core box cannot quietly
+  hand a schedule tuned for 8 cores sixteen workers. On a host with fewer than 8
+  usable physical cores it warns and continues, and says so on the `% Hardware:`
+  line, which every run prints.
+- **`casc-sim` is for developing away from the competition machine.** It makes
+  the constraint real rather than nominal: the process is pinned, its address
+  space is capped, and it keeps searching past the CASC wall clock so a
+  memory-bound failure surfaces instead of being recorded as a timeout. Each run
+  reports where it stood when it crossed the CASC limit
+  (`casc_limit_passed_ms=… state_at_casc_limit=…`), which is what separates "would
+  have timed out at CASC" from "got past the CASC limit and then ran out of
+  memory". Concurrent jobs all pin to the same 8 cores, so `--jobs N` behaves like
+  N problems sharing one CASC machine — which is what the W8J2 runs did.
+- **`adaptive` is for development and for benchmarking on a large box**, where
+  the only question is whether a problem can be solved at all. It is not a CASC
+  number and must never be reported as one.
+
+Physical cores, not logical CPUs, throughout: SMT siblings add no capacity, so
+pinning 8 logical CPUs would be simulating 4 cores. `casc` and `casc-sim` also
+report `effective_mem_mb` and warn when the host has less RAM than the allowance,
+because a limit above what the box can supply is not a limit.
+
+A run that stops on a resource ceiling says which one — memory, term bank,
+processed clauses or passive queue — in `% Resource limit:` and in the
+`resource_reason=` field of the `% SZS detail` line the harness grades.
 
 ### Goal
 

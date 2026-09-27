@@ -587,7 +587,11 @@ fn collect_filter_symbols(term: &Term, syms: &mut HashSet<SymbolId>) {
 /// a failure of the subset attempt itself (limits, mismatch — likewise
 /// only rules out this subset).
 enum Tier3Try {
-    Refuted(CertifiedGroundReport),
+    // Boxed: `CertifiedGroundReport` embeds a `SearchResult`, which carries the
+    // proof text and the resource reason, so inlining it here made the enum
+    // several times the size of its other variants. This path only runs when
+    // tier 3 is being tried, so the allocation is not on a hot path.
+    Refuted(Box<CertifiedGroundReport>),
     Saturated,
     Failed,
 }
@@ -619,7 +623,7 @@ fn tier3_try_grounded(
             proof_symbols,
             expanded_inputs.clauses.len() as u64,
         );
-        return Tier3Try::Refuted(report);
+        return Tier3Try::Refuted(Box::new(report));
     }
     match run_tier1(
         &expanded_inputs,
@@ -631,7 +635,7 @@ fn tier3_try_grounded(
         context,
     ) {
         Ok(report) if matches!(report.result, SearchResult::Refutation(..)) => {
-            Tier3Try::Refuted(report)
+            Tier3Try::Refuted(Box::new(report))
         }
         Ok(_) => Tier3Try::Saturated,
         Err(_) => Tier3Try::Failed,
@@ -735,7 +739,8 @@ fn tier3_subset_unsat(
             deadline,
             "tier3b-sub",
         ) {
-            Tier3Try::Refuted(mut report) => {
+            Tier3Try::Refuted(boxed) => {
+                let mut report = *boxed;
                 trace_certify(format!(
                     "tier3b_found tolerance={tolerance} kept={}",
                     filtered.len()
@@ -852,7 +857,7 @@ fn tier3_subset_unsat(
         };
         // Subset saturation proves nothing about the full problem, and
         // subset failures (limits, mismatch) only rule out this subset.
-        if let Tier3Try::Refuted(mut report) = tier3_try_grounded(
+        if let Tier3Try::Refuted(boxed) = tier3_try_grounded(
             subset_grounded,
             provenance,
             ordering,
@@ -865,6 +870,7 @@ fn tier3_subset_unsat(
                 "tier3_found subset_size={} tries={tries}",
                 subset.len()
             ));
+            let mut report = *boxed;
             report.tier = CertifiedTier::Three;
             return Ok(report);
         }

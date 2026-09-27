@@ -503,6 +503,10 @@ fn main() {
     // being recorded as a timeout. `--sim-time-factor 0` (or `unbounded`) means
     // "until a resource cap" rather than any multiple of the limit.
     let casc_limit = Duration::from_secs(time_secs);
+    // Whether the search will run past the CASC wall clock, decided before the
+    // schedule exists.
+    let sim_budget_is_extended =
+        matches!(hardware_mode, mrs_search::HardwareMode::CascSim) && sim_time_factor != 1.0;
     let sim_budget = if hardware_mode == mrs_search::HardwareMode::CascSim {
         if sim_time_factor == 0.0 {
             SimBudget::UntilResourceCap
@@ -528,7 +532,63 @@ fn main() {
     for warning in &hardware_profile.warnings {
         eprintln!("% Hardware warning: {warning}");
     }
-    let sim_budget_note = match sim_budget {
+
+    // casc-sim makes the constraint real rather than nominal. Pinning happens
+    // before any worker thread exists, so every thread inherits the mask.
+    // Both guards are held for the life of `main`; dropping them restores the
+    // inherited limits, which matters because this is a library.
+    let _cpu_pinning = if hardware_mode == mrs_search::HardwareMode::CascSim {
+        match mrs_search::pin_to_physical_cores(mrs_search::CASC_PHYSICAL_CORES) {
+            Ok(pin) => {
+                eprintln!(
+                    "% Hardware: pinned to {} logical CPU(s) across {} physical core(s)",
+                    pin.cpus().len(),
+                    mrs_search::CASC_PHYSICAL_CORES
+                );
+                Some(pin)
+            }
+            Err(reason) => {
+                eprintln!(
+                    "% Hardware warning: casc-sim could not pin to {} physical cores ({reason}); \
+                     the run is not CPU-constrained",
+                    mrs_search::CASC_PHYSICAL_CORES
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let _address_space_limit = if hardware_mode == mrs_search::HardwareMode::CascSim {
+        match mrs_search::limit_address_space_mb(mrs_search::CASC_MEMORY_MB) {
+            Ok(limit) => {
+                let applied = limit.applied_mb();
+                if applied == u64::MAX {
+                    eprintln!(
+                        "% Hardware warning: no address-space ceiling could be applied; the \
+                         inherited limit is unlimited, so only the RSS watchdog bounds memory"
+                    );
+                } else if applied < mrs_search::CASC_MEMORY_MB {
+                    eprintln!(
+                        "% Hardware warning: address-space ceiling clamped to {applied} MB by the \
+                         inherited hard limit, below the {} MB CASC allowance",
+                        mrs_search::CASC_MEMORY_MB
+                    );
+                }
+                Some(limit)
+            }
+            Err(reason) => {
+                eprintln!(
+                    "% Hardware warning: casc-sim could not set an address-space ceiling \
+                     ({reason}); only the RSS watchdog applies"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let mut sim_budget_note = match sim_budget {
         SimBudget::Inherit => String::new(),
         SimBudget::Scaled(limit) => {
             format!(
@@ -544,6 +604,14 @@ fn main() {
             )
         }
     };
+    if let Some(pin) = _cpu_pinning.as_ref() {
+        sim_budget_note.push_str(&format!(" pinned_cpus={}", pin.cpus().len()));
+    }
+    if let Some(limit) = _address_space_limit.as_ref()
+        && limit.applied_mb() != u64::MAX
+    {
+        sim_budget_note.push_str(&format!(" address_space_mb={}", limit.applied_mb()));
+    }
     info!(
         "% Hardware: {}{sim_budget_note}",
         hardware_profile.describe()
@@ -918,6 +986,13 @@ fn main() {
         if let Some(limit_mb) = hardware_profile.memory_budget_mb {
             for (config, _) in &mut schedule.strategies {
                 config.resource_limits.max_memory_mb = Some(limit_mb);
+            }
+        }
+        // Only casc-sim searches past the CASC wall clock, so only casc-sim needs
+        // the reference limit recorded inside the search.
+        if sim_budget_is_extended {
+            for (config, _) in &mut schedule.strategies {
+                config.casc_reference_limit = Some(casc_limit);
             }
         }
         if certify_ordered {

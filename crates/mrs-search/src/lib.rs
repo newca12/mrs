@@ -66,8 +66,9 @@ pub use mrs_calculus::ordering::TermOrdering;
 pub use mrs_cnf::goal_transform::GoalTransformMode;
 pub use preprocessing::{PreprocessingConfig, PreprocessingStats, preprocess_clauses};
 pub use resource::{
-    CASC_MEMORY_MB, CASC_PHYSICAL_CORES, HardwareMode, HardwareProfile, RAM_PER_WORKER_MB,
-    ResourceLimits, current_memory_mb, default_worker_count, memory_budget_mb, resolve_profile,
+    AddressSpaceLimit, CASC_MEMORY_MB, CASC_PHYSICAL_CORES, CpuPinning, HardwareMode,
+    HardwareProfile, RAM_PER_WORKER_MB, ResourceLimits, current_memory_mb, default_worker_count,
+    limit_address_space_mb, memory_budget_mb, pin_to_physical_cores, resolve_profile,
     usable_physical_cores,
 };
 pub use select::{QueueType, SelectionStrategy};
@@ -100,6 +101,22 @@ pub struct SearchStats {
     pub shared_published: u64,
     /// Shared unit-equality chains imported by this strategy.
     pub shared_imported: u64,
+    /// Where the run stood when it crossed the CASC reference wall clock.
+    /// Recorded only in `casc-sim`, which searches past that point on purpose:
+    /// without it a later resource stop and a plain timeout are indistinguishable
+    /// in the report, and only one of them says anything about the hardware.
+    pub casc_limit_state: Option<CascLimitState>,
+}
+
+/// Where a run stood when it passed the CASC reference wall clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CascLimitState {
+    /// Milliseconds since the search started.
+    pub elapsed_ms: u64,
+    pub iterations: u64,
+    pub processed: u64,
+    pub generated: u64,
+    pub passive: u64,
 }
 
 /// Summary for one strategy in the portfolio run.
@@ -225,6 +242,22 @@ impl ScheduleReport {
             if let Some(reason) = ig.fallback_reason {
                 detail.push_str(&format!(" instgen_fallback={}", reason));
             }
+        }
+
+        if let Some(state) = self
+            .strategies
+            .iter()
+            .filter_map(|s| s.stats.casc_limit_state)
+            .min_by_key(|state| state.elapsed_ms)
+        {
+            detail.push_str(&format!(
+                " casc_limit_passed_ms={} state_at_casc_limit=iterations:{},processed:{},generated:{},passive:{}",
+                state.elapsed_ms,
+                state.iterations,
+                state.processed,
+                state.generated,
+                state.passive
+            ));
         }
 
         if let Some(tier) = &self.cert_tier {
@@ -690,6 +723,11 @@ pub struct SearchConfig {
     pub symbol_weight_scheme: SymbolWeightScheme,
     /// Resource containment limits (clause ceilings, term bank ceiling, memory watchdog).
     pub resource_limits: ResourceLimits,
+    /// The CASC wall clock, when simulating it. `casc-sim` searches past this
+    /// point so a resource-bound failure surfaces instead of being recorded as a
+    /// timeout; the search records where it stood here so the two verdicts can
+    /// be told apart afterwards. `None` in every other mode.
+    pub casc_reference_limit: Option<Duration>,
 }
 
 impl SearchConfig {
@@ -785,6 +823,7 @@ impl Default for SearchConfig {
             precedence_scheme: PrecedenceScheme::InvFreq,
             symbol_weight_scheme: SymbolWeightScheme::Uniform,
             resource_limits: ResourceLimits::default(),
+            casc_reference_limit: None,
         }
     }
 }

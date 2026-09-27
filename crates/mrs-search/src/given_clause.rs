@@ -1414,6 +1414,24 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
             continue;
         }
 
+        // Record where the run stood at the CASC reference wall clock, once.
+        // In casc-sim the search continues past this point, so without a record
+        // here a memory stop and a plain timeout look identical in the report.
+        if state.stats.casc_limit_state.is_none()
+            && let Some(reference) = config.casc_reference_limit
+        {
+            let elapsed = start.elapsed();
+            if elapsed >= reference {
+                state.stats.casc_limit_state = Some(crate::CascLimitState {
+                    elapsed_ms: elapsed.as_millis() as u64,
+                    iterations: state.stats.iterations,
+                    processed: state.stats.processed,
+                    generated: state.stats.generated,
+                    passive: state.stats.passive_size,
+                });
+            }
+        }
+
         // Check time limit (and parallel stop-flag)
         if start.elapsed() >= config.time_limit
             || state
