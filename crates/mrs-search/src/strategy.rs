@@ -601,7 +601,8 @@ pub fn run_schedule_with_candidate_receiver(
             || std::env::var("MRS_LRS_POLICY").as_deref() == Ok("disabled")
         {
             actual_config.lrs_policy = crate::LrsPolicy::Disabled;
-        } else if let Ok(value) = std::env::var("MRS_LRS_FIXED_ITERATIONS")
+        } else if search_config.strategy_id == 0
+            && let Ok(value) = std::env::var("MRS_LRS_FIXED_ITERATIONS")
             && let Ok(budget) = value.parse::<u64>()
         {
             actual_config.lrs_policy = crate::LrsPolicy::FixedIterations { budget };
@@ -1357,6 +1358,7 @@ fn schedule_start_for_certification() -> Instant {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use mrs_core::clause::{ClauseIdGen, ClauseSource};
     use mrs_core::{Atom, Literal, SymbolTable, Term};
 
