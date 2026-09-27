@@ -1681,11 +1681,15 @@ mod tests {
                 matches!(result, SearchResult::Saturated(_)),
                 "certified SAT input must saturate under {expected}"
             );
-            assert_eq!(report.cert_tier.as_deref(), Some("1"));
+            // The SAT tier decides a satisfiable grounding before the ordered
+            // closure is attempted, so the reported tier is 2. The ordering is
+            // still reported: it remains a property of the schedule, and a
+            // future input that reaches the closure would carry it.
+            assert_eq!(report.cert_tier.as_deref(), Some("2"));
             assert_eq!(report.cert_ordering.as_deref(), Some(expected));
             let detail = report.telemetry_detail("Saturation");
             assert!(
-                detail.contains("cert_tier=1"),
+                detail.contains("cert_tier=2"),
                 "telemetry detail must carry the tier"
             );
             assert!(

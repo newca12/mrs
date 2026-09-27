@@ -113,6 +113,32 @@ impl EqClasses {
         self.find_root(term)
     }
 
+    /// Every known constant paired with its class representative, sorted.
+    /// Handed to the model-certificate builder so the certificate interprets
+    /// merged constants as one element.
+    pub(crate) fn into_pairs(self) -> Vec<(Term, Term)> {
+        let mut pairs: Vec<(Term, Term)> = self
+            .parent
+            .keys()
+            .map(|term| {
+                let mut classes = EqClasses {
+                    parent: self.parent.clone(),
+                    rank: self.rank.clone(),
+                    edges: StdHashMap::default(),
+                };
+                let root = classes.find_root(term);
+                (term.clone(), root)
+            })
+            .collect();
+        // `Term` is not `Ord`; the keys are constants, so the symbol id is a
+        // total order over them and the output stays deterministic.
+        pairs.sort_by_key(|(constant, _)| match constant {
+            Term::App(symbol, args) if args.is_empty() => symbol.index(),
+            _ => u32::MAX,
+        });
+        pairs
+    }
+
     /// Ensure `term` is a known singleton class (no merges, no edges).
     /// Used to seed every constant occurring in an equality literal so
     /// representative enumeration covers the whole equational vocabulary,
@@ -227,6 +253,28 @@ fn normalize_clause_eq(
                     changed = true;
                     continue;
                 }
+                // Unique-name resolution. Both sides are ground constants, so
+                // distinct class representatives denote distinct elements in
+                // every model, and the disequality's truth value is known
+                // without any congruence reasoning: a *negative* `Eq` between
+                // distinct representatives is true, which makes the whole
+                // clause valid, and a *positive* one is false, which drops the
+                // literal. This is what lets a non-unit positive equality
+                // reach the tiers at all — the guard above used to refuse such
+                // inputs outright because resolution cannot generate the
+                // congruence axioms it would need, and here they are not
+                // needed at all.
+                //
+                // Only ground constants qualify. A non-ground side means the
+                // literal survives to the tiers, and the top-of-function guard
+                // refuses a non-unit positive one.
+                if is_ground_constant(&new_left) && is_ground_constant(&new_right) {
+                    if !literal.positive {
+                        return Normalized::Tautology;
+                    }
+                    changed = true;
+                    continue;
+                }
                 // A pure orientation change has no equality parent to cite.
                 // Preserve the original orientation in that case; when a
                 // unit equality changed a side, the unit parents justify the
@@ -290,6 +338,18 @@ pub(crate) struct ExpandedEq {
     /// class. The caller proves it from provenance plus the full
     /// originals (the empty cites the disequality and its path units).
     pub contradiction: Option<Clause>,
+    /// Constant -> the class representative every occurrence of it was
+    /// rewritten to.
+    ///
+    /// This is the *other half* of the normalization and a model certificate
+    /// must respect it. A model with a distinct domain element per constant
+    /// cannot satisfy a unit equality that merged two of them, so a
+    /// certificate built from the pre-merge vocabulary asserts `a != b` for a
+    /// clause set containing `a = b`. Handing this map to the certificate
+    /// builder makes the two agree: every constant in a class is interpreted
+    /// as its representative's element, which is exactly what makes the
+    /// disequalities the unique-name pass dropped true in the model.
+    pub class_representatives: Vec<(Term, Term)>,
 }
 
 /// Expand a grounded clause set with ground equational reasoning:
@@ -297,6 +357,14 @@ pub(crate) struct ExpandedEq {
 /// `equality_normalization` steps) and reflexivity fast paths. Predicate-only
 /// inputs pass through byte-identical (no Eq atoms anywhere): the legacy
 /// fragment observes zero behavior change.
+/// Is this term a ground constant (a function application with no arguments)?
+/// Hoisted to module scope because the unique-name resolution in
+/// `normalize_clause_eq` and the fragment guard at the top of
+/// `expand_equality` must agree on exactly this notion of "ground".
+fn is_ground_constant(term: &Term) -> bool {
+    matches!(term, Term::App(_, args) if args.is_empty())
+}
+
 pub(crate) fn expand_equality(
     clauses: &[Clause],
     ordering: &TermOrdering,
@@ -306,12 +374,18 @@ pub(crate) fn expand_equality(
     // equality clauses derived later by resolution. Accepting a non-unit
     // positive equality could therefore turn an equality-dependent
     // contradiction into a false saturation claim.
+    //
+    // `normalize_clause_eq` resolves the ground case outright under the
+    // unique-name axiom, so this guard only has to catch what survives that
+    // pass: a positive equality with a non-ground side, whose value is not
+    // known and would have to be left to resolution.
     if clauses.iter().any(|clause| {
         clause.literals.len() != 1
-            && clause
-                .literals
-                .iter()
-                .any(|literal| literal.positive && matches!(literal.atom, Atom::Eq(_, _)))
+            && clause.literals.iter().any(|literal| {
+                literal.positive
+                    && matches!(&literal.atom, Atom::Eq(left, right)
+                        if !(is_ground_constant(left) && is_ground_constant(right)))
+            })
     }) {
         return Err(CertificationFailure::Unsupported(
             "non-unit positive equality is outside the certified fragment",
@@ -324,9 +398,6 @@ pub(crate) fn expand_equality(
     // Non-ground equality sides are skipped defensively (post-grounding
     // inputs are always ground; skipping merely loses completeness,
     // never soundness).
-    fn is_ground_constant(term: &Term) -> bool {
-        matches!(term, Term::App(_, args) if args.is_empty())
-    }
     let mut classes = EqClasses::new();
     for clause in clauses {
         for literal in &clause.literals {
@@ -375,6 +446,7 @@ pub(crate) fn expand_equality(
                 return Ok(ExpandedEq {
                     clauses: expanded,
                     contradiction: Some(empty),
+                    class_representatives: classes.into_pairs(),
                 });
             }
             Normalized::Rewritten { literals, explains } => {
@@ -395,6 +467,7 @@ pub(crate) fn expand_equality(
     Ok(ExpandedEq {
         clauses: expanded,
         contradiction: None,
+        class_representatives: classes.into_pairs(),
     })
 }
 

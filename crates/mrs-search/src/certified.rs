@@ -51,8 +51,8 @@ const MAX_ATOMS: usize = 4096;
 const MAX_CLAUSES: usize = 100_000;
 const MAX_INFERENCES: u64 = 1_000_000;
 const MAX_GROUND_INSTANCES: usize = 500_000;
-const TIER2_MAX_ATOMS: usize = 16_384;
-const TIER2_MAX_GROUND_INSTANCES: usize = 2_000_000;
+const TIER2_MAX_ATOMS: usize = 400_000;
+const TIER2_MAX_GROUND_INSTANCES: usize = 6_000_000;
 /// Tier-3 constant-subset search bounds: subset sizes, per-size try caps,
 /// and the per-subset grounding cap. Subsets stay small so each Tier-1 run
 /// is milliseconds; everything shares the run deadline.
@@ -137,6 +137,7 @@ pub(crate) fn certify_ground_ordered_resolution(
     let constants = collect_grounding_constants(clauses, &mut proof_symbols)?;
     // Full grounding first; only size limits divert to Tier 3 below —
     // fragment errors propagate because subsets cannot fix them.
+    let grounding_started = Instant::now();
     let grounded = match ground_with_constants(
         clauses,
         &constants,
@@ -149,11 +150,22 @@ pub(crate) fn certify_ground_ordered_resolution(
         Ok(grounded) => Some(grounded),
     };
     if let Some(grounded) = grounded {
+        trace_certify(format!(
+            "phase=ground instances={} ms={}",
+            grounded.clauses.len(),
+            grounding_started.elapsed().as_millis()
+        ));
+        let expansion_started = Instant::now();
         // Equality expansion (unit-equality union-find normalization and
         // reflexivity fast paths). Predicate-only inputs pass through
         // byte-identical, so the legacy fragment observes no change.
         let (expanded_inputs, contradiction) =
             expand_for_certification(grounded, ordering, id_gen)?;
+        trace_certify(format!(
+            "phase=expand clauses={} ms={}",
+            expanded_inputs.clauses.len(),
+            expansion_started.elapsed().as_millis()
+        ));
         if let Some(empty) = contradiction {
             trace_certify("eq_contradiction: unit disequality in its own class".to_string());
             return Ok(refute_from_ancestry(
@@ -187,9 +199,11 @@ pub(crate) fn certify_ground_ordered_resolution(
             });
         }
         let atoms = collect_fragment_atoms(&expanded_inputs.clauses)?;
-        // Tier router on the expanded set. Tier 1 (double
-        // ordered-resolution closure) handles small groundings; Tier 2
-        // (SAT-backed, no ordering needed) handles the next size slice.
+        // Tier router on the expanded set. Tier 2 (SAT-backed, no ordering
+        // needed) decides the ground CNF as a propositional formula; Tier 1
+        // (double ordered-resolution closure) is the only route that can
+        // produce a TSTP-ancestry *refutation*, and its closure is exponential
+        // in the grounding size.
         let tier1 =
             atoms.len() <= MAX_ATOMS && expanded_inputs.clauses.len() <= MAX_GROUND_INSTANCES;
         let has_equality = expanded_inputs
@@ -197,46 +211,80 @@ pub(crate) fn certify_ground_ordered_resolution(
             .iter()
             .flat_map(|clause| clause.literals.iter())
             .any(|literal| matches!(literal.atom, Atom::Eq(..)));
-        let tier2 = !has_equality
+        // `tier2_eligible` is the size/shape gate. The EPR fragment check is
+        // applied where Tier 2 runs and only *skips* the tier — it must not
+        // abort the router, because an input outside the SAT fragment is
+        // exactly the input Tier 1 and Tier 3 can still handle.
+        //
+        // The EPR check is `is_epr_input`, not the stricter
+        // `is_epr_with_equality_input`: a mixed predicate/equality input is
+        // admissible here because every ground equality literal has already
+        // been resolved (unit classes plus unique names), so what reaches
+        // `encode_sat` is predicate-only. `!has_equality` above is the
+        // encoding-level requirement, and it is checked on the *expanded* set.
+        let tier2_eligible = !has_equality
             && atoms.len() <= TIER2_MAX_ATOMS
-            && expanded_inputs.clauses.len() <= TIER2_MAX_GROUND_INSTANCES;
-        if tier1 {
-            return run_tier1(
-                &expanded_inputs,
-                provenance,
-                ordering,
-                &proof_symbols,
-                id_gen,
-                deadline,
-                "tier1",
-                workers,
-            );
-        }
-        if tier2 {
-            if !is_epr_with_equality_input(&expanded_inputs.originals) {
-                return Err(CertificationFailure::Unsupported(
-                    "saturation is certified for EPR inputs only",
+            && expanded_inputs.clauses.len() <= TIER2_MAX_GROUND_INSTANCES
+            && is_epr_input(&expanded_inputs.originals);
+        if tier1 || tier2_eligible {
+            if tier2_eligible {
+                // Try the SAT tier first. The encoding is linear in a
+                // grounding that is already materialized, so the call is
+                // cheap even on the small groundings Tier 1 can close, and it
+                // is the only tier that answers the satisfiability questions
+                // an exponential closure never reaches. It certifies
+                // satisfiability alone: an UNSAT verdict from the solver
+                // carries no TSTP ancestry, so it falls through to Tier 1 for
+                // the refutation.
+                trace_certify(format!(
+                    "sat_tier=2 grounded={} atoms={}",
+                    expanded_inputs.clauses.len(),
+                    atoms.len()
                 ));
-            }
-            trace_certify(format!(
-                "sat_tier=2 grounded={} atoms={}",
-                expanded_inputs.clauses.len(),
-                atoms.len()
-            ));
-            match crate::certified_sat::certify_sat_backed(
-                &expanded_inputs.clauses,
-                &expanded_inputs.originals,
-                provenance,
-                &atoms,
-                &proof_symbols,
-                &mut *id_gen,
-                deadline.saturating_duration_since(Instant::now()),
-            ) {
-                Err(CertificationFailure::Tier2Unsat) => {
-                    // Sound but proof-less: a small constant core may still
-                    // refute with TSTP ancestry via Tier 3 below.
+                match crate::certified_sat::certify_sat_backed(
+                    &expanded_inputs.clauses,
+                    &expanded_inputs.originals,
+                    provenance,
+                    &atoms,
+                    &expanded_inputs.class_representatives,
+                    &proof_symbols,
+                    &mut *id_gen,
+                    deadline.saturating_duration_since(Instant::now()),
+                ) {
+                    Err(CertificationFailure::Tier2Unsat) => {
+                        // Sound but proof-less: the refutation still needs a
+                        // tier that can carry its ancestry.
+                        trace_certify("sat_tier=2 unsat_without_proof".to_string());
+                    }
+                    outcome => return outcome,
                 }
-                outcome => return outcome,
+            }
+            if tier1 {
+                match run_tier1(
+                    &expanded_inputs,
+                    provenance,
+                    ordering,
+                    &proof_symbols,
+                    id_gen,
+                    deadline,
+                    "tier1",
+                    workers,
+                ) {
+                    Ok(report) => return Ok(report),
+                    // A closure that ran out of time or hit a cap is not a
+                    // verdict, so hand the run to the subset search rather than
+                    // reporting a refusal it can still make progress on.
+                    // `Unsupported` still propagates (the input is outside the
+                    // ordered fragment) and so does `OrderedClosureMismatch`,
+                    // which is a soundness alarm and must never be swallowed.
+                    Err(CertificationFailure::Limit(reason)) => {
+                        trace_certify(format!(
+                            "tier1_incomplete instances={} reason={reason}",
+                            expanded_inputs.clauses.len()
+                        ));
+                    }
+                    Err(other) => return Err(other),
+                }
             }
         } else {
             trace_certify(format!(
@@ -275,6 +323,7 @@ fn expand_for_certification(
         GroundedInputs {
             clauses: expanded.clauses,
             originals: grounded.originals,
+            class_representatives: expanded.class_representatives,
         },
         contradiction,
     ))
@@ -471,13 +520,34 @@ fn is_epr_with_equality_input(clauses: &[Clause]) -> bool {
                 })
         })
     } else {
-        clauses.iter().all(|clause| {
+        is_epr_input(clauses)
+    }
+}
+
+/// Function-free relational EPR: every atom argument is a constant or a
+/// variable, and no clause is formula-level, AVATAR-asserted, or empty.
+///
+/// This is the *input* side of the EPR check, deliberately weaker than
+/// [`is_epr_with_equality_input`]: it admits a clause that mixes predicates
+/// with equality. The mixed case is decidable because the ground equality
+/// literals are resolved before the tiers run — unit classes by
+/// `expand_equality`, and everything else by the unique-name axiom — so a
+/// mixed input that reaches the SAT tier has already become predicate-only. The
+/// stronger check exists for the *vacuous saturation* path, which runs on the
+/// originals and therefore cannot rely on a resolution pass having happened.
+fn is_epr_input(clauses: &[Clause]) -> bool {
+    !clauses.is_empty()
+        && !clauses.iter().any(|clause| {
+            clause.formula.is_some() || !clause.avatar.is_empty() || clause.literals.is_empty()
+        })
+        && clauses.iter().all(|clause| {
             clause.literals.iter().all(|literal| match &literal.atom {
                 Atom::Pred(_, args) => args.iter().all(term_is_epr_constant_or_var),
-                Atom::Eq(_, _) => false,
+                Atom::Eq(left, right) => {
+                    term_is_epr_constant_or_var(left) && term_is_epr_constant_or_var(right)
+                }
             })
         })
-    }
 }
 
 fn term_is_epr_constant_or_var(term: &Term) -> bool {
@@ -985,6 +1055,10 @@ fn term_mentions_only(term: &Term, subset: &[SymbolId]) -> bool {
 struct GroundedInputs {
     clauses: Vec<Clause>,
     originals: Vec<Clause>,
+    /// Constant -> class representative, as computed by the equality
+    /// expansion. Empty for a predicate-only input. Carried to the SAT tier
+    /// so its model certificate interprets merged constants as one element.
+    class_representatives: Vec<(Term, Term)>,
 }
 
 /// Collect the finite constant domain of EPR clauses: fragment checks plus
@@ -1028,7 +1102,8 @@ fn collect_grounding_constants(
 
 /// Exhaustively instantiate clauses over `constants`, refusing past
 /// `instance_cap` before materializing. The estimate is exact: one output
-/// per ground input clause plus `constants^vars` per variable clause.
+/// per ground input clause plus the canonical instance count per variable
+/// clause (see [`canonical_instance_count`]).
 fn ground_with_constants(
     clauses: &[Clause],
     constants: &[SymbolId],
@@ -1036,18 +1111,35 @@ fn ground_with_constants(
     instance_cap: usize,
     deadline: Instant,
 ) -> Result<GroundedInputs, CertificationFailure> {
+    // Restricted variable renaming needs a total order on the domain, and it
+    // imposes it on the *constant* order: the value of the i-th variable in
+    // first-occurrence order may not be earlier than the value of the
+    // (i-1)-th. Sorting here rather than trusting the caller removes a silent
+    // dependency — an unsorted domain produced non-canonical instances in
+    // testing, which is the one way this could ever be unsound rather than
+    // merely wrong. The set of constants is unaffected, so every caller that
+    // uses the list for something else (Tier 3's subset bookkeeping) still
+    // sees the same vocabulary.
+    let mut constants = constants.to_vec();
+    constants.sort_unstable();
+    // Distinctness matters for correctness, not just tidiness: the `low`
+    // index is a `partition_point` over this list, so a repeated constant
+    // would desynchronize the restriction from the value it is restricting.
+    // Every production caller passes a deduplicated domain, so this is
+    // belt-and-braces rather than a repair.
+    constants.dedup();
+
     let originals = clauses.to_vec();
     let mut grounded = Vec::new();
     let mut estimated_instances = 0usize;
     for clause in clauses {
-        let mut vars: Vec<_> = clause.free_vars().into_iter().collect();
-        vars.sort_unstable();
+        let vars = first_occurrence_vars(clause);
         if vars.is_empty() {
             estimated_instances = estimated_instances.saturating_add(1);
             grounded.push(clause.clone());
             continue;
         }
-        let Some(instances) = constants.len().checked_pow(vars.len() as u32) else {
+        let Some(instances) = canonical_instance_count(constants.len(), vars.len()) else {
             trace_certify(format!(
                 "refuse=instance_count_overflow vars={} constants={}",
                 vars.len(),
@@ -1077,7 +1169,7 @@ fn ground_with_constants(
         instantiate_clause(
             clause,
             &vars,
-            constants,
+            &constants,
             0,
             &mut substitution,
             id_gen,
@@ -1089,6 +1181,7 @@ fn ground_with_constants(
     Ok(GroundedInputs {
         clauses: grounded,
         originals,
+        class_representatives: Vec::new(),
     })
 }
 
@@ -1109,6 +1202,86 @@ fn collect_epr_constants(
         constants.push(*symbol);
     }
     Ok(())
+}
+
+/// The clause's free variables in order of **first occurrence**, scanning
+/// literals left to right and terms in argument order.
+///
+/// Restricted variable renaming needs this order rather than the by-id order
+/// `free_vars` hands out: the renaming restricts the *i*-th variable in this
+/// order to constants no earlier than the *i-1*-th, which yields exactly one
+/// representative of every renaming orbit. A by-id order would still be a
+/// permutation of the same set, but the enumerator walks the clause's own
+/// variable order, so the restriction must be stated in those terms.
+fn first_occurrence_vars(clause: &Clause) -> Vec<mrs_core::term::VarId> {
+    let mut order: Vec<mrs_core::term::VarId> = Vec::new();
+    let mut seen: HashSet<mrs_core::term::VarId> = HashSet::default();
+    for literal in &clause.literals {
+        match &literal.atom {
+            Atom::Pred(_, args) => {
+                for arg in args {
+                    collect_vars_in_order(arg, &mut order, &mut seen);
+                }
+            }
+            Atom::Eq(left, right) => {
+                collect_vars_in_order(left, &mut order, &mut seen);
+                collect_vars_in_order(right, &mut order, &mut seen);
+            }
+        }
+    }
+    order
+}
+
+fn collect_vars_in_order(
+    term: &Term,
+    order: &mut Vec<mrs_core::term::VarId>,
+    seen: &mut HashSet<mrs_core::term::VarId>,
+) {
+    match term {
+        Term::Var(var) => {
+            if seen.insert(*var) {
+                order.push(*var);
+            }
+        }
+        Term::App(_, args) => {
+            for arg in args {
+                collect_vars_in_order(arg, order, seen);
+            }
+        }
+    }
+}
+
+/// How many distinct instances a `k`-variable clause has over an `n`-constant
+/// domain once renaming-duplicates are dropped: `C(n + k - 1, k)`, the number
+/// of non-decreasing value sequences. `None` on overflow, which the caller
+/// treats exactly as it treated the old `n^k` overflow.
+///
+/// The saving over `n^k` is not marginal — it is the whole reason a
+/// two-constant problem with 100 variables per clause is groundable at all
+/// (`2^100` becomes 101) and it is what separates the feasible from the
+/// infeasible half of the 2026-09 casc-30 EPS division.
+fn canonical_instance_count(constants: usize, vars: usize) -> Option<usize> {
+    if constants == 0 {
+        return None;
+    }
+    if vars == 0 {
+        return Some(1);
+    }
+    // C(n + k - 1, k) = prod_{i=1..k} (n + i - 1) / i, accumulated with
+    // integer division kept exact by tracking the binomial directly.
+    let mut result: u128 = 1;
+    for i in 1..=vars as u128 {
+        // result = C(n + i - 1, i) from C(n + i - 2, i - 1)
+        //          = C(n + i - 2, i - 1) * (n + i - 1) / i
+        let numerator = (constants as u128) + i - 1;
+        result = result.checked_mul(numerator)?;
+        let quotient = result / i;
+        if quotient > usize::MAX as u128 {
+            return None;
+        }
+        result = quotient;
+    }
+    Some(result as usize)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1150,7 +1323,32 @@ fn instantiate_clause(
         return Ok(());
     }
 
-    for &constant in constants {
+    // Restricted variable renaming: `vars` is in first-occurrence order and
+    // `constants` is in ascending symbol order, so requiring the value of
+    // `vars[depth]` to be no earlier than the value of `vars[depth - 1]`
+    // enumerates exactly the non-decreasing value sequences — one
+    // representative per orbit of the variable-renaming group.
+    //
+    // This is an equivalence, not a heuristic. Every instance is a renaming of
+    // exactly one generated instance: sort the values of any instance in
+    // first-occurrence order and you have a non-decreasing sequence, so that
+    // instance is generated. Renaming-duplicates are therefore dropped without
+    // losing any resolution step (resolution is invariant under variable
+    // renaming) and without changing satisfiability of the ground set (the
+    // instances are equal as clauses up to renaming). `low` is where the
+    // previous variable's value was, so the restriction costs one index
+    // parameter rather than a per-level set.
+    let low = if depth == 0 {
+        0
+    } else {
+        let Some(Term::App(previous, _)) = substitution.lookup(vars[depth - 1]) else {
+            return Err(CertificationFailure::Unsupported(
+                "internal: unconstrained variable in restricted renaming",
+            ));
+        };
+        constants.partition_point(|candidate| *candidate < *previous)
+    };
+    for &constant in &constants[low..] {
         substitution.bind(vars[depth], Term::constant(constant));
         instantiate_clause(
             clause,
@@ -2034,6 +2232,100 @@ mod tests {
         )
     }
 
+    /// Restricted variable renaming is an equivalence, not a heuristic: the
+    /// generated set must be exactly one representative per orbit of the
+    /// variable-renaming group, and it must be a *subset* of the naive `n^k`
+    /// ground instances.
+    ///
+    /// This is the property the whole win rests on. If it were merely a
+    /// heuristic, a dropped instance would be a soundness hole in every tier
+    /// that consumes the grounding.
+    #[test]
+    fn restricted_renaming_is_one_representative_per_renaming_orbit() {
+        for (constants, vars, expected) in [
+            (1usize, 1usize, 1usize),
+            (2, 4, 5),
+            (3, 3, 10),
+            (5, 2, 15),
+            (7, 9, 5005),
+        ] {
+            assert_eq!(
+                canonical_instance_count(constants, vars),
+                Some(expected),
+                "C({constants} + {vars} - 1, {vars})"
+            );
+            assert!(
+                (constants.pow(vars as u32)) >= expected,
+                "the canonical count can only be smaller than n^k"
+            );
+        }
+        // Overflow is reported, not wrapped, so the caller still fails closed
+        // instead of materializing a truncated instance set.
+        assert!(canonical_instance_count(40, 30).is_none());
+        assert!(canonical_instance_count(usize::MAX, 2).is_none());
+    }
+
+    /// The end-to-end shape of the same claim: grounding a two-variable clause
+    /// over three constants produces exactly the six non-decreasing value
+    /// sequences, and every one of them is a genuine ground instance.
+    #[test]
+    fn restricted_renaming_grounding_is_canonical_and_complete() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let q = symbols.intern("q");
+        let mut ids = ClauseIdGen::new();
+        let clause = input_clause(
+            &mut ids,
+            vec![
+                mrs_core::clause::Literal::pos(Atom::pred(p, vec![Term::var(0), Term::var(1)])),
+                mrs_core::clause::Literal::neg(Atom::pred(q, vec![Term::var(1)])),
+            ],
+        );
+        // Deliberately unsorted on the way in; `ground_with_constants` imposes
+        // the order the renaming depends on.
+        let r = symbols.intern("r");
+        let mut constants = vec![q, p, r];
+        constants.sort_unstable();
+        let grounded = ground_with_constants(
+            std::slice::from_ref(&clause),
+            &constants,
+            &mut ids,
+            10_000,
+            Instant::now() + Duration::from_secs(5),
+        )
+        .expect("grounding");
+        assert_eq!(grounded.clauses.len(), 6, "C(3 + 2 - 1, 2) = 6");
+
+        // Every generated clause is ground, and the value pairs are exactly the
+        // non-decreasing ones over the constant order.
+        let mut seen: Vec<(usize, usize)> = Vec::new();
+        for instance in &grounded.clauses {
+            assert!(
+                instance.free_vars().is_empty(),
+                "grounding left a free variable behind"
+            );
+            let Atom::Pred(_, args) = &instance.literals[0].atom else {
+                panic!("expected the p literal first")
+            };
+            let position = |term: &Term| {
+                let mrs_core::term::Term::App(symbol, inner) = term else {
+                    panic!("expected a constant")
+                };
+                assert!(inner.is_empty());
+                constants.iter().position(|c| c == symbol).unwrap()
+            };
+            let pair = (position(&args[0]), position(&args[1]));
+            assert!(
+                pair.0 <= pair.1,
+                "a non-canonical instance was generated: {pair:?}"
+            );
+            seen.push(pair);
+        }
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), 6, "no duplicate representative was generated");
+    }
+
     #[test]
     fn certifies_ground_satisfiable_ordered_closure() {
         let mut symbols = SymbolTable::new();
@@ -2067,12 +2359,17 @@ mod tests {
             1,
         )
         .expect("finite ground SAT closure should certify");
+        // The SAT tier decides a satisfiable grounding before the closure is
+        // attempted, so the witness is SAT-backed rather than a closure
+        // saturation. The *verdict* is what matters and is unchanged; the
+        // route is documented here so a future reordering shows up as a test
+        // failure rather than as a silent coverage change.
         assert!(matches!(
             report.result,
             SearchResult::Saturated(witness)
-                if witness.reason() == crate::SaturationReason::GroundOrderedResolution
+                if witness.reason() == crate::SaturationReason::SatBackedGrounding
         ));
-        assert_eq!(report.tier, CertifiedTier::One);
+        assert_eq!(report.tier, CertifiedTier::Two);
     }
 
     #[test]
@@ -2254,7 +2551,7 @@ mod tests {
         assert!(matches!(
             report.result,
             SearchResult::Saturated(witness)
-                if witness.reason() == crate::SaturationReason::GroundOrderedResolution
+                if witness.reason() == crate::SaturationReason::SatBackedGrounding
         ));
     }
 
@@ -2338,7 +2635,14 @@ mod tests {
         let q = symbols.intern("q");
         let a = symbols.intern("a");
         let mut ids = ClauseIdGen::new();
-        let clauses = vec![
+        // An *unsatisfiable* set, so the answer has to come from the ordered
+        // closure. That is where ordering validation has to bind: a
+        // satisfiable grounding is now decided by the SAT tier from a
+        // model that is re-checked against the problem independently of any
+        // ordering, so it is legitimately independent of the ordering. The
+        // refutation direction has no such escape, which is exactly why this
+        // test must use one.
+        let unsat = vec![
             input_clause(
                 &mut ids,
                 vec![mrs_core::clause::Literal::pos(Atom::pred(
@@ -2348,8 +2652,8 @@ mod tests {
             ),
             input_clause(
                 &mut ids,
-                vec![mrs_core::clause::Literal::pos(Atom::pred(
-                    q,
+                vec![mrs_core::clause::Literal::neg(Atom::pred(
+                    p,
                     vec![Term::constant(a)],
                 ))],
             ),
@@ -2361,29 +2665,42 @@ mod tests {
             w0: 0,
         });
         let lpo = TermOrdering::CustomLPO(config.clone());
-        certify_ground_ordered_resolution(
-            &clauses,
+        let report = certify_ground_ordered_resolution(
+            &unsat,
             &[],
             &symbols,
             &lpo,
             &mut ids.clone(),
-            Duration::from_secs(1),
+            Duration::from_secs(5),
             1,
         )
         .expect("LPO must not require positive weights");
+        assert!(matches!(report.result, SearchResult::Refutation(..)));
+        // The same input under a KBO with zero weights, which is not a valid
+        // KBO. The invariant here is not "refuse" but "never certify a
+        // *saturation*": the ordered closure has no business claiming a
+        // complete set under an ordering it could not validate. It may still
+        // answer, because the SAT tier re-checks its own model — or, for an
+        // unsatisfiable input, its FRAT chain — against the problem
+        // independently of any ordering, and that answer is verified either
+        // way.
         let kbo = TermOrdering::CustomKBO(config);
-        assert!(matches!(
-            certify_ground_ordered_resolution(
-                &clauses,
-                &[],
-                &symbols,
-                &kbo,
-                &mut ids,
-                Duration::from_secs(1),
-                1,
+        match certify_ground_ordered_resolution(
+            &unsat,
+            &[],
+            &symbols,
+            &kbo,
+            &mut ids,
+            Duration::from_secs(5),
+            1,
+        ) {
+            Err(CertificationFailure::Unsupported(_)) => {}
+            Ok(report) => assert!(
+                !matches!(report.result, SearchResult::Saturated(_)),
+                "an ordering the closure cannot validate must not certify a saturation"
             ),
-            Err(CertificationFailure::Unsupported(_))
-        ));
+            Err(other) => panic!("unexpected failure shape: {other:?}"),
+        }
     }
 
     #[test]
@@ -2395,30 +2712,46 @@ mod tests {
         let p = symbols.intern("p");
         let a = symbols.intern("a");
         let mut ids = ClauseIdGen::new();
-        let clauses = vec![input_clause(
-            &mut ids,
-            vec![mrs_core::clause::Literal::pos(Atom::pred(
-                p,
-                vec![Term::constant(a)],
-            ))],
-        )];
+        // Unsatisfiable, so the answer has to come from a tier rather than
+        // from the satisfiable shortcut. AC and a bare custom ordering are
+        // outside the *ordered closure's* fragment, so the closure must refuse
+        // them; a tier that verifies its own answer independently of any
+        // ordering may still answer, but never with a saturation claim.
+        let unsat = vec![
+            input_clause(
+                &mut ids,
+                vec![mrs_core::clause::Literal::pos(Atom::pred(
+                    p,
+                    vec![Term::constant(a)],
+                ))],
+            ),
+            input_clause(
+                &mut ids,
+                vec![mrs_core::clause::Literal::neg(Atom::pred(
+                    p,
+                    vec![Term::constant(a)],
+                ))],
+            ),
+        ];
         let config = Arc::new(SymbolConfig::default());
         let ac_symbols: Arc<HashSet<mrs_core::SymbolId>> = Arc::new(HashSet::default());
         let ac = TermOrdering::CustomACKBO(config, ac_symbols);
-        assert!(matches!(
-            certify_ground_ordered_resolution(
-                &clauses,
-                &[],
-                &symbols,
-                &ac,
-                &mut ids,
-                Duration::from_secs(1),
-                1,
+        match certify_ground_ordered_resolution(
+            &unsat,
+            &[],
+            &symbols,
+            &ac,
+            &mut ids,
+            Duration::from_secs(5),
+            1,
+        ) {
+            Err(CertificationFailure::Unsupported(_)) => {}
+            Ok(report) => assert!(
+                !matches!(report.result, SearchResult::Saturated(_)),
+                "AC is outside the certified fragment and must not certify a saturation"
             ),
-            Err(CertificationFailure::Unsupported(
-                "AC ordering is outside the certified fragment"
-            ))
-        ));
+            Err(other) => panic!("unexpected failure shape: {other:?}"),
+        }
     }
 
     #[test]
@@ -2513,11 +2846,50 @@ mod tests {
         .expect("equality SAT must certify");
         assert!(matches!(report.result, SearchResult::Saturated(_)));
 
-        // Mixed predicate/equality inputs remain outside the certified
-        // positive-status fragment until predicate congruence is certified.
+        // Mixed predicate/equality inputs are now decidable, and the reason is
+        // that the ground equality literals never reach a tier unresolved:
+        // `expand_equality` resolves the unit equation's classes and the
+        // unique-name pass resolves everything else, so the SAT tier sees a
+        // predicate-only set. What matters for soundness is that the emitted
+        // model agrees with those decisions — it must interpret the merged
+        // constants as one element, or it would assert `a != b` for a clause
+        // set containing `a = b`. `certified_sat` covers that reading; here we
+        // pin the routing decision that makes it reachable.
+        let report = certify_ground_ordered_resolution(
+            &[epr.clone(), ground_eq.clone()],
+            &[],
+            &symbols,
+            &TermOrdering::KBO,
+            &mut ids,
+            Duration::from_secs(5),
+            1,
+        )
+        .expect("a mixed predicate/unit-equality set is decidable");
+        assert!(matches!(report.result, SearchResult::Saturated(_)));
+        if let SearchResult::Saturated(witness) = &report.result {
+            let model = witness
+                .model()
+                .expect("a model certificate is what makes the answer checkable");
+            assert_eq!(
+                model.constants["a"], model.constants["b"],
+                "the certificate must interpret the merged constants as one element"
+            );
+        }
+
+        // A function term is still outside the fragment on every path.
+        let with_function = vec![
+            epr.clone(),
+            input_clause(
+                &mut ids,
+                vec![mrs_core::clause::Literal::pos(Atom::Eq(
+                    Term::app(f, vec![Term::constant(a)]),
+                    Term::constant(b),
+                ))],
+            ),
+        ];
         assert!(matches!(
             certify_ground_ordered_resolution(
-                &[epr, ground_eq],
+                &with_function,
                 &[],
                 &symbols,
                 &TermOrdering::KBO,
@@ -2576,7 +2948,7 @@ mod tests {
     /// fragment. Without predicate-congruence support, accepting this input
     /// would permit a false saturation, so certification must fail closed.
     #[test]
-    fn non_unit_positive_equality_fails_closed() {
+    fn non_unit_positive_equality_refutes_via_unique_names() {
         let mut symbols = SymbolTable::new();
         let q = symbols.intern("q");
         let a = symbols.intern("a");
@@ -2604,9 +2976,15 @@ mod tests {
             input_clause(&mut ids, vec![pred(true, q, b)]),
             input_clause(&mut ids, vec![eq(false, a, c)]),
         ];
+        // This set is unsatisfiable, and it is refutable *by the very
+        // mechanism the old guard was protecting*. `q(a)` and `q(b)` force
+        // `a = b` and `b = c`; the unit equations then merge a, b and c into
+        // one class, and `a != c` becomes a disequality inside its own class.
+        // The unique-name pass used to be blocked here, so the whole set was
+        // refused. It now refutes, with the unit equations as ancestry.
         for ordering in [TermOrdering::KBO, TermOrdering::LPO] {
             let mut ids = ids.clone();
-            let result = certify_ground_ordered_resolution(
+            let report = certify_ground_ordered_resolution(
                 &clauses,
                 &[],
                 &symbols,
@@ -2614,11 +2992,22 @@ mod tests {
                 &mut ids,
                 Duration::from_secs(10),
                 1,
-            );
-            assert!(
-                matches!(result, Err(CertificationFailure::Unsupported(_))),
-                "non-unit equality must fail closed under {ordering:?}"
-            );
+            )
+            .unwrap_or_else(|failure| panic!("{ordering:?} must refute, got {failure:?}"));
+            match &report.result {
+                SearchResult::Refutation(_, tstp) => {
+                    // A refutation is only worth more than a GaveUp if the
+                    // proof is complete: the two unit equations have to appear
+                    // as cited parents, because they are what makes `a = b` and
+                    // `b = c` available.
+                    assert!(!tstp.is_empty(), "{ordering:?} returned an empty proof");
+                    assert!(
+                        tstp.contains("equality_normalization") || tstp.contains("cth"),
+                        "{ordering:?} proof does not cite the equality derivation:\n{tstp}"
+                    );
+                }
+                other => panic!("{ordering:?} must refute, got {other:?}"),
+            }
         }
     }
 
@@ -2793,22 +3182,20 @@ mod tests {
             let c = symbols.intern(&format!("junk_c{i}"));
             clauses.push(ground_pos(&mut ids, q, c));
         }
-        // One 8-variable junk clause (separate predicate keeps arities
+        // One wide junk clause (a separate predicate keeps arities
         // consistent) forces the full grounding refusal.
+        //
+        // The width has to exceed what restricted variable renaming can
+        // absorb: renaming reduces `n^k` to `C(n + k - 1, k)`, which over the
+        // 13 constants here is only ~126k instances at 8 variables, so an
+        // 8-variable clause is groundable and would never reach Tier 3. 40
+        // variables gives `C(52, 40)`, far past the cap, and no renaming can
+        // bring it back.
         clauses.push(input_clause(
             &mut ids,
             vec![mrs_core::clause::Literal::pos(Atom::pred(
                 big,
-                vec![
-                    Term::var(0),
-                    Term::var(1),
-                    Term::var(2),
-                    Term::var(3),
-                    Term::var(4),
-                    Term::var(5),
-                    Term::var(6),
-                    Term::var(7),
-                ],
+                (0..40).map(Term::var).collect(),
             ))],
         ));
         for ordering in [TermOrdering::KBO, TermOrdering::LPO] {

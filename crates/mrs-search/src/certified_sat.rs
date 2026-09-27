@@ -32,6 +32,7 @@ use mrs_core::clause::{
 use mrs_core::formula::Atom;
 use mrs_core::model::{EqualitySemantics, ModelCertificate, PredicateTable};
 use mrs_core::symbol::SymbolTable;
+use mrs_core::term::Term;
 
 use crate::certified::{CertificationFailure, CertifiedGroundReport, trace_certify};
 use crate::{CompletenessWitness, SearchResult, SearchStats};
@@ -231,6 +232,7 @@ pub(crate) fn certify_sat_backed(
     originals: &[Clause],
     provenance: &[Clause],
     atoms: &[Atom],
+    class_representatives: &[(Term, Term)],
     symbols: &SymbolTable,
     id_gen: &mut ClauseIdGen,
     time_limit: Duration,
@@ -298,10 +300,13 @@ pub(crate) fn certify_sat_backed(
             // competition, and the kernel already knows how to re-check one.
             // A model we cannot express completely is simply not reported —
             // the saturation verdict does not depend on it.
-            let certificate =
-                build_model_certificate(&ordered_atoms, originals, symbols, &|variable| {
-                    solver.value(variable)
-                });
+            let certificate = build_model_certificate(
+                &ordered_atoms,
+                originals,
+                class_representatives,
+                symbols,
+                &|variable| solver.value(variable),
+            );
             trace_certify(format!(
                 "sat_model_certificate={}",
                 if certificate.is_some() { "yes" } else { "no" }
@@ -541,7 +546,7 @@ pub(crate) fn extract_model(
     if !verify_model(&encoded, &|literal| solver.value(literal)) {
         return None;
     }
-    build_model_certificate(&ordered_atoms, originals, symbols, &|variable| {
+    build_model_certificate(&ordered_atoms, originals, &[], symbols, &|variable| {
         solver.value(variable)
     })
 }
@@ -560,6 +565,7 @@ pub(crate) fn extract_model(
 pub(crate) fn build_model_certificate(
     ordered_atoms: &[Atom],
     originals: &[Clause],
+    class_representatives: &[(Term, Term)],
     symbols: &SymbolTable,
     value: &dyn Fn(i32) -> Option<bool>,
 ) -> Option<ModelCertificate> {
@@ -617,11 +623,90 @@ pub(crate) fn build_model_certificate(
         return None;
     }
     let domain_size = domain.len();
+    // The domain stays one element per *distinct constant* — the shape the
+    // kernel re-derives from the TPTP text — but a constant is interpreted as
+    // the element of its equality-class representative. A certificate that
+    // instead gave every constant its own element would assert `a != b` for a
+    // clause set containing the unit equation `a = b`, and the unit equalities
+    // the equality expansion already consumed are precisely the ones the
+    // certificate has to reflect.
+    let mut interpretation: BTreeMap<&str, &str> = domain
+        .iter()
+        .map(|name| (name.as_str(), name.as_str()))
+        .collect();
+    for (constant, representative) in class_representatives {
+        let (Term::App(constant, constant_args), Term::App(representative, rep_args)) =
+            (constant, representative)
+        else {
+            return None;
+        };
+        if !constant_args.is_empty() || !rep_args.is_empty() {
+            return None;
+        }
+        let constant = symbols.resolve(*constant);
+        let representative = symbols.resolve(*representative);
+        if !interpretation.contains_key(constant) || !interpretation.contains_key(representative) {
+            // A class member the input never mentions as a constant. Harmless
+            // for the tables (they are indexed by the domain) but the
+            // interpretation would be dangling, so decline rather than guess.
+            return None;
+        }
+        interpretation.insert(constant, representative);
+    }
+    // A constant that a unit equation merged does not map to *itself*, so the
+    // requirement is that its chain reaches a fixpoint (a class
+    // representative maps to itself), not that it returns to the start. More
+    // steps than there are constants means a cycle, which `EqClasses` cannot
+    // produce but which would leave the interpretation inconsistent, so
+    // decline rather than guess.
+    for name in domain.iter().map(|name| name.as_str()) {
+        let mut current = name;
+        let mut steps = 0usize;
+        while current != interpretation[current] {
+            current = interpretation[current];
+            steps += 1;
+            if steps > domain_size {
+                return None;
+            }
+        }
+    }
     let positions: BTreeMap<&str, usize> = domain
         .iter()
         .enumerate()
         .map(|(index, name)| (name.as_str(), index))
         .collect();
+
+    // Self-check the reading against the input instead of trusting the caller
+    // to have threaded the class map through. A positive *unit* equality
+    // between two distinct constants forces them to share an element, and a
+    // certificate that gave them separate elements would assert their
+    // disequality — an unsound model for a `Satisfiable` verdict. Checking the
+    // originals here makes that impossible to emit however this function is
+    // called, which is the property worth having: the bug this guards was a
+    // silent wrong answer, not a crash.
+    for clause in originals {
+        if clause.literals.len() != 1 {
+            continue;
+        }
+        let literal = &clause.literals[0];
+        let Atom::Eq(left, right) = &literal.atom else {
+            continue;
+        };
+        if !literal.positive {
+            continue;
+        }
+        let (Term::App(left, left_args), Term::App(right, right_args)) = (left, right) else {
+            continue;
+        };
+        if !left_args.is_empty() || !right_args.is_empty() || left == right {
+            continue;
+        }
+        let left = symbols.resolve(*left);
+        let right = symbols.resolve(*right);
+        if interpretation.get(left) != interpretation.get(right) {
+            return None;
+        }
+    }
 
     // Seed every table with `false`, then set the atoms the solver assigned.
     let mut total_entries = 0usize;
@@ -664,7 +749,8 @@ pub(crate) fn build_model_certificate(
             if !inner.is_empty() {
                 return None;
             }
-            tuple.push(*positions.get(symbols.resolve(*constant))?);
+            let name = symbols.resolve(*constant);
+            tuple.push(*positions.get(*interpretation.get(name)?)?);
         }
         let table = tables.get_mut(name)?;
         let index = table_index(table.arity, domain_size, &tuple)?;
@@ -673,10 +759,9 @@ pub(crate) fn build_model_certificate(
 
     let mut certificate = ModelCertificate {
         domain_size,
-        constants: domain
-            .iter()
-            .enumerate()
-            .map(|(index, name)| (name.clone(), index))
+        constants: interpretation
+            .into_iter()
+            .map(|(constant, representative)| (constant.to_string(), positions[representative]))
             .collect(),
         functions: BTreeMap::new(),
         predicates: tables,
@@ -726,6 +811,77 @@ mod tests {
                 role: "axiom".into(),
             },
         )
+    }
+
+    /// A certificate must interpret every constant of an equality class as the
+    /// *same* element. The old per-constant assignment gave `a` and `b` their
+    /// own elements, so a certificate for a clause set containing `a = b`
+    /// asserted `a != b` — an unsound model for a `Satisfiable` verdict.
+    ///
+    /// This is the regression test for that: build the certificate the way the
+    /// router does, from the class map `expand_equality` produces, and require
+    /// `a = b` to hold under the certificate's own `StrictIdentity` equality.
+    #[test]
+    fn certificate_interprets_merged_constants_as_one_element() {
+        use crate::TermOrdering;
+
+        let mut symbols = SymbolTable::new();
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let q = symbols.intern("q");
+        let mut ids = ClauseIdGen::new();
+        let unit_eq = input_clause(
+            &mut ids,
+            vec![Literal::pos(Atom::eq(Term::constant(a), Term::constant(b)))],
+        );
+        let forces_q = input_clause(
+            &mut ids,
+            vec![Literal::pos(Atom::pred(q, vec![Term::constant(a)]))],
+        );
+        let expanded = crate::certified_eq::expand_equality(
+            &[unit_eq.clone(), forces_q.clone()],
+            &TermOrdering::KBO,
+            &mut ids,
+        )
+        .expect("a unit equation is inside the fragment");
+        assert!(
+            !expanded.class_representatives.is_empty(),
+            "the unit equation must produce a class to merge"
+        );
+
+        let atoms = vec![Atom::pred(q, vec![Term::constant(a)])];
+        let certificate = build_model_certificate(
+            &atoms,
+            &[unit_eq.clone(), forces_q.clone()],
+            &expanded.class_representatives,
+            &symbols,
+            &|_| Some(true),
+        )
+        .expect("certificate");
+        assert_eq!(certificate.equality, EqualitySemantics::StrictIdentity);
+        let a_element = certificate.constants["a"];
+        let b_element = certificate.constants["b"];
+        assert_eq!(
+            a_element, b_element,
+            "constants merged by a unit equation must share a domain element"
+        );
+        // And the predicate still has to hold where the solver put it.
+        assert!(certificate.predicates["q"].table[a_element]);
+
+        // Without the class map the builder cannot know about the merge, so it
+        // must decline rather than emit a certificate whose distinct-element
+        // reading contradicts the unit equation.
+        assert!(
+            build_model_certificate(
+                &atoms,
+                &[unit_eq.clone(), forces_q.clone()],
+                &[],
+                &symbols,
+                &|_| Some(true),
+            )
+            .is_none(),
+            "a distinct-element reading of a merged constant must not be emitted"
+        );
     }
 
     fn sat_fixture() -> (Vec<Clause>, Vec<Atom>, SymbolTable) {
@@ -933,6 +1089,7 @@ mod tests {
             &clauses,
             &[],
             &atoms,
+            &[],
             &symbols,
             &mut ClauseIdGen::new(),
             Duration::from_secs(5),
@@ -988,6 +1145,7 @@ mod tests {
             &clauses,
             &[],
             &atoms,
+            &[],
             &symbols,
             &mut ids,
             Duration::from_secs(5),
@@ -1026,6 +1184,7 @@ mod tests {
             &sat_clauses,
             &[],
             &sat_atoms,
+            &[],
             &symbols,
             &mut ClauseIdGen::new(),
             Duration::from_secs(5),
@@ -1055,6 +1214,7 @@ mod tests {
             &unsat_clauses,
             &[],
             &unsat_atoms,
+            &[],
             &symbols,
             &mut ids,
             Duration::from_secs(5),
@@ -1089,7 +1249,7 @@ mod tests {
 
         // Variable order: 1 -> p(a), 2 -> p(b), 3 -> r(a). Only p(a) is set.
         let ordered = vec![pa.clone(), pb.clone(), ra.clone()];
-        let certificate = build_model_certificate(&ordered, &originals, &syms, &|variable| {
+        let certificate = build_model_certificate(&ordered, &originals, &[], &syms, &|variable| {
             (variable == 1).then_some(true)
         })
         .expect("certificate is produced");
@@ -1132,7 +1292,7 @@ mod tests {
                 role: "axiom".into(),
             },
         )];
-        assert!(build_model_certificate(&[pa], &originals, &syms, &|_| Some(true)).is_none());
+        assert!(build_model_certificate(&[pa], &originals, &[], &syms, &|_| Some(true)).is_none());
     }
 
     #[test]
@@ -1152,7 +1312,7 @@ mod tests {
             },
         )];
         let certificate =
-            build_model_certificate(&[pa], &originals, &syms, &|_| None).expect("certificate");
+            build_model_certificate(&[pa], &originals, &[], &syms, &|_| None).expect("certificate");
         assert_eq!(certificate.predicates["p"].table, vec![false]);
     }
 }
