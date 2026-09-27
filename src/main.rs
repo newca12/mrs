@@ -560,7 +560,10 @@ fn main() {
         None
     };
     let _address_space_limit = if hardware_mode == mrs_search::HardwareMode::CascSim {
-        match mrs_search::limit_address_space_mb(mrs_search::CASC_MEMORY_MB) {
+        let address_space_budget_mb = hardware_profile
+            .memory_budget_mb
+            .unwrap_or(mrs_search::CASC_MEMORY_MB);
+        match mrs_search::limit_address_space_mb(address_space_budget_mb) {
             Ok(limit) => {
                 let applied = limit.applied_mb();
                 if applied == u64::MAX {
@@ -568,11 +571,10 @@ fn main() {
                         "% Hardware warning: no address-space ceiling could be applied; the \
                          inherited limit is unlimited, so only the RSS watchdog bounds memory"
                     );
-                } else if applied < mrs_search::CASC_MEMORY_MB {
+                } else if applied < address_space_budget_mb {
                     eprintln!(
                         "% Hardware warning: address-space ceiling clamped to {applied} MB by the \
-                         inherited hard limit, below the {} MB CASC allowance",
-                        mrs_search::CASC_MEMORY_MB
+                         inherited hard limit, below the requested {address_space_budget_mb} MB allowance"
                     );
                 }
                 Some(limit)

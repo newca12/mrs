@@ -66,6 +66,10 @@
 #                       Concurrent jobs in casc-sim all pin to the same 8 cores,
 #                       so --jobs N behaves like N problems sharing one CASC
 #                       machine -- which is what the W8J2 runs did.
+#   MRS_MAX_MEMORY_MB   Explicit per-run memory ceiling; in EPS dual-search mode
+#                       this total is divided across the certifier and portfolio.
+#   MRS_SIM_TIME_FACTOR casc-sim wall-clock multiplier (default 2); 0 means
+#                       continue until a resource cap.
 #
 # Output:
 #   <output>/run.csv    — one row per (problem, system)

@@ -75,9 +75,9 @@ export RUST_MIN_STACK=67108864
 
 # EPS is measured with both the fail-closed certified path and the ordinary
 # cooperative portfolio. Keep the normal worker allotment by running one
-# certifier worker plus MRS_WORKERS-1 portfolio workers concurrently; both
-# receive the full budget. The certified result can add sound EPS coverage,
-# while the established portfolio continues searching as before.
+# certifier worker plus MRS_WORKERS-1 portfolio workers concurrently. Their
+# memory ceilings partition the run-level allowance. The certified result can
+# add sound EPS coverage while the established portfolio continues searching.
 if [[ "${DIV_LOWER}" == "eps" && "${MRS_EPS_CERTIFY:-1}" != "0" ]]; then
     TOTAL_WORKERS="${MRS_WORKERS:-8}"
     if ! [[ "${TOTAL_WORKERS}" =~ ^[0-9]+$ ]] || (( TOTAL_WORKERS < 2 )); then
@@ -103,17 +103,50 @@ if [[ "${DIV_LOWER}" == "eps" && "${MRS_EPS_CERTIFY:-1}" != "0" ]]; then
     # cores to spare (MRS_CERT_WORKERS=8 alongside a 7-worker portfolio is 15
     # threads) when the extra cert throughput is wanted for its own sake.
     CERT_WORKERS="${MRS_CERT_WORKERS:-1}"
-    "${BINARY}" --time "${SOFT_TIME}" --workers "${CERT_WORKERS}" --schedule casc_eps \
+    if ! [[ "${CERT_WORKERS}" =~ ^[0-9]+$ ]] || (( CERT_WORKERS < 1 )); then
+        echo "% SZS status Error (MRS_CERT_WORKERS must be a positive integer)"
+        exit 1
+    fi
+    PORTFOLIO_WORKERS=$((TOTAL_WORKERS - 1))
+    HARDWARE_ARGS=()
+    if [[ -n "${MRS_HARDWARE:-}" ]]; then
+        HARDWARE_ARGS+=(--hardware "${MRS_HARDWARE}")
+    fi
+    if [[ -n "${MRS_SIM_TIME_FACTOR:-}" ]]; then
+        HARDWARE_ARGS+=(--sim-time-factor "${MRS_SIM_TIME_FACTOR}")
+    fi
+    # This is one logical run split across two processes. For fixed CASC-shaped
+    # profiles, divide the run-level memory allowance in proportion to worker
+    # count so the two independent RSS/RLIMIT_AS guards cannot each consume the
+    # full allowance. An explicit MRS_MAX_MEMORY_MB remains the run-level cap.
+    CERT_MEMORY_ENV=()
+    PORTFOLIO_MEMORY_ENV=()
+    case "${MRS_HARDWARE:-}" in
+        casc|casc-sim|casc_sim|sim) FIXED_HARDWARE_MEMORY=1 ;;
+        *) FIXED_HARDWARE_MEMORY=0 ;;
+    esac
+    if [[ -n "${MRS_MAX_MEMORY_MB:-}" || "${FIXED_HARDWARE_MEMORY}" -eq 1 ]]; then
+        TOTAL_MEMORY_MB="${MRS_MAX_MEMORY_MB:-131072}"
+        if [[ "${TOTAL_MEMORY_MB}" =~ ^[0-9]+$ ]]; then
+            CONCURRENT_WORKERS=$(( CERT_WORKERS + PORTFOLIO_WORKERS ))
+            CERT_MEMORY_MB=$(( TOTAL_MEMORY_MB * CERT_WORKERS / CONCURRENT_WORKERS ))
+            PORTFOLIO_MEMORY_MB=$(( TOTAL_MEMORY_MB - CERT_MEMORY_MB ))
+            CERT_MEMORY_ENV=(MRS_MAX_MEMORY_MB="${CERT_MEMORY_MB}")
+            PORTFOLIO_MEMORY_ENV=(MRS_MAX_MEMORY_MB="${PORTFOLIO_MEMORY_MB}")
+        fi
+    fi
+    env "${CERT_MEMORY_ENV[@]}" "${BINARY}" --time "${SOFT_TIME}" --workers "${CERT_WORKERS}" \
+        "${HARDWARE_ARGS[@]}" --schedule casc_eps \
         --strategy "${CERTIFY_STRATEGY}" --certify-ordered "${PROBLEM}" \
         >"${TMP_DIR}/cert.stdout" 2>"${TMP_DIR}/cert.stderr" &
     CERT_PID=$!
 
-    PORTFOLIO_WORKERS=$((TOTAL_WORKERS - 1))
     PORTFOLIO_ARGS=(--time "${SOFT_TIME}" --workers "${PORTFOLIO_WORKERS}" --schedule "${SCHEDULE}")
     if [[ -n "${MRS_PORTFOLIO:-}" ]]; then
         PORTFOLIO_ARGS+=(--portfolio "${MRS_PORTFOLIO}")
     fi
-    "${BINARY}" "${PORTFOLIO_ARGS[@]}" "${PROBLEM}" \
+    env "${PORTFOLIO_MEMORY_ENV[@]}" "${BINARY}" "${PORTFOLIO_ARGS[@]}" \
+        "${HARDWARE_ARGS[@]}" "${PROBLEM}" \
         >"${TMP_DIR}/portfolio.stdout" 2>"${TMP_DIR}/portfolio.stderr" &
     PORTFOLIO_PID=$!
 
@@ -191,6 +224,9 @@ ARGS=(--time "${SOFT_TIME}" --workers "${MRS_WORKERS:-8}" --schedule "${SCHEDULE
 # one on a development host, adaptive (the default) to fit whatever this is.
 if [[ -n "${MRS_HARDWARE:-}" ]]; then
     ARGS+=(--hardware "${MRS_HARDWARE}")
+fi
+if [[ -n "${MRS_SIM_TIME_FACTOR:-}" ]]; then
+    ARGS+=(--sim-time-factor "${MRS_SIM_TIME_FACTOR}")
 fi
 if [[ -n "${MRS_PORTFOLIO:-}" ]]; then
     ARGS+=(--portfolio "${MRS_PORTFOLIO}")
