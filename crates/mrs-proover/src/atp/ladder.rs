@@ -72,20 +72,39 @@ impl Atp for LadderAtp {
         let per = std::cmp::max(Duration::from_secs(1), budget);
 
         std::thread::scope(|scope| {
-            let num_backends = remaining_backends.len();
+            // Counted as threads are actually started, not as backends were
+            // planned: the wait below blocks until that many verdicts arrive, so
+            // a refused spawn has to lower the count or the step would wait
+            // for a verdict that can never come.
+            let mut started = 0usize;
             for b in &remaining_backends {
                 let tx = tx.clone();
                 let cancel_ref = &cancel_flag;
-                scope.spawn(move || {
-                    let res = b.check_step(symbols, premises, conclusion, per, cancel_ref);
-                    if res == AtpVerdict::Sound || res == AtpVerdict::Unsound {
-                        cancel_ref.store(true, std::sync::atomic::Ordering::Relaxed);
+                // `check_step` runs an ATP's inference machinery, which
+                // recurses through unification and indexing on the goal, so
+                // these threads need the recursion stack rather than the 2 MiB
+                // a spawned thread defaults to.
+                match std::thread::Builder::new()
+                    .stack_size(mrs_core::RECURSION_STACK_BYTES)
+                    .spawn_scoped(scope, move || {
+                        let res = b.check_step(symbols, premises, conclusion, per, cancel_ref);
+                        if res == AtpVerdict::Sound || res == AtpVerdict::Unsound {
+                            cancel_ref.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        let _ = tx.send(res);
+                    }) {
+                    Ok(_) => started += 1,
+                    Err(error) => {
+                        eprintln!(
+                            "Warning: could not spawn an ATP backend thread ({error}); \
+                             stepping with the remaining backends."
+                        );
                     }
-                    let _ = tx.send(res);
-                });
+                }
             }
             drop(tx);
 
+            let num_backends = started;
             let mut resolved = AtpVerdict::Unknown;
             let mut received = 0;
             while received < num_backends {

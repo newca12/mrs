@@ -53,6 +53,15 @@ fn committed_evil_proofs_never_certify() {
     // is a pure function of its inputs (no global state), so scoped threads
     // borrowing the inputs are sound. Work-stealing via a shared index keeps
     // slow cases from straggling on one thread.
+    // Every thread below parses TPTP with a recursive-descent parser and then
+    // replays the proof through the kernel, both of which recurse to the depth
+    // of the input. A spawned thread's stack defaults to 2 MiB, which these
+    // deliberately nasty cases are known to exceed, and an overflow aborts the
+    // process with no output rather than failing one case. Set it here: this
+    // crate depends only on sha2/serde so it cannot share the constant the
+    // prover crates use, so the two must be kept in step deliberately.
+    const RECURSION_STACK: usize = 64 * 1024 * 1024;
+
     let n_workers = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1)
@@ -61,33 +70,37 @@ fn committed_evil_proofs_never_certify() {
     let next = AtomicUsize::new(0);
     let outcomes: Mutex<Vec<CaseOutcome>> = Mutex::new(Vec::with_capacity(inputs.len()));
     std::thread::scope(|scope| {
-        for _ in 0..n_workers {
-            scope.spawn(|| {
-                let mut local = Vec::new();
-                loop {
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    if i >= inputs.len() {
-                        break;
+        for worker_id in 0..n_workers {
+            std::thread::Builder::new()
+                .name(format!("evil-proof-{worker_id}"))
+                .stack_size(RECURSION_STACK)
+                .spawn_scoped(scope, || {
+                    let mut local = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        if i >= inputs.len() {
+                            break;
+                        }
+                        let (name, problem_text, proof_text) = &inputs[i];
+                        let result = (|| {
+                            let problem = parse_tptp(problem_text)
+                                .map_err(|error| format!("problem parse failed: {error}"))?;
+                            let proof = parse_tptp(proof_text)
+                                .map_err(|error| format!("proof parse failed: {error}"))?;
+                            let verdict =
+                                verify_strict(&problem, &proof, VerificationLimits::default());
+                            Ok(matches!(verdict, KernelVerdict::Certified))
+                        })();
+                        local.push(CaseOutcome {
+                            name: name.clone(),
+                            result,
+                        });
                     }
-                    let (name, problem_text, proof_text) = &inputs[i];
-                    let result = (|| {
-                        let problem = parse_tptp(problem_text)
-                            .map_err(|error| format!("problem parse failed: {error}"))?;
-                        let proof = parse_tptp(proof_text)
-                            .map_err(|error| format!("proof parse failed: {error}"))?;
-                        let verdict =
-                            verify_strict(&problem, &proof, VerificationLimits::default());
-                        Ok(matches!(verdict, KernelVerdict::Certified))
-                    })();
-                    local.push(CaseOutcome {
-                        name: name.clone(),
-                        result,
-                    });
-                }
-                if !local.is_empty() {
-                    outcomes.lock().expect("outcomes mutex").extend(local);
-                }
-            });
+                    if !local.is_empty() {
+                        outcomes.lock().expect("outcomes mutex").extend(local);
+                    }
+                })
+                .unwrap_or_else(|error| panic!("could not spawn evil-proof worker: {error}"));
         }
     });
 

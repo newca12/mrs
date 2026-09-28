@@ -386,35 +386,55 @@ fn run_atp_jobs(
     let results: Mutex<Vec<(usize, StepOutcome)>> = Mutex::new(Vec::with_capacity(jobs.len()));
 
     std::thread::scope(|scope| {
-        for _ in 0..n_workers {
-            scope.spawn(|| {
-                loop {
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    if i >= jobs.len() {
-                        break;
-                    }
-                    let job = &jobs[i];
-                    // `jobs.len() - i` is the number of not-yet-claimed jobs
-                    // (including this one); used to share the remaining wall
-                    // budget fairly while accounting for parallel execution.
-                    let jobs_left = jobs.len() - i;
-                    let budget = step_budget(
-                        deadline,
-                        per_step,
-                        n_workers,
-                        jobs_left,
-                        job.is_skolemisation,
-                    );
-                    let oc = finish_atp(atp, symbols, &job.step, budget);
-                    if settings.verbose {
-                        eprintln!(
-                            "% step slot {} [rule={:?}] -> {:?}",
-                            job.slot, job.step.rule, oc
+        for worker_id in 0..n_workers {
+            // `finish_atp` runs a full ATP step — unification, indexing,
+            // paramodulation and rewriting over the step's goal — which
+            // recurses to the depth of the terms involved. On the 2 MiB a
+            // spawned thread defaults to, an adversarial or deeply nested proof
+            // overflows the stack, and that aborts the process with no output.
+            let spawned = std::thread::Builder::new()
+                .name(format!("mrs-proover-step-{worker_id}"))
+                .stack_size(mrs_core::RECURSION_STACK_BYTES)
+                .spawn_scoped(scope, || {
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        if i >= jobs.len() {
+                            break;
+                        }
+                        let job = &jobs[i];
+                        // `jobs.len() - i` is the number of not-yet-claimed jobs
+                        // (including this one); used to share the remaining wall
+                        // budget fairly while accounting for parallel execution.
+                        let jobs_left = jobs.len() - i;
+                        let budget = step_budget(
+                            deadline,
+                            per_step,
+                            n_workers,
+                            jobs_left,
+                            job.is_skolemisation,
                         );
+                        let oc = finish_atp(atp, symbols, &job.step, budget);
+                        if settings.verbose {
+                            eprintln!(
+                                "% step slot {} [rule={:?}] -> {:?}",
+                                job.slot, job.step.rule, oc
+                            );
+                        }
+                        results.lock().expect("results mutex").push((job.slot, oc));
                     }
-                    results.lock().expect("results mutex").push((job.slot, oc));
-                }
-            });
+                });
+            // A refused thread is a degraded verification, not a failed one:
+            // jobs are claimed from a shared counter, so the remaining workers
+            // pick up the work and any step left unclaimed keeps its existing
+            // outcome. `n_workers` still drives the budget split above, which
+            // only ever grants a step more of the remaining wall clock than its
+            // fair share, and the deadline check bounds the run either way.
+            if let Err(error) = spawned {
+                eprintln!(
+                    "Warning: could not spawn verification worker {worker_id} ({error}); \
+                     verifying with fewer threads."
+                );
+            }
         }
     });
 

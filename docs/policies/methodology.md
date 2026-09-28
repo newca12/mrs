@@ -311,11 +311,13 @@ Before a broad run:
 5. Inspect stdout and stderr, including `% SZS detail` telemetry.
 
 For memory-constrained machines, never start a broad benchmark first. Use one
-problem at a time, explicit worker counts, and an external timeout:
+problem at a time, explicit worker counts, and an external timeout. No stack
+environment variable is needed: every thread that recurses sizes its own stack
+in code (`mrs_core::RECURSION_STACK_BYTES`).
 
 ```bash
 timeout --signal=TERM --kill-after=10s 45s \
-  env TPTP=/path/to/TPTP RUST_MIN_STACK=67108864 \
+  env TPTP=/path/to/TPTP \
   target/release/mrs --time 30 --workers 1 --schedule casc_fne problem.p
 ```
 

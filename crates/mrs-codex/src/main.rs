@@ -1543,7 +1543,7 @@ fn run_profile_only(args: &Args) {
     });
     let pool = ThreadPoolBuilder::new()
         .num_threads(num_threads)
-        .stack_size(64 * 1024 * 1024)
+        .stack_size(mrs_core::RECURSION_STACK_BYTES)
         .build()
         .expect("Failed to build rayon thread pool");
 
@@ -1920,7 +1920,7 @@ fn run_import_casc(args: &Args, import_path: &Path) {
         });
         let pool = ThreadPoolBuilder::new()
             .num_threads(num_threads)
-            .stack_size(64 * 1024 * 1024)
+            .stack_size(mrs_core::RECURSION_STACK_BYTES)
             .build()
             .expect("Failed to build rayon thread pool");
 
@@ -2451,7 +2451,7 @@ fn main() {
     });
     let pool = ThreadPoolBuilder::new()
         .num_threads(num_threads)
-        .stack_size(64 * 1024 * 1024) // 64 MiB stack size (prevents parsing stack overflow)
+        .stack_size(mrs_core::RECURSION_STACK_BYTES)
         .build()
         .expect("Failed to build rayon thread pool");
 

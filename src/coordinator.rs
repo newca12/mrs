@@ -83,14 +83,28 @@ impl AsyncCoordinator {
         });
 
         let coordinator_worker = Arc::clone(&coordinator);
-        let handle = std::thread::Builder::new()
+        // The coordinator runs the strict proof kernel, which replays a whole
+        // derivation and recurses to the depth of every term in it, so it needs
+        // the recursion stack rather than the 2 MiB a spawned thread defaults
+        // to. An overflow here would abort the process with no output.
+        match std::thread::Builder::new()
             .name("mrs-cert-coordinator".to_string())
+            .stack_size(mrs_core::RECURSION_STACK_BYTES)
             .spawn(move || {
                 coordinator_worker.worker_loop(rx);
-            })
-            .expect("failed to spawn coordinator thread");
+            }) {
+            Ok(handle) => *coordinator.join_handle.lock().unwrap() = Some(handle),
+            Err(error) => {
+                // Not fatal: the search runs independently, and this thread
+                // only turns refutation candidates into certified results. The
+                // run loses certification, not its answer.
+                eprintln!(
+                    "Warning: could not spawn the certification coordinator ({error}); \
+                     continuing without self-check certification."
+                );
+            }
+        }
 
-        *coordinator.join_handle.lock().unwrap() = Some(handle);
         coordinator
     }
 
