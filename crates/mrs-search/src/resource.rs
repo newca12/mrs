@@ -323,11 +323,14 @@ pub fn resolve_profile(
         (Some(limit), Some(host)) => host < limit,
         _ => false,
     };
-    let effective_memory_mb = match (memory_budget_mb, host_memory_mb) {
-        (Some(limit), Some(host)) => Some(limit.min(host)),
-        (Some(limit), None) => Some(limit),
-        (None, Some(host)) => Some(host),
-        (None, None) => None,
+    // The enforced ceiling is clipped to what this process can actually get,
+    // not to what the machine has. See `host_available_memory_mb` for why the
+    // distinction is load-bearing.
+    let effective_memory_mb = match (memory_budget_mb, host_memory_mb, host_available_memory_mb()) {
+        (Some(limit), Some(host), available) => Some(limit.min(available.unwrap_or(host))),
+        (Some(limit), None, _) => Some(limit),
+        (None, Some(host), _) => Some(host),
+        (None, None, _) => None,
     };
 
     HardwareProfile {
@@ -372,12 +375,34 @@ pub fn profile_warnings(
 
 /// Total RAM on this host in MB, ignoring cgroup limits.
 ///
-/// Only used to report whether a requested allowance is representable here; the
-/// watchdog uses [`memory_budget_mb`], which is cgroup-aware.
+/// Used to decide whether a requested allowance is representable here. That is
+/// a property of the machine, so `MemTotal` is the right quantity: it does not
+/// change between one call and the next.
 pub fn host_total_memory_mb() -> Option<u64> {
+    meminfo_field_mb("MemTotal:")
+}
+
+/// RAM this process can still get in MB, ignoring cgroup limits.
+///
+/// This is the quantity the *enforced* ceiling has to be derived from, and it
+/// is not the same as [`host_total_memory_mb`]. A ceiling set from `MemTotal`
+/// on a host that is not otherwise idle is above what the kernel will actually
+/// give this process, so the OOM killer gets there first and the run dies with
+/// no status — the watchdog never gets the chance to fail it closed. Measured
+/// on the 2-core/15 GB development box, a ceiling derived from `MemTotal`
+/// (15 876 MB) sat ~2 GB above `MemAvailable` (13 897 MB).
+///
+/// `MemAvailable` is a kernel estimate that moves, so it is only used for the
+/// enforced ceiling and never for the representability check or a warning;
+/// nothing user-visible should flap with transient memory pressure.
+pub fn host_available_memory_mb() -> Option<u64> {
+    meminfo_field_mb("MemAvailable:")
+}
+
+fn meminfo_field_mb(field: &str) -> Option<u64> {
     let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
     for line in meminfo.lines() {
-        if let Some(rest) = line.strip_prefix("MemTotal:") {
+        if let Some(rest) = line.strip_prefix(field) {
             return rest
                 .split_whitespace()
                 .next()?

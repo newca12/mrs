@@ -247,9 +247,10 @@ pub(crate) fn certify_sat_backed(
     let (encoded, ordered_atoms) = encode_sat(grounded, atoms, symbols, deadline)?;
     let var_count = ordered_atoms.len();
     trace_certify(format!(
-        "sat_encoded vars={var_count} clauses={} skipped={}",
+        "sat_encoded vars={var_count} clauses={} skipped={} rss_mb={}",
         encoded.len(),
         grounded.len().saturating_sub(encoded.len()),
+        crate::certified::current_rss_mb().unwrap_or(0),
     ));
     if encoded.is_empty() {
         // Tautology-only input: valid in every model, still EPR-checked.
@@ -1223,8 +1224,11 @@ mod tests {
             &symbols,
             &crate::TermOrdering::KBO,
             &mut ClauseIdGen::new(),
-            Duration::from_secs(5),
-            1,
+            crate::certified::CertifyBudget {
+                time_limit: Duration::from_secs(5),
+                workers: 1,
+                memory_mb: None,
+            },
         )
         .expect("tier 1 must decide tiny SAT");
         assert!(matches!(tier1.result, SearchResult::Saturated(_)));
@@ -1248,8 +1252,11 @@ mod tests {
             &symbols,
             &crate::TermOrdering::KBO,
             &mut ClauseIdGen::new(),
-            Duration::from_secs(5),
-            1,
+            crate::certified::CertifyBudget {
+                time_limit: Duration::from_secs(5),
+                workers: 1,
+                memory_mb: None,
+            },
         )
         .expect("tier 1 must decide tiny UNSAT");
         assert!(matches!(tier1.result, SearchResult::Refutation(..)));

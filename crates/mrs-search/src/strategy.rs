@@ -1319,8 +1319,11 @@ fn run_certified_ordered_fragment(
         symbols,
         &config.ordering,
         &mut id_gen,
-        config.time_limit,
-        cert_workers,
+        crate::certified::CertifyBudget {
+            time_limit: config.time_limit,
+            workers: cert_workers,
+            memory_mb: config.resource_limits.max_memory_mb,
+        },
     ) {
         Ok(report) => (
             report.result,
