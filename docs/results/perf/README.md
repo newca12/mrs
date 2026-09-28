@@ -12,6 +12,45 @@ For proving capability, use the CASC harness instead: `docs/guides/benchmarking.
 and `crates/mrs-bench/casc.sh`. A solved count is the objective the schedules
 were tuned for; throughput is a diagnostic.
 
+## `host_slug` is a CPU identity, not a machine identity
+
+Read this before concluding anything from a table that repeats a host name.
+
+`host_slug` is derived from the CPU model string and the physical core count
+only — `perf_probe.rs`'s `HostInfo::slug` digests `cpu_model` and appends
+`-x{physical_cores}`. It does **not** consult RAM, kernel, or any other
+per-machine value, because it is computed by the probe binary on the machine
+being measured and there is no stable machine ID to use instead.
+
+So two machines of the same model and core count **share a slug**, and the bank
+currently holds six machines under four names:
+
+| `host_slug` | Machines in the bank | Told apart by |
+|---|---|---|
+| `intel-r-xeon-r-cpu-e5-2407-0-x8-b99a4cf7` | 2 | `ram_total_mb` 96350 / 95969, `kernel` 3.10.0-1160 / 4.18.0-553, `binary_sha256` |
+| `intel-r-xeon-r-silver-4108-c-x16-90b96cec` | 2 | `ram_total_mb` 63763 / 128019, `kernel` 5.14.0-611 / 5.14.0-570, `binary_sha256` |
+| `intel-r-core-tm-i7-5820k-cpu-x6-e812a5d5` | 1 | — |
+| `intel-r-core-tm-i3-5010u-cpu-x2-61bd0b0d` | 1 | — |
+
+Three consequences, all visible in the artifacts rather than hidden:
+
+1. A cross-host table lists the same `host_slug` on two rows with different
+   throughputs. They are two machines, and both rows are correct; the name
+   cannot tell you which is which. Use `ram_total_mb` or `kernel` to separate
+   them, and do not read a repeated name as a duplicate measurement.
+2. A dated report is named `<date>-<host_slug>.md`, so **only one report can
+   exist per slug**, and it describes whichever machine was banked last. For
+   this round that is the E5-2407 with 95969 MB on kernel 4.18, and the Silver
+   with 128019 MB on kernel 5.14.0-570 — each report's own Provenance table
+   says which. The other machine of each pair is in `bank.tsv` and has no
+   report.
+3. A future run on either machine appends to the same slug, so this compounds.
+
+The fix is to fold a machine-specific value into the slug digest — `ram_total_mb`
+and `kernel` differ on every colliding pair in the table above. It cannot be
+applied retroactively, because `host_slug` is written into each row at measure
+time, so adopting it means re-measuring every host in the bank.
+
 ## Why fixed work, not a wall clock
 
 The obvious measurement — run the prover for 30 seconds, count the clauses it
@@ -71,8 +110,13 @@ the superposition closure unbounded. Without them a random equational set tends
 to saturate in a few thousand inferences, which measures nothing. They consume no
 seed entropy; they are part of the workload definition.
 
-The default single-worker run is about 11 s and under 400 MB on a 3.3 GHz
-i7-5820K, with run-to-run spread near one percent.
+The default single-worker run is 8.6 s to 21.1 s and 330–335 MB across the six
+machines currently banked, with run-to-run spread from 0.2% to 2.7% on those
+rows. The spread is a row's own noise floor, and a difference between two hosts
+smaller than the two rows' combined spread is not a result. The widest rows in
+the bank are the wide ones: ±9.7% on the E5-2407 at 8 workers and ±9.4% on the
+Silver at 16, so those cannot support a fine comparison either — which is what
+scaling a 5000-clause ceiling across 8 to 16 cores buys.
 
 ## What a row records
 
@@ -148,7 +192,7 @@ exhausted address space, so the process died with SIGABRT and a core dump.
 
 `.cargo/config.toml` sets `-C target-cpu=native`, so a binary built on one
 machine targets that machine and is neither comparable nor necessarily runnable
-on another. Every host is therefore measured twice:
+on another. Every host that can run both is therefore measured twice:
 
 - **`native`** — tuned for the host it was built on. The number you care about
   for that machine.
