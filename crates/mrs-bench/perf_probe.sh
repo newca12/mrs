@@ -31,7 +31,9 @@
 #   --shape NAME        mixed | equational | relational (default: mixed)
 #   --clauses N         Generated input clauses (default: 600)
 #   --seed N            Generator seed, decimal or 0x hex
-#   --variants LIST     Comma-separated target-cpu builds (default: native,haswell)
+#   --variants LIST     Comma-separated target-cpu builds (default: native,haswell).
+#                       A build the CPU cannot execute is dropped, not run; if
+#                       that leaves nothing, native is measured instead
 #   --memory-budget-mb N  Process RAM ceiling (default: 12288)
 #   --hard-cap MODE     none | cgroup-memory | rlimit-as | auto (default: auto)
 #   --out-dir DIR       Where to keep the raw JSON rows (default:
@@ -43,6 +45,10 @@
 # Environment:
 #   MRS_PERF_BINARY     Use this prebuilt perf_probe binary and do not build
 #   MRS_PERF_SKIP_BUILD=1  Do not build; use the existing binary
+#   MRS_PERF_CPUINFO   Read CPU flags from this file instead of /proc/cpuinfo.
+#                       Test hook: point it at a cpuinfo with the AVX2 flags
+#                       stripped to see the pre-Haswell path on a host that
+#                       supports them
 #
 # Examples:
 #   # Everything: two target-cpu builds, one worker and all physical cores.
@@ -54,6 +60,8 @@
 #   # A single build, no AVATAR, on two workers.
 #   MRS_PERF_SKIP_BUILD=1 crates/mrs-bench/perf_probe.sh --variants native --workers 2
 #
+# On a host with more cores than the 12 GiB ceiling can hold workers for, the
+# probe refuses the default width and prints the largest worker count it can run.
 # On a Nix-based development shell, `direnv exec .` (or an interactive shell
 # with the flake loaded) must already provide cargo. This script deliberately
 # does not invoke `nix develop`: it has to run unchanged on ordinary Linux
@@ -84,15 +92,46 @@ DO_VERIFY=1
 # hands it to the process-wide RSS watchdog. The watchdog is a poller, so a fast
 # allocation burst can overshoot it slightly; `--hard-cap` adds a kernel-level
 # ceiling when an exact bound matters.
+#
+# That ceiling is a *total*, and it is shared by every worker, so it also caps
+# how many workers this host may be asked for. See `worker_ceiling`.
 readonly TOTAL_BUDGET_MB=12288
 # Below this the host has nothing left to measure with, so refuse rather than
 # produce a number shaped by swapping.
 readonly MIN_AVAILABLE_MB=2048
 
+# What one search worker costs out of the budget. The heap figure is the
+# marginal RSS the bank already measures for a worker: 288 MB on the i7-5820K
+# ((1772-332)/5), 285 MB on the i7-10610U ((1187-333)/3) and 293 MB on the
+# i3-5010U (625-332) — consistent to within 3%, and rounded up for margin.
+readonly WORKER_HEAP_MB=320
+# Each worker also reserves a 64 MiB stack (mrs-search/src/strategy.rs, kept
+# large on purpose: the search recurses and an overflow aborts with no output).
+# A lazily committed stack is free against an RSS budget, but an address-space
+# cap charges the whole reservation up front — 64 workers is 4 GiB before a
+# single clause is processed, which is what made a 64-core host abort.
+readonly WORKER_STACK_MB=64
+
 # ISA extensions the `haswell` build needs. Building it on an older chip and
 # running it would die with SIGILL, which would look like a probe failure
-# instead of an unsupported configuration.
-readonly HASWELL_FLAGS="avx2 bmi1 bmi2 fma popcnt"
+# instead of an unsupported configuration, so the list has to cover every
+# instruction `-C target-cpu=haswell` can emit — a CPU that passes a short list
+# and still dies leaves the reader with a core dump instead of a missing row.
+#
+# Two lists, because the two namespaces do not agree. `rustc --print cfg -C
+# target-cpu=haswell` reports `cmpxchg16b` where /proc/cpuinfo says `cx16`, and
+# names below are the cpuinfo ones.
+#
+# The `sse*`, `xsave*`, `fxsr` and `xsaveopt` features that command also reports
+# are omitted: anything with AVX2 has them. So is `lzcnt`, which the kernel does
+# not report for Intel CPUs at all (they have had it since Core 2, but their
+# flags line never lists it), so gating on it would skip `haswell` on every
+# Intel host. Those omissions cannot cost a real row; they only mean the gate
+# is not a proof, and the SIGILL check in `run_measure` is the backstop.
+#
+# A pre-Haswell chip (Xeon E5-2407, for instance) fails the first flag and is
+# measured as `native` only.
+readonly HASWELL_FLAGS="avx avx2 bmi1 bmi2 cx16 f16c fma movbe pclmulqdq popcnt rdrand"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -185,12 +224,32 @@ mem_available_mb() {
 }
 
 # True when the CPU advertises every flag in $1.
+#
+# `MRS_PERF_CPUINFO` exists so the skip path can be exercised on a host that
+# does have the instructions: point it at a cpuinfo with the flags stripped and
+# the probe measures `native` only, exactly as it would on a pre-Haswell CPU.
 cpu_has_flags() {
-    local flags="$1" flag
+    local flags="$1" flag cpuinfo="${MRS_PERF_CPUINFO:-/proc/cpuinfo}"
+    [[ -r "${cpuinfo}" ]] || return 1
     for flag in ${flags}; do
-        grep -qw "${flag}" /proc/cpuinfo || return 1
+        grep -qw "${flag}" "${cpuinfo}" || return 1
     done
     return 0
+}
+
+# Most workers this host may be asked for, given the memory budget.
+#
+# Divides the budget by what one worker costs. Under an address-space cap the
+# stack reservation is charged on top of the heap, because that is what the
+# kernel can fail the allocation on; a cgroup memory cap and the prover's own
+# RSS watchdog both look at resident pages, which never include an untouched
+# stack.
+worker_ceiling() {
+    local per_worker="${WORKER_HEAP_MB}"
+    if [[ "${HARD_CAP_IMPL}" == "rlimit-as" ]]; then
+        per_worker=$(( per_worker + WORKER_STACK_MB ))
+    fi
+    printf '%s' "$(( MEMORY_BUDGET_MB / per_worker ))"
 }
 
 json_field() {
@@ -232,6 +291,30 @@ case "${HARD_CAP}" in
     *) die "--hard-cap must be auto, none, cgroup-memory, or rlimit-as" ;;
 esac
 
+# Decide which builds can actually run here, before anything is built or run, so
+# that the measure loop, the verification pass and the recorded command all see
+# the same list. A CPU that cannot execute a build is not a failure to report
+# around: on a pre-Haswell host the `haswell` row simply does not exist, and
+# `native` is the only comparable number available.
+IFS=',' read -r -a REQUESTED_VARIANTS <<< "${VARIANTS}"
+VARIANT_LIST=()
+for variant in "${REQUESTED_VARIANTS[@]}"; do
+    if [[ "${variant}" == "haswell" ]] && ! cpu_has_flags "${HASWELL_FLAGS}"; then
+        missing=""
+        for flag in ${HASWELL_FLAGS}; do
+            cpu_has_flags "${flag}" || missing="${missing} ${flag}"
+        done
+        log "skipping target-cpu=haswell: this CPU is missing${missing}"
+        continue
+    fi
+    VARIANT_LIST+=("${variant}")
+done
+if (( ${#VARIANT_LIST[@]} == 0 )); then
+    log "warning: none of the requested builds (${VARIANTS}) can run on this CPU; measuring target-cpu=native instead"
+    VARIANT_LIST=(native)
+fi
+VARIANTS="$(IFS=','; printf '%s' "${VARIANT_LIST[*]}")"
+
 if [[ -n "${MRS_PERF_BINARY:-}" && "${VARIANTS}" == *,* ]]; then
     die "MRS_PERF_BINARY supplies one build; set --variants to exactly one target-cpu name"
 fi
@@ -244,6 +327,11 @@ fi
     || die "--memory-budget-mb ${MEMORY_BUDGET_MB} exceeds the ${TOTAL_BUDGET_MB} MB (12 GiB) ceiling this probe promises"
 
 CORES="$(physical_cores)"
+# `nproc` honours the affinity mask, so this is the logical CPU count the same
+# process may use. Reported next to the physical count because the two must
+# differ on any SMT host, and a run where they agree is either a host without
+# SMT or a topology that could not be read.
+LOGICAL_CPUS="$(nproc 2>/dev/null || printf '0')"
 if [[ -z "${WORKER_LIST}" ]]; then
     if (( CORES == 1 )); then
         WORKER_LIST="1"
@@ -298,6 +386,28 @@ else
     HARD_CAP_IMPL="${HARD_CAP}"
 fi
 
+# Refuse a worker count the memory budget cannot hold, rather than starting a
+# run that cannot finish. The budget is a total shared by every worker, so this
+# is a real limit and not a formality: asking a 64-core host for 64 workers put
+# the process 4 GiB over on stack reservations alone, the OS refused the thread,
+# and the search died taking the process with it.
+#
+# The probe measures strong scaling with a fixed work ceiling per worker, so
+# there is no honest way to keep the requested width by shrinking each worker's
+# share: at 64 workers that is a handful of clauses each, which measures nothing.
+# The budget itself cannot be raised either — the 12 GiB promise is the point of
+# the probe. So the answer on a wide host is a narrower `--workers`.
+WORKER_CEILING="$(worker_ceiling)"
+(( WORKER_CEILING >= 1 )) || die "the ${MEMORY_BUDGET_MB} MB ceiling leaves no room for a single ${WORKER_HEAP_MB} MB worker"
+IFS=',' read -r -a REQUESTED_WORKERS <<< "${WORKER_LIST}"
+for workers in "${REQUESTED_WORKERS[@]}"; do
+    [[ "${workers}" =~ ^[0-9]+$ ]] && (( workers > 0 )) || die "bad worker count: ${workers}"
+    if (( workers > WORKER_CEILING )); then
+        die "${workers} workers will not fit in the ${MEMORY_BUDGET_MB} MB ceiling (${WORKER_CEILING} is the most this host can run under it); \
+rerun with --workers 1,${WORKER_CEILING}"
+    fi
+done
+
 # ---------------------------------------------------------------------------
 # Build provenance
 # ---------------------------------------------------------------------------
@@ -325,16 +435,20 @@ GLIBC_VERSION="$(printf '%s\n' "${LDD_OUTPUT}" | sed -n '1s/.*[^0-9.]\([0-9][0-9
 # directories mean the first build is slow once and every later run is a
 # no-op cargo cache hit.
 # ---------------------------------------------------------------------------
+declare -A VARIANT_BINARIES=()
+
 build_variant() {
     local variant="$1" target_dir="${WORKSPACE_ROOT}/target/perf/${1}"
     if [[ -n "${MRS_PERF_BINARY:-}" ]]; then
         PROBE_BINARY="${MRS_PERF_BINARY}"
+        VARIANT_BINARIES["${variant}"]="${PROBE_BINARY}"
         log "using MRS_PERF_BINARY=${PROBE_BINARY} (no build)"
         return
     fi
     if [[ "${MRS_PERF_SKIP_BUILD:-0}" == "1" ]]; then
         PROBE_BINARY="${target_dir}/release/perf_probe"
         [[ -x "${PROBE_BINARY}" ]] || die "MRS_PERF_SKIP_BUILD=1 but ${PROBE_BINARY} does not exist"
+        VARIANT_BINARIES["${variant}"]="${PROBE_BINARY}"
         return
     fi
     log "building target-cpu=${variant} into ${target_dir#"${WORKSPACE_ROOT}"/}"
@@ -343,6 +457,15 @@ build_variant() {
     CARGO_TARGET_DIR="${target_dir}" RUSTFLAGS="-C target-cpu=${variant}" \
         cargo build --release -p mrs-bench --bin perf_probe >&2
     PROBE_BINARY="${target_dir}/release/perf_probe"
+    VARIANT_BINARIES["${variant}"]="${PROBE_BINARY}"
+}
+
+# The binary built for a given target-cpu, kept per variant rather than read from
+# one global. A single global is the last variant built, so the verification pass
+# — which re-measures the *first* configuration — used to run the other build's
+# binary while labelling it with the first one's target-cpu.
+variant_binary() {
+    printf '%s' "${VARIANT_BINARIES[$1]:-}"
 }
 
 # ---------------------------------------------------------------------------
@@ -350,6 +473,9 @@ build_variant() {
 # ---------------------------------------------------------------------------
 run_measure() {
     local variant="$1" workers="$2" out_file="$3" repeat="${4:-1}" spread="${5:-0}"
+    local binary status
+    binary="$(variant_binary "${variant}")"
+    [[ -n "${binary}" ]] || die "internal error: no binary recorded for target-cpu=${variant}"
     local -a prefix=()
     case "${HARD_CAP_IMPL}" in
         cgroup-memory)
@@ -362,19 +488,21 @@ run_measure() {
             # Bounds the whole address space, so resident memory cannot exceed
             # it. Virtual size runs ahead of resident size, so this is a bound
             # on allocations rather than a measurement of the working set; the
-            # working set is what the row's peak RSS column reports.
+            # working set is what the row's peak RSS column reports. It also
+            # charges every thread's stack reservation, which is why the worker
+            # count is checked against the budget before any of this runs.
             prefix=(prlimit --as=$((MEMORY_BUDGET_MB * 1024 * 1024)))
             ;;
     esac
 
     local -a args=(
-        "${PROBE_BINARY}" measure
+        "${binary}" measure
         --processed "${PROCESSED}"
         --workers "${workers}"
         --shape "${SHAPE}"
         --clauses "${CLAUSES}"
         --memory-budget-mb "${MEMORY_BUDGET_MB}"
-        --binary "${PROBE_BINARY}"
+        --binary "${binary}"
         --commit "${COMMIT}"
         --dirty "${DIRTY}"
         --target-cpu "${variant}"
@@ -386,8 +514,18 @@ run_measure() {
     )
     [[ -n "${SEED}" ]] && args+=(--seed "${SEED}")
 
-    if ! "${prefix[@]}" "${args[@]}" > "${out_file}" 2>>"${OUT_DIR}/measure.log"; then
-        die "measurement failed (target-cpu=${variant}, workers=${workers}); see ${OUT_DIR}/measure.log"
+    status=0
+    "${prefix[@]}" "${args[@]}" > "${out_file}" 2>>"${OUT_DIR}/measure.log" || status=$?
+    if (( status != 0 )); then
+        # Name the signal. A bare "measurement failed" is what a 64-core host
+        # got when a worker thread was refused, and the signal is the whole
+        # diagnosis: 132 is SIGILL (this build cannot run on this CPU), 134 is
+        # SIGABRT (the process aborted, e.g. an allocation failed).
+        signal=""
+        if (( status > 128 )); then
+            signal=" (signal $(( status - 128 )))"
+        fi
+        die "measurement failed with status ${status}${signal} (target-cpu=${variant}, workers=${workers}); see ${OUT_DIR}/measure.log"
     fi
     [[ -s "${out_file}" ]] \
         || die "measurement produced no row (target-cpu=${variant}, workers=${workers}); a kernel memory cap kills the process without output, so check --hard-cap and --memory-budget-mb"
@@ -441,21 +579,39 @@ measure_best_of() {
 # ---------------------------------------------------------------------------
 # Measure
 # ---------------------------------------------------------------------------
-log "host: ${CORES} physical cores, ${AVAILABLE_MB} MB available, ceiling ${MEMORY_BUDGET_MB} MB (${HARD_CAP_IMPL})"
+log "host: ${CORES} physical cores, ${LOGICAL_CPUS} logical CPUs, ${AVAILABLE_MB} MB available, ceiling ${MEMORY_BUDGET_MB} MB (${HARD_CAP_IMPL})"
+log "memory: ${WORKER_CEILING} workers is the most the ${MEMORY_BUDGET_MB} MB ceiling holds here"
+if (( LOGICAL_CPUS > 0 && CORES >= LOGICAL_CPUS )); then
+    log "note: the physical count equals the logical count, so no SMT sibling was counted."
+    log "note: that is right for a host without SMT, and it is also exactly what an unreadable"
+    log "note: /sys/devices/system/cpu/*/topology looks like. Nothing here can tell those apart."
+fi
 log "workload: shape=${SHAPE} clauses=${CLAUSES} processed=${PROCESSED} workers=${WORKER_LIST}"
 log "commit: ${COMMIT} (${DIRTY}), rustc ${RUSTC_VERSION}, glibc ${GLIBC_VERSION}"
 
-IFS=',' read -r -a VARIANT_LIST <<< "${VARIANTS}"
 IFS=',' read -r -a WORKERS_LIST <<< "${WORKER_LIST}"
 
+CROSSCHECKED=0
 for variant in "${VARIANT_LIST[@]}"; do
-    if [[ "${variant}" == "haswell" ]] && ! cpu_has_flags "${HASWELL_FLAGS}"; then
-        log "skipping target-cpu=haswell: this CPU does not advertise ${HASWELL_FLAGS}"
-        continue
-    fi
     build_variant "${variant}"
+    # Cross-check the core count this script sized the worker list with against
+    # the prover's own answer. They are two implementations of one policy — this
+    # one in bash, the other `mrs_search::usable_physical_cores` in the binary
+    # that writes the row — and a disagreement would put a `physical_cores`
+    # column in the bank that does not describe the workers the timing came
+    # from. Nothing else would notice. Once per run, on the first build.
+    if (( ! CROSSCHECKED )); then
+        CROSSCHECKED=1
+        PROBE_CORES="$("${PROBE_BINARY}" cores 2>/dev/null || true)"
+        if [[ -z "${PROBE_CORES}" ]]; then
+            log "warning: could not ask the probe binary for its core count; only this script's count (${CORES}) was used"
+        elif [[ "${PROBE_CORES}" != "${CORES}" ]]; then
+            log "warning: this script counts ${CORES} physical cores, the probe binary counts ${PROBE_CORES}."
+            log "warning: the worker list and the bank's physical_cores column come from different code"
+            log "warning: paths, and the rows below are sized by ${CORES}."
+        fi
+    fi
     for workers in "${WORKERS_LIST[@]}"; do
-        [[ "${workers}" =~ ^[0-9]+$ ]] && (( workers > 0 )) || die "bad worker count: ${workers}"
         log "measuring target-cpu=${variant} workers=${workers} (best of ${REPEAT})"
         row="${OUT_DIR}/row-${variant}-w${workers}.json"
         measure_best_of "${variant}" "${workers}" "${row}"
@@ -478,6 +634,8 @@ if (( DO_VERIFY )); then
     first_workers="${WORKERS_LIST[0]}"
     reference="${OUT_DIR}/row-${first_variant}-w${first_workers}.json"
     repeat="${OUT_DIR}/row-verify.json"
+    [[ -s "${reference}" ]] \
+        || die "internal error: ${reference} is missing, so there is nothing to verify the repeat run against"
     log "verifying that the fixed work repeats in a fresh process"
     run_measure "${first_variant}" "${first_workers}" "${repeat}" 1 0
     a="$(json_field "${reference}" work_sha)"
