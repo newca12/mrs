@@ -118,3 +118,15 @@ In addition to the baseline release gate, every certified release promotion requ
   incremental, and other general SAT trace variants remain inconclusive.
 - Untracked benchmark databases, binaries, logs, and `.direnv` state are never
   part of a release commit.
+- The **main** thread's stack is still the one an environment variable sets.
+  TPTP parsing and clausification run there — the parser is recursive descent
+  and `mrs-tptp/doc/technical.md` documents deeply nested formulas as a
+  stack-overflow risk — so the wrappers still need `ulimit -s unlimited`, and a
+  direct `cargo run` on a deeply nested problem can overflow where the
+  competition wrappers would not. Every other thread now sizes its own stack in
+  code (`mrs_core::RECURSION_STACK_BYTES`), so `RUST_MIN_STACK` is gone.
+  *Planned:* remove the last environment dependence by running the parse and
+  clausification phase on a thread with an explicit stack, or by re-executing
+  with a raised `RLIMIT_STACK` at startup, so the binary is correct without any
+  wrapper. Not done here because it changes where the first phase of every run
+  happens.

@@ -24,10 +24,29 @@ they do not necessarily reproduce competition behavior.
 
 ## Stack or memory failures
 
-The benchmark wrapper exports `RUST_MIN_STACK=67108864` and raises the main
-stack where possible. Run one problem at a time, use an external timeout, and
-reduce `--workers` on low-memory hosts. `mrs-search` has resource containment,
-but a host-level OOM is still an infrastructure failure.
+The benchmark wrapper raises the main-thread stack with `ulimit -s`, and every
+thread that recurses sizes its own stack in code
+(`mrs_core::RECURSION_STACK_BYTES`, 64 MiB) — the search workers, the certifier,
+the proof coordinator, the verification workers and the ATP ladder. Nothing
+depends on an ambient `RUST_MIN_STACK` any more, so a direct `cargo run` gets the
+same stacks the wrappers do. Run one problem at a time, use an external timeout,
+and reduce `--workers` on low-memory hosts. `mrs-search` has resource
+containment, but a host-level OOM is still an infrastructure failure.
+
+Because a thread stack is reserved address space and committed on demand, those
+reservations cost nothing in resident memory — but they are charged in full by
+an `RLIMIT_AS` cap, at 64 MiB per worker. A tool that caps address space has to
+budget for that; `crates/mrs-bench/perf_probe.sh` does, and refuses a worker
+count that will not fit.
+
+**If it still overflows, suspect the main thread.** Parsing and clausification
+run there, and the main thread's stack is the one thing an environment variable
+still sets (`ulimit -s unlimited`, which the competition wrappers do and a bare
+`cargo run` does not). A stack overflow in any thread aborts the process with no
+message, so an unexplained instant death on a deeply nested problem is this
+until proven otherwise: check `ulimit -s`, or re-run under the wrapper. Removing
+that last environment dependence is tracked under "Known Boundaries" in
+[`docs/policies/release.md`](../policies/release.md).
 
 ## Unexpected positive status
 

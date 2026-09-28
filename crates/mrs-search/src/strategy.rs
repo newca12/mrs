@@ -951,7 +951,7 @@ pub fn run_schedule_with_candidate_receiver(
             let candidate_receiver_thread = candidate_receiver.clone();
             std::thread::Builder::new()
                 .name(format!("mrs-worker-{worker_id}"))
-                .stack_size(64 * 1024 * 1024)
+                .stack_size(mrs_core::RECURSION_STACK_BYTES)
                 .spawn_scoped(s, move || {
                     loop {
                     if stop.load(Ordering::Relaxed) {

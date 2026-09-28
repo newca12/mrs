@@ -368,10 +368,17 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let num_threads = parse_thread_count(&args);
 
-    // Configure rayon with larger stack size and limited parallelism to control memory
+    // Rayon workers parse TPTP with a recursive-descent parser, so their stacks
+    // have to survive a deeply nested formula; a spawned thread's 2 MiB default
+    // is not enough. This is the same size `mrs_core::RECURSION_STACK_BYTES`
+    // gives the search's threads, kept as a local copy because `mrs-tptp` has no
+    // `mrs-core` dependency and the two must be kept in step deliberately.
+    const RECURSION_STACK: usize = 64 * 1024 * 1024;
+
+    // Limited parallelism to control memory.
     let pool = ThreadPoolBuilder::new()
         .num_threads(num_threads)
-        .stack_size(64 * 1024 * 1024) // 64 MB stack per thread
+        .stack_size(RECURSION_STACK)
         .build()
         .expect("Failed to build rayon thread pool");
 

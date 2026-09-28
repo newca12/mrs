@@ -1067,6 +1067,14 @@ fn main() {
             );
             let tele = coordinator.finish();
             let mut res = coordinator.certified_result().unwrap_or(res);
+            if tele.coordinator_error.is_some()
+                && matches!(
+                    res,
+                    SearchResult::Refutation(..) | SearchResult::Saturated(_)
+                )
+            {
+                res = SearchResult::GaveUp;
+            }
             if matches!(res, SearchResult::Timeout)
                 && rep
                     .strategies

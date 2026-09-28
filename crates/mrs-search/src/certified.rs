@@ -2017,34 +2017,53 @@ fn run_closure_wave(
 
     let mut results: Vec<Result<ClosureWave, CertificationFailure>> = Vec::new();
     std::thread::scope(|scope| {
+        // One result slot per chunk, in chunk order, because `derived` is
+        // accumulated in this order and the certification output must not
+        // depend on which worker finished first.
         let mut handles = Vec::with_capacity(bounds.len());
         for (lo, hi) in bounds {
             let mut worker_id_gen = id_gen.clone();
             let worker_budget = &remaining_inferences;
             let worker_literals = &remaining_literals;
-            handles.push(scope.spawn(move || {
-                closure_wave_range(
-                    clauses,
-                    index,
-                    eq_index,
-                    id_to_pos,
-                    ordering,
-                    ordered,
-                    lo,
-                    hi,
-                    &mut worker_id_gen,
-                    deadline,
-                    worker_budget,
-                    worker_literals,
-                )
-            }));
+            handles.push(
+                std::thread::Builder::new()
+                    .name(format!("mrs-cert-wave-{lo}"))
+                    .stack_size(mrs_core::RECURSION_STACK_BYTES)
+                    .spawn_scoped(scope, move || {
+                        closure_wave_range(
+                            clauses,
+                            index,
+                            eq_index,
+                            id_to_pos,
+                            ordering,
+                            ordered,
+                            lo,
+                            hi,
+                            &mut worker_id_gen,
+                            deadline,
+                            worker_budget,
+                            worker_literals,
+                        )
+                    }),
+            );
         }
         for handle in handles {
-            results.push(handle.join().unwrap_or_else(|_| {
-                Err(CertificationFailure::Limit(
-                    "certification worker thread panicked",
-                ))
-            }));
+            results.push(match handle {
+                Ok(handle) => handle.join().unwrap_or_else(|_| {
+                    Err(CertificationFailure::Limit(
+                        "certification worker thread panicked",
+                    ))
+                }),
+                Err(error) => {
+                    eprintln!(
+                        "Warning: could not spawn a certification worker ({error}); \
+                         certifying with fewer workers."
+                    );
+                    Err(CertificationFailure::Limit(
+                        "could not spawn certification worker",
+                    ))
+                }
+            });
         }
     });
 

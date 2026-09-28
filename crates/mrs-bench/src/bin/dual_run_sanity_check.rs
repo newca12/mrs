@@ -423,8 +423,9 @@ fn run_prover(
 
     command.arg(problem_path);
 
-    // Guarantee stack headroom matching invoke.sh
-    command.env("RUST_MIN_STACK", "67108864");
+    // No stack environment here: `mrs` and `mrs-proover` size every thread that
+    // recurses in code (mrs_core::RECURSION_STACK_BYTES), so a child that
+    // inherits nothing gets the same stacks the benchmark wrappers give it.
 
     if let Some(tptp) = tptp_root {
         command.env("TPTP", tptp);

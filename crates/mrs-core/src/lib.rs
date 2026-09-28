@@ -38,6 +38,32 @@ pub use formula::{Atom, Formula};
 pub use model::{EqualitySemantics, FunctionTable, ModelCertificate, PredicateTable};
 pub use profile::{InputMetadata, ProblemArchetype, ProblemProfile};
 pub use smallvec::SmallVec;
+
+/// Stack size for any thread that runs unification, indexing, ordering,
+/// paramodulation, proof verification, or certification.
+///
+/// The search recurses to the depth of the term it is working on: resolving a
+/// literal walks a subterm tree, paramodulating rewrites in the same, and the
+/// strict proof kernel replays a whole derivation. Nothing bounds that depth
+/// from the input, so a thread that runs any of it needs a stack that is not
+/// sized for a leaf task.
+///
+/// 64 MiB is on the order of 300,000 frames, comfortably more than the nesting
+/// depth of any real TPTP problem, and the size the search has been measured
+/// and shipped with. It is deliberately set here, in code, at every spawn site,
+/// rather than left to the ambient default: Rust's default for a spawned thread
+/// is 2 MiB, and a stack overflow inside a thread aborts the whole process with
+/// no output at all, which is a far worse failure than a slow one.
+///
+/// A thread's stack is reserved address space and committed on demand, so this
+/// costs nothing in resident memory. It is not free in *address space*
+/// though, and a run that also caps `RLIMIT_AS` has to budget for it: at 64
+/// workers these reservations are 4 GiB. The fixed-work performance probe
+/// accounts for that and refuses a worker count that does not fit.
+///
+/// Threads that do not recurse — pipe readers and writers, watchdogs, audit
+/// orchestration — should keep the default, precisely because this is not free.
+pub const RECURSION_STACK_BYTES: usize = 64 * 1024 * 1024;
 pub use subst::Substitution;
 pub use symbol::{SymbolId, SymbolTable};
 pub use term::{Term, VarId};

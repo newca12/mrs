@@ -282,7 +282,7 @@ while IFS=$'\t' read -r corpus problem_name canonical_name db_status db_time db_
     # Use the database timeout for regeneration. The local corpus is selected
     # explicitly; no external TPTP path is consulted.
     set +e
-    TPTP="${corpus_root}" RUST_MIN_STACK=67108864 \
+    TPTP="${corpus_root}" \
         timeout --foreground "$((db_timeout + 5))" \
         "${MRS_BIN}" --time "${db_timeout}" --workers 8 --schedule casc_ueq "${problem_path}" \
         > "${generation_output}" 2>&1
@@ -306,7 +306,7 @@ while IFS=$'\t' read -r corpus problem_name canonical_name db_status db_time db_
         generation_status="refutation"
 
         set +e
-        TPTP="${corpus_root}" RUST_MIN_STACK=67108864 \
+        TPTP="${corpus_root}" \
             timeout --foreground "$((STRICT_TIME + 5))" \
             "${PROOVER_BIN}" --strict --workers 1 --time "${STRICT_TIME}" \
             --problems-dir "${proof_root}" "${proof_path}" \
@@ -317,7 +317,7 @@ while IFS=$'\t' read -r corpus problem_name canonical_name db_status db_time db_
         strict_detail="$(extract_detail "${strict_output}")"
 
         set +e
-        TPTP="${corpus_root}" RUST_MIN_STACK=67108864 \
+        TPTP="${corpus_root}" \
             timeout --foreground "$((LADDER_TIME + 5))" \
             "${PROOVER_BIN}" --workers 8 --time "${LADDER_TIME}" \
             --eprover "${EPROVER_BIN}" --vampire "${VAMPIRE_BIN}" \

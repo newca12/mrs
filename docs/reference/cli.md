@@ -104,7 +104,6 @@ nix develop -c cargo run -- --workers 8 --schedule casc_feq \
 | `MRS_NO_BCE`, `MRS_NO_PLE`, `MRS_NO_INSTGEN`, `MRS_NO_LRS` | Disable the corresponding search mechanism. |
 | `MRS_EPS_CERTIFY` | Set to `0` to disable the benchmark wrapper's EPS certification worker. |
 | `MRS_CERTIFY_STRATEGY` | EPS wrapper certifier strategy, `1` or `7`. |
-| `RUST_MIN_STACK` | Worker-thread stack size; the benchmark wrapper sets 64 MiB. |
 
 ## Status semantics
 

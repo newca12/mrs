@@ -47,6 +47,7 @@ pub struct CertificationTelemetry {
     pub cert_oversubscribed: bool,
     pub search_workers: usize,
     pub cert_workers: usize,
+    pub coordinator_error: Option<String>,
 }
 
 enum CoordinatorMessage {
@@ -62,6 +63,7 @@ pub struct AsyncCoordinator {
     certified_winner: Mutex<Option<SearchResult>>,
     telemetry: Mutex<CertificationTelemetry>,
     join_handle: Mutex<Option<std::thread::JoinHandle<()>>>,
+    coordinator_error: Mutex<Option<String>>,
 }
 
 impl AsyncCoordinator {
@@ -80,27 +82,49 @@ impl AsyncCoordinator {
                 ..Default::default()
             }),
             join_handle: Mutex::new(None),
+            coordinator_error: Mutex::new(None),
         });
 
         let coordinator_worker = Arc::clone(&coordinator);
-        let handle = std::thread::Builder::new()
+        // The coordinator runs the strict proof kernel, which replays a whole
+        // derivation and recurses to the depth of every term in it, so it needs
+        // the recursion stack rather than the 2 MiB a spawned thread defaults
+        // to. An overflow here would abort the process with no output.
+        match std::thread::Builder::new()
             .name("mrs-cert-coordinator".to_string())
+            .stack_size(mrs_core::RECURSION_STACK_BYTES)
             .spawn(move || {
                 coordinator_worker.worker_loop(rx);
-            })
-            .expect("failed to spawn coordinator thread");
+            }) {
+            Ok(handle) => *coordinator.join_handle.lock().unwrap() = Some(handle),
+            Err(error) => {
+                // Not fatal: the search runs independently, and this thread
+                // only turns refutation candidates into certified results. The
+                // run loses certification, not its answer.
+                eprintln!(
+                    "Warning: could not spawn the certification coordinator ({error}); \
+                     continuing without self-check certification."
+                );
+                *coordinator.coordinator_error.lock().unwrap() =
+                    Some(format!("could not spawn: {error}"));
+            }
+        }
 
-        *coordinator.join_handle.lock().unwrap() = Some(handle);
         coordinator
     }
 
     /// Stops the coordinator thread, waits for it to finish, and returns the telemetry.
     pub fn finish(&self) -> CertificationTelemetry {
         let _ = self.tx.send(CoordinatorMessage::Finish);
-        if let Some(handle) = self.join_handle.lock().unwrap().take() {
-            let _ = handle.join();
+        if let Some(handle) = self.join_handle.lock().unwrap().take()
+            && handle.join().is_err()
+        {
+            *self.coordinator_error.lock().unwrap() =
+                Some("coordinator thread panicked before certification completed".into());
         }
-        self.telemetry.lock().unwrap().clone()
+        let mut telemetry = self.telemetry.lock().unwrap().clone();
+        telemetry.coordinator_error = self.coordinator_error.lock().unwrap().clone();
+        telemetry
     }
 
     /// Returns the certified winner result, if one was certified.
@@ -211,6 +235,9 @@ impl AsyncCoordinator {
 
 impl CandidateReceiver for AsyncCoordinator {
     fn submit_candidate(&self, candidate: CandidateRefutation) -> bool {
+        if self.coordinator_error.lock().unwrap().is_some() {
+            return false;
+        }
         let _ = self.tx.send(CoordinatorMessage::Candidate(candidate));
         // Return true if certified already, signaling the caller to stop immediately.
         self.stop_flag

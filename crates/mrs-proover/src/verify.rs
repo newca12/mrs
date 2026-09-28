@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use mrs_cnf::nnf::to_nnf_bounded;
@@ -287,7 +287,7 @@ pub fn verify_with_telemetry(
     //    shared deadline, keeping the total wall time within `total_budget`
     //    regardless of scheduling. Outcomes are written back to topo slots, so
     //    the aggregated verdict (and its reason string) stay deterministic.
-    run_atp_jobs(&jobs, atp, &symbols, &mut outcomes, started, settings);
+    telemetry.workers = run_atp_jobs(&jobs, atp, &symbols, &mut outcomes, started, settings);
 
     telemetry.mrs_reports = atp.search_reports();
 
@@ -326,7 +326,6 @@ pub fn verify_with_telemetry(
                 .map(|outcome| ((*name).to_string(), outcome))
         })
         .collect();
-    telemetry.workers = settings.workers;
     telemetry.elapsed_ms = started.elapsed().as_millis() as u64;
     telemetry.verdict = Some(verdict.clone());
     (verdict, telemetry)
@@ -373,9 +372,9 @@ fn run_atp_jobs(
     outcomes: &mut [Option<StepOutcome>],
     started: Instant,
     settings: &Settings,
-) {
+) -> usize {
     if jobs.is_empty() {
-        return;
+        return 0;
     }
 
     let deadline = started + settings.total_budget;
@@ -384,43 +383,84 @@ fn run_atp_jobs(
 
     let next = AtomicUsize::new(0);
     let results: Mutex<Vec<(usize, StepOutcome)>> = Mutex::new(Vec::with_capacity(jobs.len()));
+    let mut started_workers = 0usize;
+    let active_workers = AtomicUsize::new(0);
+    let start_workers = AtomicBool::new(false);
 
     std::thread::scope(|scope| {
-        for _ in 0..n_workers {
-            scope.spawn(|| {
-                loop {
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    if i >= jobs.len() {
-                        break;
+        for worker_id in 0..n_workers {
+            // `finish_atp` runs a full ATP step — unification, indexing,
+            // paramodulation and rewriting over the step's goal — which
+            // recurses to the depth of the terms involved. On the 2 MiB a
+            // spawned thread defaults to, an adversarial or deeply nested proof
+            // overflows the stack, and that aborts the process with no output.
+            let start_workers_ref = &start_workers;
+            let active_workers_ref = &active_workers;
+            let spawned = std::thread::Builder::new()
+                .name(format!("mrs-proover-step-{worker_id}"))
+                .stack_size(mrs_core::RECURSION_STACK_BYTES)
+                .spawn_scoped(scope, || {
+                    while !start_workers_ref.load(Ordering::Acquire) {
+                        std::thread::yield_now();
                     }
-                    let job = &jobs[i];
-                    // `jobs.len() - i` is the number of not-yet-claimed jobs
-                    // (including this one); used to share the remaining wall
-                    // budget fairly while accounting for parallel execution.
-                    let jobs_left = jobs.len() - i;
-                    let budget = step_budget(
-                        deadline,
-                        per_step,
-                        n_workers,
-                        jobs_left,
-                        job.is_skolemisation,
-                    );
-                    let oc = finish_atp(atp, symbols, &job.step, budget);
-                    if settings.verbose {
-                        eprintln!(
-                            "% step slot {} [rule={:?}] -> {:?}",
-                            job.slot, job.step.rule, oc
+                    let effective_workers = active_workers_ref.load(Ordering::Relaxed).max(1);
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        if i >= jobs.len() {
+                            break;
+                        }
+                        let job = &jobs[i];
+                        // `jobs.len() - i` is the number of not-yet-claimed jobs
+                        // (including this one); used to share the remaining wall
+                        // budget fairly while accounting for parallel execution.
+                        let jobs_left = jobs.len() - i;
+                        let budget = step_budget(
+                            deadline,
+                            per_step,
+                            effective_workers,
+                            jobs_left,
+                            job.is_skolemisation,
                         );
+                        let oc = finish_atp(atp, symbols, &job.step, budget);
+                        if settings.verbose {
+                            eprintln!(
+                                "% step slot {} [rule={:?}] -> {:?}",
+                                job.slot, job.step.rule, oc
+                            );
+                        }
+                        results.lock().expect("results mutex").push((job.slot, oc));
                     }
-                    results.lock().expect("results mutex").push((job.slot, oc));
-                }
-            });
+                });
+            // A refused thread is a degraded verification, not a failed one:
+            // jobs are claimed from a shared counter, so the remaining workers
+            // pick up the work and any step left unclaimed keeps its existing
+            // outcome. `n_workers` still drives the budget split above, which
+            // only ever grants a step more of the remaining wall clock than its
+            // fair share, and the deadline check bounds the run either way.
+            if let Err(error) = spawned {
+                eprintln!(
+                    "Warning: could not spawn verification worker {worker_id} ({error}); \
+                     verifying with fewer threads."
+                );
+            } else {
+                started_workers += 1;
+            }
         }
+        active_workers.store(started_workers, Ordering::Relaxed);
+        start_workers.store(true, Ordering::Release);
     });
 
     for (slot, oc) in results.into_inner().expect("results mutex") {
         outcomes[slot] = Some(oc);
     }
+    for job in jobs {
+        if outcomes[job.slot].is_none() {
+            outcomes[job.slot] = Some(StepOutcome::Unknown(
+                "verification worker could not be spawned".into(),
+            ));
+        }
+    }
+    started_workers
 }
 
 /// Budget for one parallel ATP job.

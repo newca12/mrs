@@ -36,14 +36,16 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mrs_proover::atp::NoopAtp;
 
+use mrs_core;
 use mrs_proof_kernel::{KernelVerdict, VerificationLimits, verify_strict_with_source};
 use mrs_tptp::parse_tptp;
 
-/// The verifier's parsing is recursive descent; the competition wrappers raise
-/// the worker stack for the same reason (`RUST_MIN_STACK` in
-/// `systems/*/invoke.sh`). Test threads default to 2 MiB, which is not enough
-/// for the larger canaries.
-const WORKER_STACK: usize = 64 * 1024 * 1024;
+/// The verifier's parsing is recursive descent, and it replays a whole proof
+/// through the kernel, so these threads recurse to the depth of the canaries
+/// they are fed. A spawned thread's stack defaults to 2 MiB, which is not
+/// enough for the larger ones — the same reason the verifier's own threads set
+/// theirs explicitly.
+const WORKER_STACK: usize = mrs_core::RECURSION_STACK_BYTES;
 
 fn canary_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/resources/mrs_proofs")

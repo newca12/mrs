@@ -85,7 +85,7 @@ bin/
 └── starexec_run_default    # The official Bash wrapper script (with unified WALLCLOCK fallback)
 ```
 
-The `starexec_run_default` wrapper raises the main-thread stack limit and configures `RUST_MIN_STACK` to reduce recursive search-thread stack-overflow risk. Current proof formatting quotes generated non-word identifiers in the Rust serializer, so `sanitize_tstp.sh` is not required for a current package. The tracked script remains available at `crates/mrs-bench/sanitize_tstp.sh` for repairing archived legacy proofs.
+The `starexec_run_default` wrapper raises the main-thread stack limit with `ulimit -s`; worker threads need nothing from the environment, because every thread that recurses sizes its own stack in code (`mrs_core::RECURSION_STACK_BYTES`). Current proof formatting quotes generated non-word identifiers in the Rust serializer, so `sanitize_tstp.sh` is not required for a current package. The tracked script remains available at `crates/mrs-bench/sanitize_tstp.sh` for repairing archived legacy proofs.
 
 For SystemOnTPTP, install the same two files beside one another and name the wrapper `run_mrs` because that is the registered command:
 
