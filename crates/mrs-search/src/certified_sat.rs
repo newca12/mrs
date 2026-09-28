@@ -842,6 +842,7 @@ mod tests {
             &[unit_eq.clone(), forces_q.clone()],
             &TermOrdering::KBO,
             &mut ids,
+            std::time::Instant::now() + Duration::from_secs(10),
         )
         .expect("a unit equation is inside the fragment");
         assert!(

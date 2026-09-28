@@ -31,6 +31,7 @@
 //! Everything beyond the expansion caps fails closed as `Limit`.
 
 use std::collections::{HashMap as StdHashMap, VecDeque};
+use std::time::Instant;
 
 use crate::TermOrdering;
 use crate::certified::CertificationFailure;
@@ -369,6 +370,7 @@ pub(crate) fn expand_equality(
     clauses: &[Clause],
     ordering: &TermOrdering,
     id_gen: &mut ClauseIdGen,
+    deadline: Instant,
 ) -> Result<ExpandedEq, CertificationFailure> {
     // The closure does not generate predicate-congruence axioms for positive
     // equality clauses derived later by resolution. Accepting a non-unit
@@ -423,7 +425,17 @@ pub(crate) fn expand_equality(
         }
     }
     let mut expanded = Vec::with_capacity(clauses.len());
-    for clause in clauses {
+    for (index, clause) in clauses.iter().enumerate() {
+        // Amortized deadline check. This pass allocates a clause per changed
+        // input and unions through every ground term, so on a million-clause
+        // grounding it is one of the longest single steps in the certifier and
+        // had no way to be interrupted: NLP115-1 spent 90 s here on a 60 s
+        // budget, growing to 13.8 GB, and was killed rather than reported.
+        if index & 0xFFF == 0 && Instant::now() >= deadline {
+            return Err(CertificationFailure::Limit(
+                "certification time limit exceeded",
+            ));
+        }
         match normalize_clause_eq(clause, &mut classes, ordering) {
             Normalized::Unchanged => {
                 expanded.push(clause.clone());

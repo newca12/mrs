@@ -24,7 +24,7 @@
 
 use std::collections::HashMap as StdHashMap;
 use std::ops::ControlFlow;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::{CompletenessWitness, HashSet, SearchResult, SearchStats, TermOrdering};
@@ -54,6 +54,17 @@ use mrs_index::literal_index::LiteralIndex;
 /// raising it buys the 205-constant HWV problems at ~8 GB peak each.
 const MAX_ATOMS: usize = 4096;
 const MAX_CLAUSES: usize = 100_000;
+/// Total literals in a Tier-1 closure, over the accumulated clause set.
+///
+/// `MAX_CLAUSES` counts clauses, which bounds nothing when the clauses are
+/// wide: on HWV053-1 a wave derived 40 624 clauses averaging ~130 literals of
+/// arity 86, and merging them into the index interned ~600M terms — 160 s of
+/// the 165 s the run took against a 30 s budget, inside a loop with no
+/// deadline check and no cap that could see it. A literal budget bounds the
+/// actual work. Sized above the widest legitimate closure measured on the
+/// 2026-09 casc-30 EPS corpus while keeping the term bank in the low hundreds
+/// of MB.
+const MAX_CLAUSE_LITERALS: usize = 8_000_000;
 const MAX_INFERENCES: u64 = 1_000_000;
 const MAX_GROUND_INSTANCES: usize = 500_000;
 const TIER2_MAX_ATOMS: usize = 400_000;
@@ -165,7 +176,7 @@ pub(crate) fn certify_ground_ordered_resolution(
         // reflexivity fast paths). Predicate-only inputs pass through
         // byte-identical, so the legacy fragment observes no change.
         let (expanded_inputs, contradiction) =
-            expand_for_certification(grounded, ordering, id_gen)?;
+            expand_for_certification(grounded, ordering, id_gen, deadline)?;
         trace_certify(format!(
             "phase=expand clauses={} ms={}",
             expanded_inputs.clauses.len(),
@@ -321,8 +332,10 @@ fn expand_for_certification(
     grounded: GroundedInputs,
     ordering: &TermOrdering,
     id_gen: &mut ClauseIdGen,
+    deadline: Instant,
 ) -> Result<(GroundedInputs, Option<Clause>), CertificationFailure> {
-    let expanded = crate::certified_eq::expand_equality(&grounded.clauses, ordering, id_gen)?;
+    let expanded =
+        crate::certified_eq::expand_equality(&grounded.clauses, ordering, id_gen, deadline)?;
     let contradiction = expanded.contradiction;
     Ok((
         GroundedInputs {
@@ -392,7 +405,7 @@ fn run_tier1(
         trace_certify(format!("refuse=atom_limit atoms={}", atoms.len()));
         return Err(CertificationFailure::Limit("ground atom limit exceeded"));
     }
-    validate_ground_order(ordering, &atoms)?;
+    validate_ground_order(ordering, &atoms, deadline)?;
 
     let mut ordered_id_gen = id_gen.clone();
     let ordered = closure_indexed(
@@ -694,7 +707,7 @@ fn tier3_try_grounded(
     context: &'static str,
 ) -> Tier3Try {
     let (expanded_inputs, contradiction) =
-        match expand_for_certification(subset_grounded, ordering, id_gen) {
+        match expand_for_certification(subset_grounded, ordering, id_gen, deadline) {
             Ok(expanded) => expanded,
             Err(_) => return Tier3Try::Failed,
         };
@@ -1378,12 +1391,22 @@ fn record_term_arities(
 fn validate_ground_order(
     ordering: &TermOrdering,
     atoms: &[Atom],
+    deadline: Instant,
 ) -> Result<(), CertificationFailure> {
     let config = ordering.symbol_config();
     validate_symbol_config(ordering, &config, atoms)?;
     let terms: Vec<Term> = atoms.iter().map(atom_term).collect();
 
     for (i, left) in terms.iter().enumerate() {
+        if i & 0x1F == 0 && Instant::now() >= deadline {
+            trace_certify(format!(
+                "refuse=order_validation_time atoms={} row={i}",
+                terms.len()
+            ));
+            return Err(CertificationFailure::Limit(
+                "certification time limit exceeded",
+            ));
+        }
         for (j, right) in terms.iter().enumerate() {
             if i == j {
                 continue;
@@ -1399,17 +1422,48 @@ fn validate_ground_order(
         }
     }
 
-    for a in &terms {
-        for b in &terms {
-            for c in &terms {
-                if ordering.compare(a, b) == TermComparison::Greater
-                    && ordering.compare(b, c) == TermComparison::Greater
-                    && ordering.compare(a, c) != TermComparison::Greater
-                {
-                    return Err(CertificationFailure::Unsupported(
-                        "ordering is not transitive on ground atoms",
-                    ));
-                }
+    // Transitivity, without the cubic scan.
+    //
+    // The obvious check — for every a, b, c, `a > b > c` implies `a > c` — is
+    // O(n^3) comparisons, and each comparison here is a KBO or LPO comparison
+    // of two whole ground atoms. On the high-arity half of the EPS division
+    // (1400-odd atoms of arity 86) that is billions of comparisons: HWV053-1
+    // spent over 200 s on a 10 s budget inside this function and never reached
+    // the closure, with no deadline check to stop it.
+    //
+    // The reduction is not a relaxation. If the relation agrees with *some*
+    // total order on the atoms, it **is** that linear order, and a linear order
+    // is transitive. So: sort the atoms with the comparison to obtain candidate
+    // ranks (the sort itself may be arbitrary — a non-transitive comparator has
+    // no defined meaning for `sort_by` — which is why agreement is then
+    // verified rather than assumed), and check every pair against those ranks.
+    // Passing the check *proves* transitivity; a genuine total order always
+    // passes, because sorting by it yields its own ranks.
+    let mut ranked: Vec<usize> = (0..terms.len()).collect();
+    ranked.sort_by(
+        |&left, &right| match ordering.compare(&terms[left], &terms[right]) {
+            TermComparison::Less => std::cmp::Ordering::Less,
+            TermComparison::Greater => std::cmp::Ordering::Greater,
+            // The strict-total-order pass above already rejected this; ordering a
+            // tie is deterministic so the failure is reproducible, not arbitrary.
+            TermComparison::Equal | TermComparison::Incomparable => std::cmp::Ordering::Equal,
+        },
+    );
+    for (position, &index) in ranked.iter().enumerate() {
+        if position & 0x3F == 0 && Instant::now() >= deadline {
+            trace_certify(format!(
+                "refuse=order_validation_time atoms={} position={position}",
+                terms.len()
+            ));
+            return Err(CertificationFailure::Limit(
+                "certification time limit exceeded",
+            ));
+        }
+        for &other in &ranked[position + 1..] {
+            if ordering.compare(&terms[index], &terms[other]) != TermComparison::Less {
+                return Err(CertificationFailure::Unsupported(
+                    "ordering is not transitive on ground atoms",
+                ));
             }
         }
     }
@@ -1719,6 +1773,10 @@ fn closure_indexed_with_budget(
     }
 
     let mut inferences = 0u64;
+    let mut closure_literals: usize = 0;
+    for clause in &clauses {
+        closure_literals = closure_literals.saturating_add(clause.literals.len());
+    }
     // Wave-structured saturation. A position's partner set is fixed by the
     // clauses that existed *before* it (`partner_pos` keeps only `p < pos`),
     // and every clause derived while processing a position is appended, so it
@@ -1752,6 +1810,7 @@ fn closure_indexed_with_budget(
             deadline,
             workers,
             inference_budget.saturating_sub(inferences),
+            MAX_CLAUSE_LITERALS.saturating_sub(closure_literals),
         )?;
         inferences = inferences.saturating_add(wave.inferences);
         if inferences > inference_budget {
@@ -1775,10 +1834,35 @@ fn closure_indexed_with_budget(
         }
         // Merge in chunk order so the resulting clause sequence is a
         // deterministic function of the input, independent of scheduling.
-        for derived in wave.derived {
-            if seen.insert(clause_key(&derived)) {
+        //
+        // Interning a derived clause is proportional to its literals times
+        // their arity, so on wide clauses this loop is the most expensive step
+        // in the tier by a wide margin. It carries the literal cap and its own
+        // deadline check for that reason: a wave that finishes in seconds can
+        // still take minutes to fold in.
+        for (merged, derived) in wave.derived.iter().enumerate() {
+            if merged & 0xFF == 0 && Instant::now() >= deadline {
+                trace_certify(format!(
+                    "refuse=closure_time ordered={ordered} clauses={} inferences={inferences}",
+                    clauses.len()
+                ));
+                return Err(CertificationFailure::Limit(
+                    "certification time limit exceeded",
+                ));
+            }
+            let derived_literals = derived.literals.len();
+            if seen.insert(clause_key(derived)) {
+                closure_literals = closure_literals.saturating_add(derived_literals);
+                if closure_literals > MAX_CLAUSE_LITERALS {
+                    trace_certify(format!(
+                        "refuse=literal_limit ordered={ordered} literals={closure_literals} \
+                         clauses={} inferences={inferences}",
+                        clauses.len()
+                    ));
+                    return Err(CertificationFailure::Limit("ground literal limit exceeded"));
+                }
                 id_to_pos.insert(derived.id, clauses.len());
-                let twin = bank.clause_from_legacy(&derived);
+                let twin = bank.clause_from_legacy(derived);
                 index.insert(twin, &bank);
                 for literal in &derived.literals {
                     if matches!(literal.atom, Atom::Eq(..)) {
@@ -1788,7 +1872,7 @@ fn closure_indexed_with_budget(
                             .push(clauses.len());
                     }
                 }
-                clauses.push(derived);
+                clauses.push(derived.clone());
                 if clauses.len() > MAX_CLAUSES {
                     trace_certify(format!(
                         "refuse=clause_limit ordered={ordered} clauses={} inferences={inferences}",
@@ -1845,10 +1929,18 @@ fn run_closure_wave(
     deadline: Instant,
     workers: usize,
     inference_budget: u64,
+    literal_budget: usize,
 ) -> Result<ClosureWave, CertificationFailure> {
     let span = range_end.saturating_sub(range_start);
     let chunks = workers.clamp(1, span.max(1)).min(span.max(1));
     let remaining_inferences = AtomicU64::new(inference_budget);
+    // The budget is in literals, not clauses or inferences. Each inference can
+    // derive a clause, and folding a derived clause into the index costs its
+    // literals times their arity, so on the high-arity half of this division
+    // (86-ary atoms, 171-literal resolvents) a clause-count cap is off by
+    // three orders of magnitude. Counting literals as they are produced makes
+    // the cap enforceable while the memory is being allocated.
+    let remaining_literals = AtomicUsize::new(literal_budget);
     if chunks <= 1 {
         return closure_wave_range(
             clauses,
@@ -1862,6 +1954,7 @@ fn run_closure_wave(
             id_gen,
             deadline,
             &remaining_inferences,
+            &remaining_literals,
         );
     }
 
@@ -1881,6 +1974,7 @@ fn run_closure_wave(
         for (lo, hi) in bounds {
             let mut worker_id_gen = id_gen.clone();
             let worker_budget = &remaining_inferences;
+            let worker_literals = &remaining_literals;
             handles.push(scope.spawn(move || {
                 closure_wave_range(
                     clauses,
@@ -1894,6 +1988,7 @@ fn run_closure_wave(
                     &mut worker_id_gen,
                     deadline,
                     worker_budget,
+                    worker_literals,
                 )
             }));
         }
@@ -1942,6 +2037,7 @@ fn closure_wave_range(
     id_gen: &mut ClauseIdGen,
     deadline: Instant,
     remaining_inferences: &AtomicU64,
+    remaining_literals: &AtomicUsize,
 ) -> Result<ClosureWave, CertificationFailure> {
     let mut derived: Vec<Clause> = Vec::new();
     let mut inferences = 0u64;
@@ -1969,6 +2065,20 @@ fn closure_wave_range(
         };
         let mut partner_pos = Vec::new();
         for &lit_idx in &current_selection {
+            // One index query per selected literal, and a high-arity atom
+            // makes each of those expensive. Without a check here a single
+            // position can run far past the budget: on HWV053-1 a 30 s budget
+            // overran to 165 s inside this loop before the partner-level check
+            // could run at all.
+            if Instant::now() >= deadline {
+                trace_certify(format!(
+                    "refuse=closure_time ordered={ordered} clauses={} inferences={inferences}",
+                    clauses.len()
+                ));
+                return Err(CertificationFailure::Limit(
+                    "certification time limit exceeded",
+                ));
+            }
             if matches!(current.literals[lit_idx].atom, Atom::Eq(..)) {
                 let key = (
                     current.literals[lit_idx].atom.clone(),
@@ -1991,6 +2101,18 @@ fn closure_wave_range(
         partner_pos.sort_unstable();
         partner_pos.dedup();
         for previous_index in partner_pos {
+            // A single position can carry a large partner set, so the check at
+            // the top of the loop is not enough granularity to keep a wave
+            // inside its budget on high-arity clauses.
+            if Instant::now() >= deadline {
+                trace_certify(format!(
+                    "refuse=closure_time ordered={ordered} clauses={} inferences={inferences}",
+                    clauses.len()
+                ));
+                return Err(CertificationFailure::Limit(
+                    "certification time limit exceeded",
+                ));
+            }
             let previous = &clauses[previous_index];
             let previous_selection = if ordered {
                 selected_literals(previous, ordering)
@@ -2027,6 +2149,21 @@ fn closure_wave_range(
                     };
                     if derived_clause.is_empty() {
                         refuted = Some(derived_clause);
+                        return ControlFlow::Break(());
+                    }
+                    if remaining_literals
+                        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                            remaining.checked_sub(derived_clause.literals.len())
+                        })
+                        .is_err()
+                    {
+                        trace_certify(format!(
+                            "refuse=literal_limit ordered={ordered} chunk={range_start}..{range_end} \
+                             derived={} clauses={}",
+                            derived.len(),
+                            clauses.len()
+                        ));
+                        budget_exceeded = true;
                         return ControlFlow::Break(());
                     }
                     derived.push(derived_clause);
@@ -3067,6 +3204,139 @@ mod tests {
     /// Resource canary: a finite EPR grounding that exceeds the instance
     /// budget must fail closed with `Limit`, never with a saturation claim.
     #[test]
+    /// The transitivity check was reduced from a cubic triple loop to rank
+    /// agreement, so the property to pin is that the cheap version is not
+    /// *weaker*. A strictly total comparison whose rank order it disagrees with
+    /// must still be refused, and so must a comparison that is not a strict
+    /// total order in the first place.
+    ///
+    /// Both refusals are load-bearing: a non-transitive ordering makes
+    /// "maximal literal" ill-defined, and the ordered-closure agreement check
+    /// would then be comparing two arbitrary saturation orders.
+    #[test]
+    fn ground_order_validation_refuses_non_total_and_non_transitive_orderings() {
+        use mrs_calculus::ordering::SymbolConfig;
+        use std::sync::Arc;
+
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let mut ids = ClauseIdGen::new();
+        let atoms = vec![
+            Atom::pred(p, vec![Term::constant(a)]),
+            Atom::pred(p, vec![Term::constant(b)]),
+        ];
+        let far = Instant::now() + Duration::from_secs(10);
+
+        // A comparison that never separates the two atoms is not a strict total
+        // order, and the first pass must say so.
+        let tied = Arc::new(SymbolConfig {
+            precedence: vec![10, 10, 10],
+            weights: vec![0, 0, 0],
+            w0: 0,
+        });
+        assert!(matches!(
+            validate_ground_order(&TermOrdering::CustomLPO(tied), &atoms, far),
+            Err(CertificationFailure::Unsupported(_))
+        ));
+
+        // A total order passes: the rank check must not reject a real one.
+        let ordered = Arc::new(SymbolConfig {
+            precedence: vec![10, 20, 30],
+            weights: vec![0, 0, 0],
+            w0: 0,
+        });
+        assert!(
+            validate_ground_order(&TermOrdering::CustomLPO(ordered.clone()), &atoms, far).is_ok()
+        );
+        let kbo = Arc::new(SymbolConfig {
+            precedence: vec![10, 20, 30],
+            weights: vec![1, 1, 1],
+            w0: 1,
+        });
+        assert!(validate_ground_order(&TermOrdering::CustomKBO(kbo), &atoms, far).is_ok());
+
+        // An already-expired deadline must produce a `Limit`, not a silent
+        // quadratic scan: this is the check that was missing.
+        assert!(matches!(
+            validate_ground_order(
+                &TermOrdering::CustomLPO(ordered),
+                &atoms,
+                Instant::now() - Duration::from_secs(1)
+            ),
+            Err(CertificationFailure::Limit(_))
+        ));
+        let _ = (&mut ids, b);
+    }
+
+    /// A wide-arity grounding must fail closed *inside its budget*.
+    ///
+    /// Three separate unbounded steps used to sit between the budget and the
+    /// result, all found on HWV053-1 (1408 clauses, 86-ary atoms) where a 30 s
+    /// budget took 165 s and a 120 s one was killed at 240 s with an 81 GB
+    /// footprint and no SZS status at all:
+    ///
+    /// 1. `validate_ground_order`'s transitivity check was a cubic triple loop
+    ///    over the atoms with no deadline. Replaced by rank agreement, which
+    ///    proves transitivity in O(n^2) and, being quadratic with a deadline
+    ///    check, is bounded.
+    /// 2. The wave's cap counted *clauses*, so a wave could hold 40k
+    ///    171-literal resolvents before anything looked. Now counts literals.
+    /// 3. The merge that folds a finished wave into the index — the most
+    ///    expensive step in the tier, proportional to literals times arity —
+    ///    had neither a cap nor a deadline check.
+    ///
+    /// The test asserts the property, not the arithmetic: a budget of one
+    /// second must be reported as roughly one second, and the refusal must be a
+    /// `Limit` rather than a panic or a silence.
+    #[test]
+    fn wide_arity_grounding_fails_closed_inside_its_budget() {
+        let mut symbols = SymbolTable::new();
+        let mut ids = ClauseIdGen::new();
+        // 60 clauses over 40 clauses of the domain each, every atom of arity
+        // 30. The grounding stays small (one constant per clause) while the
+        // resolvents are wide enough that a clause-count cap cannot see them.
+        let constants: Vec<_> = (0..40)
+            .map(|i| symbols.intern(&format!("wide_c{i}")))
+            .collect();
+        let mut clauses = Vec::new();
+        for (index, constant) in constants.iter().enumerate() {
+            let predicate = symbols.intern(&format!("wide_p{index}"));
+            let mut args: Vec<Term> = (0..30)
+                .map(|j| Term::var(u32::try_from(j).unwrap()))
+                .collect();
+            args[29] = Term::constant(*constant);
+            clauses.push(input_clause(
+                &mut ids,
+                vec![mrs_core::clause::Literal::pos(Atom::pred(predicate, args))],
+            ));
+        }
+        let budget = Duration::from_millis(1200);
+        let started = Instant::now();
+        let result = certify_ground_ordered_resolution(
+            &clauses,
+            &[],
+            &symbols,
+            &TermOrdering::KBO,
+            &mut ids,
+            budget,
+            1,
+        );
+        let elapsed = started.elapsed();
+        assert!(
+            matches!(result, Err(CertificationFailure::Limit(_))),
+            "a wide-arity grounding must fail closed as a Limit, got {:?}",
+            result.map(|report| report.tier)
+        );
+        // Generous, because the point is that the budget is not *ignored*:
+        // a scheduling hiccup should not fail the test, a 100x overrun should.
+        assert!(
+            elapsed < budget * 10,
+            "a {budget:?} budget took {elapsed:?}; a step is not honouring the deadline"
+        );
+    }
+
     fn grounding_blowup_fails_closed_with_limit() {
         let mut symbols = SymbolTable::new();
         let p = symbols.intern("p");
