@@ -1,0 +1,35 @@
+audit_report=/DATA/ai/mrs/crates/mrs-bench/results/cert-eps-20260928/certification/audit.csv
+summary_report=/DATA/ai/mrs/crates/mrs-bench/results/cert-eps-20260928/certification/audit-summary.txt
+checks=[strict]
+
+================================================================================
+Division: eps                                                          Rows: 100
+================================================================================
+
+Generation
++--------------------+-------+
+|             Status | Count |
++--------------------+-------+
+|            Theorem |     0 |
+|      Unsatisfiable |     0 |
+|        Satisfiable |    42 |
+| CounterSatisfiable |     0 |
+|             GaveUp |    13 |
+|            Timeout |    45 |
+|              Error |     0 |
+|              Other |     0 |
++--------------------+-------+
+
+Verification (Refutations)
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+|   Mode | Applicable | VerifiedGood | VerifiedBad | Unknown | Timeout | N/A: Model | N/A: Incomplete | Error | Other |
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+| strict |          0 |            0 |           0 |       0 |       0 |         42 |              58 |     0 |     0 |
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+
+Verification (Model Certificates)
++--------------+------------------+----------------+--------------------------+
+| Total Models | Certified Models | Invalid Models | Uncertified (N/A: Model) |
++--------------+------------------+----------------+--------------------------+
+|           42 |               38 |              0 |                        4 |
++--------------+------------------+----------------+--------------------------+

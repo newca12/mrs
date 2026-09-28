@@ -68,7 +68,52 @@ const MAX_CLAUSE_LITERALS: usize = 8_000_000;
 const MAX_INFERENCES: u64 = 1_000_000;
 const MAX_GROUND_INSTANCES: usize = 500_000;
 const TIER2_MAX_ATOMS: usize = 400_000;
-const TIER2_MAX_GROUND_INSTANCES: usize = 2_000_000;
+/// Clause-count gate on the grounding, deliberately generous.
+///
+/// This is *not* the resource bound any more — the literal budget below is, and
+/// it is the one that tracks memory. This count only has to be high enough not
+/// to be the binding constraint on narrow clauses, where a 20M-clause grounding
+/// is ~60M literals and therefore the literal cap refuses it on its own. Kept
+/// finite so the estimate loop stays arithmetic and cannot be talked into
+/// attempting an unbounded materialization.
+const TIER2_MAX_GROUND_INSTANCES: usize = 20_000_000;
+/// Total literals the grounding may materialize, as a static ceiling.
+///
+/// The instance count is the wrong unit, and measurably so: the same clause
+/// count costs 6x more depending on clause width. From the 2026-09 casc-30 EPS
+/// runs, peak resident bytes per materialized literal across four problems
+/// spanning three orders of magnitude of instance count:
+///
+/// | instances | literals | peak MB | B/literal |
+/// |---:|---:|---:|---:|
+/// | 33 175 | 162 075 | 1 042 | — (under baseline) |
+/// | 200 034 | 3 600 066 | 2 093 | ~293 |
+/// | 1 897 273 | 6 208 833 | 3 565 | ~407 |
+/// | 1 932 646 | 34 787 082 | 15 488 | ~407 |
+///
+/// so a clause-count cap cannot see the difference between a cheap grounding and
+/// an expensive one. This is the budget the grounder actually enforces, and
+/// [`GROUND_BYTES_PER_LITERAL`] turns it into a memory figure.
+const MAX_GROUND_LITERALS: usize = 60_000_000;
+/// Peak resident bytes per materialized ground literal.
+///
+/// Re-measured after the redundant equality-expansion copy was removed (see
+/// `expand_for_certification`), stage by stage from `/proc/self/statm`:
+///
+/// | literals | rss after grounding | marginal B/literal |
+/// |---:|---:|---:|
+/// | 162 075 | 79 MB | ~439 (dominated by a fixed arena) |
+/// | 3 600 066 | 680 MB | ~187 |
+///
+/// and the SAT stage adds ~108 B/literal on top of the grounding, so the
+/// whole tier costs ~295 B/literal marginally. This constant is that with a
+/// 1.3x margin. The margin direction matters: it is used to refuse *before*
+/// allocating, so erring high costs a refused run and erring low costs an
+/// out-of-memory kill that the harness records as a lost row. The margin was
+/// worth re-deriving rather than keeping the pre-bypass figure, which was
+/// measured with the extra copy in place and would have refused work this box
+/// can do.
+const GROUND_BYTES_PER_LITERAL: u64 = 384;
 /// Tier-3 constant-subset search bounds: subset sizes, per-size try caps,
 /// and the per-subset grounding cap. Subsets stay small so each Tier-1 run
 /// is milliseconds; everything shares the run deadline.
@@ -77,6 +122,21 @@ const TIER3_MAX_SINGLETON_TRIES: usize = 200;
 const TIER3_MAX_PAIR_TRIES: usize = 100;
 const TIER3_MAX_TRIPLE_TRIES: usize = 30;
 const TIER3_MAX_SUBSET_INSTANCES: usize = 50_000;
+/// Literal counterpart of `TIER3_MAX_SUBSET_INSTANCES`, same reasoning: a
+/// subset try is bounded by what it may materialize, and 50 000 clauses of the
+/// width these corpora reach is several times its worth in bytes.
+const TIER3_MAX_SUBSET_LITERALS: usize = 4_000_000;
+
+/// Resident set size in MB, for stage-by-stage sizing telemetry.
+///
+/// Deliberately best-effort and allocation-free: it reads `/proc/self/statm`
+/// and returns `None` if that is unreadable, so a platform without procfs loses
+/// a number in a trace line and nothing else.
+pub(crate) fn current_rss_mb() -> Option<u64> {
+    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+    Some(pages * 4096 / (1024 * 1024))
+}
 
 /// Diagnostic logging for certification sizing, gated on `TRACE_CERTIFY=1`.
 /// Follows the `TRACE_LRS` / `TRACE_BCE` precedent: refusal reasons plus
@@ -139,6 +199,21 @@ struct Closure {
     inferences: u64,
 }
 
+/// The run-shaped limits a certification gets, kept together because they are
+/// one decision made in one place: the caller resolves a wall clock, a worker
+/// count and a memory allowance from the hardware mode, and the tiers below
+/// have to agree on all three or the numbers in the refusal traces stop meaning
+/// anything.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CertifyBudget {
+    pub time_limit: Duration,
+    /// Workers the closure may fan its waves across.
+    pub workers: usize,
+    /// The enforced memory ceiling in MB, from the hardware profile. `None`
+    /// means no ceiling was resolved, in which case only the static caps apply.
+    pub memory_mb: Option<u64>,
+}
+
 /// Certify and run ordered resolution for the bounded ground fragment.
 pub(crate) fn certify_ground_ordered_resolution(
     clauses: &[Clause],
@@ -146,11 +221,27 @@ pub(crate) fn certify_ground_ordered_resolution(
     symbols: &SymbolTable,
     ordering: &TermOrdering,
     id_gen: &mut ClauseIdGen,
-    time_limit: Duration,
-    workers: usize,
+    budget: CertifyBudget,
 ) -> Result<CertifiedGroundReport, CertificationFailure> {
+    let CertifyBudget {
+        time_limit,
+        workers,
+        memory_mb,
+    } = budget;
     let mut proof_symbols = symbols.clone();
     let deadline = Instant::now() + time_limit;
+    // The grounding budget is the smaller of a static ceiling and what the
+    // memory allowance can hold at the measured per-literal cost. The static
+    // ceiling is what makes a competition-shaped run comparable across hosts;
+    // the scaled one is what keeps a development box from being killed by the
+    // OOM reaper before the watchdog can fail it closed.
+    let literal_budget = match memory_mb {
+        Some(mb) => {
+            let affordable = mb.saturating_mul(1024 * 1024) / GROUND_BYTES_PER_LITERAL;
+            MAX_GROUND_LITERALS.min(usize::try_from(affordable).unwrap_or(usize::MAX))
+        }
+        None => MAX_GROUND_LITERALS,
+    };
     let constants = collect_grounding_constants(clauses, &mut proof_symbols)?;
     // Full grounding first; only size limits divert to Tier 3 below —
     // fragment errors propagate because subsets cannot fix them.
@@ -160,6 +251,7 @@ pub(crate) fn certify_ground_ordered_resolution(
         &constants,
         id_gen,
         TIER2_MAX_GROUND_INSTANCES,
+        literal_budget,
         deadline,
     ) {
         Err(CertificationFailure::Limit(_)) => None,
@@ -168,8 +260,14 @@ pub(crate) fn certify_ground_ordered_resolution(
     };
     if let Some(grounded) = grounded {
         trace_certify(format!(
-            "phase=ground instances={} ms={}",
+            "phase=ground instances={} lits={} rss_mb={} ms={}",
             grounded.clauses.len(),
+            grounded
+                .clauses
+                .iter()
+                .map(|clause| clause.literals.len())
+                .sum::<usize>(),
+            current_rss_mb().unwrap_or(0),
             grounding_started.elapsed().as_millis()
         ));
         let expansion_started = Instant::now();
@@ -179,8 +277,9 @@ pub(crate) fn certify_ground_ordered_resolution(
         let (expanded_inputs, contradiction) =
             expand_for_certification(grounded, ordering, id_gen, deadline)?;
         trace_certify(format!(
-            "phase=expand clauses={} ms={}",
+            "phase=expand clauses={} rss_mb={} ms={}",
             expanded_inputs.clauses.len(),
+            current_rss_mb().unwrap_or(0),
             expansion_started.elapsed().as_millis()
         ));
         if let Some(empty) = contradiction {
@@ -321,6 +420,7 @@ pub(crate) fn certify_ground_ordered_resolution(
         &proof_symbols,
         id_gen,
         deadline,
+        literal_budget,
     )
 }
 
@@ -335,6 +435,26 @@ fn expand_for_certification(
     id_gen: &mut ClauseIdGen,
     deadline: Instant,
 ) -> Result<(GroundedInputs, Option<Clause>), CertificationFailure> {
+    // Nothing to resolve. `certified_eq`'s own contract is that a predicate-only
+    // input passes through byte-identical, so the pass would clone every clause
+    // in order to reproduce it exactly. That is a second full copy of the whole
+    // ground set, and on the 2026-09 casc-30 EPS measurements it is not a
+    // rounding error: on `NLP116-1` the grounding ends at 680 MB and the
+    // expansion pushes it to 1 557 MB, so the copy is ~245 of the ~435 bytes
+    // per ground literal this tier peaks at — over half the peak, to compute
+    // nothing. Checking for an equality literal is a linear scan with no
+    // allocation, and most of this division is predicate-only.
+    if !grounded.clauses.iter().any(|clause| {
+        clause
+            .literals
+            .iter()
+            .any(|lit| matches!(lit.atom, Atom::Eq(..)))
+    }) {
+        trace_certify(
+            "eq_expansion: no equality literal in the grounding, passes through".to_string(),
+        );
+        return Ok((grounded, None));
+    }
     let expanded =
         crate::certified_eq::expand_equality(&grounded.clauses, ordering, id_gen, deadline)?;
     let contradiction = expanded.contradiction;
@@ -771,7 +891,11 @@ fn tier3_subset_unsat(
     proof_symbols: &SymbolTable,
     id_gen: &mut ClauseIdGen,
     deadline: Instant,
+    literal_budget: usize,
 ) -> Result<CertifiedGroundReport, CertificationFailure> {
+    // Tier 3 has a smaller static working-set cap than the full grounding, but
+    // it must still fit the run's resolved memory allowance.
+    let subset_literal_cap = TIER3_MAX_SUBSET_LITERALS.min(literal_budget);
     // Ordering applies to every Tier-1 subset run: reject once here instead
     // of once per subset.
     validate_ordering_kind(ordering)?;
@@ -827,6 +951,7 @@ fn tier3_subset_unsat(
             constants,
             id_gen,
             MAX_GROUND_INSTANCES,
+            subset_literal_cap,
             deadline,
         ) {
             Ok(grounded) => grounded,
@@ -952,6 +1077,7 @@ fn tier3_subset_unsat(
             subset,
             id_gen,
             TIER3_MAX_SUBSET_INSTANCES,
+            subset_literal_cap,
             deadline,
         ) {
             Ok(grounded) => grounded,
@@ -1130,49 +1256,106 @@ fn ground_with_constants(
     constants: &[SymbolId],
     id_gen: &mut ClauseIdGen,
     instance_cap: usize,
+    literal_cap: usize,
     deadline: Instant,
 ) -> Result<GroundedInputs, CertificationFailure> {
-    let originals = clauses.to_vec();
-    let mut grounded = Vec::new();
-    let mut estimated_instances = 0usize;
-    for clause in clauses {
-        let mut vars: Vec<_> = clause.free_vars().into_iter().collect();
-        vars.sort_unstable();
-        if vars.is_empty() {
-            estimated_instances = estimated_instances.saturating_add(1);
-            grounded.push(clause.clone());
-            continue;
-        }
-        let Some(instances) = constants.len().checked_pow(vars.len() as u32) else {
-            trace_certify(format!(
-                "refuse=instance_count_overflow vars={} constants={}",
-                vars.len(),
-                constants.len()
-            ));
+    // Pass 1: arithmetic only, no allocation. Both totals are exact — the
+    // instance count is `constants^vars` per clause and the literal count is
+    // that times the clause's width — so an oversized grounding is refused
+    // before a single clause is materialized, and the decision costs a scan of
+    // the input rather than a scan of a grounding.
+    //
+    // This ordering is what makes the refusal free. Interleaving the check with
+    // the materialization meant the run had already built most of the set when
+    // it discovered it was too big: `EPS/HWV042-2` peaked at 20.8 GB on a
+    // 13.3 GB allowance to report `GaveUp` about a set it should never have
+    // started. Two causes, both removed here — the check is now before the work,
+    // and pass 2 reserves the exact capacity (below).
+    let var_counts: Vec<usize> = clauses
+        .iter()
+        .map(|clause| {
+            let mut vars: Vec<_> = clause.free_vars().into_iter().collect();
+            vars.sort_unstable();
+            vars.len()
+        })
+        .collect();
+    let mut total_instances = 0usize;
+    let mut total_literals = 0usize;
+    for (clause, &vars) in clauses.iter().zip(&var_counts) {
+        if Instant::now() >= deadline {
             return Err(CertificationFailure::Limit(
-                "ground instance count overflow",
+                "certification time limit exceeded",
             ));
+        }
+        let instances = if vars == 0 {
+            1
+        } else {
+            let Some(instances) = constants
+                .len()
+                .checked_pow(u32::try_from(vars).unwrap_or(u32::MAX))
+            else {
+                trace_certify(format!(
+                    "refuse=instance_count_overflow vars={vars} constants={}",
+                    constants.len()
+                ));
+                return Err(CertificationFailure::Limit(
+                    "ground instance count overflow",
+                ));
+            };
+            instances
         };
-        estimated_instances = estimated_instances.saturating_add(instances);
-        if estimated_instances > instance_cap {
+        if total_instances.saturating_add(instances) > instance_cap {
             trace_certify(format!(
-                "refuse=instance_limit estimated={estimated_instances} vars={} constants={}",
-                vars.len(),
+                "refuse=instance_limit estimated={} cap={instance_cap} vars={vars} constants={}",
+                total_instances.saturating_add(instances),
                 constants.len()
             ));
             return Err(CertificationFailure::Limit(
                 "ground instance limit exceeded",
             ));
         }
-        if Instant::now() >= deadline {
-            return Err(CertificationFailure::Limit(
-                "certification time limit exceeded",
+        total_instances = total_instances.saturating_add(instances);
+        let Some(added) = instances.checked_mul(clause.literals.len().max(1)) else {
+            return Err(CertificationFailure::Limit("ground literal count overflow"));
+        };
+        if total_literals.saturating_add(added) > literal_cap {
+            trace_certify(format!(
+                "refuse=literal_limit estimated={} cap={literal_cap} \
+                 estimated_bytes={} vars={vars} constants={} lits_per_clause={}",
+                total_literals.saturating_add(added),
+                (total_literals.saturating_add(added) as u64)
+                    .saturating_mul(GROUND_BYTES_PER_LITERAL),
+                constants.len(),
+                clause.literals.len()
             ));
+            return Err(CertificationFailure::Limit("ground literal limit exceeded"));
         }
+        total_literals = total_literals.saturating_add(added);
+    }
+    if Instant::now() >= deadline {
+        return Err(CertificationFailure::Limit(
+            "certification time limit exceeded",
+        ));
+    }
+
+    // Pass 2: materialize, with the capacity already known. Amortized growth
+    // would double-and-copy a multi-gigabyte `Vec<Clause>` repeatedly, and each
+    // reallocation holds the old buffer alive while the new one is built — so the
+    // transient peak is a multiple of the final size, which is exactly the
+    // quantity the budget above is trying to bound. Reserving makes the peak the
+    // size of the result.
+    let mut grounded = Vec::with_capacity(total_instances);
+    for (clause, &vars) in clauses.iter().zip(&var_counts) {
+        if vars == 0 {
+            grounded.push(clause.clone());
+            continue;
+        }
+        let mut vars_list: Vec<_> = clause.free_vars().into_iter().collect();
+        vars_list.sort_unstable();
         let mut substitution = Substitution::new();
         instantiate_clause(
             clause,
-            &vars,
+            &vars_list,
             constants,
             0,
             &mut substitution,
@@ -1184,7 +1367,7 @@ fn ground_with_constants(
 
     Ok(GroundedInputs {
         clauses: grounded,
-        originals,
+        originals: clauses.to_vec(),
         class_representatives: Vec::new(),
     })
 }
@@ -2428,6 +2611,7 @@ mod tests {
             &e,
             &mut ids,
             10_000,
+            MAX_GROUND_LITERALS,
             Instant::now() + Duration::from_secs(5),
         )
         .expect("grounding");
@@ -2529,8 +2713,11 @@ mod tests {
             &symbols,
             &TermOrdering::KBO,
             &mut ids,
-            Duration::from_secs(1),
-            1,
+            crate::certified::CertifyBudget {
+                time_limit: Duration::from_secs(1),
+                workers: 1,
+                memory_mb: None,
+            },
         )
         .expect("finite ground SAT closure should certify");
         // The SAT tier decides a satisfiable grounding before the closure is
@@ -2574,8 +2761,11 @@ mod tests {
             &symbols,
             &TermOrdering::KBO,
             &mut ids,
-            Duration::from_secs(1),
-            1,
+            crate::certified::CertifyBudget {
+                time_limit: Duration::from_secs(1),
+                workers: 1,
+                memory_mb: None,
+            },
         )
         .expect("finite ground UNSAT closure should certify");
         assert!(matches!(report.result, SearchResult::Refutation(..)));
@@ -2609,8 +2799,11 @@ mod tests {
             &symbols,
             &TermOrdering::KBO,
             &mut ids,
-            Duration::from_secs(1),
-            1,
+            crate::certified::CertifyBudget {
+                time_limit: Duration::from_secs(1),
+                workers: 1,
+                memory_mb: None,
+            },
         )
         .expect("finite EPR grounding should certify the refutation");
         assert!(matches!(report.result, SearchResult::Refutation(..)));
@@ -2636,8 +2829,11 @@ mod tests {
                 &symbols,
                 &TermOrdering::KBO,
                 &mut ids,
-                Duration::from_secs(1),
-                1,
+                crate::certified::CertifyBudget {
+                    time_limit: Duration::from_secs(1),
+                    workers: 1,
+                    memory_mb: None,
+                }
             )
             .is_ok()
         );
@@ -2659,8 +2855,11 @@ mod tests {
                 &symbols,
                 &TermOrdering::KBO,
                 &mut ids,
-                Duration::from_secs(1),
-                1,
+                crate::certified::CertifyBudget {
+                    time_limit: Duration::from_secs(1),
+                    workers: 1,
+                    memory_mb: None,
+                }
             )
             .is_ok()
         );
@@ -2680,8 +2879,11 @@ mod tests {
                 &symbols,
                 &TermOrdering::KBO,
                 &mut ids,
-                Duration::from_secs(1),
-                1,
+                crate::certified::CertifyBudget {
+                    time_limit: Duration::from_secs(1),
+                    workers: 1,
+                    memory_mb: None,
+                }
             ),
             Err(CertificationFailure::Unsupported(
                 "function terms are outside the certified EPR fragment"
@@ -2718,8 +2920,11 @@ mod tests {
             &symbols,
             &TermOrdering::LPO,
             &mut ids,
-            Duration::from_secs(1),
-            1,
+            crate::certified::CertifyBudget {
+                time_limit: Duration::from_secs(1),
+                workers: 1,
+                memory_mb: None,
+            },
         )
         .expect("finite ground SAT closure should certify under LPO");
         assert!(matches!(
@@ -2757,8 +2962,11 @@ mod tests {
             &symbols,
             &TermOrdering::LPO,
             &mut ids,
-            Duration::from_secs(1),
-            1,
+            crate::certified::CertifyBudget {
+                time_limit: Duration::from_secs(1),
+                workers: 1,
+                memory_mb: None,
+            },
         )
         .expect("finite ground UNSAT closure should certify under LPO");
         assert!(matches!(report.result, SearchResult::Refutation(..)));
@@ -2792,8 +3000,11 @@ mod tests {
             &symbols,
             &TermOrdering::LPO,
             &mut ids,
-            Duration::from_secs(1),
-            1,
+            crate::certified::CertifyBudget {
+                time_limit: Duration::from_secs(1),
+                workers: 1,
+                memory_mb: None,
+            },
         )
         .expect("finite EPR grounding should certify the refutation under LPO");
         assert!(matches!(report.result, SearchResult::Refutation(..)));
@@ -2845,8 +3056,11 @@ mod tests {
             &symbols,
             &lpo,
             &mut ids.clone(),
-            Duration::from_secs(5),
-            1,
+            crate::certified::CertifyBudget {
+                time_limit: Duration::from_secs(5),
+                workers: 1,
+                memory_mb: None,
+            },
         )
         .expect("LPO must not require positive weights");
         assert!(matches!(report.result, SearchResult::Refutation(..)));
@@ -2865,8 +3079,11 @@ mod tests {
             &symbols,
             &kbo,
             &mut ids,
-            Duration::from_secs(5),
-            1,
+            crate::certified::CertifyBudget {
+                time_limit: Duration::from_secs(5),
+                workers: 1,
+                memory_mb: None,
+            },
         ) {
             Err(CertificationFailure::Unsupported(_)) => {}
             Ok(report) => assert!(
@@ -2916,8 +3133,11 @@ mod tests {
             &symbols,
             &ac,
             &mut ids,
-            Duration::from_secs(5),
-            1,
+            crate::certified::CertifyBudget {
+                time_limit: Duration::from_secs(5),
+                workers: 1,
+                memory_mb: None,
+            },
         ) {
             Err(CertificationFailure::Unsupported(_)) => {}
             Ok(report) => assert!(
@@ -3014,8 +3234,11 @@ mod tests {
             &symbols,
             &TermOrdering::KBO,
             &mut ids,
-            Duration::from_secs(1),
-            1,
+            crate::certified::CertifyBudget {
+                time_limit: Duration::from_secs(1),
+                workers: 1,
+                memory_mb: None,
+            },
         )
         .expect("equality SAT must certify");
         assert!(matches!(report.result, SearchResult::Saturated(_)));
@@ -3035,8 +3258,11 @@ mod tests {
             &symbols,
             &TermOrdering::KBO,
             &mut ids,
-            Duration::from_secs(5),
-            1,
+            crate::certified::CertifyBudget {
+                time_limit: Duration::from_secs(5),
+                workers: 1,
+                memory_mb: None,
+            },
         )
         .expect("a mixed predicate/unit-equality set is decidable");
         assert!(matches!(report.result, SearchResult::Saturated(_)));
@@ -3068,8 +3294,11 @@ mod tests {
                 &symbols,
                 &TermOrdering::KBO,
                 &mut ids,
-                Duration::from_secs(1),
-                1,
+                crate::certified::CertifyBudget {
+                    time_limit: Duration::from_secs(1),
+                    workers: 1,
+                    memory_mb: None,
+                }
             ),
             Err(CertificationFailure::Unsupported(_))
         ));
@@ -3107,8 +3336,11 @@ mod tests {
                 &symbols,
                 &ordering,
                 &mut ids,
-                Duration::from_secs(5),
-                1,
+                crate::certified::CertifyBudget {
+                    time_limit: Duration::from_secs(5),
+                    workers: 1,
+                    memory_mb: None,
+                },
             )
             .expect("unit contradiction must certify");
             assert!(
@@ -3121,6 +3353,151 @@ mod tests {
     /// Non-unit positive equalities are outside the certified equality
     /// fragment. Without predicate-congruence support, accepting this input
     /// would permit a false saturation, so certification must fail closed.
+    /// An oversized grounding must be refused *before* it is built.
+    ///
+    /// The observable is the id generator: only `instantiate_clause` draws from
+    /// it, so a refusal that leaves it untouched is a refusal that materialized
+    /// nothing. This is the property that matters on a memory-limited host —
+    /// checking the budget after building most of the set means the peak was
+    /// already paid by the time the run discovers it cannot finish, and
+    /// `EPS/HWV042-2` did exactly that at 20.8 GB on a 13.3 GB allowance before
+    /// reporting `GaveUp` about a set it should never have started.
+    #[test]
+    fn grounding_refuses_before_materializing_anything() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let constants: Vec<_> = (0..40)
+            .map(|i| symbols.intern(&format!("pre_c{i}")))
+            .collect();
+        let mut ids = ClauseIdGen::new();
+        let clause = input_clause(
+            &mut ids,
+            vec![mrs_core::clause::Literal::pos(Atom::pred(
+                p,
+                vec![Term::var(0), Term::var(1), Term::var(2)],
+            ))],
+        );
+        // 40^3 = 64 000 instances, 192 000 literals: over a 1000-literal cap and
+        // comfortably under the instance cap, so only the literal bound can fire.
+        let mut fresh = ClauseIdGen::new();
+        let result = ground_with_constants(
+            std::slice::from_ref(&clause),
+            &constants,
+            &mut fresh,
+            10_000_000,
+            1_000,
+            Instant::now() + Duration::from_secs(30),
+        );
+        assert!(
+            matches!(result, Err(CertificationFailure::Limit(_))),
+            "an oversized grounding must fail closed as a Limit"
+        );
+        assert_eq!(
+            fresh.next().0,
+            0,
+            "a refusal must not have materialized anything, so no clause id was drawn"
+        );
+
+        // With the literal bound raised the same input grounds, which is what
+        // makes the test above about the cap rather than about the input.
+        let mut fresh = ClauseIdGen::new();
+        let grounded = ground_with_constants(
+            std::slice::from_ref(&clause),
+            &constants,
+            &mut fresh,
+            10_000_000,
+            10_000_000,
+            Instant::now() + Duration::from_secs(30),
+        )
+        .expect("a grounding inside the literal cap must succeed");
+        assert_eq!(grounded.clauses.len(), 40 * 40 * 40);
+    }
+
+    #[test]
+    fn ground_clauses_are_included_in_both_preflight_caps() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("ground_cap_p");
+        let q = symbols.intern("ground_cap_q");
+        let a = symbols.intern("ground_cap_a");
+        let mut source_ids = ClauseIdGen::new();
+        let clause = input_clause(
+            &mut source_ids,
+            vec![
+                mrs_core::clause::Literal::pos(Atom::pred(p, vec![Term::constant(a)])),
+                mrs_core::clause::Literal::pos(Atom::pred(q, vec![Term::constant(a)])),
+            ],
+        );
+        let mut ids = ClauseIdGen::new();
+
+        let by_instances = ground_with_constants(
+            std::slice::from_ref(&clause),
+            &[a],
+            &mut ids,
+            0,
+            10,
+            Instant::now() + Duration::from_secs(1),
+        );
+        assert!(matches!(by_instances, Err(CertificationFailure::Limit(_))));
+        assert_eq!(ids.next().0, 0, "preflight refusal must not consume ids");
+
+        let mut ids = ClauseIdGen::new();
+        let by_literals = ground_with_constants(
+            std::slice::from_ref(&clause),
+            &[a],
+            &mut ids,
+            1,
+            1,
+            Instant::now() + Duration::from_secs(1),
+        );
+        assert!(matches!(by_literals, Err(CertificationFailure::Limit(_))));
+        assert_eq!(ids.next().0, 0, "preflight refusal must not consume ids");
+    }
+
+    /// The grounding budget the certifier enforces is derived from the memory
+    /// allowance, and a lower allowance has to produce a lower budget — that is
+    /// the whole point of it. Pinned here because the derivation is three lines
+    /// of arithmetic with no test otherwise, and because getting it backwards
+    /// would silently disable the bound on exactly the hosts that need it.
+    #[test]
+    fn grounding_literal_budget_tracks_the_memory_allowance() {
+        // A 128 GB allowance may afford more literals than a 1 GB one, and both
+        // are capped by the static ceiling.
+        let one_gb = 1024u64;
+        let plenty = one_gb.saturating_mul(1024 * 1024) / GROUND_BYTES_PER_LITERAL;
+        let tiny = 256u64;
+        let scarce = tiny.saturating_mul(1024 * 1024) / GROUND_BYTES_PER_LITERAL;
+        assert!(
+            plenty > scarce,
+            "a larger allowance must afford more literals"
+        );
+        assert!(
+            scarce < MAX_GROUND_LITERALS as u64,
+            "a small allowance must be below the static ceiling, or the scaling is inert"
+        );
+        // The static ceiling is what binds on a competition-shaped host, and the
+        // threshold is derivable: `MAX_GROUND_LITERALS * bytes/literal`.
+        let ceiling_bytes = (MAX_GROUND_LITERALS as u64).saturating_mul(GROUND_BYTES_PER_LITERAL);
+        assert_eq!(
+            ceiling_bytes, 23_040_000_000,
+            "the static ceiling is 60M literals at 384 B each; if this moves, the \
+             smallest allowance that reaches the ceiling moves with it and the \
+             assertion below needs restating"
+        );
+        // An allowance comfortably past that reaches the ceiling, and the
+        // budget is the ceiling rather than the raw affordable figure.
+        let competition = 64u64 * 1024;
+        let affordable = competition * 1024 * 1024 / GROUND_BYTES_PER_LITERAL;
+        assert!(
+            affordable > MAX_GROUND_LITERALS as u64,
+            "a 64 GB allowance should afford more than the static ceiling"
+        );
+        assert_eq!(
+            MAX_GROUND_LITERALS.min(affordable as usize),
+            MAX_GROUND_LITERALS,
+            "so the enforced budget is the static ceiling"
+        );
+    }
+
     /// A non-unit positive equality stays outside the certified fragment.
     ///
     /// This is the strict guard's regression test, and it is the boundary that
@@ -3173,8 +3550,11 @@ mod tests {
                 &symbols,
                 &ordering,
                 &mut ids,
-                Duration::from_secs(10),
-                1,
+                crate::certified::CertifyBudget {
+                    time_limit: Duration::from_secs(10),
+                    workers: 1,
+                    memory_mb: None,
+                },
             );
             assert!(
                 matches!(result, Err(CertificationFailure::Unsupported(_))),
@@ -3220,9 +3600,11 @@ mod tests {
                         &symbols,
                         &TermOrdering::KBO,
                         &mut ids,
-                        Duration::from_secs(1),
-                    1,
-                    )
+                        crate::certified::CertifyBudget {
+                            time_limit: Duration::from_secs(1),
+                            workers: 1,
+                            memory_mb: None,
+                        })
         ,
                     Ok(report) if matches!(report.result, SearchResult::Refutation(..))
                 ));
@@ -3270,8 +3652,11 @@ mod tests {
                 &symbols,
                 &ordering,
                 &mut ids,
-                Duration::from_secs(1),
-                1,
+                crate::certified::CertifyBudget {
+                    time_limit: Duration::from_secs(1),
+                    workers: 1,
+                    memory_mb: None,
+                },
             )
             .expect("all-positive UNSAT EPR must certify");
             assert!(
@@ -3401,8 +3786,11 @@ mod tests {
             &symbols,
             &TermOrdering::KBO,
             &mut ids,
-            budget,
-            1,
+            crate::certified::CertifyBudget {
+                time_limit: budget,
+                workers: 1,
+                memory_mb: None,
+            },
         );
         let elapsed = started.elapsed();
         assert!(
@@ -3458,8 +3846,11 @@ mod tests {
                 &symbols,
                 &ordering,
                 &mut ids,
-                Duration::from_secs(1),
-                1,
+                crate::certified::CertifyBudget {
+                    time_limit: Duration::from_secs(1),
+                    workers: 1,
+                    memory_mb: None,
+                },
             );
             // Full grounding is refused (2.98M > Tier-2 cap); Tier-3 subset
             // tries find only all-positive saturations and exhaust. Either
@@ -3511,8 +3902,11 @@ mod tests {
                 &symbols,
                 &ordering,
                 &mut ids,
-                Duration::from_secs(5),
-                1,
+                crate::certified::CertifyBudget {
+                    time_limit: Duration::from_secs(5),
+                    workers: 1,
+                    memory_mb: None,
+                },
             )
             .expect("small core must certify");
             assert!(
@@ -3560,8 +3954,11 @@ mod tests {
                 &symbols,
                 &ordering,
                 &mut ids,
-                Duration::from_secs(5),
-                1,
+                crate::certified::CertifyBudget {
+                    time_limit: Duration::from_secs(5),
+                    workers: 1,
+                    memory_mb: None,
+                },
             );
             assert!(
                 !matches!(
@@ -3616,8 +4013,11 @@ mod tests {
             &symbols,
             &TermOrdering::KBO,
             &mut ids,
-            Duration::ZERO,
-            1,
+            crate::certified::CertifyBudget {
+                time_limit: Duration::ZERO,
+                workers: 1,
+                memory_mb: None,
+            },
         );
         assert!(result.is_err(), "zero budget must fail closed");
         assert!(
@@ -3674,8 +4074,11 @@ mod tests {
             &symbols,
             &TermOrdering::KBO,
             &mut ids,
-            Duration::from_secs(30),
-            1,
+            crate::certified::CertifyBudget {
+                time_limit: Duration::from_secs(30),
+                workers: 1,
+                memory_mb: None,
+            },
         )
         .expect("vocabulary-restricted core must certify after Tier-2 UNSAT");
         assert!(matches!(report.result, SearchResult::Refutation(..)));
@@ -3835,8 +4238,11 @@ mod tests {
                 &symbols,
                 &ordering,
                 &mut ids,
-                Duration::from_secs(10),
-                1,
+                crate::certified::CertifyBudget {
+                    time_limit: Duration::from_secs(10),
+                    workers: 1,
+                    memory_mb: None,
+                },
             )
             .expect("relevance core must certify");
             assert!(

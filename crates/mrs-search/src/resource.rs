@@ -323,7 +323,11 @@ pub fn resolve_profile(
         (Some(limit), Some(host)) => host < limit,
         _ => false,
     };
-    let effective_memory_mb = match (memory_budget_mb, host_memory_mb) {
+    // The enforced ceiling is clipped to what the machine can be relied on to
+    // supply, with a reserve. See `enforceable_memory_mb` for why that is not
+    // simply `MemTotal`, and why it is emphatically not a live reading.
+    let enforceable = enforceable_memory_mb(host_memory_mb);
+    let effective_memory_mb = match (memory_budget_mb, enforceable) {
         (Some(limit), Some(host)) => Some(limit.min(host)),
         (Some(limit), None) => Some(limit),
         (None, Some(host)) => Some(host),
@@ -372,12 +376,51 @@ pub fn profile_warnings(
 
 /// Total RAM on this host in MB, ignoring cgroup limits.
 ///
-/// Only used to report whether a requested allowance is representable here; the
-/// watchdog uses [`memory_budget_mb`], which is cgroup-aware.
+/// Used to decide whether a requested allowance is representable here. That is
+/// a property of the machine, so `MemTotal` is the right quantity: it does not
+/// change between one call and the next.
 pub fn host_total_memory_mb() -> Option<u64> {
+    meminfo_field_mb("MemTotal:")
+}
+
+/// The share of RAM an enforced ceiling may assume, as a numerator over 100.
+///
+/// A ceiling set from `MemTotal` is above what the kernel will actually give a
+/// process on a host that is not otherwise idle, so the OOM killer arrives
+/// first and the run dies with no SZS status at all — the watchdog never gets
+/// to fail it closed. On the 2-core/15 GB development box `MemTotal` reported
+/// 15 876 MB against 13 897 MB actually available, so a `MemTotal` ceiling sat
+/// ~2 GB too high.
+pub const ENFORCEABLE_MEMORY_PERCENT: u64 = 85;
+
+/// RAM an enforced ceiling may assume, in MB: the configured percentage of
+/// `MemTotal`, with a minimum 1 GiB reserve.
+///
+/// **Deliberately not `MemAvailable`.** That was the first attempt and it is
+/// wrong in a way that only shows up under load: `MemAvailable` moves, so a
+/// budget derived from it makes a run's resource limits depend on whatever else
+/// happens to be running. The harness runs `--jobs N` concurrent problems, and
+/// each process would see a *smaller* `MemAvailable` the more of them there
+/// were — a benchmark whose memory budget shrinks as you parallelize it, and
+/// which reports different limits for the same problem run alone and run in a
+/// batch. A resource bound has to be a property of the run's configuration and
+/// the machine, not of the moment. Reserve rather than measure: it cannot drift
+/// between two processes on the same host, and `MemAvailable` is a kernel
+/// estimate with no guarantee anyway. The reserve is the larger of the
+/// percentage not assigned to the process and 1 GiB. The 15% reserve leaves
+/// headroom for kernel/process memory that is included in `MemTotal` but not
+/// available to this process: on the measured 15 876 MB host, only 13 897 MB
+/// was available (87.5% of total), so 90% would still exceed it.
+pub fn enforceable_memory_mb(total_mb: Option<u64>) -> Option<u64> {
+    let total = total_mb?;
+    let affordable = ((u128::from(total) * u128::from(ENFORCEABLE_MEMORY_PERCENT)) / 100) as u64;
+    Some(affordable.min(total.saturating_sub(1024)))
+}
+
+fn meminfo_field_mb(field: &str) -> Option<u64> {
     let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
     for line in meminfo.lines() {
-        if let Some(rest) = line.strip_prefix("MemTotal:") {
+        if let Some(rest) = line.strip_prefix(field) {
             return rest
                 .split_whitespace()
                 .next()?
@@ -774,6 +817,40 @@ mod tests {
             assert!(sibling_groups(&cpus).len() <= cpus.len());
         }
         assert!(host_total_memory_mb().is_some_and(|mb| mb > 0));
+    }
+
+    /// The enforced ceiling must not depend on live memory pressure.
+    ///
+    /// A budget derived from `MemAvailable` shrinks as unrelated work runs, so
+    /// the same problem gets a smaller limit alone than in a batch — the wrong
+    /// way round for a harness that parallelizes by design, and it would make
+    /// a benchmark's reported limit depend on the batch it ran in. Pinned on the
+    /// arithmetic: the reserve is a function of the total alone, so two
+    /// processes on one host compute the same ceiling.
+    #[test]
+    fn enforceable_memory_is_a_stable_fraction_of_total() {
+        for total in [2048u64, 15_876, 131_072] {
+            let enforceable = enforceable_memory_mb(Some(total)).expect("total is known");
+            assert!(
+                enforceable < total,
+                "the ceiling must leave a reserve, total={total}"
+            );
+            assert_eq!(
+                enforceable_memory_mb(Some(total)),
+                Some(enforceable),
+                "the derivation must be pure: same total in, same ceiling out"
+            );
+        }
+        // A small box keeps a whole gigabyte back rather than a percentage that
+        // rounds away to nothing: 2 GB total leaves 1 GB usable, not 2 GB minus
+        // 20 MB.
+        assert_eq!(enforceable_memory_mb(Some(2048)), Some(1024));
+        assert_eq!(enforceable_memory_mb(Some(4096)), Some(3072));
+        // Above 10 GiB, the 15% reserve is larger than the 1 GiB minimum.
+        // This is below the measured 13 897 MB available on a 15 876 MB host.
+        assert_eq!(enforceable_memory_mb(Some(15_876)), Some(13_494));
+        // Unknown total stays unknown rather than becoming an unbounded ceiling.
+        assert_eq!(enforceable_memory_mb(None), None);
     }
 
     // ---- casc simulation: process constraints ----
