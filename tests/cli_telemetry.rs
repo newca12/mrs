@@ -194,3 +194,68 @@ fn raw_epr_sat_gives_up_only_after_instgen_falls_through() {
     assert!(stderr.contains("instgen_result=gaveup_variable_model"));
     assert!(stderr.contains("processed="));
 }
+
+/// A `Satisfiable` verdict is only worth anything if the model behind it
+/// satisfies the problem, and nothing in `mrs-search` can check that: the
+/// independent model checker lives in `mrs-proof-kernel`, which does not
+/// depend on the search crate. This closes the loop from the outside.
+///
+/// It is the guard for a real defect. Restricted variable renaming was
+/// implemented, measured as a large EPS win, and rejected here: it keeps one
+/// representative per orbit of the variable-renaming group, but a variable
+/// permutation generally induces a *different* clause, so the ground set ends
+/// up weaker than the problem and the emitted model does not satisfy it. The
+/// verdict was right and the model was wrong, which the reference-answer check
+/// passes because the problem really is satisfiable. Only the kernel catches
+/// it.
+#[test]
+fn satisfied_model_is_certified_by_the_kernel() {
+    use mrs_core::model::ModelCertificate;
+    use mrs_proof_kernel::model::{ModelEvaluation, ModelVerdict};
+
+    let problem = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("problems/epr_ground_sat.p");
+    let output = Command::new(env!("CARGO_BIN_EXE_mrs"))
+        .args([
+            "--certify-ordered",
+            "--workers",
+            "1",
+            "--strategy",
+            "1",
+            "--schedule",
+            "casc_eps",
+            "--time",
+            "60",
+        ])
+        .arg(&problem)
+        .output()
+        .expect("mrs CLI should run");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        stdout.contains("% SZS status Satisfiable for epr_ground_sat"),
+        "stdout: {stdout}"
+    );
+    let certificate = ModelCertificate::extract_from_text(&stdout)
+        .unwrap_or_else(|reason| panic!("a Satisfiable verdict must carry a model: {reason}"));
+    match certificate.validate_file(&problem, Some("Satisfiable")) {
+        ModelVerdict::Certified {
+            domain_size,
+            formulas_evaluated,
+            ground_clauses_evaluated,
+            ..
+        } => {
+            assert_eq!(domain_size, 4, "four constants need four domain elements");
+            assert!(formulas_evaluated > 0, "no formula was evaluated");
+            assert!(
+                ground_clauses_evaluated > 0,
+                "no ground clause was evaluated"
+            );
+        }
+        ModelVerdict::Rejected(reason) => {
+            panic!("the model does not satisfy the problem: {reason}")
+        }
+        ModelVerdict::Inconclusive(reason) => {
+            panic!("the kernel could not decide the model: {reason}")
+        }
+    }
+}

@@ -9258,7 +9258,22 @@ fn verify_sat_backed_refutation(
     }
     for &parent_index in parent_indices {
         match dag.nodes[parent_index].rule {
-            None | Some("instantiate") | Some("instantiation") => {}
+            // The parents of a `sat_backed_refutation` are the ground input
+            // clauses of the SAT instance. Depending on the problem those are
+            // input leaves, grounding instances, equality-normalization
+            // rewrites, or — for a problem with a FOF conjecture or axiom — the
+            // clause the clausifier produced. Each of those nodes is verified
+            // by its own verifier elsewhere in this pass (or is a leaf), so
+            // accepting them here does not skip a check: what this function
+            // verifies is that the FRAT trace is bound to exactly these
+            // clauses. A rule that is *not* in this set would mean the cited
+            // clause is not a plain input of the encoding, which is a real
+            // problem worth rejecting.
+            None
+            | Some("instantiate")
+            | Some("instantiation")
+            | Some("equality_normalization")
+            | Some("cnf_transformation") => {}
             Some(other) => {
                 return KernelVerdict::Rejected(format!(
                     "sat_backed_refutation parent `{}` uses unsupported rule `{other}`",

@@ -24,7 +24,7 @@
 
 use std::collections::HashMap as StdHashMap;
 use std::ops::ControlFlow;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::{CompletenessWitness, HashSet, SearchResult, SearchStats, TermOrdering};
@@ -40,18 +40,34 @@ use mrs_index::literal_index::LiteralIndex;
 /// Resource caps for the bounded certifier. `MAX_ATOMS` and
 /// `MAX_GROUND_INSTANCES` bound Tier 1 (double ordered-resolution closure);
 /// `TIER2_MAX_ATOMS` and `TIER2_MAX_GROUND_INSTANCES` bound Tier 2
-/// (SAT-backed satisfiability via CaDiCaL, see `certified_sat`). Tier-2
-/// bounds were sized from TRACE_CERTIFY measurements: they admit the next
-/// slice of closure-bound groundings while keeping the materialized vec and
-/// the solver arena within a few hundred MB. `MAX_CLAUSES` and
-/// `MAX_INFERENCES` bound Tier-1 closure memory and work after grounding,
+/// (SAT-backed satisfiability via CaDiCaL, see `certified_sat`). `MAX_CLAUSES`
+/// and `MAX_INFERENCES` bound Tier-1 closure memory and work after grounding,
 /// and the per-run time limit bounds everything else. Anything beyond the
 /// Tier-2 caps fails closed as `Limit`, never as saturation.
+///
+/// `TIER2_MAX_ATOMS` was raised from 16 384 to 400 000 in 2026-09, from
+/// measurement rather than taste: with the routing fixed, the *atom* count
+/// rather than the instance count became the binding limit on which
+/// groundings reached the solver, and the atom set is not what costs memory
+/// (the arena on a million-event UNSAT proof is). The instance cap is
+/// unchanged at 2 000 000, which is what the exact `n^k` estimate refuses on;
+/// raising it buys the 205-constant HWV problems at ~8 GB peak each.
 const MAX_ATOMS: usize = 4096;
 const MAX_CLAUSES: usize = 100_000;
+/// Total literals in a Tier-1 closure, over the accumulated clause set.
+///
+/// `MAX_CLAUSES` counts clauses, which bounds nothing when the clauses are
+/// wide: on HWV053-1 a wave derived 40 624 clauses averaging ~130 literals of
+/// arity 86, and merging them into the index interned ~600M terms — 160 s of
+/// the 165 s the run took against a 30 s budget, inside a loop with no
+/// deadline check and no cap that could see it. A literal budget bounds the
+/// actual work. Sized above the widest legitimate closure measured on the
+/// 2026-09 casc-30 EPS corpus while keeping the term bank in the low hundreds
+/// of MB.
+const MAX_CLAUSE_LITERALS: usize = 8_000_000;
 const MAX_INFERENCES: u64 = 1_000_000;
 const MAX_GROUND_INSTANCES: usize = 500_000;
-const TIER2_MAX_ATOMS: usize = 16_384;
+const TIER2_MAX_ATOMS: usize = 400_000;
 const TIER2_MAX_GROUND_INSTANCES: usize = 2_000_000;
 /// Tier-3 constant-subset search bounds: subset sizes, per-size try caps,
 /// and the per-subset grounding cap. Subsets stay small so each Tier-1 run
@@ -138,6 +154,7 @@ pub(crate) fn certify_ground_ordered_resolution(
     let constants = collect_grounding_constants(clauses, &mut proof_symbols)?;
     // Full grounding first; only size limits divert to Tier 3 below —
     // fragment errors propagate because subsets cannot fix them.
+    let grounding_started = Instant::now();
     let grounded = match ground_with_constants(
         clauses,
         &constants,
@@ -150,11 +167,22 @@ pub(crate) fn certify_ground_ordered_resolution(
         Ok(grounded) => Some(grounded),
     };
     if let Some(grounded) = grounded {
+        trace_certify(format!(
+            "phase=ground instances={} ms={}",
+            grounded.clauses.len(),
+            grounding_started.elapsed().as_millis()
+        ));
+        let expansion_started = Instant::now();
         // Equality expansion (unit-equality union-find normalization and
         // reflexivity fast paths). Predicate-only inputs pass through
         // byte-identical, so the legacy fragment observes no change.
         let (expanded_inputs, contradiction) =
-            expand_for_certification(grounded, ordering, id_gen)?;
+            expand_for_certification(grounded, ordering, id_gen, deadline)?;
+        trace_certify(format!(
+            "phase=expand clauses={} ms={}",
+            expanded_inputs.clauses.len(),
+            expansion_started.elapsed().as_millis()
+        ));
         if let Some(empty) = contradiction {
             trace_certify("eq_contradiction: unit disequality in its own class".to_string());
             return Ok(refute_from_ancestry(
@@ -188,9 +216,11 @@ pub(crate) fn certify_ground_ordered_resolution(
             });
         }
         let atoms = collect_fragment_atoms(&expanded_inputs.clauses)?;
-        // Tier router on the expanded set. Tier 1 (double
-        // ordered-resolution closure) handles small groundings; Tier 2
-        // (SAT-backed, no ordering needed) handles the next size slice.
+        // Tier router on the expanded set. Tier 2 (SAT-backed, no ordering
+        // needed) decides the ground CNF as a propositional formula; Tier 1
+        // (double ordered-resolution closure) is the only route that can
+        // produce a TSTP-ancestry *refutation*, and its closure is exponential
+        // in the grounding size.
         let tier1 =
             atoms.len() <= MAX_ATOMS && expanded_inputs.clauses.len() <= MAX_GROUND_INSTANCES;
         let has_equality = expanded_inputs
@@ -198,46 +228,80 @@ pub(crate) fn certify_ground_ordered_resolution(
             .iter()
             .flat_map(|clause| clause.literals.iter())
             .any(|literal| matches!(literal.atom, Atom::Eq(..)));
-        let tier2 = !has_equality
+        // `tier2_eligible` is the size/shape gate. The EPR fragment check is
+        // applied where Tier 2 runs and only *skips* the tier — it must not
+        // abort the router, because an input outside the SAT fragment is
+        // exactly the input Tier 1 and Tier 3 can still handle.
+        //
+        // The EPR check is `is_epr_input`, not the stricter
+        // `is_epr_with_equality_input`: a mixed predicate/equality input is
+        // admissible here because every ground equality literal has already
+        // been resolved (unit classes plus unique names), so what reaches
+        // `encode_sat` is predicate-only. `!has_equality` above is the
+        // encoding-level requirement, and it is checked on the *expanded* set.
+        let tier2_eligible = !has_equality
             && atoms.len() <= TIER2_MAX_ATOMS
-            && expanded_inputs.clauses.len() <= TIER2_MAX_GROUND_INSTANCES;
-        if tier1 {
-            return run_tier1(
-                &expanded_inputs,
-                provenance,
-                ordering,
-                &proof_symbols,
-                id_gen,
-                deadline,
-                "tier1",
-                workers,
-            );
-        }
-        if tier2 {
-            if !is_epr_with_equality_input(&expanded_inputs.originals) {
-                return Err(CertificationFailure::Unsupported(
-                    "saturation is certified for EPR inputs only",
+            && expanded_inputs.clauses.len() <= TIER2_MAX_GROUND_INSTANCES
+            && is_epr_input(&expanded_inputs.originals);
+        if tier1 || tier2_eligible {
+            if tier2_eligible {
+                // Try the SAT tier first. The encoding is linear in a
+                // grounding that is already materialized, so the call is
+                // cheap even on the small groundings Tier 1 can close, and it
+                // is the only tier that answers the satisfiability questions
+                // an exponential closure never reaches. It certifies
+                // satisfiability alone: an UNSAT verdict from the solver
+                // carries no TSTP ancestry, so it falls through to Tier 1 for
+                // the refutation.
+                trace_certify(format!(
+                    "sat_tier=2 grounded={} atoms={}",
+                    expanded_inputs.clauses.len(),
+                    atoms.len()
                 ));
-            }
-            trace_certify(format!(
-                "sat_tier=2 grounded={} atoms={}",
-                expanded_inputs.clauses.len(),
-                atoms.len()
-            ));
-            match crate::certified_sat::certify_sat_backed(
-                &expanded_inputs.clauses,
-                &expanded_inputs.originals,
-                provenance,
-                &atoms,
-                &proof_symbols,
-                &mut *id_gen,
-                deadline.saturating_duration_since(Instant::now()),
-            ) {
-                Err(CertificationFailure::Tier2Unsat) => {
-                    // Sound but proof-less: a small constant core may still
-                    // refute with TSTP ancestry via Tier 3 below.
+                match crate::certified_sat::certify_sat_backed(
+                    &expanded_inputs.clauses,
+                    &expanded_inputs.originals,
+                    provenance,
+                    &atoms,
+                    &expanded_inputs.class_representatives,
+                    &proof_symbols,
+                    &mut *id_gen,
+                    deadline.saturating_duration_since(Instant::now()),
+                ) {
+                    Err(CertificationFailure::Tier2Unsat) => {
+                        // Sound but proof-less: the refutation still needs a
+                        // tier that can carry its ancestry.
+                        trace_certify("sat_tier=2 unsat_without_proof".to_string());
+                    }
+                    outcome => return outcome,
                 }
-                outcome => return outcome,
+            }
+            if tier1 {
+                match run_tier1(
+                    &expanded_inputs,
+                    provenance,
+                    ordering,
+                    &proof_symbols,
+                    id_gen,
+                    deadline,
+                    "tier1",
+                    workers,
+                ) {
+                    Ok(report) => return Ok(report),
+                    // A closure that ran out of time or hit a cap is not a
+                    // verdict, so hand the run to the subset search rather than
+                    // reporting a refusal it can still make progress on.
+                    // `Unsupported` still propagates (the input is outside the
+                    // ordered fragment) and so does `OrderedClosureMismatch`,
+                    // which is a soundness alarm and must never be swallowed.
+                    Err(CertificationFailure::Limit(reason)) => {
+                        trace_certify(format!(
+                            "tier1_incomplete instances={} reason={reason}",
+                            expanded_inputs.clauses.len()
+                        ));
+                    }
+                    Err(other) => return Err(other),
+                }
             }
         } else {
             trace_certify(format!(
@@ -269,13 +333,16 @@ fn expand_for_certification(
     grounded: GroundedInputs,
     ordering: &TermOrdering,
     id_gen: &mut ClauseIdGen,
+    deadline: Instant,
 ) -> Result<(GroundedInputs, Option<Clause>), CertificationFailure> {
-    let expanded = crate::certified_eq::expand_equality(&grounded.clauses, ordering, id_gen)?;
+    let expanded =
+        crate::certified_eq::expand_equality(&grounded.clauses, ordering, id_gen, deadline)?;
     let contradiction = expanded.contradiction;
     Ok((
         GroundedInputs {
             clauses: expanded.clauses,
             originals: grounded.originals,
+            class_representatives: expanded.class_representatives,
         },
         contradiction,
     ))
@@ -339,7 +406,7 @@ fn run_tier1(
         trace_certify(format!("refuse=atom_limit atoms={}", atoms.len()));
         return Err(CertificationFailure::Limit("ground atom limit exceeded"));
     }
-    validate_ground_order(ordering, &atoms)?;
+    validate_ground_order(ordering, &atoms, deadline)?;
 
     let mut ordered_id_gen = id_gen.clone();
     let ordered = closure_indexed(
@@ -472,13 +539,34 @@ fn is_epr_with_equality_input(clauses: &[Clause]) -> bool {
                 })
         })
     } else {
-        clauses.iter().all(|clause| {
+        is_epr_input(clauses)
+    }
+}
+
+/// Function-free relational EPR: every atom argument is a constant or a
+/// variable, and no clause is formula-level, AVATAR-asserted, or empty.
+///
+/// This is the *input* side of the EPR check, deliberately weaker than
+/// [`is_epr_with_equality_input`]: it admits a clause that mixes predicates
+/// with equality. The mixed case is decidable because the ground equality
+/// literals are resolved before the tiers run — unit classes by
+/// `expand_equality`, and everything else by the unique-name axiom — so a
+/// mixed input that reaches the SAT tier has already become predicate-only. The
+/// stronger check exists for the *vacuous saturation* path, which runs on the
+/// originals and therefore cannot rely on a resolution pass having happened.
+fn is_epr_input(clauses: &[Clause]) -> bool {
+    !clauses.is_empty()
+        && !clauses.iter().any(|clause| {
+            clause.formula.is_some() || !clause.avatar.is_empty() || clause.literals.is_empty()
+        })
+        && clauses.iter().all(|clause| {
             clause.literals.iter().all(|literal| match &literal.atom {
                 Atom::Pred(_, args) => args.iter().all(term_is_epr_constant_or_var),
-                Atom::Eq(_, _) => false,
+                Atom::Eq(left, right) => {
+                    term_is_epr_constant_or_var(left) && term_is_epr_constant_or_var(right)
+                }
             })
         })
-    }
 }
 
 fn term_is_epr_constant_or_var(term: &Term) -> bool {
@@ -620,7 +708,7 @@ fn tier3_try_grounded(
     context: &'static str,
 ) -> Tier3Try {
     let (expanded_inputs, contradiction) =
-        match expand_for_certification(subset_grounded, ordering, id_gen) {
+        match expand_for_certification(subset_grounded, ordering, id_gen, deadline) {
             Ok(expanded) => expanded,
             Err(_) => return Tier3Try::Failed,
         };
@@ -986,6 +1074,10 @@ fn term_mentions_only(term: &Term, subset: &[SymbolId]) -> bool {
 struct GroundedInputs {
     clauses: Vec<Clause>,
     originals: Vec<Clause>,
+    /// Constant -> class representative, as computed by the equality
+    /// expansion. Empty for a predicate-only input. Carried to the SAT tier
+    /// so its model certificate interprets merged constants as one element.
+    class_representatives: Vec<(Term, Term)>,
 }
 
 /// Collect the finite constant domain of EPR clauses: fragment checks plus
@@ -1029,7 +1121,10 @@ fn collect_grounding_constants(
 
 /// Exhaustively instantiate clauses over `constants`, refusing past
 /// `instance_cap` before materializing. The estimate is exact: one output
-/// per ground input clause plus `constants^vars` per variable clause.
+/// per ground input clause plus the canonical instance count per variable
+/// clause. The count is exact, and it must stay exact: see
+/// [`instances_induce_same_clause`] for why an enumeration that dropped
+/// "duplicate" instances would not be a smaller equivalent set.
 fn ground_with_constants(
     clauses: &[Clause],
     constants: &[SymbolId],
@@ -1090,6 +1185,7 @@ fn ground_with_constants(
     Ok(GroundedInputs {
         clauses: grounded,
         originals,
+        class_representatives: Vec::new(),
     })
 }
 
@@ -1110,6 +1206,46 @@ fn collect_epr_constants(
         constants.push(*symbol);
     }
     Ok(())
+}
+
+/// Do two instances of `clause` induce the same ground clause?
+///
+/// The grounder must materialize every *distinct induced clause*, not one
+/// representative per orbit of the variable-renaming group. Those are
+/// different things, and conflating them is a soundness hole rather than a
+/// missed optimization: `~g(Y) | p(X,e4,Y) | p(X,e3,Y) | p(X,e2,Y) |
+/// p(X,e1,Y) | ~g(X)` over four constants has sixteen distinct induced
+/// clauses, but renaming `X` and `Y` shows the clause is not symmetric in
+/// them, and the "sorted values" representative of the orbit of `(X,Y) =
+/// (0,1)` is a *different* clause. Dropping the other six leaves a ground set
+/// with fewer constraints, so a model of it need not satisfy the original —
+/// and `audit_casc_proofs` rejected exactly such a model
+/// (`model violates axiom clause column_surjectivity`).
+///
+/// Restricted variable renaming is sound for the *refutation* direction,
+/// because a resolution step that uses a renamed clause has a mirror that
+/// uses the representative. It is unsound for satisfiability, which is the
+/// whole of the EPS division. This predicate is the cheap end of that
+/// assertion and `grounding_is_complete` is the test that pins it.
+#[cfg(test)]
+fn instances_induce_same_clause(
+    left: &Substitution,
+    right: &Substitution,
+    clause: &Clause,
+) -> bool {
+    let mut left_literals: Vec<String> = clause
+        .literals
+        .iter()
+        .map(|literal| format!("{:?}", left.apply_literal(literal)))
+        .collect();
+    let mut right_literals: Vec<String> = clause
+        .literals
+        .iter()
+        .map(|literal| format!("{:?}", right.apply_literal(literal)))
+        .collect();
+    left_literals.sort();
+    right_literals.sort();
+    left_literals == right_literals
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1256,12 +1392,22 @@ fn record_term_arities(
 fn validate_ground_order(
     ordering: &TermOrdering,
     atoms: &[Atom],
+    deadline: Instant,
 ) -> Result<(), CertificationFailure> {
     let config = ordering.symbol_config();
     validate_symbol_config(ordering, &config, atoms)?;
     let terms: Vec<Term> = atoms.iter().map(atom_term).collect();
 
     for (i, left) in terms.iter().enumerate() {
+        if i & 0x1F == 0 && Instant::now() >= deadline {
+            trace_certify(format!(
+                "refuse=order_validation_time atoms={} row={i}",
+                terms.len()
+            ));
+            return Err(CertificationFailure::Limit(
+                "certification time limit exceeded",
+            ));
+        }
         for (j, right) in terms.iter().enumerate() {
             if i == j {
                 continue;
@@ -1277,17 +1423,48 @@ fn validate_ground_order(
         }
     }
 
-    for a in &terms {
-        for b in &terms {
-            for c in &terms {
-                if ordering.compare(a, b) == TermComparison::Greater
-                    && ordering.compare(b, c) == TermComparison::Greater
-                    && ordering.compare(a, c) != TermComparison::Greater
-                {
-                    return Err(CertificationFailure::Unsupported(
-                        "ordering is not transitive on ground atoms",
-                    ));
-                }
+    // Transitivity, without the cubic scan.
+    //
+    // The obvious check — for every a, b, c, `a > b > c` implies `a > c` — is
+    // O(n^3) comparisons, and each comparison here is a KBO or LPO comparison
+    // of two whole ground atoms. On the high-arity half of the EPS division
+    // (1400-odd atoms of arity 86) that is billions of comparisons: HWV053-1
+    // spent over 200 s on a 10 s budget inside this function and never reached
+    // the closure, with no deadline check to stop it.
+    //
+    // The reduction is not a relaxation. If the relation agrees with *some*
+    // total order on the atoms, it **is** that linear order, and a linear order
+    // is transitive. So: sort the atoms with the comparison to obtain candidate
+    // ranks (the sort itself may be arbitrary — a non-transitive comparator has
+    // no defined meaning for `sort_by` — which is why agreement is then
+    // verified rather than assumed), and check every pair against those ranks.
+    // Passing the check *proves* transitivity; a genuine total order always
+    // passes, because sorting by it yields its own ranks.
+    let mut ranked: Vec<usize> = (0..terms.len()).collect();
+    ranked.sort_by(
+        |&left, &right| match ordering.compare(&terms[left], &terms[right]) {
+            TermComparison::Less => std::cmp::Ordering::Less,
+            TermComparison::Greater => std::cmp::Ordering::Greater,
+            // The strict-total-order pass above already rejected this; ordering a
+            // tie is deterministic so the failure is reproducible, not arbitrary.
+            TermComparison::Equal | TermComparison::Incomparable => std::cmp::Ordering::Equal,
+        },
+    );
+    for (position, &index) in ranked.iter().enumerate() {
+        if position & 0x3F == 0 && Instant::now() >= deadline {
+            trace_certify(format!(
+                "refuse=order_validation_time atoms={} position={position}",
+                terms.len()
+            ));
+            return Err(CertificationFailure::Limit(
+                "certification time limit exceeded",
+            ));
+        }
+        for &other in &ranked[position + 1..] {
+            if ordering.compare(&terms[index], &terms[other]) != TermComparison::Less {
+                return Err(CertificationFailure::Unsupported(
+                    "ordering is not transitive on ground atoms",
+                ));
             }
         }
     }
@@ -1643,6 +1820,10 @@ fn closure_indexed_with_budget(
     }
 
     let mut inferences = 0u64;
+    let mut closure_literals: usize = 0;
+    for clause in &clauses {
+        closure_literals = closure_literals.saturating_add(clause.literals.len());
+    }
     // Wave-structured saturation. A position's partner set is fixed by the
     // clauses that existed *before* it (`partner_pos` keeps only `p < pos`),
     // and every clause derived while processing a position is appended, so it
@@ -1676,6 +1857,7 @@ fn closure_indexed_with_budget(
             deadline,
             workers,
             inference_budget.saturating_sub(inferences),
+            MAX_CLAUSE_LITERALS.saturating_sub(closure_literals),
         )?;
         inferences = inferences.saturating_add(wave.inferences);
         if inferences > inference_budget {
@@ -1699,10 +1881,35 @@ fn closure_indexed_with_budget(
         }
         // Merge in chunk order so the resulting clause sequence is a
         // deterministic function of the input, independent of scheduling.
-        for derived in wave.derived {
-            if seen.insert(clause_key(&derived)) {
+        //
+        // Interning a derived clause is proportional to its literals times
+        // their arity, so on wide clauses this loop is the most expensive step
+        // in the tier by a wide margin. It carries the literal cap and its own
+        // deadline check for that reason: a wave that finishes in seconds can
+        // still take minutes to fold in.
+        for (merged, derived) in wave.derived.iter().enumerate() {
+            if merged & 0xFF == 0 && Instant::now() >= deadline {
+                trace_certify(format!(
+                    "refuse=closure_time ordered={ordered} clauses={} inferences={inferences}",
+                    clauses.len()
+                ));
+                return Err(CertificationFailure::Limit(
+                    "certification time limit exceeded",
+                ));
+            }
+            let derived_literals = derived.literals.len();
+            if seen.insert(clause_key(derived)) {
+                closure_literals = closure_literals.saturating_add(derived_literals);
+                if closure_literals > MAX_CLAUSE_LITERALS {
+                    trace_certify(format!(
+                        "refuse=literal_limit ordered={ordered} literals={closure_literals} \
+                         clauses={} inferences={inferences}",
+                        clauses.len()
+                    ));
+                    return Err(CertificationFailure::Limit("ground literal limit exceeded"));
+                }
                 id_to_pos.insert(derived.id, clauses.len());
-                let twin = bank.clause_from_legacy(&derived);
+                let twin = bank.clause_from_legacy(derived);
                 index.insert(twin, &bank);
                 for literal in &derived.literals {
                     if matches!(literal.atom, Atom::Eq(..)) {
@@ -1712,7 +1919,7 @@ fn closure_indexed_with_budget(
                             .push(clauses.len());
                     }
                 }
-                clauses.push(derived);
+                clauses.push(derived.clone());
                 if clauses.len() > MAX_CLAUSES {
                     trace_certify(format!(
                         "refuse=clause_limit ordered={ordered} clauses={} inferences={inferences}",
@@ -1769,10 +1976,18 @@ fn run_closure_wave(
     deadline: Instant,
     workers: usize,
     inference_budget: u64,
+    literal_budget: usize,
 ) -> Result<ClosureWave, CertificationFailure> {
     let span = range_end.saturating_sub(range_start);
     let chunks = workers.clamp(1, span.max(1)).min(span.max(1));
     let remaining_inferences = AtomicU64::new(inference_budget);
+    // The budget is in literals, not clauses or inferences. Each inference can
+    // derive a clause, and folding a derived clause into the index costs its
+    // literals times their arity, so on the high-arity half of this division
+    // (86-ary atoms, 171-literal resolvents) a clause-count cap is off by
+    // three orders of magnitude. Counting literals as they are produced makes
+    // the cap enforceable while the memory is being allocated.
+    let remaining_literals = AtomicUsize::new(literal_budget);
     if chunks <= 1 {
         return closure_wave_range(
             clauses,
@@ -1786,6 +2001,7 @@ fn run_closure_wave(
             id_gen,
             deadline,
             &remaining_inferences,
+            &remaining_literals,
         );
     }
 
@@ -1805,6 +2021,7 @@ fn run_closure_wave(
         for (lo, hi) in bounds {
             let mut worker_id_gen = id_gen.clone();
             let worker_budget = &remaining_inferences;
+            let worker_literals = &remaining_literals;
             handles.push(scope.spawn(move || {
                 closure_wave_range(
                     clauses,
@@ -1818,6 +2035,7 @@ fn run_closure_wave(
                     &mut worker_id_gen,
                     deadline,
                     worker_budget,
+                    worker_literals,
                 )
             }));
         }
@@ -1866,6 +2084,7 @@ fn closure_wave_range(
     id_gen: &mut ClauseIdGen,
     deadline: Instant,
     remaining_inferences: &AtomicU64,
+    remaining_literals: &AtomicUsize,
 ) -> Result<ClosureWave, CertificationFailure> {
     let mut derived: Vec<Clause> = Vec::new();
     let mut inferences = 0u64;
@@ -1893,6 +2112,20 @@ fn closure_wave_range(
         };
         let mut partner_pos = Vec::new();
         for &lit_idx in &current_selection {
+            // One index query per selected literal, and a high-arity atom
+            // makes each of those expensive. Without a check here a single
+            // position can run far past the budget: on HWV053-1 a 30 s budget
+            // overran to 165 s inside this loop before the partner-level check
+            // could run at all.
+            if Instant::now() >= deadline {
+                trace_certify(format!(
+                    "refuse=closure_time ordered={ordered} clauses={} inferences={inferences}",
+                    clauses.len()
+                ));
+                return Err(CertificationFailure::Limit(
+                    "certification time limit exceeded",
+                ));
+            }
             if matches!(current.literals[lit_idx].atom, Atom::Eq(..)) {
                 let key = (
                     current.literals[lit_idx].atom.clone(),
@@ -1972,6 +2205,21 @@ fn closure_wave_range(
                     };
                     if derived_clause.is_empty() {
                         refuted = Some(derived_clause);
+                        return ControlFlow::Break(());
+                    }
+                    if remaining_literals
+                        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                            remaining.checked_sub(derived_clause.literals.len())
+                        })
+                        .is_err()
+                    {
+                        trace_certify(format!(
+                            "refuse=literal_limit ordered={ordered} chunk={range_start}..{range_end} \
+                             derived={} clauses={}",
+                            derived.len(),
+                            clauses.len()
+                        ));
+                        budget_exceeded = true;
                         return ControlFlow::Break(());
                     }
                     derived.push(derived_clause);
@@ -2110,6 +2358,129 @@ mod tests {
         )
     }
 
+    /// The grounder must materialize every *distinct induced clause*.
+    ///
+    /// This is the test that keeps restricted variable renaming out. The
+    /// tempting optimization is to enumerate only one representative per orbit
+    /// of the variable-renaming group, which turns `n^k` into `C(n + k - 1, k)`
+    /// and makes the two-constant, hundred-variable half of the EPS division
+    /// groundable at all. It is unsound: renaming a clause generally induces a
+    /// *different* clause, so an orbit holds several distinct clauses and the
+    /// representative is not one of the constraints the problem actually
+    /// imposes. A model of the reduced set then need not satisfy the original,
+    /// and the certifier would report `Satisfiable` with a model that the
+    /// independent kernel check rejects.
+    ///
+    /// The clause below is the concrete case that exposed it: 4 constants, 2
+    /// variables, 16 distinct induced clauses, and the first-occurrence
+    /// restriction keeps only 10 of them.
+    #[test]
+    fn grounding_is_complete_over_distinct_induced_clauses() {
+        let mut symbols = SymbolTable::new();
+        let g = symbols.intern("group_element");
+        let p = symbols.intern("product");
+        let e = [
+            symbols.intern("e_1"),
+            symbols.intern("e_2"),
+            symbols.intern("e_3"),
+            symbols.intern("e_4"),
+        ];
+        let mut ids = ClauseIdGen::new();
+        // ~group_element(Y) | product(X,e_4,Y) | ... | product(X,e_1,Y) | ~group_element(X)
+        // (GRP123-4.004's `column_surjectivity`, the clause the audit named.)
+        let mut literals = vec![mrs_core::clause::Literal::neg(Atom::pred(
+            g,
+            vec![Term::var(1)],
+        ))];
+        for constant in e {
+            literals.push(mrs_core::clause::Literal::pos(Atom::pred(
+                p,
+                vec![Term::var(0), Term::constant(constant), Term::var(1)],
+            )));
+        }
+        literals.push(mrs_core::clause::Literal::neg(Atom::pred(
+            g,
+            vec![Term::var(0)],
+        )));
+        let clause = input_clause(&mut ids, literals);
+
+        let grounded = ground_with_constants(
+            std::slice::from_ref(&clause),
+            &e,
+            &mut ids,
+            10_000,
+            Instant::now() + Duration::from_secs(5),
+        )
+        .expect("grounding");
+        assert_eq!(
+            grounded.clauses.len(),
+            16,
+            "every assignment induces a distinct clause here, so all 16 must be present"
+        );
+
+        // And no two generated clauses coincide, so nothing is duplicated and
+        // nothing is a renaming that could stand in for a missing instance.
+        let mut rendered: Vec<String> = grounded
+            .clauses
+            .iter()
+            .map(|instance| {
+                let mut literals: Vec<String> = instance
+                    .literals
+                    .iter()
+                    .map(|literal| format!("{:?}", literal))
+                    .collect();
+                literals.sort();
+                literals.join(" | ")
+            })
+            .collect();
+        rendered.sort();
+        let total = rendered.len();
+        rendered.dedup();
+        assert_eq!(rendered.len(), total, "no duplicate instances");
+    }
+
+    /// Two instances of the *same* clause that induce the same ground clause
+    /// are interchangeable; two that differ are not. Pinned because the
+    /// difference is the whole argument: a grounder that treats "renaming of"
+    /// as "duplicate of" is unsound for satisfiability, and this is the
+    /// predicate that says what the difference is.
+    #[test]
+    fn instance_equality_is_clause_equality_not_renaming() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let mut ids = ClauseIdGen::new();
+        // p(X) | p(Y): symmetric in X and Y, so the two orders coincide.
+        let symmetric = input_clause(
+            &mut ids,
+            vec![
+                mrs_core::clause::Literal::pos(Atom::pred(p, vec![Term::var(0)])),
+                mrs_core::clause::Literal::pos(Atom::pred(p, vec![Term::var(1)])),
+            ],
+        );
+        // p(X,Y): swapping the arguments changes the clause.
+        let asymmetric = input_clause(
+            &mut ids,
+            vec![mrs_core::clause::Literal::pos(Atom::pred(
+                p,
+                vec![Term::var(0), Term::var(1)],
+            ))],
+        );
+        let mut forward = Substitution::new();
+        forward.bind(mrs_core::term::VarId::from(0u32), Term::constant(a));
+        forward.bind(mrs_core::term::VarId::from(1u32), Term::constant(b));
+        let mut swapped = Substitution::new();
+        swapped.bind(mrs_core::term::VarId::from(0u32), Term::constant(b));
+        swapped.bind(mrs_core::term::VarId::from(1u32), Term::constant(a));
+        assert!(instances_induce_same_clause(&forward, &swapped, &symmetric));
+        assert!(!instances_induce_same_clause(
+            &forward,
+            &swapped,
+            &asymmetric
+        ));
+    }
+
     #[test]
     fn certifies_ground_satisfiable_ordered_closure() {
         let mut symbols = SymbolTable::new();
@@ -2143,12 +2514,17 @@ mod tests {
             1,
         )
         .expect("finite ground SAT closure should certify");
+        // The SAT tier decides a satisfiable grounding before the closure is
+        // attempted, so the witness is SAT-backed rather than a closure
+        // saturation. The *verdict* is what matters and is unchanged; the
+        // route is documented here so a future reordering shows up as a test
+        // failure rather than as a silent coverage change.
         assert!(matches!(
             report.result,
             SearchResult::Saturated(witness)
-                if witness.reason() == crate::SaturationReason::GroundOrderedResolution
+                if witness.reason() == crate::SaturationReason::SatBackedGrounding
         ));
-        assert_eq!(report.tier, CertifiedTier::One);
+        assert_eq!(report.tier, CertifiedTier::Two);
     }
 
     #[test]
@@ -2330,7 +2706,7 @@ mod tests {
         assert!(matches!(
             report.result,
             SearchResult::Saturated(witness)
-                if witness.reason() == crate::SaturationReason::GroundOrderedResolution
+                if witness.reason() == crate::SaturationReason::SatBackedGrounding
         ));
     }
 
@@ -2414,7 +2790,14 @@ mod tests {
         let q = symbols.intern("q");
         let a = symbols.intern("a");
         let mut ids = ClauseIdGen::new();
-        let clauses = vec![
+        // An *unsatisfiable* set, so the answer has to come from the ordered
+        // closure. That is where ordering validation has to bind: a
+        // satisfiable grounding is now decided by the SAT tier from a
+        // model that is re-checked against the problem independently of any
+        // ordering, so it is legitimately independent of the ordering. The
+        // refutation direction has no such escape, which is exactly why this
+        // test must use one.
+        let unsat = vec![
             input_clause(
                 &mut ids,
                 vec![mrs_core::clause::Literal::pos(Atom::pred(
@@ -2424,8 +2807,8 @@ mod tests {
             ),
             input_clause(
                 &mut ids,
-                vec![mrs_core::clause::Literal::pos(Atom::pred(
-                    q,
+                vec![mrs_core::clause::Literal::neg(Atom::pred(
+                    p,
                     vec![Term::constant(a)],
                 ))],
             ),
@@ -2437,29 +2820,42 @@ mod tests {
             w0: 0,
         });
         let lpo = TermOrdering::CustomLPO(config.clone());
-        certify_ground_ordered_resolution(
-            &clauses,
+        let report = certify_ground_ordered_resolution(
+            &unsat,
             &[],
             &symbols,
             &lpo,
             &mut ids.clone(),
-            Duration::from_secs(1),
+            Duration::from_secs(5),
             1,
         )
         .expect("LPO must not require positive weights");
+        assert!(matches!(report.result, SearchResult::Refutation(..)));
+        // The same input under a KBO with zero weights, which is not a valid
+        // KBO. The invariant here is not "refuse" but "never certify a
+        // *saturation*": the ordered closure has no business claiming a
+        // complete set under an ordering it could not validate. It may still
+        // answer, because the SAT tier re-checks its own model — or, for an
+        // unsatisfiable input, its FRAT chain — against the problem
+        // independently of any ordering, and that answer is verified either
+        // way.
         let kbo = TermOrdering::CustomKBO(config);
-        assert!(matches!(
-            certify_ground_ordered_resolution(
-                &clauses,
-                &[],
-                &symbols,
-                &kbo,
-                &mut ids,
-                Duration::from_secs(1),
-                1,
+        match certify_ground_ordered_resolution(
+            &unsat,
+            &[],
+            &symbols,
+            &kbo,
+            &mut ids,
+            Duration::from_secs(5),
+            1,
+        ) {
+            Err(CertificationFailure::Unsupported(_)) => {}
+            Ok(report) => assert!(
+                !matches!(report.result, SearchResult::Saturated(_)),
+                "an ordering the closure cannot validate must not certify a saturation"
             ),
-            Err(CertificationFailure::Unsupported(_))
-        ));
+            Err(other) => panic!("unexpected failure shape: {other:?}"),
+        }
     }
 
     #[test]
@@ -2471,30 +2867,46 @@ mod tests {
         let p = symbols.intern("p");
         let a = symbols.intern("a");
         let mut ids = ClauseIdGen::new();
-        let clauses = vec![input_clause(
-            &mut ids,
-            vec![mrs_core::clause::Literal::pos(Atom::pred(
-                p,
-                vec![Term::constant(a)],
-            ))],
-        )];
+        // Unsatisfiable, so the answer has to come from a tier rather than
+        // from the satisfiable shortcut. AC and a bare custom ordering are
+        // outside the *ordered closure's* fragment, so the closure must refuse
+        // them; a tier that verifies its own answer independently of any
+        // ordering may still answer, but never with a saturation claim.
+        let unsat = vec![
+            input_clause(
+                &mut ids,
+                vec![mrs_core::clause::Literal::pos(Atom::pred(
+                    p,
+                    vec![Term::constant(a)],
+                ))],
+            ),
+            input_clause(
+                &mut ids,
+                vec![mrs_core::clause::Literal::neg(Atom::pred(
+                    p,
+                    vec![Term::constant(a)],
+                ))],
+            ),
+        ];
         let config = Arc::new(SymbolConfig::default());
         let ac_symbols: Arc<HashSet<mrs_core::SymbolId>> = Arc::new(HashSet::default());
         let ac = TermOrdering::CustomACKBO(config, ac_symbols);
-        assert!(matches!(
-            certify_ground_ordered_resolution(
-                &clauses,
-                &[],
-                &symbols,
-                &ac,
-                &mut ids,
-                Duration::from_secs(1),
-                1,
+        match certify_ground_ordered_resolution(
+            &unsat,
+            &[],
+            &symbols,
+            &ac,
+            &mut ids,
+            Duration::from_secs(5),
+            1,
+        ) {
+            Err(CertificationFailure::Unsupported(_)) => {}
+            Ok(report) => assert!(
+                !matches!(report.result, SearchResult::Saturated(_)),
+                "AC is outside the certified fragment and must not certify a saturation"
             ),
-            Err(CertificationFailure::Unsupported(
-                "AC ordering is outside the certified fragment"
-            ))
-        ));
+            Err(other) => panic!("unexpected failure shape: {other:?}"),
+        }
     }
 
     #[test]
@@ -2589,11 +3001,50 @@ mod tests {
         .expect("equality SAT must certify");
         assert!(matches!(report.result, SearchResult::Saturated(_)));
 
-        // Mixed predicate/equality inputs remain outside the certified
-        // positive-status fragment until predicate congruence is certified.
+        // Mixed predicate/equality inputs are now decidable, and the reason is
+        // that the ground equality literals never reach a tier unresolved:
+        // `expand_equality` resolves the unit equation's classes and the
+        // unique-name pass resolves everything else, so the SAT tier sees a
+        // predicate-only set. What matters for soundness is that the emitted
+        // model agrees with those decisions — it must interpret the merged
+        // constants as one element, or it would assert `a != b` for a clause
+        // set containing `a = b`. `certified_sat` covers that reading; here we
+        // pin the routing decision that makes it reachable.
+        let report = certify_ground_ordered_resolution(
+            &[epr.clone(), ground_eq.clone()],
+            &[],
+            &symbols,
+            &TermOrdering::KBO,
+            &mut ids,
+            Duration::from_secs(5),
+            1,
+        )
+        .expect("a mixed predicate/unit-equality set is decidable");
+        assert!(matches!(report.result, SearchResult::Saturated(_)));
+        if let SearchResult::Saturated(witness) = &report.result {
+            let model = witness
+                .model()
+                .expect("a model certificate is what makes the answer checkable");
+            assert_eq!(
+                model.constants["a"], model.constants["b"],
+                "the certificate must interpret the merged constants as one element"
+            );
+        }
+
+        // A function term is still outside the fragment on every path.
+        let with_function = vec![
+            epr.clone(),
+            input_clause(
+                &mut ids,
+                vec![mrs_core::clause::Literal::pos(Atom::Eq(
+                    Term::app(f, vec![Term::constant(a)]),
+                    Term::constant(b),
+                ))],
+            ),
+        ];
         assert!(matches!(
             certify_ground_ordered_resolution(
-                &[epr, ground_eq],
+                &with_function,
                 &[],
                 &symbols,
                 &TermOrdering::KBO,
@@ -2651,8 +3102,19 @@ mod tests {
     /// Non-unit positive equalities are outside the certified equality
     /// fragment. Without predicate-congruence support, accepting this input
     /// would permit a false saturation, so certification must fail closed.
+    /// A non-unit positive equality stays outside the certified fragment.
+    ///
+    /// This is the strict guard's regression test, and it is the boundary that
+    /// a 2026-09 change moved and then restored. Resolving ground non-unit
+    /// positive equalities by the unique-name axiom is equisatisfiability
+    /// preserving and does decide the NLP division, but it also made
+    /// `EPS/HWV042-1` reachable, and that problem's ground set then came out
+    /// unsatisfiable against a `Satisfiable` reference answer. Whether the
+    /// cause was the resolution or MRS's lowering was not established, so the
+    /// input stays refused: a `GaveUp` that agrees with the reference is
+    /// strictly better than a verdict that does not.
     #[test]
-    fn non_unit_positive_equality_fails_closed() {
+    fn non_unit_positive_equality_stays_outside_the_fragment() {
         let mut symbols = SymbolTable::new();
         let q = symbols.intern("q");
         let a = symbols.intern("a");
@@ -2673,6 +3135,10 @@ mod tests {
                 mrs_core::clause::Literal::neg(Atom::pred(sym, vec![Term::constant(constant)]))
             }
         };
+        // `~q(a) | a = b` is ground, both sides are constants, and the
+        // unique-name pass would decide the equality literal. The closure
+        // cannot supply the congruence axioms the reasoning would need, so
+        // the input is refused rather than decided.
         let clauses = vec![
             input_clause(&mut ids, vec![pred(false, q, a), eq(true, a, b)]),
             input_clause(&mut ids, vec![pred(false, q, b), eq(true, b, c)]),
@@ -2693,7 +3159,7 @@ mod tests {
             );
             assert!(
                 matches!(result, Err(CertificationFailure::Unsupported(_))),
-                "non-unit equality must fail closed under {ordering:?}"
+                "a non-unit positive equality must stay outside the fragment under {ordering:?}"
             );
         }
     }
@@ -2800,6 +3266,139 @@ mod tests {
     /// Resource canary: a finite EPR grounding that exceeds the instance
     /// budget must fail closed with `Limit`, never with a saturation claim.
     #[test]
+    /// The transitivity check was reduced from a cubic triple loop to rank
+    /// agreement, so the property to pin is that the cheap version is not
+    /// *weaker*. A strictly total comparison whose rank order it disagrees with
+    /// must still be refused, and so must a comparison that is not a strict
+    /// total order in the first place.
+    ///
+    /// Both refusals are load-bearing: a non-transitive ordering makes
+    /// "maximal literal" ill-defined, and the ordered-closure agreement check
+    /// would then be comparing two arbitrary saturation orders.
+    #[test]
+    fn ground_order_validation_refuses_non_total_and_non_transitive_orderings() {
+        use mrs_calculus::ordering::SymbolConfig;
+        use std::sync::Arc;
+
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let mut ids = ClauseIdGen::new();
+        let atoms = vec![
+            Atom::pred(p, vec![Term::constant(a)]),
+            Atom::pred(p, vec![Term::constant(b)]),
+        ];
+        let far = Instant::now() + Duration::from_secs(10);
+
+        // A comparison that never separates the two atoms is not a strict total
+        // order, and the first pass must say so.
+        let tied = Arc::new(SymbolConfig {
+            precedence: vec![10, 10, 10],
+            weights: vec![0, 0, 0],
+            w0: 0,
+        });
+        assert!(matches!(
+            validate_ground_order(&TermOrdering::CustomLPO(tied), &atoms, far),
+            Err(CertificationFailure::Unsupported(_))
+        ));
+
+        // A total order passes: the rank check must not reject a real one.
+        let ordered = Arc::new(SymbolConfig {
+            precedence: vec![10, 20, 30],
+            weights: vec![0, 0, 0],
+            w0: 0,
+        });
+        assert!(
+            validate_ground_order(&TermOrdering::CustomLPO(ordered.clone()), &atoms, far).is_ok()
+        );
+        let kbo = Arc::new(SymbolConfig {
+            precedence: vec![10, 20, 30],
+            weights: vec![1, 1, 1],
+            w0: 1,
+        });
+        assert!(validate_ground_order(&TermOrdering::CustomKBO(kbo), &atoms, far).is_ok());
+
+        // An already-expired deadline must produce a `Limit`, not a silent
+        // quadratic scan: this is the check that was missing.
+        assert!(matches!(
+            validate_ground_order(
+                &TermOrdering::CustomLPO(ordered),
+                &atoms,
+                Instant::now() - Duration::from_secs(1)
+            ),
+            Err(CertificationFailure::Limit(_))
+        ));
+        let _ = (&mut ids, b);
+    }
+
+    /// A wide-arity grounding must fail closed *inside its budget*.
+    ///
+    /// Three separate unbounded steps used to sit between the budget and the
+    /// result, all found on HWV053-1 (1408 clauses, 86-ary atoms) where a 30 s
+    /// budget took 165 s and a 120 s one was killed at 240 s with an 81 GB
+    /// footprint and no SZS status at all:
+    ///
+    /// 1. `validate_ground_order`'s transitivity check was a cubic triple loop
+    ///    over the atoms with no deadline. Replaced by rank agreement, which
+    ///    proves transitivity in O(n^2) and, being quadratic with a deadline
+    ///    check, is bounded.
+    /// 2. The wave's cap counted *clauses*, so a wave could hold 40k
+    ///    171-literal resolvents before anything looked. Now counts literals.
+    /// 3. The merge that folds a finished wave into the index — the most
+    ///    expensive step in the tier, proportional to literals times arity —
+    ///    had neither a cap nor a deadline check.
+    ///
+    /// The test asserts the property, not the arithmetic: a budget of one
+    /// second must be reported as roughly one second, and the refusal must be a
+    /// `Limit` rather than a panic or a silence.
+    #[test]
+    fn wide_arity_grounding_fails_closed_inside_its_budget() {
+        let mut symbols = SymbolTable::new();
+        let mut ids = ClauseIdGen::new();
+        // 60 clauses over 40 clauses of the domain each, every atom of arity
+        // 30. The grounding stays small (one constant per clause) while the
+        // resolvents are wide enough that a clause-count cap cannot see them.
+        let constants: Vec<_> = (0..40)
+            .map(|i| symbols.intern(&format!("wide_c{i}")))
+            .collect();
+        let mut clauses = Vec::new();
+        for (index, constant) in constants.iter().enumerate() {
+            let predicate = symbols.intern(&format!("wide_p{index}"));
+            let mut args: Vec<Term> = (0..30)
+                .map(|j| Term::var(u32::try_from(j).unwrap()))
+                .collect();
+            args[29] = Term::constant(*constant);
+            clauses.push(input_clause(
+                &mut ids,
+                vec![mrs_core::clause::Literal::pos(Atom::pred(predicate, args))],
+            ));
+        }
+        let budget = Duration::from_millis(1200);
+        let started = Instant::now();
+        let result = certify_ground_ordered_resolution(
+            &clauses,
+            &[],
+            &symbols,
+            &TermOrdering::KBO,
+            &mut ids,
+            budget,
+            1,
+        );
+        let elapsed = started.elapsed();
+        assert!(
+            matches!(result, Err(CertificationFailure::Limit(_))),
+            "a wide-arity grounding must fail closed as a Limit, got {:?}",
+            result.map(|report| report.tier)
+        );
+        // Generous, because the point is that the budget is not *ignored*:
+        // a scheduling hiccup should not fail the test, a 100x overrun should.
+        assert!(
+            elapsed < budget * 10,
+            "a {budget:?} budget took {elapsed:?}; a step is not honouring the deadline"
+        );
+    }
+
     fn grounding_blowup_fails_closed_with_limit() {
         let mut symbols = SymbolTable::new();
         let p = symbols.intern("p");
@@ -2869,22 +3468,20 @@ mod tests {
             let c = symbols.intern(&format!("junk_c{i}"));
             clauses.push(ground_pos(&mut ids, q, c));
         }
-        // One 8-variable junk clause (separate predicate keeps arities
+        // One wide junk clause (a separate predicate keeps arities
         // consistent) forces the full grounding refusal.
+        //
+        // The width has to exceed what restricted variable renaming can
+        // absorb: renaming reduces `n^k` to `C(n + k - 1, k)`, which over the
+        // 13 constants here is only ~126k instances at 8 variables, so an
+        // 8-variable clause is groundable and would never reach Tier 3. 40
+        // variables gives `C(52, 40)`, far past the cap, and no renaming can
+        // bring it back.
         clauses.push(input_clause(
             &mut ids,
             vec![mrs_core::clause::Literal::pos(Atom::pred(
                 big,
-                vec![
-                    Term::var(0),
-                    Term::var(1),
-                    Term::var(2),
-                    Term::var(3),
-                    Term::var(4),
-                    Term::var(5),
-                    Term::var(6),
-                    Term::var(7),
-                ],
+                (0..40).map(Term::var).collect(),
             ))],
         ));
         for ordering in [TermOrdering::KBO, TermOrdering::LPO] {

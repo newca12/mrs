@@ -150,11 +150,6 @@ if [[ "${DIV_LOWER}" == "eps" && "${MRS_EPS_CERTIFY:-1}" != "0" ]]; then
         >"${TMP_DIR}/portfolio.stdout" 2>"${TMP_DIR}/portfolio.stderr" &
     PORTFOLIO_PID=$!
 
-    CERT_RC=0
-    if wait "${CERT_PID}"; then CERT_RC=0; else CERT_RC=$?; fi
-    PORTFOLIO_RC=0
-    if wait "${PORTFOLIO_PID}"; then PORTFOLIO_RC=0; else PORTFOLIO_RC=$?; fi
-
     status_from() {
         local status=""
         local line
@@ -176,14 +171,47 @@ if [[ "${DIV_LOWER}" == "eps" && "${MRS_EPS_CERTIFY:-1}" != "0" ]]; then
         esac
     }
 
+    # Stop the sibling as soon as one track has a definitive answer. The two
+    # tracks run on the same budget, and the certified track now answers many
+    # EPS problems in milliseconds while the portfolio track still spends the
+    # whole limit; blocking on both turned a 0.1 s cert into a 110 s row and
+    # cost the sweep a full budget per solved problem.
+    #
+    # A disagreement needs two answers, so terminating the loser after the
+    # winner is definitive cannot hide one: the terminated track never produced
+    # a status to disagree with. When both happen to answer inside one poll
+    # interval both survive and the check below runs as before. `STOPPED` names
+    # the track that was cut short so the archived stderr says the comparison
+    # was not applicable rather than silently passing.
+    STOPPED="none"
+    while kill -0 "${CERT_PID}" 2>/dev/null || kill -0 "${PORTFOLIO_PID}" 2>/dev/null; do
+        _cert_now="$(status_from "${TMP_DIR}/cert.stdout")"
+        _port_now="$(status_from "${TMP_DIR}/portfolio.stdout")"
+        if is_definitive "${_cert_now}" && kill -0 "${PORTFOLIO_PID}" 2>/dev/null; then
+            kill -TERM "${PORTFOLIO_PID}" 2>/dev/null || true
+            STOPPED="portfolio"
+        elif is_definitive "${_port_now}" && kill -0 "${CERT_PID}" 2>/dev/null; then
+            kill -TERM "${CERT_PID}" 2>/dev/null || true
+            STOPPED="cert"
+        fi
+        kill -0 "${CERT_PID}" 2>/dev/null || \
+            kill -0 "${PORTFOLIO_PID}" 2>/dev/null || break
+        sleep 0.25
+    done
+
+    CERT_RC=0
+    if wait "${CERT_PID}"; then CERT_RC=0; else CERT_RC=$?; fi
+    PORTFOLIO_RC=0
+    if wait "${PORTFOLIO_PID}"; then PORTFOLIO_RC=0; else PORTFOLIO_RC=$?; fi
+
     CERT_STATUS="$(status_from "${TMP_DIR}/cert.stdout")"
     PORTFOLIO_STATUS="$(status_from "${TMP_DIR}/portfolio.stdout")"
     CERT_TIER="$(grep -m1 -o 'cert_tier=[^ ]*' "${TMP_DIR}/cert.stderr" || true)"
     CERT_ORDERING="$(grep -m1 -o 'cert_ordering=[^ ]*' "${TMP_DIR}/cert.stderr" || true)"
 
-    printf '%% mrs EPS dual search: certification status=%s exit=%s; portfolio status=%s exit=%s workers=%s+1 time=%ss\n' \
+    printf '%% mrs EPS dual search: certification status=%s exit=%s; portfolio status=%s exit=%s workers=%s+1 time=%ss stopped=%s\n' \
         "${CERT_STATUS:-missing}" "${CERT_RC}" "${PORTFOLIO_STATUS:-missing}" \
-        "${PORTFOLIO_RC}" "${PORTFOLIO_WORKERS}" "${SOFT_TIME}" >&2
+        "${PORTFOLIO_RC}" "${PORTFOLIO_WORKERS}" "${SOFT_TIME}" "${STOPPED}" >&2
 
     if is_definitive "${CERT_STATUS}" && is_definitive "${PORTFOLIO_STATUS}" \
         && [[ "${CERT_STATUS}" != "${PORTFOLIO_STATUS}" ]]; then
@@ -206,9 +234,10 @@ if [[ "${DIV_LOWER}" == "eps" && "${MRS_EPS_CERTIFY:-1}" != "0" ]]; then
         exit 0
     fi
 
-    printf '%% SZS detail eps_cert_status=%s eps_portfolio_status=%s selected=%s workers=%s+%s time=%ss %s %s\n' \
+    printf '%% SZS detail eps_cert_status=%s eps_portfolio_status=%s selected=%s workers=%s+%s time=%ss stopped=%s %s %s\n' \
         "${CERT_STATUS:-missing}" "${PORTFOLIO_STATUS:-missing}" "${SELECTED}" \
-        "${PORTFOLIO_WORKERS}" "${CERT_WORKERS}" "${SOFT_TIME}" "${CERT_TIER}" "${CERT_ORDERING}" >&2
+        "${PORTFOLIO_WORKERS}" "${CERT_WORKERS}" "${SOFT_TIME}" "${STOPPED}" \
+        "${CERT_TIER}" "${CERT_ORDERING}" >&2
     cat "${TMP_DIR}/cert.stderr" >&2
     cat "${TMP_DIR}/portfolio.stderr" >&2
     if [[ "${SELECTED}" == "cert" ]]; then

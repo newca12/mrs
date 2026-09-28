@@ -31,6 +31,7 @@
 //! Everything beyond the expansion caps fails closed as `Limit`.
 
 use std::collections::{HashMap as StdHashMap, VecDeque};
+use std::time::Instant;
 
 use crate::TermOrdering;
 use crate::certified::CertificationFailure;
@@ -111,6 +112,32 @@ impl EqClasses {
             return term.clone();
         }
         self.find_root(term)
+    }
+
+    /// Every known constant paired with its class representative, sorted.
+    /// Handed to the model-certificate builder so the certificate interprets
+    /// merged constants as one element.
+    pub(crate) fn into_pairs(self) -> Vec<(Term, Term)> {
+        let mut pairs: Vec<(Term, Term)> = self
+            .parent
+            .keys()
+            .map(|term| {
+                let mut classes = EqClasses {
+                    parent: self.parent.clone(),
+                    rank: self.rank.clone(),
+                    edges: StdHashMap::default(),
+                };
+                let root = classes.find_root(term);
+                (term.clone(), root)
+            })
+            .collect();
+        // `Term` is not `Ord`; the keys are constants, so the symbol id is a
+        // total order over them and the output stays deterministic.
+        pairs.sort_by_key(|(constant, _)| match constant {
+            Term::App(symbol, args) if args.is_empty() => symbol.index(),
+            _ => u32::MAX,
+        });
+        pairs
     }
 
     /// Ensure `term` is a known singleton class (no merges, no edges).
@@ -290,6 +317,18 @@ pub(crate) struct ExpandedEq {
     /// class. The caller proves it from provenance plus the full
     /// originals (the empty cites the disequality and its path units).
     pub contradiction: Option<Clause>,
+    /// Constant -> the class representative every occurrence of it was
+    /// rewritten to.
+    ///
+    /// This is the *other half* of the normalization and a model certificate
+    /// must respect it. A model with a distinct domain element per constant
+    /// cannot satisfy a unit equality that merged two of them, so a
+    /// certificate built from the pre-merge vocabulary asserts `a != b` for a
+    /// clause set containing `a = b`. Handing this map to the certificate
+    /// builder makes the two agree: every constant in a class is interpreted
+    /// as its representative's element, which is exactly what makes the
+    /// disequalities the unique-name pass dropped true in the model.
+    pub class_representatives: Vec<(Term, Term)>,
 }
 
 /// Expand a grounded clause set with ground equational reasoning:
@@ -297,15 +336,37 @@ pub(crate) struct ExpandedEq {
 /// `equality_normalization` steps) and reflexivity fast paths. Predicate-only
 /// inputs pass through byte-identical (no Eq atoms anywhere): the legacy
 /// fragment observes zero behavior change.
+/// Is this term a ground constant (a function application with no arguments)?
+/// Hoisted to module scope because the unique-name resolution in
+/// `normalize_clause_eq` and the fragment guard at the top of
+/// `expand_equality` must agree on exactly this notion of "ground".
+fn is_ground_constant(term: &Term) -> bool {
+    matches!(term, Term::App(_, args) if args.is_empty())
+}
+
 pub(crate) fn expand_equality(
     clauses: &[Clause],
     ordering: &TermOrdering,
     id_gen: &mut ClauseIdGen,
+    deadline: Instant,
 ) -> Result<ExpandedEq, CertificationFailure> {
     // The closure does not generate predicate-congruence axioms for positive
     // equality clauses derived later by resolution. Accepting a non-unit
     // positive equality could therefore turn an equality-dependent
     // contradiction into a false saturation claim.
+    //
+    // A 2026-09 attempt relaxed this to admit *ground* non-unit positive
+    // equalities, resolving them by the unique-name axiom (a ground disequality
+    // between distinct constants is valid, a ground equality between them is
+    // false). The equisatisfiability argument for that is sound, and it does
+    // decide the NLP division — but it turned a fail-closed `GaveUp` into a
+    // verdict on `EPS/HWV042-1`, whose reference answer is `Satisfiable` and
+    // whose ground set the SAT solver then called unsatisfiable. Whether the
+    // discrepancy is in the resolution or in MRS's lowering of that problem was
+    // not established, and a change that can move a run off `GaveUp` onto a
+    // reference-violating verdict is release-blocking whatever the cause. The
+    // strict guard stays; the reachable-input question belongs to a change that
+    // can be validated end to end.
     if clauses.iter().any(|clause| {
         clause.literals.len() != 1
             && clause
@@ -324,9 +385,6 @@ pub(crate) fn expand_equality(
     // Non-ground equality sides are skipped defensively (post-grounding
     // inputs are always ground; skipping merely loses completeness,
     // never soundness).
-    fn is_ground_constant(term: &Term) -> bool {
-        matches!(term, Term::App(_, args) if args.is_empty())
-    }
     let mut classes = EqClasses::new();
     for clause in clauses {
         for literal in &clause.literals {
@@ -352,7 +410,17 @@ pub(crate) fn expand_equality(
         }
     }
     let mut expanded = Vec::with_capacity(clauses.len());
-    for clause in clauses {
+    for (index, clause) in clauses.iter().enumerate() {
+        // Amortized deadline check. This pass allocates a clause per changed
+        // input and unions through every ground term, so on a million-clause
+        // grounding it is one of the longest single steps in the certifier and
+        // had no way to be interrupted: NLP115-1 spent 90 s here on a 60 s
+        // budget, growing to 13.8 GB, and was killed rather than reported.
+        if index & 0xFFF == 0 && Instant::now() >= deadline {
+            return Err(CertificationFailure::Limit(
+                "certification time limit exceeded",
+            ));
+        }
         match normalize_clause_eq(clause, &mut classes, ordering) {
             Normalized::Unchanged => {
                 expanded.push(clause.clone());
@@ -375,6 +443,7 @@ pub(crate) fn expand_equality(
                 return Ok(ExpandedEq {
                     clauses: expanded,
                     contradiction: Some(empty),
+                    class_representatives: classes.into_pairs(),
                 });
             }
             Normalized::Rewritten { literals, explains } => {
@@ -395,6 +464,7 @@ pub(crate) fn expand_equality(
     Ok(ExpandedEq {
         clauses: expanded,
         contradiction: None,
+        class_representatives: classes.into_pairs(),
     })
 }
 

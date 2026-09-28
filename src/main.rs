@@ -990,10 +990,19 @@ fn main() {
                 config.goal_transformation = Some(gt);
             }
         }
-        // The resolved memory ceiling, applied to every strategy. Without this
-        // the watchdog would keep using `ResourceLimits::default()`, which reads
-        // the ambient policy and so ignores the mode entirely.
-        if let Some(limit_mb) = hardware_profile.memory_budget_mb {
+        // The memory ceiling the watchdog enforces, applied to every strategy.
+        // Without this the watchdog would keep using `ResourceLimits::default()`,
+        // which reads the ambient policy and so ignores the mode entirely.
+        //
+        // This is the *effective* ceiling, not the mode's nominal allowance. A
+        // casc-shaped mode asks for 128 GB, but when the host has less the OS
+        // OOM-killer gets there first and the run dies with no SZS status at
+        // all — the benchmark records a kill instead of a resource limit, which
+        // is the opposite of what casc-sim exists to surface. Enforcing the
+        // effective ceiling instead makes the run fail closed and say so. On a
+        // host that can represent the allowance the two are equal, so a
+        // competition-shaped run is unaffected.
+        if let Some(limit_mb) = hardware_profile.effective_memory_mb {
             for (config, _) in &mut schedule.strategies {
                 config.resource_limits.max_memory_mb = Some(limit_mb);
             }
