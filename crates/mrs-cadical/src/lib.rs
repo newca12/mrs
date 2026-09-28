@@ -242,12 +242,44 @@ fn write_frat_clause(output: &mut String, kind: char, id: i64, clause: &[i32], h
 /// CaDiCaL's callback tracer. This is intentionally independent of the SAT
 /// solver: it validates clause identity and RUP-style antecedent chains, but
 /// it does not parse a binary/text FRAT file yet.
+/// Re-check a captured FRAT trace: every derived clause must follow by RUP
+/// from the originals, and the trace must end in a final empty clause.
+///
+/// `deadline` bounds the replay. It is a *fail-closed* bound, not a
+/// correctness input: running out of time returns
+/// [`TraceError::Deadline`], and the caller treats that exactly like any other
+/// failure to certify. It matters because a re-check is linear in the event
+/// count and the count is bounded only by what the solver emitted — a
+/// 3.7M-event trace took more than 140 s on a 60 s budget with no way to stop
+/// it.
+pub fn check_proof_trace_until(trace: &ProofTrace, deadline: Instant) -> Result<(), TraceError> {
+    check_proof_trace_inner(trace, Some(deadline))
+}
+
 pub fn check_proof_trace(trace: &ProofTrace) -> Result<(), TraceError> {
+    check_proof_trace_inner(trace, None)
+}
+
+fn check_proof_trace_inner(
+    trace: &ProofTrace,
+    deadline: Option<Instant>,
+) -> Result<(), TraceError> {
     use std::collections::HashMap;
 
     let mut clauses: HashMap<i64, Vec<i32>> = HashMap::new();
     let mut finalized_empty = false;
-    for event in &trace.events {
+    for (event_index, event) in trace.events.iter().enumerate() {
+        // Every 64 events, not every 4096: a single `DerivedClause` performs
+        // a RUP check over its whole antecedent set, which on a large grounding
+        // is thousands of originals and can take seconds on its own. A
+        // 4096-event granularity meant a 3.8M-event trace could run 100 s past
+        // its deadline between checks.
+        if event_index & 0x3F == 0
+            && let Some(deadline) = deadline
+            && Instant::now() >= deadline
+        {
+            return Err(TraceError::Deadline);
+        }
         match event {
             ProofEvent::BeginProof { .. }
             | ProofEvent::ReportStatus { .. }
@@ -501,6 +533,9 @@ pub enum TraceError {
     EventLimitExceeded,
     FfiFailure,
     Malformed(String),
+    /// A deadline-bounded replay ran out of time. Fail closed, like any other
+    /// inability to certify: the proof is not wrong, it is unverified.
+    Deadline,
 }
 
 #[derive(Debug)]
@@ -528,6 +563,7 @@ impl std::fmt::Display for TraceError {
             Self::EventLimitExceeded => f.write_str("CaDiCaL proof trace event limit exceeded"),
             Self::FfiFailure => f.write_str("CaDiCaL proof trace FFI operation failed"),
             Self::Malformed(reason) => write!(f, "malformed CaDiCaL proof trace: {reason}"),
+            Self::Deadline => f.write_str("CaDiCaL proof trace replay exceeded its deadline"),
         }
     }
 }

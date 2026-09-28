@@ -19,11 +19,12 @@
 //! (`certified::certify_ground_ordered_resolution`); ordering validation is
 //! skipped here by design — model checking needs no ordering.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet as StdHashSet};
 use std::time::{Duration, Instant};
 
 use mrs_cadical::{
-    ProofEvent, ProofTrace, SolveResult, Solver, TraceConfig, check_proof_trace, encode_frat_ascii,
+    ProofEvent, ProofTrace, SolveResult, Solver, TraceConfig, check_proof_trace_until,
+    encode_frat_ascii,
 };
 use mrs_core::clause::{
     AvatarSatTrace, Clause, ClauseCertificate, ClauseId, ClauseIdGen, ClauseSource,
@@ -86,6 +87,7 @@ pub(crate) struct UnsatTraceReport {
 /// verdicts — only TRACE gains lines).
 pub(crate) fn capture_and_check(
     solver: &mut Solver,
+    deadline: Instant,
 ) -> Result<UnsatTraceReport, CertificationFailure> {
     let trace = solver.disconnect_trace().map_err(|e| {
         if matches!(e, mrs_cadical::TraceError::EventLimitExceeded) {
@@ -103,7 +105,11 @@ pub(crate) fn capture_and_check(
             _ => {}
         }
     }
-    let check = check_proof_trace(&trace).map_err(|e| format!("{e}"));
+    // Bounded replay. A 3.7M-event trace took over 140 s on a 60 s budget
+    // inside this call with no way to stop it; the bound is fail-closed, so a
+    // trace that runs out of time is treated as unverified and the run falls
+    // back to Tier 3.
+    let check = check_proof_trace_until(&trace, deadline).map_err(|e| format!("{e}"));
     let events = trace.events.len();
     Ok(UnsatTraceReport {
         events,
@@ -330,7 +336,7 @@ pub(crate) fn certify_sat_backed(
             // Capture, re-check, and emit a FRAT-backed TSTP refutation.
             // Every failure below maps to Tier2Unsat (fail closed, Tier-3
             // may still find a small-core proof).
-            let report = match capture_and_check(&mut solver) {
+            let report = match capture_and_check(&mut solver, deadline) {
                 Ok(report) => report,
                 Err(CertificationFailure::Limit(reason)) => {
                     trace_certify(format!("sat_trace_capture failed:{reason}"));
@@ -360,6 +366,7 @@ pub(crate) fn certify_sat_backed(
                 var_count as u32,
                 symbols,
                 id_gen,
+                deadline,
             ) {
                 Ok(emitted) => emitted,
                 Err(_) => return Err(CertificationFailure::Tier2Unsat),
@@ -406,11 +413,30 @@ fn emit_sat_refutation(
     var_count: u32,
     symbols: &SymbolTable,
     id_gen: &mut ClauseIdGen,
+    deadline: Instant,
 ) -> Result<(ClauseId, String), CertificationFailure> {
     use std::collections::HashMap as Map;
+    // Every step below is linear in the number of trace originals, which for a
+    // large grounding is millions: the content map, the proof store (a clone
+    // per grounded clause), extraction and rendering. None of it is
+    // interruptible and none of it is covered by the manifest cap, which only
+    // bounds the payload — on HWV039-1 a 1.8M-entry manifest reached 15 GB and
+    // was still running at 60 s. A `Limit` here maps to `Tier2Unsat`, which is
+    // the right outcome anyway: a refutation too large to render is a
+    // refutation that belongs to Tier 3's small-core search.
+    if Instant::now() >= deadline {
+        return Err(CertificationFailure::Limit(
+            "certification time limit exceeded",
+        ));
+    }
     // Content map: normalized encoded literals -> source clause id.
     let mut content_map: Map<Vec<i32>, ClauseId> = Map::new();
-    for clause in encoded {
+    for (index, clause) in encoded.iter().enumerate() {
+        if index & 0xFFF == 0 && Instant::now() >= deadline {
+            return Err(CertificationFailure::Limit(
+                "certification time limit exceeded",
+            ));
+        }
         let mut key = clause.lits.clone();
         key.sort_unstable();
         content_map.entry(key).or_insert(clause.source);
@@ -419,7 +445,18 @@ fn emit_sat_refutation(
     let mut manifest: Vec<Vec<i32>> = Vec::new();
     let mut original_ids: Vec<i64> = Vec::new();
     let mut cited_sources: Vec<ClauseId> = Vec::new();
-    for event in &trace.events {
+    // Membership alongside the vector, to keep the emitted parent order
+    // deterministic. The obvious `cited_sources.contains(&source)` is a linear
+    // scan, and with one distinct source per original it made this loop
+    // quadratic: HWV039-1's 1.8M-entry manifest was 1.6 trillion comparisons,
+    // and the run was killed at 200 s on a 30 s budget without a status.
+    let mut cited_set: StdHashSet<ClauseId> = StdHashSet::default();
+    for (index, event) in trace.events.iter().enumerate() {
+        if index & 0xFFF == 0 && Instant::now() >= deadline {
+            return Err(CertificationFailure::Limit(
+                "certification time limit exceeded",
+            ));
+        }
         let ProofEvent::OriginalClause { id, clause, .. } = event else {
             continue;
         };
@@ -431,7 +468,7 @@ fn emit_sat_refutation(
         };
         original_ids.push(*id);
         manifest.push(clause.clone());
-        if !cited_sources.contains(&source) {
+        if cited_set.insert(source) {
             cited_sources.push(source);
         }
     }
@@ -498,11 +535,21 @@ fn emit_sat_refutation(
     for clause in originals {
         store.insert(clause.id, clause.clone());
     }
-    for clause in grounded {
+    for (index, clause) in grounded.iter().enumerate() {
+        if index & 0xFFF == 0 && Instant::now() >= deadline {
+            return Err(CertificationFailure::Limit(
+                "certification time limit exceeded",
+            ));
+        }
         store.insert(clause.id, clause.clone());
     }
     store.insert(empty_id, empty);
     let proof = mrs_proof::extract::extract_proof(empty_id, &store);
+    if Instant::now() >= deadline {
+        return Err(CertificationFailure::Limit(
+            "certification time limit exceeded",
+        ));
+    }
     let tstp = mrs_proof::tstp::format_tstp(&proof, symbols);
     if tstp.is_empty() {
         trace_certify("sat_emit=fail:empty_tstp".to_string());
@@ -1120,7 +1167,8 @@ mod tests {
         solver.add_clause([1]);
         solver.add_clause([-1]);
         assert_eq!(solver.solve(), mrs_cadical::SolveResult::Unsat);
-        let report = capture_and_check(&mut solver).expect("capture must succeed");
+        let report = capture_and_check(&mut solver, Instant::now() + Duration::from_secs(60))
+            .expect("capture must succeed");
         assert_eq!(report.originals, 2);
         assert!(
             report.check.is_ok(),
