@@ -237,8 +237,8 @@ pub(crate) fn certify_ground_ordered_resolution(
     // OOM reaper before the watchdog can fail it closed.
     let literal_budget = match memory_mb {
         Some(mb) => {
-            let affordable = (mb.saturating_mul(1024 * 1024) / GROUND_BYTES_PER_LITERAL) as usize;
-            MAX_GROUND_LITERALS.min(affordable)
+            let affordable = mb.saturating_mul(1024 * 1024) / GROUND_BYTES_PER_LITERAL;
+            MAX_GROUND_LITERALS.min(usize::try_from(affordable).unwrap_or(usize::MAX))
         }
         None => MAX_GROUND_LITERALS,
     };
@@ -420,6 +420,7 @@ pub(crate) fn certify_ground_ordered_resolution(
         &proof_symbols,
         id_gen,
         deadline,
+        literal_budget,
     )
 }
 
@@ -890,7 +891,11 @@ fn tier3_subset_unsat(
     proof_symbols: &SymbolTable,
     id_gen: &mut ClauseIdGen,
     deadline: Instant,
+    literal_budget: usize,
 ) -> Result<CertifiedGroundReport, CertificationFailure> {
+    // Tier 3 has a smaller static working-set cap than the full grounding, but
+    // it must still fit the run's resolved memory allowance.
+    let subset_literal_cap = TIER3_MAX_SUBSET_LITERALS.min(literal_budget);
     // Ordering applies to every Tier-1 subset run: reject once here instead
     // of once per subset.
     validate_ordering_kind(ordering)?;
@@ -946,7 +951,7 @@ fn tier3_subset_unsat(
             constants,
             id_gen,
             MAX_GROUND_INSTANCES,
-            TIER3_MAX_SUBSET_LITERALS,
+            subset_literal_cap,
             deadline,
         ) {
             Ok(grounded) => grounded,
@@ -1072,7 +1077,7 @@ fn tier3_subset_unsat(
             subset,
             id_gen,
             TIER3_MAX_SUBSET_INSTANCES,
-            TIER3_MAX_SUBSET_LITERALS,
+            subset_literal_cap,
             deadline,
         ) {
             Ok(grounded) => grounded,
@@ -1277,22 +1282,27 @@ fn ground_with_constants(
     let mut total_instances = 0usize;
     let mut total_literals = 0usize;
     for (clause, &vars) in clauses.iter().zip(&var_counts) {
-        if vars == 0 {
-            total_instances = total_instances.saturating_add(1);
-            total_literals = total_literals.saturating_add(clause.literals.len().max(1));
-            continue;
-        }
-        let Some(instances) = constants
-            .len()
-            .checked_pow(u32::try_from(vars).unwrap_or(u32::MAX))
-        else {
-            trace_certify(format!(
-                "refuse=instance_count_overflow vars={vars} constants={}",
-                constants.len()
-            ));
+        if Instant::now() >= deadline {
             return Err(CertificationFailure::Limit(
-                "ground instance count overflow",
+                "certification time limit exceeded",
             ));
+        }
+        let instances = if vars == 0 {
+            1
+        } else {
+            let Some(instances) = constants
+                .len()
+                .checked_pow(u32::try_from(vars).unwrap_or(u32::MAX))
+            else {
+                trace_certify(format!(
+                    "refuse=instance_count_overflow vars={vars} constants={}",
+                    constants.len()
+                ));
+                return Err(CertificationFailure::Limit(
+                    "ground instance count overflow",
+                ));
+            };
+            instances
         };
         if total_instances.saturating_add(instances) > instance_cap {
             trace_certify(format!(
@@ -1304,7 +1314,7 @@ fn ground_with_constants(
                 "ground instance limit exceeded",
             ));
         }
-        total_instances += instances;
+        total_instances = total_instances.saturating_add(instances);
         let Some(added) = instances.checked_mul(clause.literals.len().max(1)) else {
             return Err(CertificationFailure::Limit("ground literal count overflow"));
         };
@@ -1320,7 +1330,7 @@ fn ground_with_constants(
             ));
             return Err(CertificationFailure::Limit("ground literal limit exceeded"));
         }
-        total_literals += added;
+        total_literals = total_literals.saturating_add(added);
     }
     if Instant::now() >= deadline {
         return Err(CertificationFailure::Limit(
@@ -3401,6 +3411,46 @@ mod tests {
         )
         .expect("a grounding inside the literal cap must succeed");
         assert_eq!(grounded.clauses.len(), 40 * 40 * 40);
+    }
+
+    #[test]
+    fn ground_clauses_are_included_in_both_preflight_caps() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("ground_cap_p");
+        let q = symbols.intern("ground_cap_q");
+        let a = symbols.intern("ground_cap_a");
+        let mut source_ids = ClauseIdGen::new();
+        let clause = input_clause(
+            &mut source_ids,
+            vec![
+                mrs_core::clause::Literal::pos(Atom::pred(p, vec![Term::constant(a)])),
+                mrs_core::clause::Literal::pos(Atom::pred(q, vec![Term::constant(a)])),
+            ],
+        );
+        let mut ids = ClauseIdGen::new();
+
+        let by_instances = ground_with_constants(
+            std::slice::from_ref(&clause),
+            &[a],
+            &mut ids,
+            0,
+            10,
+            Instant::now() + Duration::from_secs(1),
+        );
+        assert!(matches!(by_instances, Err(CertificationFailure::Limit(_))));
+        assert_eq!(ids.next().0, 0, "preflight refusal must not consume ids");
+
+        let mut ids = ClauseIdGen::new();
+        let by_literals = ground_with_constants(
+            std::slice::from_ref(&clause),
+            &[a],
+            &mut ids,
+            1,
+            1,
+            Instant::now() + Duration::from_secs(1),
+        );
+        assert!(matches!(by_literals, Err(CertificationFailure::Limit(_))));
+        assert_eq!(ids.next().0, 0, "preflight refusal must not consume ids");
     }
 
     /// The grounding budget the certifier enforces is derived from the memory

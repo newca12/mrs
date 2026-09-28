@@ -391,9 +391,10 @@ pub fn host_total_memory_mb() -> Option<u64> {
 /// to fail it closed. On the 2-core/15 GB development box `MemTotal` reported
 /// 15 876 MB against 13 897 MB actually available, so a `MemTotal` ceiling sat
 /// ~2 GB too high.
-pub const ENFORCEABLE_MEMORY_PERCENT: u64 = 90;
+pub const ENFORCEABLE_MEMORY_PERCENT: u64 = 85;
 
-/// RAM an enforced ceiling may assume, in MB: `MemTotal` less a 10% reserve.
+/// RAM an enforced ceiling may assume, in MB: the configured percentage of
+/// `MemTotal`, with a minimum 1 GiB reserve.
 ///
 /// **Deliberately not `MemAvailable`.** That was the first attempt and it is
 /// wrong in a way that only shows up under load: `MemAvailable` moves, so a
@@ -405,12 +406,15 @@ pub const ENFORCEABLE_MEMORY_PERCENT: u64 = 90;
 /// batch. A resource bound has to be a property of the run's configuration and
 /// the machine, not of the moment. Reserve rather than measure: it cannot drift
 /// between two processes on the same host, and `MemAvailable` is a kernel
-/// estimate with no guarantee anyway. The reserve is the larger of
-/// [`ENFORCEABLE_MEMORY_PERCENT`]% of the total and 1 GiB.
+/// estimate with no guarantee anyway. The reserve is the larger of the
+/// percentage not assigned to the process and 1 GiB. The 15% reserve leaves
+/// headroom for kernel/process memory that is included in `MemTotal` but not
+/// available to this process: on the measured 15 876 MB host, only 13 897 MB
+/// was available (87.5% of total), so 90% would still exceed it.
 pub fn enforceable_memory_mb(total_mb: Option<u64>) -> Option<u64> {
     let total = total_mb?;
-    let reserve = (total / 100).max(1024);
-    Some(total.saturating_sub(reserve))
+    let affordable = ((u128::from(total) * u128::from(ENFORCEABLE_MEMORY_PERCENT)) / 100) as u64;
+    Some(affordable.min(total.saturating_sub(1024)))
 }
 
 fn meminfo_field_mb(field: &str) -> Option<u64> {
@@ -842,6 +846,9 @@ mod tests {
         // 20 MB.
         assert_eq!(enforceable_memory_mb(Some(2048)), Some(1024));
         assert_eq!(enforceable_memory_mb(Some(4096)), Some(3072));
+        // Above 10 GiB, the 15% reserve is larger than the 1 GiB minimum.
+        // This is below the measured 13 897 MB available on a 15 876 MB host.
+        assert_eq!(enforceable_memory_mb(Some(15_876)), Some(13_494));
         // Unknown total stays unknown rather than becoming an unbounded ceiling.
         assert_eq!(enforceable_memory_mb(None), None);
     }
