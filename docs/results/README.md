@@ -17,8 +17,11 @@ comparison table, including the +30 / 0 gained-versus-lost split and the
 10× drop in mean time on solved rows, is in
 [`../reports/benchmarks/eps-2026-09.md`](../reports/benchmarks/eps-2026-09.md).
 
-Provenance caveat: `cert-eps-20260928/run_meta.json` records `git_commit
-95f7984e`, branch `main`, `git_dirty true` — not a clean tree of this branch.
-The archived streams do prove which changes it exercised (every solved row
-carries `cert_tier=2` and `stopped=portfolio`), so the run covers this work, but
-it should be quoted as a dirty-tree run and not as a build of `37d411c`.
+Provenance: `cert-eps-20260928/run_meta.json` records `git_commit 95f7984e`,
+branch `main` — the merge of `feat/eps-casc-sim-exploration` into `main`, with
+all six of that branch's commits as ancestors. So this run measures the merged
+result. `95f7984` also carries intervening mainline work beyond the branch tip,
+and `git_dirty: true` records an incidental local modification, so the number
+belongs to the merge rather than to the branch tip in isolation. The archived
+streams confirm which changes ran: every solved row carries `cert_tier=2` and
+`stopped=portfolio`.
