@@ -899,7 +899,23 @@ fn measure(args: &MeasureArgs) -> Row {
         Some(args.workers),
     );
 
-    let (result_name, stop_reason, complete) = describe_result(&result);
+    let (result_name, mut stop_reason, mut complete) = describe_result(&result);
+    // `run_schedule` reports the workers it actually started, which is fewer
+    // than requested whenever the OS refused a thread. A row must claim the
+    // count that did the work: the report divides the measured speed-up by
+    // `workers`, so a shortfall recorded as the request would turn a degraded
+    // run into a fictitious scaling number.
+    let workers = report.workers.max(1);
+    let spawn_short = workers != args.workers;
+    if spawn_short {
+        eprintln!(
+            "[perf] only {workers} of {} requested workers started; \
+             the row is recorded as {workers} worker(s) and is not comparable",
+            args.workers
+        );
+        stop_reason = "spawn_short".to_string();
+        complete = 0;
+    }
     let mut totals = Totals::default();
     for strategy in &report.strategies {
         totals.add(&strategy.stats);
@@ -947,7 +963,7 @@ fn measure(args: &MeasureArgs) -> Row {
         ordering: format!("{:?}", args.ordering),
         literals: format!("{:?}", args.literals),
         avatar: u8::from(args.avatar).to_string(),
-        workers: args.workers,
+        workers,
         processed_cap: args.processed_cap,
         lrs_budget: args.lrs_budget.unwrap_or(args.processed_cap),
         max_passive: args.max_passive,
@@ -1303,8 +1319,10 @@ fn render_report(current: &[Row], bank: &[Row], command: &str) -> String {
         let _ = writeln!(
             out,
             "Only one target-cpu build was measured (`{}`), so there is nothing to\n\
-             compare on this host. Run the default `native,haswell` to see what host\n\
-             tuning buys over the competition floor.",
+             compare on this host. The `native` vs `haswell` gap needs a CPU that can\n\
+             run both: a pre-Haswell chip makes the probe skip `haswell` and measure\n\
+             `native` alone, and on such a host the default is not the way to get the\n\
+             second build — no build of it will run here.",
             builds_here.first().map(String::as_str).unwrap_or("unknown")
         );
     } else {

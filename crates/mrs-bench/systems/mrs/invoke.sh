@@ -58,19 +58,23 @@ SOFT_TIME=$(( TIME_LIMIT > 2 ? TIME_LIMIT - 2 : TIME_LIMIT ))
 ulimit -s unlimited 2>/dev/null || true
 
 # `ulimit -s` above only covers the main thread. The strategy portfolio
-# (std::thread::scope in strategy.rs, default 8 workers) spawns worker
-# threads with Rust's own runtime default of 2 MiB (DEFAULT_MIN_STACK_SIZE,
-# smaller than the typical 8 MiB main-thread default) unless RUST_MIN_STACK
-# is set in the environment before the process starts. Those threads run
-# genuinely recursive code from mrs-unify/mrs-core/mrs-index throughout the
-# entire given-clause search -- a stack overflow there triggers Rust's
-# abort() handler, killing the whole process with zero output, which is
+# (std::thread::scope in strategy.rs, default 8 workers) sets its own worker
+# stacks with ThreadBuilder::stack_size(64 MiB), which overrides RUST_MIN_STACK
+# for those threads -- this export covers anything else that spawns. Those
+# workers run genuinely recursive code from mrs-unify/mrs-core/mrs-index
+# throughout the entire given-clause search -- a stack overflow there triggers
+# Rust's abort() handler, killing the whole process with zero output, which is
 # worse than a clean timeout. 64 MiB matches the precedent already set by
-# crates/mrs-tptp/examples/parse_folder.rs's stack_size(64 * 1024 * 1024)
-# and gives on the order of 300,000 levels of recursion headroom --
-# comfortably more than any real TPTP problem's term nesting depth, at
-# negligible cost (thread stacks are lazily-committed virtual memory, not
-# counted against RSS until used).
+# crates/mrs-tptp/examples/parse_folder.rs's stack_size(64 * 1024 * 1024) and
+# gives on the order of 300,000 levels of recursion headroom, comfortably more
+# than any real TPTP problem's term nesting depth.
+#
+# A lazily committed stack is free against an RSS budget, which is why 8
+# workers cost nothing here, but it is NOT free against an address-space cap:
+# RLIMIT_AS charges the whole reservation, so 64 workers reserve 4 GiB before a
+# single clause is processed. Anything that caps address space has to budget for
+# that (crates/mrs-bench/perf_probe.sh does, and refuses a worker count that
+# would not fit).
 export RUST_MIN_STACK=67108864
 
 # EPS is measured with both the fail-closed certified path and the ordinary

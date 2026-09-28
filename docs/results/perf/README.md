@@ -112,11 +112,37 @@ The probe is bounded to **12 GiB (12288 MB) of RAM in total**, enforced twice:
    `MemoryMax` instead, which bounds RSS more directly but needs a D-Bus session
    and fails under load, so it is opt-in.
 
-Phases run one at a time, so the per-process ceiling is also the total.
+Phases run one at a time, so the per-process ceiling is also the total — but
+only after the workers are counted against it, because every worker draws on that
+same total. `perf_probe.sh` budgets roughly 320 MB of search working set per
+worker (the marginal RSS the bank measures is 288, 285 and 293 MB on the three
+hosts measured so far) plus, under an address-space cap, the 64 MiB stack each
+worker reserves, and **refuses** a worker count that will not fit rather than
+starting a run that cannot finish. Under the default `rlimit-as` that is 32
+workers at 12 GiB. Two things follow that are worth knowing:
+
+- A host with more cores than that cannot run the probe at its default width.
+  Pass `--workers` to say how wide to go; the 12 GiB ceiling is the probe's
+  promise and will not be raised to accommodate a core count. The width the
+  default lands on is the prover's own core count, so it is the same number the
+  row records — see "Who counts the cores" below.
+- `rlimit-as` charges a thread's stack reservation in full, even though the
+  pages are not resident until used. That is why the reservation is budgeted
+  here and why the CASC harness's own scripts, which do not cap address space,
+  can ignore it.
+
 `perf_probe.sh` refuses a `--memory-budget-mb` above 12288, and refuses to start
 on a host with less than 2 GiB available, where the number would be shaped by
 swapping rather than by the CPU. `peak_rss_mb` comes from the kernel's own
 `VmHWM` high-water mark, so the ceiling can be audited from the artifacts.
+
+If the OS refuses a worker thread anyway — a `pids.max`, a thread limit, an
+address-space cap tighter than the budget — the search does not die. It runs the
+workers that started, and the row records what actually ran: `workers` becomes
+the count that did the work, `stop_reason` is `spawn_short`, and `complete` is 0,
+so the report files it under "Not comparable" rather than ranking it. An earlier
+version panicked here, and the panic's own message allocation failed on the same
+exhausted address space, so the process died with SIGABRT and a core dump.
 
 ## Two builds per host: `native` and `haswell`
 
@@ -133,11 +159,53 @@ on another. Every host is therefore measured twice:
 The two builds live in separate `CARGO_TARGET_DIR`s under `target/perf/`,
 because switching `RUSTFLAGS` in a shared directory invalidates every cached
 artifact. The first build of each is slow once; later runs are cache hits.
-`haswell` is skipped automatically on a CPU that does not advertise the
-instructions, rather than dying with `SIGILL`.
+
+`haswell` is **skipped automatically on a CPU that does not advertise the
+instructions**, rather than dying with `SIGILL`. The gate covers everything
+`-C target-cpu=haswell` can emit, in the kernel's flag names (`cx16` for
+`cmpxchg16b`), so it is the build, not a hand-kept subset, that decides. It
+cannot see everything the build uses: `lzcnt` is not reported for Intel CPUs at
+all, and `lzcnt`/`xsave`/`sse*` are omitted on the grounds that anything with
+AVX2 has them. Those omissions cost no real row; a CPU that somehow passes the
+gate and cannot run the build is caught by the signal named in the error.
+
+On such a host the `haswell` row does not exist and `native` is the whole
+measurement, so those rows are **not** comparable to any `haswell` row from
+another host and are not a CASC hardware proxy — the CASC entry targets
+`haswell` and its binary will not run on a pre-Haswell CPU. Pass
+`--variants haswell` (or any set of unusable builds) and the probe says which
+instructions are missing and measures `native` instead of failing.
 
 `target_cpu` is therefore part of a row's identity, and the report never ranks
 one build against the other.
+
+## Who counts the cores
+
+The driver sizes its default worker list from the host's physical core count,
+and there are two implementations of that count: `physical_cores` in the shell
+driver and `mrs_search::usable_physical_cores` in the binary that writes the row.
+**The binary's answer wins**, and the driver asks for it as soon as the first
+build exists — before anything is measured, and after the caller's own
+`--workers` has already been checked against the memory budget.
+
+That ordering exists because the two have been observed to disagree by 8×: on a
+dual-socket Xeon E5-2407 the shell counter reported 64 physical cores on a host
+with 8, so the probe asked for 64 workers, which the 12 GiB ceiling cannot hold,
+and the run died rather than measuring anything. A worker list sized from the
+wrong counter also contradicts the `physical_cores` column the bank records, so
+one count has to be authoritative and it has to be the one that ends up in the
+row.
+
+Sizing by the prover's count costs one build before the refusal check on a
+count-derived width, which is a cache hit after the first run. A width the
+caller passed is checked immediately, before any build.
+
+A disagreement is reported rather than silently corrected, because it means the
+shell counter is wrong somewhere and the next host to hit it deserves to know.
+The driver also prints the physical and logical CPU counts separately, since a
+host whose topology sysfs is unreadable makes both counters degrade to the
+logical count — indistinguishable from a host without SMT unless it is said out
+loud.
 
 ## Running it
 

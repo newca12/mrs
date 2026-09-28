@@ -29,7 +29,11 @@ because the search is wall-clock sensitive. It builds both a `native` and a
 `haswell` binary so ISA effects are separable, and it caps the whole probe at
 12 GiB, divided across workers for the search's RSS watchdog. The driver uses
 the same affinity/cgroup-aware physical-core count as the prover for its default
-worker list. See [`docs/results/perf/README.md`](../results/perf/README.md) for the
+worker list. Two consequences on older or wider hardware: a CPU that cannot run
+the `haswell` build (anything pre-Haswell) measures `native` only, and a host
+with more cores than 12 GiB can hold workers for is told to pass `--workers`
+rather than being measured past the ceiling. See
+[`docs/results/perf/README.md`](../results/perf/README.md) for the
 method, the comparability rules, and how to add another host.
 
 ## Prepare the corpus

@@ -129,7 +129,10 @@ iteration-counted clause ceiling, not a wall clock) on a generated clause set,
 for both a `native` and a `haswell` build, and appends the result to
 `docs/results/perf/bank.tsv` with a dated report. Work is what makes two hosts
 comparable: a "run it for 30 s and count clauses" number is not, because the
-search is wall-clock sensitive. The whole probe is capped at 12 GiB.
+search is wall-clock sensitive. The whole probe is capped at 12 GiB. A CPU that
+cannot run the `haswell` build (pre-Haswell) measures `native` only, and the
+probe **refuses** a worker count the 12 GiB ceiling cannot hold — 32 workers
+under the default `rlimit-as` — so a wide host needs an explicit `--workers`.
 
 ```bash
 crates/mrs-bench/perf_probe.sh              # measure, bank, and report (~3 min)

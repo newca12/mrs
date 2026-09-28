@@ -479,6 +479,36 @@ fn is_ml_prune_slot(strategy_idx: usize, total_strategies: usize) -> bool {
     strategy_idx >= total_strategies.saturating_sub(ML_PRUNE_LAST_SLOTS)
 }
 
+/// Start `total` workers, stopping at the first one the OS refuses, and report
+/// how many actually started.
+///
+/// `pthread_create` fails with `EAGAIN` when the process cannot reserve another
+/// 64 MiB worker stack: an `RLIMIT_AS` ceiling, a cgroup `pids.max`, or the
+/// thread limit. That is a resource condition, not a defect, and it must not end
+/// the run. A portfolio that asked for 64 workers runs the 40 that fit, and the
+/// caller sees the true count in `ScheduleReport::workers`.
+///
+/// Panicking here was worse than useless twice over: the panic message needs
+/// memory too, so on the host that provoked it the allocation failed as well and
+/// the process died with SIGABRT and a core dump, with the real reason — one
+/// line in the log — easy to miss.
+fn spawn_budget(total: usize, mut attempt: impl FnMut(usize) -> std::io::Result<()>) -> usize {
+    let mut spawned = 0usize;
+    for worker_id in 0..total {
+        match attempt(worker_id) {
+            Ok(()) => spawned += 1,
+            Err(error) => {
+                eprintln!(
+                    "Warning: worker {worker_id} of {total} could not be spawned ({error}); \
+                     running {spawned} worker(s) instead."
+                );
+                break;
+            }
+        }
+    }
+    spawned
+}
+
 /// A candidate refutation discovered during search.
 #[derive(Debug, Clone)]
 pub struct CandidateRefutation {
@@ -899,8 +929,10 @@ pub fn run_schedule_with_candidate_receiver(
         }
     });
 
+    let mut spawned_workers = num_workers;
+
     std::thread::scope(|s| {
-        for worker_id in 0..num_workers {
+        spawned_workers = spawn_budget(num_workers, |worker_id| {
             let stop = Arc::clone(&stop_flag);
             let pool = Arc::clone(&shared_pool);
             let tx = tx.clone();
@@ -1196,8 +1228,8 @@ pub fn run_schedule_with_candidate_receiver(
                     let _ = tx.send((strategy_idx, result, state.stats.clone(), elapsed_ms));
                 }
             })
-            .expect("failed to spawn worker thread");
-        }
+            .map(|_| ())
+        });
 
         // Drop the main sender so the channel closes when all threads finish.
         drop(tx);
@@ -1206,7 +1238,7 @@ pub fn run_schedule_with_candidate_receiver(
         // Priority: Refutation > Saturated > ResourceOut > GaveUp > Timeout
         let mut best: SearchResult = SearchResult::Timeout;
         let mut report = crate::ScheduleReport {
-            workers: num_workers,
+            workers: spawned_workers,
             ..crate::ScheduleReport::default()
         };
 
@@ -1361,6 +1393,43 @@ mod tests {
 
     use mrs_core::clause::{ClauseIdGen, ClauseSource};
     use mrs_core::{Atom, Literal, SymbolTable, Term};
+
+    #[test]
+    fn spawn_budget_stops_at_the_first_refusal_and_reports_the_truth() {
+        // A process that cannot reserve another 64 MiB stack gets EAGAIN from
+        // pthread_create. The portfolio must keep the workers it already has
+        // rather than panicking: this is the state a 64-core host under a 12
+        // GiB RLIMIT_AS actually reached.
+        let mut attempts = Vec::new();
+        let spawned = spawn_budget(64, |worker_id| {
+            attempts.push(worker_id);
+            if worker_id == 40 {
+                Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(spawned, 40, "the 40 workers that started must be reported");
+        assert_eq!(
+            attempts.len(),
+            41,
+            "the loop must stop at the first refusal instead of trying all 64"
+        );
+    }
+
+    #[test]
+    fn spawn_budget_spawns_everything_when_the_os_allows_it() {
+        let spawned = spawn_budget(8, |_| Ok(()));
+        assert_eq!(spawned, 8);
+    }
+
+    #[test]
+    fn spawn_budget_reports_zero_without_panicking() {
+        let spawned = spawn_budget(8, |_| {
+            Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
+        });
+        assert_eq!(spawned, 0);
+    }
 
     #[test]
     fn ml_prune_slot_picks_last_two_of_eight() {
