@@ -563,8 +563,10 @@ the model that justifies it was not.
 
 The class map is now threaded from `expand_equality` to the builder, which
 interprets each constant as its class representative's element. That is the
-reading under which the disequalities the unique-name pass dropped are
-actually true, so the certificate and the routing agree by construction.
+reading under which the union-find pass's rewrite is actually reflected in the
+model, so the certificate and the routing agree by construction. The fix does
+not depend on the equality-boundary question above — the class map is a product
+of the union-find pass, which has always run.
 
 The builder also re-derives the requirement from the originals rather than
 trusting its caller: a positive *unit* equality between two distinct

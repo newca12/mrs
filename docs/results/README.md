@@ -1,22 +1,11 @@
-# Benchmark Results
+# Banked benchmark results
 
-This directory contains result artifacts that are too detailed or too large
-for the current guides. Files here are evidence, not automatically current
-baselines.
+Dated, per-run artefacts. These are evidence, not current baselines: a number
+here describes the commit and configuration named in the file that produced it.
+Re-measure before quoting one.
 
-Every checked-in summary must identify:
+| file | what |
+|---|---|
+| `eps-casc-sim-20260928-summary.tsv` | `casc-30` EPS, certified track, 120 s CASC limit, `MRS_HARDWARE=casc-sim`, `MRS_WORKERS=2`. 42/100 solved, 0 reference violations, 0 invalid models, 38/42 models kernel-certified. Interpretation in [`../reports/benchmarks/eps-2026-09.md`](../reports/benchmarks/eps-2026-09.md). |
 
-- source commit and dirty state;
-- corpus and TPTP version;
-- command, schedule, portfolio, workers, jobs, and environment variables;
-- hardware and toolchain; and
-- whether the result is solo diagnostic, cooperative, strict-audited, or
-  competition-mode.
-
-The existing `greedy_portfolios` files are solo set-cover diagnostics. They do
-not establish cooperative portfolio coverage.
-
-`perf/` holds the fixed-work performance bank: how fast `mrs` searches on a
-given host, with results comparable across machines. It measures throughput on
-a generated clause set, not solving ability, so it never substitutes for a CASC
-run. See [`perf/README.md`](perf/README.md).
+Columns are `problem`, `szs_status`, `cert_tier`.
