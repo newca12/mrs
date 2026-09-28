@@ -23,12 +23,13 @@ per-machine value, because it is computed by the probe binary on the machine
 being measured and there is no stable machine ID to use instead.
 
 So two machines of the same model and core count **share a slug**, and the bank
-currently holds five machines under three names:
+currently holds six machines under four names:
 
 | `host_slug` | Machines in the bank | Told apart by |
 |---|---|---|
 | `intel-r-xeon-r-cpu-e5-2407-0-x8-b99a4cf7` | 2 | `ram_total_mb` 96350 / 95969, `kernel` 3.10.0-1160 / 4.18.0-553, `binary_sha256` |
 | `intel-r-xeon-r-silver-4108-c-x16-90b96cec` | 2 | `ram_total_mb` 63763 / 128019, `kernel` 5.14.0-611 / 5.14.0-570, `binary_sha256` |
+| `intel-r-core-tm-i7-5820k-cpu-x6-e812a5d5` | 1 | — |
 | `intel-r-core-tm-i3-5010u-cpu-x2-61bd0b0d` | 1 | — |
 
 Three consequences, all visible in the artifacts rather than hidden:
@@ -109,10 +110,13 @@ the superposition closure unbounded. Without them a random equational set tends
 to saturate in a few thousand inferences, which measures nothing. They consume no
 seed entropy; they are part of the workload definition.
 
-The default single-worker run is about 10 s to 21 s and 330–335 MB across the
-five machines currently banked, with run-to-run spread from 0.2% to 3.5% — the
-spread is the row's own noise floor, and any comparison smaller than the two
-rows' combined spread is not a result.
+The default single-worker run is 8.6 s to 21.1 s and 330–335 MB across the six
+machines currently banked, with run-to-run spread from 0.2% to 2.7% on those
+rows. The spread is a row's own noise floor, and a difference between two hosts
+smaller than the two rows' combined spread is not a result. The widest rows in
+the bank are the wide ones: ±9.7% on the E5-2407 at 8 workers and ±9.4% on the
+Silver at 16, so those cannot support a fine comparison either — which is what
+scaling a 5000-clause ceiling across 8 to 16 cores buys.
 
 ## What a row records
 
