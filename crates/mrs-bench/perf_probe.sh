@@ -326,13 +326,20 @@ fi
 (( MEMORY_BUDGET_MB <= TOTAL_BUDGET_MB )) \
     || die "--memory-budget-mb ${MEMORY_BUDGET_MB} exceeds the ${TOTAL_BUDGET_MB} MB (12 GiB) ceiling this probe promises"
 
+# The default worker list follows the host's core count, but the authoritative
+# count is the prover's own (`perf_probe cores`), which is not known until a
+# binary exists. `WORKER_LIST` is therefore provisional when it comes from the
+# count and final when the caller passed it: see `resolve_core_count`, which
+# re-derives the default before anything is measured.
 CORES="$(physical_cores)"
 # `nproc` honours the affinity mask, so this is the logical CPU count the same
 # process may use. Reported next to the physical count because the two must
 # differ on any SMT host, and a run where they agree is either a host without
 # SMT or a topology that could not be read.
 LOGICAL_CPUS="$(nproc 2>/dev/null || printf '0')"
+WORKER_LIST_FROM_COUNT=0
 if [[ -z "${WORKER_LIST}" ]]; then
+    WORKER_LIST_FROM_COUNT=1
     if (( CORES == 1 )); then
         WORKER_LIST="1"
     else
@@ -345,10 +352,6 @@ TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 mkdir -p "${OUT_DIR}"
 ROWS="${OUT_DIR}/rows.jsonl"
 : > "${ROWS}"
-
-# The exact command, recorded in the generated report so a reader can rerun it.
-COMMAND="crates/mrs-bench/perf_probe.sh --processed ${PROCESSED} --repeat ${REPEAT} --workers ${WORKER_LIST} --shape ${SHAPE} --clauses ${CLAUSES} --variants ${VARIANTS} --memory-budget-mb ${MEMORY_BUDGET_MB} --hard-cap ${HARD_CAP}"
-[[ -n "${SEED}" ]] && COMMAND="${COMMAND} --seed ${SEED}"
 
 # ---------------------------------------------------------------------------
 # Pre-flight
@@ -399,14 +402,32 @@ fi
 # the probe. So the answer on a wide host is a narrower `--workers`.
 WORKER_CEILING="$(worker_ceiling)"
 (( WORKER_CEILING >= 1 )) || die "the ${MEMORY_BUDGET_MB} MB ceiling leaves no room for a single ${WORKER_HEAP_MB} MB worker"
-IFS=',' read -r -a REQUESTED_WORKERS <<< "${WORKER_LIST}"
-for workers in "${REQUESTED_WORKERS[@]}"; do
-    [[ "${workers}" =~ ^[0-9]+$ ]] && (( workers > 0 )) || die "bad worker count: ${workers}"
-    if (( workers > WORKER_CEILING )); then
-        die "${workers} workers will not fit in the ${MEMORY_BUDGET_MB} MB ceiling (${WORKER_CEILING} is the most this host can run under it); \
+# Check the widths now, but only the ones the caller chose. A width derived from
+# the core count is only provisional until `resolve_core_count` gets the
+# prover's own answer, and refusing on a provisional count is how a wrong count
+# turns into a wrong refusal. That check happens after the first build, before
+# anything is measured.
+check_worker_widths() {
+    local workers
+    IFS=',' read -r -a REQUESTED_WORKERS <<< "${WORKER_LIST}"
+    for workers in "${REQUESTED_WORKERS[@]}"; do
+        [[ "${workers}" =~ ^[0-9]+$ ]] && (( workers > 0 )) || die "bad worker count: ${workers}"
+        if (( workers > WORKER_CEILING )); then
+            die "${workers} workers will not fit in the ${MEMORY_BUDGET_MB} MB ceiling (${WORKER_CEILING} is the most this host can run under it); \
 rerun with --workers 1,${WORKER_CEILING}"
-    fi
-done
+        fi
+    done
+}
+(( WORKER_LIST_FROM_COUNT )) || check_worker_widths
+
+# The exact command, recorded in the generated report so a reader can rerun it.
+# Built after the core count is final, so it names the width that was measured.
+record_command() {
+    COMMAND="crates/mrs-bench/perf_probe.sh --processed ${PROCESSED} --repeat ${REPEAT} --workers ${WORKER_LIST} --shape ${SHAPE} --clauses ${CLAUSES} --variants ${VARIANTS} --memory-budget-mb ${MEMORY_BUDGET_MB} --hard-cap ${HARD_CAP}"
+    [[ -n "${SEED}" ]] && COMMAND="${COMMAND} --seed ${SEED}"
+    return 0
+}
+
 
 # ---------------------------------------------------------------------------
 # Build provenance
@@ -577,40 +598,68 @@ measure_best_of() {
 }
 
 # ---------------------------------------------------------------------------
-# Measure
+# Settle the core count, then measure
 # ---------------------------------------------------------------------------
-log "host: ${CORES} physical cores, ${LOGICAL_CPUS} logical CPUs, ${AVAILABLE_MB} MB available, ceiling ${MEMORY_BUDGET_MB} MB (${HARD_CAP_IMPL})"
-log "memory: ${WORKER_CEILING} workers is the most the ${MEMORY_BUDGET_MB} MB ceiling holds here"
-if (( LOGICAL_CPUS > 0 && CORES >= LOGICAL_CPUS )); then
-    log "note: the physical count equals the logical count, so no SMT sibling was counted."
-    log "note: that is right for a host without SMT, and it is also exactly what an unreadable"
-    log "note: /sys/devices/system/cpu/*/topology looks like. Nothing here can tell those apart."
-fi
-log "workload: shape=${SHAPE} clauses=${CLAUSES} processed=${PROCESSED} workers=${WORKER_LIST}"
+
+# Replace the bash core count with the prover's own, and re-derive the default
+# worker width from it.
+#
+# These are two implementations of one policy — `physical_cores` in bash and
+# `mrs_search::usable_physical_cores` in the binary that writes the row — and
+# they have been observed to disagree by 8x on a dual-socket Xeon E5-2407, where
+# the bash count said 64 workers on a host with 8 physical cores. Sizing a run
+# from the wrong one asks for eight times the memory the budget holds, and the
+# result is a search that cannot start.
+#
+# The binary's count wins, because it is the one that ends up in the bank's
+# `physical_cores` column: sizing the workers by it is what keeps that column
+# and the worker list describing the same run. A disagreement is still reported,
+# because it means the bash count is wrong somewhere and the next host to hit it
+# deserves to know.
+resolve_core_count() {
+    local probe_cores
+    probe_cores="$("${PROBE_BINARY}" cores 2>/dev/null || true)"
+    if [[ -z "${probe_cores}" ]]; then
+        log "warning: could not ask the probe binary for its core count; using this script's count (${CORES})"
+        return 0
+    fi
+    if [[ "${probe_cores}" != "${CORES}" ]]; then
+        log "warning: this script's core counter says ${CORES}, the prover's says ${probe_cores}."
+        log "warning: the two are separate implementations of the same policy, and a worker list"
+        log "warning: sized by the wrong one exceeds the memory ceiling. The prover's count is"
+        log "warning: authoritative here because it is what the bank records. This is a bug in"
+        log "warning: physical_cores() in this script."
+    fi
+    CORES="${probe_cores}"
+    if (( WORKER_LIST_FROM_COUNT )); then
+        if (( CORES == 1 )); then
+            WORKER_LIST="1"
+        else
+            WORKER_LIST="1,${CORES}"
+        fi
+        check_worker_widths
+    fi
+}
+
 log "commit: ${COMMIT} (${DIRTY}), rustc ${RUSTC_VERSION}, glibc ${GLIBC_VERSION}"
 
-IFS=',' read -r -a WORKERS_LIST <<< "${WORKER_LIST}"
-
-CROSSCHECKED=0
+RESOLVED=0
 for variant in "${VARIANT_LIST[@]}"; do
     build_variant "${variant}"
-    # Cross-check the core count this script sized the worker list with against
-    # the prover's own answer. They are two implementations of one policy — this
-    # one in bash, the other `mrs_search::usable_physical_cores` in the binary
-    # that writes the row — and a disagreement would put a `physical_cores`
-    # column in the bank that does not describe the workers the timing came
-    # from. Nothing else would notice. Once per run, on the first build.
-    if (( ! CROSSCHECKED )); then
-        CROSSCHECKED=1
-        PROBE_CORES="$("${PROBE_BINARY}" cores 2>/dev/null || true)"
-        if [[ -z "${PROBE_CORES}" ]]; then
-            log "warning: could not ask the probe binary for its core count; only this script's count (${CORES}) was used"
-        elif [[ "${PROBE_CORES}" != "${CORES}" ]]; then
-            log "warning: this script counts ${CORES} physical cores, the probe binary counts ${PROBE_CORES}."
-            log "warning: the worker list and the bank's physical_cores column come from different code"
-            log "warning: paths, and the rows below are sized by ${CORES}."
+    if (( ! RESOLVED )); then
+        RESOLVED=1
+        resolve_core_count
+        record_command
+        log "host: ${CORES} physical cores, ${LOGICAL_CPUS} logical CPUs, ${AVAILABLE_MB} MB available, ceiling ${MEMORY_BUDGET_MB} MB (${HARD_CAP_IMPL})"
+        log "memory: ${WORKER_CEILING} workers is the most the ${MEMORY_BUDGET_MB} MB ceiling holds here"
+        if (( LOGICAL_CPUS > 0 && CORES >= LOGICAL_CPUS )); then
+            log "note: the physical count equals the logical count, so no SMT sibling was counted."
+            log "note: that is right for a host without SMT, and it is also exactly what an unreadable"
+            log "note: /sys/devices/system/cpu/*/topology looks like. Nothing here can tell those apart."
         fi
+        log "workload: shape=${SHAPE} clauses=${CLAUSES} processed=${PROCESSED} workers=${WORKER_LIST}"
     fi
+    IFS=',' read -r -a WORKERS_LIST <<< "${WORKER_LIST}"
     for workers in "${WORKERS_LIST[@]}"; do
         log "measuring target-cpu=${variant} workers=${workers} (best of ${REPEAT})"
         row="${OUT_DIR}/row-${variant}-w${workers}.json"
@@ -657,6 +706,7 @@ if (( DO_BANK )); then
     BANK_TSV="${BANK_DIR}/bank.tsv"
     HOST_SLUG="$(json_field "${ROWS}" host_slug)"
     [[ -n "${HOST_SLUG}" ]] || die "could not read host_slug from ${ROWS}"
+    [[ -n "${COMMAND:-}" ]] || die "internal error: the rerun command was never recorded"
     REPORT="${BANK_DIR}/$(date +%F)-${HOST_SLUG}.md"
 
     "${PROBE_BINARY}" bank \
