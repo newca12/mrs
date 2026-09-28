@@ -254,28 +254,6 @@ fn normalize_clause_eq(
                     changed = true;
                     continue;
                 }
-                // Unique-name resolution. Both sides are ground constants, so
-                // distinct class representatives denote distinct elements in
-                // every model, and the disequality's truth value is known
-                // without any congruence reasoning: a *negative* `Eq` between
-                // distinct representatives is true, which makes the whole
-                // clause valid, and a *positive* one is false, which drops the
-                // literal. This is what lets a non-unit positive equality
-                // reach the tiers at all — the guard above used to refuse such
-                // inputs outright because resolution cannot generate the
-                // congruence axioms it would need, and here they are not
-                // needed at all.
-                //
-                // Only ground constants qualify. A non-ground side means the
-                // literal survives to the tiers, and the top-of-function guard
-                // refuses a non-unit positive one.
-                if is_ground_constant(&new_left) && is_ground_constant(&new_right) {
-                    if !literal.positive {
-                        return Normalized::Tautology;
-                    }
-                    changed = true;
-                    continue;
-                }
                 // A pure orientation change has no equality parent to cite.
                 // Preserve the original orientation in that case; when a
                 // unit equality changed a side, the unit parents justify the
@@ -377,17 +355,24 @@ pub(crate) fn expand_equality(
     // positive equality could therefore turn an equality-dependent
     // contradiction into a false saturation claim.
     //
-    // `normalize_clause_eq` resolves the ground case outright under the
-    // unique-name axiom, so this guard only has to catch what survives that
-    // pass: a positive equality with a non-ground side, whose value is not
-    // known and would have to be left to resolution.
+    // A 2026-09 attempt relaxed this to admit *ground* non-unit positive
+    // equalities, resolving them by the unique-name axiom (a ground disequality
+    // between distinct constants is valid, a ground equality between them is
+    // false). The equisatisfiability argument for that is sound, and it does
+    // decide the NLP division — but it turned a fail-closed `GaveUp` into a
+    // verdict on `EPS/HWV042-1`, whose reference answer is `Satisfiable` and
+    // whose ground set the SAT solver then called unsatisfiable. Whether the
+    // discrepancy is in the resolution or in MRS's lowering of that problem was
+    // not established, and a change that can move a run off `GaveUp` onto a
+    // reference-violating verdict is release-blocking whatever the cause. The
+    // strict guard stays; the reachable-input question belongs to a change that
+    // can be validated end to end.
     if clauses.iter().any(|clause| {
         clause.literals.len() != 1
-            && clause.literals.iter().any(|literal| {
-                literal.positive
-                    && matches!(&literal.atom, Atom::Eq(left, right)
-                        if !(is_ground_constant(left) && is_ground_constant(right)))
-            })
+            && clause
+                .literals
+                .iter()
+                .any(|literal| literal.positive && matches!(literal.atom, Atom::Eq(_, _)))
     }) {
         return Err(CertificationFailure::Unsupported(
             "non-unit positive equality is outside the certified fragment",

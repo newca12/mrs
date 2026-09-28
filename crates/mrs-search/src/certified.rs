@@ -3038,8 +3038,19 @@ mod tests {
     /// Non-unit positive equalities are outside the certified equality
     /// fragment. Without predicate-congruence support, accepting this input
     /// would permit a false saturation, so certification must fail closed.
+    /// A non-unit positive equality stays outside the certified fragment.
+    ///
+    /// This is the strict guard's regression test, and it is the boundary that
+    /// a 2026-09 change moved and then restored. Resolving ground non-unit
+    /// positive equalities by the unique-name axiom is equisatisfiability
+    /// preserving and does decide the NLP division, but it also made
+    /// `EPS/HWV042-1` reachable, and that problem's ground set then came out
+    /// unsatisfiable against a `Satisfiable` reference answer. Whether the
+    /// cause was the resolution or MRS's lowering was not established, so the
+    /// input stays refused: a `GaveUp` that agrees with the reference is
+    /// strictly better than a verdict that does not.
     #[test]
-    fn non_unit_positive_equality_refutes_via_unique_names() {
+    fn non_unit_positive_equality_stays_outside_the_fragment() {
         let mut symbols = SymbolTable::new();
         let q = symbols.intern("q");
         let a = symbols.intern("a");
@@ -3060,6 +3071,10 @@ mod tests {
                 mrs_core::clause::Literal::neg(Atom::pred(sym, vec![Term::constant(constant)]))
             }
         };
+        // `~q(a) | a = b` is ground, both sides are constants, and the
+        // unique-name pass would decide the equality literal. The closure
+        // cannot supply the congruence axioms the reasoning would need, so
+        // the input is refused rather than decided.
         let clauses = vec![
             input_clause(&mut ids, vec![pred(false, q, a), eq(true, a, b)]),
             input_clause(&mut ids, vec![pred(false, q, b), eq(true, b, c)]),
@@ -3067,15 +3082,9 @@ mod tests {
             input_clause(&mut ids, vec![pred(true, q, b)]),
             input_clause(&mut ids, vec![eq(false, a, c)]),
         ];
-        // This set is unsatisfiable, and it is refutable *by the very
-        // mechanism the old guard was protecting*. `q(a)` and `q(b)` force
-        // `a = b` and `b = c`; the unit equations then merge a, b and c into
-        // one class, and `a != c` becomes a disequality inside its own class.
-        // The unique-name pass used to be blocked here, so the whole set was
-        // refused. It now refutes, with the unit equations as ancestry.
         for ordering in [TermOrdering::KBO, TermOrdering::LPO] {
             let mut ids = ids.clone();
-            let report = certify_ground_ordered_resolution(
+            let result = certify_ground_ordered_resolution(
                 &clauses,
                 &[],
                 &symbols,
@@ -3083,22 +3092,11 @@ mod tests {
                 &mut ids,
                 Duration::from_secs(10),
                 1,
-            )
-            .unwrap_or_else(|failure| panic!("{ordering:?} must refute, got {failure:?}"));
-            match &report.result {
-                SearchResult::Refutation(_, tstp) => {
-                    // A refutation is only worth more than a GaveUp if the
-                    // proof is complete: the two unit equations have to appear
-                    // as cited parents, because they are what makes `a = b` and
-                    // `b = c` available.
-                    assert!(!tstp.is_empty(), "{ordering:?} returned an empty proof");
-                    assert!(
-                        tstp.contains("equality_normalization") || tstp.contains("cth"),
-                        "{ordering:?} proof does not cite the equality derivation:\n{tstp}"
-                    );
-                }
-                other => panic!("{ordering:?} must refute, got {other:?}"),
-            }
+            );
+            assert!(
+                matches!(result, Err(CertificationFailure::Unsupported(_))),
+                "a non-unit positive equality must stay outside the fragment under {ordering:?}"
+            );
         }
     }
 
