@@ -11,6 +11,7 @@ Re-measure before quoting one.
 | `eps-casc-sim-20260928-run.csv` | `casc-30` EPS through `casc.sh --divisions eps --casc-times`, 120 s, CASC 8-worker dual split (`workers=7+1`), 32-core Xeon / 128 GB. **42/100 solved, 0 reference violations, 0 invalid models.** |
 | `eps-casc-sim-20260928-audit-summary.txt` | The `audit_casc_proofs` report for that run: 38 of the 42 models kernel-certified, 0 invalid, 4 `Inconclusive` on the kernel's evaluation work cap. |
 | `eps-casc-sim-20260928-summary.tsv` | A local re-measurement of the same division, certified track alone, on a 2-core host under `casc-sim`. Same 42 solved. Kept because it carries the refusal-reason telemetry (`cert_tier`) per problem. |
+| `eps-lowram-20260928-summary.tsv` | The same 42 on the same 2-core / 15 GB host after the grounding budget was changed to track memory. Confirms the memory work is coverage-neutral on the box that motivated it, and is the reference for what the box can now afford. |
 
 The baseline for comparison is `cert-eps-20260926` in the same results tree; the
 comparison table, including the +30 / 0 gained-versus-lost split and the

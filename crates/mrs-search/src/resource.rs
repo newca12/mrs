@@ -405,7 +405,8 @@ pub const ENFORCEABLE_MEMORY_PERCENT: u64 = 90;
 /// batch. A resource bound has to be a property of the run's configuration and
 /// the machine, not of the moment. Reserve rather than measure: it cannot drift
 /// between two processes on the same host, and `MemAvailable` is a kernel
-/// estimate with no guarantee anyway.
+/// estimate with no guarantee anyway. The reserve is the larger of
+/// [`ENFORCEABLE_MEMORY_PERCENT`]% of the total and 1 GiB.
 pub fn enforceable_memory_mb(total_mb: Option<u64>) -> Option<u64> {
     let total = total_mb?;
     let reserve = (total / 100).max(1024);
