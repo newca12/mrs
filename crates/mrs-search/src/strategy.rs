@@ -682,12 +682,12 @@ pub fn run_schedule_with_candidate_receiver(
     // searches the `epr_equality` profile, which the InstGen pre-pass below
     // refuses outright on 39 of the 100 CASC-30 EPU problems. What it is not yet
     // is strong enough to be worth its budget by default: on a stratified
-    // 26-problem sample of the division it refuted nothing with a proof the
-    // checker accepts, while consuming three quarters of the run before the
-    // portfolio starts. Enabling it by default would trade the portfolio's
-    // 15-second slice for a pre-pass that returns nothing, so it is off until the
-    // instantiation restriction is strong enough to earn its share. See
-    // `epr_ground`'s module docs for the measurement.
+    // sample of the division it refuted nothing with a proof the checker
+    // accepts, while consuming the larger part of the run before the portfolio
+    // starts. Enabling it by default would trade the portfolio's slice for a
+    // pre-pass that returns nothing, so it is off until the instantiation
+    // restriction is strong enough to earn its share. See `epr_ground`'s
+    // module docs for the measurement.
     //
     // A refutation here is the final answer, so it goes through the candidate
     // receiver like any other winner and can be certified.
@@ -697,6 +697,19 @@ pub fn run_schedule_with_candidate_receiver(
         let memory_budget_mb = actual_configs
             .iter()
             .find_map(|c| c.resource_limits.max_memory_mb);
+        // Sized from the sum of strategy budgets. That sum is the right scale
+        // because every schedule constructor partitions the CLI wall clock
+        // into per-strategy slices (the default schedule's shares add to
+        // ~100%, `mini`/`fast`/cooperative portfolios to exactly 100%), and
+        // the pre-pass runs sequentially, so its timeout is a share of the
+        // wall clock in every worker mode. Two things this is *not*: the
+        // minimum slice (a 2% diagnostic share would clamp the pre-pass to
+        // the 500 ms floor, which the proof reserve then eats whole) and the
+        // maximum slice (a 14% share would starve grounding on short runs).
+        // Known limitation, documented in `epr_ground`: worker budgets are
+        // not reduced by pre-pass elapsed, so an opt-in run's total wall is
+        // the pre-pass share *plus* the full portfolio, not a partition of
+        // `--time`.
         let budget = crate::epr_budget(memory_budget_mb, total_budget);
         let mut epr_id_gen = id_gen.clone();
         let (epr_result, tele) = crate::try_epr_ground_refutation(

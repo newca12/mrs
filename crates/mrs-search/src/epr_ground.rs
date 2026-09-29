@@ -32,11 +32,22 @@
 //!    propositional BFS over ground atoms is lifted clause by clause into a
 //!    first-order resolution proof.
 //!
-//! Equality needs no special case. `⊥ = c` is as much a ground instance as
-//! `p(⊥)` is, and ground instances carry real `d = c` atoms, so the
-//! `epr_equality` profile — which [`crate::instgen`] refuses outright with
-//! `unsupported_epr_profile`, on 39 of the 100 EPU problems — is searched by
-//! exactly the same loop.
+//! Equality needs no special case in *instance generation*. `⊥ = c` is as
+//! much a ground instance as `p(⊥)` is, and ground instances carry real
+//! `d = c` atoms, so the `epr_equality` profile — which [`crate::instgen`]
+//! refuses outright with `unsupported_epr_profile`, on 39 of the 100 EPU
+//! problems — is searched by exactly the same loop. What the SAT abstraction
+//! does *not* do is equality reasoning: ground equality atoms are
+//! propositionally atomic and uninterpreted there (ordered canonically, with
+//! reflexive equalities simplified away, but with no transitivity or
+//! congruence axioms). A refutation that needs the equality theory must come
+//! from the given-clause fallback, which runs superposition over the ground
+//! instances and reasons about equality properly.
+//!
+//! Every instance emitted here is fully ground. Rungs narrower than the
+//! clause complete the substitution with `⊥` (see [`complete_with_bot`]):
+//! a partial instance would be dropped by the ground-set abstraction, so
+//! emitting one counts search that did not happen.
 //!
 //! Soundness rests on two facts, both true of every instance set built here:
 //! every clause in it is an instance of an input clause, and the SAT problem is
@@ -60,6 +71,9 @@ use crate::{HashMap, HashSet, SearchResult};
 /// A ground atom: a predicate application over constants, or an equality
 /// between two constants. Both are propositionally atomic, which is what makes a
 /// propositional refutation over them a first-order one.
+///
+/// Equality pairs are stored in sorted order, so `a = b` and `b = a` abstract
+/// to the same variable instead of two independent propositions.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 enum GAtom {
     Pred(SymbolId, SmallVec<[SymbolId; 4]>),
@@ -67,9 +81,16 @@ enum GAtom {
 }
 
 impl GAtom {
+    /// Ground equality with a canonical argument order, so `a = b` and
+    /// `b = a` intern to the same SAT variable.
+    fn eq(a: SymbolId, b: SymbolId) -> Self {
+        GAtom::Eq(a.min(b), a.max(b))
+    }
+
     /// The ground atom a literal denotes, or `None` if the literal is not a
-    /// usable ground atom: it has a variable in it, or it is `c = c`, which
-    /// holds in every model and makes its clause trivially true.
+    /// usable ground atom: it has a variable in it, or it is a reflexive
+    /// equality (`c = c`), which is decided by simplification instead (see
+    /// [`GroundAbstraction::abstract_clause`]).
     fn of_literal(lit: &Literal) -> Option<Self> {
         match &lit.atom {
             Atom::Pred(sym, args) => {
@@ -88,11 +109,26 @@ impl GAtom {
                     _ => None,
                 };
                 match (const_side(l), const_side(r)) {
-                    (Some(a), Some(b)) if a != b => Some(GAtom::Eq(a, b)),
+                    (Some(a), Some(b)) if a != b => Some(GAtom::eq(a, b)),
                     _ => None,
                 }
             }
         }
+    }
+
+    /// A literal that holds in every model: a positive reflexive equality
+    /// (`c = c`, or `t = t` generally by reflexivity). Its clause is a
+    /// tautology and carries no constraint.
+    fn is_valid(lit: &Literal) -> bool {
+        lit.positive && matches!(&lit.atom, Atom::Eq(l, r) if l == r)
+    }
+
+    /// A literal that holds in no model: a negative reflexive equality
+    /// (`c != c`). It constrains nothing and is dropped from its clause
+    /// during abstraction; a clause of nothing but such literals is the
+    /// empty clause.
+    fn is_false(lit: &Literal) -> bool {
+        !lit.positive && matches!(&lit.atom, Atom::Eq(l, r) if l == r)
     }
 
     /// The first-order literal this atom came from.
@@ -128,25 +164,46 @@ impl GroundAbstraction {
         v
     }
 
-    /// Abstracts a ground clause. `None` if any literal is not a usable ground
-    /// atom, in which case the clause must not reach the SAT solver at all:
-    /// reasoning over a partially-grounded abstraction would not lift.
-    fn abstract_clause(&mut self, clause: &Clause) -> Option<Pc> {
+    /// Abstracts a ground instance for the SAT solver.
+    ///
+    /// Reflexive equalities are simplified first: a literal true in every
+    /// model (`c = c`) makes the whole clause vacuous, a literal false in
+    /// every model (`c != c`) is dropped. Anything with a variable in it
+    /// still keeps the clause out entirely — reasoning over a
+    /// partially-grounded abstraction would not lift.
+    ///
+    /// An empty image is a genuine contradiction (every literal simplified
+    /// to `c != c`), not a tautology: the caller records it and the next
+    /// solve reports `Unsat`.
+    fn abstract_clause(&mut self, clause: &Clause) -> Abstracted {
         let mut pc = Vec::with_capacity(clause.literals.len());
         for lit in &clause.literals {
-            let atom = GAtom::of_literal(lit)?;
+            if GAtom::is_valid(lit) {
+                return Abstracted::Skip;
+            }
+            if GAtom::is_false(lit) {
+                continue;
+            }
+            let Some(atom) = GAtom::of_literal(lit) else {
+                return Abstracted::Skip;
+            };
             let v = self.intern(&atom);
             pc.push(if lit.positive { v } else { -v });
         }
         pc.sort_unstable();
         pc.dedup();
-        if pc.is_empty() {
-            // Every literal was `c = c`: trivially true, so the clause carries no
-            // constraint and the atom table must not grow a variable for it.
-            return None;
-        }
-        Some(pc)
+        Abstracted::Clause(pc)
     }
+}
+
+/// What abstraction decided for one instance.
+enum Abstracted {
+    /// Carries no constraint (tautology) or is not ground: keep it out of
+    /// the SAT solver.
+    Skip,
+    /// Propositional image. Empty means contradiction — every literal
+    /// simplified to `c != c` — and the solver will report `Unsat`.
+    Clause(Pc),
 }
 
 /// One ground instance together with its propositional image. The instance's
@@ -187,11 +244,15 @@ impl GroundSet {
     }
 
     /// Adds a ground instance. Returns whether it was new and fits.
+    ///
+    /// An empty propositional image (a clause of nothing but `c != c`) is an
+    /// immediate contradiction: it is recorded as the empty clause and the
+    /// next solve reports `Unsat`.
     fn add(&mut self, clause: Clause) -> bool {
         if self.clauses.len() >= self.cap {
             return false;
         }
-        let Some(pc) = self.abs.abstract_clause(&clause) else {
+        let Abstracted::Clause(pc) = self.abs.abstract_clause(&clause) else {
             return false;
         };
         if !self.seen.insert(pc.clone()) {
@@ -823,6 +884,7 @@ pub fn try_epr_ground_refutation(
         clauses,
         pivots: &pivots,
         domain: &domain,
+        bot,
         deadline: grounding_deadline,
         rung: 0,
         cursors: vec![vec![0; clauses.len()]; MAX_RUNGS],
@@ -994,6 +1056,10 @@ struct GroundingContext<'a> {
     clauses: &'a [Clause],
     pivots: &'a [SymbolId],
     domain: &'a [SymbolId],
+    /// The `⊥` placeholder: variables no rung binds stay free unless they are
+    /// completed with it (see [`complete_with_bot`]), and a free variable
+    /// makes the instance unusable to the SAT solver.
+    bot: SymbolId,
     deadline: Instant,
     rung: usize,
     /// `cursors[depth][clause]` — how far this clause has been swept at this
@@ -1001,6 +1067,22 @@ struct GroundingContext<'a> {
     /// consume the whole constant list and leaves every later clause with an
     /// exhausted rung.
     cursors: Vec<Vec<usize>>,
+}
+
+/// Binds every variable in `vars` that `subst` leaves free to `bot`, so the
+/// instance the substitution produces is ground.
+///
+/// Substituting `⊥` for a universally quantified variable is ordinary
+/// universal instantiation with a fresh constant, so the completed instance
+/// is as genuine as one over problem constants. Without this, rungs narrower
+/// than the clause are dead on arrival: `GroundSet::add` drops anything with
+/// a variable in it, and the round would report instances it never asserted.
+fn complete_with_bot(vars: &[VarId], subst: &mut Substitution, bot: SymbolId) {
+    for &v in vars {
+        if subst.lookup(v).is_none() {
+            subst.bind(v, Term::constant(bot));
+        }
+    }
 }
 
 fn generate_from_model(
@@ -1012,6 +1094,7 @@ fn generate_from_model(
         clauses,
         pivots,
         domain,
+        bot,
         deadline,
         rung,
         cursors,
@@ -1054,9 +1137,12 @@ fn generate_from_model(
         // The falsification rule: bind variables so every literal is false under
         // the current model. An instance the model cannot satisfy is a strict
         // shrink of the model space, so it is the one move guaranteed to move.
-        if let Some((subst, all_false)) =
+        // Variables the rule leaves alone are completed with `⊥`, so the
+        // instance is ground and can reach the solver.
+        if let Some((mut subst, all_false)) =
             falsifying_substitution(clause, &ground.abs, &ground.solver, &index)
         {
+            complete_with_bot(&vars, &mut subst, *bot);
             let lits: Vec<Literal> = clause
                 .literals
                 .iter()
@@ -1076,6 +1162,8 @@ fn generate_from_model(
 
         // Widen: bind the variables the current rung allows, using constants the
         // rung has not reached yet so no round repeats the last one's work.
+        // Variables past the rung's depth are completed with `⊥` inside, so
+        // every candidate below is a genuine ground instance.
         rung_instances(
             clause,
             &vars,
@@ -1085,6 +1173,7 @@ fn generate_from_model(
             round_cap.saturating_sub(out.len()),
             &mut instances,
             *deadline,
+            *bot,
         );
         for lits in instances.drain(..) {
             out.push(instantiation(id_gen, clause.id, lits));
@@ -1112,7 +1201,7 @@ fn generate_from_model(
 /// is what a transitivity or reachability step needs. Wider rungs are strictly
 /// stronger, and each is only reached once the previous one has stopped finding
 /// new instances, so a problem rung 0 settles never pays for rung 2.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Rung {
     OneVariablePivots,
     OneVariableDomain,
@@ -1191,6 +1280,11 @@ impl From<usize> for Rung {
 /// The instances rung `r` still owes `clause`, binding `r`'s depth of its
 /// variables to constants from the rung's list at or after `cursor`.
 ///
+/// Variables past the rung's depth are completed with `bot`, so every emitted
+/// instance is ground: a rung narrower than the clause still searches a real
+/// (if restricted) slice of the Herbrand expansion instead of emitting
+/// partial instances the SAT solver must drop.
+///
 /// The cursor is per clause and per rung. A single shared cursor is wrong: the
 /// first clause would consume the whole constant list and every later clause
 /// would see an exhausted rung, which is what made a 56-constant domain produce
@@ -1207,6 +1301,7 @@ fn rung_instances(
     budget: usize,
     out: &mut Vec<Vec<Literal>>,
     deadline: Instant,
+    bot: SymbolId,
 ) {
     let mut i = *cursor;
     while i < constants.len() {
@@ -1227,6 +1322,7 @@ fn rung_instances(
         for &var in vars.iter().filter(|_| rung.uses(0)) {
             let mut subst = Substitution::new();
             subst.bind(var, Term::constant(outer));
+            complete_with_bot(vars, &mut subst, bot);
             push_instance(clause, subst, budget, out);
             if out.len() >= budget {
                 *cursor = i;
@@ -1241,6 +1337,7 @@ fn rung_instances(
                     let mut subst = Substitution::new();
                     subst.bind(var, Term::constant(outer));
                     subst.bind(var2, Term::constant(inner));
+                    complete_with_bot(vars, &mut subst, bot);
                     push_instance(clause, subst, budget, out);
                     if out.len() >= budget {
                         *cursor = i;
@@ -1384,10 +1481,11 @@ enum Template {
         args: Vec<Option<SymbolId>>,
         free: usize,
     },
-    Eq {
-        other: SymbolId,
-        var_is_left: bool,
-    },
+    /// An equality with one side a constant and the other a free variable.
+    /// Which side is which does not matter past construction: atoms are
+    /// stored with sorted arguments, so the lookup key is canonical either
+    /// way.
+    Eq { other: SymbolId },
 }
 
 impl Template {
@@ -1425,27 +1523,23 @@ impl Template {
                 ))
             }
             Atom::Eq(l, r) => {
+                // A variable already bound by `sigma` stands for its constant;
+                // only a still-free variable is a position the rule can move.
+                // A side that is neither is not EPR-shaped and ends the
+                // template: a literal with no single free variable to move is
+                // one the rule cannot turn off from here.
                 let side = |t: &Term| -> Option<Result<SymbolId, VarId>> {
                     match t {
-                        Term::Var(v) if !sigma.contains_key(v) => Some(Err(*v)),
+                        Term::Var(v) => Some(match sigma.get(v) {
+                            Some(c) => Ok(*c),
+                            None => Err(*v),
+                        }),
                         _ => constant_of(t).map(Ok),
                     }
                 };
                 match (side(l), side(r)) {
-                    (Some(Err(var)), Some(Ok(other))) => Some((
-                        Template::Eq {
-                            other,
-                            var_is_left: true,
-                        },
-                        var,
-                    )),
-                    (Some(Ok(other)), Some(Err(var))) => Some((
-                        Template::Eq {
-                            other,
-                            var_is_left: false,
-                        },
-                        var,
-                    )),
+                    (Some(Err(var)), Some(Ok(other))) => Some((Template::Eq { other }, var)),
+                    (Some(Ok(other)), Some(Err(var))) => Some((Template::Eq { other }, var)),
                     _ => None,
                 }
             }
@@ -1522,24 +1616,26 @@ impl TemplateIndex {
                     }
                 }
             }
-            Template::Eq { other, var_is_left } => {
-                let bucket = if *var_is_left {
-                    self.eq_by_right.get(other)
-                } else {
-                    self.eq_by_left.get(other)
-                };
-                if let Some(bucket) = bucket {
-                    for &c in bucket {
-                        let key = if *var_is_left {
-                            GAtom::Eq(c, *other)
-                        } else {
-                            GAtom::Eq(*other, c)
-                        };
-                        if let Some(&v) = abs.atom_to_var.get(&key)
-                            && solver.value(v) == Some(false)
-                        {
-                            out.push(c);
-                        }
+            Template::Eq { other, .. } => {
+                // Atoms are stored with sorted arguments, so `other` may sit
+                // on either side: partners come from both buckets. The two
+                // buckets are disjoint (`c = c` is never interned), so no
+                // constant is proposed twice. Which side of the *template* is
+                // free does not matter for the lookup — the atom key is
+                // canonical either way.
+                let mut partners: Vec<SymbolId> = Vec::new();
+                if let Some(bucket) = self.eq_by_right.get(other) {
+                    partners.extend(bucket.iter().copied());
+                }
+                if let Some(bucket) = self.eq_by_left.get(other) {
+                    partners.extend(bucket.iter().copied());
+                }
+                for c in partners {
+                    let key = GAtom::eq(c, *other);
+                    if let Some(&v) = abs.atom_to_var.get(&key)
+                        && solver.value(v) == Some(false)
+                    {
+                        out.push(c);
                     }
                 }
             }
@@ -1630,7 +1726,7 @@ fn literal_value(
     abs: &GroundAbstraction,
     solver: &Solver,
 ) -> Option<bool> {
-    let mut mapped = Literal {
+    let mapped = Literal {
         positive: lit.positive,
         atom: map_term(&lit.atom, &mut |t| match t {
             Term::App(_, cargs) if cargs.is_empty() => match constant_of(t) {
@@ -1644,10 +1740,12 @@ fn literal_value(
             other => other.clone(),
         }),
     };
-    if let Atom::Eq(a, b) = &mut mapped.atom
+    if let Atom::Eq(a, b) = &mapped.atom
         && a == b
     {
-        return Some(true);
+        // `c = c` holds in every model: a positive literal is true, a
+        // negative one (`c != c`) is false.
+        return Some(lit.positive);
     }
     let atom = GAtom::of_literal(&mapped)?;
     let &v = abs.atom_to_var.get(&atom)?;
@@ -1922,7 +2020,10 @@ fn ground_refutation_fallback(
         id_gen.clone(),
         std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
         std::sync::Arc::new(symbols.clone()),
-        std::env::var("MRS_EPR_AVATAR").is_ok(),
+        // Matches `use_avatar: true` below: AVATAR splitting is set up in the
+        // state as well as enabled in the config, so the fallback really is
+        // the DPLL(T)-shaped search the comment below describes.
+        true,
         None,
         false,
         crate::ClauseWeightFn::Standard,
@@ -1940,7 +2041,16 @@ fn ground_refutation_fallback(
         ..crate::SearchConfig::default()
     };
     match crate::given_clause::search(&mut state, &config) {
-        SearchResult::Refutation(id, tstp) => (Some(SearchResult::Refutation(id, tstp)), 0),
+        SearchResult::Refutation(id, tstp) => {
+            // The derivation is rendered TSTP: one `cnf(`/`fof(` step per
+            // line, plus the `% Proof` header. Count the steps so the
+            // telemetry's proof-size column is real on this route too.
+            let nodes = tstp
+                .lines()
+                .filter(|l| l.starts_with("cnf(") || l.starts_with("fof("))
+                .count();
+            (Some(SearchResult::Refutation(id, tstp)), nodes)
+        }
         _ => (None, 0),
     }
 }
@@ -2075,7 +2185,9 @@ mod tests {
         let mut abs = GroundAbstraction::default();
         // Both sides ground, so the clause abstracts; the equality atoms are
         // propositionally atomic and lift back to first-order literals.
-        let pc = abs.abstract_clause(&inst).expect("ground equality clause");
+        let Abstracted::Clause(pc) = abs.abstract_clause(&inst) else {
+            panic!("ground equality clause must abstract");
+        };
         assert_eq!(pc.len(), 2);
         for &lit in &pc {
             let atom = &abs.var_to_atom[lit.unsigned_abs() as usize - 1];
@@ -2085,6 +2197,186 @@ mod tests {
             );
             let back = atom.to_literal(lit > 0);
             assert!(matches!(back.atom, Atom::Eq(..)));
+        }
+    }
+
+    /// `a = b` and `b = a` are the same ground atom: argument order is
+    /// canonical, so the two spellings share one SAT variable instead of
+    /// reasoning as independent propositions.
+    #[test]
+    fn equality_atoms_normalize_argument_order() {
+        let mut symbols = SymbolTable::new();
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let fwd = GAtom::of_literal(&Literal {
+            positive: true,
+            atom: Atom::eq(Term::constant(a), Term::constant(b)),
+        });
+        let rev = GAtom::of_literal(&Literal {
+            positive: false,
+            atom: Atom::eq(Term::constant(b), Term::constant(a)),
+        });
+        assert_eq!(fwd, rev);
+    }
+
+    /// Reflexive equalities simplify during abstraction: a positive `c = c`
+    /// makes the clause vacuous, a negative one (`c != c`) is dropped, and a
+    /// clause of nothing but dropped literals is the empty clause.
+    #[test]
+    fn abstraction_simplifies_reflexive_equalities() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let mut abs = GroundAbstraction::default();
+        // `p(a) ∨ a = a`: true in every model, carries no constraint.
+        let valid = input(
+            ClauseId(0),
+            vec![
+                pred(true, p, vec![Term::constant(a)]),
+                Literal {
+                    positive: true,
+                    atom: Atom::eq(Term::constant(a), Term::constant(a)),
+                },
+            ],
+        );
+        assert!(matches!(abs.abstract_clause(&valid), Abstracted::Skip));
+        // `p(a) ∨ a != a`: the false literal drops, one constraint remains.
+        let drop_false = input(
+            ClauseId(1),
+            vec![
+                pred(true, p, vec![Term::constant(a)]),
+                Literal {
+                    positive: false,
+                    atom: Atom::eq(Term::constant(a), Term::constant(a)),
+                },
+            ],
+        );
+        let Abstracted::Clause(pc) = abs.abstract_clause(&drop_false) else {
+            panic!("clause with a dropped false literal must abstract");
+        };
+        assert_eq!(pc.len(), 1);
+        // `a != a` alone: the empty clause, an immediate contradiction.
+        let empty = input(
+            ClauseId(2),
+            vec![Literal {
+                positive: false,
+                atom: Atom::eq(Term::constant(a), Term::constant(a)),
+            }],
+        );
+        let Abstracted::Clause(pc) = abs.abstract_clause(&empty) else {
+            panic!("unit `c != c` must abstract to the empty clause");
+        };
+        assert!(pc.is_empty());
+    }
+
+    /// `c = c` is true and `c != c` is false, regardless of which the model
+    /// says about anything else: polarity decides, not the solver.
+    #[test]
+    fn literal_value_respects_reflexive_equality_polarity() {
+        let mut symbols = SymbolTable::new();
+        let a = symbols.intern("a");
+        let abs = GroundAbstraction::default();
+        let solver = Solver::new();
+        let mk = |positive: bool| Literal {
+            positive,
+            atom: Atom::eq(Term::constant(a), Term::constant(a)),
+        };
+        let sigma = HashMap::default();
+        assert_eq!(literal_value(&mk(true), &sigma, &abs, &solver), Some(true));
+        assert_eq!(
+            literal_value(&mk(false), &sigma, &abs, &solver),
+            Some(false)
+        );
+    }
+
+    /// A variable already bound by `sigma` stands for its constant: `X = Y`
+    /// with `X` bound is a template in `Y`, not a refusal.
+    #[test]
+    fn template_eq_sees_through_bound_variables() {
+        let mut symbols = SymbolTable::new();
+        let a = symbols.intern("a");
+        let mut sigma = HashMap::default();
+        sigma.insert(0, a);
+        let atom = Atom::eq(Term::var(0), Term::var(1));
+        let Some((template, var)) = Template::build(&atom, &sigma) else {
+            panic!("X = Y with X bound must build a template in Y");
+        };
+        assert_eq!(var, 1);
+        assert!(matches!(template, Template::Eq { other } if other == a));
+    }
+
+    /// Completing a partial substitution with `⊥` grounds it: every variable
+    /// ends up bound.
+    #[test]
+    fn bot_completion_grounds_a_partial_substitution() {
+        let mut symbols = SymbolTable::new();
+        let a = symbols.intern("a");
+        let bot = symbols.intern("$bot");
+        let mut subst = Substitution::new();
+        subst.bind(0, Term::constant(a));
+        complete_with_bot(&[0, 1, 2], &mut subst, bot);
+        for v in [0, 1, 2] {
+            assert!(
+                subst.lookup(v).is_some(),
+                "variable {v} must be bound after completion"
+            );
+        }
+        assert_eq!(subst.lookup(0), Some(&Term::constant(a)));
+        assert_eq!(subst.lookup(1), Some(&Term::constant(bot)));
+    }
+
+    /// REGRESSION. Rungs narrower than the clause used to emit partial
+    /// instances — one variable bound, the rest free — which the ground-set
+    /// abstraction drops on arrival, so the rung searched nothing. Every
+    /// candidate below must be fully ground.
+    #[test]
+    fn narrow_rungs_emit_ground_instances() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let c0 = symbols.intern("c0");
+        let c1 = symbols.intern("c1");
+        let bot = symbols.intern("$bot");
+        // Four distinct variables: wider than every rung but uniform/all.
+        let clause = input(
+            ClauseId(0),
+            vec![pred(
+                true,
+                p,
+                vec![Term::var(0), Term::var(1), Term::var(2), Term::var(3)],
+            )],
+        );
+        let vars = clause_vars_ordered(&clause);
+        assert_eq!(vars.len(), 4);
+        for rung in [
+            Rung::OneVariablePivots,
+            Rung::OneVariableDomain,
+            Rung::TwoVariablePivots,
+        ] {
+            let mut cursor = 0usize;
+            let mut out: Vec<Vec<Literal>> = Vec::new();
+            rung_instances(
+                &clause,
+                &vars,
+                rung,
+                &[c0, c1],
+                &mut cursor,
+                64,
+                &mut out,
+                Instant::now() + Duration::from_secs(10),
+                bot,
+            );
+            assert!(
+                !out.is_empty(),
+                "rung {rung:?} must emit candidates for a four-variable clause"
+            );
+            for lits in &out {
+                for lit in lits {
+                    assert!(
+                        GAtom::of_literal(lit).is_some(),
+                        "rung {rung:?} emitted a non-ground literal: {lit:?}"
+                    );
+                }
+            }
         }
     }
 
