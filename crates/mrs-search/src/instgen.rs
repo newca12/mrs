@@ -169,13 +169,32 @@ pub fn term_is_epr(term: &Term) -> bool {
 }
 
 /// Collects all distinct constants (nullary function symbols) from `clauses`.
-fn collect_constants(clauses: &[Clause]) -> Vec<SymbolId> {
+/// Collects the Herbrand universe of an EPR clause set: every distinct constant
+/// that occurs as a term, plus every **nullary predicate**.
+///
+/// The second half is not a detail. A predicate of arity 0 is a 0-ary function
+/// symbol applied to no arguments, so `esk1_0` is a ground term and a member of
+/// the Herbrand universe, exactly like `c_e_h_3`. Reading only *argument*
+/// positions misses every one of them, and the universe that comes back is a
+/// strict subset of the real one. All 100 CASC-30 EPU problems contain nullary
+/// predicates — up to 2 527 in `HWV090-1` — so before this was fixed every
+/// grounding decision in the division was taken over a truncated domain, and a
+/// ladder that exhausted it reported `model_fixpoint` as if there were no
+/// instances left to draw.
+///
+/// `pub` so the EPR grounding pre-pass shares this one implementation rather
+/// than carrying a second copy of the same definition to get wrong separately.
+pub fn collect_constants(clauses: &[Clause]) -> Vec<SymbolId> {
     let mut seen: HashSet<SymbolId> = HashSet::default();
     let mut constants: Vec<SymbolId> = Vec::new();
     for clause in clauses {
         for lit in &clause.literals {
             match &lit.atom {
-                Atom::Pred(_, args) => {
+                Atom::Pred(sym, args) => {
+                    if args.is_empty() {
+                        seen.insert(*sym);
+                        constants.push(*sym);
+                    }
                     for t in args {
                         collect_constants_term(t, &mut seen, &mut constants);
                     }

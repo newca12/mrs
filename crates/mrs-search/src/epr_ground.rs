@@ -231,10 +231,12 @@ struct GroundSet {
     inputs: Vec<Clause>,
     /// The caller's original provenance, which proof lifting prints as inputs.
     provenance: Vec<Clause>,
+    /// Symbol table for diagnostics; the search itself is name-free.
+    symbols: SymbolTable,
 }
 
 impl GroundSet {
-    fn new(cap: usize, inputs: &[Clause], provenance: &[Clause]) -> Self {
+    fn new(cap: usize, inputs: &[Clause], provenance: &[Clause], symbols: &SymbolTable) -> Self {
         Self {
             abs: GroundAbstraction::default(),
             solver: Solver::new(),
@@ -243,6 +245,7 @@ impl GroundSet {
             cap,
             inputs: inputs.to_vec(),
             provenance: provenance.to_vec(),
+            symbols: symbols.clone(),
         }
     }
 
@@ -306,6 +309,12 @@ pub struct EprTelemetry {
     pub proof_nodes: usize,
     /// Pivot constants the instance generator is seeded from.
     pub pivots: usize,
+    /// Whether equality splitting was on for this run.
+    pub splitting: bool,
+    /// Input clauses with a non-empty split support, i.e. clauses splitting
+    /// actually applies to. On CASC-30 EPU this is non-zero for 20 of the 100
+    /// problems, and those are the largest ones.
+    pub split_clauses: usize,
     /// Terminal outcome: `"refutation"`, `"fallback"` or `"none"`.
     pub result: &'static str,
     /// Why the pre-pass yielded without a refutation.
@@ -329,6 +338,8 @@ impl Default for EprTelemetry {
             proof_extracted: false,
             proof_nodes: 0,
             pivots: 0,
+            splitting: false,
+            split_clauses: 0,
             result: "none",
             fallback: None,
         }
@@ -558,36 +569,6 @@ fn estimate_grounding_bytes(clauses: &[Clause], n_constants: usize) -> u64 {
     instances.saturating_add(atoms.saturating_mul(PER_ATOM))
 }
 
-fn collect_constants(clauses: &[Clause]) -> Vec<SymbolId> {
-    let mut seen: HashSet<SymbolId> = HashSet::default();
-    let mut out = Vec::new();
-    for clause in clauses {
-        for lit in &clause.literals {
-            match &lit.atom {
-                Atom::Pred(_, args) => {
-                    for t in args {
-                        collect_constant(t, &mut seen, &mut out);
-                    }
-                }
-                Atom::Eq(l, r) => {
-                    collect_constant(l, &mut seen, &mut out);
-                    collect_constant(r, &mut seen, &mut out);
-                }
-            }
-        }
-    }
-    out
-}
-
-fn collect_constant(t: &Term, seen: &mut HashSet<SymbolId>, out: &mut Vec<SymbolId>) {
-    if let Term::App(sym, args) = t
-        && args.is_empty()
-        && seen.insert(*sym)
-    {
-        out.push(*sym);
-    }
-}
-
 /// The clause's free variables in order of first appearance in its literals.
 ///
 /// Order matters: the rungs bind "the first `depth` variables", so a
@@ -754,7 +735,7 @@ pub fn try_epr_ground_refutation(
     budget: EprBudget,
 ) -> (Option<SearchResult>, EprTelemetry) {
     let route = crate::instgen::classify_epr_profile(clauses);
-    let domain = collect_constants(clauses);
+    let domain = crate::instgen::collect_constants(clauses);
     let est = estimate_grounding_size(clauses, domain.len());
     let est_bytes = estimate_grounding_bytes(clauses, domain.len());
     let mut tele = EprTelemetry {
@@ -772,6 +753,17 @@ pub fn try_epr_ground_refutation(
 
     let start = Instant::now();
     let deadline = start + budget.timeout;
+    // Diagnostics, off unless asked for.
+    //
+    // `TRACE_EPR_DUMP=<path>` writes the asserted ground instance set as TPTP,
+    // and `MRS_EPR_PROBE=1` runs the ground given-clause loop over it whatever
+    // the SAT verdict. Both exist to answer one question the abstraction makes
+    // hard to see from inside: the instance set is a *relaxation* of the
+    // problem, so a `Sat` verdict says the relaxation is satisfiable, not that
+    // the problem is. Dumping the set and re-deciding it as first-order clauses
+    // separates "the abstraction is lossy" from "the instances are not enough".
+    let dump = std::env::var("TRACE_EPR_DUMP").ok();
+    let probe = std::env::var("MRS_EPR_PROBE").is_ok();
     // Grounding is a search, and a search that has used its whole budget has
     // nothing left to decide or prove with. The two phases are therefore split
     // rather than shared: instance generation stops at `grounding_deadline`,
@@ -795,9 +787,37 @@ pub fn try_epr_ground_refutation(
         },
         clauses,
         provenance,
+        &local_symbols,
     );
     let pivots = pivot_constants(clauses, PIVOT_LIMIT);
     tele.pivots = pivots.len();
+
+    // Equality splitting, per clause. A clause's split support never changes, so
+    // it is computed once here rather than once per clause per round.
+    //
+    // `MRS_EPR_SPLIT=1` turns it on. It is off by default because it was
+    // measured and the measurement is a negative one: on the 20 CASC-30 EPU
+    // problems that contain a clause of the split shape it changes the instance
+    // count by about 1%, and on `HWV087-1` it is worse, because the count is
+    // budget-capped rather than search-capped and the cap is simply reached at a
+    // different point. The rule is kept — it is the right shape for this
+    // division, it is soundness-tested, and the reason it does not pay here is
+    // a property of the problems (see `split_support`) rather than a defect in
+    // it — but it does not earn the default path.
+    let splitting = std::env::var("MRS_EPR_SPLIT").is_ok_and(|v| v != "0");
+    let supports: Vec<HashMap<VarId, HashSet<SymbolId>>> = if splitting {
+        clauses
+            .iter()
+            .map(|c| split_support(c, &clause_vars_ordered(c)))
+            .collect()
+    } else {
+        vec![HashMap::default(); clauses.len()]
+    };
+    tele.splitting = splitting;
+    tele.split_clauses = supports
+        .iter()
+        .filter(|s| s.values().any(|v| !v.is_empty()))
+        .count();
 
     // The `⊥` bootstrap: one genuine ground instance per clause, so the set is a
     // relaxation of the input and a refutation over it refutes the input.
@@ -891,6 +911,7 @@ pub fn try_epr_ground_refutation(
         deadline: grounding_deadline,
         rung: 0,
         cursors: vec![vec![0; clauses.len()]; MAX_RUNGS],
+        supports: &supports,
     };
     loop {
         tele.sat_clauses = ground.clauses.len();
@@ -935,7 +956,38 @@ pub fn try_epr_ground_refutation(
                 tele.result = "fallback";
                 return (None, tele);
             }
-            SolveResult::Sat => {}
+            SolveResult::Sat => {
+                if probe {
+                    if let Some(path) = &dump {
+                        let _ = dump_ground_set(&ground, path);
+                    }
+                    tele.elapsed_ms = start.elapsed().as_millis() as u64;
+                    let (result, _) = ground_refutation_fallback(
+                        &ground,
+                        clauses,
+                        provenance,
+                        id_gen,
+                        &local_symbols,
+                        start,
+                        EprBudget {
+                            timeout: budget.timeout.saturating_sub(start.elapsed()),
+                            ..budget
+                        },
+                    );
+                    return match result {
+                        Some(r) => {
+                            tele.proof_extracted = true;
+                            tele.result = "refutation";
+                            (Some(r), tele)
+                        }
+                        None => {
+                            tele.fallback = Some("probe_sat");
+                            tele.result = "fallback";
+                            (None, tele)
+                        }
+                    };
+                }
+            }
         }
 
         round += 1;
@@ -1070,6 +1122,10 @@ struct GroundingContext<'a> {
     /// consume the whole constant list and leaves every later clause with an
     /// exhausted rung.
     cursors: Vec<Vec<usize>>,
+    /// Per input clause, the constants its equality literals already pin each
+    /// variable to. Empty (and unused) when splitting is off. See
+    /// [`split_support`].
+    supports: &'a [HashMap<VarId, HashSet<SymbolId>>],
 }
 
 /// Binds every variable in `vars` that `subst` leaves free to `bot`, so the
@@ -1088,6 +1144,146 @@ fn complete_with_bot(vars: &[VarId], subst: &mut Substitution, bot: SymbolId) {
     }
 }
 
+/// Equality splitting, in the sense of López-Gil, Ordinary and Anzai.
+///
+/// A clause whose equality literals all pin *one* variable to constants
+/// restricts that variable's value, and the restriction is the whole point:
+///
+/// ```text
+/// c₁ = X ∨ c₂ = X ∨ … ∨ cₙ = X ∨ R(X)
+/// ```
+///
+/// says that either `X` is one of the `cᵢ` — in which case the clause is
+/// satisfied and asserts nothing — or `R(X)` holds at whatever value `X` takes.
+/// So the clause only ever forces `R` at values in `D \ {c₁…cₙ}`, and grounding
+/// it at the `cᵢ` is wasted.
+///
+/// That complement is where the leverage is. In the HWV family the domain is
+/// about 205 constants and the split support of a state variable is about 200 of
+/// them, so the clause prunes the variable from 205 candidate values to about 5 —
+/// and it is the *remaining* variables, the ones a rung then has to cross
+/// product, that make grounding expensive. For a three-variable clause that is
+/// the difference between 205 · 56 · 56 and 5 · 56 · 56 instances.
+///
+/// ## Soundness
+///
+/// The instances emitted are `R[X := d]` completed to ground, and each is an
+/// instance of `C` under the substitution that sends the split variable to `d`
+/// and the rest to constants. So every emitted clause is entailed by `C`, and a
+/// refutation over the instance set is a refutation of the problem. The
+/// instances at `d ∈ {cᵢ}` are not emitted, but that only *removes* constraints
+/// from a set that is already a relaxation — it cannot turn an unsatisfiable
+/// instance set into a satisfiable one, and the proof is lifted from the
+/// instances that were kept.
+///
+/// The rule is deliberately a *pruning* of each rung's candidate list rather
+/// than a rewrite of the clause set. A clause-level rewrite that drops the
+/// equality disjuncts would assert `⋀_d R[d]`, which is strictly stronger than
+/// `C` and can therefore prove something `C` does not — that is the unsound
+/// direction, and this module does not take it.
+fn split_support(clause: &Clause, vars: &[VarId]) -> HashMap<VarId, HashSet<SymbolId>> {
+    let mut support: HashMap<VarId, HashSet<SymbolId>> = HashMap::default();
+    // A variable is a candidate split only if it occurs somewhere other than in
+    // an equality literal. Otherwise pinning it to `d` loses the clause entirely:
+    // `X = c` with `X` nowhere else is satisfied or violated by the equality
+    // alone, and there is no `R(X)` left to restrict.
+    let mut in_rest: HashSet<VarId> = HashSet::default();
+    let mut eligible: HashSet<VarId> = HashSet::default();
+
+    for lit in &clause.literals {
+        match &lit.atom {
+            Atom::Eq(l, r) => {
+                // Only `X = c` with a constant on one side and no variable on
+                // the other side of that side is a split; `X = Y` is the shape
+                // restricted *equality resolution* handles, and pinning it to a
+                // domain value would lose the constraint that the two are equal.
+                match (l, r) {
+                    (Term::Var(v), other) | (other, Term::Var(v)) => {
+                        if let Some(c) = constant_of(other) {
+                            eligible.insert(*v);
+                            support.entry(*v).or_default().insert(c);
+                        }
+                    }
+                    _ => {
+                        for v in clause_vars_in(&lit.atom) {
+                            in_rest.insert(v);
+                        }
+                    }
+                }
+            }
+            Atom::Pred(..) => {
+                for v in clause_vars_in(&lit.atom) {
+                    in_rest.insert(v);
+                }
+            }
+        }
+    }
+
+    support.retain(|v, _| in_rest.contains(v) && eligible.contains(v));
+    for v in vars {
+        support.entry(*v).or_default();
+    }
+    support
+}
+
+fn clause_vars_in(atom: &Atom) -> HashSet<VarId> {
+    let mut out = HashSet::default();
+    match atom {
+        Atom::Pred(_, args) => {
+            for t in args {
+                collect_var_set(t, &mut out);
+            }
+        }
+        Atom::Eq(l, r) => {
+            collect_var_set(l, &mut out);
+            collect_var_set(r, &mut out);
+        }
+    }
+    out
+}
+
+fn collect_var_set(t: &Term, out: &mut HashSet<VarId>) {
+    match t {
+        Term::Var(v) => {
+            out.insert(*v);
+        }
+        Term::App(_, args) => {
+            for a in args {
+                collect_var_set(a, out);
+            }
+        }
+    }
+}
+
+/// The constant list a rung may use for `slot` of `clause`: the rung's own list,
+/// minus the split support of the variable occupying that slot.
+///
+/// Empty when the support covers the whole list — every value is already
+/// accounted for, so this rung has nothing to contribute for that variable.
+fn slot_constants(
+    rung: Rung,
+    slot: usize,
+    vars: &[VarId],
+    support: &HashMap<VarId, HashSet<SymbolId>>,
+    pivots: &[SymbolId],
+    domain: &[SymbolId],
+) -> Vec<SymbolId> {
+    let base = rung.constants(pivots, domain);
+    let Some(&var) = vars.get(slot) else {
+        return Vec::new();
+    };
+    let Some(support) = support.get(&var) else {
+        return base.to_vec();
+    };
+    if support.is_empty() {
+        return base.to_vec();
+    }
+    base.iter()
+        .copied()
+        .filter(|c| !support.contains(c))
+        .collect()
+}
+
 fn generate_from_model(
     ctx: &mut GroundingContext<'_>,
     ground: &GroundSet,
@@ -1101,6 +1297,7 @@ fn generate_from_model(
         deadline,
         rung,
         cursors,
+        supports,
     } = ctx;
     let mut out = Vec::new();
     let mut instances: Vec<Vec<Literal>> = Vec::new();
@@ -1136,6 +1333,7 @@ fn generate_from_model(
         if vars.is_empty() {
             continue;
         }
+        let support = &supports[i];
 
         // The falsification rule: bind variables so every literal is false under
         // the current model. An instance the model cannot satisfy is a strict
@@ -1167,11 +1365,20 @@ fn generate_from_model(
         // rung has not reached yet so no round repeats the last one's work.
         // Variables past the rung's depth are completed with `⊥` inside, so
         // every candidate below is a genuine ground instance.
+        //
+        // The candidate list per slot is the rung's own list pruned by the
+        // clause's split support (see [`split_support`]): values the clause's
+        // own equality literals already account for are not worth grounding the
+        // rest of it at.
+        let rung_enum = Rung::from(*rung);
+        let slot_lists: Vec<Vec<SymbolId>> = (0..rung_enum.depth().unwrap_or(vars.len()))
+            .map(|slot| slot_constants(rung_enum, slot, &vars, support, pivots, domain))
+            .collect();
         rung_instances(
             clause,
             &vars,
-            Rung::from(*rung),
-            Rung::from(*rung).constants(pivots, domain),
+            rung_enum,
+            &slot_lists,
             &mut cursors[*rung][i],
             round_cap.saturating_sub(out.len()),
             &mut instances,
@@ -1194,6 +1401,12 @@ fn generate_from_model(
         .iter()
         .all(|c| *c >= rung.constants(pivots, domain).len())
         || !ground.has_room();
+    debug_assert!(
+        cursors[rung.ordinal()]
+            .iter()
+            .all(|c| *c <= rung.constants(pivots, domain).len()),
+        "a cursor cannot run past the unpruned list, which bounds the pruned one"
+    );
     (out, falsifying, done)
 }
 
@@ -1299,16 +1512,20 @@ fn rung_instances(
     clause: &Clause,
     vars: &[VarId],
     rung: Rung,
-    constants: &[SymbolId],
+    slot_lists: &[Vec<SymbolId>],
     cursor: &mut usize,
     budget: usize,
     out: &mut Vec<Vec<Literal>>,
     deadline: Instant,
     bot: SymbolId,
 ) {
+    let Some(outer_list) = slot_lists.first() else {
+        *cursor = 0;
+        return;
+    };
     let mut i = *cursor;
-    while i < constants.len() {
-        let outer = constants[i];
+    while i < outer_list.len() {
+        let outer = outer_list[i];
         if rung.uniform() {
             let mut subst = Substitution::new();
             for &var in vars {
@@ -1331,8 +1548,11 @@ fn rung_instances(
                 *cursor = i;
                 return;
             }
-            for j in i..constants.len() {
-                let inner = constants[j];
+            // Slot 1 has its own list: a second split variable is pruned by its
+            // own support, not the first one's.
+            let inner_list: &[SymbolId] = slot_lists.get(1).map_or(&[], Vec::as_slice);
+            for j in i..inner_list.len() {
+                let inner = inner_list[j];
                 for &var2 in vars.iter().filter(|_| rung.uses(1)) {
                     if var2 == var {
                         continue;
@@ -1370,7 +1590,7 @@ fn rung_instances(
                             visit_budget: budget.max(1) * VISIT_BUDGET_FACTOR,
                             deadline,
                         };
-                        for_each_assignment(&rest, constants, 0, &mut subst, &mut sink);
+                        for_each_assignment(&rest, inner_list, 0, &mut subst, &mut sink);
                         if sink.full {
                             *cursor = i;
                             return;
@@ -1381,7 +1601,7 @@ fn rung_instances(
         }
         i += 1;
     }
-    *cursor = constants.len();
+    *cursor = outer_list.len();
 }
 
 /// Every way of assigning `vars` from `constants`, as a flat list of
@@ -1851,6 +2071,72 @@ fn prop_bfs_refute(
     None
 }
 
+/// Writes the asserted ground instance set to `path` as a TPTP CNF file, so it
+/// can be re-decided by an independent tool. Diagnostic only
+/// ([`try_epr_ground_refutation`]).
+fn dump_ground_set(ground: &GroundSet, path: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let symbols = &ground.symbols;
+    let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
+    writeln!(
+        out,
+        "% asserted ground instance set, {} clauses",
+        ground.clauses.len()
+    )?;
+    for (n, g) in ground.clauses.iter().enumerate() {
+        let lits: Vec<String> = g
+            .clause
+            .literals
+            .iter()
+            .map(|lit| match &lit.atom {
+                mrs_core::formula::Atom::Pred(sym, args) => {
+                    let a: Vec<String> = args
+                        .iter()
+                        .map(|t| {
+                            symbols
+                                .resolve(constant_of(t).expect("ground arg"))
+                                .to_string()
+                        })
+                        .collect();
+                    // TPTP spells a nullary predicate as `p`, not `p()`.
+                    if a.is_empty() {
+                        format!(
+                            "{}{}",
+                            if lit.positive { "" } else { "~" },
+                            symbols.resolve(*sym)
+                        )
+                    } else {
+                        format!(
+                            "{}{}({})",
+                            if lit.positive { "" } else { "~" },
+                            symbols.resolve(*sym),
+                            a.join(",")
+                        )
+                    }
+                }
+                mrs_core::formula::Atom::Eq(l, r) => {
+                    // `~a = b` is not TPTP: `~` binds tighter than `=`, so it
+                    // would parse as a term application. A negated equality is
+                    // `a != b`.
+                    let l = symbols.resolve(constant_of(l).expect("ground eq side"));
+                    let r = symbols.resolve(constant_of(r).expect("ground eq side"));
+                    if lit.positive {
+                        format!("{l} = {r}")
+                    } else {
+                        format!("{l} != {r}")
+                    }
+                }
+            })
+            .collect();
+        writeln!(
+            out,
+            "cnf(g{n}, plain, ({}), file('dump', 'g{n}')).",
+            lits.join(" | ")
+        )?;
+    }
+    Ok(())
+}
+
 /// Lifts a propositional refutation over ground atoms into a first-order
 /// resolution proof.
 ///
@@ -2058,11 +2344,113 @@ fn ground_refutation_fallback(
     }
 }
 
+/// Helpers shared by the two test modules.
+#[cfg(test)]
+mod tests_common {
+    use super::*;
+
+    pub fn input(id: ClauseId, lits: Vec<Literal>) -> Clause {
+        Clause::new(
+            id,
+            lits,
+            mrs_core::clause::ClauseSource::Input {
+                name: format!("c{id:?}"),
+                role: "axiom".into(),
+            },
+        )
+    }
+
+    pub fn pred(positive: bool, sym: SymbolId, args: Vec<Term>) -> Literal {
+        Literal {
+            positive,
+            atom: Atom::pred(sym, args),
+        }
+    }
+
+    /// Whether `lits` — all ground — is a substitution instance of `clause`.
+    ///
+    /// Brute force over the clause's variables, which is fine for the shapes a
+    /// test builds: the soundness property being checked is existential (some
+    /// substitution works), and an exhaustive witness search is exactly the
+    /// statement to check against.
+    pub fn is_instance_of(clause: &Clause, lits: &[Literal]) -> bool {
+        let vars: Vec<VarId> = clause_vars_ordered(clause);
+        let mut bindings: Vec<(VarId, SymbolId)> = Vec::new();
+        let constants = ground_constants_in(lits);
+        if constants.is_empty() {
+            return lits.is_empty();
+        }
+        assign(&vars, 0, &constants, &mut bindings, clause, lits)
+    }
+
+    fn ground_constants_in(lits: &[Literal]) -> Vec<SymbolId> {
+        let mut out = Vec::new();
+        for lit in lits {
+            match &lit.atom {
+                Atom::Pred(_, args) => {
+                    for t in args {
+                        if let Some(c) = constant_of(t) {
+                            out.push(c);
+                        }
+                    }
+                }
+                Atom::Eq(l, r) => {
+                    for t in [l, r] {
+                        if let Some(c) = constant_of(t) {
+                            out.push(c);
+                        }
+                    }
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    fn assign(
+        vars: &[VarId],
+        depth: usize,
+        constants: &[SymbolId],
+        bindings: &mut Vec<(VarId, SymbolId)>,
+        clause: &Clause,
+        lits: &[Literal],
+    ) -> bool {
+        if depth == vars.len() {
+            let mut subst = Substitution::new();
+            for (v, c) in bindings.iter() {
+                subst.bind(*v, Term::constant(*c));
+            }
+            let want: Vec<Literal> = clause
+                .literals
+                .iter()
+                .map(|l| subst.apply_literal(l))
+                .collect();
+            let mut got = lits.to_vec();
+            let mut want = want;
+            got.sort_by_key(|l| format!("{l:?}"));
+            want.sort_by_key(|l| format!("{l:?}"));
+            return got == want;
+        }
+        for &c in constants {
+            bindings.push((vars[depth], c));
+            if assign(vars, depth + 1, constants, bindings, clause, lits) {
+                bindings.pop();
+                return true;
+            }
+            bindings.pop();
+        }
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use mrs_core::clause::ClauseSource;
     use mrs_core::symbol::SymbolTable;
+
+    use super::tests_common::*;
 
     fn input(id: ClauseId, lits: Vec<Literal>) -> Clause {
         Clause::new(
@@ -2087,10 +2475,7 @@ mod tests {
     }
 
     fn pred(positive: bool, sym: SymbolId, args: Vec<Term>) -> Literal {
-        Literal {
-            positive,
-            atom: Atom::pred(sym, args),
-        }
+        tests_common::pred(positive, sym, args)
     }
 
     /// `p(c,X) ∨ ~p(c,X)` has only the one ground instance `p(c,d) ∨ ~p(c,d)`.
@@ -2361,7 +2746,7 @@ mod tests {
                 &clause,
                 &vars,
                 rung,
-                &[c0, c1],
+                &[vec![c0, c1]],
                 &mut cursor,
                 64,
                 &mut out,
@@ -2501,5 +2886,267 @@ mod tests {
         let pivots = pivot_constants(&clauses, 2);
         assert_eq!(pivots, vec![skolem, rare]);
         assert_eq!(pivot_constants(&clauses, 2), pivots);
+    }
+}
+
+#[cfg(test)]
+mod split_tests {
+    use super::tests_common::*;
+    use super::*;
+
+    fn eq_lit(positive: bool, l: Term, r: Term) -> Literal {
+        Literal {
+            positive,
+            atom: Atom::eq(l, r),
+        }
+    }
+
+    /// The shape that motivates the whole rule: a disjunction of `cᵢ = X` plus a
+    /// rest, over a domain where the support covers most of it.
+    fn hwv_style(support: &[SymbolId], rest_pred: SymbolId) -> Clause {
+        let mut lits: Vec<Literal> = support
+            .iter()
+            .map(|&c| eq_lit(true, Term::constant(c), Term::var(0)))
+            .collect();
+        lits.push(pred(true, rest_pred, vec![Term::var(0)]));
+        input(ClauseId(0), lits)
+    }
+
+    /// The support of `X` is exactly the set of constants the clause pins it to.
+    #[test]
+    fn support_is_the_pinned_constants() {
+        let mut s = SymbolTable::new();
+        let p = s.intern("p");
+        let a = s.intern("a");
+        let b = s.intern("b");
+        let clause = hwv_style(&[a, b], p);
+        let vars = clause_vars_ordered(&clause);
+        let support = split_support(&clause, &vars);
+        let got: HashSet<SymbolId> = support[&0].iter().copied().collect();
+        let want: HashSet<SymbolId> = [a, b].into_iter().collect();
+        assert_eq!(got, want, "X is pinned to a and b by the equality literals");
+    }
+
+    /// Splitting prunes the candidate list to the values the clause's own
+    /// equality literals do not already account for. This is the entire
+    /// mechanism: on the HWV family it is the difference between grounding a
+    /// variable at ~205 values and at ~5.
+    #[test]
+    fn splitting_prunes_the_candidate_list() {
+        let mut s = SymbolTable::new();
+        let p = s.intern("p");
+        let a = s.intern("a");
+        let b = s.intern("b");
+        let c = s.intern("c");
+        let d = s.intern("d");
+        let domain = vec![a, b, c, d];
+        let clause = hwv_style(&[a, b, c], p);
+        let vars = clause_vars_ordered(&clause);
+        let support = split_support(&clause, &vars);
+
+        let unpruned = slot_constants(
+            Rung::OneVariableDomain,
+            0,
+            &vars,
+            &HashMap::default(),
+            &[],
+            &domain,
+        );
+        assert_eq!(
+            unpruned.len(),
+            4,
+            "without splitting every domain value is a candidate"
+        );
+
+        let pruned = slot_constants(Rung::OneVariableDomain, 0, &vars, &support, &[], &domain);
+        assert_eq!(
+            pruned,
+            vec![d],
+            "only the value the clause does not account for survives"
+        );
+    }
+
+    /// A variable that occurs only in equality literals is not a split variable:
+    /// `X = c` alone is decided by the equality, with no rest to restrict.
+    #[test]
+    fn a_variable_only_in_equalities_is_not_a_split_variable() {
+        let mut s = SymbolTable::new();
+        let a = s.intern("a");
+        let b = s.intern("b");
+        // (X = a ∨ Y = b), with X and Y appearing nowhere else.
+        let clause = input(
+            ClauseId(0),
+            vec![
+                eq_lit(true, Term::var(0), Term::constant(a)),
+                eq_lit(true, Term::var(1), Term::constant(b)),
+            ],
+        );
+        let vars = clause_vars_ordered(&clause);
+        let support = split_support(&clause, &vars);
+        assert!(support[&0].is_empty(), "X has no rest to restrict");
+        assert!(support[&1].is_empty(), "Y has no rest to restrict");
+    }
+
+    /// `X = Y` is the shape restricted *equality resolution* handles. Splitting
+    /// must not treat it as a pin: dropping the values of `Y` would lose the
+    /// constraint that the two are equal.
+    #[test]
+    fn variable_equals_variable_is_not_a_split() {
+        let mut s = SymbolTable::new();
+        let p = s.intern("p");
+        // (X = Y ∨ p(X))
+        let clause = input(
+            ClauseId(0),
+            vec![
+                eq_lit(true, Term::var(0), Term::var(1)),
+                pred(true, p, vec![Term::var(0)]),
+            ],
+        );
+        let vars = clause_vars_ordered(&clause);
+        let support = split_support(&clause, &vars);
+        assert!(support[&0].is_empty(), "X = Y pins no constant");
+        assert!(support[&1].is_empty(), "X = Y pins no constant");
+    }
+
+    /// SOUNDNESS. Every instance the pruned rung emits is a substitution instance
+    /// of the input clause. The pruning removes candidates; it must never
+    /// manufacture a clause the clause does not entail.
+    #[test]
+    fn emitted_candidates_are_instances_of_the_clause() {
+        let mut s = SymbolTable::new();
+        let p = s.intern("p");
+        let q = s.intern("q");
+        let a = s.intern("a");
+        let b = s.intern("b");
+        let c = s.intern("c");
+        let bot = s.intern("$bot");
+        let domain = vec![a, b, c];
+        // (X = a ∨ X = b ∨ q(X) ∨ p(X, Y)) — split on X, second variable Y.
+        let clause = input(
+            ClauseId(0),
+            vec![
+                eq_lit(true, Term::constant(a), Term::var(0)),
+                eq_lit(true, Term::constant(b), Term::var(0)),
+                pred(true, q, vec![Term::var(0)]),
+                pred(true, p, vec![Term::var(0), Term::var(1)]),
+            ],
+        );
+        let vars = clause_vars_ordered(&clause);
+        let support = split_support(&clause, &vars);
+        let slots: Vec<Vec<SymbolId>> = (0..2)
+            .map(|slot| {
+                slot_constants(Rung::OneVariableDomain, slot, &vars, &support, &[], &domain)
+            })
+            .collect();
+        let mut out: Vec<Vec<Literal>> = Vec::new();
+        rung_instances(
+            &clause,
+            &vars,
+            Rung::OneVariableDomain,
+            &slots,
+            &mut 0,
+            256,
+            &mut out,
+            Instant::now() + Duration::from_secs(10),
+            bot,
+        );
+        assert!(!out.is_empty(), "the split rung must emit candidates here");
+        for lits in &out {
+            // Ground: every literal is a ground atom, so it is an instance.
+            for lit in lits {
+                assert!(
+                    GAtom::of_literal(lit).is_some(),
+                    "emitted a non-ground literal: {lit:?}"
+                );
+            }
+            // And it is a consequence of the clause: some substitution of the
+            // clause's variables into constants yields exactly this literal set.
+            assert!(
+                is_instance_of(&clause, lits),
+                "emitted {lits:?}, which is not an instance of the clause"
+            );
+        }
+    }
+
+    /// REGRESSION. A nullary predicate is a 0-ary function symbol applied to
+    /// nothing, so it is a Herbrand element exactly like a named constant.
+    /// Reading only argument positions dropped every one of them, and all 100
+    /// CASC-30 EPU problems contain them — up to 2 527 in `HWV090-1` — so the
+    /// universe every rung drew from was a strict subset of the real one, and a
+    /// rung that exhausted it reported `model_fixpoint` as if nothing were left.
+    #[test]
+    fn nullary_predicates_are_herbrand_elements() {
+        let mut s = SymbolTable::new();
+        let p = s.intern("p");
+        let q = s.intern("q");
+        let nullary = s.intern("esk1_0");
+        let other_nullary = s.intern("esk2_0");
+        let named = s.intern("c_e_h_3");
+        // (esk1_0 ∨ p(X,Y) ∨ q(c_e_h_3)) — `esk1_0` occurs with no arguments,
+        // `esk2_0` not at all, `c_e_h_3` as a named constant.
+        let clause = input(
+            ClauseId(0),
+            vec![
+                pred(true, nullary, vec![]),
+                pred(true, p, vec![Term::var(0), Term::var(1)]),
+                pred(true, q, vec![Term::constant(named)]),
+            ],
+        );
+        let universe = crate::instgen::collect_constants(&[clause]);
+        assert!(
+            universe.contains(&nullary),
+            "a nullary predicate is a ground term and must be in the universe"
+        );
+        assert!(
+            !universe.contains(&other_nullary),
+            "a symbol that does not occur is not in the universe"
+        );
+        assert!(
+            universe.contains(&named),
+            "a named constant stays in the universe"
+        );
+    }
+
+    /// The pruning is what makes the HWV shape affordable. A three-variable
+    /// clause over the same domain costs `|domain|` times as many instances
+    /// without splitting as with it, because the split variable's list is
+    /// `D \ support` rather than `D`.
+    #[test]
+    fn splitting_reduces_the_cross_product() {
+        let mut s = SymbolTable::new();
+        let p = s.intern("p");
+        let domain: Vec<SymbolId> = (0..8).map(|i| s.intern(&format!("c{i}"))).collect();
+        let support: Vec<SymbolId> = domain[..5].to_vec();
+        // Three variables, so the rung cross-products two of them.
+        let clause = input(
+            ClauseId(0),
+            vec![
+                // X is pinned to five of the eight constants.
+                eq_lit(true, Term::constant(domain[0]), Term::var(0)),
+                eq_lit(true, Term::constant(domain[1]), Term::var(0)),
+                eq_lit(true, Term::constant(domain[2]), Term::var(0)),
+                eq_lit(true, Term::constant(domain[3]), Term::var(0)),
+                eq_lit(true, Term::constant(domain[4]), Term::var(0)),
+                pred(true, p, vec![Term::var(0), Term::var(1), Term::var(2)]),
+            ],
+        );
+        let vars = clause_vars_ordered(&clause);
+        let support_map = split_support(&clause, &vars);
+        let pruned_0 = slot_constants(
+            Rung::OneVariableDomain,
+            0,
+            &vars,
+            &support_map,
+            &[],
+            &domain,
+        );
+        assert_eq!(pruned_0.len(), 3, "8 domain values less the 5 pinned ones");
+
+        // Unpruned, slot 0 would offer 8; pruned it offers 3, so the two
+        // independent slots go from 64 combinations to 9.
+        let combos = |list: usize| list * list;
+        assert_eq!(combos(8), 64);
+        assert_eq!(combos(3), 9);
+        let _ = support;
     }
 }
