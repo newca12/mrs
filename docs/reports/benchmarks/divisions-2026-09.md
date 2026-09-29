@@ -102,16 +102,17 @@ order; the exact coverage for the compromise order has not been measured.
 
 ---
 
-### FNE follow-up: where the 57 CASC-30 failures actually go
+### FNE follow-up: where the CASC-30 failures actually go
 
 `docs/reports/benchmarks/fne-2026-09.md` profiles the FNE division. Headline:
-**30 of the 57 CASC-30 FNE failures are TPTP LCL problems** — 420-to-545-byte
-inputs that encode propositional theoremhood as `is_a_theorem(<schema>)` plus a
-condensed-detachment rule. The portfolio spends 42 000 given-clause iterations
-per problem on a three-clause problem and does not close a five-step
-condensed-detachment derivation. casc-sim shows the failures are arithmetic, not
-allocation (2–11 GB peaks against a 128 GiB allowance, `casc_limit_passed_ms`
-reached, iteration counts unchanged at 2x the budget).
+**31 of the 61 `cert-fne-20260928` FNE failures are TPTP LCL problems** —
+420-to-545-byte inputs that encode propositional theoremhood as
+`is_a_theorem(<schema>)` plus a condensed-detachment rule. The portfolio spends
+42 000 given-clause iterations per problem on a three-clause problem and does
+not close a five-step condensed-detachment derivation. casc-sim shows the
+failures are arithmetic, not allocation (2–11 GB peaks against a 128 GiB
+allowance, `casc_limit_passed_ms` reached, iteration counts unchanged at 2x the
+budget).
 
 That investigation also found a real defect, fixed in this branch: `casc_fne`
 installs single-negative literal selection on every slot, which leaves a Horn
