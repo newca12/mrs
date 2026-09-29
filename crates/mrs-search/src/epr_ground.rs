@@ -1197,6 +1197,13 @@ fn split_support(clause: &Clause, vars: &[VarId]) -> HashMap<VarId, HashSet<Symb
                 // the other side of that side is a split; `X = Y` is the shape
                 // restricted *equality resolution* handles, and pinning it to a
                 // domain value would lose the constraint that the two are equal.
+                if !lit.positive {
+                    // A negative equality is false at its pinned constant, so
+                    // that value is exactly where the rest of the clause may
+                    // need to be enforced. Only positive equalities provide
+                    // values on which the clause is already satisfied.
+                    continue;
+                }
                 match (l, r) {
                     (Term::Var(v), other) | (other, Term::Var(v)) => {
                         if let Some(c) = constant_of(other) {
@@ -1319,6 +1326,18 @@ fn generate_from_model(
     let round_cap = headroom.min(ground.cap / 64).max(1);
 
     let mut checked = 0usize;
+    let rung_enum = Rung::from(*rung);
+    let totals: Vec<usize> = clauses
+        .iter()
+        .enumerate()
+        .map(|(i, clause)| {
+            let vars = clause_vars_ordered(clause);
+            let slot_lists: Vec<Vec<SymbolId>> = (0..vars.len())
+                .map(|slot| slot_constants(rung_enum, slot, &vars, &supports[i], pivots, domain))
+                .collect();
+            rung_instance_count(rung_enum, &vars, &slot_lists)
+        })
+        .collect();
     for (i, clause) in clauses.iter().enumerate() {
         if !ground.has_room() {
             break;
@@ -1370,8 +1389,7 @@ fn generate_from_model(
         // clause's split support (see [`split_support`]): values the clause's
         // own equality literals already account for are not worth grounding the
         // rest of it at.
-        let rung_enum = Rung::from(*rung);
-        let slot_lists: Vec<Vec<SymbolId>> = (0..rung_enum.depth().unwrap_or(vars.len()))
+        let slot_lists: Vec<Vec<SymbolId>> = (0..vars.len())
             .map(|slot| slot_constants(rung_enum, slot, &vars, support, pivots, domain))
             .collect();
         rung_instances(
@@ -1396,18 +1414,55 @@ fn generate_from_model(
     // constant list. A clause the loop never reached has a cursor that has not
     // moved, so the comparison is "did it move past everything" and not "is it
     // zero".
-    let rung = Rung::from(*rung);
-    let done = cursors[rung.ordinal()]
+    let done = cursors[rung_enum.ordinal()]
         .iter()
-        .all(|c| *c >= rung.constants(pivots, domain).len())
+        .zip(totals)
+        .all(|(cursor, total)| *cursor >= total)
         || !ground.has_room();
-    debug_assert!(
-        cursors[rung.ordinal()]
-            .iter()
-            .all(|c| *c <= rung.constants(pivots, domain).len()),
-        "a cursor cannot run past the unpruned list, which bounds the pruned one"
-    );
     (out, falsifying, done)
+}
+
+fn rung_instance_count(rung: Rung, vars: &[VarId], slot_lists: &[Vec<SymbolId>]) -> usize {
+    match rung {
+        Rung::OneVariablePivots | Rung::OneVariableDomain => {
+            slot_lists.iter().take(vars.len()).map(Vec::len).sum()
+        }
+        Rung::TwoVariablePivots => vars
+            .iter()
+            .enumerate()
+            .map(|(i, _)| {
+                vars.iter()
+                    .enumerate()
+                    .filter(|(j, _)| *j != i)
+                    .map(|(j, _)| {
+                        slot_lists
+                            .get(i)
+                            .map_or(0, Vec::len)
+                            .saturating_mul(slot_lists.get(j).map_or(0, Vec::len))
+                    })
+                    .sum::<usize>()
+            })
+            .sum(),
+        Rung::UniformPivots => slot_lists.first().map_or(0, |first| {
+            first
+                .iter()
+                .filter(|constant| {
+                    slot_lists
+                        .iter()
+                        .take(vars.len())
+                        .all(|list| list.contains(constant))
+                })
+                .count()
+        }),
+        Rung::AllPivots => {
+            if vars.is_empty() || slot_lists.len() < vars.len() {
+                return 0;
+            }
+            slot_lists[..vars.len()]
+                .iter()
+                .fold(1usize, |total, choices| total.saturating_mul(choices.len()))
+        }
+    }
 }
 
 /// How much of the Herbrand expansion a rung may instantiate.
@@ -1435,39 +1490,8 @@ impl Rung {
             _ => pivots,
         }
     }
-
-    /// How many of the clause's variables this rung binds at once. `None` means
-    /// all of them.
-    fn depth(self) -> Option<usize> {
-        match self {
-            Rung::OneVariablePivots | Rung::OneVariableDomain => Some(1),
-            Rung::TwoVariablePivots => Some(2),
-            Rung::UniformPivots | Rung::AllPivots => None,
-        }
-    }
-
-    /// Whether this rung binds the variable at `slot`. Variables past the depth
-    /// stay free and are bound by a later rung, which is what keeps the cross
-    /// product at `|constants|^depth` per clause instead of `|constants|^|vars|`.
-    fn uses(self, slot: usize) -> bool {
-        self.depth().is_none_or(|d| slot < d)
-    }
-
-    /// `UniformPivots` puts every variable on the *same* constant, which is the
-    /// shape a single-valued encoding uses: a time index compared against itself
-    /// is only ever true when the two occurrences are the same index.
-    fn uniform(self) -> bool {
-        matches!(self, Rung::UniformPivots)
-    }
 }
 
-/// How many assignments a cross product may examine per emitted instance before
-/// the rung gives up on that clause. Tautologies and duplicates dominate the
-/// examination, so the two counts are not the same and the examination needs its
-/// own bound.
-const VISIT_BUDGET_FACTOR: usize = 64;
-
-/// The cursor row `rung` owns.
 impl Rung {
     /// Stable ordinal, matching [`Rung::from`].
     const fn ordinal(self) -> usize {
@@ -1519,167 +1543,151 @@ fn rung_instances(
     deadline: Instant,
     bot: SymbolId,
 ) {
-    let Some(outer_list) = slot_lists.first() else {
-        *cursor = 0;
+    if budget == 0 {
         return;
-    };
-    let mut i = *cursor;
-    while i < outer_list.len() {
-        let outer = outer_list[i];
-        if rung.uniform() {
-            let mut subst = Substitution::new();
-            for &var in vars {
-                subst.bind(var, Term::constant(outer));
-            }
-            push_instance(clause, subst, budget, out);
-            if out.len() >= budget {
-                *cursor = i;
-                return;
-            }
-            i += 1;
-            continue;
-        }
-        for &var in vars.iter().filter(|_| rung.uses(0)) {
-            let mut subst = Substitution::new();
-            subst.bind(var, Term::constant(outer));
-            complete_with_bot(vars, &mut subst, bot);
-            push_instance(clause, subst, budget, out);
-            if out.len() >= budget {
-                *cursor = i;
-                return;
-            }
-            // Slot 1 has its own list: a second split variable is pruned by its
-            // own support, not the first one's.
-            let inner_list: &[SymbolId] = slot_lists.get(1).map_or(&[], Vec::as_slice);
-            for j in i..inner_list.len() {
-                let inner = inner_list[j];
-                for &var2 in vars.iter().filter(|_| rung.uses(1)) {
-                    if var2 == var {
-                        continue;
-                    }
-                    let mut subst = Substitution::new();
-                    subst.bind(var, Term::constant(outer));
-                    subst.bind(var2, Term::constant(inner));
-                    complete_with_bot(vars, &mut subst, bot);
-                    push_instance(clause, subst, budget, out);
-                    if out.len() >= budget {
-                        *cursor = i;
+    }
+    let start = *cursor;
+    let mut rank = 0usize;
+
+    match rung {
+        Rung::OneVariablePivots | Rung::OneVariableDomain => {
+            for (slot, &var) in vars.iter().enumerate() {
+                let Some(constants) = slot_lists.get(slot) else {
+                    *cursor = 0;
+                    return;
+                };
+                for &constant in constants {
+                    if !emit_rung_assignment(
+                        clause,
+                        vars,
+                        bot,
+                        &[(var, constant)],
+                        cursor,
+                        &mut rank,
+                        budget,
+                        out,
+                        deadline,
+                    ) {
+                        *cursor = rank;
                         return;
                     }
-                    if matches!(rung, Rung::AllPivots) {
-                        // Every variable, each independently. Streamed, not
-                        // materialised: a clause of six variables over an
-                        // eight-constant pivot set is a quarter of a million
-                        // assignments, and collecting them as `Vec<Vec<_>>`
-                        // before using any of them cost a 15 s run 120 s and
-                        // 13 GB in allocation churn alone.
-                        let rest: Vec<VarId> = vars
-                            .iter()
-                            .copied()
-                            .filter(|v| *v != var && *v != var2)
-                            .collect();
-                        let mut subst = Substitution::new();
-                        subst.bind(var, Term::constant(outer));
-                        subst.bind(var2, Term::constant(inner));
-                        let mut sink = AssignmentSink {
-                            clause,
-                            budget: budget.saturating_sub(out.len()),
-                            out,
-                            full: false,
-                            visited: 0,
-                            visit_budget: budget.max(1) * VISIT_BUDGET_FACTOR,
-                            deadline,
-                        };
-                        for_each_assignment(&rest, inner_list, 0, &mut subst, &mut sink);
-                        if sink.full {
-                            *cursor = i;
-                            return;
+                }
+            }
+        }
+        Rung::TwoVariablePivots => {
+            if vars.len() < 2 || slot_lists.len() < vars.len() {
+                *cursor = 0;
+                return;
+            }
+            for (slot1, &var1) in vars.iter().enumerate() {
+                for (slot2, &var2) in vars.iter().enumerate() {
+                    if slot1 == slot2 {
+                        continue;
+                    }
+                    for &c1 in &slot_lists[slot1] {
+                        for &c2 in &slot_lists[slot2] {
+                            if !emit_rung_assignment(
+                                clause,
+                                vars,
+                                bot,
+                                &[(var1, c1), (var2, c2)],
+                                cursor,
+                                &mut rank,
+                                budget,
+                                out,
+                                deadline,
+                            ) {
+                                *cursor = rank;
+                                return;
+                            }
                         }
                     }
                 }
             }
         }
-        i += 1;
+        Rung::UniformPivots => {
+            let Some(constants) = slot_lists.first() else {
+                *cursor = 0;
+                return;
+            };
+            for &constant in constants {
+                if slot_lists.len() < vars.len()
+                    || slot_lists[..vars.len()]
+                        .iter()
+                        .any(|list| !list.contains(&constant))
+                {
+                    continue;
+                }
+                let bindings: Vec<_> = vars.iter().map(|&var| (var, constant)).collect();
+                if !emit_rung_assignment(
+                    clause, vars, bot, &bindings, cursor, &mut rank, budget, out, deadline,
+                ) {
+                    *cursor = rank;
+                    return;
+                }
+            }
+        }
+        Rung::AllPivots => {
+            if slot_lists.len() < vars.len() || slot_lists.iter().any(Vec::is_empty) {
+                *cursor = 0;
+                return;
+            }
+            let total = slot_lists[..vars.len()]
+                .iter()
+                .fold(1usize, |n, choices| n.saturating_mul(choices.len()));
+            rank = start;
+            while rank < total {
+                if rank.is_multiple_of(256) && Instant::now() >= deadline {
+                    *cursor = rank;
+                    return;
+                }
+                let mut remaining = rank;
+                let mut bindings = Vec::with_capacity(vars.len());
+                for (var, choices) in vars.iter().zip(&slot_lists[..vars.len()]).rev() {
+                    let choice = remaining % choices.len();
+                    remaining /= choices.len();
+                    bindings.push((*var, choices[choice]));
+                }
+                bindings.reverse();
+                if !emit_rung_assignment(
+                    clause, vars, bot, &bindings, cursor, &mut rank, budget, out, deadline,
+                ) {
+                    *cursor = rank;
+                    return;
+                }
+            }
+        }
     }
-    *cursor = outer_list.len();
+    *cursor = rank;
 }
 
-/// Every way of assigning `vars` from `constants`, as a flat list of
-/// variable-ordered constant choices.
-/// Where a streamed cross product writes each assignment as it is produced.
-struct AssignmentSink<'a> {
-    clause: &'a Clause,
-    /// How many more instances this call may emit.
-    budget: usize,
-    out: &'a mut Vec<Vec<Literal>>,
-    /// Set once the budget ran out, to unwind the recursion.
-    full: bool,
-    /// How many assignments have been *examined*. Bounded independently of
-    /// `budget`, because a tautological assignment emits nothing: without a
-    /// separate counter the recursion walks the entire cross product looking for
-    /// a non-tautology, which on a six-variable clause is a quarter of a
-    /// million assignments per constant pair and does not stop.
-    visited: usize,
-    visit_budget: usize,
-    deadline: Instant,
-}
-
-impl AssignmentSink<'_> {
-    fn admit(&mut self) -> bool {
-        if self.visited >= self.visit_budget || Instant::now() >= self.deadline {
-            self.full = true;
-            return false;
-        }
-        self.visited += 1;
-        true
-    }
-
-    fn emit(&mut self, subst: &Substitution) {
-        if self.out.len() >= self.budget || !self.admit() {
-            self.full = true;
-            return;
-        }
-        let lits: Vec<Literal> = self
-            .clause
-            .literals
-            .iter()
-            .map(|l| subst.apply_literal(l))
-            .collect();
-        if is_tautology(&lits) {
-            return;
-        }
-        self.out.push(lits);
-    }
-}
-
-/// Walks every assignment of `vars` from `constants` in order, depth first,
-/// emitting each as an instance of `clause`.
-///
-/// Streamed rather than collected: a clause of six variables over an
-/// eight-constant pivot set is a quarter of a million assignments, and holding
-/// them as `Vec<Vec<_>>` before using any of them cost a 15 s run 120 s and
-/// 13 GB in allocation churn alone.
-fn for_each_assignment(
+#[allow(clippy::too_many_arguments)]
+fn emit_rung_assignment(
+    clause: &Clause,
     vars: &[VarId],
-    constants: &[SymbolId],
-    depth: usize,
-    subst: &mut Substitution,
-    sink: &mut AssignmentSink,
-) {
-    if sink.full {
-        return;
+    bot: SymbolId,
+    bindings: &[(VarId, SymbolId)],
+    cursor: &usize,
+    rank: &mut usize,
+    budget: usize,
+    out: &mut Vec<Vec<Literal>>,
+    deadline: Instant,
+) -> bool {
+    if rank.is_multiple_of(256) && Instant::now() >= deadline {
+        return false;
     }
-    if depth == vars.len() {
-        sink.emit(subst);
-        return;
+    let current = *rank;
+    *rank = rank.saturating_add(1);
+    if current < *cursor {
+        return true;
     }
-    for &c in constants {
-        subst.bind(vars[depth], Term::constant(c));
-        for_each_assignment(vars, constants, depth + 1, subst, sink);
-        if sink.full {
-            return;
-        }
+    let mut subst = Substitution::new();
+    for &(var, constant) in bindings {
+        subst.bind(var, Term::constant(constant));
     }
+    complete_with_bot(vars, &mut subst, bot);
+    push_instance(clause, subst, budget, out);
+    out.len() < budget
 }
 
 fn push_instance(clause: &Clause, subst: Substitution, budget: usize, out: &mut Vec<Vec<Literal>>) {
@@ -2450,8 +2458,6 @@ mod tests {
     use mrs_core::clause::ClauseSource;
     use mrs_core::symbol::SymbolTable;
 
-    use super::tests_common::*;
-
     fn input(id: ClauseId, lits: Vec<Literal>) -> Clause {
         Clause::new(
             id,
@@ -2746,7 +2752,7 @@ mod tests {
                 &clause,
                 &vars,
                 rung,
-                &[vec![c0, c1]],
+                &[vec![c0, c1], vec![c0, c1], vec![c0, c1], vec![c0, c1]],
                 &mut cursor,
                 64,
                 &mut out,
@@ -2766,6 +2772,140 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn two_variable_rung_enumerates_ordered_constant_pairs() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let bot = symbols.intern("$bot");
+        let clause = input(
+            ClauseId(0),
+            vec![pred(true, p, vec![Term::var(0), Term::var(1)])],
+        );
+        let vars = clause_vars_ordered(&clause);
+        let mut cursor = 0;
+        let mut out = Vec::new();
+        rung_instances(
+            &clause,
+            &vars,
+            Rung::TwoVariablePivots,
+            &[vec![a, b], vec![a, b]],
+            &mut cursor,
+            16,
+            &mut out,
+            Instant::now() + Duration::from_secs(10),
+            bot,
+        );
+
+        let pairs: HashSet<(SymbolId, SymbolId)> = out
+            .iter()
+            .map(|lits| match &lits[0].atom {
+                Atom::Pred(_, args) => (
+                    constant_of(&args[0]).unwrap(),
+                    constant_of(&args[1]).unwrap(),
+                ),
+                other => panic!("expected predicate instance, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(pairs.len(), 4, "both ordered pairs (a,b) and (b,a) matter");
+        assert!(pairs.contains(&(a, b)));
+        assert!(pairs.contains(&(b, a)));
+    }
+
+    #[test]
+    fn capped_rung_advances_past_the_emitted_outer_bucket() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let bot = symbols.intern("$bot");
+        let clause = input(ClauseId(0), vec![pred(true, p, vec![Term::var(0)])]);
+        let vars = clause_vars_ordered(&clause);
+        let constants = [vec![a, b]];
+        let mut cursor = 0;
+        let mut first = Vec::new();
+        rung_instances(
+            &clause,
+            &vars,
+            Rung::OneVariablePivots,
+            &constants,
+            &mut cursor,
+            1,
+            &mut first,
+            Instant::now() + Duration::from_secs(10),
+            bot,
+        );
+        assert_eq!(cursor, 1);
+        assert_eq!(first.len(), 1);
+
+        let mut second = Vec::new();
+        rung_instances(
+            &clause,
+            &vars,
+            Rung::OneVariablePivots,
+            &constants,
+            &mut cursor,
+            1,
+            &mut second,
+            Instant::now() + Duration::from_secs(10),
+            bot,
+        );
+        assert_eq!(cursor, 2);
+        assert_eq!(second.len(), 1);
+        assert_ne!(
+            first[0], second[0],
+            "a capped round must not repeat its prefix"
+        );
+    }
+
+    #[test]
+    fn all_pivots_resume_from_the_next_cross_product_assignment() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let bot = symbols.intern("$bot");
+        let clause = input(
+            ClauseId(0),
+            vec![pred(true, p, vec![Term::var(0), Term::var(1)])],
+        );
+        let vars = clause_vars_ordered(&clause);
+        let slots = [vec![a, b], vec![a, b]];
+        let mut cursor = 0;
+        let mut seen = HashSet::default();
+
+        while cursor < 4 {
+            let mut batch = Vec::new();
+            rung_instances(
+                &clause,
+                &vars,
+                Rung::AllPivots,
+                &slots,
+                &mut cursor,
+                2,
+                &mut batch,
+                Instant::now() + Duration::from_secs(10),
+                bot,
+            );
+            assert!(!batch.is_empty());
+            for lits in batch {
+                let Atom::Pred(_, args) = &lits[0].atom else {
+                    panic!("expected predicate instance")
+                };
+                seen.insert((
+                    constant_of(&args[0]).unwrap(),
+                    constant_of(&args[1]).unwrap(),
+                ));
+            }
+        }
+        assert_eq!(
+            seen.len(),
+            4,
+            "resume must cover the entire ordered product"
+        );
     }
 
     /// `p(X) ∨ ¬p(X)` has no non-tautological ground instance, so the bootstrap
@@ -2927,6 +3067,28 @@ mod split_tests {
         assert_eq!(got, want, "X is pinned to a and b by the equality literals");
     }
 
+    #[test]
+    fn negative_equality_does_not_prune_its_pinned_constant() {
+        let mut s = SymbolTable::new();
+        let p = s.intern("p");
+        let a = s.intern("a");
+        let b = s.intern("b");
+        let clause = input(
+            ClauseId(0),
+            vec![
+                eq_lit(false, Term::var(0), Term::constant(a)),
+                pred(true, p, vec![Term::var(0)]),
+            ],
+        );
+        let vars = clause_vars_ordered(&clause);
+        let support = split_support(&clause, &vars);
+        assert!(support[&0].is_empty());
+        assert_eq!(
+            slot_constants(Rung::OneVariableDomain, 0, &vars, &support, &[], &[a, b]),
+            vec![a, b]
+        );
+    }
+
     /// Splitting prunes the candidate list to the values the clause's own
     /// equality literals do not already account for. This is the entire
     /// mechanism: on the HWV family it is the difference between grounding a
@@ -3068,14 +3230,10 @@ mod split_tests {
         }
     }
 
-    /// REGRESSION. A nullary predicate is a 0-ary function symbol applied to
-    /// nothing, so it is a Herbrand element exactly like a named constant.
-    /// Reading only argument positions dropped every one of them, and all 100
-    /// CASC-30 EPU problems contain them — up to 2 527 in `HWV090-1` — so the
-    /// universe every rung drew from was a strict subset of the real one, and a
-    /// rung that exhausted it reported `model_fixpoint` as if nothing were left.
+    /// Regression: nullary predicate symbols are propositions rather than
+    /// terms, so they must not be added to the Herbrand universe.
     #[test]
-    fn nullary_predicates_are_herbrand_elements() {
+    fn nullary_predicates_are_not_herbrand_elements() {
         let mut s = SymbolTable::new();
         let p = s.intern("p");
         let q = s.intern("q");
@@ -3094,8 +3252,8 @@ mod split_tests {
         );
         let universe = crate::instgen::collect_constants(&[clause]);
         assert!(
-            universe.contains(&nullary),
-            "a nullary predicate is a ground term and must be in the universe"
+            !universe.contains(&nullary),
+            "a nullary predicate is not a ground term and must not enter the universe"
         );
         assert!(
             !universe.contains(&other_nullary),

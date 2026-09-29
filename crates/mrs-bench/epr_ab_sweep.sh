@@ -94,13 +94,20 @@ shift || true
 detect_physical_cores() {
   local n
   if command -v lscpu >/dev/null 2>&1; then
-    n="$(lscpu -p=core 2>/dev/null | grep -v '^#' | grep -v '^$' | sort -u | wc -l)"
+    # Core IDs are only unique within a socket on some machines, so count the
+    # socket/core pairs rather than the raw core IDs.
+    n="$(lscpu -p=socket,core 2>/dev/null | grep -v '^#' | grep -v '^$' | sort -u | wc -l)"
     [[ "$n" =~ ^[0-9]+$ && "$n" -gt 0 ]] && { echo "$n"; return; }
   fi
-  nproc 2>/dev/null || echo 8
+  # Logical CPU count is not a safe substitute: SMT would let this guard
+  # approve more concurrent workers than there are physical cores.
+  return 1
 }
 
-HOST_CORES="$(detect_physical_cores)"
+if ! HOST_CORES="$(detect_physical_cores)"; then
+  echo "[epr-sweep] REFUSING: cannot determine physical core count safely (lscpu unavailable or failed)" >&2
+  exit 2
+fi
 case "$HARDWARE" in
   casc|casc-sim) WORKERS_PER_JOB=8 ;;
   *)             WORKERS_PER_JOB="$HOST_CORES" ;;  # adaptive: one per physical core
@@ -220,6 +227,7 @@ print(f"{good}/{total}")' "$OUT/certification/audit.csv")" \
 else
   echo "[epr-sweep] WARNING: audit_casc_proofs not built, the proof column is missing." >&2
   echo "[epr-sweep]   cargo build --release -p mrs-bench --bin audit_casc_proofs" >&2
+  VERIFIED="audit-missing"
 fi
 
 # EPR pre-pass telemetry, joined from the archived stderr that casc.sh kept.
@@ -268,6 +276,11 @@ echo "[epr-sweep] audit summary    $OUT/certification/audit-summary.txt"
 
 if [[ "$KO" -gt 0 ]]; then
   echo "[epr-sweep] REFERENCE VIOLATIONS: $KO. Do not report this run." >&2
+  exit 1
+fi
+if [[ "$VERIFIED" == "audit-failed" || "$VERIFIED" == "audit-missing" ]]; then
+  echo "[epr-sweep] STRICT PROOF AUDIT DID NOT COMPLETE. Do not report this run." >&2
+  exit 1
 fi
 
 # Running this where the shape is not available
