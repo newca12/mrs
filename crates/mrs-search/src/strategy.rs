@@ -678,16 +678,26 @@ pub fn run_schedule_with_candidate_receiver(
 
     // EPR grounding pre-pass — opt-in via `MRS_EPR_GROUND=1`.
     //
-    // It is the division's natural mode and it is the only thing in the tree that
-    // searches the `epr_equality` profile, which the InstGen pre-pass below
-    // refuses outright on 39 of the 100 CASC-30 EPU problems. What it is not yet
-    // is strong enough to be worth its budget by default: on a stratified
-    // sample of the division it refuted nothing with a proof the checker
-    // accepts, while consuming the larger part of the run before the portfolio
-    // starts. Enabling it by default would trade the portfolio's slice for a
-    // pre-pass that returns nothing, so it is off until the instantiation
-    // restriction is strong enough to earn its share. See `epr_ground`'s
-    // module docs for the measurement.
+    // Grounding is the division's natural mode, and this is the only thing in
+    // the tree that searches the `epr_equality` profile *by grounding* — the
+    // pre-pass below refuses that profile outright, on 40 of the 100 CASC-30
+    // EPU problems by measurement. "By grounding" is load-bearing and was an
+    // overstatement in an earlier cut of this comment: the ordinary engine
+    // handles equality by superposition, so the profile is searched by default
+    // too, and the recorded EPU run refuted 9 problems including the
+    // epr_equality `HWV107-1`. What is missing here is the conservative
+    // grounding, not the ability to search the profile.
+    //
+    // It is not yet strong enough to be worth its budget by default. The
+    // measurement that established this was taken with a ladder whose narrow
+    // rungs emitted partial instances the ground-set abstraction discarded, so
+    // on wide clauses it searched nothing and returned nothing; that is fixed
+    // (see `epr_ground`), which makes the earlier "refuted nothing" result a
+    // statement about a broken instrument rather than about the route, and it is
+    // why the default stays off pending a fresh full-division measurement.
+    // Enabling it by default would trade the portfolio's slice for a pre-pass
+    // with no measured coverage, and shipping that is the thing this repo's
+    // discipline exists to prevent.
     //
     // A refutation here is the final answer, so it goes through the candidate
     // receiver like any other winner and can be certified.

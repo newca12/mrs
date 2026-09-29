@@ -35,8 +35,11 @@
 //! Equality needs no special case in *instance generation*. `⊥ = c` is as
 //! much a ground instance as `p(⊥)` is, and ground instances carry real
 //! `d = c` atoms, so the `epr_equality` profile — which [`crate::instgen`]
-//! refuses outright with `unsupported_epr_profile`, on 39 of the 100 EPU
-//! problems — is searched by exactly the same loop. What the SAT abstraction
+//! refuses outright with `unsupported_epr_profile` — on 43 of the 100 CASC-30
+//! EPU problems at an 8 s budget, and 40 at 3 s, because the recorded route
+//! depends on how far the pre-pass gets before its own budget runs out. Quote
+//! the census with the budget it was taken at; the point of it is that the
+//! profile is a large share of the division, not that it is exactly `n`. What the SAT abstraction
 //! does *not* do is equality reasoning: ground equality atoms are
 //! propositionally atomic and uninterpreted there (ordered canonically, with
 //! reflexive equalities simplified away, but with no transitivity or
