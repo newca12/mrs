@@ -33,7 +33,10 @@
 #   MRS_HARDWARE          passed through; defaults to `casc`
 #   EPU_JOBS              casc.sh --jobs, default 1 (one problem at a time: the
 #                         honest shape when each problem already wants all 8
-#                         workers)
+#                         workers). Each job is a whole mrs process, so jobs
+#                         multiply the worker count: under `casc` a host with N
+#                         physical cores sustains at most N/8 jobs. The script
+#                         refuses to oversubscribe unless EPU_ALLOW_OVERSUB=1.
 #   EPU_TIME              per-problem seconds; unset means --casc-times (120 s)
 #   EPU_SUBSET_FILE       replace the stratified subset
 #   EPU_SWEEP_ROOT        where run directories are written
@@ -77,6 +80,74 @@ esac
 
 LABEL="${1:?usage: epr_ab_sweep.sh [--subset] <label>}"
 shift || true
+# Shape guard.
+#
+# `casc.sh --jobs N` launches N *separate* mrs processes and nothing coordinates
+# them; each independently applies its own hardware mode. Under `casc` that means
+# 8 workers per process and no CPU pinning (pinning is casc-sim-only, see
+# src/main.rs), so N jobs is 8N threads on the host. Nothing in casc.sh or mrs
+# notices the oversubscription, and every problem still prints
+# `% Hardware: workers=8` — so an undersubscribed run produces numbers that look
+# CASC-shaped and are not, with no signal anywhere that they are wrong. That is
+# the single most likely way this harness misleads, so it is checked here, before
+# the run, where it costs a second instead of seven hours.
+detect_physical_cores() {
+  local n
+  if command -v lscpu >/dev/null 2>&1; then
+    n="$(lscpu -p=core 2>/dev/null | grep -v '^#' | grep -v '^$' | sort -u | wc -l)"
+    [[ "$n" =~ ^[0-9]+$ && "$n" -gt 0 ]] && { echo "$n"; return; }
+  fi
+  nproc 2>/dev/null || echo 8
+}
+
+HOST_CORES="$(detect_physical_cores)"
+case "$HARDWARE" in
+  casc|casc-sim) WORKERS_PER_JOB=8 ;;
+  *)             WORKERS_PER_JOB="$HOST_CORES" ;;  # adaptive: one per physical core
+esac
+NEEDED=$((JOBS * WORKERS_PER_JOB))
+SHAPE_OK=1
+SHAPE_NOTE="cores: $HOST_CORES physical, $JOBS job(s) x $WORKERS_PER_JOB worker(s) = $NEEDED -> ok"
+if [[ "$NEEDED" -gt "$HOST_CORES" ]]; then
+  SHAPE_OK=0
+  SHAPE_NOTE="cores: $HOST_CORES physical, $JOBS job(s) x $WORKERS_PER_JOB worker(s) = $NEEDED -> OVERSUBSCRIBED"
+  if [[ "${EPU_ALLOW_OVERSUB:-0}" == "1" ]]; then
+    SHAPE_NOTE="$SHAPE_NOTE (EPU_ALLOW_OVERSUB=1, result is NOT a CASC number)"
+  else
+    echo "[epr-sweep] REFUSING: $SHAPE_NOTE" >&2
+    echo "[epr-sweep]   Each job is a whole mrs process, so jobs multiply the worker" >&2
+    echo "[epr-sweep]   count. The host cannot give each problem its own 8 cores, and" >&2
+    echo "[epr-sweep]   every problem will still report workers=8 regardless." >&2
+    if [[ $((HOST_CORES / WORKERS_PER_JOB)) -ge 1 ]]; then
+      echo "[epr-sweep]   Fix the job count: EPU_JOBS=$((HOST_CORES / WORKERS_PER_JOB)) is the most this host sustains" >&2
+    else
+      echo "[epr-sweep]   This host cannot hold a single CASC-shaped problem under" >&2
+      echo "[epr-sweep]   '$HARDWARE' ($WORKERS_PER_JOB workers vs $HOST_CORES cores)." >&2
+      echo "[epr-sweep]   Use MRS_HARDWARE=adaptive for a relative, non-CASC measurement." >&2
+    fi
+    echo "[epr-sweep]   or set EPU_ALLOW_OVERSUB=1 to run it knowing the number is void." >&2
+    exit 2
+  fi
+fi
+
+# Memory. The CASC allowance is 128 GiB; a host with slightly less is flagged
+# mem_unrepresentable by the binary, which is honest but alarming out of context.
+# Observed EPU peak RSS is ~5 GB, so a 2-3% shortfall cannot matter in practice.
+if [[ -r /proc/meminfo ]]; then
+  MEM_MB="$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo)"
+  if [[ "$MEM_MB" -ge 131072 ]]; then
+    MEM_NOTE="memory: ${MEM_MB} MB available, covers the 131072 MB allowance"
+  elif [[ "$MEM_MB" -ge 16384 ]]; then
+    # The worst EPU peak measured is 5133 MB. Below ~16 GB there is no longer
+    # 4x headroom over that, so stop claiming the shortfall is immaterial.
+    MEM_NOTE="memory: ${MEM_MB} MB available vs the 131072 MB allowance ($(( (131072 - MEM_MB) * 100 / 131072 ))% short, still $((MEM_MB / 5133))x the worst observed EPU peak of 5133 MB)"
+  else
+    MEM_NOTE="memory: ${MEM_MB} MB available is $((MEM_MB / 5133))x the worst observed EPU peak of 5133 MB - too tight to call the 131072 MB allowance immaterial, and OOM kills would be misread as solver failures"
+  fi
+else
+  MEM_NOTE="memory: /proc/meminfo unreadable, allowance not checked"
+fi
+
 OUT="$OUT_ROOT/epu-sweep-$LABEL"
 mkdir -p "$OUT"
 
@@ -103,9 +174,15 @@ fi
   printf '# problems_dir=%s division=%s problems=%s\n' \
     "$PROBLEMS_DIR" "$DIVISION" "$([ "$MODE" = full ] && echo 100 || echo "${#SUBSET_DEFAULT[@]}")"
   printf '# MRS_EPR_GROUND=%s MRS_HARDWARE=%s\n' "${MRS_EPR_GROUND:-0}" "$HARDWARE"
+  printf '# shape_valid=%s\n' "$([[ $SHAPE_OK -eq 1 ]] && echo 1 || echo 0)"
+  printf '# shape %s\n' "$SHAPE_NOTE"
+  printf '# shape %s\n' "$MEM_NOTE"
 } > "$OUT/conditions.txt"
 
 echo "[epr-sweep] label=$LABEL pre_pass=$PRE_PASS mode=$MODE hardware=$HARDWARE jobs=$JOBS"
+echo "[epr-sweep] shape: $SHAPE_NOTE"
+echo "[epr-sweep] shape: $MEM_NOTE"
+[[ "$SHAPE_OK" -eq 0 ]] && echo "[epr-sweep] shape: WARNING - this run is NOT a CASC-shaped number" >&2
 echo "[epr-sweep] conditions: $OUT/conditions.txt"
 
 MRS_HARDWARE="$HARDWARE" "$CASC" \
