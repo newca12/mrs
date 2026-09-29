@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use mrs_calculus::demodulation;
 use mrs_calculus::equality;
 use mrs_calculus::factoring;
+use mrs_calculus::literal_selection::LiteralSelection;
 use mrs_calculus::literal_selection::{restrict_to_maximal_id, selected_literals_id};
 use mrs_calculus::resolution;
 use mrs_calculus::subsumption;
@@ -1029,6 +1030,133 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
     }
 }
 
+/// Consecutive productive-free iterations after which a set-of-support
+/// restriction is dropped. A restriction that cannot generate anything is not
+/// focusing the search, it is ending it.
+const SOS_STALL_LIMIT: u32 = 64;
+
+/// Whether the set-of-support gate would block **every** inference the input
+/// clauses admit.
+///
+/// Returns `false` as soon as one input pair is inference-capable with at least
+/// one parent inside the support set, so the normal case costs a handful of
+/// literal comparisons and only a genuinely blocked input pays for the full
+/// pairwise check.
+fn sos_blocks_every_input_inference(
+    state: &mut SearchState,
+    input_ids: &[mrs_core::clause::ClauseId],
+    sos_depth: u32,
+    literal_selection: &LiteralSelection,
+) -> bool {
+    let clauses: Vec<IdClause> = input_ids
+        .iter()
+        .filter_map(|id| state.clause_store.get(id).cloned())
+        .filter(|c| !c.is_empty())
+        .collect();
+    if clauses.is_empty() {
+        return false;
+    }
+    // The pre-flight is about whether an inference is *available*; use the
+    // configuration's own literal selection so the answer matches the loop.
+    let selections: Vec<Vec<usize>> = clauses
+        .iter()
+        .map(|c| selected_literals_id(c, literal_selection, &state.term_bank))
+        .collect();
+
+    let mut any_inference_at_all = false;
+    for i in 0..clauses.len() {
+        for j in 0..clauses.len() {
+            if i == j {
+                continue;
+            }
+            if !clauses[i]
+                .literals
+                .iter()
+                .enumerate()
+                .any(|(li, _)| selections[i].contains(&li))
+                || !clauses[j]
+                    .literals
+                    .iter()
+                    .enumerate()
+                    .any(|(lj, _)| selections[j].contains(&lj))
+            {
+                continue;
+            }
+            if !pair_can_resolve(
+                &clauses[i],
+                &selections[i],
+                &clauses[j],
+                &selections[j],
+                state,
+            ) {
+                continue;
+            }
+            any_inference_at_all = true;
+            if clauses[i].distance < sos_depth || clauses[j].distance < sos_depth {
+                return false;
+            }
+        }
+    }
+    any_inference_at_all
+}
+
+/// Largest variable index in a term.
+fn max_var_id(term: &Term) -> u32 {
+    match term {
+        Term::Var(v) => *v,
+        Term::App(_, args) => args.iter().map(max_var_id).max().unwrap_or(0),
+    }
+}
+
+/// Renumbers every variable in `term` by `offset`, making it variable-disjoint
+/// from another term.
+fn shift_vars(term: &Term, offset: u32) -> Term {
+    match term {
+        Term::Var(v) => Term::var(v + offset),
+        Term::App(s, args) => Term::app(*s, args.iter().map(|a| shift_vars(a, offset)).collect()),
+    }
+}
+
+/// Whether two clauses can produce at least one resolvent under the given
+/// literal selections.
+fn pair_can_resolve(
+    left: &IdClause,
+    left_sel: &[usize],
+    right: &IdClause,
+    right_sel: &[usize],
+    state: &mut SearchState,
+) -> bool {
+    for (i, li) in left.literals.iter().enumerate() {
+        if !left_sel.contains(&i) {
+            continue;
+        }
+        for (j, lj) in right.literals.iter().enumerate() {
+            if !right_sel.contains(&j) || li.positive == lj.positive {
+                continue;
+            }
+            let (IdAtom::Pred(ps, pa), IdAtom::Pred(qs, qa)) = (&li.atom, &lj.atom) else {
+                continue;
+            };
+            let to_term = |sym: SymbolId, args: &[TermId]| {
+                Term::app(
+                    sym,
+                    args.iter().map(|a| state.term_bank.to_legacy(*a)).collect(),
+                )
+            };
+            // Clause-local variable numbering: the two terms' `Var(0)` are
+            // different variables, so shift the right one clear before unifying
+            // or unification reports a spurious occurs-check failure (and the
+            // pre-flight concludes, wrongly, that no inference is available).
+            let lt = to_term(*ps, pa);
+            let rt = shift_vars(&to_term(*qs, qa), max_var_id(&lt) + 1);
+            if mrs_unify::unify(&lt, &rt).is_ok() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
     let mut ordering = config.ordering.clone();
     let sym_config = ordering.symbol_config();
@@ -1118,6 +1246,41 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
 
     // Check for initial empty clauses
     let initial_ids: Vec<_> = state.unprocessed.iter().collect();
+    // Set-of-support depth actually enforced for this search.
+    //
+    // A set-of-support restriction is a promise that inferences touching the
+    // goal are worth making and axiom-side churn is not. When the input cannot
+    // keep that promise the gate stops being a restriction and becomes a total
+    // block: if *every* inference the input admits has both parents outside the
+    // support set, the search consumes its input clauses, generates nothing and
+    // gives up. The restriction did not focus the search, it ended it.
+    //
+    // That degenerate case is not hypothetical, and it is not cheap. It costs
+    // two whole FNE portfolio workers (s10, s13) their entire budget on TPTP's
+    // LCL "theoremhood" encodings, where the negated conjecture is a lone
+    // negative unit that unifies with nothing and the only productive step is
+    // axiom-side: on `LCL978+1` both workers report `processed=3 generated=0`
+    // and `GaveUp` in 71 ms. Detect it on the input clauses and fall back to
+    // unrestricted inference; whenever the support set can still reach an
+    // inference the restriction is kept exactly as configured.
+    let mut sos_depth = config.sos_depth;
+    if sos_depth < u32::MAX
+        && sos_blocks_every_input_inference(
+            state,
+            &initial_ids,
+            sos_depth,
+            &config.literal_selection,
+        )
+    {
+        if std::env::var("TRACE_SEARCH").is_ok() {
+            eprintln!(
+                "[TRACE] set-of-support at depth {sos_depth} blocks every inference the input \
+                 admits; running unrestricted"
+            );
+        }
+        sos_depth = u32::MAX;
+    }
+
     for id in initial_ids {
         let clause = state.clause_store.get(&id).unwrap().clone();
         if clause.is_empty() {
@@ -1149,6 +1312,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
     }
 
     let mut iteration: u64 = 0;
+    // Consecutive given-clause iterations that produced nothing, used to drop
+    // a set-of-support restriction that is not paying for itself.
+    let mut starved_iterations: u32 = 0;
 
     loop {
         // Ingest shared clauses (each entry is a full ancestor chain: input
@@ -1391,7 +1557,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
             &mut state.unprocessed,
             &config.selection,
             iteration,
-            config.sos_depth,
+            sos_depth,
         ) {
             Some(id) => id,
             None => break,
@@ -1637,11 +1803,33 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     lit.positive,
                     &state.term_bank,
                 );
+                if std::env::var("TRACE_RES").is_ok() {
+                    eprintln!(
+                        "[RES] given={} dist={} sel={:?} partners={}",
+                        given.id.0,
+                        given.distance,
+                        given_sel,
+                        partners.len()
+                    );
+                }
                 for partner in partners {
                     // SOS restriction: skip if both parents are outside the support set.
-                    if config.sos_depth < u32::MAX
-                        && given.distance >= config.sos_depth
-                        && partner.distance >= config.sos_depth
+                    if std::env::var("TRACE_RES").is_ok() {
+                        eprintln!(
+                            "[RES]   partner={} dist={} sos_gate={} unit_gate={}",
+                            partner.id.0,
+                            partner.distance,
+                            sos_depth < u32::MAX
+                                && given.distance >= sos_depth
+                                && partner.distance >= sos_depth,
+                            config.unit_only_resolution
+                                && given.literals.len() > 1
+                                && partner.literals.len() > 1
+                        );
+                    }
+                    if sos_depth < u32::MAX
+                        && given.distance >= sos_depth
+                        && partner.distance >= sos_depth
                     {
                         continue;
                     }
@@ -1730,9 +1918,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 candidate_targets.sort_unstable_by_key(|c| c.id);
 
                 for active in &candidate_targets {
-                    if config.sos_depth < u32::MAX
-                        && given.distance >= config.sos_depth
-                        && active.distance >= config.sos_depth
+                    if sos_depth < u32::MAX
+                        && given.distance >= sos_depth
+                        && active.distance >= sos_depth
                     {
                         continue;
                     }
@@ -1771,7 +1959,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 if start.elapsed() >= config.time_limit {
                     return SearchResult::Timeout;
                 }
-                if config.sos_depth == u32::MAX || given.distance < config.sos_depth {
+                if sos_depth == u32::MAX || given.distance < sos_depth {
                     let given_sel_local = {
                         let base = selected_literals_id(
                             &given,
@@ -1869,9 +2057,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 candidate_sources.sort_unstable_by_key(|c| c.id);
 
                 for active in &candidate_sources {
-                    if config.sos_depth < u32::MAX
-                        && given.distance >= config.sos_depth
-                        && active.distance >= config.sos_depth
+                    if sos_depth < u32::MAX
+                        && given.distance >= sos_depth
+                        && active.distance >= sos_depth
                     {
                         continue;
                     }
@@ -2262,6 +2450,32 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     }
                     return SearchResult::Refutation(id, String::new());
                 }
+            }
+        }
+
+        // A set-of-support restriction that has produced nothing for a long
+        // stretch is not a restriction, it is a block. The degenerate case is
+        // a goal clause that shares no unifiable atom with the axiom side: the
+        // only productive inference is between two axiom-side clauses, which
+        // the gate forbids, so the search consumes its input and gives up. On
+        // the LCL "theoremhood" encodings that costs two whole FNE portfolio
+        // workers (s10, s13) their entire budget for zero clauses. Give the
+        // search its full inference power once the restriction has demonstrably
+        // stalled.
+        if sos_depth < u32::MAX {
+            if new_clauses.is_empty() {
+                starved_iterations = starved_iterations.saturating_add(1);
+                if starved_iterations >= SOS_STALL_LIMIT {
+                    if std::env::var("TRACE_SEARCH").is_ok() {
+                        eprintln!(
+                            "[TRACE] set-of-support produced nothing for {SOS_STALL_LIMIT} \
+                             iterations; dropping the restriction"
+                        );
+                    }
+                    sos_depth = u32::MAX;
+                }
+            } else {
+                starved_iterations = 0;
             }
         }
 
@@ -3878,5 +4092,198 @@ mod tests {
             SearchResult::ResourceOut(crate::ResourceReason::MaxProcessed { processed: 1, .. })
         ));
         assert_eq!(state.stats.processed, 1);
+    }
+
+    /// Builds the three-clause "theoremhood" fragment of TPTP's LCL domain, in
+    /// the shape `LCL978+1` clausifies to: the axiom schema `a5`, the
+    /// detachment rule, and a lone negated-conjecture unit. This is the shape on
+    /// which a set-of-support restriction admits no inference at all.
+    fn cd_fragment(symbols: &mut SymbolTable, id_gen: &mut ClauseIdGen) -> Vec<Clause> {
+        let p = symbols.intern("p");
+        let imp = symbols.intern("imp");
+        let not = symbols.intern("not");
+        let (a, b, c) = (Term::var(0), Term::var(1), Term::var(2));
+        let (d, e) = (Term::var(3), Term::var(4));
+        let axiom_arg = Term::app(
+            imp,
+            vec![
+                Term::app(
+                    imp,
+                    vec![
+                        a.clone(),
+                        Term::app(
+                            imp,
+                            vec![
+                                Term::app(imp, vec![Term::app(not, vec![a.clone()]), b.clone()]),
+                                c.clone(),
+                            ],
+                        ),
+                    ],
+                ),
+                Term::app(
+                    imp,
+                    vec![
+                        d.clone(),
+                        Term::app(
+                            imp,
+                            vec![
+                                Term::app(
+                                    imp,
+                                    vec![
+                                        Term::app(not, vec![e.clone()]),
+                                        Term::app(imp, vec![c.clone(), e.clone()]),
+                                    ],
+                                ),
+                                Term::app(imp, vec![a.clone(), d.clone()]),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        );
+        let rule_arg = Term::app(imp, vec![Term::var(0), Term::var(1)]);
+        let goal_arg = {
+            let (s0, s1, s2) = (
+                Term::constant(symbols.intern("sk0")),
+                Term::constant(symbols.intern("sk1")),
+                Term::constant(symbols.intern("sk2")),
+            );
+            Term::app(
+                imp,
+                vec![
+                    Term::app(imp, vec![s0.clone(), s1.clone()]),
+                    Term::app(
+                        imp,
+                        vec![
+                            Term::app(imp, vec![s1.clone(), s2.clone()]),
+                            Term::app(imp, vec![s0, s2]),
+                        ],
+                    ),
+                ],
+            )
+        };
+        vec![
+            Clause::new(
+                id_gen.next(),
+                vec![Literal::pos(Atom::pred(p, vec![axiom_arg]))],
+                ClauseSource::Input {
+                    name: "a5".into(),
+                    role: "axiom".into(),
+                },
+            )
+            .with_distance(100),
+            Clause::new(
+                id_gen.next(),
+                vec![
+                    Literal::neg(Atom::pred(p, vec![Term::var(0)])),
+                    Literal::pos(Atom::pred(p, vec![Term::var(1)])),
+                    Literal::neg(Atom::pred(p, vec![rule_arg])),
+                ],
+                ClauseSource::Input {
+                    name: "condensed_detachment".into(),
+                    role: "axiom".into(),
+                },
+            )
+            .with_distance(100),
+            Clause::new(
+                id_gen.next(),
+                vec![Literal::neg(Atom::pred(p, vec![goal_arg]))],
+                ClauseSource::Input {
+                    name: "prove_cn_1".into(),
+                    role: "negated_conjecture".into(),
+                },
+            )
+            .with_distance(0),
+        ]
+    }
+
+    /// A set-of-support restriction that blocks every inference the input can
+    /// make is not focusing the search, it is ending it, and must be released.
+    ///
+    /// This is the `LCL978+1` shape: with the single-negative literal selection
+    /// `casc_fne` installs, the detachment rule's only selected literal is
+    /// `~p(X => Y)`, and the only clause it unifies with is the axiom schema —
+    /// both at the axiom distance. With the restriction in place the search
+    /// reports `processed=3 generated=0 GaveUp` in 71 ms.
+    #[test]
+    fn sos_that_blocks_all_input_inference_is_released() {
+        let mut symbols = SymbolTable::new();
+        let mut id_gen = ClauseIdGen::new();
+        let clauses = cd_fragment(&mut symbols, &mut id_gen);
+        let mut state = SearchState::new(
+            clauses,
+            id_gen,
+            Arc::new(SymbolConfig::default()),
+            Arc::new(symbols),
+            false,
+        );
+        let input_ids: Vec<_> = state.unprocessed.iter().collect();
+        assert_eq!(input_ids.len(), 3);
+        assert!(
+            sos_blocks_every_input_inference(
+                &mut state,
+                &input_ids,
+                100,
+                &LiteralSelection::MaxNegative
+            ),
+            "the LCL fragment admits only axiom-side inferences, so the \
+             set-of-support gate blocks all of them"
+        );
+    }
+
+    /// The escape hatch must not fire when the support set can still reach an
+    /// inference, so the restriction keeps doing its job.
+    #[test]
+    fn sos_is_kept_when_the_support_set_can_reach_an_inference() {
+        let mut symbols = SymbolTable::new();
+        let mut id_gen = ClauseIdGen::new();
+        let clauses = cd_fragment(&mut symbols, &mut id_gen);
+        let mut state = SearchState::new(
+            clauses,
+            id_gen,
+            Arc::new(SymbolConfig::default()),
+            Arc::new(symbols),
+            false,
+        );
+        // Mark the detachment rule goal-connected: the restricted search can now
+        // resolve it, so the restriction is doing its job and must stay.
+        for clause in state.clause_store.values_mut() {
+            if clause.literals.len() == 3 {
+                clause.distance = 0;
+            }
+        }
+        let input_ids: Vec<_> = state.unprocessed.iter().collect();
+        assert!(!sos_blocks_every_input_inference(
+            &mut state,
+            &input_ids,
+            100,
+            &LiteralSelection::MaxNegative
+        ));
+    }
+
+    /// A support set that no input clause falls into cannot restrict anything,
+    /// only block; that is the degenerate case as well.
+    #[test]
+    fn sos_with_an_empty_support_set_is_released() {
+        let mut symbols = SymbolTable::new();
+        let mut id_gen = ClauseIdGen::new();
+        let clauses = cd_fragment(&mut symbols, &mut id_gen);
+        let mut state = SearchState::new(
+            clauses,
+            id_gen,
+            Arc::new(SymbolConfig::default()),
+            Arc::new(symbols),
+            false,
+        );
+        for clause in state.clause_store.values_mut() {
+            clause.distance = 100;
+        }
+        let input_ids: Vec<_> = state.unprocessed.iter().collect();
+        assert!(sos_blocks_every_input_inference(
+            &mut state,
+            &input_ids,
+            100,
+            &LiteralSelection::MaxNegative
+        ));
     }
 }
