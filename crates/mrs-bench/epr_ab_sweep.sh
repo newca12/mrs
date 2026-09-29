@@ -10,8 +10,8 @@
 # resource pressure it saw so an overlarge run is obvious rather than silent.
 #
 # Usage:
-#   epu_ab_sweep.sh <label> <problem> [problem...]
-#   epu_ab_sweep.sh --list          print the default subset
+#   epr_ab_sweep.sh <label> <problem> [problem...]
+#   epr_ab_sweep.sh --list          print the default subset
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -20,18 +20,19 @@ MRS="$REPO/target/release/mrs"
 OUT_ROOT="${EPU_SWEEP_ROOT:-$REPO/crates/mrs-bench/results}"
 
 # One problem per EPR profile and per observed outcome, so the subset moves when
-# a change helps one profile and hurts another instead of averaging out.
-#
-# Only problems that carry a `conjecture` role are in the default subset. Eighteen
-# of the 100 files in this snapshot have axioms and no goal, while
-# `systems/reference/answers.tsv` grades every EPU problem `Unsatisfiable`: no
-# prover can score on those, and a `Satisfiable` answer would be graded `ko`. The
-# real ceiling on the division is 82, and measuring against 100 hides that.
+# a change helps one profile and hurts another instead of averaging out. The
+# subset spans the whole division, including axiom-only files (no `conjecture`
+# role): those are refute-the-axioms tasks graded `Unsatisfiable` like the
+# rest, and an earlier cut wrongly excluded them on a retracted "ceiling 82"
+# theory (see docs/reports/benchmarks/epu-2026-09.md). HWV065-1 is in
+# deliberately: its full Herbrand expansion over {true, false} is UNSAT, the
+# counterexample that retired the exclusion.
 DEFAULT_SUBSET=(
   HWV039-1 HWV089-1 HWV111-1 HWV041-1 HWV047-1       # epr_equality
   MSC015-1.022 PLA031-1.007 SWV418-1.300              # pure relational
   SWV421-1.500 SWV422-1.505 SWV423-1.010
   SWV418-1.900 SWV421-1.400 SWV422-1.465 SWV419-1.035
+  HWV065-1 SYO591-1 MSC024-1                          # axiom-only, all expected Unsatisfiable
 )
 
 if [[ "${1:-}" == "--list" ]]; then
