@@ -1244,6 +1244,18 @@ fn verify_cnf_transformation(
         return verdict;
     }
 
+    // Definitions may be *nested*: the prover introduces `def_k` for a
+    // subformula and then a later `def_j` whose body is stated in terms of
+    // `def_k` rather than over the source's own symbols (c66/c67 of
+    // LCL660+1.020 cite `def_main_58`/`def_main_59`, whose bodies mention
+    // `def_main_45`..`def_main_57`). The matching below looks for a
+    // definition's body as a subformula of the source, and the source
+    // mentions none of these fresh symbols, so a nested body never matches
+    // and every definition is left unreplaced -- the expansion then cannot
+    // contain the goal clause and the step is rejected even though the
+    // prover's step is sound.
+    //
+
     // Fast path: the goal may already be a definition direction clause
     // (e.g. `~def | C` for one conjunct `C` of a conjunctive body).
     // Checking these before the source expansion certifies
@@ -1274,6 +1286,7 @@ fn verify_cnf_transformation(
         }
     }
 
+    let mut all_definitions_matched = true;
     let Some(named_source) = (if definitions.is_empty() {
         // No definitions cited: quantifier hoisting below only reorders
         // quantifiers to help definition bodies match across quantifier
@@ -1283,7 +1296,13 @@ fn verify_cnf_transformation(
         // LCL642+1.010 c3 before failing. Skip it outright.
         Some(source.clone())
     } else {
-        replace_definition_subformulas(source, &definitions, limits)
+        match replace_definition_subformulas(source, &definitions, limits) {
+            Some((rewritten, matched)) => {
+                all_definitions_matched = matched.iter().all(|hit| *hit);
+                Some(rewritten)
+            }
+            None => None,
+        }
     }) else {
         return KernelVerdict::Inconclusive(
             "CNF definition replacement exceeded strict limits".into(),
@@ -1318,12 +1337,33 @@ fn verify_cnf_transformation(
         .iter()
         .any(|clause| clause_alpha_equiv(&condense_clause(clause), &condense_clause(&goal)))
     {
-        KernelVerdict::Certified
-    } else {
-        KernelVerdict::Rejected(format!(
-            "CNF node `{node_name}` is not a clause of the cited parents"
-        ))
+        return KernelVerdict::Certified;
     }
+
+    // Before rejecting, make sure the expansion above was *faithful*. A cited
+    // definition's body is substituted into the source by syntactic matching,
+    // and the matcher is deliberately conservative: a body that is stated over
+    // other fresh symbols, or whose block the prover emitted with a different
+    // variable order, need not be found even though the step is perfectly
+    // sound. If any cited definition failed to claim its block, the expansion
+    // is not the prover's clause set, so its not containing the goal says
+    // nothing about the proof.
+    //
+    // Reporting `Rejected` there accuses a sound step of being wrong. The
+    // honest verdict is `Inconclusive`: the kernel could not check this step.
+    // That distinction is what makes `VerifiedBad` mean "this proof is wrong"
+    // rather than "this checker gave up", and it is the same fail-closed
+    // discipline the rest of this file follows.
+    if !all_definitions_matched {
+        return KernelVerdict::Inconclusive(format!(
+            "CNF node `{node_name}` cites definitions whose bodies could not be \
+             matched against the source, so the step could not be checked"
+        ));
+    }
+
+    KernelVerdict::Rejected(format!(
+        "CNF node `{node_name}` is not a clause of the cited parents"
+    ))
 }
 
 #[derive(Clone)]
@@ -1749,7 +1789,7 @@ fn replace_definition_subformulas(
     source: &Formula,
     definitions: &[CoreDefinition],
     limits: VerificationLimits,
-) -> Option<Formula> {
+) -> Option<(Formula, Vec<bool>)> {
     let mut current = source.clone();
     // Hoisting is only a matching aid (the normalizer re-prenexes
     // anyway), so it gets its own small budget: wide sources such as
@@ -1758,6 +1798,10 @@ fn replace_definition_subformulas(
     // stay interleaved, since folding can expose further hoists.
     let mut hoist_passes = 0;
     let mut steps = 0;
+    // Per-definition record of "this body was found in the source at least
+    // once". A definition that never matched is the signal that the expansion
+    // is not the prover's clause set; see the caller's guard.
+    let mut matched: Vec<bool> = vec![false; definitions.len()];
     loop {
         if steps >= limits.max_rewrite_steps {
             return None;
@@ -1778,18 +1822,24 @@ fn replace_definition_subformulas(
         // Canonical sites first: apply identity matches for every
         // definition before falling back to permuting matches, so
         // symmetric blocks are claimed by their own definitions.
-        for definition in definitions {
+        for (index, definition) in definitions.iter().enumerate() {
             let (next, replaced) = replace_one_definition(&current, definition, true);
+            if replaced && let Some(slot) = matched.get_mut(index) {
+                *slot = true;
+            }
             current = next;
             changed |= replaced;
         }
-        for definition in definitions {
+        for (index, definition) in definitions.iter().enumerate() {
             let (next, replaced) = replace_one_definition(&current, definition, false);
+            if replaced && let Some(slot) = matched.get_mut(index) {
+                *slot = true;
+            }
             current = next;
             changed |= replaced;
         }
         if !changed {
-            return Some(current);
+            return Some((current, matched));
         }
     }
 }
@@ -3068,7 +3118,7 @@ fn verify_definition_renaming(
 
     // 1. Fast path: forward replacement (exact substitution of definition RHS in source)
     let forward_res = replace_definition_subformulas(source, &definitions, limits);
-    if let Some(expected) = &forward_res
+    if let Some((expected, _matched)) = &forward_res
         && !alpha_equiv(expected, source)
         && alpha_equiv(expected, conclusion)
     {
@@ -11841,6 +11891,74 @@ mod tests {
                      cnf(m1, plain, d2(Y), inference(resolution, [status(thm)], [main,r1])).\n\
                      cnf(bot, plain, $false, inference(resolution, [status(thm)], [m1,r2])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    /// A `cnf_transformation` step whose cited definitions are *nested* must not
+    /// be rejected just because the matcher cannot place their bodies in the
+    /// source.
+    ///
+    /// LCL660+1.020 c698 cites `d2`, whose body is stated in terms of `d1`
+    /// rather than over the source's own symbols, so no body matches the source
+    /// and the expansion cannot contain the goal clause. The kernel used to
+    /// report `Rejected` — "this proof is wrong" — for a step that is sound and
+    /// that the other two checkers could not decide either (both `Unknown`).
+    /// An incomplete substitution means the expansion is not the prover's
+    /// clause set, so its missing the goal says nothing: the verdict must be
+    /// `Inconclusive`.
+    #[test]
+    fn nested_definition_step_is_inconclusive_not_rejected() {
+        let problem = "fof(src, axiom, ![X] : ((p(X) & ![Y] : q(X,Y)) | ![Z] : r(Z))).\n\
+                       fof(np, axiom, ~p(c)).\n\
+                       fof(nq, axiom, ![X] : ~q(X,c)).\n\
+                       fof(nr, axiom, ![Z] : ~r(Z)).";
+        // `d1`'s body is stated over `p`/`q`; `d2`'s body is stated in terms of
+        // `d1`, which is exactly the nesting the prover emits.
+        let proof = "fof(src, axiom, ![X] : ((p(X) & ![Y] : q(X,Y)) | ![Z] : r(Z)), file('problem.p', src)).\n\
+                     fof(np, axiom, ~p(c), file('problem.p', np)).\n\
+                     fof(nq, axiom, ![X] : ~q(X,c), file('problem.p', nq)).\n\
+                     fof(nr, axiom, ![Z] : ~r(Z), file('problem.p', nr)).\n\
+                     fof(d1, definition, ![X,Y] : (d1(X,Y) <=> (p(X) & q(X,Y))), introduced(definition, [new_symbols(definition, [d1])])).\n\
+                     fof(d2, definition, ![X,Z] : (d2(X,Z) <=> (d1(X,c) | r(Z))), introduced(definition, [new_symbols(definition, [d2])])).\n\
+                     cnf(main, plain, d2(X,Z), inference(cnf_transformation, [status(thm)], [src,d2,d1])).\n\
+                     cnf(w1, plain, ~d1(X,c) | p(X), inference(cnf_transformation, [status(thm)], [src,d2,d1])).\n\
+                     cnf(w2, plain, ~d2(X,Z) | r(Z), inference(cnf_transformation, [status(thm)], [src,d2,d1])).\n\
+                     cnf(m1, plain, d1(c,c), inference(resolution, [status(thm)], [w1,np])).\n\
+                     cnf(m2, plain, ~q(c,c), inference(resolution, [status(thm)], [m1,nq])).\n\
+                     cnf(m3, plain, r(Z), inference(resolution, [status(thm)], [m2,w2])).\n\
+                     cnf(m4, plain, d2(c,Z), inference(resolution, [status(thm)], [main,m1])).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [m4,nr])).";
+        let verdict = check(problem, proof);
+        assert!(
+            matches!(verdict, KernelVerdict::Inconclusive(_)),
+            "an unmatchable definition body must not be reported as a bad proof, got {verdict:?}"
+        );
+        assert!(
+            !matches!(verdict, KernelVerdict::Rejected(_)),
+            "a sound step must never be rejected as wrong"
+        );
+    }
+
+    /// The `Inconclusive` guard must not fire when every cited definition body
+    /// is matched, so a genuinely wrong CNF step is still rejected.
+    #[test]
+    fn wrong_goal_clause_over_matched_definitions_is_still_rejected() {
+        let problem = "fof(src, axiom, ![X] : (p(X) | q(X))).\n\
+                       fof(np, axiom, ![X] : ~p(X)).\n\
+                       fof(nq, axiom, ![X] : ~q(X)).";
+        // Both bodies match `src`, so the expansion is faithful and the goal
+        // clause `p(X)` is simply not among its clauses.
+        let proof = "fof(src, axiom, ![X] : (p(X) | q(X)), file('problem.p', src)).\n\
+                     fof(np, axiom, ![X] : ~p(X), file('problem.p', np)).\n\
+                     fof(nq, axiom, ![X] : ~q(X), file('problem.p', nq)).\n\
+                     fof(d1, definition, ![X] : (d1(X) <=> p(X)), introduced(definition, [new_symbols(definition, [d1])])).\n\
+                     cnf(main, plain, d1(X), inference(cnf_transformation, [status(thm)], [src,d1])).\n\
+                     cnf(w1, plain, ~d1(X) | p(X), inference(cnf_transformation, [status(thm)], [src,d1])).\n\
+                     cnf(m1, plain, p(X), inference(resolution, [status(thm)], [w1,np])).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [m1,nq])).";
+        assert!(
+            matches!(check(problem, proof), KernelVerdict::Rejected(_)),
+            "a goal clause absent from a faithful expansion is a real error"
+        );
     }
 
     #[test]

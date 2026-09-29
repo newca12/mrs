@@ -75,7 +75,7 @@
 #   <output>/run.csv    — one row per (problem, system)
 #   <output>/run.log    — harness stderr
 #
-# CSV schema: edition,division,problem,system,timeout,szs_status,expected,verdict,wall_time_s,peak_memory_mb,failure_detail,raw_stdout_path,raw_stderr_path,raw_stdout_sha256,raw_stderr_sha256
+# CSV schema: edition,division,problem,system,timeout,szs_status,expected,verdict,wall_time_s,peak_memory_mb,failure_detail,processed_per_s,raw_stdout_path,raw_stderr_path,raw_stdout_sha256,raw_stderr_sha256
 #   verdict ∈ {ok, ko, unknown}
 #     ok      — system status agrees with the reference answer
 #     ko      — system status disagrees with the reference answer
@@ -323,7 +323,7 @@ if [[ ! -f "${ANSWERS}" ]]; then
 fi
 
 CSV="${OUTPUT}/run.csv"
-echo "edition,division,problem,system,timeout,szs_status,expected,verdict,wall_time_s,peak_memory_mb,failure_detail,raw_stdout_path,raw_stderr_path,raw_stdout_sha256,raw_stderr_sha256" > "${CSV}"
+echo "edition,division,problem,system,timeout,szs_status,expected,verdict,wall_time_s,peak_memory_mb,failure_detail,processed_per_s,raw_stdout_path,raw_stderr_path,raw_stdout_sha256,raw_stderr_sha256" > "${CSV}"
 
 # Warn on a stale `mrs`. The run itself is unaffected, but a run.csv from an
 # out-of-date prover looks exactly like a measurement of the current one.
@@ -596,7 +596,7 @@ echo "[casc] Total jobs:  ${total_problems}" >&2
 # Arguments: div  problem  prob_path  sys  time_limit
 #
 # Emits one CSV row:
-#   edition,division,problem,system,timeout,szs_status,expected,verdict,wall_time_s,peak_memory_mb,failure_detail,raw_stdout_path,raw_stderr_path,raw_stdout_sha256,raw_stderr_sha256
+#   edition,division,problem,system,timeout,szs_status,expected,verdict,wall_time_s,peak_memory_mb,failure_detail,processed_per_s,raw_stdout_path,raw_stderr_path,raw_stdout_sha256,raw_stderr_sha256
 #
 # `verdict` compares the system's SZS status against the reference
 # answer for `problem` (from systems/reference/answers.tsv):
@@ -669,6 +669,22 @@ run_one() {
     # Stores the key=value portion; empty string if not present.
     local failure_detail=""
     failure_detail=$(grep -m1 '% SZS detail' "${tmp_err}" 2>/dev/null | sed 's/^% SZS detail //' || true)
+
+    # Derive a work rate from the detail line. `processed_per_s` is the single
+    # number that makes two runs of the same commit comparable: the FNE score
+    # moves by +-4 problems between hosts purely because one host retires
+    # fewer clauses per second, and `processed_per_s` is what shows that
+    # directly. Empty when the prover reported no search telemetry (a
+    # parse-only, model, or immediate verdict), so a blank cell always means
+    # "not measured", never "measured as zero".
+    local processed_per_s=""
+    local _proc="" _elapsed_ms=""
+    _proc=$(printf '%s' "${failure_detail}" | grep -oE '(^| )processed=[0-9]+' | head -1 | cut -d= -f2 || true)
+    _elapsed_ms=$(printf '%s' "${failure_detail}" | grep -oE '(^| )elapsed_ms=[0-9]+' | head -1 | cut -d= -f2 || true)
+    if [[ -n "${_proc}" && -n "${_elapsed_ms}" ]] && (( ${_elapsed_ms} > 0 )); then
+        processed_per_s=$(awk -v p="${_proc}" -v ms="${_elapsed_ms}" \
+            'BEGIN { printf "%.1f", p * 1000 / ms }')
+    fi
 
     if [[ -z "${szs}" ]]; then
         if [[ ${exit_code} -eq 124 ]]; then
@@ -755,9 +771,10 @@ run_one() {
         fi
     fi
 
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
         "${EDITION}" "${div}" "${problem}" "${sys}" "${tlimit}" \
         "${szs}" "${expected}" "${verdict}" "${wall_s}" "${peak_memory_mb}" "${failure_detail}" \
+        "${processed_per_s}" \
         "${raw_stdout_rel}" "${raw_stderr_rel}" "${raw_stdout_sha256}" "${raw_stderr_sha256}"
 }
 
