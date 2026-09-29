@@ -699,6 +699,17 @@ pub fn run_schedule_with_candidate_receiver(
     // with no measured coverage, and shipping that is the thing this repo's
     // discipline exists to prevent.
     //
+    // Two things that looked like causes turned out not to be, both measured
+    // rather than argued, and both recorded in
+    // `docs/reports/benchmarks/epu-2026-09.md`:
+    //
+    //   - the Herbrand universe was missing every nullary predicate, so every
+    //     rung searched a subset of the space and the resulting
+    //     `model_fixpoint` did not mean what it said. Fixed;
+    //   - equality splitting (`MRS_EPR_SPLIT=1`) is implemented, sound and
+    //     measured at worth nothing here, because only 20 of the 100 problems
+    //     contain a clause of the split shape. Kept and gated.
+    //
     // A refutation here is the final answer, so it goes through the candidate
     // receiver like any other winner and can be certified.
     let mut epr_telemetry: Option<crate::EprTelemetry> = None;
