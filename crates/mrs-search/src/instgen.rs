@@ -169,7 +169,12 @@ pub fn term_is_epr(term: &Term) -> bool {
 }
 
 /// Collects all distinct constants (nullary function symbols) from `clauses`.
-fn collect_constants(clauses: &[Clause]) -> Vec<SymbolId> {
+/// Predicate symbols, including nullary predicates, are not terms and therefore
+/// are not members of the Herbrand universe.
+///
+/// `pub` so the EPR grounding pre-pass shares this one implementation rather
+/// than carrying a second copy of the same definition.
+pub fn collect_constants(clauses: &[Clause]) -> Vec<SymbolId> {
     let mut seen: HashSet<SymbolId> = HashSet::default();
     let mut constants: Vec<SymbolId> = Vec::new();
     for clause in clauses {

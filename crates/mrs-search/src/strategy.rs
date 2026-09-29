@@ -665,11 +665,6 @@ pub fn run_schedule_with_candidate_receiver(
 
     let clauses_owned = clauses.to_vec();
 
-    // EPR pre-grounding is disabled: naive ground instance enumeration causes
-    // OOM on large EPR problems (tens of thousands of ground clauses inflate
-    // CaDiCaL's SAT instance beyond memory limits). AVATAR handles EPR
-    // structure lazily and correctly without pre-expansion.
-
     let total_budget: Duration = actual_configs.iter().map(|c| c.time_limit).sum();
     let schedule_start = Instant::now();
 
@@ -680,6 +675,100 @@ pub fn run_schedule_with_candidate_receiver(
     // resolution search over EPR clauses and can cause CaDiCaL to block for
     // minutes with no way to interrupt it.
     let is_problem_epr = is_epr(&clauses_owned);
+
+    // EPR grounding pre-pass — opt-in via `MRS_EPR_GROUND=1`.
+    //
+    // Grounding is the division's natural mode, and this is the only thing in
+    // the tree that searches the `epr_equality` profile *by grounding* — the
+    // pre-pass below refuses that profile outright, on 40 of the 100 CASC-30
+    // EPU problems by measurement. "By grounding" is load-bearing and was an
+    // overstatement in an earlier cut of this comment: the ordinary engine
+    // handles equality by superposition, so the profile is searched by default
+    // too, and the recorded EPU run refuted 9 problems including the
+    // epr_equality `HWV107-1`. What is missing here is the conservative
+    // grounding, not the ability to search the profile.
+    //
+    // It is not yet strong enough to be worth its budget by default. The
+    // measurement that established this was taken with a ladder whose narrow
+    // rungs emitted partial instances the ground-set abstraction discarded, so
+    // on wide clauses it searched nothing and returned nothing; that is fixed
+    // (see `epr_ground`), which makes the earlier "refuted nothing" result a
+    // statement about a broken instrument rather than about the route, and it is
+    // why the default stays off pending a fresh full-division measurement.
+    // Enabling it by default would trade the portfolio's slice for a pre-pass
+    // with no measured coverage, and shipping that is the thing this repo's
+    // discipline exists to prevent.
+    //
+    // Equality splitting (`MRS_EPR_SPLIT=1`) is implemented and remains gated;
+    // its measurement is documented in `epu-2026-09.md` and predates the
+    // corrected instance ladder.
+    //
+    // A refutation here is the final answer, so it goes through the candidate
+    // receiver like any other winner and can be certified.
+    let mut epr_telemetry: Option<crate::EprTelemetry> = None;
+    let epr_ground_enabled = std::env::var("MRS_EPR_GROUND").is_ok_and(|v| v != "0");
+    if is_problem_epr && epr_ground_enabled {
+        let memory_budget_mb = actual_configs
+            .iter()
+            .find_map(|c| c.resource_limits.max_memory_mb);
+        // Sized from the sum of strategy budgets. That sum is the right scale
+        // because every schedule constructor partitions the CLI wall clock
+        // into per-strategy slices (the default schedule's shares add to
+        // ~100%, `mini`/`fast`/cooperative portfolios to exactly 100%), and
+        // the pre-pass runs sequentially, so its timeout is a share of the
+        // wall clock in every worker mode. Two things this is *not*: the
+        // minimum slice (a 2% diagnostic share would clamp the pre-pass to
+        // the 500 ms floor, which the proof reserve then eats whole) and the
+        // maximum slice (a 14% share would starve grounding on short runs).
+        // Known limitation, documented in `epr_ground`: worker budgets are
+        // not reduced by pre-pass elapsed, so an opt-in run's total wall is
+        // the pre-pass share *plus* the full portfolio, not a partition of
+        // `--time`.
+        let budget = crate::epr_budget(memory_budget_mb, total_budget);
+        let mut epr_id_gen = id_gen.clone();
+        let (epr_result, tele) = crate::try_epr_ground_refutation(
+            &clauses_owned,
+            provenance,
+            &mut epr_id_gen,
+            symbols,
+            budget,
+        );
+        epr_telemetry = Some(tele);
+        if let Some(result) = epr_result
+            && let SearchResult::Refutation(id, ref tstp) = result
+        {
+            let report = crate::ScheduleReport {
+                workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                strategies: vec![crate::StrategyReport {
+                    strategy_idx: 0,
+                    strategy_id: 0,
+                    result: result.clone(),
+                    stats: crate::SearchStats::default(),
+                    elapsed_ms: 0,
+                }],
+                instgen: None,
+                epr: epr_telemetry.clone(),
+                cert_tier: None,
+                cert_ordering: None,
+            };
+            if let Some(ref r) = candidate_receiver {
+                let should_stop = r.submit_candidate(CandidateRefutation {
+                    strategy_idx: 0,
+                    strategy_id: 0,
+                    clause_id: id,
+                    tstp_proof: tstp.clone(),
+                    elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                    time_remaining: total_budget.saturating_sub(schedule_start.elapsed()),
+                });
+                if should_stop {
+                    return (r.certified_result().unwrap_or(result), report);
+                }
+            } else {
+                return (result, report);
+            }
+        }
+    }
 
     // FVO pre-pass: for clause sets where all predicate arguments are variables
     // (no equality, no function terms), the first-order problem is
@@ -771,6 +860,7 @@ pub fn run_schedule_with_candidate_receiver(
                     elapsed_ms: tele.elapsed_ms,
                 }],
                 instgen: Some(tele),
+                epr: epr_telemetry.clone(),
                 cert_tier: None,
                 cert_ordering: None,
             };
@@ -1293,6 +1383,7 @@ pub fn run_schedule_with_candidate_receiver(
         }
 
         report.instgen = instgen_telemetry;
+        report.epr = epr_telemetry;
         report.elapsed_ms = schedule_start.elapsed().as_millis() as u64;
         (best, report)
     })
@@ -1380,6 +1471,7 @@ fn run_certified_ordered_fragment(
             elapsed_ms: schedule_start.elapsed().as_millis() as u64,
         }],
         instgen: None,
+        epr: None,
         cert_tier,
         cert_ordering,
     };

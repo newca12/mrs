@@ -37,6 +37,7 @@ pub(crate) mod certified_eq;
 pub(crate) mod certified_sat;
 pub mod cwa;
 pub mod der;
+pub mod epr_ground;
 pub mod fvo;
 pub mod given_clause;
 pub mod goal_distance;
@@ -57,6 +58,7 @@ use mrs_core::clause::{Clause, ClauseId};
 
 pub use goal_distance::GoalDistanceMap;
 
+pub use epr_ground::{EprBudget, EprTelemetry, epr_budget, try_epr_ground_refutation};
 pub use instgen::{
     InstGenTelemetry, classify_epr_profile, is_epr, is_pure_relational_epr, try_instgen_epr,
     try_instgen_epr_with_telemetry,
@@ -149,6 +151,9 @@ pub struct ScheduleReport {
     pub strategies: Vec<StrategyReport>,
     /// Telemetry collected from the InstGen pre-pass, if run.
     pub instgen: Option<InstGenTelemetry>,
+    /// Telemetry collected from the EPR grounding pre-pass, if run. This is the
+    /// pre-pass that searches `epr_equality` problems, which InstGen refuses.
+    pub epr: Option<EprTelemetry>,
     /// Certification tier that produced this schedule's result (`1`, `2`,
     /// or `3`), set only by the `--certify-ordered` path on success.
     /// Lets benchmark harnesses attribute coverage without TRACE output.
@@ -241,6 +246,35 @@ impl ScheduleReport {
             }
             if let Some(reason) = ig.fallback_reason {
                 detail.push_str(&format!(" instgen_fallback={}", reason));
+            }
+        }
+
+        if let Some(epr) = &self.epr {
+            detail.push_str(&format!(
+                " epr_attempted={} epr_route={} epr_domain={} epr_est={} epr_full_grounding={} \
+                 epr_generated={} epr_vars={} epr_clauses={} epr_rounds={} epr_falsifying={} \
+                 epr_ms={} epr_proof_nodes={} epr_pivots={} epr_splitting={} epr_split_clauses={}",
+                epr.attempted,
+                epr.route,
+                epr.domain,
+                epr.est_instances,
+                epr.full_grounding,
+                epr.generated,
+                epr.sat_vars,
+                epr.sat_clauses,
+                epr.rounds,
+                epr.falsifying,
+                epr.elapsed_ms,
+                epr.proof_nodes,
+                epr.pivots,
+                epr.splitting,
+                epr.split_clauses
+            ));
+            if epr.result != "none" {
+                detail.push_str(&format!(" epr_result={}", epr.result));
+            }
+            if let Some(reason) = epr.fallback {
+                detail.push_str(&format!(" epr_fallback={}", reason));
             }
         }
 

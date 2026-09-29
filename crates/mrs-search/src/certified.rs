@@ -3017,7 +3017,6 @@ mod tests {
 
         let mut symbols = SymbolTable::new();
         let p = symbols.intern("p");
-        let q = symbols.intern("q");
         let a = symbols.intern("a");
         let mut ids = ClauseIdGen::new();
         // An *unsatisfiable* set, so the answer has to come from the ordered
@@ -3667,9 +3666,6 @@ mod tests {
         }
     }
 
-    /// Resource canary: a finite EPR grounding that exceeds the instance
-    /// budget must fail closed with `Limit`, never with a saturation claim.
-    #[test]
     /// The transitivity check was reduced from a cubic triple loop to rank
     /// agreement, so the property to pin is that the cheap version is not
     /// *weaker*. A strictly total comparison whose rank order it disagrees with
@@ -3806,6 +3802,9 @@ mod tests {
         );
     }
 
+    /// Resource canary: a finite EPR grounding that exceeds the instance
+    /// budget must fail closed with `Limit`, never with a saturation claim.
+    #[test]
     fn grounding_blowup_fails_closed_with_limit() {
         let mut symbols = SymbolTable::new();
         let p = symbols.intern("p");
