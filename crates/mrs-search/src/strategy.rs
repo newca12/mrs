@@ -665,11 +665,6 @@ pub fn run_schedule_with_candidate_receiver(
 
     let clauses_owned = clauses.to_vec();
 
-    // EPR pre-grounding is disabled: naive ground instance enumeration causes
-    // OOM on large EPR problems (tens of thousands of ground clauses inflate
-    // CaDiCaL's SAT instance beyond memory limits). AVATAR handles EPR
-    // structure lazily and correctly without pre-expansion.
-
     let total_budget: Duration = actual_configs.iter().map(|c| c.time_limit).sum();
     let schedule_start = Instant::now();
 
@@ -680,6 +675,73 @@ pub fn run_schedule_with_candidate_receiver(
     // resolution search over EPR clauses and can cause CaDiCaL to block for
     // minutes with no way to interrupt it.
     let is_problem_epr = is_epr(&clauses_owned);
+
+    // EPR grounding pre-pass — opt-in via `MRS_EPR_GROUND=1`.
+    //
+    // It is the division's natural mode and it is the only thing in the tree that
+    // searches the `epr_equality` profile, which the InstGen pre-pass below
+    // refuses outright on 39 of the 100 CASC-30 EPU problems. What it is not yet
+    // is strong enough to be worth its budget by default: on a stratified
+    // 26-problem sample of the division it refuted nothing with a proof the
+    // checker accepts, while consuming three quarters of the run before the
+    // portfolio starts. Enabling it by default would trade the portfolio's
+    // 15-second slice for a pre-pass that returns nothing, so it is off until the
+    // instantiation restriction is strong enough to earn its share. See
+    // `epr_ground`'s module docs for the measurement.
+    //
+    // A refutation here is the final answer, so it goes through the candidate
+    // receiver like any other winner and can be certified.
+    let mut epr_telemetry: Option<crate::EprTelemetry> = None;
+    let epr_ground_enabled = std::env::var("MRS_EPR_GROUND").is_ok_and(|v| v != "0");
+    if is_problem_epr && epr_ground_enabled {
+        let memory_budget_mb = actual_configs
+            .iter()
+            .find_map(|c| c.resource_limits.max_memory_mb);
+        let budget = crate::epr_budget(memory_budget_mb, total_budget);
+        let mut epr_id_gen = id_gen.clone();
+        let (epr_result, tele) = crate::try_epr_ground_refutation(
+            &clauses_owned,
+            provenance,
+            &mut epr_id_gen,
+            symbols,
+            budget,
+        );
+        epr_telemetry = Some(tele);
+        if let Some(result) = epr_result
+            && let SearchResult::Refutation(id, ref tstp) = result
+        {
+            let report = crate::ScheduleReport {
+                workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                strategies: vec![crate::StrategyReport {
+                    strategy_idx: 0,
+                    strategy_id: 0,
+                    result: result.clone(),
+                    stats: crate::SearchStats::default(),
+                    elapsed_ms: 0,
+                }],
+                instgen: None,
+                epr: epr_telemetry.clone(),
+                cert_tier: None,
+                cert_ordering: None,
+            };
+            if let Some(ref r) = candidate_receiver {
+                let should_stop = r.submit_candidate(CandidateRefutation {
+                    strategy_idx: 0,
+                    strategy_id: 0,
+                    clause_id: id,
+                    tstp_proof: tstp.clone(),
+                    elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                    time_remaining: total_budget.saturating_sub(schedule_start.elapsed()),
+                });
+                if should_stop {
+                    return (r.certified_result().unwrap_or(result), report);
+                }
+            } else {
+                return (result, report);
+            }
+        }
+    }
 
     // FVO pre-pass: for clause sets where all predicate arguments are variables
     // (no equality, no function terms), the first-order problem is
@@ -771,6 +833,7 @@ pub fn run_schedule_with_candidate_receiver(
                     elapsed_ms: tele.elapsed_ms,
                 }],
                 instgen: Some(tele),
+                epr: epr_telemetry.clone(),
                 cert_tier: None,
                 cert_ordering: None,
             };
@@ -1293,6 +1356,7 @@ pub fn run_schedule_with_candidate_receiver(
         }
 
         report.instgen = instgen_telemetry;
+        report.epr = epr_telemetry;
         report.elapsed_ms = schedule_start.elapsed().as_millis() as u64;
         (best, report)
     })
@@ -1380,6 +1444,7 @@ fn run_certified_ordered_fragment(
             elapsed_ms: schedule_start.elapsed().as_millis() as u64,
         }],
         instgen: None,
+        epr: None,
         cert_tier,
         cert_ordering,
     };
