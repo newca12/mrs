@@ -122,8 +122,28 @@ is forbidden outright — `LCL978+1  s10  GaveUp processed=3 generated=0` in
 only when it can prove the restriction blocks every inference the input admits.
 Worth ~2.3x throughput on the LCL cluster and two working portfolio workers;
 worth 0 on the FNE score, because the refutations are not reachable by extra
-throughput. The 30 LCL problems need a propositional-logic engine, which is
-where the next attempt should start.
+throughput. The 25 condensed-detachment LCL problems need a propositional-logic
+engine, which is where the next attempt should start.
+
+Two further findings from the `cert-fne-20260928` run (FNE only, `jobs=1`,
+Xeon E5-2407, commit `0f28fbb`):
+
+* **The score carries a +-4-point host band.** That run reports 39/100 where
+  `cert-30-20260926` reports 43/100, with identical strategy, worker count and
+  time limit. Over the 39 commonly-solved problems the E5-2407 host does
+  0.762x the clauses per second and is slower on 39 of 39, and all four lost
+  problems had solved in the 161-238 s band. An FNE improvement below ~5
+  problems is therefore not measurable, and an A/B has to run on one host
+  against a baseline from that host. `run.csv` now banks `processed_per_s`
+  (`9cb44d8`) so this is visible without re-deriving anything.
+* **Seven proofs were rejected that were sound.** Across both runs the strict
+  kernel returned `VerifiedBad` for 7 `Theorem` answers, all of them
+  `cnf_transformation` steps citing nested definitional CNF definitions that its
+  own matcher cannot place in the source. `37d3e2e` makes that verdict
+  `Inconclusive`: FNE goes 30 good / 2 bad / 4 unknown to 30 good / 0 bad / 6
+  unknown, and the full `cert-30-20260926` sweep 116/3/2 to 116/0/2, with no
+  `VerifiedGood` lost. The honest FNE reading is 39/100 refuted, 30 of them
+  kernel-certified.
 
 ## 4. The `categorize_tptp` Utility
 
