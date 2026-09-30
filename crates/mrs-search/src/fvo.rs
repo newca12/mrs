@@ -152,7 +152,7 @@ pub fn is_fvo_clause(clause: &Clause) -> bool {
 /// abstract soundly: every clause FVO, and every predicate symbol used at a
 /// single arity.
 pub fn is_fvo_problem(clauses: &[Clause]) -> bool {
-    !clauses.is_empty() && PropAbstraction::build(clauses).is_some()
+    !clauses.is_empty() && PropAbstraction::build(clauses, None).is_some()
 }
 
 // ---------------------------------------------------------------------------
@@ -192,16 +192,23 @@ impl PropAbstraction {
     ///   would not be a resolution inference at all. Such a problem is
     ///   ill-formed TPTP, but the parser accepts it, so it is rejected here
     ///   rather than trusted.
-    fn build(clauses: &[Clause]) -> Option<Self> {
+    fn build(clauses: &[Clause], deadline: Option<Instant>) -> Option<Self> {
         let mut arities: HashMap<SymbolId, usize> = HashMap::default();
+        let mut checked_literals = 0usize;
         for clause in clauses {
-            if !is_fvo_clause(clause) {
-                return None;
-            }
             for lit in &clause.literals {
+                checked_literals += 1;
+                if checked_literals.is_multiple_of(DEADLINE_CHECK_INTERVAL)
+                    && deadline.is_some_and(|end| Instant::now() >= end)
+                {
+                    return None;
+                }
                 let Atom::Pred(sym, args) = &lit.atom else {
                     return None;
                 };
+                if args.iter().any(|term| !matches!(term, Term::Var(_))) {
+                    return None;
+                }
                 match arities.get(sym) {
                     Some(&arity) if arity != args.len() => return None,
                     Some(_) => {}
@@ -214,34 +221,33 @@ impl PropAbstraction {
 
         let mut sym_to_var: HashMap<u32, u32> = HashMap::default();
         let mut var_to_sym_arity: Vec<(SymbolId, usize)> = Vec::new();
-
-        let prop_clauses: Vec<PC> = clauses
-            .iter()
-            .map(|clause| {
-                let mut lits: Vec<PL> = clause
-                    .literals
-                    .iter()
-                    .filter_map(|lit| {
-                        if let Atom::Pred(sym, args) = &lit.atom {
-                            let var = *sym_to_var.entry(sym.index()).or_insert_with(|| {
-                                let v = var_to_sym_arity.len() as u32 + 1; // 1-indexed
-                                var_to_sym_arity.push((*sym, args.len()));
-                                v
-                            });
-                            Some(if lit.positive {
-                                var as PL
-                            } else {
-                                -(var as PL)
-                            })
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                lits.sort();
-                lits
-            })
-            .collect();
+        let mut prop_clauses = Vec::with_capacity(clauses.len());
+        for clause in clauses {
+            let mut lits = Vec::with_capacity(clause.literals.len());
+            for lit in &clause.literals {
+                checked_literals += 1;
+                if checked_literals.is_multiple_of(DEADLINE_CHECK_INTERVAL)
+                    && deadline.is_some_and(|end| Instant::now() >= end)
+                {
+                    return None;
+                }
+                let Atom::Pred(sym, args) = &lit.atom else {
+                    return None;
+                };
+                let var = *sym_to_var.entry(sym.index()).or_insert_with(|| {
+                    let v = var_to_sym_arity.len() as u32 + 1; // 1-indexed
+                    var_to_sym_arity.push((*sym, args.len()));
+                    v
+                });
+                lits.push(if lit.positive {
+                    var as PL
+                } else {
+                    -(var as PL)
+                });
+            }
+            lits.sort();
+            prop_clauses.push(lits);
+        }
 
         Some(Self {
             prop_clauses,
@@ -509,13 +515,18 @@ fn fvo_resolve(
 /// Iterative rather than recursive: the clause vector can hold `MAX_DERIVED`
 /// entries and a resolution chain can be as deep as it is long, which is more
 /// than the main thread's stack should be asked to hold.
-fn topo_order(root: usize, prop_sources: &[PSrc]) -> Vec<usize> {
+fn topo_order(root: usize, prop_sources: &[PSrc], deadline: Instant) -> Option<Vec<usize>> {
     let mut order: Vec<usize> = Vec::new();
     let mut visited: Vec<bool> = vec![false; prop_sources.len()];
     // (node, stage): stage 0 expands the node, stage 1 emits it, so the
     // emission marker is always popped after every child's subtree.
     let mut stack: Vec<(usize, u8)> = vec![(root, 0)];
+    let mut visited_count = 0usize;
     while let Some((node, stage)) = stack.pop() {
+        visited_count += 1;
+        if visited_count.is_multiple_of(DEADLINE_CHECK_INTERVAL) && Instant::now() >= deadline {
+            return None;
+        }
         if stage == 1 {
             order.push(node);
             continue;
@@ -530,7 +541,7 @@ fn topo_order(root: usize, prop_sources: &[PSrc]) -> Vec<usize> {
             stack.push((left, 0));
         }
     }
-    order
+    (Instant::now() < deadline).then_some(order)
 }
 
 /// Wall-clock ceiling for the FVO pre-pass, as a share of the schedule budget.
@@ -567,14 +578,20 @@ pub fn try_fvo_refutation(
     symbols: &SymbolTable,
     budget: Duration,
 ) -> Option<SearchResult> {
-    let abs = PropAbstraction::build(clauses)?;
     let deadline = Instant::now() + budget;
+    if Instant::now() >= deadline {
+        return None;
+    }
+    let abs = PropAbstraction::build(clauses, Some(deadline))?;
 
     // Fast oracle: use CaDiCaL to check propositional UNSAT before BFS.
     // This avoids O(n²) BFS work when the problem is actually satisfiable.
     {
         let mut solver = Solver::new();
-        for pc in &abs.prop_clauses {
+        for (index, pc) in abs.prop_clauses.iter().enumerate() {
+            if index.is_multiple_of(DEADLINE_CHECK_INTERVAL) && Instant::now() >= deadline {
+                return None;
+            }
             solver.add_clause(pc.as_slice());
         }
         // Duplicates are irrelevant to a SAT solver, so the multiset images
@@ -592,7 +609,7 @@ pub fn try_fvo_refutation(
     let (_prop_clauses, prop_sources, empty_idx) = prop_bfs_refute(&abs.prop_clauses, deadline)?;
 
     // Collect the proof ancestors in topological order (parents before children).
-    let order = topo_order(empty_idx, &prop_sources);
+    let order = topo_order(empty_idx, &prop_sources, deadline)?;
     debug_assert_eq!(order.last(), Some(&empty_idx));
 
     // Build the first-order proof, resolving the emitted parents at each step so
@@ -604,6 +621,9 @@ pub fn try_fvo_refutation(
     fof_proof.extend(provenance.iter().cloned());
 
     for &prop_idx in &order {
+        if Instant::now() >= deadline {
+            return None;
+        }
         let step = match &prop_sources[prop_idx] {
             PSrc::Input(input_idx) => {
                 // Use the original FOF clause unchanged (preserves ClauseId and source).
@@ -629,6 +649,9 @@ pub fn try_fvo_refutation(
         return None;
     }
 
+    if Instant::now() >= deadline {
+        return None;
+    }
     let tstp = format_tstp(&fof_proof, symbols);
 
     Some(SearchResult::Refutation(last.id, tstp))
@@ -802,12 +825,27 @@ mod tests {
             ],
             "c1",
         );
-        let abs = PropAbstraction::build(std::slice::from_ref(&c1)).expect("FVO");
+        let abs = PropAbstraction::build(std::slice::from_ref(&c1), None).expect("FVO");
         assert_eq!(
             abs.prop_clauses[0].len(),
             2,
             "p(X) | p(Y) must abstract to two skeleton literals, not one: {:?}",
             abs.prop_clauses[0]
+        );
+    }
+
+    #[test]
+    fn fvo_abstraction_respects_an_expired_deadline() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let clause = make_clause(
+            &mut ClauseIdGen::new(),
+            vec![Literal::pos(Atom::prop(p)); DEADLINE_CHECK_INTERVAL],
+            "wide",
+        );
+        assert!(
+            PropAbstraction::build(&[clause], Some(Instant::now() - Duration::from_secs(1)))
+                .is_none()
         );
     }
 
@@ -972,7 +1010,7 @@ mod tests {
         assert!(is_fvo_clause(&c1));
         assert!(is_fvo_clause(&c2));
         assert!(!is_fvo_problem(&[c1.clone(), c2.clone()]));
-        assert!(PropAbstraction::build(&[c1, c2]).is_none());
+        assert!(PropAbstraction::build(&[c1, c2], None).is_none());
         assert!(
             try_fvo_refutation(
                 &[
