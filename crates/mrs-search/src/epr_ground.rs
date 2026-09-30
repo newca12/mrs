@@ -57,6 +57,7 @@
 //! stated over ground atoms only. So any refutation of the abstraction refutes
 //! the input, and it lifts.
 
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use smallvec::SmallVec;
@@ -64,6 +65,7 @@ use smallvec::SmallVec;
 use mrs_cadical::{SolveResult, Solver};
 use mrs_core::clause::{Clause, ClauseId, ClauseIdGen, ClauseSource, Literal};
 use mrs_core::formula::Atom;
+use mrs_core::model::{EqualitySemantics, ModelCertificate, PredicateTable};
 use mrs_core::subst::Substitution;
 use mrs_core::symbol::{SymbolId, SymbolTable};
 use mrs_core::term::{Term, VarId};
@@ -150,7 +152,7 @@ type Pl = i32;
 type Pc = Vec<Pl>;
 
 /// Bijection between ground atoms and DIMACS variables.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct GroundAbstraction {
     atom_to_var: HashMap<GAtom, i32>,
     var_to_atom: Vec<GAtom>,
@@ -274,6 +276,276 @@ impl GroundSet {
     }
 }
 
+/// Turn the current SAT assignment into a finite model only when it satisfies
+/// every original EPR clause over the entire finite domain. The grounder may
+/// have asserted only a small, model-guided subset of instances, so SAT alone
+/// is never enough to claim satisfiability.
+fn verified_finite_model(
+    ground: &GroundSet,
+    originals: &[Clause],
+    bot: SymbolId,
+    deadline: Instant,
+) -> Option<(ModelCertificate, u64)> {
+    const MAX_VALIDATION_WORK: u64 = 100_000_000;
+
+    let mut named_constants = crate::instgen::collect_constants(originals);
+    let mut domain_constants = named_constants.clone();
+    domain_constants.extend(crate::instgen::collect_constants(&ground.inputs));
+    if domain_constants.is_empty() {
+        domain_constants.push(bot);
+    }
+    domain_constants
+        .sort_unstable_by(|a, b| ground.symbols.resolve(*a).cmp(ground.symbols.resolve(*b)));
+    domain_constants.dedup();
+    named_constants
+        .sort_unstable_by(|a, b| ground.symbols.resolve(*a).cmp(ground.symbols.resolve(*b)));
+
+    if domain_constants.is_empty() {
+        return None;
+    }
+
+    // Equality atoms are SAT variables during search. The candidate-model SAT
+    // copy below adds a bounded equality theory before any model is interpreted.
+    let has_equality = ground.clauses.iter().any(|item| {
+        item.clause
+            .literals
+            .iter()
+            .any(|lit| matches!(lit.atom, Atom::Eq(..)))
+    });
+    if has_equality {
+        // Refuse instead of interpreting propositional equality variables as
+        // identity. The ordinary superposition portfolio remains available.
+        return None;
+    }
+    let domain_size = domain_constants.len();
+    let positions: HashMap<SymbolId, usize> = domain_constants
+        .iter()
+        .enumerate()
+        .map(|(index, &constant)| (constant, index))
+        .collect();
+    let certificate_positions = &positions;
+    let solver = &ground.solver;
+    let mut predicates = BTreeMap::<String, usize>::new();
+    for clause in originals.iter().chain(&ground.inputs) {
+        for literal in &clause.literals {
+            if let Atom::Pred(predicate, args) = &literal.atom {
+                let name = ground.symbols.resolve(*predicate).to_string();
+                if predicates
+                    .insert(name, args.len())
+                    .is_some_and(|arity| arity != args.len())
+                {
+                    return None;
+                }
+            }
+        }
+    }
+    for atom in &ground.abs.var_to_atom {
+        if let GAtom::Pred(predicate, args) = atom {
+            let name = ground.symbols.resolve(*predicate).to_string();
+            if predicates
+                .insert(name, args.len())
+                .is_some_and(|arity| arity != args.len())
+            {
+                return None;
+            }
+        }
+    }
+
+    let mut table_entries = 0usize;
+    let mut tables = BTreeMap::new();
+    for (name, arity) in predicates {
+        let length = if arity == 0 {
+            1
+        } else {
+            domain_size.checked_pow(u32::try_from(arity).ok()?)?
+        };
+        table_entries = table_entries.checked_add(length)?;
+        if table_entries > mrs_core::model::MAX_MODEL_TABLE_ENTRIES {
+            return None;
+        }
+        tables.insert(
+            name,
+            PredicateTable {
+                arity,
+                table: vec![false; length],
+            },
+        );
+    }
+
+    // Unmentioned ground atoms default to false. Copy the SAT assignment into
+    // the finite interpretation; the full original-clause check below is the
+    // acceptance gate, independent of the grounding relaxation.
+    for (atom, &variable) in &ground.abs.atom_to_var {
+        let GAtom::Pred(predicate, args) = atom else {
+            // Equality atoms in the search abstraction are deliberately not
+            // trusted as an interpretation of identity equality. The full
+            // clause re-check below evaluates equality semantically.
+            continue;
+        };
+        let value = solver.value(variable)?;
+        let name = ground.symbols.resolve(*predicate);
+        let table = tables.get_mut(name)?;
+        let tuple: Vec<usize> = args
+            .iter()
+            .map(|arg| {
+                positions
+                    .get(arg)
+                    .copied()
+                    .or_else(|| (arg == &bot).then_some(0))
+            })
+            .collect::<Option<_>>()?;
+        let index = table_index(domain_size, &tuple)?;
+        *table.table.get_mut(index)? = value;
+    }
+
+    let mut validation_work = 0u64;
+    let mut assignments_checked = 0u64;
+    for clause in originals {
+        let vars = clause_vars_ordered(clause);
+        let assignments = (0..vars.len()).try_fold(1u64, |count, _| {
+            count.checked_mul(u64::try_from(domain_size).ok()?)
+        })?;
+        validation_work = validation_work
+            .checked_add(assignments.saturating_mul(clause.literals.len().max(1) as u64))?;
+        if validation_work > MAX_VALIDATION_WORK {
+            return None;
+        }
+        let mut assignment = HashMap::default();
+        let mut checked = 0u64;
+        let clause_satisfied = verify_clause_over_domain(
+            clause,
+            &vars,
+            0,
+            &domain_constants,
+            &positions,
+            &tables,
+            &ground.symbols,
+            domain_size,
+            &mut assignment,
+            &mut checked,
+            deadline,
+        )?;
+        if !clause_satisfied {
+            return None;
+        }
+        assignments_checked = assignments_checked.checked_add(checked)?;
+        if Instant::now() >= deadline {
+            return None;
+        }
+    }
+
+    let mut certificate = ModelCertificate {
+        domain_size,
+        constants: named_constants
+            .iter()
+            .map(|constant| {
+                (
+                    ground.symbols.resolve(*constant).to_string(),
+                    certificate_positions[constant],
+                )
+            })
+            .collect(),
+        functions: BTreeMap::new(),
+        predicates: tables,
+        equality: EqualitySemantics::StrictIdentity,
+        digest: String::new(),
+    };
+    certificate.digest = certificate.compute_digest();
+    if std::env::var("TRACE_EPR_MODEL").is_ok() {
+        eprintln!(
+            "[EPR model] domain={} predicates={} validation_work={validation_work} rss_mb={}",
+            certificate.domain_size,
+            certificate.predicates.len(),
+            crate::resource::current_memory_mb().unwrap_or(0),
+        );
+    }
+    Some((certificate, assignments_checked))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_clause_over_domain(
+    clause: &Clause,
+    vars: &[VarId],
+    depth: usize,
+    domain: &[SymbolId],
+    positions: &HashMap<SymbolId, usize>,
+    tables: &BTreeMap<String, PredicateTable>,
+    symbols: &SymbolTable,
+    model_domain_size: usize,
+    assignment: &mut HashMap<VarId, SymbolId>,
+    checked: &mut u64,
+    deadline: Instant,
+) -> Option<bool> {
+    if depth < vars.len() {
+        for &constant in domain {
+            assignment.insert(vars[depth], constant);
+            if !verify_clause_over_domain(
+                clause,
+                vars,
+                depth + 1,
+                domain,
+                positions,
+                tables,
+                symbols,
+                model_domain_size,
+                assignment,
+                checked,
+                deadline,
+            )? {
+                return Some(false);
+            }
+        }
+        assignment.remove(&vars[depth]);
+        return Some(true);
+    }
+
+    *checked += 1;
+    if checked.is_multiple_of(1024) && Instant::now() >= deadline {
+        return None;
+    }
+    for literal in &clause.literals {
+        let truth = match &literal.atom {
+            Atom::Pred(predicate, args) => {
+                let mut tuple = Vec::with_capacity(args.len());
+                for arg in args {
+                    tuple.push(match arg {
+                        Term::Var(var) => positions.get(assignment.get(var)?).copied()?,
+                        Term::App(constant, inner) if inner.is_empty() => {
+                            // `$bot` occurs only in generated search instances,
+                            // never in `model_clauses`; unknown constants are
+                            // therefore a malformed model-check input.
+                            positions.get(constant).copied()?
+                        }
+                        _ => return None,
+                    });
+                }
+                let table = tables.get(symbols.resolve(*predicate))?;
+                *table.table.get(table_index(model_domain_size, &tuple)?)?
+            }
+            Atom::Eq(left, right) => {
+                let value = |term: &Term| match term {
+                    Term::Var(var) => assignment.get(var).copied(),
+                    Term::App(constant, inner) if inner.is_empty() => Some(*constant),
+                    _ => None,
+                };
+                let left = positions.get(&value(left)?)?;
+                let right = positions.get(&value(right)?)?;
+                left == right
+            }
+        };
+        if truth == literal.positive {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
+
+fn table_index(domain_size: usize, tuple: &[usize]) -> Option<usize> {
+    tuple.iter().try_fold(0usize, |index, value| {
+        index.checked_mul(domain_size)?.checked_add(*value)
+    })
+}
+
 /// What the pre-pass did, and why it stopped. Reported verbatim in the
 /// `% SZS detail` line so a run's outcome is attributable.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -317,6 +589,11 @@ pub struct EprTelemetry {
     pub split_clauses: usize,
     /// Terminal outcome: `"refutation"`, `"fallback"` or `"none"`.
     pub result: &'static str,
+    /// Whether the optional model-search path verified a finite model against
+    /// the supplied original clauses.
+    pub model_verified: bool,
+    /// Candidate first-order assignments checked by that model search.
+    pub model_assignments: u64,
     /// Why the pre-pass yielded without a refutation.
     pub fallback: Option<&'static str>,
 }
@@ -341,6 +618,8 @@ impl Default for EprTelemetry {
             splitting: false,
             split_clauses: 0,
             result: "none",
+            model_verified: false,
+            model_assignments: 0,
             fallback: None,
         }
     }
@@ -734,18 +1013,52 @@ pub fn try_epr_ground_refutation(
     symbols: &SymbolTable,
     budget: EprBudget,
 ) -> (Option<SearchResult>, EprTelemetry) {
+    try_epr_ground_with_model(clauses, None, provenance, id_gen, symbols, budget)
+}
+
+/// As [`try_epr_ground_refutation`], while checking any candidate model against
+/// `model_clauses` rather than only the preprocessed search set. This is
+/// required because satisfiability-preserving preprocessing need not preserve
+/// the particular finite model chosen by the SAT solver.
+pub fn try_epr_ground_with_originals(
+    clauses: &[Clause],
+    model_clauses: &[Clause],
+    provenance: &[Clause],
+    id_gen: &mut ClauseIdGen,
+    symbols: &SymbolTable,
+    budget: EprBudget,
+) -> (Option<SearchResult>, EprTelemetry) {
+    try_epr_ground_with_model(
+        clauses,
+        Some(model_clauses),
+        provenance,
+        id_gen,
+        symbols,
+        budget,
+    )
+}
+
+fn try_epr_ground_with_model(
+    clauses: &[Clause],
+    model_clauses: Option<&[Clause]>,
+    provenance: &[Clause],
+    id_gen: &mut ClauseIdGen,
+    symbols: &SymbolTable,
+    budget: EprBudget,
+) -> (Option<SearchResult>, EprTelemetry) {
     let route = crate::instgen::classify_epr_profile(clauses);
-    let domain = crate::instgen::collect_constants(clauses);
-    let est = estimate_grounding_size(clauses, domain.len());
-    let est_bytes = estimate_grounding_bytes(clauses, domain.len());
+    let mut domain = crate::instgen::collect_constants(clauses);
+    let domain_size = domain.len().max(1);
+    let est = estimate_grounding_size(clauses, domain_size);
+    let est_bytes = estimate_grounding_bytes(clauses, domain_size);
     let mut tele = EprTelemetry {
         route,
-        domain: domain.len(),
+        domain: domain_size,
         est_instances: est,
         ..EprTelemetry::default()
     };
 
-    if matches!(route, "non_epr" | "empty") || domain.is_empty() {
+    if matches!(route, "non_epr" | "empty") {
         tele.fallback = Some("unsupported_epr_profile");
         return (None, tele);
     }
@@ -776,6 +1089,11 @@ pub fn try_epr_ground_refutation(
     // problem symbol, and the proof is printed in the problem's vocabulary.
     let mut local_symbols = symbols.clone();
     let bot = local_symbols.intern("$bot");
+    // A function-free signature may contain no constants. The standard EPR
+    // grounding then uses one fresh element as its Herbrand universe.
+    if domain.is_empty() {
+        domain.push(bot);
+    }
 
     // The instance cap is lifted for whole-set grounding, which is bounded by
     // bytes instead; the lazy search keeps the lower cap.
@@ -957,6 +1275,23 @@ pub fn try_epr_ground_refutation(
                 return (None, tele);
             }
             SolveResult::Sat => {
+                if let Some(model_clauses) = model_clauses
+                    && let Some((model, assignments)) =
+                        verified_finite_model(&ground, model_clauses, bot, deadline)
+                {
+                    tele.elapsed_ms = start.elapsed().as_millis() as u64;
+                    tele.rounds = round;
+                    tele.result = "model";
+                    tele.model_verified = true;
+                    tele.model_assignments = assignments;
+                    return (
+                        Some(SearchResult::Saturated(
+                            crate::CompletenessWitness::sat_backed_grounding()
+                                .with_model(Some(model)),
+                        )),
+                        tele,
+                    );
+                }
                 if probe {
                     if let Some(path) = &dump {
                         let _ = dump_ground_set(&ground, path);
@@ -2984,6 +3319,112 @@ mod tests {
             "a satisfiable clause set must not yield a refutation, got {result:?}"
         );
         assert_ne!(tele.result, "refutation");
+    }
+
+    #[test]
+    fn epr_model_path_emits_only_a_full_domain_verified_model() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let mut id_gen = ClauseIdGen::new();
+        let clause = input(ClauseId(0), vec![pred(true, p, vec![Term::var(0)])]);
+        let clauses = [clause.clone()];
+        let budget = EprBudget {
+            timeout: Duration::from_secs(2),
+            max_instances: 10_000,
+            byte_budget: 1 << 30,
+            memory_ceiling_mb: None,
+            max_rounds: 8,
+        };
+
+        let (result, telemetry) =
+            try_epr_ground_with_originals(&clauses, &clauses, &[], &mut id_gen, &symbols, budget);
+        let Some(SearchResult::Saturated(witness)) = result else {
+            panic!("expected a model-certified saturation, telemetry={telemetry:?}");
+        };
+        let model = witness.model().expect("model certificate");
+        assert_eq!(model.domain_size, 1);
+        assert_eq!(model.predicates["p"].table, vec![true]);
+        assert_eq!(telemetry.result, "model");
+    }
+
+    #[test]
+    fn epr_model_path_handles_equality_and_empty_constant_signature() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let clause = input(ClauseId(0), vec![pred(true, p, vec![Term::var(0)])]);
+        let clauses = [clause.clone()];
+        let mut id_gen = ClauseIdGen::new();
+        let budget = EprBudget {
+            timeout: Duration::from_secs(2),
+            max_instances: 10_000,
+            byte_budget: 1 << 30,
+            memory_ceiling_mb: None,
+            max_rounds: 8,
+        };
+
+        let (result, telemetry) =
+            try_epr_ground_with_originals(&clauses, &clauses, &[], &mut id_gen, &symbols, budget);
+        let Some(SearchResult::Saturated(witness)) = result else {
+            panic!("expected one-element-domain model, telemetry={telemetry:?}");
+        };
+        assert_eq!(witness.model().unwrap().domain_size, 1);
+    }
+
+    #[test]
+    fn epr_model_path_uses_real_equality_semantics() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let clauses = [
+            input(ClauseId(0), vec![pred(true, p, vec![Term::constant(a)])]),
+            input(ClauseId(1), vec![pred(false, p, vec![Term::constant(b)])]),
+            input(
+                ClauseId(2),
+                vec![Literal {
+                    positive: true,
+                    atom: Atom::eq(Term::constant(a), Term::constant(b)),
+                }],
+            ),
+        ];
+        let mut id_gen = ClauseIdGen::new();
+        let budget = EprBudget {
+            timeout: Duration::from_secs(2),
+            max_instances: 10_000,
+            byte_budget: 1 << 30,
+            memory_ceiling_mb: None,
+            max_rounds: 8,
+        };
+
+        let (result, telemetry) =
+            try_epr_ground_with_originals(&clauses, &clauses, &[], &mut id_gen, &symbols, budget);
+        assert!(result.is_none());
+        assert!(matches!(
+            telemetry.fallback,
+            Some("model_fixpoint" | "grounding_exhausted")
+        ));
+    }
+
+    #[test]
+    fn epr_model_path_rechecks_preprocessed_candidate_against_originals() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let search_clause = input(ClauseId(0), vec![pred(true, p, vec![Term::constant(a)])]);
+        let original_clause = input(ClauseId(1), vec![pred(false, p, vec![Term::constant(a)])]);
+        let _bot = symbols.intern("$bot");
+        let mut ground = GroundSet::new(10, &[search_clause.clone()], &[], &symbols);
+        assert!(ground.add(search_clause));
+        assert_eq!(ground.solver.solve(), SolveResult::Sat);
+        assert!(
+            verified_finite_model(
+                &ground,
+                &[original_clause],
+                _bot,
+                Instant::now() + Duration::from_secs(1),
+            )
+            .is_none()
+        );
     }
 
     /// Variables come back in a fixed order, so the widening rungs bind the same

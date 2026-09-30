@@ -253,7 +253,8 @@ impl ScheduleReport {
             detail.push_str(&format!(
                 " epr_attempted={} epr_route={} epr_domain={} epr_est={} epr_full_grounding={} \
                  epr_generated={} epr_vars={} epr_clauses={} epr_rounds={} epr_falsifying={} \
-                 epr_ms={} epr_proof_nodes={} epr_pivots={} epr_splitting={} epr_split_clauses={}",
+                 epr_ms={} epr_proof_nodes={} epr_pivots={} epr_splitting={} epr_split_clauses={} \
+                 epr_model_verified={} epr_model_assignments={}",
                 epr.attempted,
                 epr.route,
                 epr.domain,
@@ -268,7 +269,9 @@ impl ScheduleReport {
                 epr.proof_nodes,
                 epr.pivots,
                 epr.splitting,
-                epr.split_clauses
+                epr.split_clauses,
+                epr.model_verified,
+                epr.model_assignments
             ));
             if epr.result != "none" {
                 detail.push_str(&format!(" epr_result={}", epr.result));

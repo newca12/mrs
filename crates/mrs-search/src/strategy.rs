@@ -578,6 +578,9 @@ pub fn run_schedule_with_candidate_receiver(
 
     // 0. Clause preprocessing: Tautology Elimination, Pure Literal Elimination (PLE),
     // and First-Order Blocked Clause Elimination (BCE).
+    // The optional finite-model path checks against these originals, because
+    // preprocessing need not preserve its particular candidate interpretation.
+    let original_clauses = clauses.to_vec();
     let no_bce = std::env::var("MRS_NO_BCE").is_ok();
     let no_ple = std::env::var("MRS_NO_PLE").is_ok();
     let prep_config = crate::preprocessing::PreprocessingConfig {
@@ -665,7 +668,7 @@ pub fn run_schedule_with_candidate_receiver(
 
     let clauses_owned = clauses.to_vec();
 
-    let total_budget: Duration = actual_configs.iter().map(|c| c.time_limit).sum();
+    let mut total_budget: Duration = actual_configs.iter().map(|c| c.time_limit).sum();
     let schedule_start = Instant::now();
 
     // Detect EPR structure even when the full expansion exceeds MAX_INSTANCES.
@@ -706,7 +709,9 @@ pub fn run_schedule_with_candidate_receiver(
     // A refutation here is the final answer, so it goes through the candidate
     // receiver like any other winner and can be certified.
     let mut epr_telemetry: Option<crate::EprTelemetry> = None;
-    let epr_ground_enabled = std::env::var("MRS_EPR_GROUND").is_ok_and(|v| v != "0");
+    let epr_ground_enabled = ["MRS_EPR_GROUND", "MRS_EPR_MODEL"]
+        .iter()
+        .any(|name| std::env::var(name).is_ok_and(|v| v != "0"));
     if is_problem_epr && epr_ground_enabled {
         let memory_budget_mb = actual_configs
             .iter()
@@ -724,48 +729,113 @@ pub fn run_schedule_with_candidate_receiver(
         // not reduced by pre-pass elapsed, so an opt-in run's total wall is
         // the pre-pass share *plus* the full portfolio, not a partition of
         // `--time`.
-        let budget = crate::epr_budget(memory_budget_mb, total_budget);
-        let mut epr_id_gen = id_gen.clone();
-        let (epr_result, tele) = crate::try_epr_ground_refutation(
-            &clauses_owned,
-            provenance,
-            &mut epr_id_gen,
-            symbols,
-            budget,
-        );
-        epr_telemetry = Some(tele);
-        if let Some(result) = epr_result
-            && let SearchResult::Refutation(id, ref tstp) = result
-        {
-            let report = crate::ScheduleReport {
-                workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
-                elapsed_ms: schedule_start.elapsed().as_millis() as u64,
-                strategies: vec![crate::StrategyReport {
-                    strategy_idx: 0,
-                    strategy_id: 0,
-                    result: result.clone(),
-                    stats: crate::SearchStats::default(),
-                    elapsed_ms: 0,
-                }],
-                instgen: None,
-                epr: epr_telemetry.clone(),
-                cert_tier: None,
-                cert_ordering: None,
+        let model_search = std::env::var("MRS_EPR_MODEL").is_ok_and(|v| v != "0");
+        let mut budget = crate::epr_budget(memory_budget_mb, total_budget);
+        if model_search {
+            // Model checking should be a bounded EPS experiment. Never let this
+            // opt-in pre-pass scale its instance cap with a large competition
+            // allowance: reserve most memory and time for the ordinary search.
+            let bounded_memory_mb = memory_budget_mb.unwrap_or(128).min(128);
+            let bounded = crate::epr_budget(Some(bounded_memory_mb), total_budget);
+            budget = crate::EprBudget {
+                timeout: bounded.timeout.min(Duration::from_millis(500)),
+                max_instances: bounded.max_instances.min(1_000),
+                ..bounded
             };
-            if let Some(ref r) = candidate_receiver {
-                let should_stop = r.submit_candidate(CandidateRefutation {
-                    strategy_idx: 0,
-                    strategy_id: 0,
-                    clause_id: id,
-                    tstp_proof: tstp.clone(),
+            // Equality-bearing profiles continue to the portfolio until the
+            // model path has a complete congruence-closure certificate.
+            if matches!(
+                crate::instgen::classify_epr_profile(&clauses_owned),
+                "pure_relational_epr" | "ground"
+            ) {
+                let mut model_id_gen = id_gen.clone();
+                let (model_result, telemetry) = crate::epr_ground::try_epr_ground_with_originals(
+                    &clauses_owned,
+                    &original_clauses,
+                    provenance,
+                    &mut model_id_gen,
+                    symbols,
+                    budget,
+                );
+                epr_telemetry = Some(telemetry);
+                let report = crate::ScheduleReport {
+                    workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
                     elapsed_ms: schedule_start.elapsed().as_millis() as u64,
-                    time_remaining: total_budget.saturating_sub(schedule_start.elapsed()),
-                });
-                if should_stop {
-                    return (r.certified_result().unwrap_or(result), report);
+                    strategies: Vec::new(),
+                    instgen: None,
+                    epr: epr_telemetry.clone(),
+                    cert_tier: None,
+                    cert_ordering: None,
+                };
+                if let Some(SearchResult::Saturated(witness)) = model_result.as_ref()
+                    && witness.model().is_some()
+                {
+                    return (model_result.unwrap(), report);
                 }
-            } else {
-                return (result, report);
+                if let Some(SearchResult::Refutation(id, tstp)) = model_result {
+                    if let Some(ref receiver) = candidate_receiver {
+                        let should_stop = receiver.submit_candidate(CandidateRefutation {
+                            strategy_idx: 0,
+                            strategy_id: 0,
+                            clause_id: id,
+                            tstp_proof: tstp,
+                            elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                            time_remaining: total_budget.saturating_sub(schedule_start.elapsed()),
+                        });
+                        if should_stop {
+                            return (
+                                receiver.certified_result().unwrap_or(SearchResult::GaveUp),
+                                report,
+                            );
+                        }
+                    } else {
+                        return (SearchResult::Refutation(id, tstp), report);
+                    }
+                }
+                // The opt-in pre-pass consumes the same per-problem wall
+                // budget as the portfolio. Do not extend an EPS run past its
+                // configured deadline just because model construction ran.
+                total_budget = total_budget.saturating_sub(schedule_start.elapsed());
+            }
+        }
+        let mut epr_id_gen = id_gen.clone();
+        if !model_search {
+            let (epr_result, tele) = crate::try_epr_ground_refutation(
+                &clauses_owned,
+                provenance,
+                &mut epr_id_gen,
+                symbols,
+                budget,
+            );
+            epr_telemetry = Some(tele);
+            if let Some(SearchResult::Refutation(id, tstp)) = epr_result {
+                let report = crate::ScheduleReport {
+                    workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                    elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                    strategies: Vec::new(),
+                    instgen: None,
+                    epr: epr_telemetry.clone(),
+                    cert_tier: None,
+                    cert_ordering: None,
+                };
+                if let Some(ref receiver) = candidate_receiver {
+                    let should_stop = receiver.submit_candidate(CandidateRefutation {
+                        strategy_idx: 0,
+                        strategy_id: 0,
+                        clause_id: id,
+                        tstp_proof: tstp,
+                        elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                        time_remaining: total_budget.saturating_sub(schedule_start.elapsed()),
+                    });
+                    if should_stop {
+                        return (
+                            receiver.certified_result().unwrap_or(SearchResult::GaveUp),
+                            report,
+                        );
+                    }
+                } else {
+                    return (SearchResult::Refutation(id, tstp), report);
+                }
             }
         }
     }
