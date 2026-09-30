@@ -330,9 +330,11 @@ impl UnprocessedSet {
         self.active_ids.iter().copied()
     }
 
-    /// Prunes the passive set to keep only the `target_size` lightest clauses by weight.
+    /// Prunes the passive set to keep only `target_size` clauses, reserving a
+    /// configurable fraction for oldest active clauses and filling the rest
+    /// by weight.
     /// Returns the number of discarded clauses.
-    pub fn prune(&mut self, target_size: usize) -> usize {
+    pub fn prune(&mut self, target_size: usize, age_reserve_percent: usize) -> usize {
         if self.active_ids.len() <= target_size {
             return 0;
         }
@@ -346,19 +348,44 @@ impl UnprocessedSet {
             }
         }
 
-        // 2. Sort them by weight ascending (lightest first).
-        // Since WeightWrapper has Ord implemented with reversed cmp, let's sort with actual weight.
-        active_wrappers
-            .sort_unstable_by(|a, b| a.weight.cmp(&b.weight).then_with(|| a.id.cmp(&b.id)));
+        // Reserve a bounded fraction of the oldest active clauses so a long
+        // run of light, locally attractive clauses cannot erase all age
+        // diversity. Disabled by default; the EPU experiment sets this through
+        // MRS_LRS_AGE_RESERVE.
+        let reserve_count = target_size.saturating_mul(age_reserve_percent.min(100)) / 100;
+        let mut reserve = HashSet::default();
+        if reserve_count > 0 {
+            for id in &self.age_queue {
+                if self.active_ids.contains(id) {
+                    reserve.insert(*id);
+                    if reserve.len() >= reserve_count {
+                        break;
+                    }
+                }
+            }
+        }
+        let mut protected: Vec<_> = active_wrappers
+            .iter()
+            .filter(|wrapper| reserve.contains(&wrapper.id))
+            .cloned()
+            .collect();
+        let mut candidates: Vec<_> = active_wrappers
+            .into_iter()
+            .filter(|wrapper| !reserve.contains(&wrapper.id))
+            .collect();
+        let remaining = target_size.saturating_sub(protected.len());
+        candidates.sort_unstable_by(|a, b| a.weight.cmp(&b.weight).then_with(|| a.id.cmp(&b.id)));
 
-        if active_wrappers.len() <= target_size {
+        if candidates.len() <= remaining {
             // Restore weight_queue and return
-            self.weight_queue = BinaryHeap::from(active_wrappers);
+            protected.extend(candidates);
+            self.weight_queue = BinaryHeap::from(protected);
             return 0;
         }
 
-        let (kept, discarded) = active_wrappers.split_at(target_size);
+        let (kept, discarded) = candidates.split_at(remaining);
         let num_discarded = discarded.len();
+        protected.extend_from_slice(kept);
 
         // 3. Remove discarded IDs from active_ids
         for w in discarded {
@@ -371,10 +398,10 @@ impl UnprocessedSet {
         // 5. Rebuild weight_queue
         // Since BinaryHeap is a max-heap but WeightWrapper's Ord is reversed,
         // we can just construct BinaryHeap from the kept wrappers!
-        self.weight_queue = BinaryHeap::from(kept.to_vec());
+        self.weight_queue = BinaryHeap::from(protected.clone());
 
         // 6. Rebuild goal_queue
-        let goal_wrappers: Vec<WeightWrapper> = kept
+        let goal_wrappers: Vec<WeightWrapper> = protected
             .iter()
             .map(|w| {
                 let goal_weight = if w.goal_distance < 100 {
@@ -460,7 +487,7 @@ mod tests {
         // Sorted weights: c2 (5), c0 (10), c4 (20), c1 (50), c3 (100)
         // We expect c1 and c3 (heaviest) to be pruned!
         // So c2, c0, and c4 should be kept.
-        let discarded = set.prune(3);
+        let discarded = set.prune(3, 0);
         assert_eq!(discarded, 2);
         assert_eq!(set.active_count(), 3);
 
@@ -476,6 +503,34 @@ mod tests {
         assert_eq!(set.pop_weight(), Some(clauses[0].id));
         assert_eq!(set.pop_weight(), Some(clauses[4].id));
         assert_eq!(set.pop_weight(), None);
+    }
+
+    #[test]
+    fn lrs_age_reserve_preserves_old_clauses_over_weight() {
+        let config = Arc::new(SymbolConfig::default());
+        let mut set = UnprocessedSet::new(config);
+        let mut bank = TermBank::new();
+        let clauses = (0..5)
+            .map(|i| {
+                let legacy = Clause::new(
+                    ClauseId(i),
+                    vec![],
+                    ClauseSource::Input {
+                        name: format!("test{i}"),
+                        role: "axiom".into(),
+                    },
+                );
+                bank.clause_from_legacy(&legacy)
+            })
+            .collect::<Vec<_>>();
+        for (clause, weight) in clauses.iter().zip([100, 90, 80, 1, 2]) {
+            set.push(clause, &bank, weight, None, None);
+        }
+
+        assert_eq!(set.prune(2, 50), 3);
+        assert!(set.contains(&clauses[0].id));
+        assert!(set.contains(&clauses[3].id));
+        assert_eq!(set.active_count(), 2);
     }
 
     #[test]

@@ -702,9 +702,11 @@ pub fn run_schedule_with_candidate_receiver(
     // with no measured coverage, and shipping that is the thing this repo's
     // discipline exists to prevent.
     //
-    // Equality splitting (`MRS_EPR_SPLIT=1`) is implemented and remains gated;
-    // its measurement is documented in `epu-2026-09.md` and predates the
-    // corrected instance ladder.
+    // Equality splitting (`MRS_EPR_SPLIT=1`) and complementary-unit E-matching
+    // (`MRS_EPR_EMATCH=1`) are bounded experiments and remain independently
+    // gated. E-matching adds ordinary ground substitution instances; it does not
+    // change the fact that this entire grounding route is opt-in pending a
+    // certified full-division coverage gain.
     //
     // A refutation here is the final answer, so it goes through the candidate
     // receiver like any other winner and can be certified.

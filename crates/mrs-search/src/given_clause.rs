@@ -1475,7 +1475,11 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 };
 
                 if should_prune {
-                    let discarded = state.unprocessed.prune(target_size);
+                    let age_reserve = std::env::var("MRS_LRS_AGE_RESERVE")
+                        .ok()
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    let discarded = state.unprocessed.prune(target_size, age_reserve);
                     state.stats.lrs_discarded += discarded as u64;
                     if std::env::var("TRACE_LRS").is_ok() {
                         eprintln!(

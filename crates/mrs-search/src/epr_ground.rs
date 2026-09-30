@@ -579,6 +579,9 @@ pub struct EprTelemetry {
     pub proof_extracted: bool,
     /// Proof size in nodes.
     pub proof_nodes: usize,
+    /// Initial ground instances seeded by matching input literals against
+    /// complementary unit clauses. Non-zero only with `MRS_EPR_EMATCH=1`.
+    pub ematch_instances: usize,
     /// Pivot constants the instance generator is seeded from.
     pub pivots: usize,
     /// Whether equality splitting was on for this run.
@@ -614,6 +617,7 @@ impl Default for EprTelemetry {
             elapsed_ms: 0,
             proof_extracted: false,
             proof_nodes: 0,
+            ematch_instances: 0,
             pivots: 0,
             splitting: false,
             split_clauses: 0,
@@ -707,6 +711,9 @@ const INSTANCE_COST_BYTES: u64 = 8 * 1024;
 /// How many constants to seed instances from. Small on purpose: the seed exists
 /// to give the falsification rule somewhere to move, not to enumerate the domain.
 const PIVOT_LIMIT: usize = 8;
+
+/// Maximum extra instances admitted by the opt-in complementary-unit matcher.
+const EMATCH_INSTANCE_LIMIT: usize = 20_000;
 
 /// The constants a refutation is most likely to turn on, best first.
 ///
@@ -950,6 +957,130 @@ fn bot_instance(clause: &Clause, bot: SymbolId, id_gen: &mut ClauseIdGen) -> Opt
     Some(instantiation(id_gen, clause.id, lits))
 }
 
+/// Builds bounded ground instances by matching each literal against a
+/// complementary input unit. Variables not bound by the matched atom are
+/// completed with `bot`, preserving a genuine instance of the source clause.
+fn ematch_instances(
+    clauses: &[Clause],
+    bot: SymbolId,
+    id_gen: &mut ClauseIdGen,
+    limit: usize,
+    deadline: Instant,
+) -> Vec<Clause> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let mut predicate_units: HashMap<(bool, SymbolId, usize), Vec<&Literal>> = HashMap::default();
+    let mut equality_units: [Vec<&Literal>; 2] = [Vec::new(), Vec::new()];
+    for clause in clauses.iter().filter(|clause| clause.literals.len() == 1) {
+        let unit = &clause.literals[0];
+        match &unit.atom {
+            Atom::Pred(symbol, args) => predicate_units
+                .entry((unit.positive, *symbol, args.len()))
+                .or_default()
+                .push(unit),
+            Atom::Eq(..) => equality_units[usize::from(unit.positive)].push(unit),
+        }
+    }
+    let mut out = Vec::new();
+    let mut checked = 0usize;
+    for clause in clauses {
+        let vars = clause_vars_ordered(clause);
+        if vars.is_empty() {
+            continue;
+        }
+        for literal in &clause.literals {
+            let candidates: &[&Literal] = match &literal.atom {
+                Atom::Pred(symbol, args) => predicate_units
+                    .get(&(!literal.positive, *symbol, args.len()))
+                    .map_or(&[], Vec::as_slice),
+                Atom::Eq(..) => &equality_units[usize::from(!literal.positive)],
+            };
+            for unit in candidates {
+                checked += 1;
+                if checked.is_multiple_of(64) && Instant::now() >= deadline {
+                    return out;
+                }
+                let Some(bindings) = match_complementary_literal(literal, unit) else {
+                    continue;
+                };
+                let mut subst = Substitution::new();
+                for (var, constant) in bindings {
+                    subst.bind(var, Term::constant(constant));
+                }
+                complete_with_bot(&vars, &mut subst, bot);
+                let literals = clause
+                    .literals
+                    .iter()
+                    .map(|literal| subst.apply_literal(literal))
+                    .collect();
+                out.push(instantiation(id_gen, clause.id, literals));
+                if out.len() >= limit {
+                    return out;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Matches an EPR literal pattern against a ground literal of opposite
+/// polarity. Equality matching tries both argument orientations. Repeated
+/// variables must be bound to the same constant.
+fn match_complementary_literal(
+    pattern: &Literal,
+    target: &Literal,
+) -> Option<HashMap<VarId, SymbolId>> {
+    if pattern.positive == target.positive {
+        return None;
+    }
+    match (&pattern.atom, &target.atom) {
+        (Atom::Pred(pattern_sym, pattern_args), Atom::Pred(target_sym, target_args))
+            if pattern_sym == target_sym && pattern_args.len() == target_args.len() =>
+        {
+            let mut bindings = HashMap::default();
+            pattern_args
+                .iter()
+                .zip(target_args)
+                .all(|(pattern, target)| match_epr_term(pattern, target, &mut bindings))
+                .then_some(bindings)
+        }
+        (Atom::Eq(pattern_left, pattern_right), Atom::Eq(target_left, target_right)) => {
+            let mut forward = HashMap::default();
+            if match_epr_term(pattern_left, target_left, &mut forward)
+                && match_epr_term(pattern_right, target_right, &mut forward)
+            {
+                return Some(forward);
+            }
+            let mut reverse = HashMap::default();
+            if match_epr_term(pattern_left, target_right, &mut reverse)
+                && match_epr_term(pattern_right, target_left, &mut reverse)
+            {
+                Some(reverse)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn match_epr_term(pattern: &Term, target: &Term, bindings: &mut HashMap<VarId, SymbolId>) -> bool {
+    match (pattern, constant_of(target)) {
+        (Term::Var(var), Some(constant)) => match bindings.get(var) {
+            Some(bound) => *bound == constant,
+            None => {
+                bindings.insert(*var, constant);
+                true
+            }
+        },
+        (Term::App(pattern_sym, args), Some(target_constant)) if args.is_empty() => {
+            *pattern_sym == target_constant
+        }
+        _ => false,
+    }
+}
+
 /// Calls `f` with every substitution mapping each variable of `clause` to a
 /// constant in `domain`, stopping early when `f` returns `false`.
 ///
@@ -1152,6 +1283,28 @@ fn try_epr_ground_with_model(
             && ground.add(inst)
         {
             tele.generated += 1;
+        }
+    }
+
+    // Opt-in E-matching seed: match a clause literal against a complementary
+    // input unit, then ground any remaining variables with `bot`. Each result
+    // is an ordinary substitution instance; keep the experiment bounded and
+    // opt-in until a certified full EPU sweep demonstrates coverage gain.
+    if std::env::var("MRS_EPR_EMATCH").is_ok_and(|v| v != "0") {
+        let limit = ground
+            .cap
+            .saturating_sub(ground.clauses.len())
+            .min((ground.cap / 16).max(1))
+            .min(EMATCH_INSTANCE_LIMIT);
+        let seeds = ematch_instances(clauses, bot, id_gen, limit, grounding_deadline);
+        for instance in seeds {
+            if Instant::now() >= grounding_deadline || !ground.has_room() {
+                break;
+            }
+            if ground.add(instance) {
+                tele.ematch_instances += 1;
+                tele.generated += 1;
+            }
         }
     }
 
@@ -2884,6 +3037,78 @@ mod tests {
         let got: Vec<Literal> = inst.literals.iter().cloned().collect();
         assert_eq!(got.len(), want.len());
         assert!(got.iter().all(|l| want.contains(l)));
+    }
+
+    #[test]
+    fn ematch_generates_ground_instances_from_complementary_units() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let bot = symbols.intern("$bot");
+        let clause = input(
+            ClauseId(0),
+            vec![pred(true, p, vec![Term::var(0), Term::var(1)])],
+        );
+        let unit = input(
+            ClauseId(1),
+            vec![pred(false, p, vec![Term::constant(a), Term::constant(a)])],
+        );
+        let mut id_gen = ClauseIdGen::new();
+        let instances = ematch_instances(
+            &[clause.clone(), unit],
+            bot,
+            &mut id_gen,
+            10,
+            Instant::now() + Duration::from_secs(1),
+        );
+        let matched = instances
+            .iter()
+            .find(|instance| match &instance.source {
+                ClauseSource::Inference { rule, parents } => {
+                    *rule == "instantiation" && parents.contains(&clause.id)
+                }
+                _ => false,
+            })
+            .expect("complementary unit should produce an instance");
+        assert!(tests_common::is_instance_of(&clause, &matched.literals));
+        assert!(matched.literals.iter().all(|literal| match &literal.atom {
+            Atom::Pred(_, args) => args.iter().all(|term| constant_of(term).is_some()),
+            Atom::Eq(..) => false,
+        }));
+        assert!(matched.literals.iter().any(|literal| {
+            matches!(&literal.atom, Atom::Pred(_, args) if args == &[Term::constant(a), Term::constant(a)])
+        }));
+    }
+
+    #[test]
+    fn ematch_enforces_repeated_variables_and_symmetric_equality() {
+        let mut symbols = SymbolTable::new();
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let p = symbols.intern("p");
+        let repeated = Literal {
+            positive: true,
+            atom: Atom::pred(p, vec![Term::var(0), Term::var(0)]),
+        };
+        let unequal_target = Literal {
+            positive: false,
+            atom: Atom::pred(p, vec![Term::constant(a), Term::constant(b)]),
+        };
+        assert!(match_complementary_literal(&repeated, &unequal_target).is_none());
+
+        let equality = Literal {
+            positive: true,
+            atom: Atom::eq(Term::var(0), Term::constant(a)),
+        };
+        let reversed_target = Literal {
+            positive: false,
+            atom: Atom::eq(Term::constant(a), Term::constant(b)),
+        };
+        assert_eq!(
+            match_complementary_literal(&equality, &reversed_target)
+                .and_then(|bindings| bindings.get(&0).copied()),
+            Some(b)
+        );
     }
 
     /// An equality literal is a ground atom like any other, so a bootstrap
