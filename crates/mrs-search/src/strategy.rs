@@ -771,15 +771,35 @@ pub fn run_schedule_with_candidate_receiver(
     }
 
     // FVO pre-pass: for clause sets where all predicate arguments are variables
-    // (no equality, no function terms), the first-order problem is
-    // propositionally equivalent.  Try a BFS propositional refutation first;
-    // it solves problems like SYN938+1 in milliseconds where the regular
-    // given-clause loop times out.
+    // (no equality, no function terms, one arity per predicate), every pair of
+    // atoms over the same predicate unifies, so a propositional skeleton of the
+    // clause set can be searched for a refutation much more cheaply than the
+    // clause set.  The proof is then rebuilt in first order from the clauses it
+    // emits, so the reported refutation is a real derivation -- see `fvo`.
+    //
+    // The pre-pass gets a wall-clock ceiling because it runs before any
+    // portfolio thread exists, so its cost is *added* to the run rather than
+    // taken from the strategies' budgets.  It previously had no ceiling at all
+    // and only a clause-count cap, which on an instance whose resolution closure
+    // lands under the cap let it run for many minutes past `--time`.
+    //
+    // Note that it does not fire on the divisions it was written for: across the
+    // 800 CASC-J13 FNE, UEQ and FEQ problems, `mrs --profile` reports FVO on
+    // none, and the `SYN938+1` problem an earlier revision of this comment
+    // credited it with is not FVO either (`FVO (Vars-Only Pred):No`).  The
+    // pre-pass is currently reachable only on input no competition problem
+    // produces, so its cost here is close to zero and its coverage is not
+    // carrying the schedule.  `fvo`'s module docs record the measurements.
     {
         let mut fvo_id_gen = id_gen.clone();
-        if let Some(result) =
-            try_fvo_refutation(&clauses_owned, provenance, &mut fvo_id_gen, symbols)
-        {
+        let fvo_budget = crate::fvo::fvo_budget(total_budget);
+        if let Some(result) = try_fvo_refutation(
+            &clauses_owned,
+            provenance,
+            &mut fvo_id_gen,
+            symbols,
+            fvo_budget,
+        ) {
             if let SearchResult::Refutation(id, ref tstp) = result {
                 if let Some(ref r) = candidate_receiver {
                     let should_stop = r.submit_candidate(CandidateRefutation {

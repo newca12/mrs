@@ -26,3 +26,10 @@ libc = { workspace = true }
 rand = { workspace = true, optional = true }
 wincode = { workspace = true, optional = true }
 burn = { workspace = true, optional = true }
+
+# The FVO pre-pass is validated against the independent proof kernel in
+# `fvo.rs` tests. `mrs-proof-kernel` does not depend on `mrs-search`, so this
+# is a one-way dev-dependency.
+[dev-dependencies]
+mrs-proof-kernel = { workspace = true }
+mrs-tptp = { workspace = true }
