@@ -3797,6 +3797,8 @@ dependencies = [
  "mrs-core",
  "mrs-index",
  "mrs-proof",
+ "mrs-proof-kernel",
+ "mrs-tptp",
  "mrs-unify",
  "num_cpus",
  "rand 0.10.3",
