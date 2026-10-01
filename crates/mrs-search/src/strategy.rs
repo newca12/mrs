@@ -9,9 +9,17 @@
 
 pub mod named;
 
+static CONDENSED_DETACHMENT_PROCESS_START: OnceLock<Instant> = OnceLock::new();
+
+fn condensed_detachment_process_elapsed() -> Duration {
+    CONDENSED_DETACHMENT_PROCESS_START
+        .get_or_init(Instant::now)
+        .elapsed()
+}
+
 use crate::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use mrs_core::SymbolTable;
@@ -19,6 +27,7 @@ use mrs_core::clause::{Clause, ClauseIdGen};
 use mrs_proof::extract::extract_proof;
 use mrs_proof::tstp::format_tstp;
 
+use crate::condensed_detachment::try_refutation as try_condensed_detachment_refutation;
 use crate::cwa::try_componentwise_refute;
 use crate::fvo::try_fvo_refutation;
 use crate::given_clause::search;
@@ -978,6 +987,47 @@ pub fn run_schedule_with_candidate_receiver(
                 );
             }
         }
+    }
+
+    // LCL's compact `is_a_theorem` condensed-detachment basis is a narrow
+    // fragment with a proof-producing, bounded closure. Keep it opt-in until
+    // full-division measurements justify spending pre-pass time by default.
+    // The strict self-check coordinator owns its own wall-clock reserve; leave
+    // candidate verification to it via the ordinary schedule.
+    // A process-wide five-second ceiling ensures concurrent benchmark jobs do
+    // not repeatedly pay this diagnostic cap for every input problem.
+    if std::env::var("MRS_CONDENSED_DETACHMENT").is_ok_and(|value| value != "0")
+        && condensed_detachment_process_elapsed() < Duration::from_secs(5)
+        && candidate_receiver.is_none()
+    {
+        let cd_start = Instant::now();
+        let mut cd_id_gen = id_gen.clone();
+        let cd_budget = total_budget
+            .min(Duration::from_secs(1))
+            .min(Duration::from_secs(5).saturating_sub(condensed_detachment_process_elapsed()));
+        if let Some(result) = try_condensed_detachment_refutation(
+            &clauses_owned,
+            provenance,
+            &mut cd_id_gen,
+            symbols,
+            cd_budget,
+        ) && matches!(result, SearchResult::Refutation(..))
+        {
+            let report = crate::ScheduleReport {
+                workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                strategies: vec![crate::StrategyReport {
+                    strategy_idx: 0,
+                    strategy_id: 0,
+                    result: result.clone(),
+                    stats: crate::SearchStats::default(),
+                    elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                }],
+                ..crate::ScheduleReport::default()
+            };
+            return (result, report);
+        }
+        total_budget = total_budget.saturating_sub(cd_start.elapsed());
     }
 
     // InstGen pre-pass for EPR:

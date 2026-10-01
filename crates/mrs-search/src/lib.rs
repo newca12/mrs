@@ -35,6 +35,7 @@ pub mod avatar;
 pub(crate) mod certified;
 pub(crate) mod certified_eq;
 pub(crate) mod certified_sat;
+pub mod condensed_detachment;
 pub mod cwa;
 pub mod der;
 pub mod epr_ground;

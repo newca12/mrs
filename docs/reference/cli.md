@@ -57,6 +57,12 @@ See [Trust and verification](trust-and-verification.md).
 | `--trace-bce` | Emit preprocessing diagnostics. |
 | `--trace-instgen` | Emit InstGen diagnostics. |
 
+## Experimental pre-passes
+
+| Environment variable | Effect |
+|---|---|
+| `MRS_CONDENSED_DETACHMENT=1` | Enable the bounded, proof-producing pre-pass for the compact LCL `is_a_theorem` condensed-detachment encoding. It has a one-second per-problem budget and five-second process-wide budget; declined cases continue to the normal schedule. |
+
 ## ML options
 
 These options parse in all builds. Their active behavior requires the relevant

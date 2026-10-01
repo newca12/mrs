@@ -22,6 +22,7 @@ corpus, command, hardware, and environment.
 | Measure search speed on this machine | [Fixed-work performance probe](results/perf/README.md) |
 | Verify TSTP proofs | [ProoVer guide](guides/proover.md) |
 | Understand the trust boundary | [Trust and verification](reference/trust-and-verification.md) |
+| Run the experimental LCL condensed-detachment pre-pass | [Condensed-detachment experiment](research/condensed-detachment.md) |
 | Work on a soundness-sensitive change | [Development methodology](policies/methodology.md) |
 | Prepare a release | [Release policy](policies/release.md) |
 | Learn the calculus interactively | [The mdBook](book/README.md) |
