@@ -200,6 +200,18 @@ The Codex summary records one 8-worker run over 1,039 rows:
 The run had no reference-status violations. ICU also contained the recorded
 OS-OOM event and must not be treated as an ordinary performance result.
 
+The EPS row above is the Codex run and is not the current certified-track
+number. A separate CASC-30 EPS campaign at `8a1fdd0` through the harness's
+dual-search route answers **44/100 `Satisfiable`, 40 kernel-certified models**,
+and that number is the one to compare against. The bounded EPR model pre-pass
+(`MRS_EPR_MODEL=1`) was A/B'd over the whole division against a flag-off
+control at that commit and changed nothing: same 44, same 40 certified, same 13
+`GaveUp`, same 43 `Timeout`, zero problems differing in either direction. The
+flag therefore stays off, and the reason is not that the route is unmeasured —
+it is that the cert track already answers the same rows faster than the
+pre-pass can verify a model for them. Evidence and the two cap changes that
+would be the next experiment: [`eps-2026-09.md`](eps-2026-09.md).
+
 ### Current CASC-J13 Snapshot
 
 The stored 800-row run records:

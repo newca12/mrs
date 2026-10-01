@@ -772,11 +772,27 @@ pub fn run_schedule_with_candidate_receiver(
     // rungs emitted partial instances the ground-set abstraction discarded, so
     // on wide clauses it searched nothing and returned nothing; that is fixed
     // (see `epr_ground`), which makes the earlier "refuted nothing" result a
-    // statement about a broken instrument rather than about the route, and it is
-    // why the default stays off pending a fresh full-division measurement.
+    // statement about a broken instrument rather than about the route.
     // Enabling it by default would trade the portfolio's slice for a pre-pass
     // with no measured coverage, and shipping that is the thing this repo's
     // discipline exists to prevent.
+    //
+    // The full-division measurement that was pending is now taken, for the
+    // *model* arm (`MRS_EPR_MODEL=1`) on CASC-30 EPS, and it is null: 44/100
+    // `Satisfiable` and 40/40 kernel-certified models with the arm on and with
+    // it off, identical problem-for-problem, both at commit `8a1fdd0`. The
+    // 12 rows where the pre-pass verified a model were already `Satisfiable`
+    // from the cert track in under 0.6 s, so what the arm buys is latency on
+    // rows already solved rather than coverage. See
+    // `docs/reports/benchmarks/eps-2026-09.md`.
+    //
+    // Two limits on that result, so it is not read as settling the whole
+    // route. It is the EPS/model arm, not the EPU refutation arm: the
+    // `MRS_EPR_GROUND=1` refutation path still has no post-fix full-division
+    // measurement, so "pending" is discharged for one arm and not the other.
+    // And 61 of the 100 EPS problems never reach the model branch at all —
+    // 34 are `epr_equality`, 1 is not EPR, and the branch is entered only for
+    // `pure_relational_epr` and `ground`.
     //
     // Equality splitting (`MRS_EPR_SPLIT=1`) and complementary-unit E-matching
     // (`MRS_EPR_EMATCH=1`) are bounded experiments and remain independently
@@ -813,6 +829,17 @@ pub fn run_schedule_with_candidate_receiver(
             // Model checking should be a bounded EPS experiment. Never let this
             // opt-in pre-pass scale its instance cap with a large competition
             // allowance: reserve most memory and time for the ordinary search.
+            //
+            // Measured consequence, CASC-30 EPS at `8a1fdd0`: these two clamps
+            // are the binding constraint on the arm, not a neutral safety
+            // margin. Of the 39 problems that enter the branch, 27 return
+            // nothing — 12 at `memory_ceiling` (the 128 MB allowance refuses
+            // before the 1 000-instance cap can bind; `SYN812/815/816/817/
+            // 818/826/828/830/838/840/841/853`, the arity 40-56 encodings) and
+            // 15 at `grounding_timeout` (the 500 ms ceiling, `epr_ms=500` on
+            // `SYN422-1`). Raising either clamp is the experiment to run next,
+            // and it has to be an A/B against this null baseline rather than a
+            // default change. See `docs/reports/benchmarks/eps-2026-09.md`.
             let bounded_memory_mb = memory_budget_mb.unwrap_or(128).min(128);
             let bounded = crate::epr_budget(Some(bounded_memory_mb), total_budget);
             budget = crate::EprBudget {

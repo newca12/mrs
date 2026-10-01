@@ -111,6 +111,12 @@ nix develop -c cargo run -- --workers 8 --schedule casc_feq \
 | `MRS_SINGLE_STRATEGY=N` | Diagnostic override for the default schedule; `16` selects the zero-time diagnostic slot and gives it the full budget. |
 | `MRS_ORDERED` | Diagnostic ordered inference override; positive saturation remains fail-closed unless the bounded certifier is used. |
 | `MRS_NO_BCE`, `MRS_NO_PLE`, `MRS_NO_INSTGEN`, `MRS_NO_LRS` | Disable the corresponding search mechanism. |
+| `MRS_EPR_GROUND=1` | Enable the EPR grounding pre-pass and let it return a refutation. Opt-in; no post-fix full-division coverage measurement. |
+| `MRS_EPR_MODEL=1` | Also enable the bounded **model** route of that pre-pass, which can return a `Satisfiable` with a model certificate. Opt-in. Measured null on CASC-30 EPS at `8a1fdd0` — 44/100 with the flag on and off — so it buys latency on rows the cert track already solves, not coverage. See [`eps-2026-09.md`](../reports/benchmarks/eps-2026-09.md). |
+| `MRS_EPR_SPLIT=1` | Per-clause equality splitting inside the EPR pre-pass. Measured negative; kept for the shape. |
+| `MRS_EPR_EMATCH=1` | Complementary-unit E-matching in the EPR pre-pass. Bounded experiment, off by default. |
+| `MRS_EPR_PROBE=1` | Re-decide the EPR pre-pass's ground instance set with the ordinary ground given-clause loop whatever the SAT verdict. Diagnostic. |
+| `TRACE_EPR=1`, `TRACE_EPR_MODEL=1`, `TRACE_EPR_DUMP=<path>` | Per-round EPR pre-pass tracing, model-path tracing, and dumping the asserted ground instance set as TPTP. Diagnostic. |
 | `MRS_EPS_CERTIFY` | Set to `0` to disable the benchmark wrapper's EPS certification worker. |
 | `MRS_CERTIFY_STRATEGY` | EPS wrapper certifier strategy, `1` or `7`. |
 
