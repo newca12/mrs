@@ -1,0 +1,7 @@
+division=fne edition=casc-30 problems=37
+binary=/home/hack/mrs/target/release/mrs
+prover=/home/hack/mrs/target/release/mrs-proover
+wide: budget_ms=60000 wall=62 max_facts=100000 max_inferences=2000000
+prod: budget_ms=1000 wall=3 max_facts=5000 max_inferences=100000
+--- arm prod: refutations=0 deadline=16 facts_exhausted=2 of 37
+--- arm wide: refutations=0 deadline=3 facts_exhausted=2 of 37

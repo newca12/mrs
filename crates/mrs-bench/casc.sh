@@ -224,6 +224,36 @@ if [[ -f "${MRS_BIN}" ]]; then
     MRS_BIN_SHA256="$(sha256sum "${MRS_BIN}" | awk '{print $1}')"
 fi
 
+# Record every MRS_* variable in the run's own metadata.
+#
+# These knobs change what the prover does: MRS_CONDENSED_DETACHMENT and its
+# bounds, MRS_SHARED_POOL_INTERVAL, MRS_SINGLE_STRATEGY, MRS_PORTFOLIO,
+# MRS_EPR_MODEL, MRS_WORKERS, MRS_HARDWARE. A run that does not record them
+# cannot be told apart from a run with them set, which is exactly the ambiguity
+# that made the 2026-10-01 FNE condensed/ref pair unreadable: the two arms shared
+# a commit and a binary sha, and the only evidence of the on/off state was a ~1 s
+# shift in mrs's own elapsed_ms that had to be inferred from the raw stderr.
+#
+# Recording the whole MRS_ prefix rather than a hand-picked list is deliberate:
+# a new knob is self-documenting from the day it lands, instead of becoming
+# invisible until someone remembers to add it here.
+MRS_ENV_JSON=""
+while IFS='=' read -r mrskey mrsval; do
+    [[ -z "${mrskey}" ]] && continue
+    # JSON-escape backslash and double quote; no other escaping is needed for
+    # the numeric sizes, schedule names and paths these variables carry.
+    mrsval="${mrsval//\\/\\\\}"
+    mrsval="${mrsval//\"/\\\"}"
+    MRS_ENV_JSON+="${MRS_ENV_JSON:+,$'\n'    }\"${mrskey}\": \"${mrsval}\""
+done < <(env | grep '^MRS_' | sort || true)
+if [[ -z "${MRS_ENV_JSON}" ]]; then
+    MRS_ENV_JSON_JSON='{}'
+else
+    MRS_ENV_JSON_JSON="{
+    ${MRS_ENV_JSON}
+  }"
+fi
+
 cat <<EOF > "${OUTPUT}/run_meta.json"
 {
   "run_id": "${RUN_ID}",
@@ -239,6 +269,7 @@ cat <<EOF > "${OUTPUT}/run_meta.json"
   "jobs": ${JOBS},
   "default_time_limit": ${TIME_LIMIT},
   "use_casc_times": ${USE_CASC_TIMES},
+  "prover_env": ${MRS_ENV_JSON_JSON},
   "host": {
     "hostname": "${HOSTNAME_STR}",
     "kernel": "${KERNEL_VER}",

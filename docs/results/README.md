@@ -56,3 +56,39 @@ banked here. The 6 MB of raw stdout/stderr under the run's `raw/mrs/ueq/` is
 not, so re-running `audit_casc_proofs` against these artefacts needs the
 original run directory, which lives outside any git repository. Each row's
 `raw_stdout_sha256` pins the copy that was audited.
+
+## LCL condensed-detachment pre-pass, FNE `casc-30`, 2026-10-01
+
+Two measurements of the same pre-pass, written up in
+[`../research/condensed-detachment.md`](../research/condensed-detachment.md).
+
+| file | what |
+|---|---|
+| `cd-fne-casc30-condensed-20261001-run.csv` | The `condensed` arm of the FNE CASC-30 campaign: 100 problems, `MRS_CONDENSED_DETACHMENT=1`, 8 workers, 2 jobs, official 240 s CASC clock. **42 solved, 0 of them by the pre-pass.** |
+| `cd-fne-casc30-ref-20261001-run.csv` | The matched `ref` arm, pre-pass off. **42 solved**, the same 42 problems. |
+| `cd-fne-casc30-{condensed,ref}-20261001-run_meta.json` | Harness provenance. **Both record the same `git_commit 38e1f85` and the same `binary_sha256` — and neither records the environment, which is the whole reason the pair is hard to read.** `casc.sh` now writes a `prover_env` block for exactly this reason. |
+| `cd-fne-casc30-20261001-run.csv` | `cd_bound_probe.sh` over the 37 `LCL*` problems, at production bounds (`prod`) and at 60x/20x widened bounds (`wide`). **0 pre-pass refutations in either arm.** |
+| `cd-fne-casc30-20261001-summary.tsv` | The per-problem reading: stop reason, derived-fact count, inference count and elapsed time for both arms side by side. This is the table the conclusion is read off. |
+| `cd-fne-casc30-20261001-probe.log` | Probe configuration header. |
+
+Provenance: campaign arms at `git_commit 38e1f85`, `git_dirty: true`, Xeon Silver
+4108 / 32 cores / 128 GB, `jobs=2`. The probe was run later from a 2-physical-core
+/ 16 GB host, which does not affect its readings — the pre-pass is single-threaded
+and the probe pins `--workers 1` — but it does cap how wide the wide arm could
+afford to go.
+
+Two caveats that belong with these files rather than in a report:
+
+- **The campaign pair is not a clean A/B and was never going to be one.** Both
+  editions ran two campaigns concurrently on one 128 GB box: 4 jobs x 8 workers on
+  16 cores, with up to 4 x ~59 GB of memory demand. `NLP260+1`, `NLP261+1` and
+  `NLP262+1` were OOM-killed or stopped at `resource_reason=memory` in the casc-j13
+  arms. The pre-pass conclusion does not depend on those rows; the 42/36 headline
+  does not survive them.
+- **The campaign number cannot be compared to the casc-j13 number.** CASC-30 FNE
+  and CASC-j13 FNE share only 34 of 100 problems, and the two editions ran
+  different binary SHAs from two different dirty working trees.
+
+The 73 MB of raw streams under the original campaign directories is not banked.
+The probe's stop reasons were reconstructed from them and are now in the summary
+`.tsv`, which is why that file exists rather than being derived on demand.

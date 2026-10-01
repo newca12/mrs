@@ -119,6 +119,25 @@ shared and no-sharing runs to quantify cooperation separately from strategy
 diversity. `failure_detail` records `strategy_ids`, `shared_published`, and
 `shared_imported` telemetry for each problem.
 
+## Pre-pass bound probes
+
+`cd_bound_probe.sh` measures a pre-pass in isolation, at its production bounds and
+at bounds raised enough to tell "the closure cannot close this fragment" apart
+from "the bound stopped it first". It runs the pre-pass alone over one cluster,
+sequentially, and reads the pre-pass's own `% SZS detail condensed_detachment=`
+line rather than the SZS status — a status of `Theorem` with
+`stop!=refutation` is the portfolio's work, not the pre-pass's.
+
+```bash
+# Production bounds vs 60x the wall budget and 20x each structural bound.
+crates/mrs-bench/cd_bound_probe.sh --div fne --edition casc-30 --time 60 \
+    --max-facts 100000 --max-inferences 2000000
+```
+
+Any refutation is put through `mrs-proover --strict` before it is counted, and
+the summary separates the stop-reason distribution from the solve count. See
+`docs/research/condensed-detachment.md` for the FNE result and how to read it.
+
 ## Deferred CASC proof auditing
 
 `casc.sh` preserves every prover stream below the run directory:

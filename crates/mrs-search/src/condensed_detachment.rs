@@ -24,8 +24,96 @@ use mrs_core::symbol::SymbolTable;
 use mrs_core::term::Term;
 use mrs_proof::tstp::format_tstp;
 
-const MAX_FACTS: usize = 5_000;
-const MAX_INFERENCES: usize = 100_000;
+pub const MAX_FACTS: usize = 5_000;
+pub const MAX_INFERENCES: u64 = 100_000;
+
+/// Why a pre-pass attempt ended without a refutation.
+///
+/// A bounded no-result outcome is inconclusive, not a failure: the ordinary
+/// schedule still runs. The distinction matters for measurement. `Deadline` and
+/// `MaxInferences`/`MaxFacts` mean the closure was *cut off* while still making
+/// progress, so only those distinguish a bound that was too small from a
+/// fragment the closure simply cannot close.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StopReason {
+    #[default]
+    NotRun,
+    /// A refutation was derived and rendered.
+    Refutation,
+    /// No budget, or the input does not carry the detachment rule clause.
+    NoFragment,
+    /// Rule clause present but no theorem facts and/or no goal units.
+    NoGoals,
+    /// The wall budget expired mid-closure.
+    Deadline,
+    /// The inference-count bound was reached.
+    MaxInferences,
+    /// The theorem-fact count bound was reached.
+    MaxFacts,
+    /// The closure ran to exhaustion: no more detachments were derivable.
+    FactsExhausted,
+    /// A refutation was derived but its TSTP rendering came out empty.
+    EmptyTstp,
+}
+
+impl StopReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotRun => "not_run",
+            Self::Refutation => "refutation",
+            Self::NoFragment => "no_fragment",
+            Self::NoGoals => "no_goals",
+            Self::Deadline => "deadline",
+            Self::MaxInferences => "max_inferences",
+            Self::MaxFacts => "max_facts",
+            Self::FactsExhausted => "facts_exhausted",
+            Self::EmptyTstp => "empty_tstp",
+        }
+    }
+}
+
+/// What the pre-pass actually did on one problem.
+///
+/// Without this, a benchmark row cannot distinguish "the pre-pass found
+/// nothing" from "the pre-pass was cut off mid-search", and a null result is
+/// indistinguishable from a pre-pass that never ran.
+#[derive(Debug, Clone, Default)]
+pub struct Telemetry {
+    /// The detachment rule clause was found in the input.
+    pub shape_matched: bool,
+    pub stop_reason: StopReason,
+    pub facts: usize,
+    pub inferences: u64,
+    pub elapsed_ms: u64,
+    pub budget_ms: u64,
+}
+
+impl Telemetry {
+    fn stop(&mut self, reason: StopReason) {
+        self.stop_reason = reason;
+    }
+}
+
+/// The three closure bounds.
+///
+/// They default to the documented production values and are overridable only
+/// so that a measurement can ask whether a bound, rather than the method, is
+/// what stops the closure. Widening them is a diagnostic action: see
+/// `docs/research/condensed-detachment.md`.
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    pub max_facts: usize,
+    pub max_inferences: u64,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_facts: MAX_FACTS,
+            max_inferences: MAX_INFERENCES,
+        }
+    }
+}
 
 fn collect_subterms(term: &Term, output: &mut HashSet<Term>) {
     if !output.insert(term.clone()) {
@@ -195,15 +283,30 @@ pub fn try_refutation(
     id_gen: &mut ClauseIdGen,
     symbols: &SymbolTable,
     budget: Duration,
+    limits: Limits,
+    telemetry: &mut Telemetry,
 ) -> Option<SearchResult> {
+    let started = Instant::now();
+    telemetry.budget_ms = budget.as_millis() as u64;
+    let finish = |telemetry: &mut Telemetry| {
+        telemetry.elapsed_ms = started.elapsed().as_millis() as u64;
+    };
     if budget.is_zero() {
+        finish(telemetry);
+        telemetry.stop(StopReason::NoFragment);
         return None;
     }
     let deadline = Instant::now().checked_add(budget)?;
-    let (rule_index, shape) = clauses
+    let Some((rule_index, shape)) = clauses
         .iter()
         .enumerate()
-        .find_map(|(index, clause)| detachment_rule(clause).map(|shape| (index, shape)))?;
+        .find_map(|(index, clause)| detachment_rule(clause).map(|shape| (index, shape)))
+    else {
+        finish(telemetry);
+        telemetry.stop(StopReason::NoFragment);
+        return None;
+    };
+    telemetry.shape_matched = true;
     let predicate = shape.predicate;
     let rule = &clauses[rule_index];
 
@@ -214,6 +317,8 @@ pub fn try_refutation(
     let mut max_goal_nodes = 0;
     for (clause_index, clause) in clauses.iter().enumerate() {
         if Instant::now() >= deadline {
+            finish(telemetry);
+            telemetry.stop(StopReason::Deadline);
             return None;
         }
         if clause_index == rule_index {
@@ -224,13 +329,17 @@ pub fn try_refutation(
         {
             if literal.positive {
                 if seen.insert(fact_key(clause)?) {
-                    if theorem_facts.len() >= MAX_FACTS {
+                    if theorem_facts.len() >= limits.max_facts {
+                        finish(telemetry);
+                        telemetry.stop(StopReason::MaxFacts);
                         return None;
                     }
                     theorem_facts.push(clause.clone());
                 }
             } else {
-                if goal_units.len() >= MAX_FACTS {
+                if goal_units.len() >= limits.max_facts {
+                    finish(telemetry);
+                    telemetry.stop(StopReason::MaxFacts);
                     return None;
                 }
                 max_goal_nodes = max_goal_nodes.max(term_nodes(formula));
@@ -240,6 +349,8 @@ pub fn try_refutation(
         }
     }
     if theorem_facts.is_empty() || goal_units.is_empty() {
+        finish(telemetry);
+        telemetry.stop(StopReason::NoGoals);
         return None;
     }
 
@@ -254,8 +365,13 @@ pub fn try_refutation(
     let mut proof = proof_ancestors(&proof_roots, provenance, clauses)?;
     let mut fact_head = 0;
     let mut inferences = 0;
+    // Set when the closure is abandoned with derivable detachments still
+    // outstanding, so the final report distinguishes a cut-off closure from one
+    // that genuinely ran out of detachments to make.
+    let mut cut_off = false;
     while fact_head < theorem_facts.len() {
         if Instant::now() >= deadline {
+            cut_off = true;
             break;
         }
         let current = theorem_facts[fact_head].clone();
@@ -266,14 +382,24 @@ pub fn try_refutation(
         for goal in &goal_units {
             for empty in resolve(&current, goal, id_gen) {
                 if Instant::now() >= deadline {
+                    finish(telemetry);
+                    telemetry.facts = theorem_facts.len();
+                    telemetry.inferences = inferences;
+                    telemetry.stop(StopReason::Deadline);
                     return None;
                 }
                 if empty.is_empty() {
                     proof.push(empty.clone());
                     let tstp = format_tstp(&proof, symbols);
+                    telemetry.facts = theorem_facts.len();
+                    telemetry.inferences = inferences;
                     if !tstp.is_empty() {
+                        telemetry.stop(StopReason::Refutation);
+                        finish(telemetry);
                         return Some(SearchResult::Refutation(empty.id, tstp));
                     }
+                    finish(telemetry);
+                    telemetry.stop(StopReason::EmptyTstp);
                     return None;
                 }
             }
@@ -284,6 +410,7 @@ pub fn try_refutation(
         let snapshot = theorem_facts.len();
         for other_index in 0..snapshot {
             if Instant::now() >= deadline {
+                cut_off = true;
                 break;
             }
             let other = theorem_facts[other_index].clone();
@@ -309,6 +436,10 @@ pub fn try_refutation(
                     &HashSet::default(),
                 ) {
                     if Instant::now() >= deadline {
+                        finish(telemetry);
+                        telemetry.facts = theorem_facts.len();
+                        telemetry.inferences = inferences;
+                        telemetry.stop(StopReason::Deadline);
                         return None;
                     }
                     if open.literals.len() != 2
@@ -330,10 +461,18 @@ pub fn try_refutation(
                         &HashSet::default(),
                     ) {
                         if Instant::now() >= deadline {
+                            finish(telemetry);
+                            telemetry.facts = theorem_facts.len();
+                            telemetry.inferences = inferences;
+                            telemetry.stop(StopReason::Deadline);
                             return None;
                         }
                         inferences += 2;
-                        if inferences > MAX_INFERENCES {
+                        if inferences > limits.max_inferences {
+                            finish(telemetry);
+                            telemetry.facts = theorem_facts.len();
+                            telemetry.inferences = inferences;
+                            telemetry.stop(StopReason::MaxInferences);
                             return None;
                         }
                         let Some((literal, p, formula)) = theorem_literal(&derived) else {
@@ -349,7 +488,11 @@ pub fn try_refutation(
                             continue;
                         };
                         if seen.insert(key) {
-                            if theorem_facts.len() >= MAX_FACTS {
+                            if theorem_facts.len() >= limits.max_facts {
+                                finish(telemetry);
+                                telemetry.facts = theorem_facts.len();
+                                telemetry.inferences = inferences;
+                                telemetry.stop(StopReason::MaxFacts);
                                 return None;
                             }
                             proof.push(open.clone());
@@ -360,16 +503,26 @@ pub fn try_refutation(
                                 for goal in &goal_units {
                                     for empty in resolve(&derived, goal, id_gen) {
                                         if Instant::now() >= deadline {
+                                            finish(telemetry);
+                                            telemetry.facts = theorem_facts.len();
+                                            telemetry.inferences = inferences;
+                                            telemetry.stop(StopReason::Deadline);
                                             return None;
                                         }
                                         if empty.is_empty() {
                                             proof.push(empty.clone());
                                             let tstp = format_tstp(&proof, symbols);
+                                            telemetry.facts = theorem_facts.len();
+                                            telemetry.inferences = inferences;
                                             if !tstp.is_empty() {
+                                                telemetry.stop(StopReason::Refutation);
+                                                finish(telemetry);
                                                 return Some(SearchResult::Refutation(
                                                     empty.id, tstp,
                                                 ));
                                             }
+                                            finish(telemetry);
+                                            telemetry.stop(StopReason::EmptyTstp);
                                             return None;
                                         }
                                     }
@@ -381,6 +534,14 @@ pub fn try_refutation(
             }
         }
     }
+    finish(telemetry);
+    telemetry.facts = theorem_facts.len();
+    telemetry.inferences = inferences;
+    telemetry.stop(if cut_off {
+        StopReason::Deadline
+    } else {
+        StopReason::FactsExhausted
+    });
     None
 }
 
@@ -472,7 +633,15 @@ mod tests {
             },
         );
         let clauses = vec![transitivity, rule, fact_ab, fact_bc, goal];
-        let result = try_refutation(&clauses, &[], &mut id_gen, &symbols, Duration::from_secs(1));
+        let result = try_refutation(
+            &clauses,
+            &[],
+            &mut id_gen,
+            &symbols,
+            Duration::from_secs(1),
+            Limits::default(),
+            &mut Telemetry::default(),
+        );
         let Some(SearchResult::Refutation(_, tstp)) = result else {
             panic!("expected a condensed-detachment refutation");
         };
@@ -511,7 +680,16 @@ mod tests {
         );
         let mut id_gen = ClauseIdGen::new();
         assert!(
-            try_refutation(&[atom.clone()], &[], &mut id_gen, &symbols, Duration::ZERO).is_none()
+            try_refutation(
+                &[atom.clone()],
+                &[],
+                &mut id_gen,
+                &symbols,
+                Duration::ZERO,
+                Limits::default(),
+                &mut Telemetry::default(),
+            )
+            .is_none()
         );
         assert!(
             try_refutation(
@@ -519,10 +697,129 @@ mod tests {
                 &[],
                 &mut id_gen,
                 &symbols,
-                Duration::from_millis(5)
+                Duration::from_millis(5),
+                Limits::default(),
+                &mut Telemetry::default(),
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn reports_why_it_stopped_so_a_null_result_is_readable() {
+        // A benchmark row can only tell "the closure cannot close this fragment"
+        // apart from "the bound stopped it first" if the pre-pass says which.
+        // These four cases are the whole reading vocabulary of
+        // docs/research/condensed-detachment.md, so pin them.
+        let mut symbols = SymbolTable::new();
+        let theorem = symbols.intern("is_a_theorem");
+        let implies = symbols.intern("implies");
+        let mut id_gen = ClauseIdGen::new();
+
+        let rule = input(
+            &mut id_gen,
+            vec![
+                Literal::neg(Atom::pred(theorem, vec![Term::var(0)])),
+                Literal::pos(Atom::pred(theorem, vec![Term::var(1)])),
+                Literal::neg(Atom::pred(
+                    theorem,
+                    vec![Term::app(implies, vec![Term::var(0), Term::var(1)])],
+                )),
+            ],
+            "condensed_detachment",
+        );
+        // `p(a)` alone: no detachment is derivable from a single fact, so the
+        // closure exhausts immediately rather than running out of budget.
+        let fact = input(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(
+                theorem,
+                vec![Term::constant(symbols.intern("a"))],
+            ))],
+            "fact",
+        );
+        let goal = input(
+            &mut id_gen,
+            vec![Literal::neg(Atom::pred(
+                theorem,
+                vec![Term::constant(symbols.intern("z"))],
+            ))],
+            "goal",
+        );
+
+        let mut telemetry = Telemetry::default();
+        assert!(
+            try_refutation(
+                &[rule.clone(), fact.clone()],
+                &[],
+                &mut id_gen,
+                &symbols,
+                Duration::from_secs(1),
+                Limits::default(),
+                &mut telemetry,
+            )
+            .is_none()
+        );
+        assert!(telemetry.shape_matched, "the rule clause was present");
+        assert_eq!(telemetry.stop_reason, StopReason::NoGoals);
+        assert_eq!(telemetry.stop_reason.as_str(), "no_goals");
+        assert_eq!(telemetry.budget_ms, 1000);
+
+        let mut telemetry = Telemetry::default();
+        assert!(
+            try_refutation(
+                &[fact.clone(), goal.clone()],
+                &[],
+                &mut id_gen,
+                &symbols,
+                Duration::from_secs(1),
+                Limits::default(),
+                &mut telemetry,
+            )
+            .is_none()
+        );
+        assert!(!telemetry.shape_matched, "no detachment rule in this input");
+        assert_eq!(telemetry.stop_reason, StopReason::NoFragment);
+
+        // A closure that cannot derive the goal runs out of detachments: this is
+        // the verdict that a wider bound cannot change.
+        let mut telemetry = Telemetry::default();
+        assert!(
+            try_refutation(
+                &[rule.clone(), fact.clone(), goal.clone()],
+                &[],
+                &mut id_gen,
+                &symbols,
+                Duration::from_secs(1),
+                Limits::default(),
+                &mut telemetry,
+            )
+            .is_none()
+        );
+        assert_eq!(telemetry.stop_reason, StopReason::FactsExhausted);
+        assert_eq!(telemetry.facts, 1);
+
+        // The same fragment with a zero-width fact bound cannot even admit the
+        // input fact, so the fact bound is what stops it -- a different reading
+        // of the same fragment, and the one a widened measurement must not
+        // confuse with exhaustion.
+        let mut telemetry = Telemetry::default();
+        assert!(
+            try_refutation(
+                &[rule, fact, goal],
+                &[],
+                &mut id_gen,
+                &symbols,
+                Duration::from_secs(1),
+                Limits {
+                    max_facts: 0,
+                    max_inferences: u64::MAX,
+                },
+                &mut telemetry,
+            )
+            .is_none()
+        );
+        assert_eq!(telemetry.stop_reason, StopReason::MaxFacts);
     }
 
     #[test]
@@ -571,7 +868,15 @@ mod tests {
             cnf(fact_ab,axiom,is_a_theorem(implies(a,b))).\n\
             cnf(condensed_detachment,axiom,~is_a_theorem(X) | is_a_theorem(Y) | ~is_a_theorem(implies(X,Y))).\n\
             cnf(goal,negated_conjecture,~is_a_theorem(b)).\n";
-        let result = try_refutation(&clauses, &[], &mut id_gen, &symbols, Duration::from_secs(1));
+        let result = try_refutation(
+            &clauses,
+            &[],
+            &mut id_gen,
+            &symbols,
+            Duration::from_secs(1),
+            Limits::default(),
+            &mut Telemetry::default(),
+        );
         let Some(SearchResult::Refutation(_, tstp)) = result else {
             panic!("expected detached theorem refutation");
         };

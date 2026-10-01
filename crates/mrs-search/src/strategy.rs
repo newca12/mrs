@@ -9,12 +9,31 @@
 
 pub mod named;
 
+/// Per-problem wall ceiling for the condensed-detachment pre-pass.
+const CONDENSED_DETACHMENT_BUDGET_MS: u64 = 1_000;
+/// Process-wide wall ceiling, so concurrent benchmark jobs cannot each pay the
+/// per-problem cap on every input problem.
+const CONDENSED_DETACHMENT_PROCESS_MS: u64 = 5_000;
+
 static CONDENSED_DETACHMENT_PROCESS_START: OnceLock<Instant> = OnceLock::new();
 
 fn condensed_detachment_process_elapsed() -> Duration {
     CONDENSED_DETACHMENT_PROCESS_START
         .get_or_init(Instant::now)
         .elapsed()
+}
+
+/// Reads a bound override, falling back to the production value.
+///
+/// A malformed or zero value falls back rather than disabling the bound: a zero
+/// would turn "bounded pre-pass" into "unbounded closure", which is the one
+/// thing these bounds exist to prevent.
+fn condensed_detachment_env_bound(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
 }
 
 use crate::HashMap;
@@ -1021,24 +1040,68 @@ pub fn run_schedule_with_candidate_receiver(
     // full-division measurements justify spending pre-pass time by default.
     // The strict self-check coordinator owns its own wall-clock reserve; leave
     // candidate verification to it via the ordinary schedule.
-    // A process-wide five-second ceiling ensures concurrent benchmark jobs do
-    // not repeatedly pay this diagnostic cap for every input problem.
+    // A process-wide ceiling ensures concurrent benchmark jobs do not
+    // repeatedly pay this diagnostic cap for every input problem.
+    //
+    // All three bounds are overridable so a measurement can tell "the closure
+    // cannot close this fragment" apart from "the bound stopped it first".
+    // Widening them spends portfolio budget, so it stays a diagnostic action:
+    // see docs/research/condensed-detachment.md. MRS_CD_* spells the short
+    // names because MRS_CONDENSED_DETACHMENT_BUDGET_MS is unwieldy in a shell.
+    let cd_process_ceiling = Duration::from_millis(condensed_detachment_env_bound(
+        "MRS_CD_PROCESS_MS",
+        CONDENSED_DETACHMENT_PROCESS_MS,
+    ));
     if std::env::var("MRS_CONDENSED_DETACHMENT").is_ok_and(|value| value != "0")
-        && condensed_detachment_process_elapsed() < Duration::from_secs(5)
+        && condensed_detachment_process_elapsed() < cd_process_ceiling
         && candidate_receiver.is_none()
     {
         let cd_start = Instant::now();
         let mut cd_id_gen = id_gen.clone();
         let cd_budget = total_budget
-            .min(Duration::from_secs(1))
-            .min(Duration::from_secs(5).saturating_sub(condensed_detachment_process_elapsed()));
-        if let Some(result) = try_condensed_detachment_refutation(
+            .min(Duration::from_millis(condensed_detachment_env_bound(
+                "MRS_CD_BUDGET_MS",
+                CONDENSED_DETACHMENT_BUDGET_MS,
+            )))
+            .min(cd_process_ceiling.saturating_sub(condensed_detachment_process_elapsed()));
+        let cd_limits = crate::condensed_detachment::Limits {
+            max_facts: condensed_detachment_env_bound(
+                "MRS_CD_MAX_FACTS",
+                crate::condensed_detachment::MAX_FACTS as u64,
+            ) as usize,
+            max_inferences: condensed_detachment_env_bound(
+                "MRS_CD_MAX_INFERENCES",
+                crate::condensed_detachment::MAX_INFERENCES,
+            ),
+        };
+        let mut cd_telemetry = crate::condensed_detachment::Telemetry::default();
+        let cd_result = try_condensed_detachment_refutation(
             &clauses_owned,
             provenance,
             &mut cd_id_gen,
             symbols,
             cd_budget,
-        ) && matches!(result, SearchResult::Refutation(..))
+            cd_limits,
+            &mut cd_telemetry,
+        );
+        eprintln!(
+            "% SZS detail condensed_detachment=ran shape={} stop={} facts={} inferences={} \
+             elapsed_ms={} budget_ms={} max_facts={} max_inferences={}",
+            if cd_telemetry.shape_matched {
+                "matched"
+            } else {
+                "unmatched"
+            },
+            cd_telemetry.stop_reason.as_str(),
+            cd_telemetry.facts,
+            cd_telemetry.inferences,
+            cd_telemetry.elapsed_ms,
+            cd_budget.as_millis(),
+            cd_limits.max_facts,
+            cd_limits.max_inferences,
+        );
+        if let Some(result) = cd_result
+            && matches!(result, SearchResult::Refutation(..))
         {
             let report = crate::ScheduleReport {
                 workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
