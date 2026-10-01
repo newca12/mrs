@@ -225,6 +225,20 @@ The stored 800-row run records:
 
 There were no errors, no `ko` rows, and no reference or polarity violations.
 
+**The UEQ row is superseded.** A later CASC-J13 UEQ campaign at commit
+`c07cac9` (`docs/results/ueq-casc-j13-20260930-run.csv`, 400 problems, 180 s,
+8 workers) answers **107/400 (26.8%)**, all 107 kernel-certified with zero
+violations. Row-by-row against this snapshot it solves 96 in common, **loses
+161**, and gains 11; on the regressed rows carrying telemetry on both sides
+median `processed_per_s` falls from 1649.5 to 116.0. Two changes fall inside
+that window — cross-strategy sharing disabled by default (`ce7bdc5`) and the
+`casc_ueq` portfolio reorder (`b214a13`) — and neither is yet established as
+the cause. Do not quote 257/400 as the current UEQ number, and do not quote
+26.8% as a CASC result: the new run is `hardware=adaptive` on 16 cores, not
+CASC-shaped. Full analysis and the separating A/B:
+[`ueq-2026-09.md`](ueq-2026-09.md). The FNE and FEQ rows above are
+unaffected by that campaign and stand.
+
 ### Cooperative Sharing Evidence
 
 The controlled results so far show that sharing is workload-dependent.
@@ -381,3 +395,11 @@ Before changing a `casc_*` order or sharing interval:
 - Do not convert solo set-cover coverage into a cooperative claim.
 - Do not allow profile/ML policy errors to produce a new definitive SZS status.
 - Update the benchmark log and this summary only after the raw result exists.
+
+The second and seventh items exist because both were violated on the UEQ path:
+`casc_ueq` was reordered at `b214a13` on solo set-cover evidence that
+[`greedy_portfolios_20260925.md`](../../results/greedy_portfolios_20260925.md)
+flags as unvalidated cooperatively, and cross-strategy sharing was disabled by
+default at `ce7bdc5` in the same window. UEQ coverage fell 257 → 107 on the same
+400 problems across those two changes. Neither was re-measured as a control
+before or after. See [`ueq-2026-09.md`](ueq-2026-09.md) §2.

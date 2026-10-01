@@ -1,0 +1,28 @@
+audit_report=/DATA/ai/fr22192/mrs/crates/mrs-bench/results/campaign-ueq-W8C16J1-20260930/certification/audit.csv
+summary_report=/DATA/ai/fr22192/mrs/crates/mrs-bench/results/campaign-ueq-W8C16J1-20260930/certification/audit-summary.txt
+checks=[strict]
+
+================================================================================
+Division: ueq                                                          Rows: 400
+================================================================================
+
+Generation
++--------------------+-------+
+|             Status | Count |
++--------------------+-------+
+|            Theorem |     0 |
+|      Unsatisfiable |   107 |
+|        Satisfiable |     0 |
+| CounterSatisfiable |     0 |
+|             GaveUp |    22 |
+|            Timeout |   271 |
+|              Error |     0 |
+|              Other |     0 |
++--------------------+-------+
+
+Verification (Refutations)
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+|   Mode | Applicable | VerifiedGood | VerifiedBad | Unknown | Timeout | N/A: Model | N/A: Incomplete | Error | Other |
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+
+| strict |        107 |          107 |           0 |       0 |       0 |          0 |             293 |     0 |     0 |
++--------+------------+--------------+-------------+---------+---------+------------+-----------------+-------+-------+

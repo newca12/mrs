@@ -113,6 +113,21 @@ An earlier revision of this table claimed 192 at HEAD. That figure predates the
 bounded-NNF work, which moved 3 problems from `Certified` to `Unknown` by design
 — the trade is named below, and the honest total is 189, not 192.
 
+### UEQ CASC-J13 campaign `campaign-ueq-W8C16J1-20260930` (180 s, 8 workers, `c07cac9`)
+
+A single-division UEQ campaign answers **107 refutations, 107 `VerifiedGood` of
+107 applicable, 0 `VerifiedBad`, 0 `Unknown`, 0 `Error`** under `--checks
+strict` — clean on every row that produced a proof, against 87.9 % on the W8J2
+run above. The certification gap that dominates that table (the 18
+`demodulation` rows) is therefore not what limits this division; the 293
+remaining rows are `N/A: Incomplete`, i.e. they produced no proof to check.
+
+The number to watch is not the 107 but the comparison: the stored `codex.db`
+CASC-J13 UEQ run answers 257/400 on the same problems, so this campaign loses
+161 and gains 11, with median `processed_per_s` on the regressed rows falling
+from 1649.5 to 116.0. Coverage, not certification, is the open question. See
+[`reports/benchmarks/ueq-2026-09.md`](reports/benchmarks/ueq-2026-09.md).
+
 ### The residual 25, and what closes them
 
 Reasons as reported at HEAD for the 25 `Unknown` (one row per proof):
