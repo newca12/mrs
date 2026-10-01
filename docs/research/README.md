@@ -6,5 +6,6 @@ runtime contracts unless a current reference page explicitly adopts a result.
 | Document | Scope |
 |---|---|
 | [Machine learning](ml.md) | Current ML implementation and evaluation policy. |
+| [Parent guidance experiment](parent-guidance.md) | Opt-in parent-pair prediction, trace collection, training, and pruning contract. |
 | [Competition selection](competition-selection.md) | TPTP/CASC corpus selection and permutation studies. |
 | [Hardware](hardware.md) | Historical hardware, ISA, and scaling measurements. |

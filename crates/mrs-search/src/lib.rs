@@ -103,6 +103,10 @@ pub struct SearchStats {
     pub shared_published: u64,
     /// Shared unit-equality chains imported by this strategy.
     pub shared_imported: u64,
+    /// Inference parent pairs omitted by experimental guidance.
+    pub parent_guidance_pruned: u64,
+    /// Parent pairs sampled for offline training.
+    pub parent_guidance_sampled: u64,
     /// Where the run stood when it crossed the CASC reference wall clock.
     /// Recorded only in `casc-sim`, which searches past that point on purpose:
     /// without it a later resource stop and a plain timeout are indistinguishable
@@ -191,6 +195,16 @@ impl ScheduleReport {
             .iter()
             .map(|s| s.stats.shared_imported)
             .sum();
+        let parent_guidance_pruned: u64 = self
+            .strategies
+            .iter()
+            .map(|s| s.stats.parent_guidance_pruned)
+            .sum();
+        let parent_guidance_sampled: u64 = self
+            .strategies
+            .iter()
+            .map(|s| s.stats.parent_guidance_sampled)
+            .sum();
         let timeout = self
             .strategies
             .iter()
@@ -205,7 +219,7 @@ impl ScheduleReport {
         let mut detail = format!(
             "strategies={} workers={} strategy_ids={} result={} elapsed_ms={} timeout={} saturated={} \
              processed={} generated={} passive={} weight_discarded={} lrs_discarded={} \
-             fwd_subsumed={} shared_published={} shared_imported={}",
+             fwd_subsumed={} shared_published={} shared_imported={} parent_guidance_pruned={} parent_guidance_sampled={}",
             self.strategies.len(),
             self.workers,
             {
@@ -233,6 +247,8 @@ impl ScheduleReport {
             total_forward_subsumed,
             total_shared_published,
             total_shared_imported,
+            parent_guidance_pruned,
+            parent_guidance_sampled,
         );
 
         if let Some(ig) = &self.instgen {
@@ -435,6 +451,8 @@ pub enum IncompletenessReason {
     SineFiltered,
     /// ML premise pruning removed input axioms.
     MlPremisePruned,
+    /// Experimental parent guidance omitted candidate inferences.
+    ParentGuidancePruned,
     /// A non-standard clause weight changes the simplification/search order.
     NonStandardWeightFn,
     /// Literal selection does not preserve complete inference generation.
@@ -786,6 +804,7 @@ impl SearchConfig {
         weight_discarded: u64,
         lrs_discarded: u64,
         ml_pruned: bool,
+        parent_guidance_pruned: u64,
     ) -> Result<(), IncompletenessReason> {
         if let Some(cap) = self.max_term_weight
             && weight_discarded > 0
@@ -806,6 +825,9 @@ impl SearchConfig {
         }
         if ml_pruned {
             return Err(IncompletenessReason::MlPremisePruned);
+        }
+        if parent_guidance_pruned > 0 {
+            return Err(IncompletenessReason::ParentGuidancePruned);
         }
         if self.weight_fn != ClauseWeightFn::Standard {
             return Err(IncompletenessReason::NonStandardWeightFn);
@@ -950,8 +972,16 @@ mod tests {
     fn completeness_audit_accepts_unpruned_default_configuration() {
         let config = SearchConfig::default();
         config
-            .check_completeness(0, 0, false)
+            .check_completeness(0, 0, false, 0)
             .expect("default configuration should pass the configuration audit");
+    }
+
+    #[test]
+    fn completeness_audit_rejects_parent_guidance_pruning() {
+        assert_eq!(
+            SearchConfig::default().check_completeness(0, 0, false, 1),
+            Err(IncompletenessReason::ParentGuidancePruned)
+        );
     }
 
     #[test]
@@ -966,7 +996,7 @@ mod tests {
             ..SearchConfig::default()
         };
         assert_eq!(
-            config.check_completeness(0, 0, false),
+            config.check_completeness(0, 0, false, 0),
             Err(IncompletenessReason::OrderedInferenceRestriction)
         );
     }
@@ -986,7 +1016,7 @@ mod tests {
             ..SearchConfig::default()
         };
         assert_eq!(
-            base.check_completeness(1, 0, false),
+            base.check_completeness(1, 0, false, 0),
             Err(IncompletenessReason::MaxTermWeightDiscarded {
                 cap: 10,
                 discarded: 1,
@@ -998,7 +1028,7 @@ mod tests {
             ..base.clone()
         };
         assert_eq!(
-            sos.check_completeness(0, 0, false),
+            sos.check_completeness(0, 0, false, 0),
             Err(IncompletenessReason::SosRestricted(10))
         );
 
@@ -1007,7 +1037,7 @@ mod tests {
             ..base.clone()
         };
         assert_eq!(
-            unit_only.check_completeness(0, 0, false),
+            unit_only.check_completeness(0, 0, false, 0),
             Err(IncompletenessReason::UnitOnlyResolution)
         );
 
@@ -1016,16 +1046,20 @@ mod tests {
             ..base.clone()
         };
         assert_eq!(
-            sine.check_completeness(0, 0, false),
+            sine.check_completeness(0, 0, false, 0),
             Err(IncompletenessReason::SineFiltered)
         );
 
         assert_eq!(
-            base.check_completeness(0, 0, true),
+            base.check_completeness(0, 0, true, 0),
             Err(IncompletenessReason::MlPremisePruned)
         );
         assert_eq!(
-            base.check_completeness(0, 42, false),
+            base.check_completeness(0, 0, false, 1),
+            Err(IncompletenessReason::ParentGuidancePruned)
+        );
+        assert_eq!(
+            base.check_completeness(0, 42, false, 0),
             Err(IncompletenessReason::LrsDiscarded(42))
         );
         assert_eq!(
@@ -1033,7 +1067,7 @@ mod tests {
                 weight_fn: ClauseWeightFn::FunctionDepth,
                 ..base.clone()
             }
-            .check_completeness(0, 0, false),
+            .check_completeness(0, 0, false, 0),
             Err(IncompletenessReason::NonStandardWeightFn)
         );
         assert_eq!(
@@ -1041,8 +1075,36 @@ mod tests {
                 literal_selection: LiteralSelection::MaxNegativeOrMaxPositive,
                 ..base
             }
-            .check_completeness(0, 0, false),
+            .check_completeness(0, 0, false, 0),
             Err(IncompletenessReason::IncompleteLiteralSelection)
+        );
+    }
+
+    #[test]
+    fn parent_guidance_telemetry_marks_experimental_run() {
+        let mut report = ScheduleReport::default();
+        report.strategies.push(StrategyReport {
+            strategy_idx: 7,
+            strategy_id: 8,
+            result: SearchResult::GaveUp,
+            stats: SearchStats {
+                parent_guidance_pruned: 3,
+                parent_guidance_sampled: 40,
+                ..SearchStats::default()
+            },
+            elapsed_ms: 1,
+        });
+        let detail = report.telemetry_detail("GaveUp");
+        assert!(detail.contains("parent_guidance_pruned=3"));
+        assert!(detail.contains("parent_guidance_sampled=40"));
+    }
+
+    #[cfg(feature = "parent-guidance")]
+    #[test]
+    fn parent_guidance_pruned_search_fails_completeness_audit() {
+        assert_eq!(
+            SearchConfig::default().check_completeness(0, 0, false, 1),
+            Err(IncompletenessReason::ParentGuidancePruned)
         );
     }
 }

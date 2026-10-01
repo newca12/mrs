@@ -25,5 +25,6 @@ burn = { workspace = true, features = [
     "dataset",
 ] }
 wincode = { workspace = true }
+serde_json = { workspace = true }
 walkdir = { workspace = true }
 rand = { workspace = true }

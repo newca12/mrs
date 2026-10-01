@@ -1845,6 +1845,24 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         continue;
                     }
                     if resolution_partner_ids.insert(partner.id) {
+                        #[cfg(feature = "parent-guidance")]
+                        let inference_kind =
+                            mrs_core::ml::parent_guidance::InferenceKind::Resolution;
+                        #[cfg(feature = "parent-guidance")]
+                        let (reject, sample) = state.reject_parent_pair(
+                            &given,
+                            &partner,
+                            inference_kind,
+                            given_sel.len() + partner.literals.len(),
+                        );
+                        #[cfg(not(feature = "parent-guidance"))]
+                        let reject = false;
+                        if reject {
+                            state.stats.parent_guidance_pruned += 1;
+                            continue;
+                        }
+                        #[cfg(feature = "parent-guidance")]
+                        let parent_sample = sample;
                         let active_sel = {
                             let base = selected_literals_id(
                                 &partner,
@@ -1872,6 +1890,8 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                             &state.comm_symbols,
                             &state.assoc_symbols,
                         );
+                        #[cfg(feature = "parent-guidance")]
+                        state.record_parent_pair_outcome(parent_sample, !resolvents.is_empty());
                         for mut r in resolvents {
                             mark_ac_resolution(&mut r, &state.ac_axiom_ids);
                             new_clauses.push(r);
@@ -1928,6 +1948,19 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     {
                         continue;
                     }
+                    #[cfg(feature = "parent-guidance")]
+                    let (reject, parent_sample) = state.reject_parent_pair(
+                        &given,
+                        active,
+                        mrs_core::ml::parent_guidance::InferenceKind::GivenAsEqualitySource,
+                        given_sel.len() + active.literals.len(),
+                    );
+                    #[cfg(not(feature = "parent-guidance"))]
+                    let reject = false;
+                    if reject {
+                        state.stats.parent_guidance_pruned += 1;
+                        continue;
+                    }
                     let active_sel = {
                         let base = selected_literals_id(
                             active,
@@ -1951,6 +1984,8 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         &state.assoc_symbols,
                         state.search_deadline,
                     );
+                    #[cfg(feature = "parent-guidance")]
+                    state.record_parent_pair_outcome(parent_sample, !sp.is_empty());
                     new_clauses.extend(sp.into_iter().map(|mut clause| {
                         mark_ac_superposition(&mut clause, &state.ac_axiom_ids);
                         clause
@@ -1976,21 +2011,38 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                             base
                         }
                     };
-                    let sp = superposition::superpose_selected_id_until(
+                    #[cfg(feature = "parent-guidance")]
+                    let (reject_self, self_sample) = state.reject_parent_pair(
                         &given,
                         &given,
-                        &mut state.term_bank,
-                        &ordering,
-                        &mut state.id_gen,
-                        Some(&given_sel_local),
-                        &state.comm_symbols,
-                        &state.assoc_symbols,
-                        state.search_deadline,
+                        mrs_core::ml::parent_guidance::InferenceKind::SelfSuperposition,
+                        given_sel_local.len() * 2,
                     );
-                    new_clauses.extend(sp.into_iter().map(|mut clause| {
-                        mark_ac_superposition(&mut clause, &state.ac_axiom_ids);
-                        clause
-                    }));
+                    #[cfg(not(feature = "parent-guidance"))]
+                    let reject_self = false;
+                    #[cfg(not(feature = "parent-guidance"))]
+                    let _self_sample: Option<usize> = None;
+                    if reject_self {
+                        state.stats.parent_guidance_pruned += 1;
+                    } else {
+                        let sp = superposition::superpose_selected_id_until(
+                            &given,
+                            &given,
+                            &mut state.term_bank,
+                            &ordering,
+                            &mut state.id_gen,
+                            Some(&given_sel_local),
+                            &state.comm_symbols,
+                            &state.assoc_symbols,
+                            state.search_deadline,
+                        );
+                        #[cfg(feature = "parent-guidance")]
+                        state.record_parent_pair_outcome(self_sample, !sp.is_empty());
+                        new_clauses.extend(sp.into_iter().map(|mut clause| {
+                            mark_ac_superposition(&mut clause, &state.ac_axiom_ids);
+                            clause
+                        }));
+                    }
                 }
             }
 
@@ -2067,6 +2119,19 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     {
                         continue;
                     }
+                    #[cfg(feature = "parent-guidance")]
+                    let (reject, parent_sample) = state.reject_parent_pair(
+                        &given,
+                        active,
+                        mrs_core::ml::parent_guidance::InferenceKind::GivenAsTarget,
+                        given_sel.len() + active.literals.len(),
+                    );
+                    #[cfg(not(feature = "parent-guidance"))]
+                    let reject = false;
+                    if reject {
+                        state.stats.parent_guidance_pruned += 1;
+                        continue;
+                    }
                     let sp = superposition::superpose_selected_id_until(
                         active,
                         &given,
@@ -2078,6 +2143,8 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         &state.assoc_symbols,
                         state.search_deadline,
                     );
+                    #[cfg(feature = "parent-guidance")]
+                    state.record_parent_pair_outcome(parent_sample, !sp.is_empty());
                     new_clauses.extend(sp.into_iter().map(|mut clause| {
                         mark_ac_superposition(&mut clause, &state.ac_axiom_ids);
                         clause
@@ -2959,10 +3026,18 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
         return SearchResult::GaveUp;
     }
 
+    #[cfg(feature = "parent-guidance")]
+    let parent_guidance_pruned = state.stats.parent_guidance_pruned;
+    #[cfg(not(feature = "parent-guidance"))]
+    let parent_guidance_pruned = 0;
+    if parent_guidance_pruned > 0 {
+        return SearchResult::GaveUp;
+    }
     let audit = config.check_completeness(
         state.stats.weight_discarded,
         state.stats.lrs_discarded,
         false,
+        parent_guidance_pruned,
     );
     if std::env::var("TRACE_SEARCH").is_ok() {
         eprintln!(

@@ -430,6 +430,73 @@ pub struct MlOptions {
     /// `Saturated` (demoted to `GaveUp`), because saturating a subset says
     /// nothing about the full problem. `None` disables pruning.
     pub premise_keep: Option<Arc<std::collections::HashSet<mrs_core::clause::ClauseId>>>,
+    /// Parent-pair linear model JSON, enabled only in the final active slot.
+    #[cfg(feature = "parent-guidance")]
+    pub parent_weights: Option<String>,
+    /// Logit threshold required to turn scoring into pruning. Without it,
+    /// parent pairs are sampled for offline training only.
+    #[cfg(feature = "parent-guidance")]
+    pub parent_threshold: Option<f32>,
+}
+
+#[cfg(feature = "parent-guidance")]
+fn parent_guidance_tail_slot(strategy_idx: usize, schedule: &StrategySchedule) -> bool {
+    let Some(last_active) = schedule
+        .strategies
+        .iter()
+        .rposition(|(_, budget)| !budget.is_zero())
+    else {
+        return false;
+    };
+    last_active > 0 && strategy_idx == last_active
+}
+
+#[cfg(feature = "parent-guidance")]
+fn log_parent_samples(
+    log_dir: &str,
+    strategy_idx: usize,
+    samples: &[mrs_core::ml::parent_guidance::ParentPairSample],
+) {
+    use std::io::Write;
+    let dir = std::path::Path::new(log_dir).join("parent-guidance");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let name = std::env::var("PROBLEM_NAME").unwrap_or_else(|_| "problem".into());
+    if let Ok(mut file) = std::fs::File::create(dir.join(format!("{name}_{strategy_idx}.csv"))) {
+        for (features, _, kind, label) in samples {
+            let features = features
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            if let Some(label) = label {
+                let _ = writeln!(file, "{},{},{}", *kind as u8, u8::from(*label), features);
+            }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "parent-guidance"))]
+mod parent_guidance_slot_tests {
+    use super::*;
+
+    #[test]
+    fn selects_only_last_active_strategy_and_requires_multiple() {
+        let schedule = StrategySchedule {
+            strategies: vec![
+                (SearchConfig::default(), Duration::from_secs(1)),
+                (SearchConfig::default(), Duration::from_secs(1)),
+                (SearchConfig::default(), Duration::ZERO),
+            ],
+        };
+        assert!(!parent_guidance_tail_slot(0, &schedule));
+        assert!(parent_guidance_tail_slot(1, &schedule));
+        let single = StrategySchedule {
+            strategies: vec![(SearchConfig::default(), Duration::from_secs(1))],
+        };
+        assert!(!parent_guidance_tail_slot(0, &single));
+    }
 }
 
 /// Pick a division portfolio from the syntactic shape of the clause set.
@@ -1111,6 +1178,17 @@ pub fn run_schedule_with_candidate_receiver(
         }
     });
 
+    #[cfg(feature = "parent-guidance")]
+    let parent_model = ml.parent_weights.as_ref().and_then(|path| {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|content| {
+                serde_json::from_str::<mrs_core::ml::parent_guidance::ParentGuidanceModel>(&content)
+                    .ok()
+            })
+            .filter(mrs_core::ml::parent_guidance::ParentGuidanceModel::valid)
+            .map(Arc::new)
+    });
     let mut spawned_workers = num_workers;
 
     std::thread::scope(|s| {
@@ -1128,6 +1206,14 @@ pub fn run_schedule_with_candidate_receiver(
 
             #[cfg(feature = "ml-guidance")]
             let ml_model_thread = ml_model.clone();
+            #[cfg(feature = "parent-guidance")]
+            let parent_model_thread = parent_model.clone();
+            #[cfg(feature = "parent-guidance")]
+            let parent_threshold_thread = ml.parent_threshold;
+            #[cfg(feature = "parent-guidance")]
+            let parent_guidance_requested = ml.parent_weights.is_some()
+                || ml.parent_threshold.is_some()
+                || ml.log_dir.is_some();
             let log_ml_data_thread = ml.log_dir.clone();
             let premise_keep_thread = ml.premise_keep.clone();
             let candidate_receiver_thread = candidate_receiver.clone();
@@ -1159,7 +1245,7 @@ pub fn run_schedule_with_candidate_receiver(
                         break;
                     }
 
-                    let mut sc = search_config.clone();
+            let mut sc = search_config.clone();
                     // Scale the individual time slice by the number of workers, capped by wall-clock limit.
                     let scaled_ms = (sc.time_limit.as_millis() as u64).saturating_mul(num_workers as u64);
                     sc.time_limit = Duration::from_millis(scaled_ms).min(remaining);
@@ -1238,6 +1324,15 @@ pub fn run_schedule_with_candidate_receiver(
                     {
                         state.ml_model = ml_model_thread.clone();
                     }
+                    #[cfg(feature = "parent-guidance")]
+                    if parent_guidance_tail_slot(strategy_idx, schedule) {
+                        state.parent_guidance_model = parent_model_thread.clone();
+                        state.parent_guidance_threshold = parent_threshold_thread;
+                        state.parent_guidance_enabled = parent_guidance_requested;
+                        if state.parent_guidance_enabled && log_ml_data_thread.is_some() {
+                            state.parent_guidance_sample_probability = 0.02;
+                        }
+                    }
                     state.stop_flag = Some(Arc::clone(&stop));
                     state.shared_pool = Some(Arc::clone(&pool));
 
@@ -1246,6 +1341,13 @@ pub fn run_schedule_with_candidate_receiver(
                     let elapsed_ms = strategy_start.elapsed().as_millis() as u64;
                     // Capture passive size after search (unprocessed set is still live).
                     state.stats.passive_size = state.unprocessed.active_count() as u64;
+                    #[cfg(feature = "parent-guidance")]
+                    if state.parent_guidance_enabled
+                        && state.stats.parent_guidance_sampled > 0
+                        && let Some(log_dir) = &state.log_ml_data
+                    {
+                        log_parent_samples(log_dir, strategy_idx, &state.parent_pairs);
+                    }
 
                     if std::env::var("TRACE_SEARCH").is_ok() {
                         eprintln!(
@@ -1259,6 +1361,20 @@ pub fn run_schedule_with_candidate_receiver(
                         );
                     }
 
+                    let raw = {
+                        #[cfg(feature = "parent-guidance")]
+                        {
+                            if state.stats.parent_guidance_pruned > 0 {
+                                SearchResult::GaveUp
+                            } else {
+                                raw
+                            }
+                        }
+                        #[cfg(not(feature = "parent-guidance"))]
+                        {
+                            raw
+                        }
+                    };
                     let result = match raw {
                         SearchResult::Refutation(id, tstp_proof) => {
                             #[cfg(feature = "ml-guidance")]

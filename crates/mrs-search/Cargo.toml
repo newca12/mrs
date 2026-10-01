@@ -10,6 +10,7 @@ rust-version.workspace = true
 [features]
 default = []
 ml-guidance = ["mrs-core/ml", "dep:rand", "dep:wincode", "dep:burn", "burn?/ndarray", "burn?/std"]
+parent-guidance = ["mrs-core/ml", "dep:serde_json"]
 
 [dependencies]
 mrs-core = { workspace = true }
@@ -23,6 +24,7 @@ rustc-hash = { workspace = true }
 smallvec = { workspace = true }
 num_cpus = { workspace = true }
 libc = { workspace = true }
+serde_json = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 wincode = { workspace = true, optional = true }
 burn = { workspace = true, optional = true }

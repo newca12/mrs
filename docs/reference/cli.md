@@ -71,6 +71,8 @@ feature build.
 | `--ml-premise-weights FILE` | Premise-selector model used with `--ml-prune`. |
 | `--ml-schedule` | Deprecated alias for rule-based `--auto-schedule`; the old learned schedule classifier is retired. |
 | `--ml-schedule-weights FILE` | Deprecated and ignored. |
+| `--parent-guidance-weights FILE` | Load a schema-checked parent-pair linear model in a `parent-guidance` build. Guidance is restricted to the final active strategy slot in multi-strategy portfolios. |
+| `--parent-guidance-threshold LOGIT` | Reject candidate inference pairs with model scores below this finite logit. Requires compatible weights; without a threshold, logging remains observational. A worker that rejects pairs cannot claim a definitive refutation or saturation. |
 
 ## Features
 
@@ -80,6 +82,7 @@ feature build.
 | `proover` | Enables stdin input, `--quiet`, and ProoVer-friendly behavior. |
 | `ml` | Enables ML trace logging and premise-selection support. |
 | `ml-guidance` | Enables in-process ML-guided selection and weight loading. |
+| `parent-guidance` | Enables parent-pair feature collection and opt-in inference pruning. |
 
 Examples:
 

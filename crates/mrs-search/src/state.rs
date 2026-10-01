@@ -16,6 +16,21 @@ use mrs_index::stree::STreeId;
 use crate::avatar::AvatarContext;
 use crate::unprocessed::UnprocessedSet;
 
+#[cfg(feature = "parent-guidance")]
+fn sample_hash(
+    given: ClauseId,
+    partner: ClauseId,
+    kind: mrs_core::ml::parent_guidance::InferenceKind,
+) -> f32 {
+    use std::hash::{Hash, Hasher};
+    let mut ids = [given.0, partner.0];
+    ids.sort_unstable();
+    let mut hasher = rustc_hash::FxHasher::default();
+    ids.hash(&mut hasher);
+    kind.hash(&mut hasher);
+    (hasher.finish() >> 40) as f32 / (1u32 << 24) as f32
+}
+
 /// The mutable state of a proof search.
 ///
 /// Tracks processed (active) clauses, unprocessed (passive) clauses,
@@ -84,6 +99,18 @@ pub struct SearchState {
     pub log_ml_data: Option<String>,
     /// Whether to log in CSV format instead of wincode.
     pub ml_log_csv: bool,
+    /// Sampled parent-pair vectors, parent ids, operation kind, and whether
+    /// the full inference routine produced a non-tautological result.
+    #[cfg(feature = "parent-guidance")]
+    pub parent_pairs: Vec<mrs_core::ml::parent_guidance::ParentPairSample>,
+    #[cfg(feature = "parent-guidance")]
+    pub parent_guidance_enabled: bool,
+    #[cfg(feature = "parent-guidance")]
+    pub parent_guidance_sample_probability: f32,
+    #[cfg(feature = "parent-guidance")]
+    pub parent_guidance_threshold: Option<f32>,
+    #[cfg(feature = "parent-guidance")]
+    pub parent_guidance_model: Option<Arc<mrs_core::ml::parent_guidance::ParentGuidanceModel>>,
     /// Loaded ML model for clause scoring.
     #[cfg(feature = "ml-guidance")]
     pub ml_model: Option<Arc<mrs_core::ml::model::ClauseClassifier<burn::backend::NdArray>>>,
@@ -262,6 +289,16 @@ impl SearchState {
             shared_pool_seen: HashSet::default(),
             log_ml_data,
             ml_log_csv,
+            #[cfg(feature = "parent-guidance")]
+            parent_pairs: Vec::new(),
+            #[cfg(feature = "parent-guidance")]
+            parent_guidance_enabled: false,
+            #[cfg(feature = "parent-guidance")]
+            parent_guidance_sample_probability: 0.0,
+            #[cfg(feature = "parent-guidance")]
+            parent_guidance_threshold: None,
+            #[cfg(feature = "parent-guidance")]
+            parent_guidance_model: None,
             #[cfg(feature = "ml-guidance")]
             ml_model: None,
             #[cfg(feature = "ml-guidance")]
@@ -350,6 +387,85 @@ impl SearchState {
             Some(logit)
         } else {
             None
+        }
+    }
+
+    /// Sample candidate parent pairs, or reject them only when an explicit
+    /// model and logit threshold have both been configured.
+    #[cfg(feature = "parent-guidance")]
+    pub fn reject_parent_pair(
+        &mut self,
+        given: &IdClause,
+        partner: &IdClause,
+        kind: mrs_core::ml::parent_guidance::InferenceKind,
+        selected_literals: usize,
+    ) -> (bool, Option<usize>) {
+        if !self.parent_guidance_enabled {
+            return (false, None);
+        }
+        let threshold = self.parent_guidance_threshold;
+        let sample = self.log_ml_data.is_some()
+            && self
+                .parent_guidance_model
+                .as_ref()
+                .is_none_or(|model| model.inference_kind == kind as u8)
+            && sample_hash(given.id, partner.id, kind) < self.parent_guidance_sample_probability;
+        let sample_index = if sample && self.parent_pairs.len() < 200_000 {
+            let mut parents = [given.id, partner.id];
+            parents.sort_unstable();
+            let index = self.parent_pairs.len();
+            self.parent_pairs.push((
+                [0.0; mrs_core::ml::parent_guidance::PARENT_FEATURE_DIM],
+                parents,
+                kind,
+                None,
+            ));
+            Some(index)
+        } else {
+            None
+        };
+        if !sample && threshold.is_none() {
+            return (false, None);
+        }
+        let model = self.parent_guidance_model.as_ref();
+        let features = mrs_core::ml::parent_guidance::extract_parent_features(
+            given,
+            partner,
+            kind,
+            selected_literals,
+            &self.term_bank,
+            &self.symbols,
+        );
+        if let Some(index) = sample_index {
+            self.parent_pairs[index].0 = features;
+            self.stats.parent_guidance_sampled += 1;
+        }
+        let rejected = match (model, threshold) {
+            (Some(model), Some(threshold)) if model.inference_kind == kind as u8 => {
+                let score = model.score(&features);
+                score.is_finite() && score < threshold
+            }
+            _ => false,
+        };
+        (rejected, (!rejected).then_some(sample_index).flatten())
+    }
+
+    #[cfg(feature = "parent-guidance")]
+    pub fn record_parent_pair_outcome(
+        &mut self,
+        sample_index: Option<usize>,
+        produced_inference: bool,
+    ) {
+        if self
+            .search_deadline
+            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+        {
+            return;
+        }
+        if let Some((_, _, _, label)) =
+            sample_index.and_then(|index| self.parent_pairs.get_mut(index))
+        {
+            *label = Some(produced_inference);
         }
     }
 

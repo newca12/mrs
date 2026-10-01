@@ -35,6 +35,10 @@ fn main() {
     let mut log_ml_data: Option<String> = None;
     let mut ml_log_csv = false;
     let mut ml_weights: Option<String> = None;
+    #[cfg(feature = "parent-guidance")]
+    let mut parent_weights: Option<String> = None;
+    #[cfg(feature = "parent-guidance")]
+    let mut parent_threshold: Option<f32> = None;
     let mut workers: Option<usize> = None;
     let mut hardware: Option<mrs_search::HardwareMode> = None;
     // casc-sim only: multiple of the CASC wall clock to keep searching after.
@@ -193,6 +197,43 @@ fn main() {
                 // If ml weights are provided but no schedule is selected, default to the `ml` schedule.
                 if schedule_name.is_none() {
                     schedule_name = Some("ml".to_string());
+                }
+            }
+            "--parent-guidance-weights" => {
+                #[cfg(feature = "parent-guidance")]
+                {
+                    parent_weights = Some(args.next().unwrap_or_else(|| {
+                        eprintln!("--parent-guidance-weights requires a JSON file");
+                        process::exit(1);
+                    }));
+                }
+                #[cfg(not(feature = "parent-guidance"))]
+                {
+                    eprintln!("Build with --features parent-guidance to use this option");
+                    process::exit(1);
+                }
+            }
+            "--parent-guidance-threshold" => {
+                #[cfg(feature = "parent-guidance")]
+                {
+                    let raw = args.next().unwrap_or_else(|| {
+                        eprintln!("--parent-guidance-threshold requires a finite logit");
+                        process::exit(1);
+                    });
+                    let value = raw
+                        .parse::<f32>()
+                        .ok()
+                        .filter(|v| v.is_finite())
+                        .unwrap_or_else(|| {
+                            eprintln!("Invalid finite logit: {raw}");
+                            process::exit(1);
+                        });
+                    parent_threshold = Some(value);
+                }
+                #[cfg(not(feature = "parent-guidance"))]
+                {
+                    eprintln!("Build with --features parent-guidance to use this option");
+                    process::exit(1);
                 }
             }
             "--auto-schedule" => {
@@ -1061,6 +1102,10 @@ fn main() {
                     log_csv: ml_log_csv,
                     weights: ml_weights.clone(),
                     premise_keep: premise_keep.clone(),
+                    #[cfg(feature = "parent-guidance")]
+                    parent_weights: parent_weights.clone(),
+                    #[cfg(feature = "parent-guidance")]
+                    parent_threshold,
                 },
                 Some(search_workers),
                 Some(coordinator.clone()),
@@ -1096,6 +1141,10 @@ fn main() {
                     log_csv: ml_log_csv,
                     weights: ml_weights.clone(),
                     premise_keep: premise_keep.clone(),
+                    #[cfg(feature = "parent-guidance")]
+                    parent_weights: parent_weights.clone(),
+                    #[cfg(feature = "parent-guidance")]
+                    parent_threshold,
                 },
                 Some(actual_workers),
             );
