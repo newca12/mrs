@@ -234,7 +234,7 @@ fn main() {
         collected.lock().unwrap().push(outcome);
         let mut done_count = completed.lock().unwrap();
         *done_count += 1;
-        if *done_count % 50 == 0 {
+        if (*done_count).is_multiple_of(50) {
             eprintln!("[sweep] {done_count}/{} runs", tasks.len());
         }
     });

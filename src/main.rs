@@ -55,6 +55,12 @@ fn main() {
     let mut profile_json_mode = false;
     let mut goal_transform: Option<mrs_cnf::GoalTransformMode> = None;
     let mut certify_ordered = false;
+    // Pre-phase: measure the problem, then route the portfolio from the
+    // measurement. Off unless asked for, so this stays a measurement rather than
+    // a silent behaviour change.
+    let mut pre_phase = false;
+    let mut pre_phase_only = false;
+    let mut pre_phase_probe = false;
     /// What casc-sim does with the wall clock. `Inherit` is every other mode.
     enum SimBudget {
         Inherit,
@@ -326,6 +332,17 @@ fn main() {
             "--certify-ordered" => {
                 certify_ordered = true;
             }
+            "--pre-phase" => {
+                pre_phase = true;
+            }
+            "--pre-phase-only" => {
+                pre_phase = true;
+                pre_phase_only = true;
+            }
+            "--pre-phase-probe" => {
+                pre_phase = true;
+                pre_phase_probe = true;
+            }
             "--proof-bytes-limit" => {
                 let val = args.next().unwrap_or_else(|| {
                     eprintln!("Error: --proof-bytes-limit requires a byte count");
@@ -382,7 +399,7 @@ fn main() {
             _ => {
                 if path.is_some() {
                     eprintln!(
-                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--goal-transform MODE] [--certify-ordered] [--proof-bytes-limit N] [--no-bce] [--no-ple] [--no-instgen] [--no-lrs] [--no-sharing] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"
+                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--goal-transform MODE] [--certify-ordered] [--pre-phase] [--proof-bytes-limit N] [--no-bce] [--no-ple] [--no-instgen] [--no-lrs] [--no-sharing] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"
                     );
                     process::exit(1);
                 }
@@ -392,7 +409,7 @@ fn main() {
     }
     let Some(path) = path else {
         eprintln!(
-            "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--goal-transform MODE] [--certify-ordered] [--proof-bytes-limit N] [--no-bce] [--no-ple] [--no-instgen] [--no-lrs] [--no-sharing] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"
+            "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--goal-transform MODE] [--certify-ordered] [--pre-phase] [--proof-bytes-limit N] [--no-bce] [--no-ple] [--no-instgen] [--no-lrs] [--no-sharing] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"
         );
         eprintln!("  An automated theorem prover for TPTP problems.");
         eprintln!(
@@ -951,6 +968,82 @@ fn main() {
                 config.emit_avatar_trace = true;
             }
         }
+        // The pre-phase replaces the portfolio only when no schedule was named
+        // explicitly. An explicit `--schedule` / `--strategy` / `--portfolio` is
+        // a measurement instruction, and silently overriding it would make every
+        // A/B of this feature unreadable.
+        let prephase_enabled = pre_phase || std::env::var("MRS_PREPHASE").is_ok_and(|v| v != "0");
+        let mut decision: Option<mrs_search::prephase::Decision> = None;
+        if prephase_enabled {
+            let mut route = mrs_search::prephase::decide(
+                problem_name,
+                &prephase_meta,
+                &all_clauses,
+                &lowered.symbols,
+            );
+            if pre_phase_probe {
+                route.probe = Some(mrs_search::prephase::probe(
+                    &all_clauses,
+                    lowered.id_gen.clone(),
+                    &lowered.symbols,
+                ));
+                let summary = route
+                    .probe
+                    .as_ref()
+                    .map(|probe| probe.summary())
+                    .unwrap_or_default();
+                info!("% Pre-phase probe: {summary}");
+            }
+            info!("% Pre-phase: {}", route.plan.summary());
+            info!(
+                "% Pre-phase analysis: label={} clauses={} literals={} logic={} shape={} \
+                 goal_reachable={:.2} components={} redundancy={:.2} max_depth={} skolems={} \
+                 abstraction_atoms={}",
+                route.analysis.label,
+                route.analysis.n_clauses,
+                route.analysis.n_literals,
+                route.analysis.logic(),
+                route.analysis.shape_class.as_str(),
+                route.analysis.goal_reachable_ratio,
+                route.analysis.n_components,
+                route.analysis.redundant_ratio,
+                route.analysis.max_term_depth,
+                route.analysis.n_skolems,
+                route.analysis.abstraction_atoms,
+            );
+            if pre_phase_only {
+                println!("{}", szs_status_line(SzsStatus::GaveUp, problem_name));
+                process::exit(0);
+            }
+            if schedule_name.is_none() && exact_strategy.is_none() && portfolio.is_none() {
+                let mut configs = mrs_search::prephase::schedule_from_plan(
+                    &route.plan,
+                    search_budget,
+                    search_workers,
+                );
+                mrs_search::prephase::apply_pre_passes(&mut configs, &route.plan);
+                schedule = mrs_search::strategy::StrategySchedule {
+                    strategies: configs
+                        .into_iter()
+                        .map(|config| {
+                            let time = config.time_limit;
+                            (config, time)
+                        })
+                        .collect(),
+                };
+                info!(
+                    "% Pre-phase: portfolio replaced with {} routed strategies",
+                    schedule.strategies.len()
+                );
+            } else {
+                info!(
+                    "% Pre-phase: an explicit schedule was requested, so the routing decision \
+                     is reported but not applied"
+                );
+            }
+            decision = Some(route);
+        }
+        let _ = &decision;
         if let Some(gt) = goal_transform {
             for (config, _) in &mut schedule.strategies {
                 config.goal_transformation = Some(gt);

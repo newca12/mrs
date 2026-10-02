@@ -215,7 +215,7 @@ fn main() {
     let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
     for (_, row) in &rows {
         *counts.entry(row.status.clone()).or_default() += 1;
-        let csv = row.csv.clone().unwrap_or_else(|| empty_row());
+        let csv = row.csv.clone().unwrap_or_else(empty_row);
         let _ = writeln!(file, "{},{},{},{}", row.path, row.status, row.detail, csv);
     }
     eprintln!("[dump] wrote {} rows to {}", rows.len(), out.display());
