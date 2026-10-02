@@ -137,6 +137,7 @@ BINNED = {
 }
 
 CATEGORICAL = [
+    "probe_saturation",
     "logic_class",
     "shape_class",
     "scale_class",
@@ -825,9 +826,33 @@ BINNED = {
     "nonlinear_ratio": [(0.01, "0"), (0.3, "<.3"), (0.8, "<.8"), (1.01, ">=.8")],
     "rewrite_rule_ratio": [(0.01, "0"), (0.3, "<.3"), (0.8, "<.8"), (1.01, ">=.8")],
     "n_literals": [(50, "<50"), (500, "50-500"), (5000, "500-5k"), (1e9, ">=5k")],
+    # Probe columns. Only present when the feature table was dumped with
+    # `--probe`; a table without them simply contributes no rows here.
+    "probe_generation_rate": [(0.001, "0"), (0.5, "<=.5"), (2.0, ".5-2"), (6.0, "2-6"), (1e9, ">6")],
+    "probe_redundancy_rate": [(0.001, "0"), (0.25, "<=.25"), (0.6, "<=.6"), (1.01, ">.6")],
+    "probe_forward_subsumed": [(1, "0"), (50, "1-50"), (500, "51-500"), (1e9, ">500")],
+    "probe_processed": [(1, "0"), (100, "1-100"), (1000, "101-1000"), (2001, "1001-2000")],
+    "probe_passive": [(1, "0"), (100, "1-100"), (1000, "101-1000"), (1e9, ">1000")],
+    "probe_throughput_per_ms": [(0.001, "0"), (10, "<10"), (100, "10-100"), (1e9, ">=100")],
 }
 
+# `probe_processed` below the ceiling means the reference search *saturated* the
+# clause set rather than running out of budget, which is a different statement
+# about the problem than "slow". Derived here so both the report and the
+# simulator can use it.
+def probe_saturated(row):
+    try:
+        processed = float(row.get("probe_processed", "") or "nan")
+        elapsed = float(row.get("probe_elapsed_ms", "") or "nan")
+    except ValueError:
+        return None
+    if processed != processed:  # NaN: no probe columns
+        return None
+    # The ceiling is 2000 clauses; a run that stops well short of it finished.
+    return processed < 2000 and elapsed < 1000
+
 CATEGORICAL = [
+    "probe_saturation",
     "logic_class",
     "shape_class",
     "scale_class",
@@ -848,8 +873,21 @@ def groups(features, labels, problems, strategy_sets, strategies):
             per_strategy = {s: len(strategy_sets[s] & set(members)) for s in strategies}
             out[(key, name)] = (members, per_strategy)
     for key in CATEGORICAL:
-        for name in sorted({features[p][key] for p in problems}):
-            members = [p for p in problems if features[p][key] == name]
+        if key == "probe_saturation":
+            for name in ("saturated", "budget-bound"):
+                members = [
+                    p for p in problems
+                    if (probe_saturated(features[p]) is True) == (name == "saturated")
+                    and probe_saturated(features[p]) is not None
+                ]
+                if not members:
+                    continue
+                per_strategy = {s: len(strategy_sets[s] & set(members)) for s in strategies}
+                out[(key, name)] = (members, per_strategy)
+            continue
+        values = {features[p].get(key) for p in problems}
+        for name in sorted(v for v in values if v is not None):
+            members = [p for p in problems if features[p].get(key) == name]
             per_strategy = {s: len(strategy_sets[s] & set(members)) for s in strategies}
             out[(key, name)] = (members, per_strategy)
     return out

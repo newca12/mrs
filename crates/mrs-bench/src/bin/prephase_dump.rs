@@ -160,6 +160,13 @@ fn main() {
         root.display()
     );
 
+    // `--probe` is published through the environment rather than threaded
+    // through `analyze_file`, because the isolated path re-executes this binary
+    // as a child and the child has to make the same decision.
+    if with_probe {
+        unsafe { std::env::set_var("PREPHASE_PROBE", "1") };
+    }
+
     // A hand-rolled pool rather than rayon: parsing and clausification recurse
     // to the depth of the input, and the stack size has to be guaranteed on
     // whichever thread a file lands on. Rayon is free to run work on the
