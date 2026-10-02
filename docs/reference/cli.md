@@ -109,6 +109,7 @@ what made the 2026-10-01 FNE campaigns unreadable; see
 | `MRS_CD_PROCESS_MS` | `5000` | Process-wide wall budget, so concurrent jobs cannot each pay the per-problem cap on every problem. |
 | `MRS_CD_MAX_FACTS` | `5000` | Theorem-fact bound. |
 | `MRS_CD_MAX_INFERENCES` | `100000` | Resolution-step bound. |
+| `MRS_CD_ONLY=1` | — | Diagnostic harness mode: stop after the condensed-detachment attempt and return `GaveUp` if it did not refute, so a later portfolio result cannot be misattributed to the pre-pass. |
 
 These exist so a measurement can tell "the closure cannot close this fragment"
 apart from "the bound stopped it first". A malformed or zero value falls back to

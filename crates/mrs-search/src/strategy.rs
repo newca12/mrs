@@ -1120,6 +1120,20 @@ pub fn run_schedule_with_candidate_receiver(
         total_budget = total_budget.saturating_sub(cd_start.elapsed());
     }
 
+    // Diagnostic harnesses can measure the pre-pass even when no fragment was
+    // recognised, without accidentally attributing a later portfolio refutation
+    // to it.
+    if std::env::var("MRS_CD_ONLY").is_ok_and(|value| value != "0") {
+        return (
+            SearchResult::GaveUp,
+            crate::ScheduleReport {
+                workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                ..crate::ScheduleReport::default()
+            },
+        );
+    }
+
     // InstGen pre-pass for EPR:
     // For pure relational EPR problems (all terms are variables or constants, no
     // function symbols with arity >= 1, no equality), the InstGen loop combines

@@ -136,8 +136,9 @@ structural bound. Sequential, `--workers 1`, because the pre-pass is
 single-threaded and its outcome does not depend on the worker count — which is
 what makes the result comparable between the hosts this was run on.
 
-`--time` tracks each arm's own budget, so the pre-pass gets the whole of it and
-the portfolio has nothing left to run.
+`--time` tracks each arm's own budget. The harness sets `MRS_CD_ONLY=1`, so a
+problem not refuted by the pre-pass stops before the ordinary portfolio can run
+and cannot be mistaken for pre-pass coverage.
 
 ```bash
 crates/mrs-bench/cd_bound_probe.sh --div fne --edition casc-30 --time 60 \

@@ -23,15 +23,9 @@
 # Two deliberate constraints keep the result about the pre-pass:
 #
 #   - `--time` tracks each arm's own pre-pass budget, plus two seconds of parse
-#     headroom. MRS_CD_BUDGET_MS caps the pre-pass independently, so the headroom
-#     does not dilute the arm being measured; what it bounds is the portfolio
-#     that would otherwise inherit the remainder. That inheritance happens
-#     whenever the pre-pass stops early — `facts_exhausted`, `no_fragment` —
-#     and then the portfolio can solve the problem on its own. It does not
-#     corrupt the reading, because the two are distinguishable in the row: a
-#     pre-pass refutation is always `stop=refutation`, so `stop!=refutation`
-#     with `szs_status=Theorem` is the portfolio's work. Only `stop=refutation`
-#     is counted as pre-pass coverage below.
+#     headroom. MRS_CD_BUDGET_MS caps the pre-pass independently, and
+#     MRS_CD_ONLY=1 stops before the portfolio, so no later search result can be
+#     misattributed to the measured pass.
 #   - The pre-pass is single-threaded, so the result does not depend on the
 #     worker count. `--workers 1` is therefore not a resource concession, it is
 #     what makes the number comparable between the hosts this has been run on
@@ -162,7 +156,7 @@ run_arm() {
     local arm="$1" budget_ms="$2" process_ms="$3" max_facts="$4" max_inferences="$5"
     local arm_dir="${OUT}/${arm}"
     mkdir -p "${arm_dir}"
-    local n=0 solved=0 deadline=0 exhausted=0
+    local n=0 refutations=0 verified=0 unverified=0 deadline=0 exhausted=0
     # `--time` only has to exceed the pre-pass budget: MRS_CD_BUDGET_MS caps the
     # pre-pass independently, so the extra seconds are parse headroom and the
     # portfolio's leftover. Keeping --time tied to each arm's own budget is what
@@ -186,6 +180,7 @@ run_arm() {
         MRS_CD_PROCESS_MS="${process_ms}" \
         MRS_CD_MAX_FACTS="${max_facts}" \
         MRS_CD_MAX_INFERENCES="${max_inferences}" \
+        MRS_CD_ONLY=1 \
         MRS_MAX_MEMORY_MB="${CD_MAX_MEMORY_MB:-8000}" \
         TPTP="${TPTP}" \
             "${MRS_BIN}" --time "${wall}" --workers 1 --schedule "casc_${DIVISION,,}" \
@@ -209,7 +204,7 @@ run_arm() {
                 sed -n '/^% SZS output start/,/^% SZS output end/p' "${stdout}" \
                     | sed -e '1d' -e '$d' > "${arm_dir}/${name}.tstp"
                 proof="${arm_dir}/${name}.tstp"
-                strict="$("${PROVER}" --strict --only-mrs --no-atp "${proof}" 2>&1 |
+                strict="$("${PROVER}" --strict --only-mrs --no-atp --problems-dir "${DIV_DIR}" "${proof}" 2>&1 |
                     grep -m1 -o '% SZS status [A-Za-z]*' | awk '{print $4}' || true)"
                 strict="${strict:-none}"
             else
@@ -218,7 +213,14 @@ run_arm() {
         fi
 
         case "${stop}" in
-            refutation) solved=$((solved + 1)) ;;
+            refutation)
+                refutations=$((refutations + 1))
+                if [[ "${strict}" == "VerifiedGood" ]]; then
+                    verified=$((verified + 1))
+                else
+                    unverified=$((unverified + 1))
+                fi
+                ;;
             deadline) deadline=$((deadline + 1)) ;;
             facts_exhausted) exhausted=$((exhausted + 1)) ;;
         esac
@@ -229,7 +231,7 @@ run_arm() {
             "${strict}" "${proof}" >> "${REPORT}"
     done
     {
-        echo "--- arm ${arm}: refutations=${solved} deadline=${deadline} facts_exhausted=${exhausted} of ${#PROBLEMS[@]}"
+        echo "--- arm ${arm}: refutations=${refutations} strict_verified=${verified} unverified_refutations=${unverified} deadline=${deadline} facts_exhausted=${exhausted} of ${#PROBLEMS[@]}"
     } | tee -a "${LOG}" >&2
 }
 
@@ -244,8 +246,8 @@ echo
 echo "report: ${REPORT}"
 echo
 echo "pre-pass verdicts by arm (only stop=refutation is coverage):"
-awk -F, 'NR>1 {n[$4]++; if ($7=="refutation") r[$4]++; if ($7=="deadline") d[$4]++; if ($7=="facts_exhausted") x[$4]++; if ($7=="max_facts"||$7=="max_inferences") b[$4]++}
-     END {for (a in n) printf "  %-5s problems=%d refutation=%d deadline=%d facts_exhausted=%d bound_hit=%d\n", a, n[a], r[a]+0, d[a]+0, x[a]+0, b[a]+0}' "${REPORT}" | sort
+awk -F, 'NR>1 {n[$4]++; if ($7=="refutation") {r[$4]++; if ($12=="VerifiedGood") v[$4]++; else u[$4]++} if ($7=="deadline") d[$4]++; if ($7=="facts_exhausted") x[$4]++; if ($7=="max_facts"||$7=="max_inferences") b[$4]++}
+     END {for (a in n) printf "  %-5s problems=%d strict_verified=%d unverified_refutation=%d deadline=%d facts_exhausted=%d bound_hit=%d\n", a, n[a], v[a]+0, u[a]+0, d[a]+0, x[a]+0, b[a]+0}' "${REPORT}" | sort
 echo
-echo "rows where the pre-pass refuted (all must be VerifiedGood):"
+echo "rows where the pre-pass refuted (only VerifiedGood counts as coverage):"
 awk -F, 'NR>1 && $7=="refutation" {print "  " $3 "  status=" $5 "  strict=" $12}' "${REPORT}"

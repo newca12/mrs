@@ -161,8 +161,8 @@ is faster and unsound at the same time.
 at bounds raised enough to tell "the closure cannot close this fragment" apart
 from "the bound stopped it first". It runs the pre-pass alone over one cluster,
 sequentially, and reads the pre-pass's own `% SZS detail condensed_detachment=`
-line rather than the SZS status — a status of `Theorem` with
-`stop!=refutation` is the portfolio's work, not the pre-pass's.
+line rather than the SZS status. It sets `MRS_CD_ONLY=1`, so the ordinary
+portfolio cannot run afterward and be confused with a pre-pass result.
 
 ```bash
 # Production bounds vs 60x the wall budget and 20x each structural bound.
@@ -170,8 +170,10 @@ crates/mrs-bench/cd_bound_probe.sh --div fne --edition casc-30 --time 60 \
     --max-facts 100000 --max-inferences 2000000
 ```
 
-Any refutation is put through `mrs-proover --strict` before it is counted, and
-the summary separates the stop-reason distribution from the solve count. See
+Any refutation is put through `mrs-proover --strict` with the selected division
+as its problem directory before it is counted, and the summary separates
+strictly verified pre-pass refutations from unverified claims and the
+stop-reason distribution. See
 `docs/research/condensed-detachment.md` for the FNE result and how to read it.
 
 ## Deferred CASC proof auditing

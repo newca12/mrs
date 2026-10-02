@@ -226,15 +226,12 @@ const MAX_MEMO_ENTRIES: usize = 400_000;
 /// the same failure `mrs-search`'s `fvo` module documents. `rewrite_term_id`
 /// also returns at the first rewrite, so positives are rare regardless.
 ///
-/// # Invalidation is per root cell
+/// # Invalidation
 ///
-/// A rule `l -> r` can only rewrite a term whose root cell is `l`'s, so adding
-/// or removing one cannot change the answer for any other root. Each root
-/// carries a generation, and an entry is only a hit when its recorded
-/// generation still matches — so inserting a unit equality invalidates the
-/// terms that rule could reach and leaves the rest of the memo standing. A
-/// single global counter would be correct but would empty the memo on every
-/// derived equality, which on an equational division is most iterations.
+/// A negative result covers the entire term tree. A rule for a nested subterm
+/// can make an enclosing term reducible even when its root is unrelated. Every
+/// index mutation therefore advances one global generation in O(1), invalidating
+/// all prior entries without scanning the memo.
 ///
 /// # Scope
 ///
@@ -244,8 +241,8 @@ const MAX_MEMO_ENTRIES: usize = 400_000;
 /// no AVATAR context, because the rule-availability test depends on it; the
 /// caller enforces that by passing `None` for a split clause.
 pub struct DemodMemo {
-    entries: HashMap<TermId, (RootKey, u64)>,
-    generations: HashMap<RootKey, u64>,
+    entries: HashMap<TermId, u64>,
+    generation: u64,
     lookups: u64,
     hits: u64,
     records: u64,
@@ -256,7 +253,7 @@ impl DemodMemo {
     pub fn new() -> Self {
         DemodMemo {
             entries: HashMap::default(),
-            generations: HashMap::default(),
+            generation: 0,
             lookups: 0,
             hits: 0,
             records: 0,
@@ -278,17 +275,11 @@ impl DemodMemo {
 
     /// Returns `true` if `term` is already known to be irreducible.
     pub fn is_irreducible(&mut self, term: TermId, bank: &TermBank) -> bool {
-        let Some(key) = Self::root_key(term, bank) else {
+        let Some(_key) = Self::root_key(term, bank) else {
             return true;
         };
         self.lookups += 1;
-        let hit = match self.entries.get(&term) {
-            Some((stored_key, stored_gen)) => {
-                *stored_key == key
-                    && self.generations.get(&key).copied().unwrap_or(0) == *stored_gen
-            }
-            None => false,
-        };
+        let hit = self.entries.get(&term) == Some(&self.generation);
         if hit {
             self.hits += 1;
         }
@@ -297,28 +288,34 @@ impl DemodMemo {
 
     /// Records that `term` was found irreducible by the current index.
     pub fn record_irreducible(&mut self, term: TermId, bank: &TermBank) {
-        let Some(key) = Self::root_key(term, bank) else {
+        let Some(_key) = Self::root_key(term, bank) else {
             return;
         };
         if self.entries.len() >= MAX_MEMO_ENTRIES {
             self.entries.clear();
             self.evictions += 1;
         }
-        let generation = self.generations.get(&key).copied().unwrap_or(0);
-        self.entries.insert(term, (key, generation));
+        self.entries.insert(term, self.generation);
         self.records += 1;
     }
 
-    /// Declares that the rule set for `term`'s root cell has changed.
+    /// Declares that the demodulation rule set has changed.
     ///
-    /// Call this after inserting into, or removing from, the index that the
-    /// memo was populated against. Passing the changed rule's own side is
-    /// enough: the generation is keyed on the root cell, which is what decides
-    /// which terms the rule can reach.
+    /// Irreducibility covers the entire term tree: a rule rooted at a descendant
+    /// can change the answer for a memoized parent even when the parent's root
+    /// is unrelated. Therefore every mutation invalidates entries across all
+    /// roots. The generation makes this O(1); old entries are overwritten on
+    /// demand and the existing cap bounds retained stale entries. On the
+    /// practically unreachable counter wrap, clearing prevents an ancient entry
+    /// from becoming valid again.
     pub fn invalidate(&mut self, term: TermId, bank: &TermBank) {
-        if let Some(key) = Self::root_key(term, bank) {
-            let slot = self.generations.entry(key).or_insert(0);
-            *slot = slot.saturating_add(1);
+        if Self::root_key(term, bank).is_some() {
+            if let Some(next) = self.generation.checked_add(1) {
+                self.generation = next;
+            } else {
+                self.entries.clear();
+                self.generation = 0;
+            }
         }
     }
 
@@ -1283,6 +1280,44 @@ mod tests {
         assert!(
             !memo.is_irreducible(fa, &bank),
             "invalidating the root must retire exactly the entries that root can reach"
+        );
+    }
+
+    #[test]
+    fn inserting_a_nested_rule_invalidates_parent_irreducibility() {
+        // A negative answer for f(a) includes its child a. A newly indexed rule
+        // for a must invalidate that parent entry even though the rule's root
+        // differs from the memoized term's root.
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let f = syms.intern("f");
+        let a_sym = syms.intern("a");
+        let b_sym = syms.intern("b");
+        let mut bank = TermBank::new();
+        let mut id_gen = ClauseIdGen::new();
+        let a = term(&mut bank, &Term::constant(a_sym));
+        let b = term(&mut bank, &Term::constant(b_sym));
+        let fa = bank.intern_app(f, smallvec::smallvec![a]);
+        let target = id_pred_clause(&mut id_gen, p, fa, "target");
+        let mut index = mrs_index::stree::STreeId::new();
+        let mut store = HashMap::default();
+        let mut memo = DemodMemo::new();
+
+        assert!(no_rewrite(
+            &target,
+            &mut bank,
+            &index,
+            &store,
+            &mut id_gen,
+            &mut memo
+        ));
+        assert!(memo.is_irreducible(fa, &bank));
+
+        add_rule(&mut index, &mut store, &mut id_gen, &mut bank, a, b);
+        memo.invalidate(a, &bank);
+        assert!(
+            !no_rewrite(&target, &mut bank, &index, &store, &mut id_gen, &mut memo),
+            "a rule for a nested subterm must not be hidden by the parent's old negative cache entry"
         );
     }
 }

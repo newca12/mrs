@@ -2467,12 +2467,14 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                                 state
                                     .demod_index
                                     .remove(*l, &state.term_bank, &(*l, *r, proc.id));
+                                state.demod_memo.invalidate(*l, &state.term_bank);
                             } else if ordering.compare_id(*r, *l, &state.term_bank)
                                 == TermComparison::Greater
                             {
                                 state
                                     .demod_index
                                     .remove(*r, &state.term_bank, &(*r, *l, proc.id));
+                                state.demod_memo.invalidate(*r, &state.term_bank);
                             }
                         }
 
@@ -2508,6 +2510,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                                             &state.term_bank,
                                             (*l, *r, simplified.id),
                                         );
+                                        state.demod_memo.invalidate(*l, &state.term_bank);
                                     } else if ordering.compare_id(*r, *l, &state.term_bank)
                                         == TermComparison::Greater
                                     {
@@ -2516,6 +2519,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                                             &state.term_bank,
                                             (*r, *l, simplified.id),
                                         );
+                                        state.demod_memo.invalidate(*r, &state.term_bank);
                                     }
                                 }
                                 created_units.push(simplified.clone());

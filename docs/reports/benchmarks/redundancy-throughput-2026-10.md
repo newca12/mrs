@@ -1,6 +1,12 @@
 # Redundancy elimination was 47% of the search, and most of it was waste
 
-> Status: current. Branch `perf/redundancy-throughput`, base commit `233e0d8`.
+> Status: historical, **superseded pending remeasurement**. The branch measured
+> here memoized negative demodulation answers with per-root invalidation. Review
+> found that a rule for a nested subterm can make an enclosing term reducible,
+> leaving the old entry stale. The fix uses global O(1) generation invalidation;
+> the throughput and hit-rate numbers below were collected before that fix and
+> must not be treated as measurements of the corrected implementation.
+> Branch `perf/redundancy-throughput`, base commit `233e0d8`.
 > Measured on this branch's release build (sha256 `16c38c223c6453c8…`) against a
 > base build of `233e0d8` (sha256 `d12c0dd774f965a5…`). Host: 2 physical cores /
 > 15 GB, single worker, sharing off, strictly sequential, both arms in one
@@ -39,11 +45,11 @@ successes. 4 % hit rate, 47 % of the clock.
 
 ## 2. Six changes
 
-Every one is a no-op on the result. None can turn an incomplete search into a
-definitive status, and the only one that changes *what the search derives* is the
-subsumption-resolution restore in §2.6 — which was a bug I introduced and
-reverted within this work, and is written up because the way it was caught is the
-part worth keeping.
+Every change was intended as a no-op on the result. Review found that the original
+per-root demodulation memo invalidation could suppress rewriting below a term
+root. The corrected global invalidation is covered by a nested-rule regression
+test. Throughput numbers in §3 and memo hit rates in §2.5 predate this fix and
+must be rerun before they describe the corrected implementation.
 
 ### 2.1 Substituted terms were re-interned even when nothing changed
 
@@ -119,11 +125,10 @@ Three properties make it sound, and each is a place it could have gone wrong:
   witness to justify the step to a checker. A synthesised substitute would be a
   step that did not happen, the same failure `mrs-search`'s `fvo` module
   documents.
-- **Invalidation is per root cell.** A rule `l -> r` can only rewrite a term whose
-  root cell is `l`'s, so each root carries a generation and an entry is a hit only
-  while its generation still matches. A single global counter would be correct but
-  would empty the memo on every derived equality, which on an equational division
-  is most iterations.
+- **Invalidation is global.** A negative result covers the whole term tree: a rule
+  for a nested subterm can make an enclosing term reducible even when its root is
+  unrelated. Every index mutation advances one generation in O(1), invalidating
+  all previous entries without scanning the memo.
 - **Scope is explicit.** `demodulate_id` takes the memo as an `Option`: backward
   demodulation rewrites against a temporary index and passes `None`, and a clause
   with a non-empty AVATAR context passes `None` because the memo key does not
