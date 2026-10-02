@@ -186,15 +186,69 @@ def print_group_report(features, labels, problems, strategy_sets, strategies, mi
 # ------------------------------------------------------------ main ------
 
 
+def corpus_taxonomy(features, statuses):
+    """What is in this corpus, independent of any prover result.
+
+    Run with `--features-only`. This is the descriptive half of the study and it
+    needs no labels, so it runs over the whole 27k-problem TPTP distribution as
+    well as over the competition sub-corpora.
+    """
+    total = sum(statuses.values())
+    print(f"corpus: {total} files")
+    print("front-end outcome:")
+    for status, count in statuses.most_common():
+        print(f"  {status:<24} {count:>6}  {100*count/max(1,total):5.1f}%")
+    analysable = [row for row in features.values()]
+    if not analysable:
+        return
+    n = len(analysable)
+    print(f"\nclass distribution over the {n} analysable problems:")
+    for axis in ("logic_class", "shape_class", "scale_class", "goal_class",
+                 "decomposition_class", "dialect"):
+        counter = Counter(row[axis] for row in analysable)
+        print(f"\n  {axis}:")
+        for value, count in counter.most_common():
+            print(f"    {value:<16} {count:>6}  {100*count/n:5.1f}%")
+
+    # The sharpest descriptive question: does the post-clausification class agree
+    # with the CASC division the problem was filed under? The division is defined
+    # on the *input*; the analysis sees the *clausified* clause set. Where they
+    # disagree, a router that keys on the post-clausification class is making a
+    # decision on a different question than the one CASC's own taxonomy answers.
+    print("\nagreement between the CASC division (parent directory) and the "
+          "post-clausification logic class:")
+    cross = defaultdict(Counter)
+    for row in analysable:
+        division = division_of(row["path"])
+        cross[division][row["logic_class"]] += 1
+    for division in sorted(cross):
+        size = sum(cross[division].values())
+        counter = cross[division]
+        top, top_count = counter.most_common(1)[0]
+        print(f"  {division:<6} n={size:<5} modal={top:<5} "
+              f"({100*top_count/size:4.1f}% agree)  " +
+              " ".join(f"{k}={v}" for k, v in counter.most_common(4)))
+
+    print("\nfull label distribution (top 20):")
+    labels = Counter(row["label"] for row in analysable)
+    for label, count in labels.most_common(20):
+        print(f"  {label:<48} {count:>6}  {100*count/n:5.1f}%")
+    print(f"  ({len(labels)} distinct labels over {n} problems)")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("features")
-    parser.add_argument("labels")
+    parser.add_argument("labels", nargs="?")
     parser.add_argument("--divisions", default=None)
     parser.add_argument("--emit-rules", action="store_true")
+    parser.add_argument("--features-only", action="store_true")
     args = parser.parse_args()
 
     features, statuses = load_features(args.features)
+    if args.features_only or not args.labels:
+        corpus_taxonomy(features, statuses)
+        return
     labels = load_labels(args.labels)
     divisions = set(args.divisions.split(",")) if args.divisions else None
 
@@ -478,15 +532,69 @@ def fit_orders(features, fit_problems, strategies, solved):
     return orders
 
 
+def corpus_taxonomy(features, statuses):
+    """What is in this corpus, independent of any prover result.
+
+    Run with `--features-only`. This is the descriptive half of the study and it
+    needs no labels, so it runs over the whole 27k-problem TPTP distribution as
+    well as over the competition sub-corpora.
+    """
+    total = sum(statuses.values())
+    print(f"corpus: {total} files")
+    print("front-end outcome:")
+    for status, count in statuses.most_common():
+        print(f"  {status:<24} {count:>6}  {100*count/max(1,total):5.1f}%")
+    analysable = [row for row in features.values()]
+    if not analysable:
+        return
+    n = len(analysable)
+    print(f"\nclass distribution over the {n} analysable problems:")
+    for axis in ("logic_class", "shape_class", "scale_class", "goal_class",
+                 "decomposition_class", "dialect"):
+        counter = Counter(row[axis] for row in analysable)
+        print(f"\n  {axis}:")
+        for value, count in counter.most_common():
+            print(f"    {value:<16} {count:>6}  {100*count/n:5.1f}%")
+
+    # The sharpest descriptive question: does the post-clausification class agree
+    # with the CASC division the problem was filed under? The division is defined
+    # on the *input*; the analysis sees the *clausified* clause set. Where they
+    # disagree, a router that keys on the post-clausification class is making a
+    # decision on a different question than the one CASC's own taxonomy answers.
+    print("\nagreement between the CASC division (parent directory) and the "
+          "post-clausification logic class:")
+    cross = defaultdict(Counter)
+    for row in analysable:
+        division = division_of(row["path"])
+        cross[division][row["logic_class"]] += 1
+    for division in sorted(cross):
+        size = sum(cross[division].values())
+        counter = cross[division]
+        top, top_count = counter.most_common(1)[0]
+        print(f"  {division:<6} n={size:<5} modal={top:<5} "
+              f"({100*top_count/size:4.1f}% agree)  " +
+              " ".join(f"{k}={v}" for k, v in counter.most_common(4)))
+
+    print("\nfull label distribution (top 20):")
+    labels = Counter(row["label"] for row in analysable)
+    for label, count in labels.most_common(20):
+        print(f"  {label:<48} {count:>6}  {100*count/n:5.1f}%")
+    print(f"  ({len(labels)} distinct labels over {n} problems)")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("features")
-    parser.add_argument("labels")
+    parser.add_argument("labels", nargs="?")
     parser.add_argument("--divisions", default=None)
     parser.add_argument("--emit-rules", action="store_true")
+    parser.add_argument("--features-only", action="store_true")
     args = parser.parse_args()
 
     features, statuses = load_features(args.features)
+    if args.features_only or not args.labels:
+        corpus_taxonomy(features, statuses)
+        return
     labels = load_labels(args.labels)
     divisions = set(args.divisions.split(",")) if args.divisions else None
 
