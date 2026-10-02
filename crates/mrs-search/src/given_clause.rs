@@ -1432,12 +1432,21 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 if let Some(id_clause) = head {
                     let fv = FeatureVector::from_id_clause(&id_clause, &state.term_bank);
                     let candidates = state.processed.subsumption_candidate_ids(&fv);
-                    if !candidates.iter().any(|id| {
+                    let already_present = candidates.iter().any(|id| {
                         state.processed.get(*id).is_some_and(|p| {
                             p.avatar_is_subset_of(&id_clause)
-                                && subsumption::subsumes_id(p, &id_clause, &mut state.term_bank)
+                                && subsumption::subsumes_id_until(
+                                    p,
+                                    &id_clause,
+                                    &mut state.term_bank,
+                                    state.search_deadline,
+                                )
                         })
-                    }) {
+                    });
+                    if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                        return SearchResult::Timeout;
+                    }
+                    if !already_present {
                         #[cfg(feature = "ml-guidance")]
                         let score = state.get_ml_score(&id_clause);
                         #[cfg(not(feature = "ml-guidance"))]
@@ -1668,14 +1677,20 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 let Some(p) = state.processed.get(*candidate_id) else {
                     continue;
                 };
-                if p.avatar_is_subset_of(&given)
-                    && let Some(removed_idx) = subsumption::subsumption_resolution_id_until(
+                let removed_idx = if p.avatar_is_subset_of(&given) {
+                    subsumption::subsumption_resolution_id_until(
                         p,
                         &given,
                         &mut state.term_bank,
                         state.search_deadline,
                     )
-                {
+                } else {
+                    None
+                };
+                if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                    return SearchResult::Timeout;
+                }
+                if let Some(removed_idx) = removed_idx {
                     let parent = p.id;
                     let mut new_lits = given.literals.clone();
                     new_lits.remove(removed_idx);
@@ -1755,11 +1770,19 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 }
                 if state.processed.get(*id).is_some_and(|p| {
                     p.avatar_is_subset_of(&given)
-                        && subsumption::subsumes_id(p, &given, &mut state.term_bank)
+                        && subsumption::subsumes_id_until(
+                            p,
+                            &given,
+                            &mut state.term_bank,
+                            state.search_deadline,
+                        )
                 }) {
                     subsumed = true;
                     break;
                 }
+            }
+            if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                return SearchResult::Timeout;
             }
             if subsumed {
                 state.stats.forward_subsumed += 1;
@@ -1770,7 +1793,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
 
         // Forward demodulation: simplify given using unit equalities
         let given = {
-            if let Some(simplified) = demodulation::demodulate_id_until(
+            let simplified = demodulation::demodulate_id_until(
                 &given,
                 &mut state.term_bank,
                 &state.demod_index,
@@ -1779,7 +1802,11 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 &ac_syms,
                 Some(&mut state.demod_memo),
                 state.search_deadline,
-            ) {
+            );
+            if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                return SearchResult::Timeout;
+            }
+            if let Some(simplified) = simplified {
                 state.register_clause(&given);
                 simplified
             } else {
@@ -1817,13 +1844,23 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
         };
 
         // Condensation
-        let given = if condense_allowed(given.literals.len())
-            && let Some(condensed) = subsumption::condense_id_until(
+        let condensed = if condense_allowed(given.literals.len()) {
+            subsumption::condense_id_until(
                 &given,
                 &mut state.term_bank,
                 &mut state.id_gen,
                 state.search_deadline,
-            ) {
+            )
+        } else {
+            None
+        };
+        if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+            return SearchResult::Timeout;
+        }
+        let given = if let Some(condensed) = condensed {
+            if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                return SearchResult::Timeout;
+            }
             state.register_clause(&given);
             condensed
         } else {
@@ -1938,6 +1975,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                             &state.assoc_symbols,
                             state.search_deadline,
                         );
+                        if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                            return SearchResult::Timeout;
+                        }
                         #[cfg(feature = "parent-guidance")]
                         state.record_parent_pair_outcome(parent_sample, !resolvents.is_empty());
                         for mut r in resolvents {
@@ -2235,6 +2275,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
             &mut state.id_gen,
             state.search_deadline,
         ));
+        if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+            return SearchResult::Timeout;
+        }
 
         // Backward subsumption: remove processed clauses subsumed by the given
         let mut to_remove_from_processed = Vec::new();
@@ -2247,9 +2290,17 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 let Some(p) = state.processed.get(candidate_id).cloned() else {
                     continue;
                 };
-                if given.avatar_is_subset_of(&p)
-                    && subsumption::subsumes_id(&given, &p, &mut state.term_bank)
-                {
+                let subsumes = given.avatar_is_subset_of(&p)
+                    && subsumption::subsumes_id_until(
+                        &given,
+                        &p,
+                        &mut state.term_bank,
+                        state.search_deadline,
+                    );
+                if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                    return SearchResult::Timeout;
+                }
+                if subsumes {
                     to_remove_from_processed.push(p.id);
                 }
             }
@@ -2457,7 +2508,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
 
                     // No memo: `temp_demod_index` is a different index from the
                     // one `state.demod_memo` was populated against.
-                    if let Some(simplified) = demodulation::demodulate_id_until(
+                    let simplified = demodulation::demodulate_id_until(
                         &proc,
                         &mut state.term_bank,
                         &temp_demod_index,
@@ -2466,7 +2517,11 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         &ac_syms,
                         None,
                         state.search_deadline,
-                    ) {
+                    );
+                    if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                        return SearchResult::Timeout;
+                    }
+                    if let Some(simplified) = simplified {
                         state.register_clause(&proc);
 
                         // Chain further rewriting using existing active unit equalities in demod_index
@@ -2480,9 +2535,15 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                             Some(&mut state.demod_memo),
                             state.search_deadline,
                         ) {
+                            if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                                return SearchResult::Timeout;
+                            }
                             state.register_clause(&simplified);
                             further
                         } else {
+                            if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                                return SearchResult::Timeout;
+                            }
                             simplified
                         };
 
@@ -2797,7 +2858,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
             if !clause.is_tautology() {
                 let stage_mark = std::time::Instant::now();
                 // Forward demodulation on new clauses
-                let clause = if let Some(simplified) = demodulation::demodulate_id_until(
+                let demodulated = demodulation::demodulate_id_until(
                     &clause,
                     &mut state.term_bank,
                     &state.demod_index,
@@ -2806,7 +2867,11 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     &ac_syms,
                     Some(&mut state.demod_memo),
                     state.search_deadline,
-                ) {
+                );
+                if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                    return SearchResult::Timeout;
+                }
+                let clause = if let Some(simplified) = demodulated {
                     state.register_clause(&clause);
                     simplified
                 } else {
@@ -2939,13 +3004,20 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 trace_stage(trace_progress, iteration, new_index, "der", &stage_mark);
                 let stage_mark = std::time::Instant::now();
                 // Condensation
-                let clause = if condense_allowed(clause.literals.len())
-                    && let Some(condensed) = subsumption::condense_id_until(
+                let condensed = if condense_allowed(clause.literals.len()) {
+                    subsumption::condense_id_until(
                         &clause,
                         &mut state.term_bank,
                         &mut state.id_gen,
                         state.search_deadline,
-                    ) {
+                    )
+                } else {
+                    None
+                };
+                if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                    return SearchResult::Timeout;
+                }
+                let clause = if let Some(condensed) = condensed {
                     state.register_clause(&clause);
                     condensed
                 } else {
@@ -3015,14 +3087,20 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         let Some(p) = state.processed.get(*candidate_id) else {
                             continue;
                         };
-                        if p.avatar_is_subset_of(&clause)
-                            && let Some(removed_idx) = subsumption::subsumption_resolution_id_until(
+                        let removed_idx = if p.avatar_is_subset_of(&clause) {
+                            subsumption::subsumption_resolution_id_until(
                                 p,
                                 &clause,
                                 &mut state.term_bank,
                                 state.search_deadline,
                             )
-                        {
+                        } else {
+                            None
+                        };
+                        if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                            return SearchResult::Timeout;
+                        }
+                        if let Some(removed_idx) = removed_idx {
                             let parent = p.id;
                             let mut new_lits = clause.literals.clone();
                             new_lits.remove(removed_idx);
@@ -3084,11 +3162,19 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         }
                         if state.processed.get(*id).is_some_and(|p| {
                             p.avatar_is_subset_of(&clause)
-                                && subsumption::subsumes_id(p, &clause, &mut state.term_bank)
+                                && subsumption::subsumes_id_until(
+                                    p,
+                                    &clause,
+                                    &mut state.term_bank,
+                                    state.search_deadline,
+                                )
                         }) {
                             subsumed = true;
                             break;
                         }
+                    }
+                    if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                        return SearchResult::Timeout;
                     }
                     if subsumed {
                         continue;

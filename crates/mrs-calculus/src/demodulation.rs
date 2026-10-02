@@ -677,7 +677,12 @@ fn rewrite_term_id_until(
         }
     }
 
-    if let Some(fresh) = memo.as_deref_mut() {
+    // An interrupted descent must not be memoized as irreducible: a later
+    // call with the same index and a fresh budget still needs to inspect the
+    // children that this call could not reach.
+    if !deadline.is_some_and(|limit| std::time::Instant::now() >= limit)
+        && let Some(fresh) = memo.as_deref_mut()
+    {
         fresh.record_irreducible(term, bank);
     }
     (term, false)
