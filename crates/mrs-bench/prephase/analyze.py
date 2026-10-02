@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import sys
 from collections import Counter, defaultdict
 
@@ -483,6 +484,51 @@ def simulate_portfolios(features, labels, problems, strategies, solved, routed_o
         print(f"{workers:>7} {len(union_all):>7} {fixed_cov:>11} {routed_cov:>7} "
               f"{casc_cov:>6} {div_cov:>9} {delta:>+6}")
     print(f"  (n={n}; oracle = union over all {len(strategies)} configurations)")
+
+    # Significance of the routed-vs-per-division difference at 8 slots.
+    print("\npaired significance at 8 slots (routed vs the division's own order):")
+    routed_cover = {p for p in problems if any(p in solved[s] for s in routed_orders.get(p, [])[:8])}
+    div_cover = set()
+    for problem in problems:
+        division = division_of(features[problem]["path"]).lower()
+        order = NAMED_ORDERS.get(f"casc_{division}", NAMED_ORDERS["casc"])
+        if any(problem in solved[s] for s in order[:8]):
+            div_cover.add(problem)
+    paired_comparison(problems, routed_cover, div_cover, "routed", "division")
+    best_cover = set()
+    for problem in problems:
+        if any(problem in solved[s] for s in best_fixed_portfolio(problems, solved, strategies, 8)[0]):
+            best_cover.add(problem)
+    paired_comparison(problems, routed_cover, best_cover, "routed", "best-fixed")
+
+
+def mcnemar(pairs):
+    """Two-sided exact sign test on the discordant pairs.
+
+    `pairs` is a list of `(a_solved, b_solved)` booleans. Only the pairs where the
+    two arms disagree carry information, and a routing table that adds three
+    problems out of six hundred has not been shown to do anything: with 6
+    discordant pairs and all 6 one-sided, the two-sided p-value is 2 * 0.5^6 =
+    0.03, which is the smallest evidence this sample size can produce. Reporting
+    the count without the count of discordant pairs invites reading noise as a
+    result.
+    """
+    discordant = sum(1 for a, b in pairs if a != b)
+    wins = sum(1 for a, b in pairs if a and not b)
+    if discordant == 0:
+        return wins, 0, 1.0
+    # Two-sided exact binomial test under p=0.5.
+    tail = sum(math.comb(discordant, k) for k in range(0, min(wins, discordant - wins) + 1))
+    p_value = min(1.0, 2.0 * tail / (2.0 ** discordant))
+    return wins, discordant, p_value
+
+
+def paired_comparison(problems, covered_a, covered_b, label_a, label_b):
+    pairs = [(p in covered_a, p in covered_b) for p in problems]
+    wins, discordant, p_value = mcnemar(pairs)
+    print(f"  {label_a} vs {label_b}: {label_a}+only={wins} "
+          f"{label_b}+only={discordant - wins} discordant={discordant} "
+          f"two-sided p={p_value:.4f}")
 
 
 def cross_validate(features, labels, problems, strategies, solved, folds=2):
