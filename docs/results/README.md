@@ -92,3 +92,48 @@ Two caveats that belong with these files rather than in a report:
 The 73 MB of raw streams under the original campaign directories is not banked.
 The probe's stop reasons were reconstructed from them and are now in the summary
 `.tsv`, which is why that file exists rather than being derived on demand.
+
+## Redundancy-elimination throughput, UEQ, 2026-10-02
+
+Two fixed-wall-clock probes of the same binary pair, written up in
+[`../reports/benchmarks/redundancy-throughput-2026-10.md`](../reports/benchmarks/redundancy-throughput-2026-10.md).
+The unit of measurement is clauses retired out of a fixed budget, not
+clauses-per-second: see `docs/results/perf/README.md` for why, and
+`fne-2026-09.md` §1 for the host band that makes the wall-clock reading
+untrustworthy. Both probes ran strictly sequentially, one worker, sharing off,
+on one 2-physical-core / 15 GB host in one session.
+
+| file | what |
+|---|---|
+| `throughput-probe-12s-{base,fixed}.csv` | 45 problems (30 UEQ, 15 FNE) at 12 s each. **UEQ `processed` 13 222 → 16 386 (1.24x), `generated` 521 233 → 704 523 (1.35x); FNE 1.02x / 1.10x. No status change on any row.** |
+| `throughput-probe-12s-summary.tsv` | The per-problem reading of that pair, both arms side by side with the ratio. |
+| `throughput-probe-ueq30s-{base,fixed}.csv` | 60 `casc-30` UEQ problems at 30 s each, one strategy. **10 refuted → 11; 2 gained, 1 lost; total wall on the 9 commonly-solved rows 130.9 s → 84.7 s; `processed` on the 50 timing-out rows 1.27x.** |
+| `throughput-probe-ueq30s-summary.tsv` | The per-problem reading of that pair. |
+
+Provenance: base binary built from `233e0d8` (sha256 `d12c0dd774f965a5…`),
+fixed from this branch's release build (sha256 `16c38c223c6453c8…`). The
+`base`/`fixed` CSVs carry the binary sha in every row, so an arm cannot be
+silently swapped.
+
+The branch-tip binary hashes to `546188b63d433fad…`, not `16c38c223c6453c8…`:
+a few cosmetic refactors landed after the measurement (an early return folded
+into one call in `subsumes_id`, two `let mut` bindings that no longer need to be
+mutable, and comment wording). Re-running the 8-row UEQ subset on the branch-tip
+binary reproduces the banked arm — 156 / 136 / 1181 / 598 / 579 / 78 / 444 / 743
+`processed` against the banked 156 / 136 / 1183 / 598 / 579 / 78 / 444 / 742 — so
+the two shas are the same engine. The banked numbers are still the ones the
+recorded sha produced.
+
+Two caveats that belong with these files:
+
+- **These are single-strategy numbers, not division scores.** `--workers 1`
+  against `casc_ueq` runs one strategy; the banked division runs eight
+  cooperatively at 240 s. The 60-problem set was chosen from the problems
+  `codex.db` records as solved, but at 30 s with one strategy only 10 of the
+  60 are actually refuted in either arm, so the refuted-count column is a
+  regression check and not a score.
+- **`BOO017-10` is a real, reproducible flip and is not explained.** It is
+  `Unsatisfiable` at 30 s on the base arm and `Timeout` at 30 s on the fixed
+  arm — and `Timeout` at 60 s on base and `Unsatisfiable` at 60 s on fixed, so
+  neither arm is monotone in its own budget. Three repeats of each reproduce
+  it. It is reported rather than dropped; see the report §4.

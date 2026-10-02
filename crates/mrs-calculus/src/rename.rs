@@ -19,13 +19,27 @@ pub fn max_var(clause: &Clause) -> VarId {
 
 pub fn max_var_id(
     clause: &mrs_core::term_bank::IdClause,
-    bank: &mrs_core::term_bank::TermBank,
+    bank: &mut mrs_core::term_bank::TermBank,
 ) -> VarId {
-    clause
-        .free_vars(bank)
-        .into_iter()
-        .max()
-        .map_or(0, |m| m + 1)
+    // Allocation-free fold rather than `clause.free_vars(bank).into_iter().max()`:
+    // the set is an allocation and a hash insert per variable occurrence, and
+    // the answer wanted here is only the maximum. Called once per subsumption
+    // test, so it runs once per candidate clause. The bank memoises the fold
+    // per interned term, so the repeat cost is one lookup per literal.
+    bank.max_var_clause(clause).map_or(0, |m| m + 1)
+}
+
+/// Returns `true` if `clause` contains no variables at all.
+///
+/// Renaming a ground clause by any offset is the identity, so a caller that
+/// standardises two clauses apart can skip building the renamed copy entirely
+/// when the first one is ground — which, on an equational problem, is most of
+/// the subsumption candidate set, since the candidates are unit equalities.
+pub fn is_ground_id(
+    clause: &mrs_core::term_bank::IdClause,
+    bank: &mut mrs_core::term_bank::TermBank,
+) -> bool {
+    bank.max_var_clause(clause).is_none()
 }
 
 /// Renames all variables in a clause by adding `offset` to each VarId.

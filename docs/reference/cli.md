@@ -57,6 +57,27 @@ See [Trust and verification](trust-and-verification.md).
 | `--trace-bce` | Emit preprocessing diagnostics. |
 | `--trace-instgen` | Emit InstGen diagnostics. |
 
+### Redundancy-elimination telemetry
+
+The aggregate `% SZS detail` line carries three counters for the demodulation
+memo, which remembers terms the unit-equality index has already been shown not to
+rewrite:
+
+| Field | Meaning |
+|---|---|
+| `demod_memo_lookups` | Times the memo was asked whether a term is irreducible. |
+| `demod_memo_hits` | Of those, the ones it already knew. `hits / lookups` is the hit rate. |
+| `demod_memo_evictions` | Times the memo reached its entry cap and was cleared. Non-zero means the cap, not the hit rate, is the limit. |
+
+The rate is the reading that matters, and it is worth checking on any equational
+problem before believing that demodulation is cheap: a memo invalidated as fast
+as it is filled has a low rate and no effect, which looks identical to a
+memoisation that was never consulted. `demod_memo_evictions=0` with a low rate
+means the index is growing faster than the memo can be reused, not that the
+memo is broken. See
+[Redundancy elimination was 47% of the search](../reports/benchmarks/redundancy-throughput-2026-10.md)
+for the profile that motivated it and the measured rates.
+
 ## Experimental pre-passes
 
 | Environment variable | Effect |

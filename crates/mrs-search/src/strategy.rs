@@ -1663,7 +1663,17 @@ pub fn run_schedule_with_candidate_receiver(
                         stop.store(true, Ordering::Relaxed);
                     }
 
-                    let _ = tx.send((strategy_idx, result, state.stats.clone(), elapsed_ms));
+                    // The demodulation memo lives on the state, not in
+                    // `SearchStats`, so its counters are folded in here — after
+                    // every pre-pass that used a different index and so left it
+                    // untouched.
+                    let (memo_lookups, memo_hits, _records, memo_evictions) =
+                        state.demod_memo.stats();
+                    let mut stats = state.stats.clone();
+                    stats.demod_memo_lookups = memo_lookups;
+                    stats.demod_memo_hits = memo_hits;
+                    stats.demod_memo_evictions = memo_evictions;
+                    let _ = tx.send((strategy_idx, result, stats, elapsed_ms));
                 }
             })
             .map(|_| ())

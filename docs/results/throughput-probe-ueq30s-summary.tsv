@@ -1,0 +1,67 @@
+# throughput probe, 30 s per problem, 60 casc-30 UEQ problems, base vs fixed
+# Fixed wall clock per problem, one worker, one schedule strategy, sharing off.
+# `processed`/`generated` are the search telemetry the prover already reports.
+# base binary sha 233e0d8 build; fixed = this branch's release build.
+#
+# UEQ: base processed 35965 -> fixed 45491
+division	problem	base_result	fixed_result	base_processed	fixed_processed	ratio	base_generated	fixed_generated
+UEQ	casc-30/UEQ/ALG213-10	Timeout	Timeout	204	221	1.08	51535	65255
+UEQ	casc-30/UEQ/BOO017-10	Unsatisfiable	Timeout	1209	1305	1.08	26291	56379
+UEQ	casc-30/UEQ/COL003-19	Unsatisfiable	Unsatisfiable	154	154	1.00	54540	54540
+UEQ	casc-30/UEQ/COL042-6	Unsatisfiable	Unsatisfiable	130	130	1.00	51330	51330
+UEQ	casc-30/UEQ/COL043-3	Timeout	Timeout	125	145	1.16	61331	88487
+UEQ	casc-30/UEQ/CSR034-10	Unsatisfiable	Unsatisfiable	46	46	1.00	19	19
+UEQ	casc-30/UEQ/CSR051-10	Unsatisfiable	Unsatisfiable	13	13	1.00	0	0
+UEQ	casc-30/UEQ/CSR065-10	GaveUp	GaveUp	198	207	1.05	148	159
+UEQ	casc-30/UEQ/GRP048-10	Timeout	Timeout	1056	1198	1.13	50198	64366
+UEQ	casc-30/UEQ/GRP167-1	Timeout	Timeout	1386	1770	1.28	29504	30459
+UEQ	casc-30/UEQ/GRP167-4	Timeout	Timeout	721	882	1.22	29655	37712
+UEQ	casc-30/UEQ/GRP179-2	Timeout	Timeout	746	830	1.11	29533	38471
+UEQ	casc-30/UEQ/GRP180-2	Timeout	Timeout	887	1137	1.28	26432	33889
+UEQ	casc-30/UEQ/GRP183-3	Timeout	Timeout	738	842	1.14	29419	38828
+UEQ	casc-30/UEQ/GRP185-2	Timeout	Timeout	841	1182	1.41	25484	32342
+UEQ	casc-30/UEQ/GRP186-2	Timeout	Timeout	749	888	1.19	29380	37908
+UEQ	casc-30/UEQ/GRP203-1	Timeout	Timeout	488	581	1.19	23862	31947
+UEQ	casc-30/UEQ/GRP416-1	Unsatisfiable	Unsatisfiable	85	85	1.00	24561	24658
+UEQ	casc-30/UEQ/GRP422-1	Timeout	Unsatisfiable	96	120	1.25	50385	75154
+UEQ	casc-30/UEQ/GRP472-1	Timeout	Timeout	156	200	1.28	48803	75133
+UEQ	casc-30/UEQ/GRP478-1	Unsatisfiable	Unsatisfiable	107	107	1.00	20914	20916
+UEQ	casc-30/UEQ/GRP655-11	Timeout	Timeout	524	651	1.24	29629	42361
+UEQ	casc-30/UEQ/GRP660-10	Timeout	Unsatisfiable	497	588	1.18	27963	31211
+UEQ	casc-30/UEQ/GRP662-1	Timeout	Timeout	614	834	1.36	42752	61324
+UEQ	casc-30/UEQ/GRP667-10	Timeout	Timeout	650	849	1.31	37447	53519
+UEQ	casc-30/UEQ/GRP670-1	Timeout	Timeout	490	638	1.30	22330	39147
+UEQ	casc-30/UEQ/GRP688-1	Timeout	Timeout	419	634	1.51	16804	32861
+UEQ	casc-30/UEQ/GRP694-1	Timeout	Timeout	922	1333	1.45	42038	65906
+UEQ	casc-30/UEQ/GRP705-1	Timeout	Timeout	722	963	1.33	25807	35918
+UEQ	casc-30/UEQ/GRP750-1	Unsatisfiable	Unsatisfiable	295	295	1.00	38308	38309
+UEQ	casc-30/UEQ/GRP753-1	Timeout	Timeout	438	525	1.20	32574	43805
+UEQ	casc-30/UEQ/GRP767-1	Timeout	Timeout	1188	1389	1.17	44308	62344
+UEQ	casc-30/UEQ/KLE104-10	Timeout	Timeout	2424	2950	1.22	42775	45653
+UEQ	casc-30/UEQ/KLE145-10	Timeout	Timeout	1347	1629	1.21	39487	46499
+UEQ	casc-30/UEQ/KLE152-10	Timeout	Timeout	1339	1662	1.24	39662	48979
+UEQ	casc-30/UEQ/LAT020-1	Timeout	Timeout	648	862	1.33	11194	14629
+UEQ	casc-30/UEQ/LAT044-1	Timeout	Timeout	2331	2641	1.13	20327	25098
+UEQ	casc-30/UEQ/LAT079-1	Timeout	Timeout	93	137	1.47	17909	28790
+UEQ	casc-30/UEQ/LAT082-1	GaveUp	GaveUp	2	2	1.00	0	0
+UEQ	casc-30/UEQ/LAT092-1	GaveUp	GaveUp	2	2	1.00	0	0
+UEQ	casc-30/UEQ/LAT138-1	Timeout	Timeout	441	796	1.80	9181	13666
+UEQ	casc-30/UEQ/LAT144-1	Timeout	Timeout	266	373	1.40	16104	23942
+UEQ	casc-30/UEQ/LAT149-1	Timeout	Timeout	224	304	1.36	14718	23749
+UEQ	casc-30/UEQ/LAT154-1	Timeout	Timeout	293	403	1.38	16001	23484
+UEQ	casc-30/UEQ/LAT158-1	Timeout	Timeout	281	387	1.38	19307	24635
+UEQ	casc-30/UEQ/LAT163-1	Timeout	Timeout	219	320	1.46	8444	14171
+UEQ	casc-30/UEQ/LAT167-1	Timeout	Timeout	349	492	1.41	9808	15234
+UEQ	casc-30/UEQ/LAT170-1	Timeout	Timeout	334	493	1.48	10810	16201
+UEQ	casc-30/UEQ/LAT174-1	Timeout	Timeout	376	437	1.16	9495	12349
+UEQ	casc-30/UEQ/LAT186-10	Timeout	Timeout	824	996	1.21	12072	14453
+UEQ	casc-30/UEQ/LAT223-10	Timeout	Timeout	1526	1795	1.18	7946	14926
+UEQ	casc-30/UEQ/LAT392-1	GaveUp	GaveUp	2	2	1.00	0	0
+UEQ	casc-30/UEQ/LAT394-1	Unsatisfiable	Unsatisfiable	160	250	1.56	4088	4978
+UEQ	casc-30/UEQ/LCL042-10	Timeout	Timeout	697	831	1.19	12259	15519
+UEQ	casc-30/UEQ/LCL148-10	Timeout	Timeout	863	987	1.14	68135	84104
+UEQ	casc-30/UEQ/LCL265-10	Timeout	Timeout	1240	1323	1.07	14011	19576
+UEQ	casc-30/UEQ/MVA008-1	Timeout	Timeout	746	1044	1.40	38047	52254
+UEQ	casc-30/UEQ/NUN134-1	Timeout	Timeout	373	430	1.15	49781	59714
+UEQ	casc-30/UEQ/REL005-3	Timeout	Timeout	1323	1833	1.39	41904	55861
+UEQ	casc-30/UEQ/REL010-2	Unsatisfiable	Unsatisfiable	348	1368	3.93	7827	45549

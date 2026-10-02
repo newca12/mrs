@@ -419,6 +419,15 @@ impl LiteralIndex {
         self.clauses.get(&id)
     }
 
+    /// Returns the feature vector recorded for `id`, if it is indexed.
+    ///
+    /// Lets a caller re-apply [`FeatureVector::can_subsumption_resolve`]
+    /// against a target that has changed since its candidate list was built,
+    /// without rebuilding the list.
+    pub fn feature_vector(&self, id: ClauseId) -> Option<&FeatureVector> {
+        self.fv_map.get(&id)
+    }
+
     /// Returns an iterator over all stored clauses.
     pub fn iter(&self) -> impl Iterator<Item = &IdClause> {
         self.clauses.values()

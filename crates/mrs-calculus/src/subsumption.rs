@@ -11,7 +11,7 @@ use mrs_core::Substitution;
 use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource, Literal};
 use mrs_core::term::Term;
 
-use crate::rename::{max_var, max_var_id, rename_clause, rename_clause_id};
+use crate::rename::{is_ground_id, max_var, max_var_id, rename_clause, rename_clause_id};
 use mrs_core::term_bank::{
     IdAtom, IdClause, IdLiteral, IdSubstitution, TermBank, TermId, TermNode,
 };
@@ -25,18 +25,23 @@ pub fn subsumes_id(c1: &IdClause, c2: &IdClause, bank: &mut TermBank) -> bool {
     }
 
     let offset = max_var_id(c2, bank);
-    let c1_renamed = rename_clause_id(c1, offset, bank);
+    // A ground `c1` is unchanged by the rename, so the renamed copy is a pure
+    // clone of a clause the caller already holds. `rename_clause_id` interns
+    // every renamed subterm, so skipping it when there is nothing to rename is
+    // the difference between one hash lookup per subterm and none. Unit
+    // equalities are ground, and on an equational problem they are most of the
+    // subsumption candidate set.
+    let renamed;
+    let c1_literals: &[IdLiteral] = if is_ground_id(c1, bank) {
+        &c1.literals
+    } else {
+        renamed = rename_clause_id(c1, offset, bank);
+        &renamed.literals
+    };
 
     let subst = IdSubstitution::new();
     let mut steps = 0usize;
-    match_literals_id(
-        &c1_renamed.literals,
-        &c2.literals,
-        &subst,
-        offset,
-        bank,
-        &mut steps,
-    )
+    match_literals_id(c1_literals, &c2.literals, &subst, offset, bank, &mut steps)
 }
 
 /// Backtracking step limit for subsumption matching.
@@ -184,22 +189,46 @@ fn contains_var_id(term: TermId, var: mrs_core::term::VarId, bank: &TermBank) ->
 }
 
 fn apply_subst_flat_id(subst: &IdSubstitution, term: TermId, bank: &mut TermBank) -> TermId {
+    // Applying an empty substitution is the identity, and this is called once per
+    // (candidate literal, target literal) pair — the matcher rejects most pairs
+    // on their first term comparison, and an empty substitution is the state
+    // every one of those rejections is in.
+    if subst.is_empty() {
+        return term;
+    }
     match bank.get(term).clone() {
         TermNode::Var(v) => match subst.get(v) {
             Some(t) => t,
             None => term,
         },
         TermNode::App(f, args) => {
-            let new_args: Vec<TermId> = args
-                .iter()
-                .map(|&a| apply_subst_flat_id(subst, a, bank))
-                .collect();
-            bank.intern_app(f, new_args)
+            // Rebuild only the arguments that change. An unchanged argument list
+            // interns back to the id it started from, so allocating it and
+            // hashing it into the bank is a cost with no effect.
+            let mut rewritten: smallvec::SmallVec<[(usize, TermId); 4]> = smallvec::SmallVec::new();
+            for (idx, &arg) in args.iter().enumerate() {
+                let new_arg = apply_subst_flat_id(subst, arg, bank);
+                if new_arg != arg {
+                    rewritten.push((idx, new_arg));
+                }
+            }
+            if rewritten.is_empty() {
+                term
+            } else {
+                let mut new_args: smallvec::SmallVec<[TermId; 4]> = args.iter().copied().collect();
+                for (idx, new_arg) in rewritten {
+                    new_args[idx] = new_arg;
+                }
+                bank.intern_app(f, new_args)
+            }
         }
     }
 }
 
 fn apply_subst_chain_id(subst: &IdSubstitution, mut term: TermId, bank: &mut TermBank) -> TermId {
+    if subst.is_empty() {
+        return term;
+    }
     let mut steps = 0;
     loop {
         if let TermNode::Var(v) = bank.get(term)
@@ -216,11 +245,22 @@ fn apply_subst_chain_id(subst: &IdSubstitution, mut term: TermId, bank: &mut Ter
     match bank.get(term).clone() {
         TermNode::Var(_) => term,
         TermNode::App(f, args) => {
-            let new_args: Vec<TermId> = args
-                .iter()
-                .map(|&a| apply_subst_chain_id(subst, a, bank))
-                .collect();
-            bank.intern_app(f, new_args)
+            let mut rewritten: smallvec::SmallVec<[(usize, TermId); 4]> = smallvec::SmallVec::new();
+            for (idx, &arg) in args.iter().enumerate() {
+                let new_arg = apply_subst_chain_id(subst, arg, bank);
+                if new_arg != arg {
+                    rewritten.push((idx, new_arg));
+                }
+            }
+            if rewritten.is_empty() {
+                term
+            } else {
+                let mut new_args: smallvec::SmallVec<[TermId; 4]> = args.iter().copied().collect();
+                for (idx, new_arg) in rewritten {
+                    new_args[idx] = new_arg;
+                }
+                bank.intern_app(f, new_args)
+            }
         }
     }
 }
@@ -638,31 +678,58 @@ pub fn subsumption_resolution_id(
     }
 
     let offset = max_var_id(target, bank);
-    let active_renamed = rename_clause_id(active_clause, offset, bank);
+    // See `subsumes_id`: renaming a ground active clause is the identity, and
+    // `rename_clause_id` interns every subterm it walks.
+    let ground_active = is_ground_id(active_clause, bank);
+    let renamed;
+    let active_literals: &[IdLiteral] = if ground_active {
+        &active_clause.literals
+    } else {
+        renamed = rename_clause_id(active_clause, offset, bank);
+        &renamed.literals
+    };
 
+    // One copy of the target, with the polarity flip applied in place.
+    //
+    // Building a fresh `modified_target` per position cost a vector allocation
+    // plus a clone of every literal, for each of the target's literals, on every
+    // candidate — and the target is the wide clause.
+    //
+    // The flip has to be *undone*. Each position flips one literal, and the
+    // positions are tried in order, so without a restore the literals of the
+    // earlier positions stay flipped and position `i` is matched against a
+    // target with several polarities reversed. That does not make the rule
+    // unsound — the emitted conclusion is still the target minus the literal at
+    // the reported index — but it is not the inference the step claims, and
+    // `mrs-proover --strict` rejects every such step with "conclusion is not
+    // the target with a justified literal removed". The regression is invisible
+    // in a self-check that replays only the prover's own reasoning, so the
+    // restore is the part that must not be optimised away.
+    let mut modified_target: Vec<IdLiteral> = target.literals.to_vec();
     for i in 0..target.literals.len() {
-        let mut modified_target = Vec::with_capacity(target.literals.len());
-        for (j, lit) in target.literals.iter().enumerate() {
-            if i == j {
-                modified_target.push(IdLiteral {
-                    positive: !lit.positive,
-                    atom: lit.atom.clone(),
-                });
-            } else {
-                modified_target.push(lit.clone());
-            }
-        }
+        let original = target.literals[i].clone();
+        modified_target[i] = IdLiteral {
+            positive: !original.positive,
+            atom: original.atom.clone(),
+        };
 
         let subst = IdSubstitution::new();
         let mut steps = 0usize;
-        if match_literals_id(
-            &active_renamed.literals,
+        let matched = match_literals_id(
+            active_literals,
             &modified_target,
             &subst,
             offset,
             bank,
             &mut steps,
-        ) {
+        );
+        // Undo the flip before the next position, and before returning: position
+        // `i` must be matched against the target with only literal `i` reversed,
+        // and each position rewrites only its own index, so without this the
+        // literals `0..i` stay reversed. `subsumption_resolution_id_reports_the_position_whose_flip_matched`
+        // fails without it.
+        modified_target[i] = original;
+        if matched {
             return Some(i);
         }
     }
@@ -987,6 +1054,17 @@ mod tests2 {
     use mrs_core::clause::{ClauseIdGen, ClauseSource};
     use mrs_core::{Atom, Literal, SymbolTable, Term};
 
+    fn id_clause(id_gen: &mut ClauseIdGen, lits: Vec<IdLiteral>, name: &str) -> IdClause {
+        IdClause::new(
+            id_gen.next(),
+            lits,
+            ClauseSource::Input {
+                name: name.into(),
+                role: "axiom".into(),
+            },
+        )
+    }
+
     fn input_clause(
         id_gen: &mut ClauseIdGen,
         lits: Vec<Literal>,
@@ -1034,5 +1112,53 @@ mod tests2 {
 
         let removed_idx = subsumption_resolution(&active, &target);
         assert_eq!(removed_idx, Some(1));
+    }
+
+    /// The reported index must be the position whose flip actually made the
+    /// active clause embed.
+    ///
+    /// The polarity flip is applied in place across positions, so a version that
+    /// forgets to undo it presents position `i` with a target whose literals
+    /// `0..i` are all reversed. The fixture below is shaped so that this changes
+    /// the answer: the active clause embeds the *unflipped* literal 0, position 0
+    /// is tried first and correctly fails, and position 1 is the true answer. With
+    /// a stale flip, position 1 is offered a reversed literal 0 and fails too, and
+    /// so does position 2, so the function returns `None` where it must return
+    /// `Some(1)`.
+    ///
+    /// Such a step is still a consequence of its parents, so a replay of the
+    /// prover's own reasoning accepts it, and `mrs-proover --strict` rejects every
+    /// one with "conclusion is not the target with a justified literal removed" —
+    /// which is how the bug was found, and why the check is on the index rather
+    /// than on the proof.
+    #[test]
+    fn subsumption_resolution_id_reports_the_position_whose_flip_matched() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+        let r = syms.intern("r");
+        let mut id_gen = ClauseIdGen::new();
+        let mut bank = TermBank::new();
+        let pos = |sym: mrs_core::SymbolId, bank: &mut TermBank, v: u32| IdLiteral {
+            positive: true,
+            atom: IdAtom::Pred(sym, smallvec::SmallVec::from_vec(vec![bank.intern_var(v)])),
+        };
+
+        let active = id_clause(&mut id_gen, vec![pos(p, &mut bank, 0)], "active");
+        let target = id_clause(
+            &mut id_gen,
+            vec![
+                pos(p, &mut bank, 0),
+                pos(q, &mut bank, 1),
+                pos(r, &mut bank, 2),
+            ],
+            "target",
+        );
+
+        assert_eq!(
+            subsumption_resolution_id(&active, &target, &mut bank),
+            Some(1),
+            "literal 0 embeds only once literal 1 is reversed"
+        );
     }
 }

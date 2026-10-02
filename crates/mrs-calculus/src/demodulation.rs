@@ -188,7 +188,151 @@ fn apply_matching_subst(sigma: &Substitution, term: &Term) -> Term {
 }
 
 use mrs_core::SymbolId;
-use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank, TermId};
+use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank, TermId, TermNode};
+
+/// Root cell of a term: the symbol and arity a rewrite rule's left-hand side
+/// must share with a term for that rule to be able to rewrite it.
+///
+/// `TermNode` has no separate constant case, so a constant is `App(sym, 0)` and
+/// is covered by the same key.
+type RootKey = (SymbolId, u8);
+
+/// Cap on memoised terms.
+///
+/// A memo entry is one interned `TermId` plus a root key and a generation, so
+/// the cap is a bound on how much of the term bank the memo can pin. It is
+/// sized from the clauses-per-second these searches reach: a run that retires
+/// hundreds of thousands of given clauses visits far more distinct terms than
+/// this, and past the cap the memo is cleared rather than grown. Clearing costs
+/// one rebuild of the entries and is counted, so a run that is thrashing the
+/// cap says so instead of quietly paying for it.
+const MAX_MEMO_ENTRIES: usize = 400_000;
+
+/// Memo of terms already found irreducible by one demodulation index.
+///
+/// `rewrite_term_id` is a pure function of the term, the rules in the index,
+/// and the literal's AVATAR context, and the search asks it the same question
+/// about the same interned term over and over: an argument that occurs in one
+/// clause occurs in most of the clauses that mention its symbol. A callgrind
+/// profile of a single-strategy run on `casc-j13/UEQ/LAT141-1.p` attributes
+/// about 40 % of search instructions to this walk, and almost every answer is
+/// "no rule applies".
+///
+/// # Only the negative answer is memoised
+///
+/// A positive answer carries a witness — which unit clause was applied, at
+/// which term path — and `mrs-proof` replays that witness to justify the step
+/// to a checker. A synthesised substitute would be a step that did not happen,
+/// the same failure `mrs-search`'s `fvo` module documents. `rewrite_term_id`
+/// also returns at the first rewrite, so positives are rare regardless.
+///
+/// # Invalidation is per root cell
+///
+/// A rule `l -> r` can only rewrite a term whose root cell is `l`'s, so adding
+/// or removing one cannot change the answer for any other root. Each root
+/// carries a generation, and an entry is only a hit when its recorded
+/// generation still matches — so inserting a unit equality invalidates the
+/// terms that rule could reach and leaves the rest of the memo standing. A
+/// single global counter would be correct but would empty the memo on every
+/// derived equality, which on an equational division is most iterations.
+///
+/// # Scope
+///
+/// The memo is only valid for the index it was populated against, so
+/// [`demodulate_id`] takes it as an `Option`: a caller rewriting against a
+/// temporary index passes `None`. It is also only valid when the clause carries
+/// no AVATAR context, because the rule-availability test depends on it; the
+/// caller enforces that by passing `None` for a split clause.
+pub struct DemodMemo {
+    entries: HashMap<TermId, (RootKey, u64)>,
+    generations: HashMap<RootKey, u64>,
+    lookups: u64,
+    hits: u64,
+    records: u64,
+    evictions: u64,
+}
+
+impl DemodMemo {
+    pub fn new() -> Self {
+        DemodMemo {
+            entries: HashMap::default(),
+            generations: HashMap::default(),
+            lookups: 0,
+            hits: 0,
+            records: 0,
+            evictions: 0,
+        }
+    }
+
+    /// Root cell of `term`, or `None` for a variable.
+    ///
+    /// A variable can never be rewritten: the index only ever holds a
+    /// non-variable side of a unit equality, and a variable has no root cell for
+    /// that cell to match.
+    fn root_key(term: TermId, bank: &TermBank) -> Option<RootKey> {
+        match bank.get(term) {
+            TermNode::Var(_) => None,
+            TermNode::App(sym, args) => Some((*sym, args.len() as u8)),
+        }
+    }
+
+    /// Returns `true` if `term` is already known to be irreducible.
+    pub fn is_irreducible(&mut self, term: TermId, bank: &TermBank) -> bool {
+        let Some(key) = Self::root_key(term, bank) else {
+            return true;
+        };
+        self.lookups += 1;
+        let hit = match self.entries.get(&term) {
+            Some((stored_key, stored_gen)) => {
+                *stored_key == key
+                    && self.generations.get(&key).copied().unwrap_or(0) == *stored_gen
+            }
+            None => false,
+        };
+        if hit {
+            self.hits += 1;
+        }
+        hit
+    }
+
+    /// Records that `term` was found irreducible by the current index.
+    pub fn record_irreducible(&mut self, term: TermId, bank: &TermBank) {
+        let Some(key) = Self::root_key(term, bank) else {
+            return;
+        };
+        if self.entries.len() >= MAX_MEMO_ENTRIES {
+            self.entries.clear();
+            self.evictions += 1;
+        }
+        let generation = self.generations.get(&key).copied().unwrap_or(0);
+        self.entries.insert(term, (key, generation));
+        self.records += 1;
+    }
+
+    /// Declares that the rule set for `term`'s root cell has changed.
+    ///
+    /// Call this after inserting into, or removing from, the index that the
+    /// memo was populated against. Passing the changed rule's own side is
+    /// enough: the generation is keyed on the root cell, which is what decides
+    /// which terms the rule can reach.
+    pub fn invalidate(&mut self, term: TermId, bank: &TermBank) {
+        if let Some(key) = Self::root_key(term, bank) {
+            let slot = self.generations.entry(key).or_insert(0);
+            *slot = slot.saturating_add(1);
+        }
+    }
+
+    /// `(lookups, hits, records, evictions)`.
+    pub fn stats(&self) -> (u64, u64, u64, u64) {
+        (self.lookups, self.hits, self.records, self.evictions)
+    }
+}
+
+impl Default for DemodMemo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 pub fn demodulate_id(
     clause: &IdClause,
@@ -197,7 +341,11 @@ pub fn demodulate_id(
     clause_store: &HashMap<ClauseId, IdClause>,
     id_gen: &mut ClauseIdGen,
     ac_syms: &HashSet<SymbolId>,
+    memo: Option<&mut DemodMemo>,
 ) -> Option<IdClause> {
+    // A split clause's rewrite availability depends on its AVATAR context, which
+    // the memo key does not carry, so a split clause runs unmemoised.
+    let mut memo = memo.filter(|_| clause.avatar.is_empty());
     let mut current_lits = clause.literals.clone();
     let mut changed = false;
     let mut used_unit_ids = Vec::new();
@@ -229,6 +377,7 @@ pub fn demodulate_id(
                 &mut used_unit_ids,
                 &mut steps,
                 ac_syms,
+                memo.as_deref_mut(),
             ) {
                 changed = true;
                 changed_this_pass = true;
@@ -292,11 +441,16 @@ fn rewrite_literal_id(
     used_unit_ids: &mut Vec<ClauseId>,
     steps: &mut Vec<DemodStepWitness>,
     ac_syms: &HashSet<SymbolId>,
+    mut memo: Option<&mut DemodMemo>,
 ) -> bool {
     let mut changed = false;
+    // One path buffer for the whole literal, truncated and re-pushed per
+    // argument, instead of one `Vec` allocation per argument.
+    let mut path = TermPath::new();
     let new_atom = match &lit.atom {
         IdAtom::Pred(p, args) => {
-            let new_args: smallvec::SmallVec<[TermId; 4]> = args
+            let arg_ids: smallvec::SmallVec<[TermId; 4]> = args.iter().copied().collect();
+            let new_args: smallvec::SmallVec<[TermId; 4]> = arg_ids
                 .iter()
                 .enumerate()
                 .map(|(arg_idx, arg)| {
@@ -304,7 +458,7 @@ fn rewrite_literal_id(
                     // from the literal's atom down to the rewritten subterm, so
                     // it is threaded down the recursion rather than rebuilt at
                     // each level.
-                    let mut path = TermPath::new();
+                    path.clear();
                     path.push(arg_idx);
                     let (new_arg, ch) = rewrite_term_id(
                         *arg,
@@ -317,6 +471,7 @@ fn rewrite_literal_id(
                         used_unit_ids,
                         steps,
                         ac_syms,
+                        memo.as_deref_mut(),
                     );
                     if ch {
                         changed = true;
@@ -327,12 +482,13 @@ fn rewrite_literal_id(
             IdAtom::Pred(*p, new_args)
         }
         IdAtom::Eq(l, r) => {
-            let mut left_path = TermPath::new();
-            left_path.push(0);
+            let (l, r) = (*l, *r);
+            path.clear();
+            path.push(0);
             let (new_l, ch_l) = rewrite_term_id(
-                *l,
+                l,
                 lit_idx,
-                &mut left_path,
+                &mut path,
                 target_avatar,
                 bank,
                 demod_index,
@@ -340,13 +496,14 @@ fn rewrite_literal_id(
                 used_unit_ids,
                 steps,
                 ac_syms,
+                memo.as_deref_mut(),
             );
-            let mut right_path = TermPath::new();
-            right_path.push(1);
+            path.clear();
+            path.push(1);
             let (new_r, ch_r) = rewrite_term_id(
-                *r,
+                r,
                 lit_idx,
-                &mut right_path,
+                &mut path,
                 target_avatar,
                 bank,
                 demod_index,
@@ -354,6 +511,9 @@ fn rewrite_literal_id(
                 used_unit_ids,
                 steps,
                 ac_syms,
+                // Argument position reborrows implicitly, so the binding goes
+                // across as-is.
+                memo,
             );
             if ch_l || ch_r {
                 changed = true;
@@ -374,7 +534,11 @@ type TermPath = Vec<usize>;
 /// `path` is the position of `term` inside its literal: the chain of argument
 /// indices from the literal's atom (or `0`/`1` for the left/right side of an
 /// equality atom) down to this subterm.
-#[allow(clippy::too_many_arguments)]
+// `as_deref_mut` is load-bearing here: it reborrows the memo so that the
+// recursive call in the middle can also take it. Clippy reads it as a no-op
+// because `Option<&mut T>::as_deref_mut()` has the same type, and taking the
+// binding by value instead would move it out.
+#[allow(clippy::too_many_arguments, clippy::needless_option_as_deref)]
 fn rewrite_term_id(
     term: TermId,
     lit_idx: usize,
@@ -386,7 +550,16 @@ fn rewrite_term_id(
     used_unit_ids: &mut Vec<ClauseId>,
     steps: &mut Vec<DemodStepWitness>,
     _ac_syms: &HashSet<SymbolId>,
+    mut memo: Option<&mut DemodMemo>,
 ) -> (TermId, bool) {
+    // Already known irreducible against the current index: the whole subtree
+    // walk, and every trie descent under it, can be skipped. See `DemodMemo`
+    // for why only this answer is cached.
+    if let Some(known) = memo.as_deref_mut()
+        && known.is_irreducible(term, bank)
+    {
+        return (term, false);
+    }
     let rules = demod_index.get_generalizations(term, bank);
     for (from, to, unit_id) in rules {
         if let Some(rule_clause) = clause_store.get(&unit_id) {
@@ -413,8 +586,12 @@ fn rewrite_term_id(
 
     if let mrs_core::term_bank::TermNode::App(sym, args) = bank.get(term).clone() {
         let mut changed = false;
-        let mut new_args = Vec::with_capacity(args.len());
-        for (arg_idx, arg) in args.into_iter().enumerate() {
+        // Collect the rewritten children instead of rebuilding the argument list
+        // eagerly: on the overwhelmingly common no-op path this used to
+        // allocate and fill a vector per term node, per literal, per clause.
+        let mut rewritten_args: smallvec::SmallVec<[(usize, TermId); 4]> =
+            smallvec::SmallVec::new();
+        for (arg_idx, arg) in args.iter().copied().enumerate() {
             path.push(arg_idx);
             let (new_arg, ch) = rewrite_term_id(
                 arg,
@@ -427,19 +604,27 @@ fn rewrite_term_id(
                 used_unit_ids,
                 steps,
                 _ac_syms,
+                memo.as_deref_mut(),
             );
             path.pop();
             if ch {
                 changed = true;
+                rewritten_args.push((arg_idx, new_arg));
             }
-            new_args.push(new_arg);
         }
         if changed {
+            let mut new_args: smallvec::SmallVec<[TermId; 4]> = args.iter().copied().collect();
+            for (arg_idx, new_arg) in rewritten_args {
+                new_args[arg_idx] = new_arg;
+            }
             let app_term = bank.intern_app(sym, new_args);
             return (app_term, true);
         }
     }
 
+    if let Some(fresh) = memo.as_deref_mut() {
+        fresh.record_irreducible(term, bank);
+    }
     (term, false)
 }
 
@@ -724,6 +909,7 @@ mod tests {
             &clause_store,
             &mut id_gen,
             &Default::default(),
+            None,
         )
         .expect("demodulation applies");
         let mrs_core::witness::ProofWitness::Demodulation {
@@ -870,5 +1056,233 @@ mod tests {
             );
             assert!(step.term_path[0] <= 1);
         }
+    }
+
+    // ── DemodMemo ─────────────────────────────────────────────────────────────
+
+    fn term(bank: &mut TermBank, t: &Term) -> TermId {
+        bank.from_legacy(t)
+    }
+
+    fn app1(bank: &mut TermBank, f: SymbolId, c: SymbolId) -> TermId {
+        let arg = term(bank, &Term::constant(c));
+        bank.intern_app(f, smallvec::SmallVec::from_vec(vec![arg]))
+    }
+
+    fn id_pred_clause(id_gen: &mut ClauseIdGen, p: SymbolId, arg: TermId, name: &str) -> IdClause {
+        let lits = vec![IdLiteral {
+            positive: true,
+            atom: IdAtom::Pred(p, smallvec::SmallVec::from_vec(vec![arg])),
+        }];
+        IdClause::new(
+            id_gen.next(),
+            lits,
+            ClauseSource::Input {
+                name: name.into(),
+                role: "axiom".into(),
+            },
+        )
+    }
+
+    fn add_rule(
+        index: &mut mrs_index::stree::STreeId<(TermId, TermId, ClauseId)>,
+        store: &mut HashMap<ClauseId, IdClause>,
+        id_gen: &mut ClauseIdGen,
+        bank: &mut TermBank,
+        lhs: TermId,
+        rhs: TermId,
+    ) -> ClauseId {
+        let lits = vec![IdLiteral {
+            positive: true,
+            atom: IdAtom::Eq(lhs, rhs),
+        }];
+        let unit = IdClause::new(
+            id_gen.next(),
+            lits,
+            ClauseSource::Input {
+                name: "unit".into(),
+                role: "axiom".into(),
+            },
+        );
+        let unit_id = unit.id;
+        index.insert(lhs, bank, (lhs, rhs, unit_id));
+        store.insert(unit_id, unit);
+        unit_id
+    }
+
+    fn no_rewrite(
+        target: &IdClause,
+        bank: &mut TermBank,
+        index: &mrs_index::stree::STreeId<(TermId, TermId, ClauseId)>,
+        store: &HashMap<ClauseId, IdClause>,
+        id_gen: &mut ClauseIdGen,
+        memo: &mut DemodMemo,
+    ) -> bool {
+        demodulate_id(
+            target,
+            bank,
+            index,
+            store,
+            id_gen,
+            &Default::default(),
+            Some(&mut *memo),
+        )
+        .is_none()
+    }
+
+    #[test]
+    fn memo_answers_the_same_thing_as_a_fresh_walk() {
+        // `p(f(a))` is irreducible with no rules, stays irreducible when a rule
+        // with an unrelated root is added, and must stop claiming so once a rule
+        // rooted at f/1 exists. Forgetting the `invalidate` call fails the third
+        // step, and it fails it as a *silent* loss of demodulation.
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let f = syms.intern("f");
+        let g = syms.intern("g");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let mut bank = TermBank::new();
+        let mut id_gen = ClauseIdGen::new();
+        let fa = app1(&mut bank, f, a);
+        let fb = app1(&mut bank, f, b);
+        let ga = app1(&mut bank, g, a);
+
+        let target = id_pred_clause(&mut id_gen, p, fa, "target");
+        let mut index = mrs_index::stree::STreeId::new();
+        let mut store = HashMap::default();
+        let mut memo = DemodMemo::new();
+
+        assert!(no_rewrite(
+            &target,
+            &mut bank,
+            &index,
+            &store,
+            &mut id_gen,
+            &mut memo
+        ));
+        assert_eq!(
+            memo.stats().1,
+            0,
+            "the first walk populates the memo, it cannot hit it"
+        );
+        assert!(no_rewrite(
+            &target,
+            &mut bank,
+            &index,
+            &store,
+            &mut id_gen,
+            &mut memo
+        ));
+        assert!(
+            memo.stats().1 > 0,
+            "an identical second walk should be answered from the memo"
+        );
+
+        // A rule with a different root cannot rewrite p(f(a)), so the memo entry
+        // stays valid and the answer stays "no rewrite".
+        add_rule(&mut index, &mut store, &mut id_gen, &mut bank, ga, fa);
+        assert!(no_rewrite(
+            &target,
+            &mut bank,
+            &index,
+            &store,
+            &mut id_gen,
+            &mut memo
+        ));
+
+        // A rule rooted at f/1 can rewrite it, so the memo must not still claim
+        // the term is irreducible. `invalidate` is what the search must do after
+        // every index insert; leaving it out here is exactly the bug the
+        // assertion is here to catch.
+        add_rule(&mut index, &mut store, &mut id_gen, &mut bank, fa, fb);
+        memo.invalidate(fa, &bank);
+        let hits_before = memo.stats().1;
+        assert!(
+            !no_rewrite(&target, &mut bank, &index, &store, &mut id_gen, &mut memo),
+            "a stale memo entry would suppress this rewrite"
+        );
+        assert_eq!(
+            memo.stats().1,
+            hits_before,
+            "a stale memo entry would also be reported as a hit"
+        );
+    }
+
+    #[test]
+    fn memo_is_not_used_for_a_split_clause() {
+        // The rewrite-availability test reads the literal's AVATAR context, which
+        // the memo key does not carry, so a split clause must run unmemoised.
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let f = syms.intern("f");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let mut bank = TermBank::new();
+        let mut id_gen = ClauseIdGen::new();
+        let fa = app1(&mut bank, f, a);
+        let fb = app1(&mut bank, f, b);
+        let mut index = mrs_index::stree::STreeId::new();
+        let mut store = HashMap::default();
+        let unit_id = add_rule(&mut index, &mut store, &mut id_gen, &mut bank, fa, fb);
+
+        // The rule is cited in split 2 while the target carries split 1, so the
+        // rule is not available and nothing may be rewritten.
+        store
+            .get_mut(&unit_id)
+            .expect("rule is in the store")
+            .avatar = vec![2];
+        let mut target = id_pred_clause(&mut id_gen, p, fa, "target");
+        target.avatar = vec![1];
+
+        let mut memo = DemodMemo::new();
+        assert!(no_rewrite(
+            &target,
+            &mut bank,
+            &index,
+            &store,
+            &mut id_gen,
+            &mut memo
+        ));
+        assert_eq!(
+            memo.stats(),
+            (0, 0, 0, 0),
+            "a split clause must not memoise"
+        );
+    }
+
+    #[test]
+    fn memo_treats_a_variable_as_irreducible() {
+        // No rewrite rule can have a variable as its left-hand side, so the
+        // answer is structural and must not depend on the index.
+        let mut syms = SymbolTable::new();
+        let _ = syms.intern("unused");
+        let mut bank = TermBank::new();
+        let v = bank.intern_var(0);
+        let mut memo = DemodMemo::new();
+        assert!(memo.is_irreducible(v, &bank));
+        memo.record_irreducible(v, &bank);
+        assert_eq!(
+            memo.stats(),
+            (0, 0, 0, 0),
+            "a variable is answered structurally, so it costs no lookup either"
+        );
+    }
+
+    #[test]
+    fn memo_entry_is_dropped_when_its_root_changes() {
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("f");
+        let a = syms.intern("a");
+        let mut bank = TermBank::new();
+        let fa = app1(&mut bank, f, a);
+        let mut memo = DemodMemo::new();
+        memo.record_irreducible(fa, &bank);
+        assert!(memo.is_irreducible(fa, &bank));
+        memo.invalidate(fa, &bank);
+        assert!(
+            !memo.is_irreducible(fa, &bank),
+            "invalidating the root must retire exactly the entries that root can reach"
+        );
     }
 }

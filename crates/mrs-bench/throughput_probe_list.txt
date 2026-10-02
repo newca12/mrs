@@ -1,0 +1,64 @@
+# Problem list for throughput_probe.sh: one `edition/division/problem` per line.
+#
+# The set is chosen for the *code path* a problem exercises, not for its
+# benchmark status, so a change to demodulation or subsumption shows up as a
+# throughput movement on a known shape rather than as a solved-count wobble.
+# The sample is a fixed stride over each sorted directory, so it is stable when
+# the corpus grows and needs no RNG seed to reproduce.
+#
+# Recorded per row: the SZS status plus `processed`, `generated`, `passive`,
+# `lrs_discarded`, `weight_discarded` and `fwd_subsumed`. `processed` is the
+# headline; the rest say *why* it moved, which a solved count cannot.
+#
+# Equational problems: the search populates the demodulation index with unit
+# equalities, and `stree::get_generalizations` over that index is what a
+# callgrind profile of a single-strategy UEQ run attributes ~46% of search
+# instructions to. Two editions, so the baseline is not one corpus.
+casc-30/UEQ/ALG212-10
+casc-30/UEQ/COL006-7
+casc-30/UEQ/COL064-1
+casc-30/UEQ/GRP164-2
+casc-30/UEQ/GRP183-3
+casc-30/UEQ/GRP420-1
+casc-30/UEQ/GRP655-14
+casc-30/UEQ/GRP678-1
+casc-30/UEQ/GRP725-1
+casc-30/UEQ/KLE151-10
+casc-30/UEQ/LAT085-1
+casc-30/UEQ/LAT157-1
+casc-30/UEQ/LAT177-1
+casc-30/UEQ/LCL024-10
+casc-30/UEQ/LCL224-10
+casc-30/UEQ/MVA011-1
+casc-30/UEQ/REL016-10
+casc-30/UEQ/REL031-1
+casc-30/UEQ/REL045-1
+casc-30/UEQ/RNG026-7
+casc-j13/UEQ/ALG212-10
+casc-j13/UEQ/COL044-1
+casc-j13/UEQ/GRP181-2
+casc-j13/UEQ/GRP670-1
+casc-j13/UEQ/LAT022-1
+casc-j13/UEQ/LAT158-1
+casc-j13/UEQ/LCL054-10
+casc-j13/UEQ/MVA009-1
+casc-j13/UEQ/REL029-3
+casc-j13/UEQ/RNG021-7
+#
+# Non-equational problems: the demodulation index stays empty, so these
+# isolate the cost that a demodulation fast path must *not* change.
+casc-30/FNE/BOO109+1
+casc-30/FNE/CSR052+3
+casc-30/FNE/CSR115+6
+casc-30/FNE/KRS203+1
+casc-30/FNE/LCL109+1
+casc-30/FNE/LCL376+1
+casc-30/FNE/LCL403+2
+casc-30/FNE/LCL682+1.020
+casc-30/FNE/NLP261+1
+casc-30/FNE/NUN087+1
+casc-j13/FNE/COM008+1
+casc-j13/FNE/CSR116+3
+casc-j13/FNE/LCL368+2
+casc-j13/FNE/LCL646+1.015
+casc-j13/FNE/NUN060+1
