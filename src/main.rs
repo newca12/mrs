@@ -10,6 +10,7 @@ mod analyze;
 mod coordinator;
 mod include;
 mod lowering;
+mod pipeline;
 mod sine;
 
 use std::env;
@@ -20,8 +21,6 @@ use std::time::Instant;
 
 use std::time::Duration;
 
-use mrs_core::Formula;
-use mrs_core::clause::{Clause, ClauseSource};
 use mrs_proof_kernel::model::ModelEvaluation;
 use mrs_search::strategy::{StrategySchedule, run_schedule};
 use mrs_search::{ScheduleReport, SearchResult};
@@ -472,27 +471,25 @@ fn main() {
         }
     };
 
-    // Lower to core types
-    let mut lowered = lowering::lower_problem(&problem);
-
-    // Resolve include directives
-    if !problem.includes.is_empty() {
-        let base_dir = Path::new(&path).parent().unwrap_or(Path::new("."));
-
-        // Use $TPTP as a hint for the root directory.  Even if it is wrong
-        // (e.g. pointing at Problems/ instead of TPTP-v9.2.1/), resolve_path
-        // will also auto-detect the root by walking up from base_dir looking
-        // for an ancestor that contains Axioms/.
-        let tptp_root: Option<PathBuf> = env::var("TPTP").ok().map(PathBuf::from);
-
-        match include::resolve_and_lower(&problem, &mut lowered, base_dir, tptp_root.as_deref()) {
-            Ok(()) => {
-                info!("% Resolved {} include directive(s)", problem.includes.len());
-            }
-            Err(e) => {
-                info!("Warning: include resolution failed: {}", e);
-            }
-        }
+    // Lower to core types, resolve includes, and clausify. Shared with the
+    // offline pre-phase dumper so both see exactly the same clause set.
+    let input_bytes = if path == "-" {
+        None
+    } else {
+        fs::metadata(&path).ok().map(|m| m.len())
+    };
+    let resolved_includes = problem.includes.len();
+    let prepared = pipeline::prepare(&problem, Some(&path), input_bytes);
+    let lowered = prepared.lowered;
+    let prephase_meta = prepared.meta;
+    let all_clauses = prepared.clauses;
+    let provenance = prepared.provenance;
+    // The clause-id generator handed to the scheduler is the lowered one, not
+    // the generator the clausification walked: inference steps get ids from it
+    // after every input clause is already numbered.
+    let id_gen = lowered.id_gen.clone();
+    if resolved_includes > 0 {
+        info!("% Resolved {} include directive(s)", resolved_includes);
     }
 
     let has_logical_formulas = !problem.includes.is_empty()
@@ -670,84 +667,12 @@ fn main() {
         cnf_count
     );
 
-    // --- Clausification ---
-    let mut id_gen = lowered.id_gen.clone();
-    let mut all_clauses: Vec<Clause> = lowered
-        .cnf_clauses
-        .clone()
-        .into_iter()
-        .map(|c| {
-            // CNF clauses with negated_conjecture role are already the
-            // negated goal: give them distance=0 so SOS/GoalDirected
-            // heuristics treat them as goal-connected.
-            let is_nc = matches!(
-                &c.source,
-                ClauseSource::Input { role, .. } if role == "negated_conjecture"
-            );
-            c.with_distance(if is_nc { 0 } else { 100 })
-        })
-        .collect();
-
-    // Non-clausal FOF-level proof steps (NNF conversion, Skolemization, and
-    // the explicit conjecture-negation step) produced alongside `all_clauses`.
-    // These document the FOF-to-CNF translation for the final proof (see
-    // CASC's evaluation criteria: "Translations from one form to another...
-    // must be adequately documented"). They are never added to the live
-    // given-clause search — see `Clause::formula`'s doc comment for why.
-    let mut provenance: Vec<Clause> = Vec::new();
-
-    // Clausify axioms directly
-    for f in &lowered.axioms {
-        let leaf_source = ClauseSource::Input {
-            name: f.name.clone(),
-            role: f.role.clone(),
-        };
-        let (steps, clauses) = mrs_cnf::clausify_with_provenance(
-            &f.formula,
-            &mut lowered.symbols,
-            &mut id_gen,
-            &f.name,
-            leaf_source,
-            None,
-        );
-        provenance.extend(steps);
-        all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(100)));
-    }
-
-    // Negate conjectures for refutation-based proving:
-    // To prove P, we show that axioms ∧ ¬P is unsatisfiable.
-    for f in &lowered.conjectures {
-        // Explicit leaf citing the original (non-negated) conjecture.
-        let conj_leaf_id = id_gen.next();
-        provenance.push(Clause::new_formula_step(
-            conj_leaf_id,
-            f.formula.clone(),
-            ClauseSource::Input {
-                name: f.name.clone(),
-                role: "conjecture".to_string(),
-            },
-        ));
-
-        // The negation step itself is explicitly cited (status cth, single
-        // parent = the conjecture leaf), per the CASC evaluation criteria:
-        // "Proofs that negate the conjecture must correctly annotate the
-        // step as status(cth) and have a single parent with the role
-        // conjecture."
-        let negated = Formula::neg(f.formula.clone());
-        let (steps, clauses) = mrs_cnf::clausify_with_provenance(
-            &negated,
-            &mut lowered.symbols,
-            &mut id_gen,
-            &f.name,
-            ClauseSource::Inference {
-                rule: "negated_conjecture",
-                parents: vec![conj_leaf_id].into(),
-            },
-            None,
-        );
-        provenance.extend(steps);
-        all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(0)));
-    }
+    // Clausification already happened in `pipeline::prepare`; the clause set
+    // the search sees is `all_clauses`, and `provenance` holds the FOF-level
+    // NNF / Skolemization / conjecture-negation steps that document the
+    // translation in the TSTP proof (CASC's evaluation criteria require the
+    // FOF-to-CNF translation to be documented). Those steps never enter the
+    // live search — see `Clause::formula`'s doc comment for why.
 
     if profile_json_mode {
         analyze::analyze_and_print_json_with_counts(

@@ -20,6 +20,7 @@ mrs-unify = { workspace = true }
 mrs-index = { workspace = true }
 mrs-proof = { workspace = true }
 mrs-cadical = { workspace = true }
+mrs-prephase = { workspace = true }
 rustc-hash = { workspace = true }
 smallvec = { workspace = true }
 num_cpus = { workspace = true }

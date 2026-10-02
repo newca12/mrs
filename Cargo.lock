@@ -3621,6 +3621,7 @@ dependencies = [
  "mrs-calculus",
  "mrs-cnf",
  "mrs-core",
+ "mrs-prephase",
  "mrs-proof",
  "mrs-proof-kernel",
  "mrs-proover",
@@ -3745,6 +3746,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mrs-prephase"
+version = "0.2.3"
+dependencies = [
+ "mrs-calculus",
+ "mrs-core",
+ "mrs-unify",
+ "rustc-hash 2.1.3",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mrs-proof"
 version = "0.2.3"
 dependencies = [
@@ -3796,6 +3809,7 @@ dependencies = [
  "mrs-cnf",
  "mrs-core",
  "mrs-index",
+ "mrs-prephase",
  "mrs-proof",
  "mrs-proof-kernel",
  "mrs-tptp",
