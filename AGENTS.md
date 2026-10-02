@@ -11,7 +11,7 @@ instead.
 ## 1. NixOS WSL Development Environment (SOTA)
 The host environment is **NixOS running inside Windows Subsystem for Linux (WSL)**.
 - Traditional FHS assumptions do NOT apply. Files and libraries are versioned under `/nix/store/` instead of `/lib` or `/usr/include`.
-- This project uses **Nix Flakes** (`flake.nix`) and **direnv** (`.envrc`) to declare its development dependencies (including Rust compiler stable 1.98.1, cargo, clippy, rustfmt, rust-analyzer, pkg-config, git, and cargo-nextest).
+- This project uses **Nix Flakes** (`flake.nix`) and **direnv** (`.envrc`) to declare its development dependencies (including Rust compiler stable 1.99.0, cargo, clippy, rustfmt, rust-analyzer, pkg-config, git, and cargo-nextest).
 
 ### Execution Rule (Critical)
 Because your native agent `bash` or terminal execution tool starts in a raw shell that does not automatically load `direnv`, **you must wrap any compilation, testing, or development command in the Nix environment.**

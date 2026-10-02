@@ -11,7 +11,7 @@ nix develop -c rustc --version
 nix develop -c cargo --version
 ```
 
-The workspace currently pins Rust `1.98.1` through `Cargo.toml` and `flake.nix`.
+The workspace currently pins Rust `1.99.0` through `Cargo.toml` and `flake.nix`.
 
 ## Build and test
 

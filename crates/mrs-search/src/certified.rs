@@ -2388,7 +2388,7 @@ fn closure_wave_range(
                 |candidate| {
                     inferences += 1;
                     if remaining_inferences
-                        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                        .try_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
                             remaining.checked_sub(1)
                         })
                         .is_err()
@@ -2410,7 +2410,7 @@ fn closure_wave_range(
                         return ControlFlow::Break(());
                     }
                     if remaining_literals
-                        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                        .try_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
                             remaining.checked_sub(derived_clause.literals.len())
                         })
                         .is_err()

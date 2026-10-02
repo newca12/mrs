@@ -20,7 +20,7 @@ cargo install mrs
 ```
 
 This requires a Rust toolchain compatible with the workspace's current
-`rust-version` (`1.98.1`). The repository development shell provides it via
+`rust-version` (`1.99.0`). The repository development shell provides it via
 the Nix flake.
 
 Pre-built binaries are not yet provided; see [Building from source](#building-from-source) if you prefer not to use `cargo install`.

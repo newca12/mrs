@@ -33,7 +33,7 @@
 #   R6_REPEATS (3), R6_SAMPLE (100), MRS_BIN (target/release/mrs).
 #
 # Toolchain: plain cargo/rustup (no nix on remote). Pin rustc to the same
-# version the local gate used (1.98.1; `rustup toolchain install 1.98.1`)
+# version the local gate used (1.99.0; `rustup toolchain install 1.99.0`)
 # and record `rustc --version` + git rev in every phase output. A version
 # mismatch warns but does not stop the campaign; note it in the report.
 # Reference answers for full divisions are generated from TPTP % Status
@@ -57,7 +57,7 @@ R2_DEEP="${R2_DEEP:-300}"
 R6_REPEATS="${R6_REPEATS:-3}"
 R6_SAMPLE="${R6_SAMPLE:-100}"
 MRS_BIN="${MRS_BIN:-${WORKSPACE_ROOT}/target/release/mrs}"
-EXPECTED_RUSTC="${EXPECTED_RUSTC:-1.98.1}"
+EXPECTED_RUSTC="${EXPECTED_RUSTC:-1.99.0}"
 
 log() { echo "[remote-cert] $*" >&2; }
 fail() { echo "[remote-cert] PHASE FAILED: $*" >&2; exit 1; }

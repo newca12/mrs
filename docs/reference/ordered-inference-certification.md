@@ -186,7 +186,7 @@ runs the full validation program against a complete TPTP checkout:
 | R6 | 3× stratified sample | Verdict stability, wobble quantification |
 
 Setup on remote: full TPTP checkout in `TPTP_ROOT`, plain cargo/rustup
-(no nix — pin rustc to the local gate's version, currently 1.98.1; the
+(no nix — pin rustc to the local gate's version, currently 1.99.0; the
 campaign records the actual toolchain and warns on mismatch), then
 `./crates/mrs-bench/remote-cert-campaign.sh r0` (or `all`). Reference
 answers generate from TPTP `% Status` headers with division-label
