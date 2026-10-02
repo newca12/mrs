@@ -108,6 +108,16 @@ pub struct SearchStats {
     pub parent_guidance_pruned: u64,
     /// Parent pairs sampled for offline training.
     pub parent_guidance_sampled: u64,
+    /// Times the demodulation memo was asked whether a term is irreducible.
+    ///
+    /// The pair with [`SearchStats::demod_memo_hits`] reads as a hit rate, which
+    /// is the only way to tell a working memo from one that is invalidated as
+    /// fast as it is filled.
+    pub demod_memo_lookups: u64,
+    /// Terms the demodulation memo already knew to be irreducible.
+    pub demod_memo_hits: u64,
+    /// Times the demodulation memo hit its entry cap and was cleared.
+    pub demod_memo_evictions: u64,
     /// Where the run stood when it crossed the CASC reference wall clock.
     /// Recorded only in `casc-sim`, which searches past that point on purpose:
     /// without it a later resource stop and a plain timeout are indistinguishable
@@ -201,6 +211,21 @@ impl ScheduleReport {
             .iter()
             .map(|s| s.stats.parent_guidance_pruned)
             .sum();
+        let demod_memo_lookups: u64 = self
+            .strategies
+            .iter()
+            .map(|s| s.stats.demod_memo_lookups)
+            .sum();
+        let demod_memo_hits: u64 = self
+            .strategies
+            .iter()
+            .map(|s| s.stats.demod_memo_hits)
+            .sum();
+        let demod_memo_evictions: u64 = self
+            .strategies
+            .iter()
+            .map(|s| s.stats.demod_memo_evictions)
+            .sum();
         let parent_guidance_sampled: u64 = self
             .strategies
             .iter()
@@ -220,7 +245,8 @@ impl ScheduleReport {
         let mut detail = format!(
             "strategies={} workers={} strategy_ids={} result={} elapsed_ms={} timeout={} saturated={} \
              processed={} generated={} passive={} weight_discarded={} lrs_discarded={} \
-             fwd_subsumed={} shared_published={} shared_imported={} parent_guidance_pruned={} parent_guidance_sampled={}",
+             fwd_subsumed={} shared_published={} shared_imported={} parent_guidance_pruned={} parent_guidance_sampled={} \
+             demod_memo_lookups={} demod_memo_hits={} demod_memo_evictions={}",
             self.strategies.len(),
             self.workers,
             {
@@ -250,6 +276,9 @@ impl ScheduleReport {
             total_shared_imported,
             parent_guidance_pruned,
             parent_guidance_sampled,
+            demod_memo_lookups,
+            demod_memo_hits,
+            demod_memo_evictions,
         );
 
         if let Some(ig) = &self.instgen {

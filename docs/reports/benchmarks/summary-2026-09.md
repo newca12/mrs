@@ -239,6 +239,21 @@ CASC-shaped. Full analysis and the separating A/B:
 [`ueq-2026-09.md`](ueq-2026-09.md). The FNE and FEQ rows above are
 unaffected by that campaign and stand.
 
+### A third candidate for part of the UEQ gap: engine throughput
+
+The UEQ report above leaves the 150-problem gap with two candidate causes, both
+portfolio-level. A third is engine-level and does not depend on either: a
+callgrind profile of a single-strategy UEQ run attributed **88 %** of search
+instructions to redundancy elimination — 47 % forward subsumption, 41 % forward
+demodulation — with a 4 % subsumption hit rate. Six no-op changes to that path
+(now a memoised negative answer for demodulation, an empty-substitution early-out
+in the subsumption matcher, and a term-bank memo for the maximum variable id)
+retire **1.24x** more clauses out of the same budget on a 30-problem UEQ set and
+1.27x on a 60-problem one, with 2 gains, 1 budget-pathological loss, and 12 of 12
+strict-verified proofs. This is a throughput measurement on a 2-core host with one
+worker, not a division score, and it does not speak to the sharing question.
+[`redundancy-throughput-2026-10.md`](redundancy-throughput-2026-10.md).
+
 ### Cooperative Sharing Evidence
 
 The controlled results so far show that sharing is workload-dependent.

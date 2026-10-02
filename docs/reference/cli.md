@@ -57,11 +57,69 @@ See [Trust and verification](trust-and-verification.md).
 | `--trace-bce` | Emit preprocessing diagnostics. |
 | `--trace-instgen` | Emit InstGen diagnostics. |
 
+### Redundancy-elimination telemetry
+
+The aggregate `% SZS detail` line carries three counters for the demodulation
+memo, which remembers terms the unit-equality index has already been shown not to
+rewrite:
+
+| Field | Meaning |
+|---|---|
+| `demod_memo_lookups` | Times the memo was asked whether a term is irreducible. |
+| `demod_memo_hits` | Of those, the ones it already knew. `hits / lookups` is the hit rate. |
+| `demod_memo_evictions` | Times the memo reached its entry cap and was cleared. Non-zero means the cap, not the hit rate, is the limit. |
+
+The rate is the reading that matters, and it is worth checking on any equational
+problem before believing that demodulation is cheap: a memo invalidated as fast
+as it is filled has a low rate and no effect, which looks identical to a
+memoisation that was never consulted. `demod_memo_evictions=0` with a low rate
+means the index is growing faster than the memo can be reused, not that the
+memo is broken. See
+[Redundancy elimination was 47% of the search](../reports/benchmarks/redundancy-throughput-2026-10.md)
+for the profile that motivated it and the measured rates.
+
 ## Experimental pre-passes
 
 | Environment variable | Effect |
 |---|---|
 | `MRS_CONDENSED_DETACHMENT=1` | Enable the bounded, proof-producing pre-pass for the compact LCL `is_a_theorem` condensed-detachment encoding. It has a one-second per-problem budget and five-second process-wide budget; declined cases continue to the normal schedule. |
+
+When the pre-pass runs it prints one line to stderr, whether or not it finds
+anything:
+
+```
+% SZS detail condensed_detachment=ran shape=matched stop=deadline facts=4358 \
+  inferences=35724 elapsed_ms=1001 budget_ms=1000 max_facts=5000 max_inferences=100000
+```
+
+`shape` says whether the input carried the detachment rule at all. `stop` is the
+reading that matters: `refutation` is the only positive, `deadline` /
+`max_facts` / `max_inferences` mean a bound stopped the closure while it was
+still making progress, and `facts_exhausted` means the closure ran out of
+detachments to make — the one verdict a wider bound cannot change. Without this
+line a null result is indistinguishable from a pre-pass that never ran, which is
+what made the 2026-10-01 FNE campaigns unreadable; see
+[Condensed detachment](../research/condensed-detachment.md).
+
+### Widening the pre-pass bounds (diagnostic only)
+
+| Environment variable | Default | Effect |
+|---|---|---|
+| `MRS_CD_BUDGET_MS` | `1000` | Per-problem wall budget for the pre-pass. |
+| `MRS_CD_PROCESS_MS` | `5000` | Process-wide wall budget, so concurrent jobs cannot each pay the per-problem cap on every problem. |
+| `MRS_CD_MAX_FACTS` | `5000` | Theorem-fact bound. |
+| `MRS_CD_MAX_INFERENCES` | `100000` | Resolution-step bound. |
+| `MRS_CD_ONLY=1` | — | Diagnostic harness mode: stop after the condensed-detachment attempt and return `GaveUp` if it did not refute, so a later portfolio result cannot be misattributed to the pre-pass. |
+
+These exist so a measurement can tell "the closure cannot close this fragment"
+apart from "the bound stopped it first". A malformed or zero value falls back to
+the default rather than taking effect: zero would turn a bounded pre-pass into
+unbounded closure, which is what the bounds exist to prevent.
+
+Widening them spends portfolio budget — the pre-pass runs first and
+`total_budget` shrinks by whatever it used — so it is a measurement action, not
+a tuning one. `crates/mrs-bench/cd_bound_probe.sh` runs both bound settings over
+the LCL cluster and prints the two arms side by side.
 
 ## ML options
 

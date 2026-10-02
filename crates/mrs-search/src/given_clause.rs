@@ -384,10 +384,12 @@ fn sync_active_dormant(state: &mut SearchState, ordering: &crate::TermOrdering) 
                     state
                         .demod_index
                         .remove(*l, &state.term_bank, &(*l, *r, p.id));
+                    state.demod_memo.invalidate(*l, &state.term_bank);
                 } else if ordering.compare_id(*r, *l, &state.term_bank) == TermComparison::Greater {
                     state
                         .demod_index
                         .remove(*r, &state.term_bank, &(*r, *l, p.id));
+                    state.demod_memo.invalidate(*r, &state.term_bank);
                 }
             }
             state.dormant_processed.insert(p.id, p);
@@ -1624,25 +1626,53 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
 
         // Forward Subsumption Resolution
         let mut given_fv = FeatureVector::from_id_clause(&given, &state.term_bank);
-        while sr_width_ok(given.literals.len()) {
+        // The candidate list is built once, not once per removed literal.
+        //
+        // `subsumption_resolution_candidates_for` unions the posting lists of
+        // the target's symbols and then applies the feature-vector test. Every
+        // one of those conditions is *stricter* as the target loses literals
+        // (its symbol set shrinks, and `can_subsumption_resolve` compares the
+        // candidate's widths and counts against a shrinking target), so the
+        // list built for the widest target is a superset of the list any later
+        // iteration would build. Re-testing a few now-rejected candidates costs
+        // a feature-vector comparison; rebuilding the list costs a hash set
+        // over every processed clause that shares a symbol with the target,
+        // once per literal removed, which on an equational problem is most of
+        // the processed set.
+        let sr_candidates = if sr_width_ok(given.literals.len()) {
+            state
+                .processed
+                .subsumption_resolution_candidates_for(&given, &given_fv)
+        } else {
+            Vec::new()
+        };
+        loop {
+            if !sr_width_ok(given.literals.len()) {
+                break;
+            }
             if start.elapsed() >= config.time_limit {
                 return SearchResult::Timeout;
             }
-            let candidates = state
-                .processed
-                .subsumption_resolution_candidates_for(&given, &given_fv);
             let mut changed = false;
-            for candidate_id in candidates {
+            for candidate_id in &sr_candidates {
                 if start.elapsed() >= config.time_limit {
                     return SearchResult::Timeout;
                 }
-                let Some(p) = state.processed.get(candidate_id).cloned() else {
+                if !state
+                    .processed
+                    .feature_vector(*candidate_id)
+                    .is_some_and(|fv| fv.can_subsumption_resolve(&given_fv))
+                {
+                    continue;
+                }
+                let Some(p) = state.processed.get(*candidate_id) else {
                     continue;
                 };
                 if p.avatar_is_subset_of(&given)
                     && let Some(removed_idx) =
-                        subsumption::subsumption_resolution_id(&p, &given, &mut state.term_bank)
+                        subsumption::subsumption_resolution_id(p, &given, &mut state.term_bank)
                 {
+                    let parent = p.id;
                     let mut new_lits = given.literals.clone();
                     new_lits.remove(removed_idx);
                     given = IdClause::new_avatar(
@@ -1650,11 +1680,11 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         new_lits,
                         ClauseSource::Inference {
                             rule: "subsumption_resolution",
-                            parents: vec![given.id, p.id].into(),
+                            parents: vec![given.id, parent].into(),
                         },
                         given.avatar.clone(),
                     );
-                    state.register_clause(&given.clone());
+                    state.register_clause(&given);
                     given_fv = FeatureVector::from_id_clause(&given, &state.term_bank);
                     changed = true;
                     break;
@@ -1735,6 +1765,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 &state.clause_store,
                 &mut state.id_gen,
                 &ac_syms,
+                Some(&mut state.demod_memo),
             ) {
                 state.register_clause(&given);
                 simplified
@@ -2303,10 +2334,12 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 state
                     .demod_index
                     .insert(*l, &state.term_bank, (*l, *r, given.id));
+                state.demod_memo.invalidate(*l, &state.term_bank);
             } else if ordering.compare_id(*r, *l, &state.term_bank) == TermComparison::Greater {
                 state
                     .demod_index
                     .insert(*r, &state.term_bank, (*r, *l, given.id));
+                state.demod_memo.invalidate(*r, &state.term_bank);
             }
         }
 
@@ -2389,6 +2422,8 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         continue;
                     }
 
+                    // No memo: `temp_demod_index` is a different index from the
+                    // one `state.demod_memo` was populated against.
                     if let Some(simplified) = demodulation::demodulate_id(
                         &proc,
                         &mut state.term_bank,
@@ -2396,6 +2431,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         &state.clause_store,
                         &mut state.id_gen,
                         &ac_syms,
+                        None,
                     ) {
                         state.register_clause(&proc);
 
@@ -2407,6 +2443,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                             &state.clause_store,
                             &mut state.id_gen,
                             &ac_syms,
+                            Some(&mut state.demod_memo),
                         ) {
                             state.register_clause(&simplified);
                             further
@@ -2430,12 +2467,14 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                                 state
                                     .demod_index
                                     .remove(*l, &state.term_bank, &(*l, *r, proc.id));
+                                state.demod_memo.invalidate(*l, &state.term_bank);
                             } else if ordering.compare_id(*r, *l, &state.term_bank)
                                 == TermComparison::Greater
                             {
                                 state
                                     .demod_index
                                     .remove(*r, &state.term_bank, &(*r, *l, proc.id));
+                                state.demod_memo.invalidate(*r, &state.term_bank);
                             }
                         }
 
@@ -2471,6 +2510,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                                             &state.term_bank,
                                             (*l, *r, simplified.id),
                                         );
+                                        state.demod_memo.invalidate(*l, &state.term_bank);
                                     } else if ordering.compare_id(*r, *l, &state.term_bank)
                                         == TermComparison::Greater
                                     {
@@ -2479,6 +2519,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                                             &state.term_bank,
                                             (*r, *l, simplified.id),
                                         );
+                                        state.demod_memo.invalidate(*r, &state.term_bank);
                                     }
                                 }
                                 created_units.push(simplified.clone());
@@ -2728,6 +2769,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     &state.clause_store,
                     &mut state.id_gen,
                     &ac_syms,
+                    Some(&mut state.demod_memo),
                 ) {
                     state.register_clause(&clause);
                     simplified
@@ -2901,6 +2943,16 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 state.register_clause(&clause);
                 let mut clause_fv = FeatureVector::from_id_clause(&clause, &state.term_bank);
                 let mut clause = clause;
+                // See the given-clause forward-SR loop for why the candidate
+                // list is built once and the feature-vector test re-applied per
+                // removal instead of the list being rebuilt.
+                let sr_candidates = if sr_width_ok(clause.literals.len()) {
+                    state
+                        .processed
+                        .subsumption_resolution_candidates_for(&clause, &clause_fv)
+                } else {
+                    Vec::new()
+                };
                 loop {
                     // One pass over the subsumption-resolution candidates can be
                     // expensive on wide clauses with a weakly selective feature
@@ -2909,28 +2961,29 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     if start.elapsed() >= config.time_limit {
                         return SearchResult::Timeout;
                     }
-                    let candidates = if sr_width_ok(clause.literals.len()) {
-                        state
-                            .processed
-                            .subsumption_resolution_candidates_for(&clause, &clause_fv)
-                    } else {
-                        Vec::new()
-                    };
                     let mut changed = false;
-                    for candidate_id in candidates {
+                    for candidate_id in &sr_candidates {
                         if start.elapsed() >= config.time_limit {
                             return SearchResult::Timeout;
                         }
-                        let Some(p) = state.processed.get(candidate_id).cloned() else {
+                        if !state
+                            .processed
+                            .feature_vector(*candidate_id)
+                            .is_some_and(|fv| fv.can_subsumption_resolve(&clause_fv))
+                        {
+                            continue;
+                        }
+                        let Some(p) = state.processed.get(*candidate_id) else {
                             continue;
                         };
                         if p.avatar_is_subset_of(&clause)
                             && let Some(removed_idx) = subsumption::subsumption_resolution_id(
-                                &p,
+                                p,
                                 &clause,
                                 &mut state.term_bank,
                             )
                         {
+                            let parent = p.id;
                             let mut new_lits = clause.literals.clone();
                             new_lits.remove(removed_idx);
                             clause = IdClause::new_avatar(
@@ -2938,7 +2991,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                                 new_lits,
                                 ClauseSource::Inference {
                                     rule: "subsumption_resolution",
-                                    parents: vec![clause.id, p.id].into(),
+                                    parents: vec![clause.id, parent].into(),
                                 },
                                 clause.avatar.clone(),
                             );

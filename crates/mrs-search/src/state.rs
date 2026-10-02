@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
+use mrs_calculus::demodulation::DemodMemo;
 use mrs_calculus::ordering::SymbolConfig;
 use mrs_core::SymbolId;
 use mrs_core::clause::{Clause, ClauseId, ClauseIdGen};
@@ -44,6 +45,12 @@ pub struct SearchState {
     /// STree indexing the LHS of oriented unit equalities for fast demodulation.
     /// The value is (from_id, to_id, unit_clause_id).
     pub demod_index: STreeId<(TermId, TermId, ClauseId)>,
+    /// Memo of terms `demod_index` has already been shown not to rewrite.
+    ///
+    /// Valid only for `demod_index`; every insert into or removal from it must
+    /// call [`DemodMemo::invalidate`]. Per worker, so no sharing and no locking.
+    /// See `mrs-calculus::demodulation`.
+    pub demod_memo: DemodMemo,
     /// Clauses waiting to be selected.
     pub unprocessed: UnprocessedSet,
     /// Maps clause IDs to `IdClause` (for proof extraction).
@@ -268,6 +275,7 @@ impl SearchState {
         Self {
             processed: LiteralIndex::new(),
             demod_index: STreeId::new(),
+            demod_memo: DemodMemo::new(),
             unprocessed,
             clause_store,
             proof_arena,
@@ -496,11 +504,13 @@ impl SearchState {
                     if ordering.compare_id(*l, *r, &self.term_bank) == TermComparison::Greater {
                         self.demod_index
                             .remove(*l, &self.term_bank, &(*l, *r, p.id));
+                        self.demod_memo.invalidate(*l, &self.term_bank);
                     } else if ordering.compare_id(*r, *l, &self.term_bank)
                         == TermComparison::Greater
                     {
                         self.demod_index
                             .remove(*r, &self.term_bank, &(*r, *l, p.id));
+                        self.demod_memo.invalidate(*r, &self.term_bank);
                     }
                 }
             }

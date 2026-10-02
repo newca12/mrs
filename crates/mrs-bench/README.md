@@ -45,6 +45,7 @@ Notes:
 |------|---------|
 | `casc.sh` | Run a full benchmark: invoke each system on each problem, collect SZS status and wall time, archive raw stdout/stderr and hashes, and write `results/<edition>/*/run.csv` |
 | `perf_probe.sh` | Measure search throughput on this host with a fixed amount of work, then append the result to the bank in `docs/results/perf/` |
+| `throughput_probe.sh` / `throughput_probe_list.txt` | Compare two `mrs` builds on clauses retired out of a fixed per-problem budget; the corpus is a fixed stride over the checked-in editions, and each row records the binary sha |
 | `cooperative_portfolio_sweep.sh` | Measure an explicit multi-worker portfolio; enable shared equality exchange with a positive `MRS_SHARED_POOL_INTERVAL`, or use `0` for a no-sharing control |
 | `cooperative_portfolio_search.sh` | Run one-swap local search over portfolios using cooperative solved-count coverage |
 | `setup.sh` | Download and extract the CASC problem and axiom archives from tptp.org |
@@ -118,6 +119,62 @@ The cooperative result is the portfolio-selection objective. Compare the
 shared and no-sharing runs to quantify cooperation separately from strategy
 diversity. `failure_detail` records `strategy_ids`, `shared_published`, and
 `shared_imported` telemetry for each problem.
+
+## Cross-build throughput probe
+
+`throughput_probe.sh` answers "did that change make the engine faster?" without
+answering "did that change make the division score better?", which is the
+distinction `docs/reports/benchmarks/summary-2026-09.md` §1 insists on. It runs a
+fixed problem list for a fixed wall clock per problem and records the search
+telemetry the prover already reports, so the measurement is *clauses retired out
+of a fixed budget* rather than clauses per second or elapsed time.
+
+The unit matters. LRS prunes the passive queue against the clock, so a run's
+clause count depends on how fast the host is, and `fne-2026-09.md` §1 measures a
++-4-problem host band on FNE from clock speed alone. `docs/results/perf/README.md`
+makes the same argument for the fixed-work clause-count probe.
+
+```bash
+cargo build --release --bin mrs
+crates/mrs-bench/throughput_probe.sh target/release/mrs head out.csv 12
+```
+
+The default list (`throughput_probe_list.txt`) is a fixed stride over the
+checked-in `casc-30` and `casc-j13` UEQ and FNE directories, so it is stable when
+the corpus grows and needs no RNG seed. Point the fifth argument at another list to
+use a different corpus; each line is `edition/division/problem`, so a list may span
+editions. `PROBE_JOBS=2` exists to make running the probe in parallel an explicit
+choice — it is not comparable with a sequential run, because two jobs on one core
+each retire fewer clauses for the same budget.
+
+Run the probe strictly sequentially, both arms, on one host in one session, and
+read the `shares_binary` column before comparing anything. The write-up for the
+measurement this was built for is
+`docs/reports/benchmarks/redundancy-throughput-2026-10.md`, and it is also where
+the reason to run the strict proof checker on any arm whose *step count falls* is
+written up: a throughput win that comes from steps the calculus does not license
+is faster and unsound at the same time.
+
+## Pre-pass bound probes
+
+`cd_bound_probe.sh` measures a pre-pass in isolation, at its production bounds and
+at bounds raised enough to tell "the closure cannot close this fragment" apart
+from "the bound stopped it first". It runs the pre-pass alone over one cluster,
+sequentially, and reads the pre-pass's own `% SZS detail condensed_detachment=`
+line rather than the SZS status. It sets `MRS_CD_ONLY=1`, so the ordinary
+portfolio cannot run afterward and be confused with a pre-pass result.
+
+```bash
+# Production bounds vs 60x the wall budget and 20x each structural bound.
+crates/mrs-bench/cd_bound_probe.sh --div fne --edition casc-30 --time 60 \
+    --max-facts 100000 --max-inferences 2000000
+```
+
+Any refutation is put through `mrs-proover --strict` with the selected division
+as its problem directory before it is counted, and the summary separates
+strictly verified pre-pass refutations from unverified claims and the
+stop-reason distribution. See
+`docs/research/condensed-detachment.md` for the FNE result and how to read it.
 
 ## Deferred CASC proof auditing
 

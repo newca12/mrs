@@ -209,6 +209,33 @@ impl IdClause {
 pub struct TermBank {
     nodes: Vec<TermNode>,
     dedup: HashMap<TermNode, TermId>,
+    /// Memo of [`TermBank::max_var`] per node, indexed by `TermId`.
+    ///
+    /// Parallel to `nodes`, so an entry is valid as soon as it is filled in: a
+    /// term is hash-consed, so its variables never change. The trade is one
+    /// byte per interned term against a walk of the whole subtree per query.
+    /// The subsumption matcher asks for the largest variable of a clause on both
+    /// sides of every test, and a callgrind profile of a single-strategy UEQ run
+    /// put that walk at about 8 % of search instructions.
+    max_var_memo: Vec<MaxVarMemo>,
+}
+
+/// Memoised answer of [`TermBank::max_var`]: the largest `VarId` in a term, or
+/// `NoVar` for a ground one, or `Unknown` before it has been asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MaxVarMemo {
+    Unknown,
+    NoVar,
+    Var(VarId),
+}
+
+impl MaxVarMemo {
+    fn value(self) -> Option<VarId> {
+        match self {
+            MaxVarMemo::Unknown | MaxVarMemo::NoVar => None,
+            MaxVarMemo::Var(v) => Some(v),
+        }
+    }
 }
 
 impl TermBank {
@@ -268,6 +295,67 @@ impl TermBank {
                 }
             }
         }
+    }
+
+    /// Returns the largest `VarId` occurring in `id`, or `None` if it has none.
+    ///
+    /// [`TermBank::collect_vars`] answers the same question through a
+    /// `HashSet`, which costs an allocation and a hash insert per occurrence.
+    /// This is the allocation-free fold, for callers that want the maximum and
+    /// nothing else — [`mrs_calculus::rename::max_var_id`] calls it once per
+    /// subsumption test, so on a candidate set of any size the set was the cost
+    /// and the answer was a single fold away.
+    ///
+    /// Memoised per node: the result is a property of the interned term, so it
+    /// is computed once per term rather than once per query.
+    pub fn max_var(&mut self, id: TermId) -> Option<VarId> {
+        if self.max_var_memo.len() <= id.0 as usize {
+            self.max_var_memo
+                .resize(id.0 as usize + 1, MaxVarMemo::Unknown);
+        }
+        if let Some(known) = self.max_var_memo[id.0 as usize].value() {
+            return Some(known);
+        }
+        if self.max_var_memo[id.0 as usize] == MaxVarMemo::NoVar {
+            return None;
+        }
+        let computed = match self.get(id) {
+            TermNode::Var(v) => MaxVarMemo::Var(*v),
+            TermNode::App(_, args) => {
+                let mut best: Option<VarId> = None;
+                // Children always have a smaller id than their parent, so their
+                // memo entries are already filled in. The argument ids are
+                // copied out because the recursive call takes `&mut self`, which
+                // cannot coexist with a borrow of `self.nodes`.
+                let args: SmallVec<[TermId; 4]> = args.clone();
+                for arg in args {
+                    if let Some(v) = self.max_var(arg) {
+                        best = Some(best.map_or(v, |b: VarId| b.max(v)));
+                    }
+                }
+                best.map_or(MaxVarMemo::NoVar, MaxVarMemo::Var)
+            }
+        };
+        self.max_var_memo[id.0 as usize] = computed;
+        computed.value()
+    }
+
+    /// Returns the largest `VarId` occurring in any atom of `atom`, or `None`.
+    pub fn max_var_atom(&mut self, atom: &IdAtom) -> Option<VarId> {
+        match atom {
+            IdAtom::Pred(_, args) => args.iter().filter_map(|&arg| self.max_var(arg)).max(),
+            IdAtom::Eq(l, r) => self.max_var(*l).into_iter().chain(self.max_var(*r)).max(),
+        }
+    }
+
+    /// Returns the largest `VarId` occurring in any literal of `clause`, or
+    /// `None` for a clause with no variables.
+    pub fn max_var_clause(&mut self, clause: &IdClause) -> Option<VarId> {
+        clause
+            .literals
+            .iter()
+            .filter_map(|lit| self.max_var_atom(&lit.atom))
+            .max()
     }
 
     /// Recursively substitutes occurrences of `target_var` with `replacement` in `term`.
@@ -620,6 +708,18 @@ impl IdSubstitution {
         self.bindings.get(var as usize).copied().flatten()
     }
 
+    /// Returns `true` if nothing is bound.
+    ///
+    /// Applying an empty substitution is the identity, and saying so lets the
+    /// callers skip the walk *and* the re-interning that a walk would end in.
+    /// This is not a micro-optimisation: the subsumption matcher calls into
+    /// substitution application once per (candidate literal, target literal)
+    /// pair, and it spends most of its time on pairs that are rejected by the
+    /// very first term comparison.
+    pub fn is_empty(&self) -> bool {
+        self.bindings.is_empty()
+    }
+
     /// Recursively applies the substitution to a term, returning a new `TermId`.
     pub fn apply_term(&self, mut term: TermId, bank: &mut TermBank) -> TermId {
         if self.bindings.is_empty() {
@@ -645,20 +745,26 @@ impl IdSubstitution {
             // Clone the node to decouple from bank borrow
             TermNode::Var(_) => term,
             TermNode::App(sym, args) => {
-                let mut changed = false;
-                let mut new_args = Vec::with_capacity(args.len());
-                for &arg in &args {
+                // Collect the arguments that actually change instead of
+                // rebuilding the list: an unchanged argument list interns back to
+                // the id it came from, so the rebuild and the hash lookup that
+                // follows it are pure overhead on the no-op path.
+                let mut rewritten: SmallVec<[(usize, TermId); 4]> = SmallVec::new();
+                for (idx, &arg) in args.iter().enumerate() {
                     let new_arg = self.apply_term(arg, bank);
                     if new_arg != arg {
-                        changed = true;
+                        rewritten.push((idx, new_arg));
                     }
-                    new_args.push(new_arg);
                 }
 
-                if changed {
-                    bank.intern_app(sym, new_args)
-                } else {
+                if rewritten.is_empty() {
                     term
+                } else {
+                    let mut new_args: SmallVec<[TermId; 4]> = args.iter().copied().collect();
+                    for (idx, new_arg) in rewritten {
+                        new_args[idx] = new_arg;
+                    }
+                    bank.intern_app(sym, new_args)
                 }
             }
         }

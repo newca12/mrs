@@ -36,7 +36,8 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
-use mrs_core::term_bank::{IdAtom, TermBank, TermId};
+use mrs_core::term::VarId;
+use mrs_core::term_bank::{IdAtom, TermBank, TermId, TermNode};
 
 use crate::dtree::{Cell, flatten_atom_id, flatten_id, skip_in_flat};
 
@@ -63,6 +64,18 @@ pub struct STreeId<V> {
     children: BTreeMap<Cell, (Vec<Cell>, STreeId<V>)>,
     /// Values stored at this node (full path consumed).
     leaves: Vec<V>,
+    /// Whether a `Cell::Var` key has ever been inserted as a *root* child of
+    /// this node.
+    ///
+    /// Only used at the top level, by [`STreeId::can_generalize_root`], to
+    /// decide whether a query whose root symbol is absent can still match
+    /// through a stored variable. Set on insert and never cleared: a stale
+    /// `true` costs one range scan that finds nothing, and clearing it would
+    /// need the reference counts that `remove_flat` does not track. No index in
+    /// the workspace stores a variable-rooted pattern — demodulation only ever
+    /// indexes a non-variable rewrite side — so in practice it stays `false`
+    /// and the scan is skipped entirely.
+    has_var_root: bool,
 }
 
 impl<V: Clone + PartialEq> STreeId<V> {
@@ -71,6 +84,7 @@ impl<V: Clone + PartialEq> STreeId<V> {
         STreeId {
             children: BTreeMap::new(),
             leaves: Vec::new(),
+            has_var_root: false,
         }
     }
 
@@ -79,13 +93,26 @@ impl<V: Clone + PartialEq> STreeId<V> {
     /// Insert `value` indexed by the pre-order flattening of `atom`.
     pub fn insert_atom(&mut self, atom: &IdAtom, bank: &TermBank, value: V) {
         let flat = flatten_atom_id(atom, bank);
+        self.note_root_cell(flat.first());
         self.insert_flat(&flat, 0, value);
     }
 
     /// Insert `value` indexed by the pre-order flattening of `term`.
     pub fn insert(&mut self, term: TermId, bank: &TermBank, value: V) {
         let flat = flatten_id(term, bank);
+        self.note_root_cell(flat.first());
         self.insert_flat(&flat, 0, value);
+    }
+
+    /// Records that `cell` is about to become a root child key.
+    ///
+    /// Only the root is tracked, because only the root is used by
+    /// [`STreeId::can_generalize_root`]; a variable deeper in a pattern is
+    /// reached by the normal walk.
+    fn note_root_cell(&mut self, cell: Option<&Cell>) {
+        if matches!(cell, Some(Cell::Var(_))) {
+            self.has_var_root = true;
+        }
     }
 
     fn insert_flat(&mut self, flat: &[Cell], pos: usize, value: V) {
@@ -266,11 +293,41 @@ impl<V: Clone + PartialEq> STreeId<V> {
     /// Used for forward demodulation: the rewrite-rule LHS must generalise
     /// the subterm being rewritten.
     pub fn get_generalizations(&self, query: TermId, bank: &TermBank) -> Vec<V> {
+        // Root dispatch, so that a query whose root symbol no stored pattern
+        // starts with costs one `BTreeMap` probe instead of a full flatten plus
+        // a walk of every root child. `gen_flat` performs the same dispatch, so
+        // this is only a way of not doing that work twice: the results are the
+        // same either way, and skipping the flatten matters because
+        // `flatten_id` allocates a variable-normalisation map on every call.
+        if !self.can_generalize_root(query, bank) {
+            return Vec::new();
+        }
         let flat = flatten_id(query, bank);
         let mut results = Vec::new();
         let mut bindings: Vec<Option<&[Cell]>> = Vec::new();
         self.gen_flat(&flat, 0, &mut results, &mut bindings);
         results
+    }
+
+    /// Returns `true` if some stored pattern starts with a cell that can
+    /// generalize the root cell of `query` at all.
+    ///
+    /// A stored `Sym(f, n)` generalizes only a query `Sym(f, n)`, and a stored
+    /// `Var` generalizes any query cell, so the answer is "is `Sym(f, n)` a
+    /// key, or is any `Var` a key".
+    fn can_generalize_root(&self, query: TermId, bank: &TermBank) -> bool {
+        if self.children.is_empty() {
+            return false;
+        }
+        if self.has_var_root {
+            return true;
+        }
+        match bank.get(query) {
+            TermNode::Var(_) => false,
+            TermNode::App(sym, args) => self
+                .children
+                .contains_key(&Cell::Sym(*sym, args.len() as u8)),
+        }
     }
 
     fn gen_flat<'a>(
@@ -285,8 +342,29 @@ impl<V: Clone + PartialEq> STreeId<V> {
             return;
         }
 
-        for (first_cell, (edge_rest, child)) in &self.children {
-            gen_walk_edge(*first_cell, edge_rest, 0, flat, pos, child, out, bindings);
+        // Dispatch on the query cell instead of visiting every child.
+        //
+        // `gen_walk_edge` rejects a mismatching `Sym`/`Sym` pair and a
+        // `Sym`-against-`Var` pair on its first iteration, so a full scan of
+        // `children` is equivalent to visiting only the keys that survive
+        // those two cases: the one `Sym` key equal to the query cell, and every
+        // `Var` key. `DTreeId::gen_flat` already dispatches this way; the
+        // path-compressed tree did not, so it paid a full root scan per query.
+        // On a demodulation index holding one rule per function symbol that is
+        // the difference between one descent and one per stored rule, and
+        // demodulation is the caller.
+        let var_children = self.children.range(Cell::Var(VarId::MIN)..);
+        if let Cell::Sym(..) = flat[pos] {
+            if let Some((edge_rest, child)) = self.children.get(&flat[pos]) {
+                gen_walk_edge(flat[pos], edge_rest, 0, flat, pos, child, out, bindings);
+            }
+            for (&first_cell, (edge_rest, child)) in var_children {
+                gen_walk_edge(first_cell, edge_rest, 0, flat, pos, child, out, bindings);
+            }
+        } else {
+            for (&first_cell, (edge_rest, child)) in var_children {
+                gen_walk_edge(first_cell, edge_rest, 0, flat, pos, child, out, bindings);
+            }
         }
     }
 }
@@ -296,6 +374,7 @@ impl<V> Default for STreeId<V> {
         Self {
             children: BTreeMap::new(),
             leaves: Vec::new(),
+            has_var_root: false,
         }
     }
 }
@@ -923,5 +1002,97 @@ mod tests {
             !tree.get_generalizations(qab, &bank).contains(&99),
             "f(X,X) must NOT generalise f(a,b)"
         );
+    }
+
+    /// The root dispatch in `gen_flat` skips root children that `gen_walk_edge`
+    /// provably rejects. This pins that against a full scan of the same tree
+    /// over a corpus that deliberately mixes root symbols, arities, constants
+    /// and variables — the shape that made the difference unobservable when
+    /// every other generalization test in this file used a single root symbol.
+    #[test]
+    fn gen_root_dispatch_matches_full_scan() {
+        let mut st = SymbolTable::new();
+        let f = st.intern("f");
+        let g = st.intern("g");
+        let h = st.intern("h");
+        let a = st.intern("a");
+        let b = st.intern("b");
+        let mut bank = TermBank::new();
+
+        // Stored patterns: several root symbols, two arities, nested
+        // structure, a repeated variable, and a variable in an argument
+        // position. Values are the insertion order so both scans can be
+        // compared as sets.
+        let stored = [
+            app(f, vec![var(0)]),
+            app(f, vec![cst(a)]),
+            app(f, vec![cst(a), cst(b)]),
+            app(f, vec![var(0), var(0)]),
+            app(g, vec![app(h, vec![cst(a)])]),
+            app(g, vec![app(h, vec![var(0)])]),
+            app(f, vec![app(g, vec![cst(a)])]),
+            cst(a),
+        ];
+        let stored_ids: Vec<TermId> = stored.iter().map(|t| intern_term(&mut bank, t)).collect();
+        let mut tree: STreeId<usize> = STreeId::new();
+        for (i, term) in stored_ids.iter().enumerate() {
+            tree.insert(*term, &bank, i);
+        }
+
+        let queries = [
+            app(f, vec![cst(a)]),
+            app(f, vec![cst(b)]),
+            app(f, vec![cst(a), cst(a)]),
+            app(f, vec![cst(a), cst(b)]),
+            app(f, vec![cst(b), cst(b)]),
+            app(f, vec![app(g, vec![cst(a)])]),
+            app(f, vec![app(g, vec![cst(b)])]),
+            app(f, vec![app(h, vec![cst(a)])]),
+            app(g, vec![app(h, vec![cst(a)])]),
+            app(g, vec![app(h, vec![cst(b)])]),
+            app(g, vec![cst(a)]),
+            app(h, vec![cst(a)]),
+            cst(a),
+            cst(b),
+            var(0),
+            var(1),
+            app(f, vec![var(0)]),
+        ];
+
+        for query in &queries {
+            let query_id = intern_term(&mut bank, query);
+            let mut dispatched = tree.get_generalizations(query_id, &bank);
+            let mut scanned = tree.generalizations_full_scan(query_id, &bank);
+            dispatched.sort_unstable();
+            scanned.sort_unstable();
+            assert_eq!(
+                dispatched, scanned,
+                "root dispatch and full scan disagree on {query:?}"
+            );
+        }
+    }
+
+    /// The pre-scan the root dispatch replaces: walk *every* root child,
+    /// exactly as `gen_flat` did before it dispatched. Kept as the oracle for
+    /// `gen_root_dispatch_matches_full_scan`.
+    impl<V: Clone + PartialEq> STreeId<V> {
+        fn generalizations_full_scan(&self, query: TermId, bank: &TermBank) -> Vec<V> {
+            let flat = flatten_id(query, bank);
+            let mut out = Vec::new();
+            let mut bindings: Vec<Option<&[Cell]>> = Vec::new();
+            for (first_cell, (edge_rest, child)) in &self.children {
+                gen_walk_edge(
+                    *first_cell,
+                    edge_rest,
+                    0,
+                    &flat,
+                    0,
+                    child,
+                    &mut out,
+                    &mut bindings,
+                );
+            }
+            out
+        }
     }
 }

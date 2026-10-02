@@ -1,0 +1,55 @@
+# throughput probe, 12 s per problem, 45 problems, base vs fixed
+# Fixed wall clock per problem, one worker, one schedule strategy, sharing off.
+# `processed`/`generated` are the search telemetry the prover already reports.
+# base binary sha 233e0d8 build; fixed = this branch's release build.
+#
+# FNE: base processed 86394 -> fixed 88086
+division	problem	base_result	fixed_result	base_processed	fixed_processed	ratio	base_generated	fixed_generated
+FNE	casc-30/FNE/BOO109+1	Timeout	Timeout	422	472	1.12	7067	8648
+FNE	casc-30/FNE/CSR052+3	Timeout	Timeout	23888	24030	1.01	47515	48058
+FNE	casc-30/FNE/CSR115+6	Timeout	Timeout	21459	21594	1.01	72563	72564
+FNE	casc-30/FNE/KRS203+1	Timeout	Timeout	3774	4027	1.07	93968	103034
+FNE	casc-30/FNE/LCL109+1	Timeout	Timeout	411	457	1.11	15112	19719
+FNE	casc-30/FNE/LCL376+1	Timeout	Timeout	456	500	1.10	13305	17289
+FNE	casc-30/FNE/LCL403+2	Timeout	Timeout	572	628	1.10	5230	8550
+FNE	casc-30/FNE/LCL682+1.020	Timeout	Timeout	994	1016	1.02	9649	10114
+FNE	casc-30/FNE/NLP261+1	Timeout	Timeout	0	0	-	0	0
+FNE	casc-30/FNE/NUN087+1	Timeout	Timeout	1718	1820	1.06	81402	87724
+FNE	casc-j13/FNE/COM008+1	Timeout	Timeout	4761	5083	1.07	51932	61320
+FNE	casc-j13/FNE/CSR116+3	Timeout	Timeout	23645	23906	1.01	60314	60527
+FNE	casc-j13/FNE/LCL368+2	Timeout	Timeout	557	664	1.19	6596	10804
+FNE	casc-j13/FNE/LCL646+1.015	Timeout	Timeout	1307	1307	1.00	11401	11414
+FNE	casc-j13/FNE/NUN060+1	Timeout	Timeout	2430	2582	1.06	93185	105061
+#
+# UEQ: base processed 13222 -> fixed 16386
+division	problem	base_result	fixed_result	base_processed	fixed_processed	ratio	base_generated	fixed_generated
+UEQ	casc-30/UEQ/ALG212-10	Timeout	Timeout	140	156	1.11	29695	42374
+UEQ	casc-30/UEQ/COL006-7	Timeout	Timeout	107	136	1.27	23809	35874
+UEQ	casc-30/UEQ/COL064-1	Timeout	Timeout	759	1183	1.56	1636	1842
+UEQ	casc-30/UEQ/GRP164-2	Timeout	Timeout	526	598	1.14	17477	21833
+UEQ	casc-30/UEQ/GRP183-3	Timeout	Timeout	506	579	1.14	17314	22034
+UEQ	casc-30/UEQ/GRP420-1	Timeout	Timeout	61	78	1.28	16522	28633
+UEQ	casc-30/UEQ/GRP655-14	Timeout	Timeout	351	444	1.26	14389	21466
+UEQ	casc-30/UEQ/GRP678-1	Timeout	Timeout	582	742	1.27	19157	26783
+UEQ	casc-30/UEQ/GRP725-1	Timeout	Timeout	440	519	1.18	37479	47760
+UEQ	casc-30/UEQ/KLE151-10	Timeout	Timeout	948	1114	1.18	21937	27247
+UEQ	casc-30/UEQ/LAT085-1	GaveUp	GaveUp	2	2	1.00	0	0
+UEQ	casc-30/UEQ/LAT157-1	Timeout	Timeout	220	253	1.15	10292	13894
+UEQ	casc-30/UEQ/LAT177-1	Timeout	Timeout	280	312	1.11	5514	7417
+UEQ	casc-30/UEQ/LCL024-10	Timeout	Timeout	288	348	1.21	11120	15149
+UEQ	casc-30/UEQ/LCL224-10	Timeout	Timeout	792	868	1.10	6290	6963
+UEQ	casc-30/UEQ/MVA011-1	Timeout	Timeout	538	619	1.15	20388	27282
+UEQ	casc-30/UEQ/REL016-10	Timeout	Timeout	460	787	1.71	14045	23283
+UEQ	casc-30/UEQ/REL031-1	Timeout	Timeout	1142	1071	0.94	16136	23255
+UEQ	casc-30/UEQ/REL045-1	Timeout	Timeout	515	649	1.26	19131	21949
+UEQ	casc-30/UEQ/RNG026-7	Timeout	Timeout	626	759	1.21	27863	35075
+UEQ	casc-j13/UEQ/ALG212-10	Timeout	Timeout	153	169	1.10	24353	32310
+UEQ	casc-j13/UEQ/COL044-1	Timeout	Timeout	85	102	1.20	31695	45443
+UEQ	casc-j13/UEQ/GRP181-2	Timeout	Timeout	455	565	1.24	18079	22717
+UEQ	casc-j13/UEQ/GRP670-1	Timeout	Timeout	413	500	1.21	17073	25920
+UEQ	casc-j13/UEQ/LAT022-1	Timeout	Timeout	311	383	1.23	13637	19099
+UEQ	casc-j13/UEQ/LAT158-1	Timeout	Timeout	216	254	1.18	10401	13888
+UEQ	casc-j13/UEQ/LCL054-10	Timeout	Timeout	451	515	1.14	5504	7050
+UEQ	casc-j13/UEQ/MVA009-1	Timeout	Timeout	607	728	1.20	22103	27104
+UEQ	casc-j13/UEQ/REL029-3	Timeout	Timeout	684	1299	1.90	22304	27844
+UEQ	casc-j13/UEQ/RNG021-7	Timeout	Timeout	564	654	1.16	25890	33035
