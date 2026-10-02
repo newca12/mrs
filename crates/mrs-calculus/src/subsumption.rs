@@ -17,6 +17,18 @@ use mrs_core::term_bank::{
 };
 
 pub fn subsumes_id(c1: &IdClause, c2: &IdClause, bank: &mut TermBank) -> bool {
+    subsumes_id_until(c1, c2, bank, None)
+}
+
+/// Subsumption test with an optional deadline. A `false` result after the
+/// deadline is inconclusive; callers must check the deadline before treating
+/// it as proof that no subsumption exists.
+pub fn subsumes_id_until(
+    c1: &IdClause,
+    c2: &IdClause,
+    bank: &mut TermBank,
+    deadline: Option<std::time::Instant>,
+) -> bool {
     if c1.literals.len() > c2.literals.len() {
         return false;
     }
@@ -41,7 +53,15 @@ pub fn subsumes_id(c1: &IdClause, c2: &IdClause, bank: &mut TermBank) -> bool {
 
     let subst = IdSubstitution::new();
     let mut steps = 0usize;
-    match_literals_id(c1_literals, &c2.literals, &subst, offset, bank, &mut steps)
+    match_literals_id(
+        c1_literals,
+        &c2.literals,
+        &subst,
+        offset,
+        bank,
+        &mut steps,
+        deadline,
+    )
 }
 
 /// Backtracking step limit for subsumption matching.
@@ -60,7 +80,11 @@ fn match_literals_id(
     min_bindable: u32,
     bank: &mut TermBank,
     steps: &mut usize,
+    deadline: Option<std::time::Instant>,
 ) -> bool {
+    if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+        return false;
+    }
     if remaining.is_empty() {
         return true;
     }
@@ -73,6 +97,9 @@ fn match_literals_id(
     let rest = &remaining[1..];
 
     for target_lit in targets {
+        if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+            return false;
+        }
         if lit.positive != target_lit.positive {
             continue;
         }
@@ -83,8 +110,16 @@ fn match_literals_id(
             current_subst,
             min_bindable,
             bank,
-        ) && match_literals_id(rest, targets, &extended, min_bindable, bank, steps)
-        {
+            deadline,
+        ) && match_literals_id(
+            rest,
+            targets,
+            &extended,
+            min_bindable,
+            bank,
+            steps,
+            deadline,
+        ) {
             return true;
         }
     }
@@ -98,7 +133,11 @@ fn match_atoms_id(
     current_subst: &IdSubstitution,
     min_bindable: u32,
     bank: &mut TermBank,
+    deadline: Option<std::time::Instant>,
 ) -> Option<IdSubstitution> {
+    if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+        return None;
+    }
     match (pattern, target) {
         (IdAtom::Pred(p1, args1), IdAtom::Pred(p2, args2)) => {
             if p1 != p2 || args1.len() != args2.len() {
@@ -106,8 +145,11 @@ fn match_atoms_id(
             }
             let mut subst = current_subst.clone();
             for (&a1, &a2) in args1.iter().zip(args2.iter()) {
-                let a1_applied = apply_subst_flat_id(&subst, a1, bank);
-                if !match_single_term_id(a1_applied, a2, &mut subst, min_bindable, bank) {
+                if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+                    return None;
+                }
+                let a1_applied = apply_subst_flat_id(&subst, a1, bank, deadline);
+                if !match_single_term_id(a1_applied, a2, &mut subst, min_bindable, bank, deadline) {
                     return None;
                 }
             }
@@ -115,18 +157,24 @@ fn match_atoms_id(
         }
         (IdAtom::Eq(l1, r1), IdAtom::Eq(l2, r2)) => {
             let mut subst = current_subst.clone();
-            let l1_applied = apply_subst_flat_id(&subst, *l1, bank);
-            if match_single_term_id(l1_applied, *l2, &mut subst, min_bindable, bank) {
-                let r1_applied = apply_subst_flat_id(&subst, *r1, bank);
-                if match_single_term_id(r1_applied, *r2, &mut subst, min_bindable, bank) {
+            let l1_applied = apply_subst_flat_id(&subst, *l1, bank, deadline);
+            if match_single_term_id(l1_applied, *l2, &mut subst, min_bindable, bank, deadline) {
+                if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+                    return None;
+                }
+                let r1_applied = apply_subst_flat_id(&subst, *r1, bank, deadline);
+                if match_single_term_id(r1_applied, *r2, &mut subst, min_bindable, bank, deadline) {
                     return Some(subst);
                 }
             }
             let mut subst = current_subst.clone();
-            let l1_applied = apply_subst_flat_id(&subst, *l1, bank);
-            if match_single_term_id(l1_applied, *r2, &mut subst, min_bindable, bank) {
-                let r1_applied = apply_subst_flat_id(&subst, *r1, bank);
-                if match_single_term_id(r1_applied, *l2, &mut subst, min_bindable, bank) {
+            let l1_applied = apply_subst_flat_id(&subst, *l1, bank, deadline);
+            if match_single_term_id(l1_applied, *r2, &mut subst, min_bindable, bank, deadline) {
+                if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+                    return None;
+                }
+                let r1_applied = apply_subst_flat_id(&subst, *r1, bank, deadline);
+                if match_single_term_id(r1_applied, *l2, &mut subst, min_bindable, bank, deadline) {
                     return Some(subst);
                 }
             }
@@ -142,7 +190,11 @@ fn match_single_term_id(
     subst: &mut IdSubstitution,
     min_bindable: u32,
     bank: &mut TermBank,
+    deadline: Option<std::time::Instant>,
 ) -> bool {
+    if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+        return false;
+    }
     match bank.get(pattern).clone() {
         TermNode::Var(v) => {
             if let Some(bound) = subst.get(v) {
@@ -150,13 +202,16 @@ fn match_single_term_id(
             } else if v < min_bindable {
                 pattern == target
             } else {
-                let resolved = apply_subst_chain_id(subst, target, bank);
+                let resolved = apply_subst_chain_id(subst, target, bank, deadline);
+                if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+                    return false;
+                }
                 if let TermNode::Var(tv) = bank.get(resolved)
                     && *tv == v
                 {
                     return true;
                 }
-                if contains_var_id(resolved, v, bank) {
+                if contains_var_id(resolved, v, bank, deadline) {
                     return false;
                 }
                 subst.bind(v, resolved);
@@ -169,8 +224,11 @@ fn match_single_term_id(
                     return false;
                 }
                 for (&a1, &a2) in args1.iter().zip(args2.iter()) {
-                    let a1_applied = apply_subst_flat_id(subst, a1, bank);
-                    if !match_single_term_id(a1_applied, a2, subst, min_bindable, bank) {
+                    if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+                        return false;
+                    }
+                    let a1_applied = apply_subst_flat_id(subst, a1, bank, deadline);
+                    if !match_single_term_id(a1_applied, a2, subst, min_bindable, bank, deadline) {
                         return false;
                     }
                 }
@@ -181,14 +239,32 @@ fn match_single_term_id(
     }
 }
 
-fn contains_var_id(term: TermId, var: mrs_core::term::VarId, bank: &TermBank) -> bool {
+fn contains_var_id(
+    term: TermId,
+    var: mrs_core::term::VarId,
+    bank: &TermBank,
+    deadline: Option<std::time::Instant>,
+) -> bool {
+    if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+        return false;
+    }
     match bank.get(term) {
         TermNode::Var(v) => *v == var,
-        TermNode::App(_, args) => args.iter().any(|&a| contains_var_id(a, var, bank)),
+        TermNode::App(_, args) => args
+            .iter()
+            .any(|&a| contains_var_id(a, var, bank, deadline)),
     }
 }
 
-fn apply_subst_flat_id(subst: &IdSubstitution, term: TermId, bank: &mut TermBank) -> TermId {
+fn apply_subst_flat_id(
+    subst: &IdSubstitution,
+    term: TermId,
+    bank: &mut TermBank,
+    deadline: Option<std::time::Instant>,
+) -> TermId {
+    if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+        return term;
+    }
     // Applying an empty substitution is the identity, and this is called once per
     // (candidate literal, target literal) pair — the matcher rejects most pairs
     // on their first term comparison, and an empty substitution is the state
@@ -207,7 +283,7 @@ fn apply_subst_flat_id(subst: &IdSubstitution, term: TermId, bank: &mut TermBank
             // hashing it into the bank is a cost with no effect.
             let mut rewritten: smallvec::SmallVec<[(usize, TermId); 4]> = smallvec::SmallVec::new();
             for (idx, &arg) in args.iter().enumerate() {
-                let new_arg = apply_subst_flat_id(subst, arg, bank);
+                let new_arg = apply_subst_flat_id(subst, arg, bank, deadline);
                 if new_arg != arg {
                     rewritten.push((idx, new_arg));
                 }
@@ -225,12 +301,20 @@ fn apply_subst_flat_id(subst: &IdSubstitution, term: TermId, bank: &mut TermBank
     }
 }
 
-fn apply_subst_chain_id(subst: &IdSubstitution, mut term: TermId, bank: &mut TermBank) -> TermId {
+fn apply_subst_chain_id(
+    subst: &IdSubstitution,
+    mut term: TermId,
+    bank: &mut TermBank,
+    deadline: Option<std::time::Instant>,
+) -> TermId {
     if subst.is_empty() {
         return term;
     }
     let mut steps = 0;
     loop {
+        if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+            return term;
+        }
         if let TermNode::Var(v) = bank.get(term)
             && let Some(next) = subst.get(*v)
         {
@@ -247,7 +331,7 @@ fn apply_subst_chain_id(subst: &IdSubstitution, mut term: TermId, bank: &mut Ter
         TermNode::App(f, args) => {
             let mut rewritten: smallvec::SmallVec<[(usize, TermId); 4]> = smallvec::SmallVec::new();
             for (idx, &arg) in args.iter().enumerate() {
-                let new_arg = apply_subst_chain_id(subst, arg, bank);
+                let new_arg = apply_subst_chain_id(subst, arg, bank, deadline);
                 if new_arg != arg {
                     rewritten.push((idx, new_arg));
                 }
@@ -618,13 +702,34 @@ pub fn condense_id(
     bank: &mut TermBank,
     id_gen: &mut ClauseIdGen,
 ) -> Option<IdClause> {
+    condense_id_until(clause, bank, id_gen, None)
+}
+
+/// Condensation with an optional deadline.
+///
+/// Returns as soon as the instant passes, with `None` meaning "no
+/// condensation found within budget" rather than "no condensation exists".
+/// Callers must treat a return after the deadline as "search over budget":
+/// the unbounded variant [`condense_id`] passes `None`.
+pub fn condense_id_until(
+    clause: &IdClause,
+    bank: &mut TermBank,
+    id_gen: &mut ClauseIdGen,
+    deadline: Option<std::time::Instant>,
+) -> Option<IdClause> {
     // Condensation is O(N³) in clause width (N² literal pairs × matching cost).
     // For clauses wider than 50 literals the cost exceeds any benefit; skip it.
     if clause.literals.len() > 50 {
         return None;
     }
     for i in 0..clause.literals.len() {
+        if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+            return None;
+        }
         for j in 0..clause.literals.len() {
+            if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+                return None;
+            }
             if i == j {
                 continue;
             }
@@ -637,9 +742,13 @@ pub fn condense_id(
             }
 
             let subst = IdSubstitution::new();
-            if let Some(sigma) = match_atoms_id(&lit_i.atom, &lit_j.atom, &subst, 0, bank) {
+            if let Some(sigma) = match_atoms_id(&lit_i.atom, &lit_j.atom, &subst, 0, bank, deadline)
+            {
                 let mut new_lits = Vec::new();
                 for (k, lit) in clause.literals.iter().enumerate() {
+                    if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+                        return None;
+                    }
                     if k != i {
                         new_lits.push(sigma.apply_literal(lit, bank));
                     }
@@ -655,7 +764,7 @@ pub fn condense_id(
                     clause.avatar.clone(),
                 );
 
-                if subsumes_id(&condensed, clause, bank) {
+                if subsumes_id_until(&condensed, clause, bank, deadline) {
                     return Some(condensed);
                 }
             }
@@ -668,6 +777,21 @@ pub fn subsumption_resolution_id(
     active_clause: &IdClause,
     target: &IdClause,
     bank: &mut TermBank,
+) -> Option<usize> {
+    subsumption_resolution_id_until(active_clause, target, bank, None)
+}
+
+/// Subsumption resolution with an optional deadline.
+///
+/// Returns as soon as the instant passes, with `None` meaning "no removable
+/// literal found within budget" rather than "no removable literal exists".
+/// Callers must treat a return after the deadline as "search over budget":
+/// the unbounded variant [`subsumption_resolution_id`] passes `None`.
+pub fn subsumption_resolution_id_until(
+    active_clause: &IdClause,
+    target: &IdClause,
+    bank: &mut TermBank,
+    deadline: Option<std::time::Instant>,
 ) -> Option<usize> {
     if active_clause.literals.len() > target.literals.len() {
         return None;
@@ -707,6 +831,9 @@ pub fn subsumption_resolution_id(
     // restore is the part that must not be optimised away.
     let mut modified_target: Vec<IdLiteral> = target.literals.to_vec();
     for i in 0..target.literals.len() {
+        if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+            return None;
+        }
         let original = target.literals[i].clone();
         modified_target[i] = IdLiteral {
             positive: !original.positive,
@@ -722,6 +849,7 @@ pub fn subsumption_resolution_id(
             offset,
             bank,
             &mut steps,
+            deadline,
         );
         // Undo the flip before the next position, and before returning: position
         // `i` must be matched against the target with only literal `i` reversed,
@@ -1160,5 +1288,96 @@ mod tests2 {
             Some(1),
             "literal 0 embeds only once literal 1 is reversed"
         );
+    }
+
+    #[test]
+    fn subsumption_resolution_until_expired_deadline_returns_none() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+        let mut id_gen = ClauseIdGen::new();
+        let mut bank = TermBank::new();
+        let pos = |sym: mrs_core::SymbolId, bank: &mut TermBank, v: u32| IdLiteral {
+            positive: true,
+            atom: IdAtom::Pred(sym, smallvec::SmallVec::from_vec(vec![bank.intern_var(v)])),
+        };
+
+        let active = id_clause(&mut id_gen, vec![pos(p, &mut bank, 0)], "active");
+        let target = id_clause(
+            &mut id_gen,
+            vec![pos(p, &mut bank, 0), pos(q, &mut bank, 1)],
+            "target",
+        );
+
+        assert_eq!(
+            subsumption_resolution_id(&active, &target, &mut bank),
+            Some(1)
+        );
+        let past = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        assert_eq!(
+            subsumption_resolution_id_until(&active, &target, &mut bank, Some(past)),
+            None
+        );
+        assert_eq!(
+            subsumption_resolution_id_until(&active, &target, &mut bank, None),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn condense_until_expired_deadline_returns_none() {
+        // {p(a), p(a)} condenses to {p(a)}, unless the deadline passed.
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+        let mut bank = TermBank::new();
+        let lit = IdLiteral {
+            positive: true,
+            atom: IdAtom::Pred(
+                p,
+                smallvec::SmallVec::from_vec(vec![bank.intern_app(a, smallvec::SmallVec::new())]),
+            ),
+        };
+
+        let clause = id_clause(&mut id_gen, vec![lit.clone(), lit], "dup");
+
+        assert!(condense_id(&clause, &mut bank, &mut id_gen).is_some());
+        let past = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        assert!(condense_id_until(&clause, &mut bank, &mut id_gen, Some(past)).is_none());
+        assert!(condense_id_until(&clause, &mut bank, &mut id_gen, None).is_some());
+    }
+
+    #[test]
+    fn subsumes_until_expired_deadline_returns_false() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+        let mut id_gen = ClauseIdGen::new();
+        let mut bank = TermBank::new();
+        let pos = |sym: mrs_core::SymbolId, bank: &mut TermBank, v: u32| IdLiteral {
+            positive: true,
+            atom: IdAtom::Pred(sym, smallvec::SmallVec::from_vec(vec![bank.intern_var(v)])),
+        };
+        let general = id_clause(
+            &mut id_gen,
+            vec![pos(p, &mut bank, 0), pos(q, &mut bank, 1)],
+            "general",
+        );
+        let specific = id_clause(
+            &mut id_gen,
+            vec![pos(p, &mut bank, 2), pos(q, &mut bank, 3)],
+            "specific",
+        );
+
+        assert!(subsumes_id(&general, &specific, &mut bank));
+        let past = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        assert!(!subsumes_id_until(
+            &general,
+            &specific,
+            &mut bank,
+            Some(past)
+        ));
+        assert!(subsumes_id_until(&general, &specific, &mut bank, None));
     }
 }

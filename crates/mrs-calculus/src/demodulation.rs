@@ -340,6 +340,41 @@ pub fn demodulate_id(
     ac_syms: &HashSet<SymbolId>,
     memo: Option<&mut DemodMemo>,
 ) -> Option<IdClause> {
+    demodulate_id_until(
+        clause,
+        bank,
+        demod_index,
+        clause_store,
+        id_gen,
+        ac_syms,
+        memo,
+        None,
+    )
+}
+
+/// Demodulation with an optional deadline.
+///
+/// The fixpoint returns as soon as the instant passes, with whatever
+/// simplification was reached: `Some` if at least one rewrite applied before
+/// the deadline, `None` otherwise. Callers must treat a return after the
+/// deadline as "search over budget" rather than a complete simplification,
+/// because further rewrites may still have applied. The unbounded variant
+/// [`demodulate_id`] passes `None`.
+///
+/// The bound is checked per fixpoint pass and per literal, so a single call
+/// can no longer run past the search deadline no matter how many literals the
+/// clause has or how many passes the rewrite cycle needs.
+#[allow(clippy::too_many_arguments)]
+pub fn demodulate_id_until(
+    clause: &IdClause,
+    bank: &mut TermBank,
+    demod_index: &mrs_index::stree::STreeId<(TermId, TermId, ClauseId)>,
+    clause_store: &HashMap<ClauseId, IdClause>,
+    id_gen: &mut ClauseIdGen,
+    ac_syms: &HashSet<SymbolId>,
+    memo: Option<&mut DemodMemo>,
+    deadline: Option<std::time::Instant>,
+) -> Option<IdClause> {
     // A split clause's rewrite availability depends on its AVATAR context, which
     // the memo key does not carry, so a split clause runs unmemoised.
     let mut memo = memo.filter(|_| clause.avatar.is_empty());
@@ -361,10 +396,16 @@ pub fn demodulate_id(
         if passes >= 100 {
             break;
         }
+        if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+            break;
+        }
         passes += 1;
         let mut changed_this_pass = false;
         for (lit_idx, lit) in current_lits.iter_mut().enumerate() {
-            if rewrite_literal_id(
+            if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+                break;
+            }
+            if rewrite_literal_id_until(
                 lit,
                 lit_idx,
                 &clause.avatar,
@@ -375,6 +416,7 @@ pub fn demodulate_id(
                 &mut steps,
                 ac_syms,
                 memo.as_deref_mut(),
+                deadline,
             ) {
                 changed = true;
                 changed_this_pass = true;
@@ -428,7 +470,7 @@ pub fn demodulate_id(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn rewrite_literal_id(
+fn rewrite_literal_id_until(
     lit: &mut IdLiteral,
     lit_idx: usize,
     target_avatar: &[u32],
@@ -439,6 +481,7 @@ fn rewrite_literal_id(
     steps: &mut Vec<DemodStepWitness>,
     ac_syms: &HashSet<SymbolId>,
     mut memo: Option<&mut DemodMemo>,
+    deadline: Option<std::time::Instant>,
 ) -> bool {
     let mut changed = false;
     // One path buffer for the whole literal, truncated and re-pushed per
@@ -457,7 +500,7 @@ fn rewrite_literal_id(
                     // each level.
                     path.clear();
                     path.push(arg_idx);
-                    let (new_arg, ch) = rewrite_term_id(
+                    let (new_arg, ch) = rewrite_term_id_until(
                         *arg,
                         lit_idx,
                         &mut path,
@@ -469,6 +512,7 @@ fn rewrite_literal_id(
                         steps,
                         ac_syms,
                         memo.as_deref_mut(),
+                        deadline,
                     );
                     if ch {
                         changed = true;
@@ -482,7 +526,7 @@ fn rewrite_literal_id(
             let (l, r) = (*l, *r);
             path.clear();
             path.push(0);
-            let (new_l, ch_l) = rewrite_term_id(
+            let (new_l, ch_l) = rewrite_term_id_until(
                 l,
                 lit_idx,
                 &mut path,
@@ -494,10 +538,11 @@ fn rewrite_literal_id(
                 steps,
                 ac_syms,
                 memo.as_deref_mut(),
+                deadline,
             );
             path.clear();
             path.push(1);
-            let (new_r, ch_r) = rewrite_term_id(
+            let (new_r, ch_r) = rewrite_term_id_until(
                 r,
                 lit_idx,
                 &mut path,
@@ -511,6 +556,7 @@ fn rewrite_literal_id(
                 // Argument position reborrows implicitly, so the binding goes
                 // across as-is.
                 memo,
+                deadline,
             );
             if ch_l || ch_r {
                 changed = true;
@@ -535,8 +581,12 @@ type TermPath = Vec<usize>;
 // recursive call in the middle can also take it. Clippy reads it as a no-op
 // because `Option<&mut T>::as_deref_mut()` has the same type, and taking the
 // binding by value instead would move it out.
+//
+// The optional deadline stops the descent: a past deadline returns the term
+// unchanged, so the caller observes "no rewrite within budget" for the
+// remaining positions.
 #[allow(clippy::too_many_arguments, clippy::needless_option_as_deref)]
-fn rewrite_term_id(
+fn rewrite_term_id_until(
     term: TermId,
     lit_idx: usize,
     path: &mut TermPath,
@@ -548,7 +598,11 @@ fn rewrite_term_id(
     steps: &mut Vec<DemodStepWitness>,
     _ac_syms: &HashSet<SymbolId>,
     mut memo: Option<&mut DemodMemo>,
+    deadline: Option<std::time::Instant>,
 ) -> (TermId, bool) {
+    if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+        return (term, false);
+    }
     // Already known irreducible against the current index: the whole subtree
     // walk, and every trie descent under it, can be skipped. See `DemodMemo`
     // for why only this answer is cached.
@@ -589,8 +643,11 @@ fn rewrite_term_id(
         let mut rewritten_args: smallvec::SmallVec<[(usize, TermId); 4]> =
             smallvec::SmallVec::new();
         for (arg_idx, arg) in args.iter().copied().enumerate() {
+            if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+                break;
+            }
             path.push(arg_idx);
-            let (new_arg, ch) = rewrite_term_id(
+            let (new_arg, ch) = rewrite_term_id_until(
                 arg,
                 lit_idx,
                 path,
@@ -602,6 +659,7 @@ fn rewrite_term_id(
                 steps,
                 _ac_syms,
                 memo.as_deref_mut(),
+                deadline,
             );
             path.pop();
             if ch {
@@ -619,7 +677,12 @@ fn rewrite_term_id(
         }
     }
 
-    if let Some(fresh) = memo.as_deref_mut() {
+    // An interrupted descent must not be memoized as irreducible: a later
+    // call with the same index and a fresh budget still needs to inspect the
+    // children that this call could not reach.
+    if !deadline.is_some_and(|limit| std::time::Instant::now() >= limit)
+        && let Some(fresh) = memo.as_deref_mut()
+    {
         fresh.record_irreducible(term, bank);
     }
     (term, false)
@@ -1053,6 +1116,86 @@ mod tests {
             );
             assert!(step.term_path[0] <= 1);
         }
+    }
+
+    #[test]
+    fn demodulate_until_expired_deadline_returns_none() {
+        // p(f(a)) rewrites to p(b) under f(a) = b, unless the deadline passed.
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("f");
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let mut bank = TermBank::new();
+        let ca = bank.intern_app(a, smallvec::SmallVec::<[TermId; 4]>::new());
+        let cb = bank.intern_app(b, smallvec::SmallVec::<[TermId; 4]>::new());
+        let fa = bank.intern_app(f, smallvec::smallvec![ca]);
+
+        let mut id_gen = ClauseIdGen::new();
+        let unit = IdClause::new(
+            id_gen.next(),
+            vec![IdLiteral {
+                positive: true,
+                atom: IdAtom::Eq(fa, cb),
+            }],
+            ClauseSource::Input {
+                name: "unit".into(),
+                role: "axiom".into(),
+            },
+        );
+        let unit_id = unit.id;
+        let target = IdClause::new(
+            id_gen.next(),
+            vec![IdLiteral {
+                positive: true,
+                atom: IdAtom::Pred(p, smallvec::smallvec![fa]),
+            }],
+            ClauseSource::Input {
+                name: "target".into(),
+                role: "axiom".into(),
+            },
+        );
+
+        let mut clause_store = HashMap::default();
+        clause_store.insert(unit_id, unit);
+        let mut index = mrs_index::stree::STreeId::new();
+        index.insert(fa, &mut bank, (fa, cb, unit_id));
+
+        let full = demodulate_id(
+            &target,
+            &mut bank,
+            &index,
+            &clause_store,
+            &mut id_gen,
+            &Default::default(),
+            None,
+        );
+        assert!(full.is_some());
+
+        let past = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        let partial = demodulate_id_until(
+            &target,
+            &mut bank,
+            &index,
+            &clause_store,
+            &mut id_gen,
+            &Default::default(),
+            None,
+            Some(past),
+        );
+        assert!(partial.is_none());
+
+        let same = demodulate_id_until(
+            &target,
+            &mut bank,
+            &index,
+            &clause_store,
+            &mut id_gen,
+            &Default::default(),
+            None,
+            None,
+        );
+        assert!(same.is_some());
     }
 
     // ── DemodMemo ─────────────────────────────────────────────────────────────
