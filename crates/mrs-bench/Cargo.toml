@@ -15,11 +15,15 @@ mrs-search = { workspace = true }
 mrs-szs = { workspace = true }
 mrs-tptp = { workspace = true }
 mrs-proof-kernel = { workspace = true }
+mrs-prephase = { workspace = true }
+mrs = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 tempfile = { workspace = true }
 walkdir = { workspace = true }
+num_cpus = { workspace = true }
+libc = { workspace = true }
 wait-timeout = { workspace = true }
 
 [[bin]]
@@ -65,3 +69,11 @@ path = "src/bin/audit_casc_proofs.rs"
 [[bin]]
 name = "perf_probe"
 path = "src/bin/perf_probe.rs"
+
+[[bin]]
+name = "prephase_dump"
+path = "src/bin/prephase_dump.rs"
+
+[[bin]]
+name = "prephase_sweep"
+path = "src/bin/prephase_sweep.rs"

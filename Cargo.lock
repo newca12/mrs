@@ -3641,11 +3641,15 @@ dependencies = [
 name = "mrs-bench"
 version = "0.2.3"
 dependencies = [
+ "libc",
+ "mrs",
  "mrs-core",
+ "mrs-prephase",
  "mrs-proof-kernel",
  "mrs-search",
  "mrs-szs",
  "mrs-tptp",
+ "num_cpus",
  "rayon",
  "serde",
  "serde_json",

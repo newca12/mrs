@@ -51,7 +51,10 @@ use mrs_core::formula::Atom;
 use mrs_core::symbol::SymbolId;
 use mrs_core::term::{Term, VarId};
 
+pub mod plan;
 pub mod preprocessing;
+
+pub use plan::{Algorithm, Plan, PrePass, StrategyKind, route};
 
 /// Maximum goal-distance BFS radius used for the reachability features.
 ///
@@ -61,6 +64,19 @@ const GOAL_RADIUS: u8 = 5;
 
 /// Sentinel distance for clauses the conjecture cannot reach at all.
 const DISCONNECTED: u32 = 100;
+
+/// Ceiling on the distinct-term / distinct-abstraction-atom sets.
+///
+/// These two counters are diagnostics, and both grow with the number of
+/// subterms rather than with the size of the problem. A single 13 MB TPTP input
+/// expands to millions of subterms, and an uncapped set of cloned `Term`s is
+/// then the largest allocation in the pre-phase by a wide margin — enough to
+/// take the process out with an OOM kill rather than produce a measurement. The
+/// cap keeps the analysis `O(1)` in memory per problem at the cost of making
+/// these two fields a lower bound above the cap; [`Analysis::analysis_capped`]
+/// records when that happened, so a downstream reader never mistakes a saturated
+/// count for a measured one.
+const TERM_CAP: usize = 1_000_000;
 
 /// Input-side metadata that clausification erases.
 ///
@@ -252,7 +268,10 @@ struct TermAcc {
     n_functions: usize,
     /// Arity per function symbol (arity 0 == constant).
     func_arities: HashMap<SymbolId, usize>,
+    /// Distinct non-variable terms, bounded by [`TERM_CAP`].
     terms: HashSet<Term>,
+    /// Set when [`Self::terms`] saturated.
+    capped: bool,
 }
 
 impl Default for TermAcc {
@@ -266,6 +285,7 @@ impl Default for TermAcc {
             n_functions: 0,
             func_arities: HashMap::default(),
             terms: HashSet::default(),
+            capped: false,
         }
     }
 }
@@ -482,6 +502,10 @@ pub struct Analysis {
     pub abstraction_clauses: usize,
     /// Fraction of clauses the collapse leaves unchanged.
     pub abstraction_trivial_clause_ratio: f64,
+    /// `true` when a bounded counter saturated at [`TERM_CAP`], so
+    /// `n_distinct_terms` and `abstraction_atoms` are lower bounds rather than
+    /// exact counts.
+    pub analysis_capped: bool,
 
     // ── Header metadata (reported, never routed on) ─────────────────────────
     /// `% Status:` from the TPTP header, when present.
@@ -836,6 +860,7 @@ pub fn analyze(
         .unwrap_or(0);
     out.max_term_size = max_term_size;
     out.n_distinct_terms = term_acc.terms.len();
+    out.analysis_capped = term_acc.capped;
 
     // ── Goal topology ──────────────────────────────────────────────────────
     out.n_goal_clauses = n_goal_clauses;
@@ -866,7 +891,7 @@ pub fn analyze(
     let (removed, duplicates) = measure_redundancy(clauses);
 
     // ── Propositional abstraction ──────────────────────────────────────────
-    let (abs_atoms, abs_clauses, abs_trivial) = propositional_abstraction(clauses);
+    let (abs_atoms, abs_clauses, abs_trivial, abs_capped) = propositional_abstraction(clauses);
 
     out.n_components = components;
     out.largest_component_ratio = largest;
@@ -886,6 +911,7 @@ pub fn analyze(
     out.abstraction_atoms = abs_atoms;
     out.abstraction_clauses = abs_clauses;
     out.abstraction_trivial_clause_ratio = ratio(abs_trivial, abs_clauses);
+    out.analysis_capped |= abs_capped;
 
     // ── Class labels ───────────────────────────────────────────────────────
     out.logic_class = if clauses.is_empty() {
@@ -1075,7 +1101,11 @@ fn record_term(
     } else {
         acc.n_functions += 1;
     }
-    acc.terms.insert(term.clone());
+    if acc.terms.len() < TERM_CAP {
+        acc.terms.insert(term.clone());
+    } else {
+        acc.capped = true;
+    }
     for arg in args {
         record_term(arg, depth + 1, acc, symbols);
     }
@@ -1284,61 +1314,73 @@ fn components(facts: &[ClauseFacts]) -> (usize, f64, usize) {
 /// counted on a canonical key so the count does not depend on internal variable
 /// numbering beyond the renaming the clause set already carries.
 fn measure_redundancy(clauses: &[Clause]) -> (usize, usize) {
+    use std::hash::{Hash, Hasher};
     let config = preprocessing::PreprocessingConfig::default();
     let (remaining, stats) = preprocessing::preprocess_clauses(clauses, &config);
-    let mut seen: HashSet<String> = HashSet::default();
+    let mut seen: HashSet<u64> = HashSet::default();
     let mut duplicates = 0usize;
     for clause in &remaining {
-        let mut key = String::with_capacity(clause.literals.len() * 8);
-        let mut literals: Vec<String> = clause
+        let mut literals: Vec<u64> = clause
             .literals
             .iter()
             .map(|literal| {
-                let mut text = String::new();
-                text.push(if literal.positive { 'p' } else { 'n' });
-                text.push_str(&canonical_atom(&literal.atom));
-                text
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                literal.positive.hash(&mut hasher);
+                canonical_atom(&literal.atom, &mut hasher);
+                hasher.finish()
             })
             .collect();
-        literals.sort();
-        key.extend(literals.iter().map(|l| l.as_str()));
-        if !seen.insert(key) {
+        literals.sort_unstable();
+        if seen.len() < TERM_CAP {
+            seen.insert(hash_slice(&literals));
+        } else if seen.contains(&hash_slice(&literals)) {
             duplicates += 1;
         }
     }
     (stats.total_removed, duplicates)
 }
 
-fn canonical_atom(atom: &Atom) -> String {
+fn hash_slice(values: &[u64]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    values.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Canonical hash of an atom. Variable *identity* is deliberately part of the
+/// hash: two clauses differing only in which variable a position uses are not
+/// duplicates, and folding them together would inflate the duplicate count on
+/// exactly the propositional-skeleton inputs where it matters most.
+fn canonical_atom(atom: &Atom, hasher: &mut impl std::hash::Hasher) {
+    use std::hash::Hash;
     match atom {
         Atom::Pred(symbol, args) => {
-            let mut out = format!("@{}(", symbol.index());
-            for (index, arg) in args.iter().enumerate() {
-                if index > 0 {
-                    out.push(',');
-                }
-                out.push_str(&canonical_term(arg));
+            symbol.index().hash(hasher);
+            for arg in args {
+                canonical_term(arg, hasher);
             }
-            out.push(')');
-            out
         }
-        Atom::Eq(left, right) => format!("#{}={}", canonical_term(left), canonical_term(right)),
+        Atom::Eq(left, right) => {
+            0u8.hash(hasher);
+            canonical_term(left, hasher);
+            canonical_term(right, hasher);
+        }
     }
 }
 
-fn canonical_term(term: &Term) -> String {
+fn canonical_term(term: &Term, hasher: &mut impl std::hash::Hasher) {
+    use std::hash::Hash;
     match term {
-        Term::Var(v) => format!("?{v}"),
+        Term::Var(v) => {
+            1u8.hash(hasher);
+            v.hash(hasher);
+        }
         Term::App(symbol, args) => {
-            let mut out = format!("@{}(", symbol.index());
-            for (index, arg) in args.iter().enumerate() {
-                if index > 0 {
-                    out.push(',');
-                }
-                out.push_str(&canonical_term(arg));
+            2u8.hash(hasher);
+            symbol.index().hash(hasher);
+            for arg in args {
+                canonical_term(arg, hasher);
             }
-            out.push(')');
-            out
         }
     }
 }
@@ -1349,61 +1391,73 @@ fn canonical_term(term: &Term) -> String {
 /// This is the instance a SAT-based abstraction refiner operates on: when it
 /// stays tiny, the bottleneck is first-order search rather than the propositional
 /// core, which is the distinction a SAT-based pre-pass needs.
-fn propositional_abstraction(clauses: &[Clause]) -> (usize, usize, usize) {
-    let mut slots: HashMap<Term, usize> = HashMap::default();
-    let mut atoms: HashSet<String> = HashSet::default();
+fn propositional_abstraction(clauses: &[Clause]) -> (usize, usize, usize, bool) {
+    use std::hash::{Hash, Hasher};
+    let mut slots: HashMap<&Term, usize> = HashMap::default();
+    let mut atoms: HashSet<u64> = HashSet::default();
     let mut abstracted_clauses = 0usize;
     let mut trivial_clauses = 0usize;
+    let mut capped = false;
     for clause in clauses {
         abstracted_clauses += 1;
         let mut changed = false;
-        let mut signature: Vec<String> = Vec::with_capacity(clause.literals.len());
+        let mut signature: Vec<u64> = Vec::with_capacity(clause.literals.len());
         for literal in &clause.literals {
-            let atom_key = match &literal.atom {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            match &literal.atom {
                 Atom::Pred(symbol, args) => {
-                    let abstracted: Vec<usize> = args
-                        .iter()
-                        .map(|arg| abstract_term(arg, &mut slots))
-                        .collect();
-                    if !matches!(abstracted.first(), Some(0))
-                        || abstracted.iter().any(|s| *s > 0 && args.len() > 1)
-                    {
+                    symbol.index().hash(&mut hasher);
+                    for arg in args {
+                        abstract_term(arg, &mut slots).hash(&mut hasher);
+                    }
+                    if args.iter().any(|arg| !matches!(arg, Term::Var(_))) {
                         changed = true;
                     }
-                    format!("@{}[{}]", symbol.index(), abstracted.len())
                 }
                 Atom::Eq(left, right) => {
                     changed = true;
-                    format!(
-                        "#{}={}",
-                        abstract_term(left, &mut slots),
-                        abstract_term(right, &mut slots)
-                    )
+                    b'#'.hash(&mut hasher);
+                    abstract_term(left, &mut slots).hash(&mut hasher);
+                    abstract_term(right, &mut slots).hash(&mut hasher);
                 }
+            }
+            // `!key` for a negative literal keeps `p` and `~p` distinct without
+            // a second set.
+            let key = if literal.positive {
+                hasher.finish()
+            } else {
+                !hasher.finish()
             };
-            atoms.insert(atom_key.clone());
-            signature.push(format!(
-                "{}{}",
-                if literal.positive { "" } else { "~" },
-                atom_key
-            ));
+            if atoms.len() < TERM_CAP {
+                atoms.insert(key);
+            } else {
+                capped = true;
+            }
+            signature.push(key);
         }
-        signature.sort();
-        if signature.len() == clause.literals.len() && !changed {
+        signature.sort_unstable();
+        let distinct = {
+            let mut copy = signature.clone();
+            copy.dedup();
+            copy.len()
+        };
+        if distinct == clause.literals.len() && !changed {
             trivial_clauses += 1;
         }
     }
-    (atoms.len(), abstracted_clauses, trivial_clauses)
+    (atoms.len(), abstracted_clauses, trivial_clauses, capped)
 }
 
 /// `0` for a variable (distinct arguments keep their identity); a stable slot
 /// index for every non-variable subterm.
-fn abstract_term(term: &Term, slots: &mut HashMap<Term, usize>) -> usize {
+fn abstract_term<'a>(term: &'a Term, slots: &mut HashMap<&'a Term, usize>) -> usize {
     match term {
         Term::Var(_) => 0,
         Term::App(_, _) => {
             let next = slots.len();
-            *slots.entry(term.clone()).or_insert(next)
+            // Borrowed rather than cloned: a 13 MB input expands to millions of
+            // subterms and cloning them all is the pre-phase's peak allocation.
+            *slots.entry(term).or_insert(next)
         }
     }
 }
@@ -1522,6 +1576,7 @@ impl Analysis {
             "abstraction_atoms" => self.abstraction_atoms.to_string(),
             "abstraction_clauses" => self.abstraction_clauses.to_string(),
             "abstraction_trivial_clause_ratio" => num(self.abstraction_trivial_clause_ratio),
+            "analysis_capped" => u8::from(self.analysis_capped).to_string(),
             "header_status" => self.header_status.clone().unwrap_or_default(),
             "header_rating" => self
                 .header_rating
@@ -1620,6 +1675,7 @@ impl Analysis {
         "abstraction_atoms",
         "abstraction_clauses",
         "abstraction_trivial_clause_ratio",
+        "analysis_capped",
         "header_status",
         "header_rating",
         "logic_class",
