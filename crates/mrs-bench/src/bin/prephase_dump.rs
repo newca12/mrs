@@ -33,7 +33,11 @@ struct Row {
     /// `isolated_wait_failed`.
     status: String,
     detail: String,
+    /// The static analysis row, or `None` when the problem could not be
+    /// analysed.
     csv: Option<String>,
+    /// The probe columns, appended when `--probe` is set.
+    probe: Option<String>,
 }
 
 fn main() {
@@ -46,6 +50,11 @@ fn main() {
     // Per-file address-space ceiling. `None` means analyse in-process.
     let mut rlimit_mb: Option<u64> = None;
     let mut child: Option<String> = None;
+    // Also run the bounded search-behaviour probe and append its numbers. The
+    // static analysis says what a problem looks like; the probe says what the
+    // search does on it. Keeping both in one row is what lets the study ask
+    // whether the trajectory predicts the outcome better than the syntax does.
+    let mut with_probe = false;
     // Inputs above this size are recorded as skipped rather than analysed. A
     // 13 MB TPTP file expands to millions of subterms, and the analysis is
     // O(subterms) in time; without a ceiling one such file decides whether the
@@ -86,6 +95,10 @@ fn main() {
                 rlimit_mb = Some(args[index + 1].parse().expect("--rlimit-mb needs a number"));
                 index += 2;
             }
+            "--probe" => {
+                with_probe = true;
+                index += 1;
+            }
             "--child" => {
                 child = Some(args[index + 1].clone());
                 index += 2;
@@ -97,7 +110,7 @@ fn main() {
             "--help" | "-h" => {
                 println!(
                     "Usage: prephase_dump --root <DIR|FILE> --out <CSV>\n\
-                     \x20         [--jobs N] [--limit N] [--filter SUBSTR] [--max-bytes N]"
+                     \x20         [--jobs N] [--limit N] [--filter SUBSTR] [--max-bytes N] [--probe]"
                 );
                 return;
             }
@@ -180,6 +193,7 @@ fn main() {
                             status: "over_size_limit".to_string(),
                             detail: format!("{size} bytes"),
                             csv: None,
+                            probe: None,
                         }
                     } else if let Some(cap_mb) = *rlimit_mb {
                         analyze_isolated(path, cap_mb, jobs)
@@ -207,16 +221,30 @@ fn main() {
     let mut file = fs::File::create(&out).expect("cannot create output file");
     writeln!(
         file,
-        "path,parse_status,parse_detail,{}",
-        mrs_prephase::Analysis::columns().join(",")
+        "path,parse_status,parse_detail,{}{}",
+        mrs_prephase::Analysis::columns().join(","),
+        if with_probe {
+            format!(",{}", mrs_search::prephase::probe_columns().join(","))
+        } else {
+            String::new()
+        }
     )
-    .expect("cannot write header");
+    .expect("cannot header");
 
     let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
     for (_, row) in &rows {
         *counts.entry(row.status.clone()).or_default() += 1;
         let csv = row.csv.clone().unwrap_or_else(empty_row);
-        let _ = writeln!(file, "{},{},{},{}", row.path, row.status, row.detail, csv);
+        let probe = if with_probe {
+            row.probe.as_deref().unwrap_or("")
+        } else {
+            ""
+        };
+        let _ = writeln!(
+            file,
+            "{},{},{},{}{}",
+            row.path, row.status, row.detail, csv, probe
+        );
     }
     eprintln!("[dump] wrote {} rows to {}", rows.len(), out.display());
     for (status, count) in counts {
@@ -283,6 +311,9 @@ fn analyze_isolated(path: &Path, cap_mb: u64, _jobs: usize) -> Row {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .env("TPTP", tptp);
+    if std::env::var_os("PREPHASE_PROBE").is_some() {
+        command.env("PREPHASE_PROBE", "1");
+    }
     // `pre_exec` runs after fork and before exec, which is the only place an
     // address-space rlimit can be installed for this child alone.
     unsafe {
@@ -307,6 +338,7 @@ fn analyze_isolated(path: &Path, cap_mb: u64, _jobs: usize) -> Row {
                 status: "isolated_spawn_failed".to_string(),
                 detail: error.to_string().replace(',', ";"),
                 csv: None,
+                probe: None,
             };
         }
     };
@@ -334,17 +366,23 @@ fn analyze_isolated(path: &Path, cap_mb: u64, _jobs: usize) -> Row {
             },
             detail: String::new(),
             csv: Some(csv),
+            probe: None,
         },
         None => Row {
             path: path.to_string_lossy().into_owned(),
             status: "resource_limit".to_string(),
             detail: format!("exit {:?} {}", output.status.code(), output.status),
             csv: None,
+            probe: None,
         },
     }
 }
 
 fn analyze_file(path: &Path) -> Row {
+    // `--probe` reaches this function through the environment rather than an
+    // argument because the isolated path re-executes this binary as a child, and
+    // the child would otherwise silently produce rows with no probe columns.
+    let with_probe = std::env::var_os("PREPHASE_PROBE").is_some();
     if std::env::var_os("PREPHASE_TRACE_FILES").is_some() {
         eprintln!(
             "[file] {:?} {}",
@@ -360,6 +398,7 @@ fn analyze_file(path: &Path) -> Row {
                 status: "unreadable".to_string(),
                 detail: error.to_string().replace(',', ";"),
                 csv: None,
+                probe: None,
             };
         }
     };
@@ -371,6 +410,7 @@ fn analyze_file(path: &Path) -> Row {
                 status: "parse_error".to_string(),
                 detail: format!("{error}").replace(',', ";"),
                 csv: None,
+                probe: None,
             };
         }
     };
@@ -392,10 +432,36 @@ fn analyze_file(path: &Path) -> Row {
     } else {
         "ok"
     };
+    let probe = if with_probe {
+        Some(mrs_search::prephase::probe(
+            &prepared.clauses,
+            prepared.lowered.id_gen.clone(),
+            &prepared.lowered.symbols,
+        ))
+    } else {
+        None
+    };
     Row {
         path: path.to_string_lossy().into_owned(),
         status: status.to_string(),
         detail: String::new(),
         csv: Some(analysis.csv_row()),
+        probe: probe.as_ref().map(probe_columns_row),
     }
+}
+
+fn probe_columns_row(probe: &mrs_search::prephase::Probe) -> String {
+    format!(
+        "{},{},{},{},{},{},{},{:.4},{:.4},{:.2}",
+        probe.iterations,
+        probe.generated,
+        probe.processed,
+        probe.forward_subsumed,
+        probe.weight_discarded,
+        probe.passive,
+        probe.elapsed_ms,
+        probe.generation_rate(),
+        probe.redundancy_rate(),
+        probe.throughput_per_ms(),
+    )
 }

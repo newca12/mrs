@@ -162,44 +162,34 @@ pub fn apply_pre_passes(schedule: &mut [SearchConfig], plan: &Plan) {
         } => Some((*tolerance, *depth_limit)),
         _ => None,
     });
-    match sine {
-        Some((tolerance, depth_limit)) => {
-            for (slot, config) in schedule.iter_mut().enumerate() {
+    let algorithm = plan.algorithm;
+    for config in schedule.iter_mut() {
+        match sine {
+            Some((tolerance, depth_limit)) => {
+                // Signature-based axiom filtering removes premises the
+                // conjecture cannot reach. It is a *soundness-preserving
+                // restriction for refutation* only while the conjecture's own
+                // clause is retained, which SInE guarantees by construction, so
+                // this is safe to enable from the plan. It does make any positive
+                // (satisfiability) answer unreportable, which the search's
+                // completeness audit already refuses.
                 config.sine_tolerance = Some(tolerance);
                 config.sine_depth_limit = Some(depth_limit);
-                // Premise filtering is only sound-preserving for the goal when
-                // the conjecture itself is never filtered, which SInE already
-                // guarantees; the depth limit is per slot so a portfolio still
-                // explores both a shallow and a deep chain.
-                let _ = slot;
             }
-        }
-        None => {
-            for config in schedule.iter_mut() {
+            None => {
                 config.sine_tolerance = None;
                 config.sine_depth_limit = None;
             }
         }
-    }
-    // Goal transformation is per strategy in the plan and already applied.
-    let wants_grounding = plan.pre_passes.contains(&PrePass::Grounding);
-    let algorithm = plan.algorithm;
-    for config in schedule.iter_mut() {
         // AVATAR's SAT instance grows without bound on a purely propositional
-        // clause set, and the plan knows when the input is propositional. The
-        // engine already forces this off for EPR input regardless; doing it here
-        // as well means the decision is the plan's rather than a side effect of
-        // an unrelated guard.
-        if wants_grounding && algorithm == Algorithm::PropositionalSplitting {
+        // clause set, and the plan is what knows the input is propositional. The
+        // engine forces this off for EPR input regardless; doing it here too
+        // makes the decision the plan's rather than a side effect of an
+        // unrelated guard.
+        if algorithm == Algorithm::PropositionalSplitting
+            && plan.pre_passes.contains(&PrePass::Grounding)
+        {
             config.use_avatar = false;
-        }
-        // Unit-equality completion with unit-only resolution is the classical
-        // restriction, and it is what the current UEQ portfolio already relies
-        // on; keeping it off by default preserves completeness for the general
-        // case and is only enabled when the plan says the input is unit
-        // equality.
-        if algorithm == Algorithm::UnitEqualityCompletion {
-            config.lrs_policy = LrsPolicy::WallClock;
         }
     }
 }
@@ -279,6 +269,23 @@ impl Probe {
             self.throughput_per_ms()
         )
     }
+}
+
+/// The probe's CSV columns, in order. The dumper writes exactly these after the
+/// static analysis columns, so the header and the row cannot drift.
+pub fn probe_columns() -> &'static [&'static str] {
+    &[
+        "probe_iterations",
+        "probe_generated",
+        "probe_processed",
+        "probe_forward_subsumed",
+        "probe_weight_discarded",
+        "probe_passive",
+        "probe_elapsed_ms",
+        "probe_generation_rate",
+        "probe_redundancy_rate",
+        "probe_throughput_per_ms",
+    ]
 }
 
 /// Clauses the reference probe search is allowed to process.
