@@ -171,18 +171,50 @@ pub fn resolve_selected_id(
     comm: &HashSet<SymbolId>,
     assoc: &HashSet<SymbolId>,
 ) -> Vec<IdClause> {
+    resolve_selected_id_until(c1, c2, bank, id_gen, sel1, sel2, comm, assoc, None)
+}
+
+/// Resolution with an optional deadline.
+///
+/// The caller may pass `deadline`; the routine then returns as soon as the
+/// instant passes, possibly with a partial resolvent set. Callers must treat a
+/// return after the deadline as "search over budget" and discard the partial
+/// results, because a partial resolvent set is not a sound basis for any
+/// conclusion. The unbounded variant [`resolve_selected_id`] passes `None`.
+///
+/// The bound is checked in the literal-pair loops, so a single call can no
+/// longer run past the search deadline no matter how wide the parent clauses
+/// are or how many pairs unify.
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_selected_id_until(
+    c1: &IdClause,
+    c2: &IdClause,
+    bank: &mut TermBank,
+    id_gen: &mut ClauseIdGen,
+    sel1: Option<&[usize]>,
+    sel2: Option<&[usize]>,
+    comm: &HashSet<SymbolId>,
+    assoc: &HashSet<SymbolId>,
+    deadline: Option<std::time::Instant>,
+) -> Vec<IdClause> {
     let offset = max_var_id(c1, bank);
     let c2r = rename_clause_id(c2, offset, bank);
 
     let mut resolvents = Vec::new();
 
     for (i, l1) in c1.literals.iter().enumerate() {
+        if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+            return resolvents;
+        }
         if let Some(sel) = sel1
             && !sel.contains(&i)
         {
             continue;
         }
         for (j, l2) in c2r.literals.iter().enumerate() {
+            if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+                return resolvents;
+            }
             if let Some(sel) = sel2
                 && !sel.contains(&j)
             {
@@ -484,5 +516,60 @@ mod tests {
         } else {
             panic!("expected Inference source");
         }
+    }
+
+    #[test]
+    fn resolve_until_expired_deadline_returns_no_resolvents() {
+        // {p(a)} resolved with {~p(a)} -> empty clause, unless the deadline
+        // has already passed, in which case the partial set is empty.
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+
+        let c1_legacy = input_clause(
+            0,
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+        );
+        let c2_legacy = input_clause(
+            1,
+            vec![Literal::neg(Atom::pred(p, vec![Term::constant(a)]))],
+        );
+
+        let mut bank = TermBank::new();
+        let c1 = bank.clause_from_legacy(&c1_legacy);
+        let c2 = bank.clause_from_legacy(&c2_legacy);
+        let comm = HashSet::default();
+        let assoc = HashSet::default();
+
+        let mut id_gen = ClauseIdGen::new();
+        let full = resolve_selected_id(&c1, &c2, &mut bank, &mut id_gen, None, None, &comm, &assoc);
+        assert_eq!(full.len(), 1);
+
+        let past = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        let partial = resolve_selected_id_until(
+            &c1,
+            &c2,
+            &mut bank,
+            &mut id_gen,
+            None,
+            None,
+            &comm,
+            &assoc,
+            Some(past),
+        );
+        assert!(partial.is_empty());
+
+        let same = resolve_selected_id_until(
+            &c1,
+            &c2,
+            &mut bank,
+            &mut id_gen,
+            None,
+            None,
+            &comm,
+            &assoc,
+            None,
+        );
+        assert_eq!(same.len(), 1);
     }
 }

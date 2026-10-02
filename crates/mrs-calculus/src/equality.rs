@@ -258,9 +258,26 @@ pub fn equality_resolve_id(
     bank: &mut TermBank,
     id_gen: &mut ClauseIdGen,
 ) -> Vec<IdClause> {
+    equality_resolve_id_until(clause, bank, id_gen, None)
+}
+
+/// Equality resolution with an optional deadline.
+///
+/// Returns as soon as the instant passes, possibly with a partial result set.
+/// Callers must treat a return after the deadline as "search over budget":
+/// the unbounded variant [`equality_resolve_id`] passes `None`.
+pub fn equality_resolve_id_until(
+    clause: &IdClause,
+    bank: &mut TermBank,
+    id_gen: &mut ClauseIdGen,
+    deadline: Option<std::time::Instant>,
+) -> Vec<IdClause> {
     let mut results = Vec::new();
 
     for (i, lit) in clause.literals.iter().enumerate() {
+        if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+            return results;
+        }
         if lit.positive {
             continue;
         }
@@ -305,9 +322,27 @@ pub fn equality_factor_id(
     ordering: &TermOrdering,
     id_gen: &mut ClauseIdGen,
 ) -> Vec<IdClause> {
+    equality_factor_id_until(clause, bank, ordering, id_gen, None)
+}
+
+/// Equality factoring with an optional deadline.
+///
+/// Returns as soon as the instant passes, possibly with a partial result set.
+/// Callers must treat a return after the deadline as "search over budget":
+/// the unbounded variant [`equality_factor_id`] passes `None`.
+pub fn equality_factor_id_until(
+    clause: &IdClause,
+    bank: &mut TermBank,
+    ordering: &TermOrdering,
+    id_gen: &mut ClauseIdGen,
+    deadline: Option<std::time::Instant>,
+) -> Vec<IdClause> {
     let mut results = Vec::new();
 
     for (i, lit1) in clause.literals.iter().enumerate() {
+        if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+            return results;
+        }
         if !lit1.positive {
             continue;
         }
@@ -317,6 +352,9 @@ pub fn equality_factor_id(
         };
 
         for (j, lit2) in clause.literals.iter().enumerate() {
+            if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+                return results;
+            }
             if j <= i || !lit2.positive {
                 continue;
             }
@@ -621,5 +659,75 @@ mod tests {
             final_clause.literals[0],
             Literal::pos(Atom::pred(q, vec![Term::Var(x)]))
         );
+    }
+
+    #[test]
+    fn equality_resolve_until_expired_deadline_returns_no_results() {
+        // ¬(a = a) resolves to the empty clause, unless the deadline passed.
+        let mut syms = SymbolTable::new();
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+
+        let legacy = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::eq(Term::constant(a), Term::constant(a)))],
+            "c1",
+        );
+
+        let mut bank = TermBank::new();
+        let clause = bank.clause_from_legacy(&legacy);
+
+        let full = equality_resolve_id(&clause, &mut bank, &mut id_gen);
+        assert_eq!(full.len(), 1);
+        assert!(full[0].is_empty());
+
+        let past = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        let partial = equality_resolve_id_until(&clause, &mut bank, &mut id_gen, Some(past));
+        assert!(partial.is_empty());
+
+        let same = equality_resolve_id_until(&clause, &mut bank, &mut id_gen, None);
+        assert_eq!(same.len(), 1);
+    }
+
+    #[test]
+    fn equality_factor_until_expired_deadline_returns_no_results() {
+        // f(a) = b ∨ f(a) = c factors (f(a) outweighs both constants under
+        // KBO), unless the deadline already passed.
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("f");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let c = syms.intern("c");
+        let mut id_gen = ClauseIdGen::new();
+        let ordering = TermOrdering::KBO;
+
+        let legacy = input_clause(
+            &mut id_gen,
+            vec![
+                Literal::pos(Atom::eq(
+                    Term::app(f, vec![Term::constant(a)]),
+                    Term::constant(b),
+                )),
+                Literal::pos(Atom::eq(
+                    Term::app(f, vec![Term::constant(a)]),
+                    Term::constant(c),
+                )),
+            ],
+            "c1",
+        );
+
+        let mut bank = TermBank::new();
+        let clause = bank.clause_from_legacy(&legacy);
+
+        let full = equality_factor_id(&clause, &mut bank, &ordering, &mut id_gen);
+        assert!(!full.is_empty());
+
+        let past = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        let partial =
+            equality_factor_id_until(&clause, &mut bank, &ordering, &mut id_gen, Some(past));
+        assert!(partial.is_empty());
+
+        let same = equality_factor_id_until(&clause, &mut bank, &ordering, &mut id_gen, None);
+        assert_eq!(same.len(), full.len());
     }
 }
