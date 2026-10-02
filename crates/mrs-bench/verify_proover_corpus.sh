@@ -107,7 +107,7 @@ echo "[corpus] =================================" >&2
 if [[ "${FAILED}" -gt 0 ]]; then
     echo "" >&2
     echo "[corpus] REGRESSION: the following known-valid proofs were rejected:" >&2
-    for f in "${FAILED_LIST[@]}"; do
+    for f in "${FAILED_LIST[@]+"${FAILED_LIST[@]}"}"; do
         echo "  - ${f}" >&2
     done
     exit 1

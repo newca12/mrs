@@ -110,7 +110,7 @@ run_one() {
     timeout $(( TIME + 5 )) "${PROOVER}" \
         --time "${TIME}" \
         --problems-dir "${proof_dir}" \
-        "${extra_args[@]}" \
+        "${extra_args[@]+"${extra_args[@]}"}" \
         "${proof}" > "${tmp}" 2>/dev/null || true
     end_ms=$(date +%s%3N)
     wall_s=$(echo "scale=3; (${end_ms} - ${start_ms}) / 1000" | bc)

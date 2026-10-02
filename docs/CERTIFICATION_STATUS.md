@@ -194,6 +194,17 @@ campaign to named problems when only a division or a regression is being
 re-measured, and the campaign resolves the corpus from the run's own
 `run_meta.txt` rather than from `--output`.
 
+To re-audit a run that already exists without paying for the search again:
+
+```bash
+crates/mrs-bench/certification_campaign.sh --audit-only \
+    crates/mrs-bench/results/cert-j13-20261002
+```
+
+Phase 1 is the expensive half — every problem at the full wall clock — and
+nothing in the audit depends on the search having just finished, so a run
+directory is enough to re-audit against the current kernel.
+
 ### Fast invariant
 
 `crates/mrs-proover/tests/mutation_sweep.rs` keeps seven real `mrs` proofs

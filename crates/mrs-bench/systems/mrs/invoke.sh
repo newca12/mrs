@@ -143,8 +143,8 @@ if [[ "${DIV_LOWER}" == "eps" && "${MRS_EPS_CERTIFY:-1}" != "0" ]]; then
             PORTFOLIO_MEMORY_ENV=(MRS_MAX_MEMORY_MB="${PORTFOLIO_MEMORY_MB}")
         fi
     fi
-    env "${CERT_MEMORY_ENV[@]}" "${BINARY}" --time "${SOFT_TIME}" --workers "${CERT_WORKERS}" \
-        "${HARDWARE_ARGS[@]}" --schedule casc_eps \
+    env "${CERT_MEMORY_ENV[@]+"${CERT_MEMORY_ENV[@]}"}" "${BINARY}" --time "${SOFT_TIME}" --workers "${CERT_WORKERS}" \
+        "${HARDWARE_ARGS[@]+"${HARDWARE_ARGS[@]}"}" --schedule casc_eps \
         --strategy "${CERTIFY_STRATEGY}" --certify-ordered "${PROBLEM}" \
         >"${TMP_DIR}/cert.stdout" 2>"${TMP_DIR}/cert.stderr" &
     CERT_PID=$!
@@ -153,8 +153,8 @@ if [[ "${DIV_LOWER}" == "eps" && "${MRS_EPS_CERTIFY:-1}" != "0" ]]; then
     if [[ -n "${MRS_PORTFOLIO:-}" ]]; then
         PORTFOLIO_ARGS+=(--portfolio "${MRS_PORTFOLIO}")
     fi
-    env "${PORTFOLIO_MEMORY_ENV[@]}" "${BINARY}" "${PORTFOLIO_ARGS[@]}" \
-        "${HARDWARE_ARGS[@]}" "${PROBLEM}" \
+    env "${PORTFOLIO_MEMORY_ENV[@]+"${PORTFOLIO_MEMORY_ENV[@]}"}" "${BINARY}" "${PORTFOLIO_ARGS[@]}" \
+        "${HARDWARE_ARGS[@]+"${HARDWARE_ARGS[@]}"}" "${PROBLEM}" \
         >"${TMP_DIR}/portfolio.stdout" 2>"${TMP_DIR}/portfolio.stderr" &
     PORTFOLIO_PID=$!
 

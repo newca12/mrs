@@ -195,7 +195,7 @@ echo "[epr-sweep] conditions: $OUT/conditions.txt"
 MRS_HARDWARE="$HARDWARE" "$CASC" \
   --edition "$EDITION" --systems mrs --divisions "$DIVISION" \
   --jobs "$JOBS" --output "$OUT/run" \
-  "${TIME_ARGS[@]}" "${SUBSET_ARGS[@]}"
+  "${TIME_ARGS[@]+"${TIME_ARGS[@]}"}" "${SUBSET_ARGS[@]+"${SUBSET_ARGS[@]}"}"
 CASC_RC=$?
 if [[ $CASC_RC -ne 0 ]]; then
   echo "[epr-sweep] casc.sh failed with $CASC_RC — no number to report" >&2

@@ -536,7 +536,7 @@ run_measure() {
     [[ -n "${SEED}" ]] && args+=(--seed "${SEED}")
 
     status=0
-    "${prefix[@]}" "${args[@]}" > "${out_file}" 2>>"${OUT_DIR}/measure.log" || status=$?
+    "${prefix[@]+"${prefix[@]}"}" "${args[@]}" > "${out_file}" 2>>"${OUT_DIR}/measure.log" || status=$?
     if (( status != 0 )); then
         # Name the signal. A bare "measurement failed" is what a 64-core host
         # got when a worker thread was refused, and the signal is the whole

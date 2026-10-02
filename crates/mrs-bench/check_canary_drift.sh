@@ -165,7 +165,7 @@ if (( canaries_found == 0 )); then
     echo -e "Result: ${YELLOW}UNVERIFIABLE${NC} (No division canaries found in this CSV)"
 elif (( is_contaminated == 1 )); then
     echo -e "Result: ${RED}KO - CONTAMINATED RUN${NC}"
-    for reason in "${reasons[@]}"; do
+    for reason in "${reasons[@]+"${reasons[@]}"}"; do
         echo -e "  ${RED}* Reason:${NC} ${reason}"
     done
     exit 2

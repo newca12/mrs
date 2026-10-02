@@ -26,4 +26,4 @@ if [[ ! -x "${BIN}" ]]; then
     (cd "${WORKSPACE_ROOT}" && cargo build --release -p mrs-bench --bin score_proover2026)
 fi
 
-exec "${BIN}" "${ROOT}" "${FORWARD[@]}"
+exec "${BIN}" "${ROOT}" "${FORWARD[@]+"${FORWARD[@]}"}"

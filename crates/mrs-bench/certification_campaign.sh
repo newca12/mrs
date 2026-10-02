@@ -26,12 +26,17 @@
 # `--subset FILE` here to run only a selected set; the campaign audits exactly
 # the names resolved by phase 1.
 #
+# `--audit-only RUN_DIR` skips the search and audits a run directory that
+# already exists. Phase 1 is the expensive half (every problem, full wall
+# clock); re-running a campaign to reach the audit repeats all of it.
+#
 # Examples (8-core competition hardware, two jobs of four workers):
 #   MRS_WORKERS=8 crates/mrs-bench/certification_campaign.sh \
 #       --edition casc-j13 --systems mrs --divisions fne,feq,ueq \
 #       --casc-times --jobs 2 --output results/cert-j13
 #   crates/mrs-bench/certification_campaign.sh \
 #       --edition casc-30 --systems mrs --divisions eps,epu,feq --casc-times --jobs 2
+#   crates/mrs-bench/certification_campaign.sh --audit-only results/cert-j13
 #
 # Environment:
 #   CERT_STRICT_TIME   per-proof kernel budget   (default 120)
@@ -48,6 +53,7 @@ OUT=""
 CERT_OUT="${CERT_OUT:-}"
 SUBSET_FILE=""
 MANIFEST_OUT=""
+AUDIT_ONLY=""
 
 # `--edition` and the problems root must agree with what phase 1 actually ran
 # against. The run metadata records the corpus root; --edition and
@@ -59,6 +65,11 @@ for ((i = 0; i < ${#args[@]}; i++)); do
         --output)
             ((i + 1 < ${#args[@]})) || { echo "campaign: --output requires a directory" >&2; exit 2; }
             OUT="${args[i + 1]}"
+            i=$((i + 1))
+            ;;
+        --audit-only)
+            ((i + 1 < ${#args[@]})) || { echo "campaign: --audit-only requires a run directory" >&2; exit 2; }
+            AUDIT_ONLY="${args[i + 1]}"
             i=$((i + 1))
             ;;
         --edition)
@@ -86,7 +97,7 @@ for ((i = 0; i < ${#args[@]}; i++)); do
             ;;
     esac
 done
-[[ -n "${OUT}" ]] || { echo "campaign: --output DIR is required" >&2; exit 2; }
+[[ -n "${OUT}" || -n "${AUDIT_ONLY}" ]] || { echo "campaign: --output DIR is required" >&2; exit 2; }
 
 # Always build (cargo no-ops when up to date). Building only when the binary is
 # *missing* is not enough: the audit is a measurement of the current kernel, and
@@ -97,19 +108,28 @@ AUDIT_BIN="${ROOT}/target/release/audit_casc_proofs"
 (cd "${ROOT}" && cargo build --release -p mrs-bench --bin audit_casc_proofs)
 [[ -x "${AUDIT_BIN}" ]] || { echo "campaign: ${AUDIT_BIN} not built" >&2; exit 2; }
 
-echo "== phase 1/2: search (normal route, no self-check) =="
-(cd "${ROOT}" && ./crates/mrs-bench/casc.sh "${args[@]}")
-
-RUN_DIR="${ROOT}/${OUT}"
-if [[ ! -d "${RUN_DIR}" ]]; then RUN_DIR="${OUT}"; fi
-if [[ "${RUN_DIR}" != /* ]]; then RUN_DIR="${PWD}/${RUN_DIR}"; fi
+if [[ -n "${AUDIT_ONLY}" ]]; then
+    RUN_DIR="${AUDIT_ONLY}"
+    if [[ "${RUN_DIR}" != /* ]]; then RUN_DIR="${PWD}/${RUN_DIR}"; fi
+    echo "audit-only: search skipped, auditing the archived run in place"
+else
+    echo "== phase 1/2: search (normal route, no self-check) =="
+    (cd "${ROOT}" && ./crates/mrs-bench/casc.sh "${args[@]}")
+    RUN_DIR="${ROOT}/${OUT}"
+    if [[ ! -d "${RUN_DIR}" ]]; then RUN_DIR="${OUT}"; fi
+    if [[ "${RUN_DIR}" != /* ]]; then RUN_DIR="${PWD}/${RUN_DIR}"; fi
+fi
 echo "run directory: ${RUN_DIR}"
 if [[ ! -f "${RUN_DIR}/run.csv" ]]; then
     echo "campaign: no run.csv at ${RUN_DIR}/run.csv" >&2
     exit 2
 fi
 
-echo "== phase 2/2: strict-kernel audit of the archived proofs =="
+if [[ -n "${AUDIT_ONLY}" ]]; then
+    echo "== strict-kernel audit of the archived proofs =="
+else
+    echo "== phase 2/2: strict-kernel audit of the archived proofs =="
+fi
 # Resolve the corpus the same way casc.sh does (CASC_PROBLEMS_ROOT, else
 # problems/<edition>), and prefer the run's own record over both: it is what
 # phase 1 provably used.
@@ -153,12 +173,12 @@ fi
 echo "audit problems root: ${PROBLEMS_DIR}"
 AUDIT_SUBSET_ARGS=()
 if [[ -n "${SUBSET_FILE}" ]]; then
-    AUDIT_SUBSET_ARGS+=(--subset "${RUN_DIR}/subset_resolved.txt")
+    AUDIT_SUBSET_ARGS=(--subset "${SUBSET_FILE}")
 fi
 "${AUDIT_BIN}" \
     --run "${RUN_DIR}" \
     --problems-dir "${PROBLEMS_DIR}" \
-    "${AUDIT_SUBSET_ARGS[@]}" \
+    "${AUDIT_SUBSET_ARGS[@]+"${AUDIT_SUBSET_ARGS[@]}"}" \
     --checks strict \
     --strict-time "${STRICT_TIME}" \
     --jobs "${JOBS}" \

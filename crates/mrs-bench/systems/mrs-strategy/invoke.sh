@@ -71,4 +71,4 @@ fi
 
 exec "${BINARY}" --time "${TIME_LIMIT}" --workers 1 \
     --schedule "${SCHEDULE}" --strategy "${STRATEGY_NUM}" \
-    "${CERTIFY_ARGS[@]}" "${PROBLEM}"
+    "${CERTIFY_ARGS[@]+"${CERTIFY_ARGS[@]}"}" "${PROBLEM}"
