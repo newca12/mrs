@@ -1414,15 +1414,32 @@ pub fn run_schedule_with_candidate_receiver(
 
                     let mut thread_clauses = clauses_for_thread.clone();
                     if let Some(tolerance) = sc.sine_tolerance {
-                        if thread_clauses.len() > 100 {
-                            let before_len = thread_clauses.len();
-                            thread_clauses = crate::sine::filter_items(&thread_clauses, tolerance, sc.sine_depth_limit);
-                            if thread_clauses.len() == before_len {
-                                sc.sine_tolerance = None;
-                            }
-                        } else {
+                        let application = crate::sine::apply_sine_filter(
+                            &thread_clauses,
+                            tolerance,
+                            sc.sine_depth_limit,
+                            &crate::sine::SinePolicy::from_env(),
+                        );
+                        if std::env::var("TRACE_SINE").is_ok() {
+                            eprintln!(
+                                "[SINE] before={} kept={} seeds={} removed_pct={} tol={:?} depth={:?} applied={} skip={}",
+                                application.before,
+                                application.kept,
+                                application.seeds,
+                                application.before.saturating_sub(application.kept) * 100
+                                    / application.before.max(1),
+                                tolerance,
+                                sc.sine_depth_limit,
+                                application.applied,
+                                application
+                                    .skip
+                                    .map_or("none", |s| s.as_str()),
+                            );
+                        }
+                        if !application.applied {
                             sc.sine_tolerance = None;
                         }
+                        thread_clauses = application.items;
                     }
 
                     // Per-worker ML premise pruning: only the LAST
