@@ -1426,8 +1426,9 @@ pub fn run_schedule_with_candidate_receiver(
                                 application.before,
                                 application.kept,
                                 application.seeds,
-                                application.before.saturating_sub(application.kept) * 100
-                                    / application.before.max(1),
+                                ((application.before.saturating_sub(application.kept) as u128)
+                                    * 100
+                                    / application.before.max(1) as u128),
                                 tolerance,
                                 sc.sine_depth_limit,
                                 application.applied,
