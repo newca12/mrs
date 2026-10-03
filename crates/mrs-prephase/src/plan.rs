@@ -54,8 +54,8 @@ pub enum LiteralSelection {
     MaxNegative,
     /// Every literal, positive and negative.
     All,
-    /// One maximal literal of either polarity. Faster, and incomplete for
-    /// positive answers.
+    /// One maximal negative literal, or one maximal positive literal when the
+    /// clause has no negative one. Faster, and incomplete for positive answers.
     Maximal,
 }
 
@@ -298,11 +298,19 @@ pub mod catalogue {
         s.symbol_weight = SymbolWeight::Arity;
         s
     }
-    /// s4 — aggressive selection, one maximal negative literal.
+    /// s4 — aggressive selection: one maximal negative literal, or one maximal
+    /// positive literal when the clause has no negative one.
+    ///
+    /// The `OrMaxPositive` half is load-bearing and was initially transcribed
+    /// here as a plain `MaxNegative`. That is a strictly narrower restriction,
+    /// and the end-to-end A/B found it: on CASC-30/UEQ the five large `CSR*-10`
+    /// problems are refuted by the shipped `casc_ueq` portfolio in ~40 ms and time
+    /// out when the catalogue's narrower s4 replaces it. "Maximal negative" is
+    /// not the same inference set as "maximal negative, else maximal positive".
     pub fn s04_age8_kbo_maxneg() -> StrategyKind {
         let mut s = StrategyKind::new("s04_age8_kbo_maxneg");
         s.selection = Selection::AgeWeight(8);
-        s.literal_selection = LiteralSelection::MaxNegative;
+        s.literal_selection = LiteralSelection::Maximal;
         s.precedence = Precedence::ArityMax;
         s
     }

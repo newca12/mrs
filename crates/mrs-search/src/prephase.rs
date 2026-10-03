@@ -163,7 +163,7 @@ pub fn apply_pre_passes(schedule: &mut [SearchConfig], plan: &Plan) {
         _ => None,
     });
     let algorithm = plan.algorithm;
-    for config in schedule.iter_mut() {
+    for (slot, config) in schedule.iter_mut().enumerate() {
         match sine {
             Some((tolerance, depth_limit)) => {
                 // Signature-based axiom filtering removes premises the
@@ -177,8 +177,16 @@ pub fn apply_pre_passes(schedule: &mut [SearchConfig], plan: &Plan) {
                 config.sine_depth_limit = Some(depth_limit);
             }
             None => {
-                config.sine_tolerance = None;
-                config.sine_depth_limit = None;
+                // The plan says nothing about premise filtering, so the default
+                // stands: the same per-slot tuning the named schedules use.
+                // Clearing it here instead cost five CASC-30/UEQ problems --
+                // SInE reduces those 8,000-clause unit-equality sets by two
+                // orders of magnitude and the portfolio then refutes them in
+                // 40 ms. A routing decision must not silently disable a
+                // preprocessing step whose value was established elsewhere.
+                let (tolerance, depth_limit) = crate::strategy::sine_threshold_tuning(slot);
+                config.sine_tolerance = tolerance;
+                config.sine_depth_limit = depth_limit;
             }
         }
         // AVATAR's SAT instance grows without bound on a purely propositional
@@ -431,6 +439,117 @@ mod tests {
         );
     }
 
+    /// The catalogue must reproduce the engine's fifteen base strategies exactly.
+    ///
+    /// The catalogue is a hand transcription of
+    /// `StrategySchedule::_all_strategies`, and a hand transcription will drift:
+    /// s4's `MaxNegativeOrMaxPositive` was first written as `MaxNegative`, which
+    /// is a strictly narrower inference set. The offline sweep could not see it,
+    /// because the sweep never consulted the catalogue — only the end-to-end A/B
+    /// could, and it cost five UEQ problems. Pinning the two against each other
+    /// turns that class of mistake into a test failure instead of a coverage
+    /// regression.
+    #[test]
+    fn catalogue_reproduces_the_engine_base_strategies() {
+        use crate::LiteralSelection as EngineLiteral;
+        use crate::TermOrdering as EngineOrdering;
+        let base: Vec<SearchConfig> =
+            crate::strategy::StrategySchedule::_all_strategies(Duration::ZERO, 0)
+                .strategies
+                .into_iter()
+                .map(|(config, _)| config)
+                .collect();
+        // `_all_strategies` ends with the zero-budget diagnostic strategy, which
+        // no portfolio may select; the catalogue is the fifteen that may.
+        let catalogue = catalogue::all();
+        assert_eq!(
+            base.len(),
+            catalogue.len() + 1,
+            "catalogue must cover the 15 selectable base strategies, not the \
+             diagnostic 16th"
+        );
+        let base = &base[..catalogue.len()];
+        for (index, (expected, kind)) in base.iter().zip(catalogue.iter()).enumerate() {
+            let actual = config_from(kind);
+            // `run_schedule` rewrites `ordering` into its problem-specific form,
+            // so compare the requested ordering, not the resolved one.
+            assert!(
+                format!("{:?}", actual.selection) == format!("{:?}", expected.selection),
+                "s{}: selection differs: catalogue {:?}, engine {:?}",
+                index + 1,
+                actual.selection,
+                expected.selection
+            );
+            assert!(
+                format!("{:?}", actual.literal_selection)
+                    == format!("{:?}", expected.literal_selection),
+                "s{}: literal selection differs: catalogue {:?}, engine {:?}",
+                index + 1,
+                actual.literal_selection,
+                expected.literal_selection
+            );
+            assert_eq!(
+                matches!(actual.ordering, TermOrdering::KBO),
+                matches!(expected.ordering, EngineOrdering::KBO),
+                "s{}: ordering differs",
+                index + 1
+            );
+            assert_eq!(
+                actual.weight_fn,
+                expected.weight_fn,
+                "s{}: weight function differs",
+                index + 1
+            );
+            assert_eq!(
+                actual.max_term_weight,
+                expected.max_term_weight,
+                "s{}: weight cap differs",
+                index + 1
+            );
+            assert_eq!(
+                actual.use_avatar,
+                expected.use_avatar,
+                "s{}: avatar differs",
+                index + 1
+            );
+            assert_eq!(
+                actual.sos_depth,
+                expected.sos_depth,
+                "s{}: set-of-support depth differs",
+                index + 1
+            );
+            assert_eq!(
+                actual.unit_only_resolution,
+                expected.unit_only_resolution,
+                "s{}: unit-only resolution differs",
+                index + 1
+            );
+            assert_eq!(
+                actual.precedence_scheme,
+                expected.precedence_scheme,
+                "s{}: precedence scheme differs",
+                index + 1
+            );
+            assert_eq!(
+                actual.symbol_weight_scheme,
+                expected.symbol_weight_scheme,
+                "s{}: symbol weight scheme differs",
+                index + 1
+            );
+        }
+        // Spot-check the variant that was wrong once, so a future "simplification"
+        // cannot reintroduce it silently.
+        assert!(
+            matches!(
+                catalogue::s04_age8_kbo_maxneg().literal_selection,
+                mrs_prephase::plan::LiteralSelection::Maximal
+            ),
+            "s4 must fall back to a maximal positive literal when a clause has no \
+             negative one; MaxNegative alone is a narrower inference set and loses \
+             the large CASC-30 UEQ CSR*-10 problems"
+        );
+    }
+
     #[test]
     fn every_catalogue_entry_maps_onto_a_distinct_config() {
         let mut seen: Vec<(String, String)> = Vec::new();
@@ -523,8 +642,23 @@ mod tests {
         apply_pre_passes(&mut schedule, &plan);
         assert!(schedule.iter().all(|c| c.sine_tolerance.is_some()));
 
+        // Silence must not mean "off": with no SInE in the plan, the per-slot
+        // default tuning applies, and at least one slot has it enabled. The
+        // fourth slot is deliberately SInE-free so a portfolio still explores a
+        // run without premise filtering.
         plan.pre_passes.clear();
         apply_pre_passes(&mut schedule, &plan);
-        assert!(schedule.iter().all(|c| c.sine_tolerance.is_none()));
+        assert!(
+            schedule.iter().any(|c| c.sine_tolerance.is_some()),
+            "a plan that does not mention SInE must leave the default tuning in place"
+        );
+        assert_eq!(
+            schedule
+                .iter()
+                .filter(|c| c.sine_tolerance.is_none())
+                .count(),
+            schedule.len() / 4,
+            "exactly one slot in four runs without premise filtering"
+        );
     }
 }

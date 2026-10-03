@@ -330,7 +330,63 @@ Two things that are stable across both budgets and therefore worth acting on:
   solved at all, and the one configuration that finds it is the one with
   conjecture-symbol precedence.
 
-## 7. What the pre-phase should therefore do
+## 7. End to end: the cooperative A/B, and the two bugs only it could find
+
+The simulation in §5 and §6 is exact for *strategy choice* and blind to everything
+else. The cooperative A/B runs the real binary, one process per problem with the
+full worker count, both arms sequentially so they cannot contend for cores:
+
+```bash
+PROBLEM_LIMIT=100 MRS_WORKERS=2 crates/mrs-bench/prephase/ab.sh UEQ casc-30 3 1 2
+```
+
+| division | problems | baseline | pre-phase | delta | disagreements |
+|---|---|---|---|---|---|
+| CASC-30 FNE | 100 | 10 | 10 | +0 | 1 each way (CSR026+3, CSR040+3) |
+| CASC-30 UEQ | 100 | 8 | 8 | +0 | none |
+
+Neutral, which is what §5 and §6 predicted. The UEQ run is the stronger of the
+two: after the fixes below the two arms solve *exactly the same eight problems*,
+so the pre-phase is neither adding nor losing anything there.
+
+### The first UEQ run lost five problems, and the simulation could not have told
+
+The first end-to-end run was **8 baseline against 3 pre-phase**, all five losses
+being the large `CSR*-10` unit-equality problems, each refuted by the shipped
+portfolio in about 40 ms and timing out under the routed one. Two separate causes,
+neither of them in anything the simulation models:
+
+1. **The strategy catalogue had drifted from the engine.** `mrs-prephase`'s
+   catalogue is a hand transcription of the fifteen base strategies, so that the
+   routing rules are readable as data. It transcribed s4's literal selection as
+   `MaxNegative` where the engine uses `MaxNegativeOrMaxPositive` — "one maximal
+   negative literal" versus "one maximal negative, or else one maximal positive".
+   The second is a strictly *larger* inference set, and on a clause with no
+   negative literal the first selects nothing at all. Fixing it did not change
+   the A/B on its own, which is exactly the point: a transcription error is
+   invisible to an offline sweep because the sweep never consults the catalogue.
+   `prephase::tests::catalogue_reproduces_the_engine_base_strategies` now pins all
+   fifteen field by field against `StrategySchedule::_all_strategies`, so this
+   class of mistake is a test failure rather than a coverage regression.
+
+2. **The pre-phase silently disabled premise filtering.** `apply_pre_passes`
+   treated "the plan does not mention SInE" as "SInE off". That is the wrong
+   default in a way no reasoning error would catch: the plan genuinely does not
+   mention SInE, because SInE was not the decision under study. On those same five
+   problems SInE reduces 8,000 unit-equality clauses to under a hundred, after
+   which the portfolio refutes the result in 40 ms — without it the identical
+   portfolio times out at 3 s having processed 1,894 clauses against the
+   baseline's 95. Silence about a preprocessing step must not mean *off*; the
+   default now stands and the per-slot tuning is shared with the named schedules
+   through `strategy::sine_threshold_tuning`.
+
+Neither bug was visible in 9,000 offline runs, because both are about the *plumbing
+between the plan and the engine* rather than about the plan's content. That is the
+methodological result worth carrying forward: **a routing decision cannot be
+validated by simulating routing.** The offline sweep says which order to use; only
+the end-to-end run can say whether the plan was actually executed.
+
+## 8. What the pre-phase should therefore do
 
 The routing table (`mrs --list-rules`) keeps its priors, because the
 measurement did not support changing any of them. It gains four calibrated rows,
@@ -362,10 +418,12 @@ a problem the front end cannot represent — are worth having, and because a
 re-measurement at a competition budget (which this host cannot run) is the
 experiment that would settle it.
 
-## 8. Negative results, recorded
+## 9. Negative results, recorded
 
 * **Routing on `logic` class is not better than the fixed per-division order.**
   See §5.
+* **Routing is neutral end to end.** 10 vs 10 on FNE and 8 vs 8 on UEQ, at 3 s
+  with 2 workers. Not a small win, not a loss: nothing.
 * **The syntactic label is almost uninformative about behaviour once "solved by
   nobody" is accounted for.** The weighted modal purity of label → behaviour is
   high (0.8–1.0 for most classes) but that number is dominated by the unsolved
@@ -381,7 +439,7 @@ experiment that would settle it.
   validating it needs a re-dump, which the 27k-problem corpus budget did not
   leave room for alongside everything else.
 
-## 9. A measurement artefact that has to be stated
+## 10. A measurement artefact that has to be stated
 
 `goal_class = NO_GOAL` shows 0 of 70 solved. That is **not** a property of
 satisfiability problems. It is a property of the instrument: a solo strategy run
@@ -398,7 +456,7 @@ parse-plus-clausification exceeds the whole search budget — a real and reporta
 observation about front-end cost, but one that means the 3 s measurement is a
 *lower* bound on those problems' difficulty.
 
-## 10. Limitations
+## 11. Limitations
 
 * **Budget.** 3 s for the broad sample and 30 s for the hard tail, not the CASC
   240 s. Every coverage number here is a 3 s or a 30 s number. Because the sweep
@@ -423,6 +481,10 @@ observation about front-end cost, but one that means the 3 s measurement is a
   follow-up; labelling it was outside the compute this host allows.
 * **One label instrument.** The 15 base configurations, not a search over the
   parameter space. A routing table can only permute what was measured.
+* **The end-to-end A/B covers two divisions at 3 s on 2 workers.** That is 200
+  problems and 400 runs. It is enough to catch a five-problem regression and not
+  enough to resolve a two-problem difference, which is consistent with the
+  simulation's verdict that differences at this budget are noise.
 * **One pre-existing test fails on this host and is not a regression.**
   `resource::tests::address_space_ceiling_is_applied_and_restored` asserts that a
   3.4 GiB allocation fails under a ceiling it computed from this process's own
@@ -431,7 +493,7 @@ observation about front-end cost, but one that means the 3 s measurement is a
   `RLIMIT_AS` was verified directly, and it is what recorded the 245
   `resource_limit` rows in the corpus dump.
 
-## 11. Reproducing
+## 12. Reproducing
 
 See `crates/mrs-bench/prephase/README.md` for the commands. The raw measurements
 are in `crates/mrs-bench/prephase/results/`.
