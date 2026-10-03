@@ -227,6 +227,39 @@ impl GoalClass {
     }
 }
 
+/// How likely the problem is to be solved at all, from structure alone.
+///
+/// This is the one thing the pre-phase *is* good at predicting. The measurement
+/// behind it (CASC-30, 600 problems, 15 configurations, 3 s) gives a base rate
+/// of 7.2% solved and a spread across structural predicates from 0% to 40%,
+/// which is a 5x lift between the extremes. `Likely` carries ~4x the base rate.
+///
+/// The reason it can work where *routing* cannot is worth stating, because it
+/// is the difference between the two problems. Feasibility asks a question the
+/// features answer — "is there a proof in reach at all" — and the answer varies
+/// by a factor of five across predicates. Routing asks "which of fifteen
+/// configurations finds it", and for 93% of problems that question has the same
+/// answer for all fifteen.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Feasibility {
+    /// A structural predicate with a materially above-base solve rate.
+    Likely,
+    #[default]
+    Unknown,
+    /// A structural predicate with a materially below-base solve rate.
+    Unlikely,
+}
+
+impl Feasibility {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Likely => "LIKELY",
+            Self::Unknown => "UNKNOWN",
+            Self::Unlikely => "UNLIKELY",
+        }
+    }
+}
+
 /// How the clause set splits along symbol sharing.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DecompositionClass {
@@ -520,6 +553,8 @@ pub struct Analysis {
     pub scale_class: ScaleClass,
     pub goal_class: GoalClass,
     pub decomposition_class: DecompositionClass,
+    /// Structural feasibility estimate. See [`Feasibility`].
+    pub feasibility: Feasibility,
     /// A stable slug combining the classes, e.g. `FEQ/NON_HORN/MEDIUM/TIGHT/`.
     pub label: String,
 }
@@ -962,6 +997,30 @@ pub fn analyze(
         GoalClass::Loose
     } else {
         GoalClass::Background
+    };
+    // Thresholds calibrated on the CASC-30 3 s sweep; see
+    // docs/reports/prephase/2026-10-prephase-study.md.
+    out.feasibility = if clauses.is_empty() {
+        Feasibility::Unlikely
+    } else if out.definite_ratio >= 0.99
+        || out.dual_horn_ratio >= 0.95
+        || out.horn_ratio >= 0.999
+        || out.goal_class == GoalClass::NoGoal && out.dialect == "THF"
+    {
+        // Definite clause sets (every clause has exactly one positive literal)
+        // are forward-chaining problems, and dual-Horn / pure-Horn sets are
+        // hyper-resolution problems: measured solve rate 0.37-0.21 against a
+        // 0.072 base rate.
+        Feasibility::Likely
+    } else if out.shape_class == ShapeClass::NonHorn
+        || out.max_term_depth > 10
+        || out.n_type_formulas > 0
+        || out.goal_class == GoalClass::NoGoal
+    {
+        // Each of these measured at or below 4% against the 7.2% base rate.
+        Feasibility::Unlikely
+    } else {
+        Feasibility::Unknown
     };
     out.decomposition_class = if clauses.is_empty() {
         DecompositionClass::Empty
@@ -1587,6 +1646,7 @@ impl Analysis {
             "scale_class" => self.scale_class.as_str().to_string(),
             "goal_class" => self.goal_class.as_str().to_string(),
             "decomposition_class" => self.decomposition_class.as_str().to_string(),
+            "feasibility" => self.feasibility.as_str().to_string(),
             "label" => quote(&self.label),
             other => panic!("unknown analysis column {other}"),
         }
@@ -1683,6 +1743,7 @@ impl Analysis {
         "scale_class",
         "goal_class",
         "decomposition_class",
+        "feasibility",
         "label",
     ];
 }
@@ -1802,7 +1863,58 @@ mod tests {
         let analysis = analyze_clauses(&[]);
         assert_eq!(analysis.logic_class, LogicClass::Empty);
         assert_eq!(analysis.scale_class, ScaleClass::Empty);
+        assert_eq!(analysis.feasibility, Feasibility::Unlikely);
         assert_eq!(analysis.label, "EMPTY/EMPTY/EMPTY/EMPTY/EMPTY");
+    }
+
+    #[test]
+    fn feasibility_follows_the_calibrated_predicates() {
+        let mut symbols = mrs_core::SymbolTable::new();
+        let p = symbols.intern("p");
+        let q = symbols.intern("q");
+        let x = Term::var(0);
+        // Pure Horn: every clause has at most one positive literal, and every
+        // clause has at most one negative one, so dual-Horn holds too.
+        let horn = vec![
+            clause(1, vec![Literal::pos(Atom::pred(p, vec![x.clone()]))], 100),
+            clause(2, vec![Literal::neg(Atom::pred(p, vec![x.clone()]))], 100),
+            clause(3, vec![Literal::pos(Atom::pred(q, vec![x.clone()]))], 0),
+        ];
+        let analysis = analyze("T", &MetaInput::default(), &horn, &symbols);
+        assert_eq!(analysis.horn_ratio, 1.0);
+        assert_eq!(
+            analysis.feasibility,
+            Feasibility::Likely,
+            "a pure Horn clause set measured at 0.18 solved against a 0.072 base rate"
+        );
+
+        // Non-Horn with two positive literals in every clause.
+        let y = Term::var(1);
+        let non_horn = vec![
+            clause(
+                1,
+                vec![
+                    Literal::pos(Atom::pred(p, vec![x.clone()])),
+                    Literal::pos(Atom::pred(q, vec![y.clone()])),
+                ],
+                100,
+            ),
+            clause(
+                2,
+                vec![
+                    Literal::neg(Atom::pred(p, vec![x.clone()])),
+                    Literal::neg(Atom::pred(q, vec![y])),
+                ],
+                100,
+            ),
+        ];
+        let analysis = analyze("T", &MetaInput::default(), &non_horn, &symbols);
+        assert_eq!(analysis.shape_class, ShapeClass::NonHorn);
+        assert_eq!(
+            analysis.feasibility,
+            Feasibility::Unlikely,
+            "non-Horn measured at 0.044 against the same base rate"
+        );
     }
 
     #[test]

@@ -1002,7 +1002,7 @@ fn main() {
             info!(
                 "% Pre-phase analysis: label={} clauses={} literals={} logic={} shape={} \
                  goal_reachable={:.2} components={} redundancy={:.2} max_depth={} skolems={} \
-                 abstraction_atoms={}",
+                 abstraction_atoms={} feasibility={}",
                 route.analysis.label,
                 route.analysis.n_clauses,
                 route.analysis.n_literals,
@@ -1014,6 +1014,7 @@ fn main() {
                 route.analysis.max_term_depth,
                 route.analysis.n_skolems,
                 route.analysis.abstraction_atoms,
+                route.analysis.feasibility.as_str(),
             );
             if pre_phase_only {
                 println!("{}", szs_status_line(SzsStatus::GaveUp, problem_name));

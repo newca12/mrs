@@ -441,6 +441,8 @@ pub enum Feature {
     Clauses,
     MaxTermDepth,
     MaxFunArity,
+    DefiniteRatio,
+    DualHornRatio,
     GoalReachableRatio,
     GroundRatio,
     HornRatio,
@@ -580,6 +582,8 @@ fn feature_name(feature: Feature) -> &'static str {
         Feature::Clauses => "n_clauses",
         Feature::MaxTermDepth => "max_term_depth",
         Feature::MaxFunArity => "max_fun_arity",
+        Feature::DefiniteRatio => "definite_ratio",
+        Feature::DualHornRatio => "dual_horn_ratio",
         Feature::GoalReachableRatio => "goal_reachable_ratio",
         Feature::GroundRatio => "ground_ratio",
         Feature::HornRatio => "horn_ratio",
@@ -667,6 +671,60 @@ pub fn rules() -> &'static [Rule] {
             pre_passes: &[Grounding, Componentwise],
             calibrated: false,
             evidence: "prior: casc_epu",
+        },
+        // A definite clause set — every clause has exactly one positive literal
+        // — is a forward-chaining problem, and a dual-Horn set is a
+        // hyper-resolution problem. Both measured at a materially above-base
+        // solve rate (0.37 and 0.21 against a 0.072 base rate over 600 problems).
+        //
+        // The leading configurations are the two chain builders: s2 is
+        // `SmallestFirst` with no weight cap, s14 is `SmallestFirst` with a tight
+        // cap and a conjecture-symbol boost. Both were the top two solvers on
+        // these subsets (s2 10/18, s14 8/18 on the definite subset).
+        //
+        // NOTE: the *portfolio* effect of this rule is +0, not +16. See
+        // docs/reports/prephase/2026-10-prephase-study.md §6: the per-division
+        // order already covers this subset at 17 of 18, so there is nothing left
+        // for a rule to win. What the measurement supports is the *feasibility*
+        // prediction, which this row records, and not the reordering.
+        Rule {
+            name: "forward-chaining",
+            when: &[
+                Condition::Numeric(Feature::DefiniteRatio, Test::Ge(0.99)),
+                Condition::NotClass(L, "UEQ"),
+            ],
+            algorithm: Superposition,
+            order: &[2, 14, 4, 5, 12, 8, 10],
+            pre_passes: &[],
+            calibrated: true,
+            evidence: "calibrated on the CASC-30 3 s sweep: definite_ratio>=0.99 over 49 problems gives P(solved)=0.37 against a 0.072 base rate, led by s2 (10) and s14 (8). Portfolio effect at 8 slots: +0, because casc_ueq and casc_fne already cover 17 of the 18",
+        },
+        Rule {
+            name: "hyper-resolution",
+            when: &[(Condition::Numeric(Feature::DualHornRatio, Test::Ge(0.95)))],
+            algorithm: Superposition,
+            order: &[2, 12, 4, 5, 14, 8, 15],
+            pre_passes: &[],
+            calibrated: true,
+            evidence: "calibrated on the CASC-30 3 s sweep: dual_horn_ratio>=0.95 over 156 problems gives P(solved)=0.21 against 0.072, led by s2 (19) and s12 (18). Portfolio effect at 8 slots: +2 of 600, within noise",
+        },
+        Rule {
+            name: "unreachable-depth",
+            // max_term_depth > 10 was 0-for-34 at 3 s. The order here is
+            // therefore not a claim that these configurations are better; it is
+            // the same broad order, because no measurement distinguishes them.
+            // What the rule buys is the refusal to spend budget on pre-passes for
+            // a problem whose clause terms already exceed any weight cap worth
+            // setting.
+            when: &[
+                Condition::Numeric(Feature::MaxTermDepth, Test::Gt(10.0)),
+                Condition::NotClass(L, "UEQ"),
+            ],
+            algorithm: Superposition,
+            order: &[15, 12, 2, 4, 5, 8, 10],
+            pre_passes: &[],
+            calibrated: true,
+            evidence: "calibrated on the CASC-30 3 s sweep: max_term_depth>10 was 0 of 34 solved by any configuration, against 0.072 overall. Order not distinguished by the data",
         },
         Rule {
             name: "far-goal",
@@ -823,6 +881,8 @@ impl Feature {
             Self::Clauses => analysis.n_clauses as f64,
             Self::MaxTermDepth => analysis.max_term_depth as f64,
             Self::MaxFunArity => analysis.max_fun_arity as f64,
+            Self::DefiniteRatio => analysis.definite_ratio,
+            Self::DualHornRatio => analysis.dual_horn_ratio,
             Self::GoalReachableRatio => analysis.goal_reachable_ratio,
             Self::GroundRatio => analysis.ground_ratio,
             Self::HornRatio => analysis.horn_ratio,
