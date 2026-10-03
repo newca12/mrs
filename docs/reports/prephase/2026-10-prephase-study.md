@@ -22,10 +22,11 @@ measures.
 | `mrs-search::prephase` | `crates/mrs-search/src/prephase.rs` | plan → `SearchConfig`, plus the bounded search-behaviour probe |
 | `--pre-phase`, `--list-rules` | `src/main.rs` | the in-binary wiring, off by default |
 
-Data: the full 26,990-problem TPTP-v9.3.0 distribution analysed, the CASC-30
-corpus (2,901 problems) analysed and 600 of them labelled across all 15 base
-configurations at a 3 s budget (9,000 runs), plus a 30 s re-measurement of the
-hard tail.
+Data: the full 26,990-problem TPTP-v9.3.0 distribution analysed; the CASC-30
+corpus (2,901 problems) analysed, 600 of them labelled across all 15 base
+configurations at a 3 s budget (9,000 runs), and 127 of them — every problem the
+3 s sweep solved, plus a label-stratified sample of those it did not — re-measured
+across 7 configurations at 30 s (889 runs).
 
 ## 2. Headline results
 
@@ -54,11 +55,14 @@ hard tail.
    making a mistake — it is answering a different question than CASC's taxonomy.
 
 4. **Routing on the syntactic class loses to the fixed per-division portfolio,
-   decisively.** At 8 slots on the 600-problem sample, the per-division baseline
-   covers 41 and a routing table fitted on one half and evaluated on the other
-   covers 29. Every one of the 14 problems the baseline wins is one routing does
-   not, and routing wins none: 0 vs 14 discordant, two-sided p = 0.0001. This is
-   the study's main negative result and §5 explains why it is not a surprise.
+   decisively, at both budgets measured.** At 8 slots on the 600-problem 3 s
+   sample, the per-division baseline covers 41 and a routing table fitted on one
+   half and evaluated on the other covers 29. Every one of the 14 problems the
+   baseline wins is one routing does not, and routing wins none: 0 vs 14
+   discordant, two-sided p = 0.0001. Re-measured at 30 s on the hard tail (§6),
+   the per-division order stays within 3 problems of the greedy optimum at every
+   portfolio width, and every hand-written structural rule the measurement
+   supports is *negative* on the subset it fires on.
 
 5. **The reason routing loses is visible in the label distribution.** Of 600
    problems, 557 (92.8%) are solved by *no* configuration at 3 s and 13 (2.2%)
@@ -214,26 +218,151 @@ Three things here are worth acting on, and none of them is a routing table:
    disagreement should be resolved by re-running the sweep rather than by
    editing the orders.
 
-## 6. What the pre-phase should therefore do
+## 6. The hard tail at 30 s: the decisive experiment
 
-The routing table (`mrs --list-rules`) is unchanged in its priors, because the
-measurement did not support changing them. What it now carries is:
+The 3 s measurement is dominated by "solved by nobody", which is the weakest
+possible basis for a routing claim. The hard tail is where the choice between
+configurations can matter, so 127 problems were re-measured at 30 s across seven
+configurations: every problem the 3 s sweep solved, plus a label-stratified
+sample of the ones it did not. Seven rather than fifteen, because the tail is
+where each 30 s run actually costs 30 s.
+
+Coverage rises from 7.2% to **36.2%**, and the shape of the answer changes:
+
+| configuration | s12 | s6 | s8 | s2 | s5 | s1 | s15 |
+|---|---|---|---|---|---|---|---|
+| problems solved | **32** | 28 | 26 | 25 | 22 | 18 | 15 |
+
+Problems by how many of the seven solve them:
+
+| 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|---|---|
+| 81 | 7 | 9 | 8 | 8 | 5 | 3 | 6 |
+
+46 of 127 are solved by at least one configuration, and **81 are solved by none at
+any of the seven**. The regime where the choice matters now holds 46 problems
+instead of 21 — enough to be worth a decision — and the decision is still
+narrow.
+
+### The per-division order is already within three problems of optimal
+
+Greedy set cover over the seven measured configurations:
+
+```
+s12 (+32)  s8 (+8)  s15 (+3)  s2 (+2)  s6 (+1)   →  46 with five
+```
+
+Portfolio coverage by width, comparing the greedy order against the shipped
+`casc_*` order for each problem's own division (both restricted to the seven
+measured configurations, since the others were not run at 30 s):
+
+| slots | greedy | `casc` (generic) | `casc_<division>` | gap to greedy |
+|---|---|---|---|---|
+| 1 | 32 | 18 | 30 | 2 |
+| 2 | 40 | 33 | 37 | 3 |
+| 3 | 43 | 35 | 42 | 1 |
+| 4 | 45 | 41 | 43 | 2 |
+| 5 | 46 | 43 | 45 | 1 |
+| 6 | 46 | 44 | 46 | 0 |
+| 7 | 46 | 46 | 46 | 0 |
+
+This is the study's main quantitative finding: **the shipped per-division orders
+are within three problems of the greedy optimum at every portfolio width.** They
+were derived from an earlier solo sweep by greedy set cover, so this is the
+expected result — and it is now measured rather than assumed, which is what makes
+it safe to *not* replace them.
+
+It also says something about the generic `casc` order: at one slot it gets 18
+where the per-division order gets 30. If a single configuration is going to run
+— the `--workers 1` diagnosis mode, the `fast` schedule, the `mrs-proover` ATP
+backend — the division order is the one to follow, not the generic one.
+
+### Structural rules are negative on the subsets they fire on
+
+| rule | subset | solved by any | division order, all slots | rule order, all slots | delta |
+|---|---|---|---|---|---|
+| `definite_ratio >= 0.99` | 34 | 20 | 20 | 17 | **−3** |
+| `dual_horn_ratio >= 0.95` | 59 | 33 | 33 | 32 | **−1** |
+| `n_components >= 2` | 28 | 12 | 12 | 11 | **−1** |
+
+Every rule fires on a subset it correctly *identifies* as winnable, and then
+loses coverage on it. The subsets really are easier — 20 of 34 and 33 of 59
+against a 36% overall rate is well above chance — and the per-division order
+already extracts all of it.
+
+Routed portfolios at 30 s:
+
+| slots | routed | per-division | delta |
+|---|---|---|---|
+| 1 | 32 | 30 | +2 |
+| 2 | 38 | 37 | +1 |
+| 3 | 38 | 42 | **−4** |
+
+The +2 at one slot is not a routing win either: it is the `definite_ratio` rule
+happening to lead with s12, which is also the single best configuration overall.
+The rule is not what produces the gain.
+
+### What the 30 s tail says about individual configurations
+
+Two things that are stable across both budgets and therefore worth acting on:
+
+* **s12 is the best single configuration** — 28/600 at 3 s and 32/127 at 30 s,
+  ahead of s8 at both. It is the seventh entry in `CASC_FNE_ORDER` and the
+  twelfth in `CASC_UEQ_ORDER`. The orders and this measurement disagree, and §7
+  says what to do about it.
+* **s15 is weak alone and valuable in company.** It is the worst of the seven
+  solo (15) yet the third greedy pick (+3), and it is the most complementary
+  partner in the table: `s2+s15` is 17-only-s2 and 7-only-s15, `s8+s15` is 18 and
+  7, `s12+s15` is 20 and 3. A rank-by-solo-coverage portfolio design would drop
+  it; the set-cover design keeps it. That is a point in favour of the existing
+  greedy orders and against any "pick the best few strategies" heuristic.
+
+### And two facts about the tail that are not about strategies at all
+
+* **`CSR115+6` and `CSR115+98`** (10,760 and 10,663 clauses) are solved *only* by
+  s15, at both 3 s and 30 s. Both are non-Horn with no conjecture-free structure,
+  and both need the one configuration that penalises rare symbols with no weight
+  cap and no AVATAR. This is the sharpest example in the corpus of a problem
+  where the configuration is the whole answer.
+* **`HWV126-1`** — 657,576 clauses after clausification, by far the largest
+  problem measured — is solved only by s8, the LPO goal-directed configuration,
+  at 30 s. Nothing else gets close. A problem that size has no business being
+  solved at all, and the one configuration that finds it is the one with
+  conjecture-symbol precedence.
+
+## 7. What the pre-phase should therefore do
+
+The routing table (`mrs --list-rules`) keeps its priors, because the
+measurement did not support changing any of them. It gains four calibrated rows,
+three of which record a *negative* portfolio effect on the subset they fire on —
+which is the most useful thing a rule table can say, because it stops the next
+person from re-deriving the same hope. What it now carries is:
 
 * the `empty` rule, which is the study's first finding given teeth — an input
   that lowers to nothing is reported as such instead of being fed a portfolio;
 * `max_term_depth` as a first-class rule input, on the strength of the `>10`
   result;
+* three calibrated rows — `forward-chaining` (`definite_ratio >= 0.99`),
+  `hyper-resolution` (`dual_horn_ratio >= 0.95`) and `unreachable-depth`
+  (`max_term_depth > 10`) — each naming its own measurement in its evidence
+  string, including the negative portfolio effect;
+* `Analysis::feasibility`, a `LIKELY` / `UNKNOWN` / `UNLIKELY` estimate that the
+  sweep does support, with a 5x spread between the extremes against a 7.2% base
+  rate. This is the pre-phase output worth trusting, and the distinction from
+  routing is the point: feasibility asks a question the features answer, while
+  routing asks one that has the same answer for all fifteen configurations on 93%
+  of problems;
 * a `calibrated` / `prior` flag on every row, so a reader can tell which is
-  which. Only the `empty` row is calibrated.
+  which.
 
-The honest summary of the study's verdict on routing: **at a 3 s budget, on this
-corpus, routing on static structure is a losing move.** The table stays in
+The honest summary of the study's verdict on routing: **at both budgets
+measured, on this corpus, routing on static structure is a losing move.** The table stays in
 because the two things it *is* good for — reporting the analysis, and reporting
 a problem the front end cannot represent — are worth having, and because a
 re-measurement at a competition budget (which this host cannot run) is the
 experiment that would settle it.
 
-## 7. Negative results, recorded
+## 8. Negative results, recorded
 
 * **Routing on `logic` class is not better than the fixed per-division order.**
   See §5.
@@ -252,7 +381,7 @@ experiment that would settle it.
   validating it needs a re-dump, which the 27k-problem corpus budget did not
   leave room for alongside everything else.
 
-## 8. A measurement artefact that has to be stated
+## 9. A measurement artefact that has to be stated
 
 `goal_class = NO_GOAL` shows 0 of 70 solved. That is **not** a property of
 satisfiability problems. It is a property of the instrument: a solo strategy run
@@ -269,12 +398,17 @@ parse-plus-clausification exceeds the whole search budget — a real and reporta
 observation about front-end cost, but one that means the 3 s measurement is a
 *lower* bound on those problems' difficulty.
 
-## 9. Limitations
+## 10. Limitations
 
-* **Budget.** 3 s per run, not the CASC 240 s. Every coverage number here is a
-  3 s number. Because the sweep records time-to-solution rather than a boolean,
-  the data replays at any budget at or above 3 s — but a problem that takes 40 s
-  is indistinguishable from an unsolvable one.
+* **Budget.** 3 s for the broad sample and 30 s for the hard tail, not the CASC
+  240 s. Every coverage number here is a 3 s or a 30 s number. Because the sweep
+  records time-to-solution rather than a boolean, the 3 s data replays at any
+  budget at or above 3 s — but a problem that takes 40 s is indistinguishable
+  from an unsolvable one, which is exactly why the hard tail was re-measured.
+* **Seven configurations at 30 s, not fifteen.** The tail is where each run costs
+  its full 30 s, so the 30 s experiment covers 7 of the 15. Portfolio widths above
+  7 are therefore not measured, and the greedy optimum is a lower bound on what
+  the other eight would add.
 * **Sample.** A stratified 600-problem sample of CASC-30, round-robin over parent
   directories. Proportional to division size, which is right for estimating a
   portfolio's behaviour and wrong for estimating a division's coverage.
@@ -289,8 +423,15 @@ observation about front-end cost, but one that means the 3 s measurement is a
   follow-up; labelling it was outside the compute this host allows.
 * **One label instrument.** The 15 base configurations, not a search over the
   parameter space. A routing table can only permute what was measured.
+* **One pre-existing test fails on this host and is not a regression.**
+  `resource::tests::address_space_ceiling_is_applied_and_restored` asserts that a
+  3.4 GiB allocation fails under a ceiling it computed from this process's own
+  usage; on a 15 GiB host the ceiling lands above the request. `resource.rs` is
+  untouched by this branch. The mechanism the test exercises does work here —
+  `RLIMIT_AS` was verified directly, and it is what recorded the 245
+  `resource_limit` rows in the corpus dump.
 
-## 10. Reproducing
+## 11. Reproducing
 
 See `crates/mrs-bench/prephase/README.md` for the commands. The raw measurements
 are in `crates/mrs-bench/prephase/results/`.
