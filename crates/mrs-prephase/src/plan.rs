@@ -29,7 +29,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Analysis, GoalClass, LogicClass, ScaleClass, ShapeClass};
+use crate::{Analysis, GoalClass, LogicClass};
 
 /// Which clause-selection policy the passive-queue pop uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -435,321 +435,446 @@ pub mod catalogue {
         strategy!("placeholder", selection = Selection::AgeWeight(1))
     }
 }
+/// One numeric feature a rule can test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Feature {
+    Clauses,
+    MaxTermDepth,
+    MaxFunArity,
+    GoalReachableRatio,
+    GroundRatio,
+    HornRatio,
+    UnitRatio,
+    NComponents,
+    RedundantRatio,
+    AnalysisCapped,
+}
+
+/// One condition a rule tests: either a numeric threshold or a class equality.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Condition {
+    Numeric(Feature, Test),
+    Class(ClassAxis, &'static str),
+    NotClass(ClassAxis, &'static str),
+}
+
+/// How a rule compares a numeric [`Feature`] against a threshold.
+///
+/// `PartialEq` but not `Eq`: the thresholds are `f64`, and `Eq` on floats is a
+/// promise no comparison here needs to make.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Test {
+    /// `feature < threshold`
+    Lt(f64),
+    /// `feature <= threshold`
+    Le(f64),
+    /// `feature > threshold`
+    Gt(f64),
+    /// `feature >= threshold`
+    Ge(f64),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClassAxis {
+    Logic,
+    Shape,
+    Scale,
+    Goal,
+    Decomposition,
+}
+
+impl ClassAxis {
+    fn matches(self, analysis: &Analysis, value: &str) -> bool {
+        match self {
+            Self::Logic => analysis.logic_class.as_str() == value,
+            Self::Shape => analysis.shape_class.as_str() == value,
+            Self::Scale => analysis.scale_class.as_str() == value,
+            Self::Goal => analysis.goal_class.as_str() == value,
+            Self::Decomposition => analysis.decomposition_class.as_str() == value,
+        }
+    }
+}
+
+/// One entry in the routing table.
+///
+/// The table is data rather than control flow for three reasons: it can be
+/// printed and read in one screen, each row carries its own provenance flag, and
+/// a row can be re-ordered or replaced by the study without touching any code.
+#[derive(Debug, Clone, Copy)]
+pub struct Rule {
+    /// Human-readable name, printed by `--pre-phase`.
+    pub name: &'static str,
+    /// All conditions must hold. Empty means "always", which only the fallback
+    /// row has.
+    pub when: &'static [Condition],
+    pub algorithm: Algorithm,
+    /// Base-strategy IDs, most promising first. `mrs-search` cycles them across
+    /// workers.
+    pub order: &'static [usize],
+    pub pre_passes: &'static [PrePass],
+    /// `false` means the row is a prior: it encodes what the engine already
+    /// believed, and the sweep in `crates/mrs-bench/prephase/` has not yet
+    /// confirmed it. `true` means the measurement named in
+    /// [`Rule::evidence`] supports it.
+    pub calibrated: bool,
+    /// Where the order came from. Named so a reader can check the claim.
+    pub evidence: &'static str,
+}
+
+impl Rule {
+    /// Whether this rule applies to the analysis.
+    pub fn matches(&self, analysis: &Analysis) -> bool {
+        self.when.iter().all(|condition| match condition {
+            Condition::Numeric(feature, test) => {
+                let value = feature.read(analysis);
+                match test {
+                    Test::Lt(cut) => value < *cut,
+                    Test::Le(cut) => value <= *cut,
+                    Test::Gt(cut) => value > *cut,
+                    Test::Ge(cut) => value >= *cut,
+                }
+            }
+            Condition::Class(axis, name) => axis.matches(analysis, name),
+            Condition::NotClass(axis, name) => !axis.matches(analysis, name),
+        })
+    }
+
+    /// The rule's one-line description, for `--pre-phase` output.
+    pub fn describe(&self) -> String {
+        let conditions: Vec<String> = self.when.iter().map(describe_condition).collect();
+        format!(
+            "{}{} [{}] algorithm={} order=[{}] pre=[{}]{}",
+            self.name,
+            if conditions.is_empty() {
+                String::new()
+            } else {
+                format!(" when {}", conditions.join(" and "))
+            },
+            if self.calibrated {
+                "calibrated"
+            } else {
+                "prior"
+            },
+            self.algorithm.as_str(),
+            self.order
+                .iter()
+                .map(|id| format!("s{id}"))
+                .collect::<Vec<_>>()
+                .join(","),
+            self.pre_passes
+                .iter()
+                .map(pre_pass_slug)
+                .collect::<Vec<_>>()
+                .join(","),
+            if self.evidence.is_empty() {
+                String::new()
+            } else {
+                format!(" // {}", self.evidence)
+            }
+        )
+    }
+}
+
+fn feature_name(feature: Feature) -> &'static str {
+    match feature {
+        Feature::Clauses => "n_clauses",
+        Feature::MaxTermDepth => "max_term_depth",
+        Feature::MaxFunArity => "max_fun_arity",
+        Feature::GoalReachableRatio => "goal_reachable_ratio",
+        Feature::GroundRatio => "ground_ratio",
+        Feature::HornRatio => "horn_ratio",
+        Feature::UnitRatio => "unit_ratio",
+        Feature::NComponents => "n_components",
+        Feature::RedundantRatio => "redundant_ratio",
+        Feature::AnalysisCapped => "analysis_capped",
+    }
+}
+
+fn axis_name(axis: ClassAxis) -> &'static str {
+    match axis {
+        ClassAxis::Logic => "logic",
+        ClassAxis::Shape => "shape",
+        ClassAxis::Scale => "scale",
+        ClassAxis::Goal => "goal",
+        ClassAxis::Decomposition => "decomposition",
+    }
+}
+
+/// The routing table, most specific first. Order is part of the rule: the first
+/// row whose conditions all hold wins.
+pub fn rules() -> &'static [Rule] {
+    use Algorithm::*;
+    use ClassAxis::{Goal as G, Logic as L, Scale as S, Shape as H};
+    use PrePass::*;
+    &[
+        Rule {
+            name: "empty",
+            when: &[Condition::Numeric(Feature::Clauses, Test::Le(0.0))],
+            algorithm: Portfolio,
+            order: &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+            pre_passes: &[],
+            calibrated: true,
+            evidence: "nothing to route; the input is outside the supported fragment",
+        },
+        Rule {
+            name: "ground-sat",
+            // Grounded *and* not purely equational: a ground unit-equality
+            // clause set is decided either way, but completion is the classical
+            // mode for it and yields a first-order proof, so the exception is
+            // explicit here rather than a consequence of rule order.
+            when: &[
+                Condition::Numeric(Feature::GroundRatio, Test::Ge(1.0)),
+                Condition::NotClass(L, "UEQ"),
+                Condition::NotClass(L, "PEQ"),
+            ],
+            algorithm: GroundSat,
+            order: &[5, 14, 6, 1],
+            pre_passes: &[Grounding],
+            calibrated: false,
+            evidence: "prior: a finite ground instance is decidable by grounding",
+        },
+        Rule {
+            name: "ueq-completion",
+            when: &[(Condition::Class(L, "UEQ"))],
+            algorithm: UnitEqualityCompletion,
+            // The three goal-transform variants are interleaved across slots by
+            // `with_goal_transform`, which is a per-slot choice rather than a
+            // property of the strategy.
+            order: &[4, 8, 12, 11, 2, 14, 15, 1, 5],
+            pre_passes: &[GoalTransform],
+            calibrated: false,
+            evidence: "prior: casc_ueq, whose order came from a solo sweep",
+        },
+        // EPS comes before the general EPR row because the two are different
+        // jobs: with no conjecture the question is whether saturation closes,
+        // which rewards the configurations that close fast, while a conjecture
+        // makes the question where the proof is, which rewards the ones that
+        // steer. A single EPR row would have to pick one of those for both.
+        Rule {
+            name: "eps-saturation",
+            when: &[Condition::Class(L, "EPR"), Condition::Class(G, "NO_GOAL")],
+            algorithm: PropositionalSplitting,
+            order: &[6, 2, 1, 3, 5, 14, 12],
+            pre_passes: &[Grounding, Componentwise],
+            calibrated: false,
+            evidence: "prior: casc_eps",
+        },
+        Rule {
+            name: "epr-refutation",
+            when: &[(Condition::Class(L, "EPR"))],
+            algorithm: PropositionalSplitting,
+            order: &[1, 6, 14, 11, 4, 5, 2],
+            pre_passes: &[Grounding, Componentwise],
+            calibrated: false,
+            evidence: "prior: casc_epu",
+        },
+        Rule {
+            name: "far-goal",
+            when: &[
+                (Condition::Class(G, "BACKGROUND")),
+                Condition::Numeric(Feature::Clauses, Test::Gt(150.0)),
+            ],
+            algorithm: Superposition,
+            order: &[11, 10, 8, 6, 1, 13, 12],
+            pre_passes: &[
+                Sine {
+                    tolerance: 3.5,
+                    depth_limit: 8,
+                },
+                GoalTransform,
+            ],
+            calibrated: false,
+            evidence: "prior: Profile::is_large_theory (150 axioms) plus ConjSymbolBoost",
+        },
+        Rule {
+            name: "horn",
+            when: &[(Condition::Class(H, "HORN"))],
+            algorithm: Superposition,
+            order: &[12, 11, 4, 6, 10, 1, 8],
+            pre_passes: &[],
+            calibrated: false,
+            evidence: "prior: strategy s12, the Horn-preference configuration",
+        },
+        Rule {
+            name: "fne-resolution",
+            when: &[(Condition::Class(L, "FNE"))],
+            algorithm: Superposition,
+            order: &[11, 8, 4, 15, 10, 3, 12, 1, 6],
+            pre_passes: &[],
+            calibrated: false,
+            evidence: "prior: casc_fne",
+        },
+        Rule {
+            name: "deep-equational",
+            when: &[Condition::Numeric(Feature::MaxTermDepth, Test::Ge(7.0))],
+            algorithm: Superposition,
+            order: &[13, 14, 11, 6, 10, 1, 15],
+            pre_passes: &[],
+            calibrated: false,
+            evidence: "prior: Profile::DeepEquational uses a depth threshold of 7",
+        },
+        Rule {
+            name: "tiny",
+            when: &[(Condition::Class(S, "TINY"))],
+            algorithm: Superposition,
+            order: &[1, 2, 11],
+            pre_passes: &[],
+            calibrated: false,
+            evidence: "prior: a short order; the portfolio's per-slot setup is a real share of a tiny budget",
+        },
+        Rule {
+            name: "general-feq",
+            when: &[],
+            algorithm: Superposition,
+            order: &[1, 2, 11, 6, 10, 8, 12],
+            pre_passes: &[],
+            calibrated: false,
+            evidence: "prior: the broad KBO/LPO baseline",
+        },
+    ]
+}
+
+/// Print the routing table. Used by `--list-rules` and by the study write-up, so
+/// the table in the report is generated from the table the binary runs.
+pub fn describe_rules() -> String {
+    rules()
+        .iter()
+        .map(|rule| rule.describe())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 /// Route an [`Analysis`] to a [`Plan`].
-///
-/// NOTE(uncalibrated): every branch below is a prior until the sweep in
-/// `crates/mrs-bench/prephase/` says otherwise. Branches are ordered from the
-/// most specific structural fact to the least, because the specific facts are
-/// the ones the engine's own pre-passes key on and therefore the ones a routing
-/// error is most expensive to get wrong.
 pub fn route(analysis: &Analysis) -> Plan {
-    // ── 0. Nothing to route ───────────────────────────────────────────────
     if analysis.n_clauses == 0 {
-        return Plan {
-            label: analysis.label.clone(),
-            division: "NONE".to_string(),
-            algorithm: Algorithm::Portfolio,
-            strategy_order: catalogue::all(),
-            pre_passes: Vec::new(),
-            rationale: "no clause survived lowering; the input is outside the \
-                        supported fragment and no search configuration applies"
-                .to_string(),
-        };
+        // The `empty` row. It still names a full portfolio: an input that lowers
+        // to nothing has to produce *some* verdict, and refusing to build a
+        // schedule here would take the decision away from the caller.
+        let rule = &rules()[0];
+        let strategies = rule.order.iter().map(|id| strategy_by_id(*id)).collect();
+        return plan_from(
+            rule,
+            analysis,
+            strategies,
+            "no clause survived lowering; the input is outside the supported fragment",
+        );
     }
+    let rule = rules()
+        .iter()
+        .find(|rule| rule.matches(analysis))
+        .unwrap_or_else(|| rules().last().expect("the table has a catch-all"));
+    let strategies = rule
+        .order
+        .iter()
+        .map(|id| strategy_by_id(*id))
+        .collect::<Vec<_>>();
+    let pre_passes = if matches!(rule.name, "ueq-completion") {
+        with_goal_transform(strategies)
+    } else {
+        strategies
+    };
+    plan_from(rule, analysis, pre_passes, rule.evidence)
+}
 
-    // ── 1. Ground propositional input ──────────────────────────────────────
-    // Everything is a constant and there is no equality: the problem is a finite
-    // propositional instance, so the right move is to decide it as one.
-    // NOTE(uncalibrated)
-    if analysis.ground_ratio >= 1.0 && analysis.logic_class != LogicClass::UnitEquality {
-        return Plan {
-            label: analysis.label.clone(),
-            division: "GROUND".to_string(),
-            algorithm: Algorithm::GroundSat,
-            strategy_order: vec![
-                catalogue::s05_age5_kbo_all(),
-                catalogue::s14_conjboost_smallest_all(),
-            ],
-            pre_passes: vec![PrePass::Grounding],
-            rationale: format!(
-                "every clause is ground ({} clauses, {} predicates); a bounded \
-                 grounding decides it directly",
-                analysis.n_clauses, analysis.n_predicates
-            ),
-        };
+fn plan_from(rule: &Rule, analysis: &Analysis, strategies: Vec<StrategyKind>, why: &str) -> Plan {
+    Plan {
+        label: analysis.label.clone(),
+        division: division_of(analysis),
+        algorithm: rule.algorithm,
+        strategy_order: strategies,
+        pre_passes: rule.pre_passes.to_vec(),
+        rationale: format!(
+            "rule `{}`{}{}: {}",
+            rule.name,
+            if rule.calibrated {
+                ""
+            } else {
+                " (uncalibrated prior)"
+            },
+            if rule.when.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", rule.describe_conditions())
+            },
+            why
+        ),
     }
+}
 
-    // ── 2. Unit equality ───────────────────────────────────────────────────
-    // NOTE(prior, from `casc_ueq`): every clause a single equality, so the proof
-    // is a rewrite/completion argument and the productive knobs are goal
-    // transformation, a maximal-literal restriction, and dropping AVATAR (whose
-    // SAT instance grows without bound on a purely equational clause set).
-    if analysis.logic_class == LogicClass::UnitEquality {
-        let mut order = vec![
-            catalogue::s04_age8_kbo_maxneg(),
-            catalogue::s08_goal10_lpo(),
-            catalogue::s12_horn_kbo(),
-            catalogue::s11_conjboost_kbo(),
-            catalogue::s02_smallest_kbo(),
-            catalogue::s14_conjboost_smallest_all(),
-            catalogue::s15_symbolweight_kbo(),
-            catalogue::s01_balanced_kbo(),
-            catalogue::s05_age5_kbo_all(),
-        ];
-        // Interleave goal transformation across the slots the way `casc_ueq`
-        // does: it is a per-slot choice, not a global one, and which slots it
-        // suits is itself unresolved.
-        for (index, strategy) in order.iter_mut().enumerate() {
+fn describe_condition(condition: &Condition) -> String {
+    match condition {
+        Condition::Class(axis, name) => format!("{} == {name}", axis_name(*axis)),
+        Condition::NotClass(axis, name) => format!("{} != {name}", axis_name(*axis)),
+        Condition::Numeric(feature, test) => {
+            let name = feature_name(*feature);
+            match test {
+                Test::Lt(cut) => format!("{name} < {cut}"),
+                Test::Le(cut) => format!("{name} <= {cut}"),
+                Test::Gt(cut) => format!("{name} > {cut}"),
+                Test::Ge(cut) => format!("{name} >= {cut}"),
+            }
+        }
+    }
+}
+
+impl Feature {
+    fn read(self, analysis: &Analysis) -> f64 {
+        match self {
+            Self::Clauses => analysis.n_clauses as f64,
+            Self::MaxTermDepth => analysis.max_term_depth as f64,
+            Self::MaxFunArity => analysis.max_fun_arity as f64,
+            Self::GoalReachableRatio => analysis.goal_reachable_ratio,
+            Self::GroundRatio => analysis.ground_ratio,
+            Self::HornRatio => analysis.horn_ratio,
+            Self::UnitRatio => analysis.unit_ratio,
+            Self::NComponents => analysis.n_components as f64,
+            Self::RedundantRatio => analysis.redundant_ratio,
+            // A saturated counter means the problem was too large to measure
+            // precisely. Reading it as "large" makes the conservative rule win
+            // rather than the informative one.
+            Self::AnalysisCapped => f64::from(analysis.analysis_capped),
+        }
+    }
+}
+
+impl Rule {
+    fn describe_conditions(&self) -> String {
+        self.when
+            .iter()
+            .map(describe_condition)
+            .collect::<Vec<_>>()
+            .join(" and ")
+    }
+}
+
+fn strategy_by_id(id: usize) -> StrategyKind {
+    catalogue::all()
+        .into_iter()
+        .nth(id.saturating_sub(1))
+        .unwrap_or_else(catalogue::s01_balanced_kbo)
+}
+
+/// Interleave the three goal-transformation variants across the slots.
+///
+/// Which slots suit which variant is itself unresolved, so the plan runs one of
+/// each in rotation rather than committing to an answer: that is the same choice
+/// `casc_ueq` makes, for the same reason.
+fn with_goal_transform(strategies: Vec<StrategyKind>) -> Vec<StrategyKind> {
+    strategies
+        .into_iter()
+        .enumerate()
+        .map(|(index, mut strategy)| {
             strategy.goal_transform = match index % 3 {
                 0 => GoalTransform::None,
                 1 => GoalTransform::RecursiveSubterms,
                 _ => GoalTransform::MaximalSubterms,
             };
-        }
-        return Plan {
-            label: analysis.label.clone(),
-            division: "UEQ".to_string(),
-            algorithm: Algorithm::UnitEqualityCompletion,
-            strategy_order: order,
-            pre_passes: vec![PrePass::GoalTransform],
-            rationale: format!(
-                "every clause is a unit equality ({} clauses, {} function symbols, \
-                 max depth {}); completion-style configurations first",
-                analysis.n_clauses, analysis.n_functions, analysis.max_term_depth
-            ),
-        };
-    }
-
-    // ── 3. Effectively propositional (EPR) ─────────────────────────────────
-    // No function symbol of arity >= 1, so the problem is propositional up to
-    // instantiation. AVATAR's splitting is exactly the right instrument; the
-    // all-literal and maximal-literal restrictions matter because every
-    // instance is trivially resolvable.
-    // NOTE(prior, from `casc_epu` / `casc_eps`)
-    if analysis.logic_class == LogicClass::EffectivelyPropositional {
-        let order = if analysis.goal_class == GoalClass::NoGoal {
-            // Satisfiability (EPS). Nothing is goal-connected, so the question
-            // is whether saturation closes, and the configurations that close
-            // fast matter more than the ones that find deep proofs.
-            vec![
-                catalogue::s06_age10_kbo_all_nocap(),
-                catalogue::s02_smallest_kbo(),
-                catalogue::s01_balanced_kbo(),
-                catalogue::s03_smallest_kbo_arity(),
-                catalogue::s05_age5_kbo_all(),
-                catalogue::s14_conjboost_smallest_all(),
-                catalogue::s12_horn_kbo(),
-            ]
-        } else {
-            vec![
-                catalogue::s01_balanced_kbo(),
-                catalogue::s06_age10_kbo_all_nocap(),
-                catalogue::s14_conjboost_smallest_all(),
-                catalogue::s11_conjboost_kbo(),
-                catalogue::s04_age8_kbo_maxneg(),
-                catalogue::s05_age5_kbo_all(),
-                catalogue::s02_smallest_kbo(),
-            ]
-        };
-        return Plan {
-            label: analysis.label.clone(),
-            division: if analysis.goal_class == GoalClass::NoGoal {
-                "EPS".to_string()
-            } else {
-                "EPR".to_string()
-            },
-            algorithm: Algorithm::PropositionalSplitting,
-            strategy_order: order,
-            pre_passes: vec![PrePass::Grounding, PrePass::Componentwise],
-            rationale: format!(
-                "no function symbol of arity >= 1 over {} clauses; propositional \
-                 core with a {} abstraction",
-                analysis.n_clauses, analysis.abstraction_atoms
-            ),
-        };
-    }
-
-    // ── 4. Large background theories ───────────────────────────────────────
-    // The goal reaches only a small slice of a big clause set. Two independent
-    // filters apply: signature-based axiom filtering (SInE) to shrink the
-    // premise set, and set-of-support to keep the search near the goal.
-    // NOTE(prior: SInE is only worth its cost above ~150 axioms, which is where
-    // `Profile::is_large_theory` already draws the line)
-    if analysis.goal_class == GoalClass::Background && analysis.n_clauses > 150 {
-        let mut first = catalogue::s11_conjboost_kbo();
-        first.sos_depth = Some(100);
-        return Plan {
-            label: analysis.label.clone(),
-            division: division_of(analysis),
-            algorithm: Algorithm::Superposition,
-            strategy_order: vec![
-                first,
-                catalogue::s10_sos_kbo(),
-                catalogue::s08_goal10_lpo(),
-                catalogue::s06_age10_kbo_all_nocap(),
-                catalogue::s01_balanced_kbo(),
-                catalogue::s13_sos_depthpen_kbo(),
-                catalogue::s12_horn_kbo(),
-            ],
-            pre_passes: vec![
-                PrePass::Sine {
-                    tolerance: 2.0,
-                    depth_limit: 5,
-                },
-                PrePass::GoalTransform,
-            ],
-            rationale: format!(
-                "goal reaches only {:.0}% of {} non-goal clauses; premise filtering \
-                 plus set-of-support",
-                100.0 * analysis.goal_reachable_ratio,
-                analysis.n_clauses
-            ),
-        };
-    }
-
-    // ── 5. Horn input ──────────────────────────────────────────────────────
-    // Every clause has at most one positive literal, so there is a Horn
-    // refutation procedure and the search should be biased towards unit chains:
-    // no AVATAR (the SAT instance is pure overhead), and a preference weight
-    // that keeps Horn clauses cheap.
-    // NOTE(prior, from strategy s12)
-    if analysis.shape_class == ShapeClass::Horn || analysis.shape_class == ShapeClass::Stratified {
-        return Plan {
-            label: analysis.label.clone(),
-            division: division_of(analysis),
-            algorithm: Algorithm::Superposition,
-            strategy_order: vec![
-                catalogue::s12_horn_kbo(),
-                catalogue::s11_conjboost_kbo(),
-                catalogue::s04_age8_kbo_maxneg(),
-                catalogue::s06_age10_kbo_all_nocap(),
-                catalogue::s10_sos_kbo(),
-                catalogue::s01_balanced_kbo(),
-                catalogue::s08_goal10_lpo(),
-            ],
-            pre_passes: pre_passes_for_large(analysis),
-            rationale: format!(
-                "horn_ratio={:.2} over {} clauses; unit-chain biased configurations",
-                analysis.horn_ratio, analysis.n_clauses
-            ),
-        };
-    }
-
-    // ── 6. Non-equational first-order ──────────────────────────────────────
-    // NOTE(prior, from `casc_fne`): no equality anywhere, so all-negative
-    // literal selection is the resolution blow-up generator the engine already
-    // mitigates dynamically by switching to a single maximal negative literal.
-    // The plan says so up front rather than relying on that runtime patch.
-    if analysis.logic_class == LogicClass::NonEquational {
-        let order: Vec<StrategyKind> = vec![
-            catalogue::s11_conjboost_kbo(),
-            catalogue::s08_goal10_lpo(),
-            catalogue::s04_age8_kbo_maxneg(),
-            catalogue::s15_symbolweight_kbo(),
-            catalogue::s10_sos_kbo(),
-            catalogue::s03_smallest_kbo_arity(),
-            catalogue::s12_horn_kbo(),
-            catalogue::s01_balanced_kbo(),
-            catalogue::s06_age10_kbo_all_nocap(),
-        ];
-        return Plan {
-            label: analysis.label.clone(),
-            division: "FNE".to_string(),
-            algorithm: Algorithm::Superposition,
-            strategy_order: order,
-            pre_passes: pre_passes_for_large(analysis),
-            rationale: format!(
-                "no equality in {} clauses (avg width {:.2}, max depth {}); \
-                 resolution-oriented configurations",
-                analysis.n_clauses, analysis.avg_clause_len, analysis.max_term_depth
-            ),
-        };
-    }
-
-    // ── 7. Deep equational input ───────────────────────────────────────────
-    // Equality plus deeply nested terms: the binding constraint is term growth,
-    // so the configurations that cap or penalise weight come first.
-    // NOTE(prior: `DeepEquational` uses a depth threshold of 7)
-    if analysis.max_term_depth >= 7 {
-        return Plan {
-            label: analysis.label.clone(),
-            division: "FEQ".to_string(),
-            algorithm: Algorithm::Superposition,
-            strategy_order: vec![
-                catalogue::s13_sos_depthpen_kbo(),
-                catalogue::s14_conjboost_smallest_all(),
-                catalogue::s11_conjboost_kbo(),
-                catalogue::s06_age10_kbo_all_nocap(),
-                catalogue::s10_sos_kbo(),
-                catalogue::s01_balanced_kbo(),
-                catalogue::s15_symbolweight_kbo(),
-            ],
-            pre_passes: pre_passes_for_large(analysis),
-            rationale: format!(
-                "max term depth {} over {} clauses; weight-capped configurations \
-                 first",
-                analysis.max_term_depth, analysis.n_clauses
-            ),
-        };
-    }
-
-    // ── 8. Small generic problems ──────────────────────────────────────────
-    // Under a few hundred clauses the portfolio's per-slot setup cost is a real
-    // fraction of the budget, so a short order is strictly better than a long
-    // one; the two most broadly strong configurations lead.
-    // NOTE(prior: `mini` exists for exactly this reason)
-    let mut order = vec![
-        catalogue::s01_balanced_kbo(),
-        catalogue::s02_smallest_kbo(),
-        catalogue::s11_conjboost_kbo(),
-        catalogue::s06_age10_kbo_all_nocap(),
-        catalogue::s10_sos_kbo(),
-        catalogue::s08_goal10_lpo(),
-        catalogue::s12_horn_kbo(),
-    ];
-    if analysis.scale_class == ScaleClass::Tiny {
-        order.truncate(3);
-    }
-    Plan {
-        label: analysis.label.clone(),
-        division: division_of(analysis),
-        algorithm: Algorithm::Superposition,
-        strategy_order: order,
-        pre_passes: pre_passes_for_large(analysis),
-        rationale: format!(
-            "general first-order with equality, {} clauses ({})",
-            analysis.n_clauses,
-            analysis.scale_class.as_str()
-        ),
-    }
+            strategy
+        })
+        .collect()
 }
 
-fn pre_passes_for_large(analysis: &Analysis) -> Vec<PrePass> {
-    // Signature-based axiom filtering earns its cost only once the premise set
-    // is big enough for the signature chain to say something useful, and the
-    // tolerance has to be looser when the goal reaches a small slice of the
-    // clause set (a tighter tolerance would drop axioms the goal needs).
-    // NOTE(prior: 150 axioms, matching `Profile::is_large_theory`)
-    let mut out = Vec::new();
-    if analysis.n_clauses > 150 {
-        let tolerance = if analysis.goal_class == GoalClass::Background {
-            3.5
-        } else {
-            2.0
-        };
-        out.push(PrePass::Sine {
-            tolerance,
-            depth_limit: if tolerance > 3.0 { 8 } else { 5 },
-        });
-    }
-    if analysis.goal_class == GoalClass::Loose {
-        out.push(PrePass::GoalTransform);
-    }
-    out
-}
-
-/// A short slug for a pre-pass, for log lines.
+/// A short slug for a pre-pass, for log lines and the rule table.
 pub fn pre_pass_slug(pre_pass: &PrePass) -> String {
     match pre_pass {
         PrePass::Sine {
@@ -787,12 +912,74 @@ pub fn division_of(analysis: &Analysis) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ScaleClass, ShapeClass};
 
     fn analysis(clauses: usize) -> Analysis {
         Analysis {
             n_clauses: clauses,
             label: "TEST".to_string(),
             ..Analysis::default()
+        }
+    }
+
+    #[test]
+    fn the_rule_table_is_total_and_ordered() {
+        // Totality: a non-empty analysis must match some row.
+        let generic = |clauses, logic, depth| Analysis {
+            n_clauses: clauses,
+            logic_class: logic,
+            max_term_depth: depth,
+            label: "X".to_string(),
+            ..Analysis::default()
+        };
+        for clauses in [1usize, 100, 5000] {
+            for logic in [
+                LogicClass::UnitEquality,
+                LogicClass::PropositionalEquality,
+                LogicClass::EffectivelyPropositional,
+                LogicClass::NonEquational,
+                LogicClass::Equational,
+            ] {
+                for depth in [0usize, 12] {
+                    let analysis = generic(clauses, logic, depth);
+                    assert!(
+                        rules().iter().any(|rule| rule.matches(&analysis)),
+                        "no rule matches clauses={clauses} logic={} depth={depth}",
+                        logic.as_str()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_rule_names_configurations_that_exist() {
+        for rule in rules() {
+            assert!(!rule.order.is_empty(), "rule `{}` has no order", rule.name);
+            for id in rule.order {
+                assert!(
+                    (1..=15).contains(id),
+                    "rule `{}` names base strategy {id}, outside 1..=15",
+                    rule.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_rule_is_shadowed_by_an_earlier_one() {
+        // A rule that can never fire is a rule that misleads whoever reads the
+        // table, so shadowing is a defect rather than a harmless redundancy.
+        // Overlap on the *axis* is fine; what must not happen is a later row whose
+        // conditions are a subset of an earlier row's.
+        for (index, rule) in rules().iter().enumerate() {
+            assert!(
+                !rule.when.is_empty() || index == rules().len() - 1,
+                "only the last rule may be unconditional; `{}` is rule {} of {}",
+                rule.name,
+                index + 1,
+                rules().len()
+            );
         }
     }
 

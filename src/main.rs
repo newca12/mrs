@@ -364,6 +364,10 @@ fn main() {
             "--fast" => {
                 schedule_name = Some("fast".to_string());
             }
+            "--list-rules" => {
+                println!("{}", mrs_prephase::plan::describe_rules());
+                process::exit(0);
+            }
             "--list-schedules" => {
                 for name in mrs_search::strategy::named::ALL {
                     println!("{name}");
