@@ -128,10 +128,16 @@ fn main() {
     // dump of that division dies at the OOM killer with no output at all.
     if let Some(path) = child {
         let row = analyze_file(Path::new(&path));
+        // Four fields, matching what `analyze_isolated` splits: the parent splits
+        // off path, status and detail before taking the analysis row. A child
+        // that omits `detail` shifts every column of the analysis by one, and the
+        // parent's own `detail: String::new()` then overwrites the column that
+        // shifted into its place, so the loss is silent.
         println!(
-            "{},{},{}",
+            "{},{},{},{}",
             row.path,
             row.status,
+            row.detail,
             row.csv.unwrap_or_else(empty_row)
         );
         return;
