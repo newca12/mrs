@@ -451,8 +451,6 @@ mod tests {
     /// regression.
     #[test]
     fn catalogue_reproduces_the_engine_base_strategies() {
-        use crate::LiteralSelection as EngineLiteral;
-        use crate::TermOrdering as EngineOrdering;
         let base: Vec<SearchConfig> =
             crate::strategy::StrategySchedule::_all_strategies(Duration::ZERO, 0)
                 .strategies
@@ -490,7 +488,7 @@ mod tests {
             );
             assert_eq!(
                 matches!(actual.ordering, TermOrdering::KBO),
-                matches!(expected.ordering, EngineOrdering::KBO),
+                matches!(expected.ordering, crate::TermOrdering::KBO),
                 "s{}: ordering differs",
                 index + 1
             );
