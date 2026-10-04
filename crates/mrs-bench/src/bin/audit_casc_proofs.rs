@@ -490,6 +490,7 @@ fn load_run_csv(path: &Path) -> Result<Vec<RunRow>, String> {
     let run_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
 
     let mut rows = Vec::new();
+    let mut run_edition: Option<String> = None;
     for line in lines {
         if line.trim().is_empty() {
             continue;
@@ -497,6 +498,15 @@ fn load_run_csv(path: &Path) -> Result<Vec<RunRow>, String> {
         let fields = parse_csv_line(line);
         let get = |index: usize| fields.get(index).cloned().unwrap_or_default();
         let edition_value = get(edition);
+        if let Some(expected) = &run_edition {
+            if expected != &edition_value {
+                return Err(format!(
+                    "run CSV mixes editions `{expected}` and `{edition_value}`; audit each edition from its own run directory"
+                ));
+            }
+        } else {
+            run_edition = Some(edition_value.clone());
+        }
         let division_value = get(division);
         let problem_value = get(problem);
         let system_value = get(system);
@@ -1391,6 +1401,31 @@ mod tests {
         assert!(!checks.mrs);
         assert!(checks.ladder);
         assert_eq!(checks.names(), "strict,ladder");
+    }
+
+    #[test]
+    fn rejects_run_csv_with_multiple_editions() {
+        let path = std::env::temp_dir().join(format!(
+            "audit-mixed-editions-{}-{:?}.csv",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::write(
+            &path,
+            "edition,division,problem,system,szs_status\n\
+             casc-j13,FEQ,P1+1,mrs,Theorem\n\
+             casc-30,FEQ,P1+1,mrs,Theorem\n",
+        )
+        .expect("write mixed-edition run CSV");
+
+        let result = load_run_csv(&path);
+        fs::remove_file(&path).ok();
+
+        let error = result.expect_err("mixed-edition run must fail closed");
+        assert!(
+            error.contains("mixes editions"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

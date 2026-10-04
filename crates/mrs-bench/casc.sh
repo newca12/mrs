@@ -200,6 +200,19 @@ if [[ -n "${MANIFEST_OUT}" && "${MANIFEST_OUT}" != /* ]]; then
     MANIFEST_OUT="${PWD}/${MANIFEST_OUT}"
 fi
 mkdir -p "${OUTPUT}"
+# A run directory is a write-once artifact. Refuse to overwrite an existing
+# run, and atomically claim an empty/new directory so concurrent invocations
+# cannot both truncate run.csv or overwrite each other's raw artifacts.
+if [[ -n "$(ls -A -- "${OUTPUT}")" ]]; then
+    echo "Output directory is not empty: ${OUTPUT}" >&2
+    echo "Choose a new --output directory; benchmark runs are never overwritten." >&2
+    exit 2
+fi
+if ! mkdir "${OUTPUT}/.mrs-casc-lock" 2>/dev/null; then
+    echo "Output directory is already claimed by another run: ${OUTPUT}" >&2
+    exit 2
+fi
+trap 'rmdir "${OUTPUT}/.mrs-casc-lock" 2>/dev/null || true' EXIT
 RAW_ROOT="${OUTPUT}/raw"
 mkdir -p "${RAW_ROOT}"
 
