@@ -233,21 +233,30 @@ for row in models:
     elif row["strict_status"] == "not_run" and "strict" not in audit_checks:
         by_division[row["division"]]["certified_models"] += 1
 
-print(f"{'division':10s} {'refutations':>12s} {'certified':>10s} {'rejected':>9s} {'unknown':>8s}")
+print(f"{'division':10s} {'refutations':>12s} {'certified':>10s} {'rejected':>9s} {'unverified':>11s} {'unchecked':>10s} {'certified%':>10s}")
 total = collections.Counter()
 for division in sorted(by_division):
     counts = by_division[division]
     n = counts["refutations"]
-    total.update({key: counts[key] for key in ("VerifiedGood", "VerifiedBad", "Unknown", "Timeout", "Error")})
-    print(f"{division:10s} {n:12d} {counts['VerifiedGood']:10d} "
-          f"{counts['VerifiedBad']:9d} {counts['Unknown'] + counts['Timeout']:8d}")
+    certified = counts["VerifiedGood"]
+    rejected = counts["VerifiedBad"]
+    unverified = counts["Unknown"] + counts["Timeout"]
+    # Every refutation the audit never reached: `proof_omitted`,
+    # `artifact_mismatch`, `problem_missing`, `no_proof`, `artifact_error`.
+    # The percentage used to divide by the five statuses it knew about, which
+    # quietly excluded these -- a run whose proofs were mostly unchecked
+    # reported a high "certified" rate over the handful it did check.
+    unchecked = n - certified - rejected - unverified
+    total.update({"refutations": n, "certified": certified, "rejected": rejected,
+                  "unverified": unverified, "unchecked": unchecked})
+    print(f"{division:10s} {n:12d} {certified:10d} {rejected:9d} {unverified:11d} "
+          f"{unchecked:10d} {100.0 * certified / n if n else 0.0:9.1f}%")
     if counts["models"]:
         print(f"  models: {counts['certified_models']}/{counts['models']} certified")
-n = total["VerifiedGood"] + total["VerifiedBad"] + total["Unknown"] + total["Timeout"] + total["Error"]
-print(f"{'TOTAL':10s} {n:12d} {total['VerifiedGood']:10d} {total['VerifiedBad']:9d} "
-      f"{total['Unknown'] + total['Timeout']:8d}")
-if n:
-    print(f"certified: {100.0 * total['VerifiedGood'] / n:.1f}%")
+n = total["refutations"]
+print(f"{'TOTAL':10s} {n:12d} {total['certified']:10d} {total['rejected']:9d} "
+      f"{total['unverified']:11d} {total['unchecked']:10d} "
+      f"{100.0 * total['certified'] / n if n else 0.0:9.1f}%")
 
 if not rows:
     print("no benchmark rows matched the selected subset", file=sys.stderr)
