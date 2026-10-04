@@ -644,12 +644,37 @@ fn audit_one(run: &RunRow, mut row: AuditRow, args: &Args) -> AuditRow {
         return row;
     }
     if !stdout_text.contains("$false") {
-        mark_selected_error(
-            &mut row,
-            &args.checks,
-            "no_proof",
-            "refutation status has no $false proof root",
-        );
+        // A `$false`-less stdout after a `Theorem` has two very different
+        // causes, and reporting them alike is what let two deliberately
+        // withheld proofs read as broken proof extraction. `mrs` drops a proof
+        // that exceeds `--proof-bytes-limit` on purpose: CASC caps total
+        // stdout, and an over-budget proof can get the process killed before
+        // it flushes the status line, losing the solve as well. It says so,
+        // on stderr (`proof_emitted=false`) and on stdout (`% Proof: ...
+        // (omitted: over the --proof-bytes-limit)`). That is a solved problem
+        // with no evidence attached, which is its own finding -- but it is not
+        // a verification failure, and `no_proof` should mean the second thing:
+        // the prover claimed a refutation and emitted no proof and no reason.
+        let stderr_text = String::from_utf8_lossy(&raw_stderr).into_owned();
+        if let Some(reason) = proof_omission(&stdout_text, &stderr_text) {
+            mark_selected_error(
+                &mut row,
+                &args.checks,
+                "proof_omitted",
+                &format!(
+                    "refutation found but the prover withheld its own proof ({reason}); \
+                     counted as solved, not verified -- re-run with a larger \
+                     --proof-bytes-limit to certify it"
+                ),
+            );
+        } else {
+            mark_selected_error(
+                &mut row,
+                &args.checks,
+                "no_proof",
+                "refutation status has no $false proof root and no proof-omission marker",
+            );
+        }
         row.audit_time_s = start.elapsed().as_secs_f64();
         return row;
     }
@@ -1128,8 +1153,14 @@ fn format_generation_table(rows: &[&AuditRow]) -> String {
         "Other",
     ];
     let mut counts = HashMap::<&str, usize>::new();
+    let mut other = 0;
     for row in rows {
-        *counts.entry(row.generation_status.as_str()).or_default() += 1;
+        let status = row.generation_status.as_str();
+        if statuses[..statuses.len() - 1].contains(&status) {
+            *counts.entry(status).or_default() += 1;
+        } else {
+            other += 1;
+        }
     }
     let mut output = String::new();
     output.push_str(&ascii_table(
@@ -1137,7 +1168,11 @@ fn format_generation_table(rows: &[&AuditRow]) -> String {
         &statuses
             .iter()
             .map(|status| {
-                let count = counts.get(status).copied().unwrap_or(0);
+                let count = if *status == "Other" {
+                    other
+                } else {
+                    counts.get(status).copied().unwrap_or(0)
+                };
                 vec![status.to_string(), count.to_string()]
             })
             .collect::<Vec<_>>(),
@@ -1146,31 +1181,50 @@ fn format_generation_table(rows: &[&AuditRow]) -> String {
 }
 
 fn format_verification_table(rows: &[&AuditRow], checks: &Checks) -> String {
-    const HEADERS: [&str; 10] = [
+    const HEADERS: [&str; 11] = [
         "Mode",
         "Applicable",
         "VerifiedGood",
         "VerifiedBad",
         "Unknown",
         "Timeout",
+        "Proof Omitted",
         "N/A: Model",
         "N/A: Incomplete",
         "Error",
         "Other",
+    ];
+    // Buckets a refutation's check result can land in that the table names
+    // explicitly. Anything else -- `artifact_mismatch`, `problem_missing`,
+    // `no_proof`, `artifact_error` -- is reported under "Other", and it is the
+    // sum of those rather than a literal lookup: an unmatched status used to
+    // disappear, so a run whose proofs were never checked could print a table
+    // whose columns did not add up to `Applicable` and still look complete.
+    const NAMED: [&str; 5] = [
+        "VerifiedGood",
+        "VerifiedBad",
+        "Unknown",
+        "Timeout",
+        "proof_omitted",
     ];
     let mut table_rows = Vec::new();
     for check in [Check::Strict, Check::Mrs, Check::Ladder] {
         if !checks.contains(check) {
             continue;
         }
-        let mut counts = HashMap::<&str, usize>::new();
+        let mut counts: HashMap<&str, usize> = HashMap::new();
         let mut applicable = 0;
+        let mut other = 0;
         for row in rows {
             let scope = generation_scope(&row.generation_status);
             let value = check_result_for(row, check).status.as_str();
             if scope == GenerationScope::Refutation {
                 applicable += 1;
-                *counts.entry(value).or_default() += 1;
+                if NAMED.contains(&value) || value == "Error" {
+                    *counts.entry(value).or_default() += 1;
+                } else {
+                    other += 1;
+                }
             } else if scope == GenerationScope::Model {
                 *counts.entry("N/A: Model").or_default() += 1;
             } else if scope == GenerationScope::Incomplete {
@@ -1186,10 +1240,11 @@ fn format_verification_table(rows: &[&AuditRow], checks: &Checks) -> String {
             count_string(&counts, "VerifiedBad"),
             count_string(&counts, "Unknown"),
             count_string(&counts, "Timeout"),
+            count_string(&counts, "proof_omitted"),
             count_string(&counts, "N/A: Model"),
             count_string(&counts, "N/A: Incomplete"),
             count_string(&counts, "Error"),
-            count_string(&counts, "Other"),
+            other.to_string(),
         ]);
     }
     ascii_table(&HEADERS, &table_rows)
@@ -1325,6 +1380,47 @@ fn extract_status_detail(output: &str) -> Option<String> {
     })
 }
 
+/// Returns why the prover withheld its own proof, if it did.
+///
+/// Prefers the stderr telemetry (`proof_emitted=false`, alongside
+/// `proof_nodes=`/`proof_bytes=`) because that field is emitted by the run
+/// itself and cannot be confused with anything else. Where the run reported
+/// the field at all it is authoritative: `proof_emitted=true` with a
+/// `$false`-less stdout is a genuine anomaly, not an omission, so this returns
+/// `None` and lets the caller call it `no_proof`. The stdout statistics
+/// comment is only a fallback for outputs recorded before the field existed.
+fn proof_omission(stdout: &str, stderr: &str) -> Option<String> {
+    if let Some(detail) = stderr.lines().find(|line| line.contains("proof_emitted=")) {
+        let detail = detail.trim();
+        if !detail.contains("proof_emitted=false") {
+            return None;
+        }
+        let field = |name: &str| {
+            detail
+                .split_whitespace()
+                .find_map(|token| token.strip_prefix(&format!("{name}=")))
+                .unwrap_or("?")
+                .to_string()
+        };
+        return Some(format!(
+            "proof_emitted=false, proof_nodes={}, proof_bytes={}",
+            field("proof_nodes"),
+            field("proof_bytes")
+        ));
+    }
+    stdout_marker(stdout)
+}
+
+/// The stdout-side omission marker: `% Proof: 25 nodes, 3200 bytes (omitted:
+/// over the --proof-bytes-limit)`.
+fn stdout_marker(stdout: &str) -> Option<String> {
+    stdout
+        .lines()
+        .map(str::trim_start)
+        .find(|line| line.starts_with("% Proof:") && line.contains("(omitted:"))
+        .map(|line| line.trim_start_matches("% Proof:").trim().to_string())
+}
+
 fn sha256_bytes(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut hex = String::with_capacity(64);
@@ -1393,6 +1489,238 @@ fn fail(message: &str) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The stdout `mrs` writes when it drops an over-budget proof. Taken from a
+    /// real run (`MGT079+1`, `campaign-feq-W8C16J2-20260930`).
+    const OMITTED_STDOUT: &str = "% SZS status Theorem for MGT079+1\n\
+         % ------------------------------\n\
+         % Version: mrs 0.2.3\n\
+         % Termination reason: Refutation\n\
+         % Time elapsed: 36.293 s\n\
+         % Proof: 132643 nodes, 21230015 bytes (omitted: over the --proof-bytes-limit)\n\
+         % Peak memory usage: 7182 MB\n\
+         % ------------------------------\n";
+
+    const OMITTED_STDERR: &str = "% Problem: MGT079+1 (56 axioms, 1 conjectures, 0 cnf clauses)\n\
+         % Proof omitted: 21230015 bytes / 132643 nodes exceeds the --proof-bytes-limit of 8388608 bytes\n\
+         % SZS detail strategies=8 workers=8 result=Refutation elapsed_ms=36271 \
+         proof_nodes=132643 proof_bytes=21230015 proof_emitted=false\n";
+
+    #[test]
+    fn recognises_a_proof_the_prover_withheld_on_purpose() {
+        // This is what `MGT079+1` and `SET017+1` did. Reporting it as
+        // `no_proof` said "proof extraction broke"; the truth is "the solve is
+        // real and its evidence was too big to print".
+        let reason = proof_omission(OMITTED_STDOUT, OMITTED_STDERR).expect("omission detected");
+        assert!(reason.contains("proof_emitted=false"));
+        assert!(reason.contains("proof_nodes=132643"));
+        assert!(reason.contains("proof_bytes=21230015"));
+    }
+
+    #[test]
+    fn an_emitted_proof_is_not_an_omission() {
+        // `proof_emitted=true` with a `$false`-less stdout is a real anomaly,
+        // so the telemetry must not be overruled by the stdout comment.
+        let stderr = "% SZS detail result=Refutation proof_nodes=25 proof_bytes=3200 \
+                      proof_emitted=true\n";
+        assert!(proof_omission(OMITTED_STDOUT, stderr).is_none());
+    }
+
+    #[test]
+    fn falls_back_to_the_stdout_marker_without_telemetry() {
+        // Outputs recorded before the `proof_emitted` field existed still carry
+        // the omission on stdout, which is weaker evidence but better than
+        // calling the run broken.
+        assert_eq!(
+            proof_omission(OMITTED_STDOUT, "").as_deref(),
+            Some("132643 nodes, 21230015 bytes (omitted: over the --proof-bytes-limit)")
+        );
+    }
+
+    #[test]
+    fn a_normal_refutation_reports_no_omission() {
+        let stdout = "% SZS status Theorem for X\n% Proof: 25 nodes, 3200 bytes\n";
+        let stderr = "% SZS detail result=Refutation proof_nodes=25 proof_bytes=3200 \
+                      proof_emitted=true\n";
+        assert!(proof_omission(stdout, stderr).is_none());
+        assert!(proof_omission("", "").is_none());
+    }
+
+    /// Reads a numeric column out of the rendered ASCII table.
+    fn column(table: &str, name: &str) -> String {
+        // Header cells are centre-padded, so match on the split cell rather
+        // than the raw text.
+        let header = table
+            .lines()
+            .find(|line| line.split('|').any(|cell| cell.trim() == "Mode"))
+            .unwrap_or_else(|| panic!("no verification table header in {table}"));
+        let index = header
+            .split('|')
+            .map(str::trim)
+            .position(|cell| cell == name)
+            .unwrap_or_else(|| panic!("no column `{name}` in {header}"));
+        let data = table
+            .lines()
+            .find(|line| line.split('|').any(|cell| cell.trim() == "strict"))
+            .unwrap_or_else(|| panic!("no strict row in {table}"));
+        data.split('|')
+            .map(str::trim)
+            .nth(index)
+            .expect("cell")
+            .to_string()
+    }
+
+    #[test]
+    fn verification_table_accounts_for_every_applicable_row() {
+        // `artifact_mismatch`, `problem_missing` and `no_proof` used to land in
+        // a literal `"Other"` lookup that nothing ever wrote to, so they
+        // vanished while still inflating `Applicable`: a run whose proofs were
+        // never checked printed a table whose columns did not add up and still
+        // read as complete.
+        let row = |generation: &str, status: &str| AuditRow {
+            edition: "casc-j13".into(),
+            division: "feq".into(),
+            problem: "P.p".into(),
+            system: "mrs".into(),
+            timeout: 0,
+            raw_stdout_path: String::new(),
+            raw_stderr_path: String::new(),
+            raw_stdout_sha256: String::new(),
+            raw_stderr_sha256: String::new(),
+            proof_path: String::new(),
+            proof_sha256: String::new(),
+            generation_status: generation.into(),
+            generation_detail: String::new(),
+            strict: CheckResult {
+                status: status.into(),
+                time_s: 0.0,
+                detail: String::new(),
+            },
+            mrs: CheckResult::not_run(),
+            ladder: CheckResult::not_run(),
+            checks: "strict".into(),
+            audit_time_s: 0.0,
+        };
+        let rows = [
+            row("Theorem", "VerifiedGood"),
+            row("Theorem", "VerifiedBad"),
+            row("Theorem", "Unknown"),
+            row("Theorem", "Timeout"),
+            row("Theorem", "proof_omitted"),
+            row("Theorem", "artifact_mismatch"),
+            row("Theorem", "problem_missing"),
+            row("Theorem", "no_proof"),
+            row("Timeout", "not_run"),
+        ];
+        let refs = rows.iter().collect::<Vec<_>>();
+        let strict_only = Checks {
+            strict: true,
+            mrs: false,
+            ladder: false,
+        };
+        let table = format_verification_table(&refs, &strict_only);
+        let applicable = column(&table, "Applicable");
+        let total = [
+            "VerifiedGood",
+            "VerifiedBad",
+            "Unknown",
+            "Timeout",
+            "Proof Omitted",
+            "N/A: Model",
+            "N/A: Incomplete",
+            "Error",
+            "Other",
+        ]
+        .iter()
+        .map(|name| column(&table, name).parse::<usize>().unwrap())
+        .sum::<usize>();
+        assert_eq!(applicable, "8", "every Theorem row is applicable");
+        assert_eq!(total, 9, "columns must cover every row: {table}");
+        assert_eq!(column(&table, "Proof Omitted"), "1");
+        assert_eq!(
+            column(&table, "Other"),
+            "3",
+            "the three unnamed statuses must be counted, not dropped"
+        );
+    }
+
+    /// Builds a one-row run directory holding `stdout`/`stderr` verbatim and
+    /// runs [`audit_one`] over it, returning the resulting check status.
+    ///
+    /// The helper-level tests above pin the classification; this one pins the
+    /// wiring, so dropping the `proof_omitted` branch from `audit_one` fails
+    /// here rather than silently reverting the fix.
+    fn audit_one_status(name: &str, stdout: &str, stderr: &str) -> String {
+        let root = std::env::temp_dir().join(format!(
+            "audit-omission-{}-{}-{:?}",
+            std::process::id(),
+            name,
+            std::thread::current().id()
+        ));
+        let raw = root.join("raw").join("mrs").join("feq");
+        fs::create_dir_all(&raw).expect("create raw dir");
+        fs::write(raw.join("P+1.stdout"), stdout).expect("write stdout");
+        fs::write(raw.join("P+1.stderr"), stderr).expect("write stderr");
+
+        let run = RunRow {
+            edition: "casc-j13".into(),
+            division: "feq".into(),
+            problem: "P+1".into(),
+            system: "mrs".into(),
+            timeout: 240,
+            generation_status: "Theorem".into(),
+            generation_detail: String::new(),
+            raw_stdout_path: raw.join("P+1.stdout"),
+            raw_stderr_path: raw.join("P+1.stderr"),
+            expected_stdout_sha256: String::new(),
+            expected_stderr_sha256: String::new(),
+        };
+        let args = Args {
+            run_csv: root.join("run.csv"),
+            problems_dir: root.clone(),
+            output: root.join("out"),
+            proover: PathBuf::from("unused"),
+            eprover: None,
+            vampire: None,
+            checks: Checks {
+                strict: true,
+                mrs: false,
+                ladder: false,
+            },
+            strict_time: 30,
+            mrs_time: 10,
+            ladder_time: 30,
+            mrs_workers: 1,
+            ladder_workers: 8,
+            jobs: 1,
+            subset: None,
+            force: true,
+        };
+        let row = audit_one(&run, AuditRow::from_run(&run), &args);
+        fs::remove_dir_all(&root).ok();
+        row.strict.status
+    }
+
+    #[test]
+    fn audit_one_reports_a_withheld_proof_as_proof_omitted() {
+        // `MGT079+1` and `SET017+1`: `Theorem`, no `$false`, and the prover's
+        // own telemetry saying it dropped the proof. This must not be `no_proof`,
+        // which says proof extraction broke.
+        let status = audit_one_status("omitted", OMITTED_STDOUT, OMITTED_STDERR);
+        assert_eq!(status, "proof_omitted");
+    }
+
+    #[test]
+    fn audit_one_still_calls_a_missing_proof_no_proof() {
+        // `Theorem` with no `$false`, and nothing anywhere saying a proof was
+        // dropped on purpose: proof extraction quietly produced nothing, which
+        // is the anomaly `no_proof` is for.
+        let stdout = "% SZS status Theorem for P+1\n\
+             % Termination reason: Refutation\n\
+             % Time elapsed: 1.000 s\n";
+        let status = audit_one_status("anomalous", stdout, "% SZS detail result=Refutation\n");
+        assert_eq!(status, "no_proof");
+    }
 
     #[test]
     fn parses_selected_checks() {

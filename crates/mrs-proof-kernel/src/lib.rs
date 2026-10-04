@@ -75,6 +75,18 @@ impl std::fmt::Display for KernelVerdict {
 #[derive(Debug, Clone, Copy)]
 pub struct VerificationLimits {
     pub max_nodes: usize,
+    /// Ceiling on the number of annotated formulas in the proof file itself.
+    ///
+    /// Separate from [`Self::max_nodes`], which bounds how far a single
+    /// checked step may expand a formula into CNF. Those are different costs:
+    /// `max_nodes` guards work done per step, while this only bounds the size
+    /// of the input DAG, which is linear to build and cheap to hold. Sharing
+    /// one ceiling meant a long-but-honest proof was refused outright --
+    /// `SET017+1`'s refutation is 119_335 formulas and drew
+    /// `proof has 119335 formulas, exceeding limit 100000`, an `Unknown` that
+    /// looked exactly like the checker giving up. That proof verifies in 14 s
+    /// and 660 MB once admitted.
+    pub max_proof_nodes: usize,
     pub max_formula_nodes: usize,
     pub max_clause_literals: usize,
     pub max_term_depth: usize,
@@ -93,6 +105,7 @@ impl Default for VerificationLimits {
     fn default() -> Self {
         Self {
             max_nodes: 100_000,
+            max_proof_nodes: 1_000_000,
             max_formula_nodes: 100_000,
             max_clause_literals: 10_000,
             max_term_depth: 256,
@@ -2408,11 +2421,11 @@ fn build_dag<'a>(
     proof: &'a mrs_tptp::TPTPProblem<'a>,
     limits: VerificationLimits,
 ) -> Result<Dag<'a>, KernelVerdict> {
-    if proof.formulas.len() > limits.max_nodes {
+    if proof.formulas.len() > limits.max_proof_nodes {
         return Err(KernelVerdict::Inconclusive(format!(
             "proof has {} formulas, exceeding limit {}",
             proof.formulas.len(),
-            limits.max_nodes
+            limits.max_proof_nodes
         )));
     }
 
@@ -15363,5 +15376,54 @@ mod tests {
                      cnf(c_comm, axiom, f(X, Y) = f(Y, X), file('problem.p', c_comm)).\n\
                      cnf(c_bot, plain, $false, inference(ac_resolution, [status(thm)], [c1, c2, c_comm])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn proof_node_ceiling_is_separate_from_per_step_expansion_ceiling() {
+        // The two guard different costs. `max_proof_nodes` bounds the input
+        // DAG and must admit a long proof; `max_nodes` bounds per-step CNF
+        // expansion and must stay where it was, or a single bloomed step
+        // silently gets an order of magnitude more headroom.
+        let limits = VerificationLimits::default();
+        assert_eq!(limits.max_nodes, 100_000);
+        assert!(limits.max_proof_nodes > 100_000);
+    }
+
+    #[test]
+    fn admits_a_proof_longer_than_the_old_shared_node_ceiling() {
+        // `SET017+1`'s refutation is 119_335 formulas. Under the old single
+        // 100_000 ceiling `build_dag` refused it before checking anything and
+        // the audit recorded an `Unknown` indistinguishable from the checker
+        // giving up. Build a proof just over that old ceiling and assert the
+        // refusal is gone: the chain must be decided, not declined.
+        let steps = 100_050usize;
+        let mut proof = String::with_capacity(steps * 24);
+        proof.push_str("fof(src, axiom, ![X] : p(X), file('problem.p', src)).\n");
+        proof.push_str("fof(np, axiom, ![X] : ~p(X), file('problem.p', np)).\n");
+        for index in 0..steps {
+            proof.push_str(&format!(
+                "cnf(s{index}, plain, q({index}), inference(supposition, [status(thm)], [src])).\n"
+            ));
+        }
+        proof.push_str(
+            "cnf(mid, plain, p(X), inference(resolution, [status(thm)], [src, np])).\n\
+             cnf(bot, plain, $false, inference(resolution, [status(thm)], [mid, src])).\n",
+        );
+
+        let parsed = parse_tptp(&proof).expect("proof parses");
+        assert!(
+            parsed.formulas.len() > 100_000,
+            "test proof must exceed the old ceiling, got {}",
+            parsed.formulas.len()
+        );
+        let verdict = verify_strict(
+            &parse_tptp("fof(src, axiom, ![X] : p(X)).").expect("problem parses"),
+            &parsed,
+            VerificationLimits::default(),
+        );
+        assert!(
+            !matches!(&verdict, KernelVerdict::Inconclusive(reason) if reason.contains("exceeding limit")),
+            "long proof was declined on the node ceiling: {verdict:?}"
+        );
     }
 }

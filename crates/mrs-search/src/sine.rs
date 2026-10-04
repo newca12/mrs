@@ -102,8 +102,8 @@ pub enum SineSkip {
 }
 
 impl SineSkip {
-    /// Stable identifier for the `% SZS detail` line and the `TRACE_SINE`
-    /// diagnostic, so a sweep can group refusals without string matching.
+    /// Stable identifier for the `TRACE_SINE` diagnostic, so a sweep can group
+    /// refusals without string matching.
     pub fn as_str(self) -> &'static str {
         match self {
             SineSkip::NothingRemoved => "nothing_removed",
@@ -118,8 +118,8 @@ impl SineSkip {
 /// When to refuse a SInE filter.
 #[derive(Debug, Clone, Copy)]
 pub struct SinePolicy {
-    /// Below this many clauses SInE is not applied at all: on a clause set this
-    /// small the restriction only costs completeness.
+    /// At or below this many clauses SInE is not applied at all: on a clause
+    /// set this small the restriction only costs completeness.
     pub min_clauses: usize,
     /// Refuse when fewer than this many premises survive. Two is the provable
     /// floor: a clause set with fewer than two clauses admits no inference, so
@@ -130,7 +130,7 @@ pub struct SinePolicy {
     ///
     /// Defaults to 100, which disables the guard. That default is measured, not
     /// lazy: over 74 solved problems carrying a conjecture and more than 200
-    /// clauses, SInE was applied on 8, and it removed up to **99.8 %** of the
+    /// clauses, SInE was applied on 8, and it removed up to **99.9 %** of the
     /// clause set on problems `mrs` solves — `CSR051-10` keeps 28 clauses of
     /// 44 219 and is a solved row. A percentage threshold low enough to catch
     /// the degenerate case would therefore switch SInE off exactly where it is
@@ -148,13 +148,21 @@ impl SinePolicy {
         let mut policy = SinePolicy::default();
         if let Some(value) = std::env::var("MRS_SINE_MAX_REMOVED_PERCENT")
             .ok()
-            .and_then(|value| value.trim().parse::<usize>().ok())
-            && value <= 100
+            .as_deref()
+            .and_then(parse_max_removed_percent)
         {
             policy.max_removed_percent = value;
         }
         policy
     }
+}
+
+fn parse_max_removed_percent(value: &str) -> Option<usize> {
+    value
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .filter(|&value| value <= 100)
 }
 
 impl Default for SinePolicy {
@@ -215,7 +223,7 @@ pub fn apply_sine_filter<T: SineItem + Clone>(
         seeds,
     };
 
-    if before < policy.min_clauses {
+    if before <= policy.min_clauses {
         return refuse(SineSkip::TooSmall, before);
     }
 
@@ -235,8 +243,11 @@ pub fn apply_sine_filter<T: SineItem + Clone>(
     if kept < policy.min_premises {
         return refuse(SineSkip::TooFewPremises, kept);
     }
-    let removed_percent = (before - kept).saturating_mul(100) / before;
-    if removed_percent > policy.max_removed_percent {
+    // Compare the exact ratio rather than a rounded-down integer percentage:
+    // e.g. removing 99.5% must exceed a configured 99% limit. `u128` keeps
+    // these products in range even when `usize` is at its maximum.
+    let removed = before - kept;
+    if (removed as u128) * 100 > (before as u128) * (policy.max_removed_percent as u128) {
         return refuse(SineSkip::Starved, kept);
     }
 
@@ -533,7 +544,7 @@ mod tests {
         };
 
         let lenient = SinePolicy {
-            max_removed_percent: 99,
+            max_removed_percent: 100,
             ..SinePolicy::default()
         };
         let applied = apply_sine_filter(&clauses, 1.5, Some(3), &lenient);
@@ -547,6 +558,34 @@ mod tests {
         let refused = apply_sine_filter(&clauses, 1.5, Some(3), &strict);
         assert_eq!(refused.skip, Some(SineSkip::Starved));
         assert_eq!(refused.items.len(), clauses.len());
+    }
+
+    #[test]
+    fn starvation_threshold_compares_fraction_without_rounding_down() {
+        let mut syms = SymbolTable::new();
+        // The goal, a linked axiom, and its premise survive: 3 of 200 clauses,
+        // so 98.5% are removed. A 98% threshold must refuse this filter.
+        let mut clauses = unlinked_problem(&mut syms, 198);
+        let link = syms.intern("goal_signal");
+        clauses.push(Clause::new(
+            ClauseId(10_000),
+            vec![
+                Literal::pos(Atom::pred(link, vec![])),
+                Literal::neg(Atom::pred(syms.intern("design_wire_0"), vec![])),
+            ],
+            ClauseSource::Input {
+                name: "link".into(),
+                role: "axiom".into(),
+            },
+        ));
+        let policy = SinePolicy {
+            max_removed_percent: 98,
+            ..SinePolicy::default()
+        };
+
+        let application = apply_sine_filter(&clauses, 1.5, Some(3), &policy);
+        assert_eq!(application.kept, 3);
+        assert_eq!(application.skip, Some(SineSkip::Starved));
     }
 
     /// A filter that keeps a real neighbourhood must stay applied under the
@@ -669,26 +708,16 @@ mod tests {
         );
     }
 
-    /// `MRS_SINE_MAX_REMOVED_PERCENT` must override the default and must ignore
-    /// values outside 0..=100 rather than clamping them into a policy nobody
-    /// asked for.
+    /// `MRS_SINE_MAX_REMOVED_PERCENT` must ignore values outside 0..=100 rather
+    /// than clamping them into a policy nobody asked for. Keep this parsing
+    /// check independent of process-global environment state: Rust tests run
+    /// concurrently.
     #[test]
     fn max_removed_percent_env_override_is_bounded() {
-        // SAFETY: single-threaded test body; the variable is read only by
-        // `SinePolicy::from_env` and restored before the assertion.
-        unsafe {
-            std::env::set_var("MRS_SINE_MAX_REMOVED_PERCENT", "40");
-            assert_eq!(SinePolicy::from_env().max_removed_percent, 40);
-            std::env::set_var("MRS_SINE_MAX_REMOVED_PERCENT", "250");
-            assert_eq!(
-                SinePolicy::from_env().max_removed_percent,
-                100,
-                "an out-of-range value must keep the default"
-            );
-            std::env::set_var("MRS_SINE_MAX_REMOVED_PERCENT", "not-a-number");
-            assert_eq!(SinePolicy::from_env().max_removed_percent, 100);
-            std::env::remove_var("MRS_SINE_MAX_REMOVED_PERCENT");
-        }
-        assert_eq!(SinePolicy::from_env().max_removed_percent, 100);
+        assert_eq!(parse_max_removed_percent("40"), Some(40));
+        assert_eq!(parse_max_removed_percent(" 0 "), Some(0));
+        assert_eq!(parse_max_removed_percent("100"), Some(100));
+        assert_eq!(parse_max_removed_percent("250"), None);
+        assert_eq!(parse_max_removed_percent("not-a-number"), None);
     }
 }
