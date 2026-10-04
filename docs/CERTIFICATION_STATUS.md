@@ -94,14 +94,17 @@ a reason histogram. The `audit_casc_proofs` report is the raw data.
 
 ### Archived CASC-J13 run `casc-j13-W8J2-nosharing-20260923` (180 s, 8 workers)
 
-215 refutations, re-verified at HEAD on a 4-core box:
+215 refutations, re-verified on a dev box. **The current figure is 193
+`VerifiedGood` (89.8 %), 22 `Unknown`, 0 `VerifiedBad`** — see "The residual 22"
+below for the node-limit fix that moved 189 to 193. The 189 column is kept
+because it is the last figure at `main`.
 
-| strict verdict | 2026-09-23 (build of that day) | HEAD |
-|---|---:|---:|
-| `Certified` | 152 | **189** (87.9 %) |
-| `Unknown` | 57 | 25 |
-| `VerifiedBad` | 5 | **0** |
-| killed (wall clock) | 0 | 1 |
+| strict verdict | 2026-09-23 (build of that day) | previous HEAD | with `max_proof_nodes` |
+|---|---:|---:|---:|
+| `Certified` | 152 | 189 (87.9 %) | **193** (89.8 %) |
+| `Unknown` | 57 | 25 | **22** |
+| `VerifiedBad` | 5 | **0** | **0** |
+| killed (wall clock) | 0 | 1 | **0** |
 
 The 2026-09-23 column is what the run's own audit recorded. The five
 kernel-side rejections it reported (CSR117+1, GEO111+1, MGT005+1, SEV606+1,
@@ -112,6 +115,11 @@ superposition shapes) are all fixed at HEAD; SWX217+1 had also been reported
 An earlier revision of this table claimed 192 at HEAD. That figure predates the
 bounded-NNF work, which moved 3 problems from `Certified` to `Unknown` by design
 — the trade is named below, and the honest total is 189, not 192.
+
+Every number in this section is a re-audit of an *archived search* on different
+hardware than the search itself. That is legitimate — nothing in the kernel
+depends on where the proof was produced — but it is not the same as a fresh
+campaign, and for the 18 demodulation rows the difference is decisive.
 
 ### UEQ CASC-J13 campaign `campaign-ueq-W8C16J1-20260930` (180 s, 8 workers, `c07cac9`)
 
@@ -128,21 +136,49 @@ CASC-J13 UEQ run answers 257/400 on the same problems, so this campaign loses
 from 1649.5 to 116.0. Coverage, not certification, is the open question. See
 [`reports/benchmarks/ueq-2026-09.md`](reports/benchmarks/ueq-2026-09.md).
 
-### The residual 25, and what closes them
+### The residual 22, and what closes them
 
-Reasons as reported at HEAD for the 25 `Unknown` (one row per proof):
+One ceiling was doing two jobs: bounding the proof's DAG and bounding per-step
+CNF expansion. A long-but-honest proof was refused outright — `SET017+1`'s
+119 335 formulas drew `proof has 119335 formulas, exceeding limit 100000` —
+which reads in a report exactly like the checker giving up.
+`VerificationLimits::max_proof_nodes` (1 000 000) now bounds the input DAG and
+`max_nodes` stays at 100 000 for expansion. On branch
+`fix/no-proof-mgt079-set017`; not yet on `main`.
+
+Re-auditing all 215 archived refutations of this run on a 2-core dev box,
+`--strict-time 120`, `--jobs 1`:
+
+| | 2026-09-23 | previous HEAD | with `max_proof_nodes` |
+|---|---:|---:|---:|
+| `VerifiedGood` | 152 | 189 | **193** (89.8 %) |
+| `Unknown` | 57 | 25 | **22** |
+| `VerifiedBad` | 5 | 0 | **0** |
+| killed (wall clock) | 0 | 1 | **0** |
+
+The four that moved are exactly the three node-limit rows plus the killed one,
+and all four now certify on the dev box: `SWV406+1` (657 454 formulas) in
+98.9 s / 4.8 GB, `MGT079+1` (227 551) in 26.4 s / 970 MB, `SET017+1` (119 335)
+in 14.4 s / 660 MB, `KRS234+1` (103 464) in 13.8 s / 531 MB.
+Cost of the whole re-audit: **310 s wall, 4.77 GB peak RSS** — re-auditing an
+archived run is not remote work.
+
+Reasons for the residual 22 (one row per proof):
 
 | count | reason | status |
 |---:|---|---|
 | 10 | `demodulation` node exceeds the strict rewrite-step limit | **fixed, awaiting re-measurement** |
 | 5 | `demodulation` replay could not reach the conclusion within the implemented search | **fixed, awaiting re-measurement** |
 | 3 | `demodulation` intermediate clause exceeds the strict size bound | **fixed, awaiting re-measurement** |
-| 3 | proof exceeds the kernel's 100 000-node limit (`SET017+1` 119 k, `KRS234+1` 103 k, `MGT079+1` 228 k) | open |
 | 3 | a `fof_nnf` step whose parent's NNF exceeds the 100 000-node budget (`BIO006+1`, `CSR115+8`, `CSR116+19`) | open, deliberate |
 | 1 | `ac_superposition` replay incomplete | open |
 
-The 26th proof, `feq/SWV406+1` (170 MB), was killed on the 70 s wall clock, so it
-never produced a verdict at all.
+Re-auditing the *archived* proofs cannot close the 18 demodulation rows, and
+the reason matters: those proofs predate the `demodulation_steps(...)`
+annotation, so replaying them exercises the fallback search path. Only a fresh
+search emits the annotation the new replay path consumes. That is why a fresh
+campaign is a remote item and the re-audit above is not — see
+[`guides/remote-only-work.md`](guides/remote-only-work.md) R1.
 
 The 18 demodulation rows are one gap seen three ways: the trace-replay work
 lands them in a bounded search, and the bounds added afterwards (rewrite steps,
@@ -278,8 +314,13 @@ proofs exceed the 10 MB output floor the CASC rules state. The tail is
 AVATAR-dominated — about half those nodes are `avatar_split_clause`
 certificates. `--proof-bytes-limit` (default 8 MiB) omits an over-budget proof
 with a diagnostic instead of letting it be killed, and proof size is now in the
-`% SZS detail` telemetry. Full analysis and the reduction options:
-`docs/PROOF_SIZE_BUDGET.md`.
+`% SZS detail` telemetry. The default has never been measured against the real
+CASC allowance on the real hardware, and proof size depends on portfolio width
+as well as on the problem: `MGT079+1`'s 8-worker proof was 38.6 MB in this run
+and 21.2 MB in the 2026-09-30 FEQ campaign, while a fresh 2-worker run on the
+same problem yields 2.8 MB. Full analysis and the reduction options:
+`docs/PROOF_SIZE_BUDGET.md`; the outstanding measurement:
+[`guides/remote-only-work.md`](guides/remote-only-work.md) R4.
 
 ---
 
@@ -287,6 +328,21 @@ with a diagnostic instead of letting it be killed, and proof size is now in the
 
 Corrected here so they are not read as current:
 
+- **`campaign-feq-W8C16J2-20260930` produced no measurement.** Two `casc.sh`
+  processes were launched concurrently — one `--edition casc-30`, one
+  `--edition casc-j13` — into the same `--output` directory. They overwrote each
+  other's `run.csv` (both truncate with `>`), `run_meta.*`, raw artifacts and
+  archived proofs, so 256 of 600 rows collided and 78 of 144 refutations were
+  never checked at all. `run_meta.txt` was won by the `casc-j13` process, so the
+  audit resolved every row against the `casc-j13` corpus: the five
+  `VerifiedBad` are `casc-30` leaves checked against `casc-j13` problems, and
+  every leaf reproduces its own edition's text exactly. The campaign summary's
+  `88.1 % certified` also divided by only the five statuses it knew about; over
+  all refutations the figure was 41.0 %. Treat the directory as void and re-run
+  FEQ as one edition per directory. Diagnostic: `casc.sh` does not refuse a
+  non-empty `--output`, and `audit_casc_proofs::find_problem` ignores the
+  per-row `edition` column. Both are unfixed. See
+  [`guides/remote-only-work.md`](guides/remote-only-work.md).
 - `docs/PROOVER_2026.md` claims `138/138` and `150/150`. Both figures are now
   reproduced on a 4-core box at 20 s per proof, but the earlier ones were
   measured on 8-core competition hardware; treat the hardware line in §1 as part
