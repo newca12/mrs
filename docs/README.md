@@ -20,6 +20,7 @@ corpus, command, hardware, and environment.
 | Choose or study a schedule | [Schedule reference](reference/schedules.md) |
 | Run CASC-style experiments | [Benchmarking guide](guides/benchmarking.md) |
 | Know what cannot be measured on a dev box | [Work that needs the remote host](guides/remote-only-work.md) |
+| Know what is known-broken and not being fixed | [Unresolved issues](policies/unresolved-issues.md) |
 | Measure search speed on this machine | [Fixed-work performance probe](results/perf/README.md) |
 | Verify TSTP proofs | [ProoVer guide](guides/proover.md) |
 | Understand the trust boundary | [Trust and verification](reference/trust-and-verification.md) |
