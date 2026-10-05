@@ -26,6 +26,9 @@ pub struct Prepared {
     /// NNF / Skolemization / conjecture-negation steps, for the TSTP proof.
     pub provenance: Vec<Clause>,
     pub meta: MetaInput,
+    /// Include resolution errors are retained so callers can warn the user or
+    /// mark a corpus row as a partial input instead of silently analysing it.
+    pub include_error: Option<String>,
     #[allow(dead_code)] // read by the pre-phase wiring added below
     pub has_conjecture: bool,
 }
@@ -62,20 +65,19 @@ pub fn prepare(
         }
     }
 
-    if !problem.includes.is_empty()
+    let include_error = if !problem.includes.is_empty()
         && let Some(path) = problem_path
     {
         let base_dir = Path::new(path).parent().unwrap_or(Path::new("."));
         let tptp_root: Option<PathBuf> = std::env::var("TPTP").ok().map(PathBuf::from);
-        // A failed include is reported by the caller; the top-level formulas are
-        // still clausified, so the analysis stays meaningful on a partial view.
-        let _ = crate::include::resolve_and_lower(
-            problem,
-            &mut lowered,
-            base_dir,
-            tptp_root.as_deref(),
-        );
-    }
+        // Keep the established behavior of searching the resolvable top-level
+        // formulas after an include failure, but surface that the view is partial.
+        crate::include::resolve_and_lower(problem, &mut lowered, base_dir, tptp_root.as_deref())
+            .err()
+            .map(|error| error.to_string())
+    } else {
+        None
+    };
 
     let (clauses, provenance) = clausify(&mut lowered);
     let has_conjecture = !lowered.conjectures.is_empty();
@@ -84,6 +86,7 @@ pub fn prepare(
         clauses,
         provenance,
         meta,
+        include_error,
         has_conjecture,
     }
 }

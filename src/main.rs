@@ -501,6 +501,11 @@ fn main() {
     };
     let resolved_includes = problem.includes.len();
     let prepared = pipeline::prepare(&problem, Some(&path), input_bytes);
+    if let Some(error) = &prepared.include_error {
+        info!("Warning: include resolution failed: {error}");
+    } else if resolved_includes > 0 {
+        info!("% Resolved {} include directive(s)", resolved_includes);
+    }
     let lowered = prepared.lowered;
     let prephase_meta = prepared.meta;
     let all_clauses = prepared.clauses;
@@ -509,10 +514,6 @@ fn main() {
     // the generator the clausification walked: inference steps get ids from it
     // after every input clause is already numbered.
     let id_gen = lowered.id_gen.clone();
-    if resolved_includes > 0 {
-        info!("% Resolved {} include directive(s)", resolved_includes);
-    }
-
     let has_logical_formulas = !problem.includes.is_empty()
         || problem.formulas.iter().any(|f| {
             match f {

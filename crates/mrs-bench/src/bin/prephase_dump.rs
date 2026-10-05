@@ -128,17 +128,25 @@ fn main() {
     // dump of that division dies at the OOM killer with no output at all.
     if let Some(path) = child {
         let row = analyze_file(Path::new(&path));
-        // Four fields, matching what `analyze_isolated` splits: the parent splits
-        // off path, status and detail before taking the analysis row. A child
-        // that omits `detail` shifts every column of the analysis by one, and the
-        // parent's own `detail: String::new()` then overwrites the column that
-        // shifted into its place, so the loss is silent.
+        let empty_probe = if std::env::var_os("PREPHASE_PROBE").is_some() {
+            ",".repeat(
+                mrs_search::prephase::probe_columns()
+                    .len()
+                    .saturating_sub(1),
+            )
+        } else {
+            String::new()
+        };
+        // NUL-delimited fields preserve commas in the analysis CSV while keeping
+        // path, status, detail, analysis, and probe rows unambiguous. The former
+        // comma-based protocol silently shifted columns when detail was omitted.
         println!(
-            "{},{},{},{}",
+            "{}\0{}\0{}\0{}\0{}",
             row.path,
             row.status,
             row.detail,
-            row.csv.unwrap_or_else(empty_row)
+            row.csv.unwrap_or_else(empty_row),
+            row.probe.unwrap_or(empty_probe)
         );
         return;
     }
@@ -248,15 +256,24 @@ fn main() {
     for (_, row) in &rows {
         *counts.entry(row.status.clone()).or_default() += 1;
         let csv = row.csv.clone().unwrap_or_else(empty_row);
+        let empty_probe = ",".repeat(
+            mrs_search::prephase::probe_columns()
+                .len()
+                .saturating_sub(1),
+        );
         let probe = if with_probe {
-            row.probe.as_deref().unwrap_or("")
+            row.probe.as_deref().unwrap_or(&empty_probe)
         } else {
             ""
         };
         let _ = writeln!(
             file,
             "{},{},{},{}{}",
-            row.path, row.status, row.detail, csv, probe
+            csv_field(&row.path),
+            csv_field(&row.status),
+            csv_field(&row.detail),
+            csv,
+            probe
         );
     }
     eprintln!("[dump] wrote {} rows to {}", rows.len(), out.display());
@@ -286,6 +303,14 @@ fn empty_row() -> String {
         })
         .collect::<Vec<_>>()
         .join(",")
+}
+
+fn csv_field(value: &str) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
 }
 
 fn collect(root: &Path) -> Vec<PathBuf> {
@@ -339,8 +364,11 @@ fn analyze_isolated(path: &Path, cap_mb: u64, _jobs: usize) -> Row {
             // RLIMIT_AS caps address space, which is what a runaway clausification
             // grows. RSS would be the wrong knob: the prover reserves worker
             // stacks up front and RLIMIT_AS charges the reservation.
-            libc::setrlimit(libc::RLIMIT_AS, &limit);
-            Ok(())
+            if libc::setrlimit(libc::RLIMIT_AS, &limit) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
         });
     }
     let output = match command.spawn().and_then(|child| child.wait_with_output()) {
@@ -355,31 +383,31 @@ fn analyze_isolated(path: &Path, cap_mb: u64, _jobs: usize) -> Row {
             };
         }
     };
-    let owned: Option<(String, String)> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .next()
-        .map(|line| line.to_string())
-        .and_then(|line| {
-            let mut fields = line.splitn(4, ',');
-            let _ = fields.next();
-            match (fields.next(), fields.next(), fields.next()) {
-                (Some(status), Some(_detail), Some(csv)) => {
-                    Some((status.to_string(), csv.to_string()))
-                }
-                _ => None,
-            }
-        });
+    let mut fields = output.stdout.splitn(5, |byte| *byte == 0);
+    let owned = match (
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+    ) {
+        (Some(_path), Some(status), Some(detail), Some(csv), Some(probe)) => Some((
+            String::from_utf8_lossy(status).into_owned(),
+            String::from_utf8_lossy(detail).into_owned(),
+            String::from_utf8_lossy(csv).into_owned(),
+            String::from_utf8_lossy(probe).trim_end().to_string(),
+        )),
+        _ => None,
+    };
     match owned {
-        Some((status, csv)) => Row {
+        Some((status, detail, csv, probe)) => Row {
             path: path.to_string_lossy().into_owned(),
-            status: match status.as_str() {
-                "ok" | "empty_after_lowering" => status,
-                // A child that died is a resource outcome, not a parse outcome.
-                _ => "resource_limit".to_string(),
-            },
-            detail: String::new(),
+            // Preserve failures the child reported. Only a child that died
+            // before it could produce a row is classified as a resource limit.
+            status,
+            detail,
             csv: Some(csv),
-            probe: None,
+            probe: Some(probe),
         },
         None => Row {
             path: path.to_string_lossy().into_owned(),
@@ -427,7 +455,9 @@ fn analyze_file(path: &Path) -> Row {
             };
         }
     };
-    let prepared = mrs::pipeline::prepare(&problem, Some(&path.to_string_lossy()), None);
+    let input_bytes = fs::metadata(path).ok().map(|metadata| metadata.len());
+    let prepared = mrs::pipeline::prepare(&problem, Some(&path.to_string_lossy()), input_bytes);
+    let include_error = prepared.include_error.clone();
     let mut meta = prepared.meta;
     let (header_status, header_rating) = mrs_prephase::parse_header(&text);
     meta.header_status = header_status;
@@ -440,7 +470,9 @@ fn analyze_file(path: &Path) -> Row {
         .to_string();
     let analysis =
         mrs_prephase::analyze(&name, &meta, &prepared.clauses, &prepared.lowered.symbols);
-    let status = if prepared.clauses.is_empty() {
+    let status = if include_error.is_some() {
+        "include_error"
+    } else if prepared.clauses.is_empty() {
         "empty_after_lowering"
     } else {
         "ok"
@@ -457,7 +489,10 @@ fn analyze_file(path: &Path) -> Row {
     Row {
         path: path.to_string_lossy().into_owned(),
         status: status.to_string(),
-        detail: String::new(),
+        detail: include_error
+            .unwrap_or_default()
+            .replace(',', ";")
+            .replace('\n', " "),
         csv: Some(analysis.csv_row()),
         probe: probe.as_ref().map(probe_columns_row),
     }
