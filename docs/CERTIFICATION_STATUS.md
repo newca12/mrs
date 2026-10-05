@@ -241,6 +241,52 @@ Phase 1 is the expensive half — every problem at the full wall clock — and
 nothing in the audit depends on the search having just finished, so a run
 directory is enough to re-audit against the current kernel.
 
+### FEQ campaigns of 2026-10-02, and the kernel-limit work
+
+Two FEQ campaigns were audited on 2026-10-02 and, unlike the runs above, they
+were audited *twice*: once by the build of that day and once after the
+kernel-limit work on `cert/feq-kernel-limits`. Both audits replay the same
+retained proofs, so the comparison is like for like.
+
+| campaign | audited before | audited now |
+|---|---:|---:|
+| `campaign-cascj13-feq-W8C8J1-20261002` (66 proofs) | 47 `VerifiedGood`, **16 `VerifiedBad`**, 3 `Unknown` | **64 `VerifiedGood`, 0 `VerifiedBad`**, 2 `Unknown` |
+| `campaign-casc30-feq-W8C8J1-20261002` (99 proofs) | 90 `VerifiedGood`, 8 `Unknown`, 1 `Timeout` | **93 `VerifiedGood`**, 6 `Unknown` |
+
+The casc-j13 `VerifiedBad` column is the point. Sixteen refutations were being
+reported as **broken proofs** when they are sound, and the cause was one
+comparison: `alpha_equiv` pairs `And`/`Or` operands without flattening the
+connective, so `A & B & C` and `C & B & A` compare unequal. A proof leaf is a
+re-serialisation of its cited axiom, not a copy of it, so every `%include`
+problem whose axiom grouped its conjuncts differently was refused. All 16 were
+confirmed to be AC-permutations of their cited axioms by a canonicaliser written
+independently of the kernel before the comparison changed, and the fix adds the
+AC laws of `&`/`|` — valid in every model — at named-leaf matching only. The
+global `alpha_equiv` contract is unchanged and a test pins it. Full write-up,
+including why this was not a limit and why widening here is sound:
+[`policies/unresolved-issues.md`](policies/unresolved-issues.md) UI-4.
+
+Eight rows remain undecided across the two campaigns, in two families, and
+neither is a ceiling that can be raised:
+
+* **Five** are `cnf_transformation` steps whose cited definitions have bodies
+  over blocks the matcher cannot tell apart. The discriminator is which source
+  variables each block uses, and the kernel does not have that information:
+  `LowerCtx` numbers variables per formula, so two definitions over the same
+  block shape get identical `VarId`s and the "is this my own block" test cannot
+  succeed. Fixing it means changing the kernel's variable model, not a limit.
+* **Three** are `ALG102+1` c391, `ALG104+1` c281 and `ALG127+1` c199, whose
+  sources expand combinatorially into clauses. `ALG127+1` reaches 12.3 GB and
+  34 s at a 2 000 000-clause ceiling without finishing, so no ceiling helps; the
+  whole-source expansion is the wrong algorithm for them.
+
+Details and the measurements: UI-7.
+
+`ALG049+1` deserves its own line because "certifies" and "certifies in budget"
+are different claims. It was the casc-30 `Timeout` and now certifies — in 396 s
+and 777 MB, down from over 900 s. The campaign's per-proof kernel budget is
+120 s, so a fresh audit of that campaign will still record it as `Timeout`.
+
 ### Fast invariant
 
 `crates/mrs-proover/tests/mutation_sweep.rs` keeps seven real `mrs` proofs

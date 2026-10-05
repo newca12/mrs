@@ -316,27 +316,30 @@ different edition answer table; this is not a controlled comparison of grading
 inputs. Before re-running, produce and validate the casc-j13 answer file and
 verify expected-status counts against the edition's official status sources.
 
-### R10 — Strict structural leaf matching rejects some equivalent included axioms
+### R10 — Strict structural leaf matching rejects some equivalent included axioms — RESOLVED
 
-The archived `campaign-cascj13-feq-W8C8J1-20261002` audit reports 16 leaf
-formula mismatches on `%include` problems. They reportedly reproduce against
-either edition's axiom files, which suggests these rows are distinct from the
-answer-table grading issue above. Because the campaign artifacts are not
-committed, reproduce/audit them before treating the exact count as a
-repository-wide fact.
+**Not remote, and not a remote item any more.** The artifacts were reachable
+after all, and the finding was reproduced and fixed on
+`cert/feq-kernel-limits`.
 
-The failing comparison is structural alpha-equivalence
-(`mrs_core::alpha::alpha_equiv`), which compares the binary connective trees.
-The archived formulas appear logically equivalent after
-reordering/reassociation of multi-operand connectives, but the full
-proof/problem artifacts are needed to independently verify every operand and
-binder. Full analysis and bounded repro in
+`mrs-proover --strict` over the retained proofs of
+`campaign-cascj13-feq-W8C8J1-20261002` reproduces the archived row for row --
+47 `VerifiedGood`, 16 `VerifiedBad`, 3 `Unknown` -- so the count was not stale
+and the rows were distinct from the answer-table grading issue above. All 16
+leaves were then checked against their cited axioms by a canonicaliser written
+from the TPTP grammar rather than from the kernel (de Bruijn indices for bound
+variables, flattened and sorted `&`/`|`, mirrored `<=>` and `=`, `<=` as `=>`).
+All 16 are AC-permutations of their cited axiom.
+
+Fixed by adding the AC laws of `&`/`|` to the *leaf* comparison only;
+`mrs_core::alpha::alpha_equiv` is unchanged and a test pins that it still
+refuses the archived pair. The campaign now audits 64/66 `VerifiedGood` with 0
+`VerifiedBad`. Full write-up and repro in
 [`unresolved-issues.md`](../policies/unresolved-issues.md) **UI-4**.
 
-No checker behavior is changed by this record. The ordinary assertions now pin
-the current structural matcher behavior, and the included-leaf fixture pins the
-observed mismatch; those tests do not establish logical equivalence of the
-archived formulas by themselves.
+The eight FEQ rows that remain are a different question, and two of them are
+*not* remote either: they need a change to the kernel's variable model and a
+different CNF expansion algorithm respectively. See **UI-7**.
 
 ---
 
