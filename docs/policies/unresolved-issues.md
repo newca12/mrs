@@ -34,13 +34,14 @@ what is blocked on hardware rather than on knowledge.
 | | |
 |---|---|
 | Status | Open, not scheduled |
-| Severity | 4 of 700 refutations lose `VerifiedGood`; 0 `VerifiedBad` |
-| Soundness | **Not a soundness problem.** Every refutation is genuine; the prover's conclusion is entailed, just not by the inference it cites. |
-| Blocks | Nothing. Cost is certification rate only. |
+| Severity | The examined examples lose `VerifiedGood`; no `VerifiedBad` |
+| Soundness | No `VerifiedBad` was recorded. An under-cited inference node alone does not establish that the final refutation is sound. |
+| Blocks | None identified; evidence does not establish a hardware blocker. |
 
 ### Observation
 
-The strict kernel refuses a small number of `ac_superposition` nodes:
+The strict kernel's archived campaign audit refused a small number of
+`ac_superposition` nodes:
 
 ```
 % SZS status Unknown : node c431338: ac_superposition replay is incomplete:
@@ -48,8 +49,9 @@ The strict kernel refuses a small number of `ac_superposition` nodes:
 ```
 
 One problem in casc-30 UEQ (`KLE145-10`, node `c431338`) and two in casc-j13 UEQ
-(`LAT044-1` node `c659171`, `LAT241-10` node `c53874`). Across both editions
-that is 4 of 700 refutations, costing them their `VerifiedGood`.
+(`LAT044-1` node `c659171`, `LAT241-10` node `c53874`) appeared in the examined
+proofs. The campaign counts were not independently re-audited to establish a
+cross-edition total, so this register does not claim a current 4/700 rate.
 
 Node ids are **not stable across runs of the same problem** — the same
 `KLE145-10` node was observed as `c431338`, `c411616`, `c426189`, `c440158`,

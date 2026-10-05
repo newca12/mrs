@@ -7339,6 +7339,11 @@ fn verify_ac_normalization(
         }
     }
 
+    // Exact alpha-equivalence is cheaper and does not depend on the bounded
+    // AC matcher. Preserve that proof path even when the AC budget is zero.
+    if clause_alpha_equiv(&source, &goal) {
+        return KernelVerdict::Certified;
+    }
     if !commutative.is_empty() || !associative.is_empty() {
         let exhausted = std::cell::Cell::new(false);
         if ac_clause_alpha_equiv(
@@ -7358,13 +7363,10 @@ fn verify_ac_normalization(
             ));
         }
     }
-    if clause_alpha_equiv(&source, &goal) {
-        KernelVerdict::Certified
-    } else {
-        KernelVerdict::Inconclusive(
-            "ac_normalization replay could not establish AC-equivalence within the implemented search".into(),
-        )
-    }
+    KernelVerdict::Inconclusive(
+        "ac_normalization replay could not establish AC-equivalence within the implemented search"
+            .into(),
+    )
 }
 
 /// Shape of a unit equality axiom recognised as commutativity or associativity.
@@ -7509,6 +7511,12 @@ fn ac_clause_alpha_equiv(
                     )
                 },
             );
+            // The recursive matcher also stops at the shared step ceiling.
+            // It cannot distinguish that stop from an ordinary mismatch, so
+            // recover the distinction here while the step counter is visible.
+            if !matched && *steps >= limits.max_equivalence_steps {
+                exhausted.set(true);
+            }
             used[right_index] = false;
             if matched {
                 return true;
@@ -8458,6 +8466,12 @@ fn verify_ac_superposition(
         background_commutative,
         background_associative,
     );
+    // A successful ordinary superposition replay already proves the node from
+    // its first two cited parents. Extra AC parents and their bounded replay
+    // must not turn that established proof into an inconclusive result.
+    if inference == KernelVerdict::Certified {
+        return inference;
+    }
     let source = match clause_from_formula(&parents[0], limits) {
         Some(clause) => clause,
         None => return KernelVerdict::Inconclusive("AC source is not a clause".into()),
@@ -11683,6 +11697,105 @@ mod tests {
                 &std::collections::HashSet::new(),
                 &std::collections::HashSet::new(),
             ),
+            KernelVerdict::Certified
+        );
+    }
+
+    #[test]
+    fn ac_superposition_replay_reports_equivalence_budget_exhaustion() {
+        let mut symbols = SymbolTable::new();
+        let f = symbols.intern("f");
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let atom = |left, right| Literal {
+            positive: true,
+            atom: Atom::eq(left, right),
+        };
+        let left = vec![atom(
+            Term::app(f, vec![Term::constant(a), Term::constant(b)]),
+            Term::constant(a),
+        )];
+        let right = vec![atom(
+            Term::app(f, vec![Term::constant(b), Term::constant(a)]),
+            Term::constant(a),
+        )];
+        let commutative = [f].into_iter().collect();
+        let limits = VerificationLimits {
+            max_equivalence_steps: 0,
+            ..VerificationLimits::default()
+        };
+
+        assert_eq!(
+            ac_superposition_replay(&left, &right, &right, &commutative, &HashSet::new(), limits),
+            AcReplay::BudgetExhausted
+        );
+    }
+
+    #[test]
+    fn ac_superposition_surfaces_equivalence_budget_exhaustion() {
+        let mut symbols = SymbolTable::new();
+        let f = symbols.intern("f");
+        let g = symbols.intern("g");
+        let p = symbols.intern("p");
+        let q = symbols.intern("q");
+        let a = Term::constant(symbols.intern("a"));
+        let b = Term::constant(symbols.intern("b"));
+        let source = Formula::atom(Atom::eq(Term::app(g, vec![Term::var(0)]), Term::var(0)));
+        let target = Formula::or(vec![
+            Formula::atom(Atom::Pred(p, vec![Term::app(g, vec![a.clone()])])),
+            Formula::atom(Atom::Pred(
+                q,
+                vec![Term::app(g, vec![Term::app(f, vec![b.clone(), a.clone()])])],
+            )),
+        ]);
+        let conclusion = Formula::or(vec![
+            Formula::atom(Atom::Pred(p, vec![a.clone()])),
+            Formula::atom(Atom::Pred(
+                q,
+                vec![Term::app(g, vec![Term::app(f, vec![a.clone(), b.clone()])])],
+            )),
+        ]);
+        let commutativity = Formula::atom(Atom::eq(
+            Term::app(f, vec![Term::var(1), Term::var(2)]),
+            Term::app(f, vec![Term::var(2), Term::var(1)]),
+        ));
+        let limits = VerificationLimits {
+            max_equivalence_steps: 0,
+            ..VerificationLimits::default()
+        };
+
+        assert!(matches!(
+            verify_ac_superposition(
+                &[source, target, commutativity],
+                &conclusion,
+                limits,
+                &HashSet::new(),
+                &HashSet::new(),
+            ),
+            KernelVerdict::Inconclusive(reason)
+                if reason.contains("exhausted the AC-equivalence budget")
+        ));
+    }
+
+    #[test]
+    fn ac_normalization_keeps_exact_match_when_ac_budget_is_zero() {
+        fn lower(input: &str, symbols: &mut SymbolTable) -> Formula {
+            let problem = parse_tptp(input).expect("formula parses");
+            lower_annotated(symbols, &problem.formulas[0], VerificationLimits::default())
+                .expect("formula lowers")
+        }
+
+        let mut symbols = SymbolTable::new();
+        let source = lower("cnf(source, plain, f(X,Y) = X).", &mut symbols);
+        let conclusion = lower("cnf(conclusion, plain, f(X,Y) = X).", &mut symbols);
+        let commutativity = lower("cnf(comm, axiom, f(X,Y) = f(Y,X)).", &mut symbols);
+        let limits = VerificationLimits {
+            max_equivalence_steps: 0,
+            ..VerificationLimits::default()
+        };
+
+        assert_eq!(
+            verify_ac_normalization(&[source, commutativity], &conclusion, limits),
             KernelVerdict::Certified
         );
     }
@@ -15035,6 +15148,38 @@ mod tests {
                      cnf(m1, plain, m(sk(es),es), inference(resolution, [status(thm)], [s,nd])).\n\
                      cnf(bot, plain, $false, inference(resolution, [status(thm)], [m1,nm])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn ac_superposition_preserves_plain_certification_when_ac_budget_is_zero() {
+        let mut symbols = SymbolTable::new();
+        let f = symbols.intern("f");
+        let g = symbols.intern("g");
+        let p = symbols.intern("p");
+        let a = Term::constant(symbols.intern("a"));
+        let x = Term::var(0);
+        let source = Formula::atom(Atom::eq(Term::app(f, vec![x.clone()]), x.clone()));
+        let target = Formula::atom(Atom::Pred(p, vec![Term::app(f, vec![a.clone()])]));
+        let conclusion = Formula::atom(Atom::Pred(p, vec![a]));
+        let commutativity = Formula::atom(Atom::eq(
+            Term::app(g, vec![Term::var(1), Term::var(2)]),
+            Term::app(g, vec![Term::var(2), Term::var(1)]),
+        ));
+        let limits = VerificationLimits {
+            max_equivalence_steps: 0,
+            ..VerificationLimits::default()
+        };
+
+        assert_eq!(
+            verify_ac_superposition(
+                &[source, target, commutativity],
+                &conclusion,
+                limits,
+                &HashSet::new(),
+                &HashSet::new(),
+            ),
+            KernelVerdict::Certified
+        );
     }
 
     #[test]

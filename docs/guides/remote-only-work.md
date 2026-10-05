@@ -219,6 +219,11 @@ pin and named `demodulation.rs:615` as the fix. Both were wrong:
 - the work needs one ~90 s solve on this box, because an invariant assertion
   costs nothing while the traces I used cost 668 293 lines / 271 MB.
 
+The under-cited conclusion is an observed kernel-replay mismatch, not evidence
+that the prover's final refutation is unsound. The claimed 4/700 certification
+rate was not independently re-audited and should not be used as a current
+measurement.
+
 Kept as a stub so the original claim is not rediscovered and re-believed. The
 real entry is UI-1.
 
