@@ -247,6 +247,31 @@ RAM, or setting an explicit `MRS_HARDWARE` memory allowance so the ceiling is a
 policy decision recorded in the run rather than a property of whichever machine
 answered the job.
 
+### R8 — Optional 8-worker reproduction of the AC-superposition mismatch
+
+The local debug attempts (`--workers 2`) timed out on KLE145-10 after 60.1 s
+and LAT044-1 after 45.1 s, both at 1.36 GB peak, before reaching the mismatch.
+This item is the fallback if further debugging should reproduce it; do not run a
+full campaign or enable inference tracing.
+
+> **Blocked by:** the reproduction previously used 8 workers and peaked at
+> **8.9 GB RSS**. The campaign host must have 8 available physical cores and at
+> least 12 GiB available memory before starting; skip the run if either limit
+> is not met. Do not run it alongside another benchmark.
+
+```bash
+cargo build --bin mrs
+MRS_HARDWARE=casc-sim MRS_MAX_MEMORY_MB=10000 \
+    ./target/debug/mrs --time 200 --workers 8 --schedule casc_ueq \
+    crates/mrs-bench/problems/casc-30/UEQ/KLE145-10.p
+```
+
+Record the git revision, rustc version, `free -h`, core allocation, and whether
+the debug assertion fired. `casc-sim` pins the process to 8 physical cores; the
+explicit 10 GB memory cap leaves headroom below the 12 GiB minimum. This single
+bounded problem run is diagnostic only; it does not produce a CASC coverage
+number.
+
 
 
 

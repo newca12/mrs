@@ -151,24 +151,40 @@ evidence yet distinguishes the two copies as the culprit.
 
 ### Next step
 
-An invariant assertion at the three superposition sites
-(`given_clause.rs:2078`, `:2130`, `:2237`):
+The search now has a debug-only invariant assertion on both indexed-partner
+superposition paths (`given_clause.rs`, the given-as-equation-source and
+given-as-target-source loops). Bounded local attempts on this 2-core dev box
+used `--workers 2`; KLE145-10 timed out after 60.1 s and LAT044-1 after 45.1 s,
+both at 1.36 GB peak RSS, without reaching a mismatching partner. These are
+inconclusive, not reproductions.
 
 > For every clause emitted with rule `superposition`/`ac_superposition`, the
 > literals used were identical in `clause_store` and in `LiteralIndex` at the
 > moment of inference.
 
-It fires once, prints both literal sets, and needs one solve — no remote host.
+It fires only on divergence and prints the clause id and both sources. A unit
+test inserts a deliberately stale processed-index copy and confirms the
+assertion detects it. The assertion and focused test run locally; they do not
+require the 8-worker reproduction.
 
 ```bash
-# Reproduces here in ~90 s at --workers 8, 8.9 GB peak.
-./target/release/mrs --time 200 --workers 8 --schedule casc_ueq \
+# Focused reproduction, respecting this dev box's 2 physical cores and RAM.
+# Previously measured: timed out after 60 s (1.36 GB peak) before the mismatch.
+nix develop -c cargo build --bin mrs
+./target/debug/mrs --time 200 --workers 2 --schedule casc_ueq \
     crates/mrs-bench/problems/casc-30/UEQ/KLE145-10.p
 
-# Then check the single proof: 0.03 s.
-./target/release/mrs-proover --problems-dir <dir-with-KLE145-10.s> \
-    --workers 1 --time 300 --strict KLE145-10.s
+# If repeating locally, cap at --time 60 and --workers 2; this is a diagnostic,
+# not a CASC coverage measurement. Do not raise the worker count on this host.
 ```
+
+**Remote-only reproduction, only if the local run fails to trigger the
+assertion:** use the campaign host with 8 physical cores and at least 12 GiB
+available RAM; no trace is needed. Run the same debug build and problem command
+with `--workers 8`, capped at 200 s. Record the `rustc` version, git revision,
+available RAM and whether the assertion fired. Do not run a full CASC sweep for
+this diagnosis. The earlier 8-worker solve was measured at 8.9 GB peak, so a
+host with less headroom is not a suitable repro host.
 
 ### Two traps that cost real time here
 

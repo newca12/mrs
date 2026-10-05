@@ -817,6 +817,28 @@ fn detect_ac_symbols(
     (comm, assoc, to_remove, ac_axioms)
 }
 
+/// Debug-only consistency check for the two independent copies used in
+/// superposition: the active-index partner and its proof/search store entry.
+/// This intentionally avoids a verbose inference trace and fires only when
+/// the copies diverge.
+#[inline]
+fn assert_indexed_clause_matches_store(state: &SearchState, indexed: &IdClause, site: &str) {
+    #[cfg(debug_assertions)]
+    match state.clause_store.get(&indexed.id) {
+        Some(stored) => debug_assert_eq!(
+            indexed.literals, stored.literals,
+            "superposition partner differs between processed index and clause store at {site}; id={} indexed_source={:?} stored_source={:?}",
+            indexed.id.0, indexed.source, stored.source,
+        ),
+        None => panic!(
+            "superposition partner is absent from clause store at {site}; id={} indexed_source={:?}",
+            indexed.id.0, indexed.source,
+        ),
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = (state, indexed, site);
+}
+
 fn mark_ac_superposition(clause: &mut IdClause, ac_axiom_ids: &[ClauseId]) {
     let ClauseSource::Inference { rule, parents } = &mut clause.source else {
         return;
@@ -2030,6 +2052,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 candidate_targets.sort_unstable_by_key(|c| c.id);
 
                 for active in &candidate_targets {
+                    assert_indexed_clause_matches_store(state, active, "given-as-equation-source");
                     if sos_depth < u32::MAX
                         && given.distance >= sos_depth
                         && active.distance >= sos_depth
@@ -2201,6 +2224,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 candidate_sources.sort_unstable_by_key(|c| c.id);
 
                 for active in &candidate_sources {
+                    assert_indexed_clause_matches_store(state, active, "given-as-target-source");
                     if sos_depth < u32::MAX
                         && given.distance >= sos_depth
                         && active.distance >= sos_depth
@@ -3342,6 +3366,39 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["a", "b"]
         );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "superposition partner differs between processed index and clause store"
+    )]
+    fn superposition_partner_consistency_check_catches_stale_index_copy() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let clause = input_clause(
+            &mut ClauseIdGen::new(),
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            "p_a",
+            "axiom",
+        );
+        let mut state = SearchState::new(
+            vec![clause],
+            ClauseIdGen::new(),
+            Arc::new(SymbolConfig::default()),
+            Arc::new(symbols),
+            false,
+        );
+        let mut stale_copy = state
+            .clause_store
+            .values()
+            .next()
+            .expect("one input clause")
+            .clone();
+        stale_copy.literals[0].positive = false;
+        state.processed.insert(stale_copy.clone(), &state.term_bank);
+
+        assert_indexed_clause_matches_store(&state, &stale_copy, "test");
     }
 
     #[test]
