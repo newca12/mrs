@@ -7339,10 +7339,24 @@ fn verify_ac_normalization(
         }
     }
 
-    if (!commutative.is_empty() || !associative.is_empty())
-        && ac_clause_alpha_equiv(&source, &goal, &commutative, &associative, limits)
-    {
-        return KernelVerdict::Certified;
+    if !commutative.is_empty() || !associative.is_empty() {
+        let exhausted = std::cell::Cell::new(false);
+        if ac_clause_alpha_equiv(
+            &source,
+            &goal,
+            &commutative,
+            &associative,
+            limits,
+            &exhausted,
+        ) {
+            return KernelVerdict::Certified;
+        }
+        if exhausted.get() {
+            return KernelVerdict::Inconclusive(format!(
+                "ac_normalization replay exhausted the AC-equivalence budget ({} steps) before deciding",
+                limits.max_equivalence_steps
+            ));
+        }
     }
     if clause_alpha_equiv(&source, &goal) {
         KernelVerdict::Certified
@@ -7420,12 +7434,21 @@ pub fn classify_ac_axiom(left: &Term, right: &Term) -> Option<(mrs_core::SymbolI
     None
 }
 
+/// Whether two clauses are equal up to AC rearrangement and variable renaming.
+///
+/// `exhausted` reports whether the comparison ran out of
+/// `limits.max_equivalence_steps` rather than genuinely failing to match.
+/// The two are indistinguishable from the return value alone, and the caller
+/// needs to tell them apart: a budget stop is a limit of this checker, while a
+/// real mismatch is a claim about the proof. Both fail closed, so the flag
+/// only sharpens the diagnostic.
 fn ac_clause_alpha_equiv(
     left: &[Literal],
     right: &[Literal],
     commutative: &HashSet<mrs_core::SymbolId>,
     associative: &HashSet<mrs_core::SymbolId>,
     limits: VerificationLimits,
+    exhausted: &std::cell::Cell<bool>,
 ) -> bool {
     if left.len() != right.len() {
         return false;
@@ -7443,8 +7466,10 @@ fn ac_clause_alpha_equiv(
         associative: &HashSet<mrs_core::SymbolId>,
         steps: &mut usize,
         limits: VerificationLimits,
+        exhausted: &std::cell::Cell<bool>,
     ) -> bool {
         if *steps >= limits.max_equivalence_steps {
+            exhausted.set(true);
             return false;
         }
         if index == left.len() {
@@ -7480,6 +7505,7 @@ fn ac_clause_alpha_equiv(
                         associative,
                         steps,
                         limits,
+                        exhausted,
                     )
                 },
             );
@@ -7502,6 +7528,7 @@ fn ac_clause_alpha_equiv(
         associative,
         &mut 0,
         limits,
+        exhausted,
     )
 }
 
@@ -8323,7 +8350,8 @@ fn background_ac_fallback(
             background_commutative,
             background_associative,
             limits,
-        ) {
+        ) == AcReplay::Matched
+        {
             return true;
         }
     }
@@ -8467,15 +8495,18 @@ fn verify_ac_superposition(
         }
     }
 
-    if ac_superposition_replay(&source, &target, &goal, &commutative, &associative, limits) {
-        KernelVerdict::Certified
-    } else {
-        match inference {
+    match ac_superposition_replay(&source, &target, &goal, &commutative, &associative, limits) {
+        AcReplay::Matched => KernelVerdict::Certified,
+        AcReplay::BudgetExhausted => KernelVerdict::Inconclusive(format!(
+            "ac_superposition replay exhausted the AC-equivalence budget ({} steps) before deciding",
+            limits.max_equivalence_steps
+        )),
+        AcReplay::NotFound => match inference {
             KernelVerdict::Rejected(reason) => KernelVerdict::Inconclusive(format!(
                 "ac_superposition replay is incomplete: {reason}"
             )),
             other => other,
-        }
+        },
     }
 }
 
@@ -8577,7 +8608,14 @@ fn ac_resolution_replay(
                     resolvent.push(apply_substitution_literal(literal, &substitution));
                 }
             }
-            if ac_clause_alpha_equiv(&resolvent, goal, commutative, associative, limits) {
+            if ac_clause_alpha_equiv(
+                &resolvent,
+                goal,
+                commutative,
+                associative,
+                limits,
+                &std::cell::Cell::new(false),
+            ) {
                 return true;
             }
             let mut deduplicated = Vec::with_capacity(resolvent.len());
@@ -8586,12 +8624,29 @@ fn ac_resolution_replay(
                     deduplicated.push(lit.clone());
                 }
             }
-            if ac_clause_alpha_equiv(&deduplicated, goal, commutative, associative, limits) {
+            if ac_clause_alpha_equiv(
+                &deduplicated,
+                goal,
+                commutative,
+                associative,
+                limits,
+                &std::cell::Cell::new(false),
+            ) {
                 return true;
             }
         }
     }
     false
+}
+
+/// Result of replaying an AC superposition, distinguishing "no superposition
+/// of the cited parents yields the conclusion" from "the budget ran out before
+/// the comparison could decide".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AcReplay {
+    Matched,
+    NotFound,
+    BudgetExhausted,
 }
 
 fn ac_superposition_replay(
@@ -8601,7 +8656,8 @@ fn ac_superposition_replay(
     commutative: &HashSet<mrs_core::SymbolId>,
     associative: &HashSet<mrs_core::SymbolId>,
     limits: VerificationLimits,
-) -> bool {
+) -> AcReplay {
+    let exhausted = std::cell::Cell::new(false);
     let target_shift = max_var_clause(equation_clause).saturating_add(1);
     let mut shifted_target = target_clause.to_vec();
     shift_clause(&mut shifted_target, target_shift);
@@ -8658,15 +8714,26 @@ fn ac_superposition_replay(
                         }
                     }
                     if clause_alpha_equiv(&expected, goal)
-                        || ac_clause_alpha_equiv(&expected, goal, commutative, associative, limits)
+                        || ac_clause_alpha_equiv(
+                            &expected,
+                            goal,
+                            commutative,
+                            associative,
+                            limits,
+                            &exhausted,
+                        )
                     {
-                        return true;
+                        return AcReplay::Matched;
                     }
                 }
             }
         }
     }
-    false
+    if exhausted.get() {
+        AcReplay::BudgetExhausted
+    } else {
+        AcReplay::NotFound
+    }
 }
 
 fn ac_unify_terms(

@@ -206,6 +206,101 @@ crates/mrs-bench/perf_probe.sh --no-bank    # measure only
 
 Method and comparability rules: `docs/results/perf/README.md`.
 
+### R6 — Locate the prover site that emits an under-cited `ac_superposition` conclusion
+
+The symptom is fully characterised and reproduces in 90 s on this box; only the
+final step needs the campaign host.
+
+`KLE145-10` (CASC-30 UEQ) refutes here in 90.7 s at `--workers 8`, producing a
+199-node proof whose node `c411616` the strict kernel refuses:
+
+```
+cnf(c411616, plain, true = iteq(true, true,
+      leq(addition(one, X14), multiplication(strong_iteration(X14), one)), true),
+    inference(ac_superposition, [status(thm)], [c409250, c2118, c3, c21])).
+
+cnf(c412250, plain, true = leq(addition(one, X14), strong_iteration(X14)),
+    inference(demodulation, [status(thm),
+      demodulation_steps(rule(1, 0, [1]), rule(2, 0, [1, 1]))], [c411616, c7, c92])).
+```
+
+`c7` is `ifeq_axiom_002` (`X0 = ifeq(X1,X1,X0,X2)`) and `c92` is
+`multiplicative_right_identity` (`multiplication(X0,one) = X0`). Both are problem
+axioms, and both are applied to `c411616` **in the expanding direction** — `X`
+becomes `iteq(true,true,X,true)` and `X` becomes `X*one`. The very next proof node
+demodulates both away again. So the emitted conclusion is the true superposition
+conclusion plus two expanding rewrites by uncited problem axioms, and the search
+immediately undid them, which is why nothing downstream looks wrong.
+
+Two facts make this a prover bug rather than a checker limit:
+
+- The kernel's `AcReplay::NotFound` (not `BudgetExhausted`) proves the replay
+  exhausted every superposition position and orientation and genuinely found no
+  match. `max_equivalence_steps` was not hit. See the `AcReplay` enum added in
+  `crates/mrs-proof-kernel/src/lib.rs` on branch
+  `fix/ac-superposition-cite-folded-demodulators`.
+- Dumping the replay's own candidate shows the difference is **not** AC
+  permutation. Candidate:
+  `iteq(addition(X2,addition(X2,X3)), addition(X2,X3), leq(X2,addition(X2,X3)), true)`.
+  Goal: `iteq(true,true, leq(addition(one,X14), multiplication(strong_iteration(X14), one)), true)`.
+  The goal has `multiplication` where the candidate has `addition`.
+
+**What is still unknown: which code path applies the expanding rewrite and keeps
+the superposition's identity.** These were all read and all behave correctly, so
+the site is not among them:
+
+| candidate site | why it is not it |
+|---|---|
+| `mrs-calculus/src/superposition.rs` | no demodulation, simplification or folding anywhere in it |
+| `mrs-search/src/given_clause.rs:2874` forward demodulation | `demodulate_id_until` already returns a correctly attributed `demodulation` node (`demodulation.rs:452-466`) |
+| `state.rs:616` `ac_normalize_for_search` | `ac_normalize_clause` preserves `clause.id` and `clause.source` |
+| `mrs-core/src/term_bank.rs:467` `ac_normalize` | pure flatten/sort/rebuild; cannot introduce `multiplication` or an `iteq` shell |
+| condensation / DER / forward SR | each sets its own rule name when it fires |
+
+The one structural asymmetry that remains is `SearchState::store_clause`
+(`state.rs:333`), which does an **unconditional** `clause_store.insert` — last
+write wins — while `register_clause` (`state.rs:541`) uses `or_insert_with` and
+so is first-write-wins. `push_unprocessed` (`state.rs:371`) goes through
+`store_clause`. A clause rewritten in place and re-pushed would keep its id and
+its arena witness while its stored literals changed, which is exactly the observed
+shape.
+
+> **Blocked by:** the search. Every instrumented run costs 90 s on this box, and
+> the probes that would localise it are high-volume — a single unconditional
+> `store_clause` trace emitted 668 293 lines / 271 MB, and `/tmp` here is tmpfs,
+> so an unfiltered trace is a RAM-availability problem, not just a disk one. Note
+> also that `IdAtom`'s `Debug` prints `SymbolId(n)`, not the function name, so any
+> grep-based probe must resolve names through `SymbolTable::iter_names()` before
+> matching, or it will silently match nothing.
+
+Two ways to close it, cheapest first:
+
+```bash
+# 1. Cheapest: one targeted trace at the suspected overwrite, keyed on the clause
+#    id taken from the proof of the *same* run (ids are not stable across runs --
+#    observed 431338 / 411616 / 426189 / 440158 / 441748 / 449061 for the same
+#    node). Compare the literals passed to store_clause against the literals
+#    already in clause_store for that id, and write the diff somewhere off tmpfs.
+#
+# 2. Better: an invariant assertion in the prover rather than a trace. For every
+#    clause registered with rule superposition/ac_superposition, assert that the
+#    clause the DAG keeps for that id has literals equal to the ones the
+#    superposition produced. A debug_assert fires once, at the exact site, with
+#    no volume problem at all. This is the one to prefer.
+```
+
+Once the site is known the prover-side fix is small: either keep the expanded
+clause's own `demodulation` provenance, or stop the forward demodulator from
+taking the expanding orientation of a rule whose contracting orientation exists
+(`demodulation.rs:615` iterates whatever orientation the index hands it). The
+second is better — it removes the need to cite anything, because the conclusion
+then *is* the superposition.
+
+Note for whoever picks this up: `casc-30` UEQ scores 123/300 with 121 certified,
+and exactly **one** node in one proof is affected. This is not a soundness
+problem — the refutations are genuine — but it does cost 2 of 300 rows their
+`VerifiedGood`, and a prover that emits uncited steps will keep producing them.
+
 ---
 
 ## What is *not* remote — measured here, do it here
