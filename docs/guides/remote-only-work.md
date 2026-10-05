@@ -422,13 +422,13 @@ not a controlled comparison in the first place.
 Worth keeping together, because the per-division numbers are otherwise quoted
 from memory and four of these six are not comparable to each other.
 
-| division | n | budget | `verdict=ok` | rate | certified | unscoreable | host | `binary_sha256` | commit |
+| division | n | budget | `verdict=ok` | rate | certified | non-definitive expected | host | `binary_sha256` | commit |
 |---|---:|---:|---:|---:|---:|---:|---|---|---|
 | ueq | 300 | 240 s | 123 | 41.0% | 121 | 0 | teenf9901 | `a63d62fd` | `af983aca` |
-| fne | 100 | 240 s | 39 | 39.0% | — | 0 | mtsdev02 | `d0df62c2` | `af983aca` |
-| eps | 100 | 120 s | 44 | 44.0% | — | 0 | mtsdev02 | `d0df62c2` | `af983aca` |
+| fne | 100 | 240 s | 39 | 39.0% | not audited | 0 | mtsdev02 | `d0df62c2` | `af983aca` |
+| eps | 100 | 120 s | 44 | 44.0% | not audited | 0 | mtsdev02 | `d0df62c2` | `af983aca` |
 | feq | 400 | 240 s | 106 | 26.5% | **90** | 0 | mtsdev04 | `a644d9de` | `af983aca` |
-| epu | 100 | 120 s | 9 | 9.0% | 9 | 0 | mtsdev01 | `fa52c23d` | `fb55719c` |
+| epu | 100 | 120 s | 9 | 9.0% | 9 | **5** | mtsdev01 | `fa52c23d` | `fb55719c` |
 | icu | 101 | **480 s** | 3 | 3.0% | **3** | **44** | mtsdev02 | `d0df62c2` | `fb55719c` |
 
 Caveats that apply to this table — each of these has cost a wrong number:
@@ -437,18 +437,23 @@ Caveats that apply to this table — each of these has cost a wrong number:
   only and never consults the audit. In ICU, `EEE001+1` is `ok` with
   `strict_status = Unknown`. Use the `certified` column above, from
   `certification/audit.csv`.
-- **Two divisions have an unscoreable fraction.** 44 of ICU's 101 problems have
-  `expected = GaveUp`, which `casc.sh:810-811` maps to `unknown`, so ICU's
-  attainable ceiling is 57 and 3 is 5.3% of that, not 3.0%. See **UI-6**.
+- **Rows with inconclusive references are ungraded.** ICU has 44 `GaveUp`
+  references (the other expected statuses are decisive); its 3 `ok` rows are
+  5.3% of the 57 rows with decisive references. EPU has 2 `expected=Timeout`
+  rows as well as 3 `expected=GaveUp` rows, so its scoreable denominator is 95,
+  not 100: 9 `ok` is 9.5% of that subset. `casc.sh` maps all non-definitive
+  reference statuses to `verdict=unknown`. See **UI-6**.
 - **feq certifies 90, not 106.** 7 solves have no proof, over the 8 MiB
   `--proof-bytes-limit` (R4).
 - **Budgets differ by division**, following `--casc-times`: 480 s for icu,
   240 s for ueq/fne/feq, 120 s for eps/epu. Rates are not comparable across
   that split, and icu is not comparable to anything.
-- **Three hosts, four binary shas, two commits.** fne, eps and icu share binary
+- **Four hosts, four binary shas, two commits.** fne, eps and icu share binary
   `d0df62c2`; only ueq/feq/fne/eps share commit `af983acae`. See R7.
-- **epu's 9.0% is genuine and reproducible** — a second run on a different
-  binary and host solved exactly the same 9 problems. See **UI-5**.
+- **epu's 9/100 `ok` results reproduce**, but the raw percentage includes five
+  rows with non-definitive expected statuses. On the 95 rows with a decisive
+  reference, 9 `ok` is 9.5%. A second run on a different binary and host
+  solved the same nine problems. See **UI-5**.
 
 **Before comparing any two runs, check all four of:** problem-set intersection
 and size; per-problem `timeout`; `binary_sha256`; and host RAM. If the
