@@ -429,3 +429,171 @@ TPTP=crates/mrs-bench/problems/casc-j13 \
   target/release/mrs-proover --problems-dir <cert>/proofs/mrs/feq \
   --workers 1 --time 180 --strict SWV453+1.s
 ```
+
+## UI-5 — EPU: the equality InstGen route refuses 43% of the division, and the pre-pass earns nothing
+
+| | |
+|---|---|
+| Status | Open, not scheduled |
+| Severity | EPU scores **9/100 (9.0%)**, the weakest of the five entered divisions |
+| Soundness | Not a soundness issue. No refutation is lost. |
+
+### Observation
+
+`campaign-casc30-epu-W8C8J1-20261002` is a well-formed run: one `Total jobs:`,
+100/100 completed, `expected` populated for all 100 rows, and **9 `Unsatisfiable`
+all 9 `VerifiedGood`, 0 `Unknown`, 0 `VerifiedBad`**. It is also *reproducible*:
+`campaign-casc30-epu-W8C8J1-20260930` ran a different binary
+(`08fa4f1ffdf5` vs `fa52c23d73b3`) from a different commit (`c07cac9d` vs
+`fb55719c`) on a different host, and solved **exactly the same 9 problems**.
+Only 5 rows differ, all in the Timeout↔GaveUp band. So 9/100 is a real number,
+not noise.
+
+The division is dominated by very large inputs: median 828 clauses but a maximum
+of **696 691** (`HWV092-1`), 2 847 336 clauses in total. None use `%include`.
+
+### The pre-pass never once succeeds, and refuses 43 of 100 problems outright
+
+From the `% SZS detail` telemetry:
+
+| `instgen_fallback` | problems |
+|---|---|
+| `unsupported_epr_profile` | **43** |
+| `timeout` | 33 |
+| `max_instances_exceeded` | 15 |
+| `max_rounds_reached` | 3 |
+| (no telemetry) | 6 |
+
+`instgen_result` is only ever `fallback` (51) or `none` (43). **It is never a
+refutation.** All 9 solves came from the given-clause fallback:
+
+| solve | route | `instgen_result` |
+|---|---|---|
+| `LAT260-2`, `LAT261-2`, `LAT264-2`, `LAT265-2`, `SET856-2`, `PUZ008-2` | *(no pre-pass)* | — |
+| `PUZ036-1.005`, `SYN837-1` | `pure_relational_epr` | `fallback` (timeout) |
+| `HWV107-1` | `epr_equality` | `none` (refused outright) |
+
+`instgen_ms` totals **32.6 s across the whole division** (mean 346 ms, budget
+750 ms per problem) — about 0.3% of the division's wall clock. So the pre-pass
+costs little, but it also contributes nothing here, and it is not the reason
+EPU scores 9%.
+
+`crates/mrs-search/src/epr_ground.rs:36-41` already records the
+`unsupported_epr_profile` refusal rate for this corpus, so the shape is known.
+
+### A fourth exit path: the portfolio gives up with budget unspent
+
+Four problems end `GaveUp` several seconds **before** their wall clock, which no
+timeout does:
+
+| problem | `elapsed_ms` | wall | gap |
+|---|---|---|---|
+| `HWV092-1` | 10 817 | 19.6 s | **8.8 s** |
+| `HWV094-1` | 16 982 | 21.4 s | 4.4 s |
+| `HWV126-1` | 116 643 | 125.1 s | 8.4 s |
+| `HWV127-1` | 116 711 | 124.8 s | 8.0 s |
+
+All four report `timeout=0` (no worker hit its slice) and `passive=0`. Every
+other `GaveUp` in the division lands within 0.3 s of the wall. With
+`lrs_discarded > 0` and an empty queue, `given_clause.rs:3212` returns
+`GaveUp` — the incompleteness guard — so all 30 `GaveUp` rows are that guard
+firing, and these four fire it with time still on the clock.
+
+### Where the headroom is
+
+The 61 timeouts and 30 `GaveUp` rows are not evenly distributed. EPU's 9 solves
+are 6 sub-0.1 s trivialities plus 3 real proofs. The realistic lever is the
+large-input tail (`HWV*` at 155 k–697 k clauses), where a 120 s budget is
+dominated by clause loading rather than by search — `HWV092-1` retires 63 662
+clauses in 10.8 s and then stops. Before spending effort on the EPR profile,
+the question worth answering is whether any of the large-`HWV` problems are
+decidable in the time it takes to *load* them.
+
+## UI-6 — ICU: 44% of the division is unscoreable, and `verdict = ok` does not mean certified
+
+| | |
+|---|---|
+| Status | Open, not scheduled |
+| Severity | ICU scores **3/101**; the reference itself gives up on 44 of them |
+| Soundness | No unsound result. But the CSV invites one: see "verdict ≠ certified". |
+
+### Observation
+
+`campaign-casc30-icu-W8C8J1-20261002` is a well-formed run (one `Total jobs:`,
+101/101, all rows graded) and is the first run to exercise a **480 s** budget,
+twice every other division. It is also the only run besides casc-j13 FEQ to
+produce an `Error`:
+
+| | count |
+|---|---|
+| `szs_status` | `Timeout` 83, `GaveUp` 12, `Theorem` 5, **`Error` 1** |
+| strict kernel | `VerifiedGood` 3, `Unknown` 2, `Error` 1 |
+| `verdict` | `ok` 3, `unknown` 98 |
+
+### 44 of 101 problems cannot be scored at all
+
+`expected` is populated for every row and matches the reference file exactly
+(verified against `systems/reference/answers.tsv`: 101/101 present, 0
+mismatches). Its distribution:
+
+| `expected` | rows |
+|---|---|
+| `Theorem` | 55 |
+| **`GaveUp`** | **44** |
+| `Satisfiable` | 1 |
+| `CounterSatisfiable` | 1 |
+
+`casc.sh:810-811` maps a non-committal reference to `verdict = unknown`, so
+**44% of ICU is unscoreable by construction** and the attainable ceiling is 57
+problems. Against that, 3 is **5.3%**, not 3.0%. Quote the denominator.
+
+The converse also happens: `CSE007+1` and `EEE009+1` are refuted by `mrs` where
+the reference gives up. Both are graded `unknown` by design — and `EEE009+1` is
+`VerifiedGood`, so one is a genuine certification that the CSV scores as a miss.
+
+### `verdict = ok` does not mean the proof was checked
+
+`casc.sh:798-816` computes `verdict` **solely** by comparing `szs_class(szs)`
+with `szs_class(expected)`. It never consults the audit. So:
+
+| problem | `verdict` | strict kernel |
+|---|---|---|
+| `EEE001+1` | **`ok`** | **`Unknown`** |
+
+`EEE001+1` counts toward the solve count while its proof did not certify. For
+UEQ and FEQ the two happened to coincide; here they diverge. **Read the
+`certification/audit.csv` `strict_status`, not `run.csv` `verdict`, whenever the
+question is "how much is certified".**
+
+### Two of five refutations lost to kernel formula-size ceilings
+
+| problem | `strict_detail` | problem size |
+|---|---|---|
+| `EEE001+1` | `node c71: negated_conjecture exceeds strict formula-size limit` | **4 axioms**, one 16.7 KB conjecture |
+| `CSE007+1` | `node c18798: NNF rule exceeded strict formula-size limit` | — |
+
+Both are `Inconclusive` from `max_formula_nodes` (default `100_000`), not prover
+failures: `EEE001+1` refutes in **269 ms**. `to_nnf` distributes nested
+biconditionals, so a right-nested `<=>` chain of depth *n* expands toward 2ⁿ
+nodes and can cross the ceiling from a modest input. This is the same class as
+the FEQ "kernel ceiling a five-minute check clears" story in the remote-only
+guide, and it is the only reason ICU's certification rate is 3/5 rather than 5/5.
+
+### One OS OOM kill, and `adaptive` mode has no hard memory ceiling
+
+`CSI008+1` was killed by the OS OOM killer at **94 161 MB**, and its
+`% Hardware:` line reports `mem_budget_mb=71642`. So it exceeded the budget it
+announced by 31% and lost its status line (`stdout` is 0 bytes — the same
+signature as UI-2, though the harness does distinguish this one as `Error`).
+
+The reason is structural: `src/main.rs:603` installs an `RLIMIT_AS` **only**
+under `HardwareMode::CascSim`. Under `adaptive` — the default mode — the memory
+budget is advisory, consulted by the LRS pruning heuristic
+(`given_clause.rs:1472-1481`) but enforced by nothing. A runaway allocation is
+stopped by the kernel, not by the prover.
+
+`CSI008+1` alone holds **2 004 866 clauses**, 73% of the division's total
+2 750 576. It is the only ICU row above 60 GB; the next largest is 37 913 MB. No
+solve was lost — a 2 M-clause input was not going to be refuted in 480 s — but
+any future problem that trips this loses its verdict rather than reporting a
+resource ceiling.
