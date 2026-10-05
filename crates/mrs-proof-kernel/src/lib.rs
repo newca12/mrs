@@ -121,6 +121,22 @@ pub struct VerificationLimits {
     /// Comparison steps allowed when matching a leaf against a problem formula
     /// modulo associativity and commutativity.
     pub max_comparison_steps: usize,
+    /// Clauses one CNF transformation step may expand its source into.
+    ///
+    /// Its own field rather than a share of [`Self::max_nodes`], which bounds
+    /// the AVATAR clause manifest. Those are unrelated costs, and one number
+    /// for both means neither can be sized for its own work.
+    ///
+    /// Left at 100_000 because raising it does not buy certification on the
+    /// proofs that hit it. `ALG102+1` c391, `ALG104+1` c281 and `ALG127+1`
+    /// c199 expand their source into more clauses than this, and the expansion
+    /// is combinatorial: at 200_000 clauses they cost 0.6-0.8 GB and under 2 s,
+    /// at 500_000 they cost 1.4-2.6 GB and 4-7 s, and at 2_000_000 `ALG127+1`
+    /// alone reaches 12.3 GB and 34 s without finishing. Those three need a
+    /// check that does not expand the whole source -- the goal-directed
+    /// direction-clause path already in this file certifies `ALG102+1` c103
+    /// without expanding anything -- not a larger ceiling.
+    pub max_expansion_clauses: usize,
     pub max_subsumption_steps: usize,
     pub max_skolem_steps: usize,
     pub max_equivalence_steps: usize,
@@ -144,6 +160,7 @@ impl Default for VerificationLimits {
             max_definition_steps: 4_096,
             max_unfold_steps: 200_000,
             max_comparison_steps: 200_000,
+            max_expansion_clauses: 100_000,
             max_subsumption_steps: 5_000,
             max_skolem_steps: 5_000,
             max_equivalence_steps: 5_000,
@@ -569,9 +586,23 @@ fn verify_strict_with_source_internal(
                 // never make a checkable step uncheckable. Acceptance still
                 // requires the conclusion to be recomputed one way or the
                 // other.
+                // Keep the recorded replay's reason when the fallback also
+                // fails. The search's own message ("could not reach the
+                // conclusion within the implemented search") describes the
+                // *fallback*, not the step, and reporting it alone hid the
+                // recorded reason -- which is the one that says what was wrong
+                // with the prover's trace.
                 let verdict = match verdict {
-                    KernelVerdict::Inconclusive(_) if recorded.is_some() => {
-                        verify_demodulation(&parents, conclusion, limits, None)
+                    KernelVerdict::Inconclusive(recorded_reason) if recorded.is_some() => {
+                        match verify_demodulation(&parents, conclusion, limits, None) {
+                            KernelVerdict::Inconclusive(search_reason) => {
+                                KernelVerdict::Inconclusive(format!(
+                                    "{recorded_reason}; the fallback rewrite search \
+                                     also declined: {search_reason}"
+                                ))
+                            }
+                            other => other,
+                        }
                     }
                     other => other,
                 };
@@ -1333,6 +1364,7 @@ fn verify_cnf_transformation(
         }
     }
 
+    let expansion_budget = limits.max_expansion_clauses;
     let mut all_definitions_matched = true;
     let Some(named_source) = (if definitions.is_empty() {
         // No definitions cited: quantifier hoisting below only reorders
@@ -1361,11 +1393,27 @@ fn verify_cnf_transformation(
     };
     let normalized_matrix = strip_forall_core(&normalized);
     let mut expanded = Vec::new();
-    if !cnf_expand(normalized_matrix, &mut expanded, limits) {
-        return KernelVerdict::Inconclusive("CNF expansion exceeded strict limits".into());
+    match cnf_expand(normalized_matrix, &mut expanded, limits) {
+        CnfExpansion::Complete => {}
+        CnfExpansion::Budget => {
+            return KernelVerdict::Inconclusive(format!(
+                "CNF expansion exceeded the strict limits of {expansion_budget} clauses \
+                 and {} literals per clause, after {} clauses",
+                limits.max_clause_literals,
+                expanded.len()
+            ));
+        }
+        CnfExpansion::Unsupported => {
+            return KernelVerdict::Inconclusive(
+                "CNF normalization left a matrix shape this expander does not produce".into(),
+            );
+        }
     }
-    if expanded.len() > limits.max_nodes {
-        return KernelVerdict::Inconclusive("CNF expansion exceeded strict limits".into());
+    if expanded.len() > expansion_budget {
+        return KernelVerdict::Inconclusive(format!(
+            "CNF expansion produced {} clauses, over the strict limit of {expansion_budget}",
+            expanded.len()
+        ));
     }
 
     for definition in &definitions {
@@ -1375,8 +1423,12 @@ fn verify_cnf_transformation(
             );
         };
         expanded.extend(direction);
-        if expanded.len() > limits.max_nodes {
-            return KernelVerdict::Inconclusive("CNF expansion exceeded strict limits".into());
+        if expanded.len() > expansion_budget {
+            return KernelVerdict::Inconclusive(format!(
+                "CNF expansion reached {} clauses with its definition direction clauses \
+                 added, over the strict limit of {expansion_budget}",
+                expanded.len()
+            ));
         }
     }
 
@@ -1768,7 +1820,7 @@ fn definition_direction_clauses(
         let mut out = Vec::new();
         for part in parts {
             let mut sub = Vec::new();
-            if !cnf_expand(part, &mut sub, limits) {
+            if !cnf_expand(part, &mut sub, limits).is_complete() {
                 return None;
             }
             for mut clause in sub {
@@ -1796,10 +1848,10 @@ fn definition_direction_clauses(
         limits.max_formula_nodes,
         limits.max_term_depth,
     )?;
-    if !cnf_expand(&nnf, &mut clauses, limits) {
-        None
-    } else {
+    if cnf_expand(&nnf, &mut clauses, limits).is_complete() {
         Some(clauses)
+    } else {
+        None
     }
 }
 
@@ -1817,7 +1869,7 @@ fn factored_definition_converse(
         limits.max_term_depth,
     )?;
     let mut clauses = Vec::new();
-    if cnf_expand(&nnf, &mut clauses, limits) {
+    if cnf_expand(&nnf, &mut clauses, limits).is_complete() {
         Some(clauses)
     } else {
         None
@@ -1848,6 +1900,7 @@ fn replace_definition_subformulas(
     // Per-definition record of "this body was found in the source at least
     // once". A definition that never matched is the signal that the expansion
     // is not the prover's clause set; see the caller's guard.
+    //
     let mut matched: Vec<bool> = vec![false; definitions.len()];
     loop {
         if steps >= limits.max_definition_steps {
@@ -1866,24 +1919,39 @@ fn replace_definition_subformulas(
             current = moved;
             changed |= moved_changed;
         }
-        // Canonical sites first: apply identity matches for every
-        // definition before falling back to permuting matches, so
-        // symmetric blocks are claimed by their own definitions.
-        for (index, definition) in definitions.iter().enumerate() {
-            let (next, replaced) = replace_one_definition(&current, definition, true);
-            if replaced && let Some(slot) = matched.get_mut(index) {
-                *slot = true;
+        // Order-preserving sites first, then canonical (identity) sites, then
+        // permuting sites, so that a definition claims the block it was
+        // actually written for.
+        //
+        // The first pass is what keeps mirror-image definitions apart. Two
+        // definitions whose bodies are the same literals in opposite order
+        // (`d0(x,y) <=> ~a(x,y) & ~b(x,y)` and `d1(x,y) <=> ~b(x,y) & ~a(x,y)`)
+        // both match *both* blocks once operands are compared as a multiset, so
+        // whichever runs first takes both and the other never matches anything.
+        // That is not merely a bookkeeping problem: the goal clause names both
+        // `d0` and `d1`, and an expansion that folded both blocks into `d0`
+        // does not contain it. `GEO331+1` c211, `GEO343+1` c155, `GEO299+1`
+        // c522 and `GEO300+1` c36 are all that shape.
+        //
+        // Comparing operands pairwise in order is strictly *narrower* than the
+        // multiset comparison, so anything it accepts was acceptable anyway;
+        // it only decides which definition owns a contested block. The
+        // identity pass then covers blocks the prover emitted in a different
+        // operand order but with its own variable numbering, and the permuting
+        // pass remains the general fallback.
+        for mode in [
+            CoreMatchMode::Ordered,
+            CoreMatchMode::Identity,
+            CoreMatchMode::Permuting,
+        ] {
+            for (index, definition) in definitions.iter().enumerate() {
+                let (next, replaced) = replace_one_definition(&current, definition, mode);
+                if replaced && let Some(slot) = matched.get_mut(index) {
+                    *slot = true;
+                }
+                current = next;
+                changed |= replaced;
             }
-            current = next;
-            changed |= replaced;
-        }
-        for (index, definition) in definitions.iter().enumerate() {
-            let (next, replaced) = replace_one_definition(&current, definition, false);
-            if replaced && let Some(slot) = matched.get_mut(index) {
-                *slot = true;
-            }
-            current = next;
-            changed |= replaced;
         }
         if !changed {
             return Some((current, matched));
@@ -1992,15 +2060,26 @@ fn pull_vacuous_quantifiers_once(formula: &Formula) -> (Formula, bool) {
     }
 }
 
+/// How a definition body may be matched against a candidate block.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CoreMatchMode {
+    /// `And`/`Or` operands must line up position by position.
+    Ordered,
+    /// Operands may be permuted, but every pattern variable must map to itself.
+    Identity,
+    /// Operands may be permuted freely.
+    Permuting,
+}
+
 fn replace_one_definition(
     source: &Formula,
     definition: &CoreDefinition,
-    identity_only: bool,
+    mode: CoreMatchMode,
 ) -> (Formula, bool) {
     let (transformed, replaced) = match source {
         Formula::Atom(_) | Formula::True | Formula::False => (source.clone(), false),
         Formula::Neg(inner) => {
-            let (inner, replaced) = replace_one_definition(inner, definition, identity_only);
+            let (inner, replaced) = replace_one_definition(inner, definition, mode);
             (Formula::neg(inner), replaced)
         }
         Formula::And(parts) => {
@@ -2008,8 +2087,7 @@ fn replace_one_definition(
             let parts = parts
                 .iter()
                 .map(|part| {
-                    let (part, part_replaced) =
-                        replace_one_definition(part, definition, identity_only);
+                    let (part, part_replaced) = replace_one_definition(part, definition, mode);
                     replaced |= part_replaced;
                     part
                 })
@@ -2021,8 +2099,7 @@ fn replace_one_definition(
             let parts = parts
                 .iter()
                 .map(|part| {
-                    let (part, part_replaced) =
-                        replace_one_definition(part, definition, identity_only);
+                    let (part, part_replaced) = replace_one_definition(part, definition, mode);
                     replaced |= part_replaced;
                     part
                 })
@@ -2030,35 +2107,35 @@ fn replace_one_definition(
             (Formula::Or(parts), replaced)
         }
         Formula::Implies(left, right) => {
-            let (left, left_replaced) = replace_one_definition(left, definition, identity_only);
-            let (right, right_replaced) = replace_one_definition(right, definition, identity_only);
+            let (left, left_replaced) = replace_one_definition(left, definition, mode);
+            let (right, right_replaced) = replace_one_definition(right, definition, mode);
             (
                 Formula::implies(left, right),
                 left_replaced || right_replaced,
             )
         }
         Formula::Iff(left, right) => {
-            let (left, left_replaced) = replace_one_definition(left, definition, identity_only);
-            let (right, right_replaced) = replace_one_definition(right, definition, identity_only);
+            let (left, left_replaced) = replace_one_definition(left, definition, mode);
+            let (right, right_replaced) = replace_one_definition(right, definition, mode);
             (Formula::iff(left, right), left_replaced || right_replaced)
         }
         Formula::Forall(var, body) => {
-            let (body, replaced) = replace_one_definition(body, definition, identity_only);
+            let (body, replaced) = replace_one_definition(body, definition, mode);
             (Formula::forall(*var, body), replaced)
         }
         Formula::Exists(var, body) => {
-            let (body, replaced) = replace_one_definition(body, definition, identity_only);
+            let (body, replaced) = replace_one_definition(body, definition, mode);
             (Formula::exists(*var, body), replaced)
         }
     };
 
     let mut mapping = HashMap::new();
-    if match_core_formula(&definition.rhs, &transformed, &mut mapping)
+    if match_core_formula_mode(&definition.rhs, &transformed, &mut mapping, mode)
         // In identity mode only accept matches that keep every pattern
         // variable fixed: the prover introduces each definition at its
         // canonical block, so canonical sites must win contested blocks
         // (e.g. GEO125+1's two definitions over symmetric blocks).
-        && (!identity_only || is_identity_mapping(&mapping))
+        && (mode != CoreMatchMode::Identity || is_identity_mapping(&mapping))
         && let Some(head) = apply_core_definition_head(&definition.head, &mapping)
     {
         (Formula::atom(head), true)
@@ -2104,14 +2181,34 @@ fn match_core_formula(
     target: &Formula,
     mapping: &mut HashMap<VarId, Term>,
 ) -> bool {
+    match_core_formula_mode(pattern, target, mapping, CoreMatchMode::Permuting)
+}
+
+/// Match a definition body against a candidate block under `mode`.
+///
+/// [`CoreMatchMode::Ordered`] compares `And`/`Or` operands position by
+/// position; the other modes flatten the connective and match the operand
+/// multisets. Flattening is what makes a definition written with three
+/// conjuncts match a block the prover emitted as a left-associative binary
+/// tree, and operand permutation is what lets it match a block whose conjuncts
+/// the prover reordered.
+fn match_core_formula_mode(
+    pattern: &Formula,
+    target: &Formula,
+    mapping: &mut HashMap<VarId, Term>,
+    mode: CoreMatchMode,
+) -> bool {
     match (pattern, target) {
         (Formula::Atom(pattern), Formula::Atom(target)) => {
             match_core_atom(pattern, target, mapping)
         }
         (Formula::Neg(pattern), Formula::Neg(target)) => {
-            match_core_formula(pattern, target, mapping)
+            match_core_formula_mode(pattern, target, mapping, mode)
         }
         (Formula::And(_), Formula::And(_)) | (Formula::Or(_), Formula::Or(_)) => {
+            if mode == CoreMatchMode::Ordered {
+                return match_core_ordered(pattern, target, mapping);
+            }
             let connective = if matches!(pattern, Formula::And(_)) {
                 CoreConnective::And
             } else {
@@ -2126,8 +2223,8 @@ fn match_core_formula(
             Formula::Implies(target_left, target_right),
         )
         | (Formula::Iff(pattern_left, pattern_right), Formula::Iff(target_left, target_right)) => {
-            match_core_formula(pattern_left, target_left, mapping)
-                && match_core_formula(pattern_right, target_right, mapping)
+            match_core_formula_mode(pattern_left, target_left, mapping, mode)
+                && match_core_formula_mode(pattern_right, target_right, mapping, mode)
         }
         (Formula::Forall(pattern_var, pattern_body), Formula::Forall(target_var, target_body))
         | (Formula::Exists(pattern_var, pattern_body), Formula::Exists(target_var, target_body)) => {
@@ -2135,7 +2232,7 @@ fn match_core_formula(
             // variables. Temporarily record their correspondence while
             // matching the body and restore any outer mapping afterwards.
             let previous = mapping.insert(*pattern_var, Term::Var(*target_var));
-            let matched = match_core_formula(pattern_body, target_body, mapping);
+            let matched = match_core_formula_mode(pattern_body, target_body, mapping, mode);
             match previous {
                 Some(term) => {
                     mapping.insert(*pattern_var, term);
@@ -2148,6 +2245,26 @@ fn match_core_formula(
         }
         (Formula::True, Formula::True) | (Formula::False, Formula::False) => true,
         _ => false,
+    }
+}
+
+/// Pairwise operand comparison that keeps `And`/`Or` grouping and order.
+///
+/// Only the definition's own operand sequence is accepted, which is what makes
+/// it able to tell two mirror-image definitions apart; see
+/// [`CoreMatchMode::Ordered`].
+fn match_core_ordered(
+    pattern: &Formula,
+    target: &Formula,
+    mapping: &mut HashMap<VarId, Term>,
+) -> bool {
+    match (pattern, target) {
+        (Formula::And(xs), Formula::And(ys)) | (Formula::Or(xs), Formula::Or(ys)) => {
+            xs.len() == ys.len()
+                && std::iter::zip(xs, ys)
+                    .all(|(x, y)| match_core_formula_mode(x, y, mapping, CoreMatchMode::Ordered))
+        }
+        _ => match_core_formula_mode(pattern, target, mapping, CoreMatchMode::Ordered),
     }
 }
 
@@ -2258,29 +2375,53 @@ fn match_core_term(pattern: &Term, target: &Term, mapping: &mut HashMap<VarId, T
     }
 }
 
+/// Why a CNF expansion stopped.
+///
+/// The two reasons are different in kind and must not be reported alike: a
+/// budget that ran out is the checker giving up, while an unsupported shape is
+/// a fact about the input. The caller needs to tell them apart to decide
+/// between `Inconclusive` and a rule-shaped refusal, and the difference is also
+/// what tells a maintainer which one to fix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CnfExpansion {
+    Complete,
+    /// A ceiling was reached.
+    Budget,
+    /// The matrix contains a shape this expander does not produce.
+    Unsupported,
+}
+
+impl CnfExpansion {
+    fn is_complete(self) -> bool {
+        self == CnfExpansion::Complete
+    }
+}
+
 fn cnf_expand(
     formula: &Formula,
     output: &mut Vec<Vec<Literal>>,
     limits: VerificationLimits,
-) -> bool {
+) -> CnfExpansion {
     match formula {
         Formula::And(parts) => {
             for part in parts {
-                if !cnf_expand(part, output, limits) {
-                    return false;
+                let outcome = cnf_expand(part, output, limits);
+                if !outcome.is_complete() {
+                    return outcome;
                 }
-                if output.len() > limits.max_nodes {
-                    return false;
+                if output.len() > limits.max_expansion_clauses {
+                    return CnfExpansion::Budget;
                 }
             }
-            true
+            CnfExpansion::Complete
         }
         Formula::Or(parts) => {
             let mut clauses = vec![Vec::<Literal>::new()];
             for part in parts {
                 let mut child = Vec::new();
-                if !cnf_expand(part, &mut child, limits) {
-                    return false;
+                let outcome = cnf_expand(part, &mut child, limits);
+                if !outcome.is_complete() {
+                    return outcome;
                 }
                 let mut next = Vec::new();
                 for left in &clauses {
@@ -2288,55 +2429,59 @@ fn cnf_expand(
                         let mut merged = left.clone();
                         merged.extend(right.clone());
                         if merged.len() > limits.max_clause_literals {
-                            return false;
+                            return CnfExpansion::Budget;
                         }
                         next.push(merged);
-                        if next.len() > limits.max_nodes {
-                            return false;
+                        if next.len() > limits.max_expansion_clauses {
+                            return CnfExpansion::Budget;
                         }
                     }
                 }
                 clauses = next;
             }
-            if output.len().saturating_add(clauses.len()) > limits.max_nodes {
-                return false;
+            if output.len().saturating_add(clauses.len()) > limits.max_expansion_clauses {
+                return CnfExpansion::Budget;
             }
             output.extend(clauses);
-            true
+            CnfExpansion::Complete
         }
         Formula::Atom(atom) => {
-            if output.len() >= limits.max_nodes {
-                return false;
+            if output.len() >= limits.max_expansion_clauses {
+                return CnfExpansion::Budget;
             }
             output.push(vec![Literal {
                 positive: true,
                 atom: atom.clone(),
             }]);
-            true
+            CnfExpansion::Complete
         }
         Formula::Neg(inner) => match inner.as_ref() {
             Formula::Atom(atom) => {
-                if output.len() >= limits.max_nodes {
-                    return false;
+                if output.len() >= limits.max_expansion_clauses {
+                    return CnfExpansion::Budget;
                 }
                 output.push(vec![Literal {
                     positive: false,
                     atom: atom.clone(),
                 }]);
-                true
+                CnfExpansion::Complete
             }
-            _ => false,
+            // A negation of anything but an atom means the matrix is not in the
+            // shape the normalizer is supposed to produce.
+            _ => CnfExpansion::Unsupported,
         },
         Formula::False => {
-            if output.len() >= limits.max_nodes {
-                return false;
+            if output.len() >= limits.max_expansion_clauses {
+                return CnfExpansion::Budget;
             }
             output.push(Vec::new());
-            true
+            CnfExpansion::Complete
         }
-        Formula::True => true,
+        Formula::True => CnfExpansion::Complete,
         Formula::Forall(_, inner) => cnf_expand(inner, output, limits),
-        Formula::Implies(_, _) | Formula::Iff(_, _) | Formula::Exists(_, _) => false,
+        Formula::Implies(_, _) | Formula::Iff(_, _) | Formula::Exists(_, _) => {
+            CnfExpansion::Unsupported
+        }
     }
 }
 
@@ -8356,36 +8501,39 @@ fn ac_match_priority(
 ///
 /// Returns `None` when the parent is not a single-positive-equality clause,
 /// which the caller treats as inconclusive.
-fn unit_equality_orientations(
-    formula: &Formula,
+/// The two orientations of a positive equality, contracting one first.
+fn unit_equality_orientations_from_eq(
+    atom: &Atom,
     limits: VerificationLimits,
 ) -> Option<Vec<(Term, Term)>> {
-    let clause = clause_from_formula(formula, limits)?;
-    let mut eq_idx = None;
-    for (idx, lit) in clause.iter().enumerate() {
-        if lit.positive && matches!(lit.atom, Atom::Eq(_, _)) {
-            if eq_idx.is_some() {
-                return None;
-            }
-            eq_idx = Some(idx);
-        }
-    }
-    let eq_idx = eq_idx?;
-    if clause.len() != 1 {
-        // Condition literals beyond the equality are handled by the search
-        // path; a recorded trace replays the equality only.
+    let _ = limits;
+    let Atom::Eq(left, right) = atom else {
         return None;
-    }
-    let Atom::Eq(left, right) = &clause[eq_idx].atom else {
-        unreachable!()
     };
     if left == right {
         return Some(Vec::new());
     }
-    Some(vec![
-        (left.clone(), right.clone()),
-        (right.clone(), left.clone()),
-    ])
+    // Try the contracting orientation first.
+    //
+    // The replay backtracks over per-step orientations, so its cost is the
+    // position of the prover's own choice in the search order. A demodulation
+    // is contracting under exactly one of the two orientations of a non-trivial
+    // equality, and the prover's trace is overwhelmingly contracting steps, so
+    // ordering by the size of the replacement finds the trace in one trial
+    // instead of enumerating `2^steps` combinations. `KLE132+1`'s `c85077`
+    // records 15 steps over 8 parents: with the orientations in source order
+    // the prover's trace sits at or beyond trial 4096 and the replay gives up.
+    //
+    // Ordering only decides where the search starts; it stays exhaustive within
+    // its trial budget, and acceptance still requires the replayed clause to
+    // equal the exported conclusion.
+    let forward = (left.clone(), right.clone());
+    let backward = (right.clone(), left.clone());
+    let mut orientations = vec![forward, backward];
+    if orientations[0].1 != orientations[1].1 {
+        orientations.sort_by_key(|(_, to)| term_size(to));
+    }
+    Some(orientations)
 }
 
 /// Replace the subterm selected by `path` in `literal` with `replacement`.
@@ -8452,14 +8600,70 @@ fn replay_recorded_demodulation(
         .max(target_size)
         .min(limits.max_formula_nodes);
     // Orientation table, resolved once: `None` for the rewritten clause and for
-    // a parent that is not a plain positive unit equality.
+    // a parent that is not a positive unit equality.
+    //
+    // A cited equality may carry condition literals -- the prover emits
+    // `spl0_21 | f(a) = b` as the rule of a demodulation guarded by `spl0_21`.
+    // The condition is carried into the clause being rewritten rather than
+    // replayed, exactly as the search path does, and is required to be
+    // variable-free and already present in the conclusion so that it cannot be
+    // a hidden assumption. Refusing such a parent outright left the replay with
+    // nothing to do and the step fell through to the search, which cannot
+    // reconstruct a 15-step trace: `KLE132+1`'s `c85077` cites 8 such parents.
     let mut orientations: Vec<Option<Vec<(Term, Term)>>> = Vec::with_capacity(parents.len());
+    let mut condition_literals: Vec<Literal> = Vec::new();
     for (index, parent) in parents.iter().enumerate() {
         if index == 0 {
             orientations.push(None);
             continue;
         }
-        orientations.push(unit_equality_orientations(parent, limits));
+        let Some(clause) = clause_from_formula(parent, limits) else {
+            orientations.push(None);
+            continue;
+        };
+        let mut eq_idx = None;
+        for (position, literal) in clause.iter().enumerate() {
+            if literal.positive && matches!(literal.atom, Atom::Eq(_, _)) {
+                if eq_idx.is_some() {
+                    orientations.push(None);
+                    eq_idx = None;
+                    break;
+                }
+                eq_idx = Some(position);
+            }
+        }
+        let Some(eq_idx) = eq_idx else {
+            orientations.push(None);
+            continue;
+        };
+        let mut conditions = Vec::new();
+        let mut usable = true;
+        for (position, literal) in clause.iter().enumerate() {
+            if position == eq_idx {
+                continue;
+            }
+            if literal_var_set(literal).is_empty() && goal.contains(literal) {
+                if !conditions.contains(literal) {
+                    conditions.push(literal.clone());
+                }
+            } else {
+                usable = false;
+                break;
+            }
+        }
+        if !usable {
+            orientations.push(None);
+            continue;
+        }
+        for literal in conditions {
+            if !condition_literals.contains(&literal) {
+                condition_literals.push(literal);
+            }
+        }
+        orientations.push(unit_equality_orientations_from_eq(
+            &clause[eq_idx].atom,
+            limits,
+        ));
     }
     for (position, step) in steps.iter().enumerate() {
         if step.rule_parent == 0 || step.rule_parent >= parents.len() {
@@ -8483,18 +8687,19 @@ fn replay_recorded_demodulation(
                 "demodulation replay term path exceeds strict depth".into(),
             );
         }
-        if step.literal >= target.len() {
-            return KernelVerdict::Inconclusive(format!(
-                "demodulation replay step {position} names literal {} of a {}-literal clause",
-                step.literal,
-                target.len()
-            ));
-        }
     }
 
     // Bounded backtracking search over per-step orientation choices.
-    const MAX_ORIENTATION_TRIALS: usize = 4096;
+    let max_orientation_trials = limits.max_rewrite_states;
+    // The prover's working clause is the target with each cited equality's
+    // condition literals appended, and the recorded literal indices index into
+    // it, so the replay has to start from the same clause.
     let mut current: Vec<Literal> = target.to_vec();
+    for literal in &condition_literals {
+        if !current.contains(literal) {
+            current.push(literal.clone());
+        }
+    }
     // Per step: the subterm that step replaced (for undo) and the next
     // orientation index to try.
     let mut undo: Vec<Option<Term>> = vec![None; steps.len()];
@@ -8509,7 +8714,7 @@ fn replay_recorded_demodulation(
                     .as_ref()
                     .map_or(0, |rules| rules.len());
         if !exhausted && index < steps.len() {
-            if trials >= MAX_ORIENTATION_TRIALS {
+            if trials >= max_orientation_trials {
                 return KernelVerdict::Inconclusive(
                     "demodulation replay exceeded strict orientation trials".into(),
                 );
@@ -8586,7 +8791,17 @@ fn replay_recorded_demodulation(
             continue;
         }
 
-        if index == steps.len() && clause_alpha_equiv(&current, goal) {
+        // Compare condensed. The prover simplifies its clause set, so a replay
+        // that is otherwise exact can carry a literal the exported conclusion
+        // no longer repeats. `GRP748+1`'s `c401801` rewrites one literal of a
+        // four-literal target with a duplicated pair and exports the condensed
+        // two-literal clause; duplicate literals are logically inert, so the
+        // step is sound and only the comparison was too strict. Requiring the
+        // replayed clause to equal the conclusion exactly cannot certify a
+        // wrong trace either way -- it can only decline to certify a right one.
+        if index == steps.len()
+            && clause_alpha_equiv(&condense_clause(&current), &condense_clause(goal))
+        {
             return KernelVerdict::Certified;
         }
         if index == 0 {
@@ -12509,6 +12724,35 @@ mod tests {
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
     }
 
+    /// Two definitions over blocks that are mirror images must each claim their
+    /// own block.
+    ///
+    /// Once `And`/`Or` operands are compared as a multiset, `d0(x,y) <=>
+    /// ~a(x,y) & ~b(x,y)` and `d1(x,y) <=> ~b(x,y) & ~a(x,y)` both match *both*
+    /// blocks, so the greedy fold gives both blocks to whichever definition runs
+    /// first and the other never matches anything. Comparing operands in order
+    /// first keeps them apart. `GEO331+1` c211 and `GEO343+1` c155 are this
+    /// shape.
+    #[test]
+    fn mirror_image_definitions_each_claim_their_own_block() {
+        let problem = "fof(src, axiom, ![X,Y,Z] : ((~a(X,Y) & ~b(X,Y)) | (~b(X,Z) & ~a(X,Z)))).\n\
+                       fof(na, axiom, ![X,Y] : a(X,Y)).\n\
+                       fof(nb, axiom, ![X,Z] : b(X,Z)).";
+        let proof = "fof(src, axiom, ![X,Y,Z] : ((~a(X,Y) & ~b(X,Y)) | (~b(X,Z) & ~a(X,Z))), file('problem.p', src)).\n\
+                     fof(na, axiom, ![X,Y] : a(X,Y), file('problem.p', na)).\n\
+                     fof(nb, axiom, ![X,Z] : b(X,Z), file('problem.p', nb)).\n\
+                     fof(d0, definition, ![X,Y] : (d0(X,Y) <=> (~a(X,Y) & ~b(X,Y))), introduced(definition, [new_symbols(definition, [d0])])).\n\
+                     fof(d1, definition, ![X,Z] : (d1(X,Z) <=> (~b(X,Z) & ~a(X,Z))), introduced(definition, [new_symbols(definition, [d1])])).\n\
+                     cnf(main, plain, d0(X,Y) | d1(X,Z), inference(cnf_transformation, [status(thm)], [src,d0,d1])).\n\
+                     cnf(w0, plain, ~d0(X,Y) | ~a(X,Y), inference(cnf_transformation, [status(thm)], [src,d0,d1])).\n\
+                     cnf(w1, plain, ~d1(X,Z) | ~b(X,Z), inference(cnf_transformation, [status(thm)], [src,d0,d1])).\n\
+                     cnf(r0, plain, ~d0(X,Y), inference(resolution, [status(thm)], [w0,na])).\n\
+                     cnf(r1, plain, ~d1(X,Z), inference(resolution, [status(thm)], [w1,nb])).\n\
+                     cnf(m1, plain, d1(X,Z), inference(resolution, [status(thm)], [main,r0])).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [m1,r1])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
     /// A `cnf_transformation` step whose cited definitions are *nested* must not
     /// be rejected just because the matcher cannot place their bodies in the
     /// source.
@@ -13160,6 +13404,67 @@ mod tests {
                        [target,r1,r2,r3])).\n\
                      fof(n, axiom, ~p(k(a)), file('problem.p', neg)).\n\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [s,n])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn recorded_demodulation_replay_carries_a_condition_literal() {
+        // KLE132+1 c85077 shape: the cited equality arrives guarded
+        // (`spl_0 | f(a) = b`), and the replay used to refuse any parent that
+        // was not a bare unit equality, leaving the step to a search that
+        // cannot reconstruct a long trace. The condition is carried into the
+        // clause being rewritten instead, and must already be in the
+        // conclusion so it cannot be a hidden assumption.
+        let problem = "fof(rule, axiom, spl_0 | f(a) = b).\n\
+                       fof(target, axiom, p(f(a))).\n\
+                       fof(neg, axiom, ~p(b)).\n\
+                       fof(nospl, axiom, ~spl_0).";
+        let proof = "fof(rule, axiom, spl_0 | f(a) = b, file('problem.p', rule)).\n\
+                     fof(target, axiom, p(f(a)), file('problem.p', target)).\n\
+                     fof(s, plain, p(b) | spl_0, inference(demodulation, [status(thm), \
+                       demodulation_steps(rule(1, 0, [0]))], [target,rule])).\n\
+                     fof(n, axiom, ~p(b), file('problem.p', neg)).\n\
+                     fof(nospl, axiom, ~spl_0, file('problem.p', nospl)).\n\
+                     fof(half, plain, spl_0, inference(resolution, [status(thm)], [s,n])).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [half,nospl])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn recorded_demodulation_replay_rejects_an_unsatisfied_condition() {
+        // A condition literal absent from the conclusion would be a hidden
+        // assumption: the rule could only fire because the guard held, and the
+        // conclusion does not say so. That must not replay.
+        let problem = "fof(rule, axiom, ~spl_0 | f(a) = b).\n\
+                       fof(target, axiom, p(f(a))).\n\
+                       fof(neg, axiom, ~p(b)).";
+        let proof = "fof(rule, axiom, ~spl_0 | f(a) = b, file('problem.p', rule)).\n\
+                     fof(target, axiom, p(f(a)), file('problem.p', target)).\n\
+                     fof(s, plain, p(b), inference(demodulation, [status(thm), \
+                       demodulation_steps(rule(1, 0, [0]))], [target,rule])).\n\
+                     fof(n, axiom, ~p(b), file('problem.p', neg)).\n\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [s,n])).";
+        assert_ne!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn recorded_demodulation_replay_accepts_a_condensed_conclusion() {
+        // GRP748+1 c401801 shape: the target repeats a literal, one copy of a
+        // different literal is rewritten, and the prover's conclusion is the
+        // condensed result. The replayed clause still carries both copies;
+        // duplicate literals are inert, so the step is sound.
+        let problem = "fof(rule, axiom, f(a) = b).\n\
+                       fof(target, axiom, p(a) | p(a) | q(f(a))).\n\
+                       fof(neg, axiom, ~q(b)).\n\
+                       fof(npa, axiom, ~p(a)).";
+        let proof = "fof(rule, axiom, f(a) = b, file('problem.p', rule)).\n\
+                     fof(target, axiom, p(a) | p(a) | q(f(a)), file('problem.p', target)).\n\
+                     fof(s, plain, p(a) | q(b), inference(demodulation, [status(thm), \
+                       demodulation_steps(rule(1, 2, [0]))], [target,rule])).\n\
+                     fof(n, axiom, ~q(b), file('problem.p', neg)).\n\
+                     fof(npa, axiom, ~p(a), file('problem.p', npa)).\n\
+                     fof(half, plain, p(a), inference(resolution, [status(thm)], [s,n])).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [half,npa])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
     }
 
