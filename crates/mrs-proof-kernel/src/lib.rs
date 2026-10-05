@@ -72,6 +72,15 @@ impl std::fmt::Display for KernelVerdict {
 }
 
 /// Explicit resource limits for strict verification.
+///
+/// Every limit here is a *resource* ceiling, never a soundness condition: a
+/// step that runs out of budget is reported `Inconclusive`, not `Rejected`.
+/// The budgets are separated by the kind of work they bound because one shared
+/// number cannot be right for all of them. `ITP019+5`'s `definition_renaming`
+/// at `c100111` needs more than 64 fixpoint passes over its source, while the
+/// bounded term rewriter that shares that field must stay small or a single
+/// demodulation blows up. Both were declined by the same 64, and neither
+/// number means anything for the other.
 #[derive(Debug, Clone, Copy)]
 pub struct VerificationLimits {
     pub max_nodes: usize,
@@ -90,7 +99,28 @@ pub struct VerificationLimits {
     pub max_formula_nodes: usize,
     pub max_clause_literals: usize,
     pub max_term_depth: usize,
+    /// Rewrite steps the bounded term rewriter may take on one demodulation.
     pub max_rewrite_steps: usize,
+    /// Distinct clause states a demodulation replay may visit.
+    ///
+    /// This is a *search* budget: the replay walks the closure of a clause
+    /// under the cited unit equations and must reach the goal somewhere in
+    /// that space. A handful of states (the field used to share 64) cannot
+    /// cover the closure of a real problem -- `KLE132+1`'s `c85077` and
+    /// `GRP748+1`'s `c401801` both failed with a reachable conclusion still
+    /// unexplored.
+    pub max_rewrite_states: usize,
+    /// Fixpoint passes over a source when folding cited definitions into it.
+    ///
+    /// Each pass replaces every definition it can, so convergence normally
+    /// needs `definitions + a few` passes; a definition-dense source with
+    /// hundreds of cited definitions cannot converge inside a two-digit budget.
+    pub max_definition_steps: usize,
+    /// Substitution steps allowed while unfolding definitions in a conclusion.
+    pub max_unfold_steps: usize,
+    /// Comparison steps allowed when matching a leaf against a problem formula
+    /// modulo associativity and commutativity.
+    pub max_comparison_steps: usize,
     pub max_subsumption_steps: usize,
     pub max_skolem_steps: usize,
     pub max_equivalence_steps: usize,
@@ -110,6 +140,10 @@ impl Default for VerificationLimits {
             max_clause_literals: 10_000,
             max_term_depth: 256,
             max_rewrite_steps: 64,
+            max_rewrite_states: 20_000,
+            max_definition_steps: 4_096,
+            max_unfold_steps: 200_000,
+            max_comparison_steps: 200_000,
             max_subsumption_steps: 5_000,
             max_skolem_steps: 5_000,
             max_equivalence_steps: 5_000,
@@ -1816,7 +1850,7 @@ fn replace_definition_subformulas(
     // is not the prover's clause set; see the caller's guard.
     let mut matched: Vec<bool> = vec![false; definitions.len()];
     loop {
-        if steps >= limits.max_rewrite_steps {
+        if steps >= limits.max_definition_steps {
             return None;
         }
         steps += 1;
@@ -2597,6 +2631,10 @@ fn verify_leaf<'a>(
     let proof_formula = lower_annotated(symbols, node.formula, limits)?;
     let mut named_match = false;
     let mut role_match = false;
+    // A comparison that ran out of budget has not decided anything, so it must
+    // not be allowed to fall through to the `does not match` rejection below:
+    // that would report the checker giving up as a broken proof.
+    let mut undecided: Option<&'static str> = None;
     for expected in problem
         .formulas
         .iter()
@@ -2608,8 +2646,10 @@ fn verify_leaf<'a>(
         }
         role_match = true;
         let expected_formula = lower_annotated(symbols, expected, limits)?;
-        if alpha_equiv(&proof_formula, &expected_formula) {
-            return Ok(());
+        match ac_alpha_equiv(&proof_formula, &expected_formula, limits) {
+            MatchOutcome::Match => return Ok(()),
+            MatchOutcome::Undecided => undecided = Some("named"),
+            MatchOutcome::Differ => {}
         }
     }
     if !named_match {
@@ -2627,8 +2667,10 @@ fn verify_leaf<'a>(
             }
             role_match = true;
             let expected_formula = lower_annotated(symbols, expected, limits)?;
-            if alpha_equiv(&proof_formula, &expected_formula) {
-                return Ok(());
+            match ac_alpha_equiv(&proof_formula, &expected_formula, limits) {
+                MatchOutcome::Match => return Ok(()),
+                MatchOutcome::Undecided => undecided = Some("provenance"),
+                MatchOutcome::Differ => {}
             }
         }
         if !provenance_match {
@@ -2637,6 +2679,13 @@ fn verify_leaf<'a>(
                 node.name, annotation.1
             )));
         }
+    }
+    if let Some(which) = undecided {
+        return Err(KernelVerdict::Inconclusive(format!(
+            "leaf `{}` {which} comparison against problem formula `{}` exceeded \
+             the strict comparison-step limit of {}",
+            node.name, annotation.1, limits.max_comparison_steps
+        )));
     }
     if !role_match {
         return Err(KernelVerdict::Rejected(format!(
@@ -2659,6 +2708,367 @@ fn roles_compatible(proof: FormulaRole, problem: FormulaRole) -> bool {
         problem.is_premise()
     } else {
         proof == problem
+    }
+}
+
+/// The outcome of a bounded formula comparison.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MatchOutcome {
+    /// The two formulas are the same under the laws this comparison accepts.
+    Match,
+    /// They are not.
+    Differ,
+    /// The comparison exhausted its budget before it could decide.
+    ///
+    /// Distinct from [`Self::Differ`] on purpose. A comparison that ran out of
+    /// room is the checker giving up, not the proof being wrong, and the two
+    /// must never be reported the same way.
+    Undecided,
+}
+
+/// Formula comparison modulo the AC laws of `And`/`Or`, on top of the relation
+/// [`alpha_equiv`] already decides.
+///
+/// This is deliberately *not* [`alpha_equiv`], and the global alpha-equivalence
+/// contract is deliberately left alone. `alpha_equiv` compares `And`/`Or`
+/// operand-by-operand without flattening the connective, so `p & q & r` and
+/// `r & q & p` -- the same formula under associativity and commutativity of
+/// `&` -- compare unequal. A proof leaf is a re-serialisation of its cited
+/// axiom rather than a copy of it: the corpus serialises a four-way
+/// conjunction one way, the prover emits a left-associative binary tree, and
+/// every `%include` problem whose axiom groups its conjuncts differently was
+/// refused. That is UI-4 in `docs/policies/unresolved-issues.md`: 16 rows of
+/// `campaign-cascj13-feq-W8C8J1-20261002`, every one `VerifiedBad`, every one
+/// independently confirmed to be an AC-permutation of its cited axiom.
+///
+/// Widening acceptance is justified here only because the extra equivalences
+/// are the associative and commutative laws of `&`/`|`, which hold in every
+/// model of classical logic. A leaf this comparison accepts is therefore an
+/// instance of its cited axiom by those laws alone: no inference beyond them
+/// is being assumed, and nothing is accepted that a model could separate. It is
+/// *not* general logical equivalence, and it makes no other shape
+/// interchangeable. Alpha-equivalence itself, biconditional mirroring, equation
+/// symmetry and reverse implication are inherited unchanged from
+/// `alpha_equiv`, so the only difference between this and the previous leaf
+/// check is the connective shape.
+///
+/// Two further differences are deliberate and both only ever accept more:
+/// same-connective operands are flattened before matching, and the operand
+/// lists are matched by complete backtracking search rather than greedy
+/// first-fit. Greedy pairing misses permutations that do exist, which is a
+/// false negative, not a false positive.
+///
+/// The search is bounded by [`VerificationLimits::max_comparison_steps`];
+/// exhausting it yields [`MatchOutcome::Undecided`] rather than a difference,
+/// so a budget-limited comparison can never be reported as a mismatch.
+fn ac_alpha_equiv(a: &Formula, b: &Formula, limits: VerificationLimits) -> MatchOutcome {
+    let mut state = AcState {
+        bindings: AcBindings::default(),
+        budget: limits.max_comparison_steps,
+    };
+    state.formula_eq(a, b)
+}
+
+/// The bound-variable correspondence threaded through one comparison.
+#[derive(Default)]
+struct AcBindings {
+    /// Binder depth of each variable bound on the left, indexed by `VarId`.
+    left: HashMap<VarId, u32>,
+    /// The same for the right.
+    right: HashMap<VarId, u32>,
+    /// Current binder depth, shared by both sides.
+    depth: u32,
+}
+
+/// Mutable state of one bounded comparison.
+struct AcState {
+    bindings: AcBindings,
+    /// Remaining comparison steps.
+    budget: usize,
+}
+
+/// Which connective an `And`/`Or` node is built from.
+///
+/// Carried alongside the operand list so that `A & B` and `A | B` cannot be
+/// compared as the same shape. Returning the operands alone would accept
+/// `p & q` for `p | q`, which is not an instance of any law this comparison
+/// is allowed to use.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AcConnective {
+    And,
+    Or,
+}
+
+/// The operands of an `And`/`Or` node with same-connective descendants folded
+/// in, so that `(A & B) & C` and `A & (B & C)` present the same operand list.
+///
+/// Returns `None` for every other shape, which keeps connective-against-atom
+/// cases decided as differences.
+fn ac_operands(formula: &Formula) -> Option<(AcConnective, Vec<&Formula>)> {
+    let connective = match formula {
+        Formula::And(_) => AcConnective::And,
+        Formula::Or(_) => AcConnective::Or,
+        _ => return None,
+    };
+    let mut operands = Vec::new();
+    let mut pending = vec![formula];
+    while let Some(current) = pending.pop() {
+        match current {
+            Formula::And(parts) if connective == AcConnective::And => pending.extend(parts.iter()),
+            Formula::Or(parts) if connective == AcConnective::Or => pending.extend(parts.iter()),
+            other => operands.push(other),
+        }
+    }
+    // `pending` is a stack, so reverse to keep source order for the common
+    // no-reassociation case. The result is a multiset either way.
+    operands.reverse();
+    Some((connective, operands))
+}
+
+impl AcState {
+    /// Spend one unit of the comparison budget. `false` means it is exhausted.
+    fn spend(&mut self) -> bool {
+        if self.budget == 0 {
+            false
+        } else {
+            self.budget -= 1;
+            true
+        }
+    }
+
+    fn formula_eq(&mut self, a: &Formula, b: &Formula) -> MatchOutcome {
+        if !self.spend() {
+            return MatchOutcome::Undecided;
+        }
+        match (a, b) {
+            (Formula::True, Formula::True) | (Formula::False, Formula::False) => {
+                MatchOutcome::Match
+            }
+            (Formula::Atom(x), Formula::Atom(y)) => self.atom_eq(x, y),
+            (Formula::Neg(x), Formula::Neg(y)) => self.formula_eq(x, y),
+            _ => {
+                if let (Some((connective, xs)), Some((other, ys))) =
+                    (ac_operands(a), ac_operands(b))
+                    && connective == other
+                {
+                    return self.multiset_eq(&xs, &ys);
+                }
+                match (a, b) {
+                    (Formula::Iff(a1, b1), Formula::Iff(a2, b2)) => {
+                        let mut direct = self.clone();
+                        let outcome = direct
+                            .formula_eq(a1, a2)
+                            .and_then(|| direct.formula_eq(b1, b2));
+                        if outcome != MatchOutcome::Differ {
+                            return outcome;
+                        }
+                        let mut mirrored = self.clone();
+                        mirrored
+                            .formula_eq(a1, b2)
+                            .and_then(|| mirrored.formula_eq(b1, a2))
+                    }
+                    (Formula::Implies(a1, b1), Formula::Implies(a2, b2)) => {
+                        let mut state = self.clone();
+                        state
+                            .formula_eq(a1, a2)
+                            .and_then(|| state.formula_eq(b1, b2))
+                    }
+                    (Formula::Forall(v1, body1), Formula::Forall(v2, body2))
+                    | (Formula::Exists(v1, body1), Formula::Exists(v2, body2)) => {
+                        let depth = self.bindings.depth;
+                        self.bindings.depth += 1;
+                        let old_left = self.bindings.left.insert(*v1, depth);
+                        let old_right = self.bindings.right.insert(*v2, depth);
+                        let outcome = self.formula_eq(body1, body2);
+                        restore_binding(&mut self.bindings.left, *v1, old_left);
+                        restore_binding(&mut self.bindings.right, *v2, old_right);
+                        self.bindings.depth = depth;
+                        outcome
+                    }
+                    _ => MatchOutcome::Differ,
+                }
+            }
+        }
+    }
+
+    fn atom_eq(&mut self, a: &Atom, b: &Atom) -> MatchOutcome {
+        if !self.spend() {
+            return MatchOutcome::Undecided;
+        }
+        match (a, b) {
+            (Atom::Pred(s1, args1), Atom::Pred(s2, args2)) => {
+                if s1 != s2 || args1.len() != args2.len() {
+                    return MatchOutcome::Differ;
+                }
+                self.terms_eq(args1, args2)
+            }
+            (Atom::Eq(l1, r1), Atom::Eq(l2, r2)) => {
+                let mut direct = self.clone();
+                if direct.term_eq(l1, l2) == MatchOutcome::Match
+                    && direct.term_eq(r1, r2) == MatchOutcome::Match
+                {
+                    return MatchOutcome::Match;
+                }
+                // Equation symmetry, as `alpha_equiv` allows. A budget spent on
+                // the first orientation is reported rather than retried: the
+                // second orientation costs the same.
+                if self.budget == 0 {
+                    return MatchOutcome::Undecided;
+                }
+                let mut flipped = self.clone();
+                flipped.term_eq(l1, r2).and_then(|| flipped.term_eq(r1, l2))
+            }
+            _ => MatchOutcome::Differ,
+        }
+    }
+
+    fn terms_eq(&mut self, left: &[Term], right: &[Term]) -> MatchOutcome {
+        for (left_term, right_term) in left.iter().zip(right.iter()) {
+            match self.term_eq(left_term, right_term) {
+                MatchOutcome::Match => {}
+                other => return other,
+            }
+        }
+        MatchOutcome::Match
+    }
+
+    /// Term comparison under the same depth-indexed relation `alpha_equiv`
+    /// uses, so the only difference between this comparison and the previous
+    /// leaf check stays the connective shape.
+    fn term_eq(&mut self, a: &Term, b: &Term) -> MatchOutcome {
+        if !self.spend() {
+            return MatchOutcome::Undecided;
+        }
+        match (a, b) {
+            (Term::Var(v1), Term::Var(v2)) => {
+                if self.bindings.variables_eq(*v1, *v2) {
+                    MatchOutcome::Match
+                } else {
+                    MatchOutcome::Differ
+                }
+            }
+            (Term::App(s1, args1), Term::App(s2, args2)) => {
+                if s1 != s2 || args1.len() != args2.len() {
+                    return MatchOutcome::Differ;
+                }
+                self.terms_eq(args1, args2)
+            }
+            _ => MatchOutcome::Differ,
+        }
+    }
+
+    /// Decide whether two operand lists are the same multiset, by complete
+    /// backtracking search.
+    fn multiset_eq(&mut self, xs: &[&Formula], ys: &[&Formula]) -> MatchOutcome {
+        if xs.len() != ys.len() {
+            return MatchOutcome::Differ;
+        }
+        let mut used = vec![false; ys.len()];
+        self.multiset_search(xs, ys, 0, &mut used)
+    }
+
+    fn multiset_search(
+        &mut self,
+        xs: &[&Formula],
+        ys: &[&Formula],
+        index: usize,
+        used: &mut [bool],
+    ) -> MatchOutcome {
+        if index == xs.len() {
+            return MatchOutcome::Match;
+        }
+        // A pairing that ran out of budget has not decided anything, so it must
+        // not be reported as "no matching exists".
+        let mut undecided = false;
+        for (target_index, y) in ys.iter().enumerate() {
+            if used[target_index] {
+                continue;
+            }
+            if !self.spend() {
+                undecided = true;
+                break;
+            }
+            let mut candidate = self.clone();
+            match candidate.formula_eq(xs[index], y) {
+                MatchOutcome::Undecided => {
+                    undecided = true;
+                    break;
+                }
+                MatchOutcome::Differ => continue,
+                MatchOutcome::Match => {}
+            }
+            used[target_index] = true;
+            match candidate.multiset_search(xs, ys, index + 1, used) {
+                MatchOutcome::Match => {
+                    *self = candidate;
+                    return MatchOutcome::Match;
+                }
+                MatchOutcome::Undecided => {
+                    undecided = true;
+                    break;
+                }
+                MatchOutcome::Differ => {}
+            }
+            used[target_index] = false;
+        }
+        if undecided {
+            MatchOutcome::Undecided
+        } else {
+            MatchOutcome::Differ
+        }
+    }
+}
+
+impl Clone for AcState {
+    fn clone(&self) -> Self {
+        // `budget` is deliberately *not* copied: a tentative pairing is a real
+        // cost, so cloning must not hand the search a fresh allowance.
+        Self {
+            bindings: AcBindings {
+                left: self.bindings.left.clone(),
+                right: self.bindings.right.clone(),
+                depth: self.bindings.depth,
+            },
+            budget: self.budget,
+        }
+    }
+}
+
+impl AcBindings {
+    /// A bound variable equals a bound variable at the same binder depth; a
+    /// free variable only itself. This is `alpha_equiv`'s relation.
+    fn variables_eq(&self, v1: VarId, v2: VarId) -> bool {
+        match (self.left.get(&v1), self.right.get(&v2)) {
+            (Some(d1), Some(d2)) => d1 == d2,
+            (None, None) => v1 == v2,
+            _ => false,
+        }
+    }
+}
+
+/// Chain a comparison with the next one, stopping at the first non-`Match`.
+trait ChainOutcome {
+    fn and_then(self, next: impl FnOnce() -> MatchOutcome) -> MatchOutcome;
+}
+
+impl ChainOutcome for MatchOutcome {
+    fn and_then(self, next: impl FnOnce() -> MatchOutcome) -> MatchOutcome {
+        match self {
+            MatchOutcome::Undecided => MatchOutcome::Undecided,
+            MatchOutcome::Match => next(),
+            MatchOutcome::Differ => MatchOutcome::Differ,
+        }
+    }
+}
+
+fn restore_binding(map: &mut HashMap<VarId, u32>, variable: VarId, previous: Option<u32>) {
+    match previous {
+        Some(depth) => {
+            map.insert(variable, depth);
+        }
+        None => {
+            map.remove(&variable);
+        }
     }
 }
 
@@ -2998,7 +3408,7 @@ fn unfold_definitions_once(
     limits: VerificationLimits,
     steps: &mut usize,
 ) -> Option<(Formula, bool)> {
-    if *steps >= limits.max_rewrite_steps {
+    if *steps >= limits.max_unfold_steps {
         return None;
     }
     *steps += 1;
@@ -6517,13 +6927,26 @@ fn verify_subsumption_resolution(
         if active.is_empty() {
             continue;
         }
+        // Condense both clauses before searching for the justified literal.
+        // Duplicate literals are logically inert, and a target that still
+        // carries them cannot be pruned in one step: `GEO111+1`'s `c15029`
+        // simplifies `D | D | I | I` to `D` with one `subsumption_resolution`
+        // step whose active parent is `D | ~I`, and the removal is only
+        // visible after the duplicates go. Condensing first is sound -- it
+        // rewrites a clause to a logically equivalent one -- and it keeps the
+        // conclusion "the target with a justified literal removed" rather than
+        // widening that rule to something else. The conclusion comparison below
+        // condenses too, so this cannot accept a conclusion that differs by
+        // more than the removal itself.
+        let target = condense_clause(target);
+        let active = condense_clause(active);
 
         let mut matching_steps = 0;
         for removed_idx in 0..target.len() {
             let mut modified_target = target.clone();
             modified_target[removed_idx].positive = !modified_target[removed_idx].positive;
             match clause_subsumes_set(
-                active,
+                &active,
                 &modified_target,
                 &mut matching_steps,
                 limits.max_subsumption_steps,
@@ -12631,6 +13054,24 @@ mod tests {
     }
 
     #[test]
+    fn certifies_subsumption_resolution_from_a_target_with_duplicates() {
+        // GEO111+1 c15029: the target still carries duplicate literals, so the
+        // justified literal is only removable once it is condensed away. The
+        // shape is `D | D | I | I` simplified with active parent `D | ~I` to
+        // `D`, which the resolution fixpoint derives. Condensing the target
+        // before the search is what makes the single removal visible.
+        let input = "cnf(target, axiom, d(X5) | d(X5) | i(X5) | i(X5)).\n\
+                     cnf(active, axiom, d(X1) | ~i(X1)).\n\
+                     cnf(nd, axiom, ~d(X5)).";
+        let proof = "cnf(target, axiom, d(X5) | d(X5) | i(X5) | i(X5), file('problem.p', target)).\n\
+                     cnf(active, axiom, d(X1) | ~i(X1), file('problem.p', active)).\n\
+                     cnf(cut, plain, d(X5), inference(subsumption_resolution, [status(thm)], [target,active])).\n\
+                     cnf(nd, axiom, ~d(X5), file('problem.p', nd)).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [cut,nd])).";
+        assert_eq!(check(input, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
     fn rejects_forged_subsumption_resolution_conclusion() {
         let input = "cnf(target, axiom, ~p(a) | q(a) | r(a)).\n\
                      cnf(active, axiom, p(X) | q(X)).\n\
@@ -13057,7 +13498,7 @@ mod tests {
     }
 
     #[test]
-    fn definition_renaming_respects_equivalence_matching_limit() {
+    fn definition_renaming_fails_closed_without_a_definition_matching_budget() {
         let problem =
             parse_tptp("fof(goal, conjecture, ~((p => q) <=> r)).").expect("problem parses");
         let proof = parse_tptp(
@@ -13068,8 +13509,13 @@ mod tests {
              fof(bot, plain, $false, inference(consequence, [status(thm)], [n])).",
         )
         .expect("proof parses");
+        // Both budgets `definition_renaming` needs: folding the cited
+        // definitions into the source, and unfolding them in the conclusion.
+        // With neither, the rule has to report that it could not check the
+        // step rather than accept or reject it.
         let limits = VerificationLimits {
-            max_rewrite_steps: 0,
+            max_definition_steps: 0,
+            max_unfold_steps: 0,
             ..VerificationLimits::default()
         };
         assert!(matches!(
@@ -15641,18 +16087,20 @@ mod tests {
 }
 
 #[cfg(test)]
-mod alpha_equiv_shape_tests {
+mod leaf_matching_tests {
     use super::*;
+    use mrs_tptp::parse_tptp;
 
     /// Leaf `c237` of `SWV453+1` against `axiom_53` of casc-j13
-    /// `Axioms/SWV011+0.ax`: logically equivalent formulas with the
-    /// biconditional mirrored and conjunction operands reordered. Reported
-    /// `VerifiedBad` in
+    /// `Axioms/SWV011+0.ax`: equivalent under the AC laws of `&` with the
+    /// biconditional mirrored, reported `VerifiedBad` in
     /// `campaign-cascj13-feq-W8C8J1-20261002` (16 rows, all `%include`
-    /// problems).
+    /// problems). Each of the 16 was independently re-checked against its
+    /// cited axiom by a separate canonicaliser before the comparison was
+    /// widened.
     ///
-    /// Both formulas must be lowered into ONE `SymbolTable`: `alpha_equiv`
-    /// compares `SymbolId`s directly, so per-formula tables make identical
+    /// Both formulas must be lowered into ONE `SymbolTable`: the comparison
+    /// resolves `SymbolId`s directly, so per-formula tables make identical
     /// names compare unequal.
     const PAIR: &str = concat!(
         "fof(leaf, axiom, ![X0]: (![X1]: ((ordered(cons(X0, X1)) <=> (ordered(X1) & ![X2]: ",
@@ -15677,19 +16125,51 @@ mod alpha_equiv_shape_tests {
         (first, second)
     }
 
-    fn pair(a: &str, b: &str) -> bool {
-        let text = format!("{a}\n{b}\n");
-        let problem = mrs_tptp::parse_tptp(&text).expect("parse");
+    /// Lower a pair of formulas written either as bare formula text
+    /// (`![X]: (p(X) & q(X)).`) or as complete annotated statements
+    /// (`fof(a, axiom, ...).`).
+    fn lowered_pair(a: &str, b: &str) -> (Formula, Formula) {
+        // A bare formula is terminated by `.`, but an annotated formula is
+        // closed by `)` *before* that `.`. Wrapping the text verbatim would
+        // emit `fof(a, axiom, F.)` and fail to parse.
+        let statement = |text: &str, name: &str| {
+            let trimmed = text.trim();
+            if trimmed.starts_with("fof(") || trimmed.starts_with("cnf(") {
+                trimmed.to_string()
+            } else {
+                format!("fof({name}, axiom, {}).", trimmed.trim_end_matches('.'))
+            }
+        };
+        let text = format!("{}\n{}\n", statement(a, "ac_a"), statement(b, "ac_b"));
+        let problem = mrs_tptp::parse_tptp(&text)
+            .unwrap_or_else(|error| panic!("pair does not parse: {error}\ninput was {text:?}"));
         let mut symbols = SymbolTable::new();
         let limits = VerificationLimits::default();
-        let v: Vec<Formula> = problem
+        let mut loaded: Vec<Formula> = problem
             .formulas
             .iter()
             .map(|f| lower_annotated(&mut symbols, f, limits).expect("lower"))
             .collect();
-        alpha_equiv(&v[0], &v[1])
+        assert_eq!(loaded.len(), 2, "pair must lower to exactly two formulas");
+        let second = loaded.pop().expect("second");
+        let first = loaded.pop().expect("first");
+        (first, second)
     }
 
+    fn pair(a: &str, b: &str) -> bool {
+        let (first, second) = lowered_pair(a, b);
+        alpha_equiv(&first, &second)
+    }
+
+    fn ac_pair(a: &str, b: &str) -> MatchOutcome {
+        let (first, second) = lowered_pair(a, b);
+        ac_alpha_equiv(&first, &second, VerificationLimits::default())
+    }
+
+    /// `alpha_equiv` decides some shapes and refuses others. Its refusals of
+    /// conjunction reordering and reassociation are recorded here so that
+    /// widening the *leaf* comparison cannot be mistaken for a change to the
+    /// global alpha-equivalence contract, which is unchanged.
     #[test]
     fn alpha_equiv_shape_characterization() {
         let cases: &[(&str, &str, &str, bool)] = &[
@@ -15783,7 +16263,189 @@ mod alpha_equiv_shape_tests {
 
     #[test]
     fn included_leaf_and_axiom_are_not_structurally_alpha_equivalent() {
+        // The archived `VerifiedBad`, kept as a characterisation:
+        // `alpha_equiv` still refuses this pair, and always will.
         let (leaf, axiom) = load_pair();
         assert!(!alpha_equiv(&leaf, &axiom));
+    }
+
+    #[test]
+    fn the_archived_leaf_now_matches_its_axiom_modulo_ac() {
+        // The same pair under the comparison the leaf checker uses. This is
+        // the 16-row `VerifiedBad` class from UI-4.
+        let (leaf, axiom) = load_pair();
+        assert_eq!(
+            ac_alpha_equiv(&leaf, &axiom, VerificationLimits::default()),
+            MatchOutcome::Match
+        );
+    }
+
+    #[test]
+    fn ac_comparison_accepts_reordering_and_reassociation() {
+        for (name, a, b) in [
+            (
+                "and reordered",
+                "![X]:((p(X) & q(X)) & r(X)).",
+                "![X]:(r(X) & (q(X) & p(X))).",
+            ),
+            (
+                "and reassociated",
+                "![X]:((p(X) & q(X)) & r(X)).",
+                "![X]:(p(X) & (q(X) & r(X))).",
+            ),
+            (
+                "or reordered",
+                "![X]:((p(X) | q(X)) | r(X)).",
+                "![X]:(r(X) | (p(X) | q(X))).",
+            ),
+            (
+                "or reassociated",
+                "![X]:((p(X) | q(X)) | r(X)).",
+                "![X]:(p(X) | (q(X) | r(X))).",
+            ),
+            (
+                "conjuncts under binders",
+                "![X]:(p(X) & q).",
+                "![X]:(q & p(X)).",
+            ),
+        ] {
+            assert_eq!(ac_pair(a, b), MatchOutcome::Match, "expected match: {name}");
+        }
+    }
+
+    #[test]
+    fn ac_comparison_finds_permutations_greedy_pairing_misses() {
+        // `alpha_equiv`'s `And`/`Or` case pairs operands greedily, so a
+        // conjunct list whose only perfect matching needs the later operand
+        // first is refused. The leaf comparison searches instead.
+        assert_eq!(
+            ac_pair(
+                "![X]:(((p(X) & q(X)) & r(X)) & s(X)).",
+                "![X]:(s(X) & (r(X) & (q(X) & p(X))))"
+            ),
+            MatchOutcome::Match
+        );
+    }
+
+    #[test]
+    fn ac_comparison_rejects_genuinely_different_formulas() {
+        // The widening must stop at the AC laws. Everything below is decided
+        // `Differ`, and none of it is an instance of associativity,
+        // commutativity, mirroring or alpha-renaming.
+        for (name, a, b) in [
+            (
+                "different atom",
+                "![X]:((p(X) & q(X)) & r(X)).",
+                "![X]:((p(X) & q(X)) & s(X)).",
+            ),
+            (
+                "missing conjunct",
+                "![X]:(p(X) & q(X)).",
+                "![X]:(p(X) & (q(X) & r(X))).",
+            ),
+            (
+                "and against or",
+                "![X]:(p(X) & q(X)).",
+                "![X]:(p(X) | q(X)).",
+            ),
+            (
+                "atom against conjunction",
+                "![X]:p(X).",
+                "![X]:(p(X) & q(X)).",
+            ),
+            (
+                "free variable identity",
+                "fof(a,axiom,p(x) & q).",
+                "fof(b,axiom,p(y) & q).",
+            ),
+            (
+                "implication direction",
+                "![X]:(p(X) => q(X)).",
+                "![X]:(q(X) => p(X)).",
+            ),
+            (
+                "bound variable reused across conjuncts",
+                "![X]:(p(X) & q(X)).",
+                "![X]:(p(X) & q(Y)).",
+            ),
+            ("quantifier kind", "![X]:(p(X) & q).", "?[X]:(p(X) & q)."),
+            (
+                "conjunct reordered inside a disjunction",
+                "![X]:((p(X) | q(X)) & r(X)).",
+                "![X]:((q(X) | p(X)) | r(X)).",
+            ),
+        ] {
+            assert_eq!(
+                ac_pair(a, b),
+                MatchOutcome::Differ,
+                "expected difference: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_comparison_over_budget_is_undecided_not_a_difference() {
+        // A comparison that runs out of budget has decided nothing. Reporting
+        // it as `Differ` would turn "the checker gave up" into "the proof is
+        // wrong", which is exactly the confusion UI-4's `VerifiedBad` rows
+        // were.
+        let (first, second) = lowered_pair(
+            "![X]:((p(X) & q(X)) & r(X)).",
+            "![X]:(r(X) & (q(X) & p(X))).",
+        );
+        for steps in [0, 1, 2] {
+            let limits = VerificationLimits {
+                max_comparison_steps: steps,
+                ..VerificationLimits::default()
+            };
+            assert_eq!(
+                ac_alpha_equiv(&first, &second, limits),
+                MatchOutcome::Undecided,
+                "a budget of {steps} steps cannot decide this pair"
+            );
+        }
+    }
+
+    #[test]
+    fn a_budget_exhausted_leaf_is_inconclusive_not_rejected() {
+        // End to end: with no comparison budget the same proof must be
+        // reported as unchecked, never as a leaf that does not match.
+        let problem = "fof(axiom, axiom, p(a) & q(a) & r(a)).";
+        let proof = "% Proof : problem.p\n\
+                     fof(axiom, axiom, r(a) & q(a) & p(a), file('problem.p', axiom)).\n\
+                     cnf(bot, plain, $false, inference(subsumption_resolution, [status(thm)], [axiom])).";
+        let limits = VerificationLimits {
+            max_comparison_steps: 1,
+            ..VerificationLimits::default()
+        };
+        let parsed_problem = parse_tptp(problem).expect("problem parses");
+        let parsed_proof = parse_tptp(proof).expect("proof parses");
+        let verdict =
+            verify_strict_with_source(&parsed_problem, &parsed_proof, Some("problem.p"), limits);
+        assert!(
+            !matches!(&verdict, KernelVerdict::Rejected(reason) if reason.contains("does not match")),
+            "a budget-limited comparison must not report a mismatch: {verdict}"
+        );
+    }
+
+    #[test]
+    fn a_leaf_is_still_rejected_when_it_differs_from_its_axiom() {
+        // The widening must not have disarmed the check itself.
+        let problem = "fof(axiom, axiom, p(a) & q(a) & r(a)).";
+        let proof = "% Proof : problem.p\n\
+                     fof(axiom, axiom, r(a) & q(a) & s(a), file('problem.p', axiom)).\n\
+                     cnf(bot, plain, $false, inference(subsumption_resolution, [status(thm)], [axiom])).";
+        let parsed_problem = parse_tptp(problem).expect("problem parses");
+        let parsed_proof = parse_tptp(proof).expect("proof parses");
+        let verdict = verify_strict_with_source(
+            &parsed_problem,
+            &parsed_proof,
+            Some("problem.p"),
+            VerificationLimits::default(),
+        );
+        assert!(
+            matches!(&verdict, KernelVerdict::Rejected(reason) if reason.contains("does not match")),
+            "a leaf that is not an AC-permutation of its axiom must be rejected: {verdict}"
+        );
     }
 }
