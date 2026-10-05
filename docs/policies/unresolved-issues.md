@@ -310,10 +310,10 @@ their generated count.
 
 | | |
 |---|---|
-| Status | Open, not scheduled. **Fixing it widens accepted leaf matching.** |
-| Severity | One archived campaign reports 16 leaf mismatches; not independently re-audited |
-| Soundness | No false-accept path is identified here. Whether each refutation is valid requires checking the original proof and source axiom. |
-| Blocks | Strict-certification counts for that campaign need re-audit against retained artifacts. |
+| Status | **Fixed** on `cert/feq-kernel-limits` (`2ffedfe`). Kept here for the record. |
+| Severity | Was 16 rows of `campaign-cascj13-feq-W8C8J1-20261002`; measured and reproduced, now 0 |
+| Soundness | No false-accept path was found. The widening is the AC laws of `&`/`\|`, which hold in every model. All 16 leaves were checked against their cited axioms by an independent canonicaliser before the comparison changed. |
+| Blocks | Nothing. The archived audit needs re-running; the counts below are from that re-run. |
 
 ### Observation
 
@@ -402,32 +402,71 @@ reported from one archived campaign, not a re-audited current rate. The cited
 comparison set and exact `VerifiedBad` denominator should be checked against
 that run's saved proof/audit artifacts before using the counts as a baseline.
 
-### Why the matching contract needs review
+### Resolution
 
-The immediate finding is about leaf matching: a verifier may need to recognize
-a proof leaf as a valid reformulation of its cited source, while the current
-helper checks alpha-equivalence only. Any broader matcher must remain bounded
-and establish equivalence; connective-shape normalization is justified only
-when associative/commutative laws are part of the chosen comparison contract.
-The archived `VerifiedBad` status alone does not establish that the rejection
-was false.
+Reproduced first: `mrs-proover --strict` over the campaign's retained proofs
+gives exactly the archived row for row -- 47 `VerifiedGood`, 16 `VerifiedBad`,
+3 `Unknown` -- so the archived numbers were not stale.
 
-An appropriate repair may be a bounded comparison modulo associativity and
-commutativity of `And`/`Or` at named-leaf matching rather than changing the
-global `alpha_equiv` contract. Before implementing it, obtain and independently
-validate the archived proof and full included axiom (including variable
-binding, implication polarity, and every connective operand); the excerpts here
-abbreviate formulas and are not a complete semantic certificate.
+The 16 leaves were then checked against their cited axioms by a canonicaliser
+written from the TPTP grammar rather than from the Rust implementation
+(methodology.md 1.4): bound variables as de Bruijn indices, `&`/`|` flattened
+and sorted, `<=>` and `=` as unordered pairs, `<=` rewritten to `=>` with
+swapped operands, free variables keeping their names. All 16 are
+AC-permutations of their cited axiom. The excerpts in the Observation section
+above abbreviate subformulas and are not themselves a semantic certificate;
+this is.
+
+Fixed by a new bounded comparison used **only** at named-leaf matching.
+`mrs_core::alpha::alpha_equiv` is unchanged and a test pins that it still
+refuses the archived pair, so the global alpha-equivalence contract did not
+move. Widening acceptance is justified only because the extra equivalences are
+the associative and commutative laws of `&`/`|`, which hold in every model of
+classical logic: a leaf the comparison accepts is an instance of its cited axiom
+by those laws alone. It is not general logical equivalence, `And` against `Or`
+is decided a difference, and nine negative cases pin that.
+
+Two further changes in the same comparison, both only ever accepting more:
+same-connective operands are flattened before matching, and operand lists are
+matched by complete backtracking search rather than greedy first-fit -- greedy
+pairing misses permutations that exist, which is a false negative.
+
+The comparison is bounded by `max_comparison_steps`, and exhausting it yields
+`Undecided`, reported `Inconclusive`. That distinction is the point: the 16 rows
+read as `VerifiedBad`, which says "this proof is wrong", because a comparison
+that ran out of room was reported as a difference.
+
+### Measured
+
+Replaying the archived proofs through `mrs-proover --strict`:
+
+| campaign | before | after |
+|---|---|---|
+| `campaign-cascj13-feq-W8C8J1-20261002` | 47 `VerifiedGood`, 16 `VerifiedBad`, 3 `Unknown` | **64 `VerifiedGood`, 0 `VerifiedBad`**, 2 `Unknown` |
+| `campaign-casc30-feq-W8C8J1-20261002` | 90 `VerifiedGood`, 8 `Unknown`, 1 `Timeout` | **92 `VerifiedGood`**, 6 `Unknown`, 1 `Timeout` |
+
+Both columns are `audit_casc_proofs --checks strict --strict-time 120` over the
+campaigns' own retained proofs, so they are like for like.
+
+No `VerifiedGood` was lost in either campaign. The residual rows are **not** UI-4
+and are recorded as UI-7.
+
+`ALG049+1` (casc-30) needs a separate note: it was the campaign's single
+`Timeout`, and it now certifies, but it takes **396 s** and 777 MB, so under the
+campaign's 120 s per-proof kernel budget the audit will still record it as
+`Timeout`. It was over 900 s before this work. Verifying it is not the same as
+verifying it inside the budget.
 
 ### Reproduce
 
 ```bash
-nix develop -c cargo test -p mrs-proof-kernel alpha_equiv_shape_tests -- --nocapture
+nix develop -c cargo test -p mrs-proof-kernel leaf_matching -- --nocapture
+nix develop -c cargo test -p mrs-proof-kernel alpha_equiv_shape_characterization
 
-# End to end, once the original campaign proof artifacts are available:
-TPTP=crates/mrs-bench/problems/casc-j13 \
-  target/release/mrs-proover --problems-dir <cert>/proofs/mrs/feq \
-  --workers 1 --time 180 --strict SWV453+1.s
+# End to end, from the retained proofs:
+crates/mrs-bench/certification_campaign.sh \
+  --audit-only /home/hack/crates/mrs-bench/results/campaign-cascj13-feq-W8C8J1-20261002 \
+  --edition casc-j13
 ```
 
 ## UI-5 — EPU: equality InstGen is unsupported on many inputs; its contribution needs measurement
@@ -619,3 +658,129 @@ are heterogeneous as noted above. The archived run did not report a solve on
 this row. Whether a similar input is solvable within 480 s is unmeasured; an OS
 kill can lose the status line instead of producing a graceful resource-limit
 result.
+
+---
+
+## UI-7 — Eight FEQ refutations the strict kernel cannot decide
+
+| | |
+|---|---|
+| Status | Open, not scheduled |
+| Severity | 8 `Unknown` rows across two FEQ campaigns, plus one more that is only over budget. No `VerifiedBad`. |
+| Soundness | No unsound step was found. All eight fail closed, and several were *reached* only because UI-4 stopped masking them. |
+| Blocks | 100% strict certification of the FEQ refutations in both campaigns, at the 120 s per-proof kernel budget. |
+
+### Observation
+
+After UI-4 and the demodulation replay fixes (`cert/feq-kernel-limits`,
+`2ffedfe` and `32356a6`), replaying the archived FEQ proofs through
+`mrs-proover --strict` leaves eight rows undecided, in two families. The
+remaining 64 casc-j13 and 92 casc-30 rows certify, and `ALG049+1` certifies in
+396 s given a budget it does not have (see
+[CERTIFICATION_STATUS.md](../CERTIFICATION_STATUS.md) §2).
+
+| problem | campaign | node | verdict |
+|---|---|---|---|
+| `GEO331+1` | casc-j13 | `c355` | definitions whose bodies could not be matched against the source |
+| `GEO343+1` | casc-j13 | `c286` | same |
+| `GEO299+1` | casc-30 | `c522` | same |
+| `GEO300+1` | casc-30 | `c285` | same |
+| `ITP019+5` | casc-30 | `c700` | same |
+| `ALG102+1` | casc-30 | `c391` | CNF expansion exceeded strict limits |
+| `ALG104+1` | casc-30 | `c281` | same |
+| `ALG127+1` | casc-30 | `c199` | same |
+
+Node ids are not stable across runs; quote the conclusion text.
+
+### Family 1 — definitions over structurally identical blocks
+
+Each `cnf_transformation` step cites several introduced definitions whose bodies
+are the same literals, sometimes in opposite order, and the source contains a
+block for each. `GEO331+1` c355 is the clearest:
+
+```
+source block A:  ~ron(X0,X2) & ~rinside(X0,X2)
+source block B:  ~ron(X1,X2) & ~rinside(X1,X2)
+c349: def_..._0(X0,X2) <=> ~ron(X0,X2) & ~rinside(X0,X2)
+c350: def_..._1(X1,X2) <=> ~ron(X1,X2) & ~rinside(X1,X2)
+goal clause:     ... | def_..._0(X0,X2) | ... | def_..._1(X1,X2) | ...
+```
+
+`match_core_multiset` compares `And`/`Or` operands as multisets, so `c349` and
+`c350` both match both blocks and the greedy fold gives both blocks to whichever
+definition runs first. The other is then left unmatched and the guard reports
+`Inconclusive`.
+
+Two things were established:
+
+* Comparing operands **in order** first separates mirror-image definitions
+  (`GEO331+1` c211, `GEO343+1` c155, `GEO300+1` c36 now certify; that pass is in
+  the tree and is strictly narrower than the multiset comparison, so it only ever
+  accepts less). It does **not** separate the c355 family, because there the two
+  bodies have the *same* operand order and nothing but variable identity
+  distinguishes the blocks.
+* Reversing the order of the definitions does not help either, because the
+  collision is not about order: the first definition takes both blocks whichever
+  order it runs in. A block-to-definition *matching* is needed, which needs
+  block identity.
+
+### The blocker: variable identity is not available
+
+The discriminator is which source variables each definition's block uses: block
+A is over the source's `X0,X2` and belongs to `def_..._0`, block B is over `X1,X2`
+and belongs to `def_..._1`. The kernel cannot see that. `LowerCtx` assigns
+`VarId`s per annotated formula, in order of first appearance, so:
+
+* `c349`'s `X0` and the source's `X0` get different `VarId`s;
+* `c349` and `c350` get *identical* `VarId`s for their two bound variables, so
+  they are the same formula to the matcher.
+
+`is_identity_mapping` -- the "is this the definition's own block" test, whose own
+comment says "same variable names as the rendered definition" -- compares
+`VarId`s and therefore can essentially never succeed across two independently
+lowered formulas. It was written for a shared name space that does not exist.
+
+Interning one `VarId` per variable *name* for the whole verification would fix
+it, but it is a change to the kernel's variable model, not to a limit, and it
+introduces a capture hazard: a formula that uses one name both free and bound
+would conflate them, and `alpha_equiv`'s depth-indexed relation would then treat
+a free variable as bound. That is a widening of leaf matching and needs its own
+independent validation before it lands. **Not attempted here.**
+
+### Family 2 — the CNF expansion is combinatorial, not under-budgeted
+
+`ALG102+1` c391, `ALG104+1` c281 and `ALG127+1` c199 report `CNF expansion
+exceeded strict limits`, which reads like a ceiling. It is not. The ceiling is
+100 000 clauses, and raising it does not converge:
+
+| ceiling | `ALG127+1` c199 | `ALG102+1` c391 |
+|---|---|---|
+| 100 000 (current) | 0.47 GB, 1.4 s, declined | 0.29 GB, 1.0 s, declined |
+| 200 000 | 0.77 GB, 1.9 s, declined | 0.48 GB, 1.4 s, declined |
+| 500 000 | 2.6 GB, 6.7 s, declined | 1.4 GB, 3.7 s, declined |
+| 2 000 000 | 12.3 GB, 33.6 s, still not finished | 6.2 GB, 15.3 s, declined |
+
+The kernel expands the *whole* source into clauses and then asks whether the goal
+is among them. For these sources that expansion is exponential in the number of
+disjuncts, so no ceiling helps: it is an algorithmic choice, not a resource
+number. The file already contains the right idea -- the goal-directed
+direction-clause fast path, which certifies `ALG102+1` c103 without expanding
+anything -- and these three nodes need that treatment (or an equivalent
+residue-based check) rather than more headroom.
+
+`cnf_expand` now reports *why* it stopped, separating "a ceiling was reached"
+from "the normalizer left a shape this expander does not produce"; both used to
+be reported as "exceeded strict limits", which sent the investigation after a
+ceiling that was never the cause.
+
+### Reproduce
+
+```bash
+# Each row, from the retained proof:
+TPTP=crates/mrs-bench/problems/casc-30 target/release/mrs-proover \\
+  --strict --no-atp --workers 1 --time 240 \\
+  /home/hack/crates/mrs-bench/results/campaign-casc30-feq-W8C8J1-20261002/certification/proofs/mrs/feq/ALG127+1.s
+```
+
+The retained proofs are under
+`/home/hack/crates/mrs-bench/results/campaign-<edition>-feq-*/certification/proofs/mrs/feq/`.
