@@ -408,6 +408,31 @@ inflated by 168 and 68 problems that appear in only one of the two sets.
 The two runs also differ in `binary_sha256` and in host RAM (see R7), so they are
 not a controlled comparison in the first place.
 
+### The five casc-30 divisions, as measured on 2026-10-02
+
+Worth keeping together, because the per-division numbers are otherwise quoted
+from memory and three of these five are not comparable to each other.
+
+| division | n | budget | solved | rate | `GaveUp` | `Timeout` | host | `binary_sha256` | commit |
+|---|---:|---:|---:|---:|---:|---:|---|---|---|
+| ueq | 300 | 240 s | 123 | 41.0% | 10 | 167 | teenf9901 | `a63d62fd` | `af983aca` |
+| fne | 100 | 240 s | 39 | 39.0% | 11 | 50 | mtsdev02 | `d0df62c2` | `af983aca` |
+| eps | 100 | 120 s | 44 | 44.0% | 11 | 45 | mtsdev02 | `d0df62c2` | `af983aca` |
+| feq | 400 | 240 s | 106 | 26.5% | 40 | 254 | mtsdev04 | `a644d9de` | `af983aca` |
+| epu | 100 | 120 s | 9 | **9.0%** | 30 | 61 | mtsdev01 | `fa52c23d` | `fb55719c` |
+
+Caveats that apply to this table:
+
+- **Four hosts, three binary shas, two commits.** Only ueq/feq/fne/eps share
+  commit `af983acae`; epu is a later tree. See R7.
+- **Budgets differ by division** (240 s for ueq/fne/feq, 120 s for eps/epu),
+  following `--casc-times`. Rates are not comparable across that split.
+- **feq's rate is not a capability figure.** 7 of its 106 solves have no proof
+  (over the 8 MiB `--proof-bytes-limit`, R4), so it certifies 90.
+- **epu's 9.0% is genuine and reproducible** — a second run on a different
+  binary and host solved exactly the same 9 problems. See
+  [`unresolved-issues.md`](../policies/unresolved-issues.md) **UI-5**.
+
 **Before comparing any two runs, check all four of:** problem-set intersection
 and size; per-problem `timeout`; `binary_sha256`; and host RAM. If the
 intersection is smaller than either run, the rates are not comparable and the
