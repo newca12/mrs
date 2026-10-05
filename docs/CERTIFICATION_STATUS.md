@@ -250,8 +250,15 @@ retained proofs, so the comparison is like for like.
 
 | campaign | audited before | audited now |
 |---|---:|---:|
-| `campaign-cascj13-feq-W8C8J1-20261002` (66 proofs) | 47 `VerifiedGood`, **16 `VerifiedBad`**, 3 `Unknown` | **64 `VerifiedGood`, 0 `VerifiedBad`**, 2 `Unknown` |
-| `campaign-casc30-feq-W8C8J1-20261002` (99 proofs) | 90 `VerifiedGood`, 8 `Unknown`, 1 `Timeout` | **93 `VerifiedGood`**, 6 `Unknown` |
+| `campaign-cascj13-feq-W8C8J1-20261002` | 47 `VerifiedGood`, **16 `VerifiedBad`**, 3 `Unknown` | **64 `VerifiedGood`, 0 `VerifiedBad`**, 2 `Unknown` |
+| `campaign-casc30-feq-W8C8J1-20261002` | 90 `VerifiedGood`, 8 `Unknown`, 1 `Timeout` | **92 `VerifiedGood`**, 6 `Unknown`, 1 `Timeout` |
+
+Both columns are the official harness (`audit_casc_proofs --checks strict
+--strict-time 120`) over the campaigns' own retained proofs, so they are like for
+like; the proofs are not re-searched. Re-audit with
+`crates/mrs-bench/certification_campaign.sh --audit-only <run-dir>`; the archived
+run directories record the *producing* machine's absolute paths, so they need
+`CASC_PROBLEMS_ROOT` or `--edition` pointed at the local corpus.
 
 The casc-j13 `VerifiedBad` column is the point. Sixteen refutations were being
 reported as **broken proofs** when they are sound, and the cause was one
@@ -283,9 +290,12 @@ neither is a ceiling that can be raised:
 Details and the measurements: UI-7.
 
 `ALG049+1` deserves its own line because "certifies" and "certifies in budget"
-are different claims. It was the casc-30 `Timeout` and now certifies — in 396 s
-and 777 MB, down from over 900 s. The campaign's per-proof kernel budget is
-120 s, so a fresh audit of that campaign will still record it as `Timeout`.
+are different claims. It is the casc-30 `Timeout` in the table above, and given
+900 s it certifies — in **396 s** and 777 MB, down from over 900 s before this
+work. The audit's per-proof kernel budget is `--strict-time 120`, so at the
+campaign's own budget it is still a `Timeout`. Two of the eleven rows in the
+"not certified" column are therefore not the same kind of thing: eight are
+`Unknown` and one is over budget.
 
 ### Fast invariant
 

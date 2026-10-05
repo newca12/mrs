@@ -442,8 +442,11 @@ Replaying the archived proofs through `mrs-proover --strict`:
 
 | campaign | before | after |
 |---|---|---|
-| `campaign-cascj13-feq-W8C8J1-20261002` | 47/66 `VerifiedGood`, 16 `VerifiedBad` | 64/66 `VerifiedGood`, 0 `VerifiedBad` |
-| `campaign-casc30-feq-W8C8J1-20261002` | 90/99 `VerifiedGood`, 8 `Unknown` | 93/99 `VerifiedGood`, 6 `Unknown` |
+| `campaign-cascj13-feq-W8C8J1-20261002` | 47 `VerifiedGood`, 16 `VerifiedBad`, 3 `Unknown` | **64 `VerifiedGood`, 0 `VerifiedBad`**, 2 `Unknown` |
+| `campaign-casc30-feq-W8C8J1-20261002` | 90 `VerifiedGood`, 8 `Unknown`, 1 `Timeout` | **92 `VerifiedGood`**, 6 `Unknown`, 1 `Timeout` |
+
+Both columns are `audit_casc_proofs --checks strict --strict-time 120` over the
+campaigns' own retained proofs, so they are like for like.
 
 No `VerifiedGood` was lost in either campaign. The residual rows are **not** UI-4
 and are recorded as UI-7.
@@ -658,21 +661,23 @@ result.
 
 ---
 
-## UI-7 — Eight FEQ refutations the strict kernel still cannot check
+## UI-7 — Eight FEQ refutations the strict kernel cannot decide
 
 | | |
 |---|---|
 | Status | Open, not scheduled |
-| Severity | 8 rows across two FEQ campaigns, all `Unknown`. No `VerifiedBad`. |
-| Soundness | No unsound step was found. All six fail closed, and two of the six were *reached* only because UI-4 stopped masking them. |
-| Blocks | 100% strict certification of the FEQ refutations in both campaigns. |
+| Severity | 8 `Unknown` rows across two FEQ campaigns, plus one more that is only over budget. No `VerifiedBad`. |
+| Soundness | No unsound step was found. All eight fail closed, and several were *reached* only because UI-4 stopped masking them. |
+| Blocks | 100% strict certification of the FEQ refutations in both campaigns, at the 120 s per-proof kernel budget. |
 
 ### Observation
 
 After UI-4 and the demodulation replay fixes (`cert/feq-kernel-limits`,
 `2ffedfe` and `32356a6`), replaying the archived FEQ proofs through
-`mrs-proover --strict` leaves eight rows unchecked, in two families. The
-remaining 64 casc-j13 and 93 casc-30 rows certify.
+`mrs-proover --strict` leaves eight rows undecided, in two families. The
+remaining 64 casc-j13 and 92 casc-30 rows certify, and `ALG049+1` certifies in
+396 s given a budget it does not have (see
+[CERTIFICATION_STATUS.md](../CERTIFICATION_STATUS.md) §2).
 
 | problem | campaign | node | verdict |
 |---|---|---|---|
