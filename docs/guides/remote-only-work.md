@@ -288,8 +288,8 @@ number.
 > **Blocked by:** nothing. This invalidates the run's headline number and needs
 > re-running once the grading input is fixed.
 
-`campaign-cascj13-feq-W8C8J1-20261002` reports **16** solves out of 300. The
-prover actually proved **69**:
+In the archived `campaign-cascj13-feq-W8C8J1-20261002`, `run.csv` reports **16**
+rows with `verdict=ok` out of 300. The prover emitted `Theorem` on **69** rows:
 
 | `szs_status` | `expected` | `verdict` | rows |
 |---|---|---|---|
@@ -300,34 +300,43 @@ prover actually proved **69**:
 | `GaveUp` | *(blank)* | `unknown` | 29 |
 | `GaveUp` | `Theorem` | `unknown` | 4 |
 
-`expected` is blank for 236 of 300 rows, so 53 genuine refutations are graded
-`unknown`. 66 of the 69 proofs are on disk and the strict kernel certifies 47 of
-them. **The 16 is a grading artefact, not a prover result**, and must not be
-quoted.
+`expected` is blank for 236 of 300 rows, so 53 `Theorem` results have no
+reference grading and become `unknown`. The archived audit reportedly found 66
+proof artifacts for those 69 results and certified 47; the run directory/raw
+proofs are not committed here, so treat those audit counts as reported campaign
+data until re-audited. **The `ok` count is a grading count, not prover
+coverage**, and must not be quoted as the number proved.
 
-The blank cells are a property of the casc-j13 FEQ corpus that the harness does
-not handle: casc-30 FEQ populates `expected` for 399 of 400 rows on the same
-host pair and the same code. Anything that reads `verdict == "ok"` as the solve
-count is wrong for this run.
+The blank cells appear to come from an absent/incomplete edition-specific
+answer table: `casc.sh` reads `answers_casc-j13.tsv` (falling back to
+`answers.tsv`), and both `fetch_answers.sh --edition casc-j13` and the fallback
+must be checked before attributing the issue to corpus format. The archived
+casc-30 FEQ run populated `expected` for 399/400 rows, but was graded with a
+different edition answer table; this is not a controlled comparison of grading
+inputs. Before re-running, produce and validate the casc-j13 answer file and
+verify expected-status counts against the edition's official status sources.
 
-### R10 — `alpha_equiv` over-strictness, surfaced as 16 `VerifiedBad`
+### R10 — Strict structural leaf matching rejects some equivalent included axioms
 
-`campaign-cascj13-feq-W8C8J1-20261002` is the first run anywhere to report
-`VerifiedBad`. All 16 rows are `leaf cN does not match problem formula X`, all
-16 problems use `%include`, and the mismatch reproduces against **either**
-edition's axiom files — so it is *not* the corpus-mismatch bug above.
+The archived `campaign-cascj13-feq-W8C8J1-20261002` audit reports 16 leaf
+formula mismatches on `%include` problems. They reportedly reproduce against
+either edition's axiom files, which suggests these rows are distinct from the
+answer-table grading issue above. Because the campaign artifacts are not
+committed, reproduce/audit them before treating the exact count as a
+repository-wide fact.
 
-Root cause, isolated: `mrs_core::alpha::alpha_equiv` compares `And`/`Or` as a
-binary tree without flattening, so reordering or re-associating three or more
-conjuncts is rejected even though the formulas are identical. Full analysis,
-blast radius and repro in
+The failing comparison is structural alpha-equivalence
+(`mrs_core::alpha::alpha_equiv`), which compares the binary connective trees.
+The archived formulas appear logically equivalent after
+reordering/reassociation of multi-operand connectives, but the full
+proof/problem artifacts are needed to independently verify every operand and
+binder. Full analysis and bounded repro in
 [`unresolved-issues.md`](../policies/unresolved-issues.md) **UI-4**.
 
-Not being fixed here: flattening would widen what the strict kernel accepts, and
-`docs/policies/methodology.md` §1.4 requires semantic claims to be checked
-independently rather than taken from the implementation. The regression tests
-are in `crates/mrs-proof-kernel/src/lib.rs` (`alpha_equiv_regression`), marked
-`#[ignore]` so they document the contract without breaking the gate.
+No checker behavior is changed by this record. The ordinary assertions now pin
+the current structural matcher behavior, and the included-leaf fixture pins the
+observed mismatch; those tests do not establish logical equivalence of the
+archived formulas by themselves.
 
 ---
 

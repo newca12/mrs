@@ -15641,12 +15641,13 @@ mod tests {
 }
 
 #[cfg(test)]
-mod alpha_equiv_regression {
+mod alpha_equiv_shape_tests {
     use super::*;
 
     /// Leaf `c237` of `SWV453+1` against `axiom_53` of casc-j13
-    /// `Axioms/SWV011+0.ax`: the same formula with the biconditional mirrored
-    /// and the conjunction reordered. Reported `VerifiedBad` in
+    /// `Axioms/SWV011+0.ax`: logically equivalent formulas with the
+    /// biconditional mirrored and conjunction operands reordered. Reported
+    /// `VerifiedBad` in
     /// `campaign-cascj13-feq-W8C8J1-20261002` (16 rows, all `%include`
     /// problems).
     ///
@@ -15689,90 +15690,100 @@ mod alpha_equiv_regression {
         alpha_equiv(&v[0], &v[1])
     }
 
-    /// Documented failing behaviour, see docs/policies/unresolved-issues.md UI-4.
-    /// Ignored so it records the current contract without breaking the gate.
     #[test]
-    #[ignore = "UI-4: alpha_equiv does not flatten nested And/Or"]
-    fn isolate_constructs() {
-        let cases: &[(&str, &str, &str)] = &[
+    fn alpha_equiv_shape_characterization() {
+        let cases: &[(&str, &str, &str, bool)] = &[
             (
                 "and reordered, atomic",
                 "fof(a,axiom,p & q).",
                 "fof(b,axiom,q & p).",
+                true,
             ),
             (
                 "and reordered under binder",
                 "fof(a,axiom,![X]:(p(X) & q)).",
                 "fof(b,axiom,![Y]:(q & p(Y))).",
+                true,
             ),
             (
                 "iff mirrored, atomic",
                 "fof(a,axiom,p <=> q).",
                 "fof(b,axiom,q <=> p).",
+                true,
             ),
             (
                 "iff mirrored over atoms",
                 "fof(a,axiom,(p & r) <=> s).",
                 "fof(b,axiom,s <=> (r & p)).",
+                true,
             ),
             (
                 "multi-var vs nested forall",
                 "fof(a,axiom,![X,Y]:(p(X,Y))).",
                 "fof(b,axiom,![X]:![Y]:(p(X,Y))).",
+                true,
             ),
             (
                 "mirrored iff, 1 var each side",
                 "fof(a,axiom,![X]:(p(X) <=> q)).",
                 "fof(b,axiom,![Y]:(q <=> p(Y))).",
+                true,
             ),
             (
                 "reverse-imp <= vs =>",
                 "fof(a,axiom,![X]:(leq(X) <= p(X))).",
                 "fof(b,axiom,![X]:(p(X) => leq(X))).",
+                true,
             ),
             (
                 "<= keeps direction?",
                 "fof(a,axiom,leq(x) <= p(x)).",
                 "fof(b,axiom,p(x) => leq(x)).",
+                true,
             ),
             (
                 "and REASSOCIATED (3 atoms)",
                 "fof(a,axiom,![X]:((p(X) & q(X)) & r(X))).",
                 "fof(b,axiom,![X]:(p(X) & (q(X) & r(X)))).",
+                false,
             ),
             (
                 "and REORDERED only (3 atoms)",
                 "fof(a,axiom,![X]:(p(X) & q(X) & r(X))).",
                 "fof(b,axiom,![X]:(r(X) & q(X) & p(X))).",
+                false,
             ),
             (
                 "and same grouping (3 atoms)",
                 "fof(a,axiom,![X]:((p(X) & q(X)) & r(X))).",
                 "fof(b,axiom,![X]:((p(X) & q(X)) & r(X))).",
+                true,
+            ),
+            (
+                "or REASSOCIATED (3 atoms)",
+                "fof(a,axiom,![X]:((p(X) | q(X)) | r(X))).",
+                "fof(b,axiom,![X]:(p(X) | (q(X) | r(X)))).",
+                false,
+            ),
+            (
+                "or REORDERED only (3 atoms)",
+                "fof(a,axiom,![X]:(p(X) | q(X) | r(X))).",
+                "fof(b,axiom,![X]:(r(X) | q(X) | p(X))).",
+                false,
             ),
         ];
-        for (name, a, b) in cases {
-            println!("{name:<34} alpha_equiv={}", pair(a, b));
+        for (name, a, b, expected) in cases {
+            assert_eq!(
+                pair(a, b),
+                *expected,
+                "unexpected alpha-equivalence behavior for {name}"
+            );
         }
     }
 
     #[test]
-    #[ignore = "diagnostic dump"]
-    fn dump_real_pair() {
+    fn included_leaf_and_axiom_are_not_structurally_alpha_equivalent() {
         let (leaf, axiom) = load_pair();
-        println!("LEAF  : {leaf:?}");
-        println!("AXIOM : {axiom:?}");
-    }
-
-    /// Documented failing behaviour, see docs/policies/unresolved-issues.md UI-4.
-    /// Ignored so it records the current contract without breaking the gate.
-    #[test]
-    #[ignore = "UI-4: alpha_equiv does not flatten nested And/Or"]
-    fn mirrored_iff_with_reordered_conjunction_is_alpha_equivalent() {
-        let (leaf, axiom) = load_pair();
-        assert!(
-            alpha_equiv(&leaf, &axiom),
-            "mirrored `<=>` with reordered `&` under binders should be alpha-equivalent"
-        );
+        assert!(!alpha_equiv(&leaf, &axiom));
     }
 }

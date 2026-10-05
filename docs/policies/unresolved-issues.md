@@ -198,13 +198,13 @@ host with less headroom is not a suitable repro host.
 
 ---
 
-## UI-2 — Problems that hang before emitting any SZS output (27 across UEQ and FEQ)
+## UI-2 — Problems that hang before emitting any SZS status (27 across UEQ and FEQ)
 
 | | |
 |---|---|
 | Status | Open, not scheduled |
 | Severity | 15 of 300 casc-30 UEQ (5%), **and 12 of 400 casc-30 FEQ (3%)** |
-| Soundness | Not a soundness issue. No refutation is lost — these are timeouts either way. |
+| Soundness | Not a false-positive issue. The timeouts may still cost coverage. |
 
 ### Observation
 
@@ -230,43 +230,52 @@ returning rather than at general slowness — the deadline is observed at
 iteration boundaries (the LRS check at `given_clause.rs:1461` runs every 100
 iterations).
 
-### It is two distinct defects that look identical in the CSV
+### The same CSV symptom may occur in different stages
 
 casc-30 **FEQ** shows the same signature 12 more times
 (`ALG215+2`, `BIO005+1`, `BIO006+1`, `CSR037+5`, `CSR047+5`, `CSR052+4`,
 `HWV090+1`, `HWV128+1`, `ITP015+4`, `NUM925+3`, `NUM925+7`, `SWX070+1`), but it
 hangs in a **different phase**.
 
-`% Problem:` is printed at `src/main.rs:664`, *after* lowering but *before*
-clausification, which runs at `src/main.rs:705` and `:737`; the search starts at
-`src/main.rs:1094`. So:
+`% Problem:` is printed at `src/main.rs:664`, after include resolution and
+lowering but before clausification, which runs at `src/main.rs:705` and `:737`;
+the search starts at `src/main.rs:1094`. Crucially, the `cnf clauses` count is
+only `lowered.cnf_clauses.len()` — clauses supplied directly in the problem —
+and does **not** count clauses generated from FOF during the following
+clausification loop. Therefore `0 cnf clauses` does not show how much
+clausification had completed when the process was killed.
+
+The available log line and source flow suggest a phase distinction, but the
+absence of stage-level progress telemetry means the stage diagnosis is not
+confirmed:
 
 | division | last line reached | hangs in |
 |---|---|---|
 | UEQ | `% Problem: … 6 cnf clauses` | **search** (clausification finished; input was already CNF) |
-| FEQ | `% Problem: … 0 cnf clauses` | **clausification** (input was FOF; never reaches search) |
+| FEQ | `% Problem: … 0 input CNF clauses` | **unknown**; could be clausification or later work |
 
 Every one of the 12 FEQ cases reports a large FOF input — `CSR037+5` has
 **540 249** axioms, `HWV128+1` 204 845, `CSR052+4` 44 216, down to `SWX070+1`
-at 148 axioms — and all report `0 cnf clauses`, i.e. clausification had produced
-nothing when the clock ran out.
+at 148 axioms. Their `0 cnf clauses` values mean zero clauses were supplied in
+the input as CNF; they are not a count of generated clauses.
 
-**Clausification has no cancellation support at all.** `main.rs:705` and `:737`
-pass `None` as the deadline argument to `mrs_cnf::clausify_with_provenance`, and
-`crates/mrs-cnf/` contains no reference to `deadline`, `cancel` or `Instant` at
-all. There is no point at which an oversized input can be interrupted, so a
-148-axiom problem that takes over 240 s cannot be stopped.
+`clausify_with_provenance` currently exposes no deadline/cancellation argument.
+The final `None` at `main.rs:705` and `:737` is `leaf_id_override`, not a
+deadline. Long clausification work therefore cannot be cooperatively cancelled
+through this API, but the campaign rows do not prove these 12 are stuck in that
+function. Stage telemetry or a targeted instrumented run is needed before
+assigning a root cause.
 
-This matters beyond the lost rows: a hung clausification also means the run
-cannot report *which* stage it reached, so the CSV cannot distinguish "hard
-problem" from "stuck before the search began".
+This matters beyond these rows: the harness does not record per-stage progress,
+so an outer timeout cannot currently distinguish a slow preprocessing stage
+from a long search.
 
 ### Secondary defect, independent of the above
 
-The CSV cannot distinguish "searched hard and timed out" from "hung and was
-killed". Both are recorded as `Timeout` with no marker. A harness change should
-make exit-124-without-SZS a distinct status so the two classes are separable in
-the results.
+The CSV cannot distinguish "searched hard and timed out" from "stopped in a
+long non-search phase and was killed". Both are recorded as `Timeout` with no
+marker. A harness change should preserve the exit code and whether an SZS status
+was emitted, so these cases can be separated in the results.
 
 ### Also affects the memory column
 
@@ -294,30 +303,37 @@ meaningless on input-heavy problems, and `perf_probe` and
 `dual_run_sanity_check` build thresholds from exactly that ratio. Anyone reading
 those thresholds should exclude problems whose input clause count approaches
 their generated count.
-## UI-4 — `alpha_equiv` rejects re-associated conjunctions, costing `VerifiedGood`
+
+---
+
+## UI-4 — Structural leaf matching rejects some reformulated included axioms
 
 | | |
 |---|---|
-| Status | Open, not scheduled. **Fixing it widens what the kernel accepts.** |
-| Severity | 16 of 63 certifiable casc-j13 FEQ refutations reported `VerifiedBad` |
-| Soundness | Fails **closed** — valid proofs are rejected, none are wrongly accepted. Not a soundness risk. |
-| Blocks | The casc-j13 FEQ certification number is unusable until resolved. |
+| Status | Open, not scheduled. **Fixing it widens accepted leaf matching.** |
+| Severity | One archived campaign reports 16 leaf mismatches; not independently re-audited |
+| Soundness | No false-accept path is identified here. Whether each refutation is valid requires checking the original proof and source axiom. |
+| Blocks | Strict-certification counts for that campaign need re-audit against retained artifacts. |
 
 ### Observation
 
-`campaign-cascj13-feq-W8C8J1-20261002` is the first run anywhere to report
-`VerifiedBad`: **16 rows**, every one of the form
+The archived `campaign-cascj13-feq-W8C8J1-20261002` report records
+`VerifiedBad` on **16 rows**, every one of the form
 
 ```
 leaf `c237` does not match problem formula `axiom_53`
 ```
 
-All 16 problems use `%include`, and the cited axiom is not in the top-level
-`.p` file. Reproduced locally against **either** edition's axiom files, so it is
-not the corpus-mismatch bug described in the remote-only guide.
+According to the archived investigation, all 16 problems use `%include`, and
+the cited axiom is not in the top-level `.p` file. The mismatch reportedly
+reproduces against either edition's axiom files, suggesting it is distinct from
+the corpus-mismatch issue in the remote-only guide. Original run artifacts are
+not committed, so re-audit the run before relying on these campaign counts.
 
-The cited proof leaf and the source axiom are the **same formula**, differing
-only in how the conjunction is grouped. Proof leaf `c237` of `SWV453+1`:
+The cited proof leaf and the source axiom appear to be logically equivalent,
+with reordering/reassociation of conjunctions and a mirrored biconditional.
+This is not alpha-equivalence in the formal sense (bound-variable renaming),
+and must not be labelled as such. Proof leaf `c237` of `SWV453+1`:
 
 ```
 ![X0]: ![X1]: ( ordered(cons(X0,X1)) <=>
@@ -330,19 +346,25 @@ only in how the conjunction is grouped. Proof leaf `c237` of `SWV453+1`:
 ![X,Q]: ( ( ordered(Q) & ![Y]: ( ... <= ... ) ) <=> ordered(cons(X,Q)) )
 ```
 
-Same conjuncts, mirrored biconditional, different binary grouping of `&`.
+Same apparent conjuncts, mirrored biconditional, different binary grouping of
+`&`. The excerpts abbreviate subformulas; do not treat them alone as a complete
+semantic proof of equivalence.
 
-### Root cause, isolated
+### Structural mismatch in the leaf checker
 
-`mrs_core::alpha::alpha_equiv` compares `And`/`Or` as a **binary tree**, with
-greedy backtrack-free multiset matching at each node
-(`crates/mrs-core/src/alpha.rs:37-54`). It never flattens nested
-conjunctions. The TPTP parser builds `a & b & c` as `And([And([a, b]), c])`, so
-the tree shape is fixed by the operand order and any reordering of three or more
-conjuncts is rejected.
+`mrs_core::alpha::alpha_equiv` is explicitly an alpha-equivalence checker:
+variables bound under quantifiers may be renamed, while free variables must
+retain their identifiers (`crates/mrs-core/src/alpha.rs:1-4`). Its `And`/`Or`
+case also accepts permutations of the immediate children, but recursively
+compares those children without flattening the connective
+(`crates/mrs-core/src/alpha.rs:37-55`). Since the FOF parser builds conjunctions
+left-associatively (`crates/mrs-tptp/src/parser/fof.rs:101-120`), differently
+grouped/reordered three-or-more operand forms can fail this structural check.
+This is a **structural leaf-matching limitation**, not evidence that
+alpha-equivalence is defined incorrectly.
 
-Measured with the ignored regression tests in
-`crates/mrs-proof-kernel/src/lib.rs` (`alpha_equiv_regression`):
+Characterized with tests in `crates/mrs-proof-kernel/src/lib.rs`
+(`alpha_equiv_shape_tests`):
 
 | case | `alpha_equiv` |
 |---|---|
@@ -353,10 +375,14 @@ Measured with the ignored regression tests in
 | `<=>` mirrored, atomic operands | `true` |
 | `![X,Y]: F` vs `![X]: ![Y]: F` | `true` |
 | `<=` vs `=>` | `true` |
+| corresponding three-operand `|` cases | reordering and reassociation are **`false`** |
 
-So the defect is specifically **conjunction/ disjunction reordering or
-re-association of three or more operands**. Biconditional mirroring, quantifier
-splitting, and reverse implication are all handled correctly.
+The structural limitation is specifically conjunction/disjunction reordering
+or reassociation of three or more operands when the binary trees do not align.
+In the tested shapes, biconditional mirroring, quantifier splitting, and reverse
+implication are handled by `alpha_equiv`. This test matrix characterizes the
+comparator; it is not a mathematical proof that the archived leaf is entailed by
+its cited axiom.
 
 Note the module contract is *not* being violated on free variables:
 `crates/mrs-core/src/alpha.rs:3-4` states "Free variables must have the same
@@ -364,39 +390,41 @@ identifiers", and `term_eq` implements exactly that.
 
 ### Blast radius
 
-`alpha_equiv` is the leaf comparison used throughout verification:
+`alpha_equiv` is a structural comparison used at several verification sites:
 
 - `crates/mrs-proof-kernel/src/lib.rs:2610`, `:2627` — input-leaf checking
 - `crates/mrs-proover/src/checks/axiom_leaf.rs:85`, `:171`, `:201`
 - `crates/mrs-proover/src/checks/definition_folding.rs:84`, `:231`
 - `crates/mrs-proover/src/checks/trivial.rs`, `crates/mrs-proover/src/verify.rs`
 
-Every one of those is potentially over-strict in the same way. The 16 rows are
-what this corpus happened to expose; casc-30 FEQ has **61 of 90** certified
-refutations citing a formula absent from their own top-level `.p` and reports
-`VerifiedBad = 0`, so the corpus's own serialisation decides whether the bug
-fires. That is why it went unnoticed.
+These call sites share the same structural limitation. The 16 rows are findings
+reported from one archived campaign, not a re-audited current rate. The cited
+comparison set and exact `VerifiedBad` denominator should be checked against
+that run's saved proof/audit artifacts before using the counts as a baseline.
 
-### Why it is not being fixed here
+### Why the matching contract needs review
 
-Flattening `And`/`Or` to n-ary multisets before comparison would accept strictly
-more proofs. `docs/policies/methodology.md` §1.4 requires that semantic claims
-be independently checked rather than taken from the implementation's own
-comments, and §1.6 requires failed or inconclusive validation to stay visible.
-Widening a strict kernel is a soundness-sensitive change and wants a deliberate
-review, not a drive-by fix alongside a docs commit.
+The immediate finding is about leaf matching: a verifier may need to recognize
+a proof leaf as a valid reformulation of its cited source, while the current
+helper checks alpha-equivalence only. Any broader matcher must remain bounded
+and establish equivalence; connective-shape normalization is justified only
+when associative/commutative laws are part of the chosen comparison contract.
+The archived `VerifiedBad` status alone does not establish that the rejection
+was false.
 
-The change itself is small — normalise to n-ary before the existing multiset
-match — but the review should confirm that n-ary flattening is exactly the
-intended notion of formula equality here, and that no inference rule *depends*
-on the binary grouping being distinguished.
+An appropriate repair may be a bounded comparison modulo associativity and
+commutativity of `And`/`Or` at named-leaf matching rather than changing the
+global `alpha_equiv` contract. Before implementing it, obtain and independently
+validate the archived proof and full included axiom (including variable
+binding, implication polarity, and every connective operand); the excerpts here
+abbreviate formulas and are not a complete semantic certificate.
 
 ### Reproduce
 
 ```bash
-cargo test -p mrs-proof-kernel alpha_equiv_regression -- --ignored --nocapture
+nix develop -c cargo test -p mrs-proof-kernel alpha_equiv_shape_tests -- --nocapture
 
-# End to end, from the archived proof:
+# End to end, once the original campaign proof artifacts are available:
 TPTP=crates/mrs-bench/problems/casc-j13 \
   target/release/mrs-proover --problems-dir <cert>/proofs/mrs/feq \
   --workers 1 --time 180 --strict SWV453+1.s
