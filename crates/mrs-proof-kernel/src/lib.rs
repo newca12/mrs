@@ -2909,7 +2909,7 @@ enum MatchOutcome {
 fn ac_alpha_equiv(a: &Formula, b: &Formula, limits: VerificationLimits) -> MatchOutcome {
     let mut state = AcState {
         bindings: AcBindings::default(),
-        budget: limits.max_comparison_steps,
+        budget: Rc::new(Cell::new(limits.max_comparison_steps)),
     };
     state.formula_eq(a, b)
 }
@@ -2929,7 +2929,9 @@ struct AcBindings {
 struct AcState {
     bindings: AcBindings,
     /// Remaining comparison steps.
-    budget: usize,
+    /// Shared by speculative branches so backtracking cannot mint a fresh
+    /// allowance each time the comparison state is cloned.
+    budget: Rc<Cell<usize>>,
 }
 
 /// Which connective an `And`/`Or` node is built from.
@@ -2973,10 +2975,11 @@ fn ac_operands(formula: &Formula) -> Option<(AcConnective, Vec<&Formula>)> {
 impl AcState {
     /// Spend one unit of the comparison budget. `false` means it is exhausted.
     fn spend(&mut self) -> bool {
-        if self.budget == 0 {
+        let remaining = self.budget.get();
+        if remaining == 0 {
             false
         } else {
-            self.budget -= 1;
+            self.budget.set(remaining - 1);
             true
         }
     }
@@ -3057,7 +3060,7 @@ impl AcState {
                 // Equation symmetry, as `alpha_equiv` allows. A budget spent on
                 // the first orientation is reported rather than retried: the
                 // second orientation costs the same.
-                if self.budget == 0 {
+                if self.budget.get() == 0 {
                     return MatchOutcome::Undecided;
                 }
                 let mut flipped = self.clone();
@@ -3166,15 +3169,15 @@ impl AcState {
 
 impl Clone for AcState {
     fn clone(&self) -> Self {
-        // `budget` is deliberately *not* copied: a tentative pairing is a real
-        // cost, so cloning must not hand the search a fresh allowance.
+        // Tentative pairings are real work, so clones share the same remaining
+        // allowance rather than getting an independent budget.
         Self {
             bindings: AcBindings {
                 left: self.bindings.left.clone(),
                 right: self.bindings.right.clone(),
                 depth: self.bindings.depth,
             },
-            budget: self.budget,
+            budget: Rc::clone(&self.budget),
         }
     }
 }
@@ -16709,6 +16712,25 @@ mod leaf_matching_tests {
                 "a budget of {steps} steps cannot decide this pair"
             );
         }
+    }
+
+    #[test]
+    fn ac_backtracking_shares_one_comparison_budget() {
+        // Failed candidate pairings are speculative, but still consume real
+        // work. Cloning a fresh budget for each candidate would let this
+        // six-way mismatch enumerate every pairing despite the small limit.
+        let (first, second) = lowered_pair(
+            "p(a) & p(b) & p(c) & p(d) & p(e) & p(f) & p(g) & p(h) & p(i) & p(j).",
+            "p(k) & p(l) & p(m) & p(n) & p(o) & p(p) & p(q) & p(r) & p(s) & p(t).",
+        );
+        let limits = VerificationLimits {
+            max_comparison_steps: 20,
+            ..VerificationLimits::default()
+        };
+        assert_eq!(
+            ac_alpha_equiv(&first, &second, limits),
+            MatchOutcome::Undecided
+        );
     }
 
     #[test]
