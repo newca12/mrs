@@ -242,10 +242,18 @@ comparable in the tail even when the problem set matches. When hosts differ,
 report the ceiling alongside the score, or restrict comparison to problems whose
 peak RSS sits well below the smaller ceiling.
 
+A **third** host appears in the FEQ pair, which makes the point sharper: the two
+2026-10-02 FEQ campaigns ran on `mtsdev03` and `mtsdev04` — matched at 8 cores /
+95 969 MB / Xeon E5-2407 @ 2.20 GHz — which is the only properly matched pair in
+the set. The UEQ pair ran on `teenf9901` (128 GB, Silver 4108 @ 1.80 GHz) and
+`tlpnf9701` (63 GB, same CPU). So the corpus editions were measured on
+different CPU generations, and every run has a distinct `binary_sha256` from the
+same commit `af983acae`, i.e. dirty trees that are not the same dirty tree.
+
 **Fixing this properly** means either provisioning campaign hosts with matched
-RAM, or setting an explicit `MRS_HARDWARE` memory allowance so the ceiling is a
-policy decision recorded in the run rather than a property of whichever machine
-answered the job.
+CPU and RAM, or setting an explicit `MRS_HARDWARE` memory allowance so the
+ceiling is a policy decision recorded in the run rather than a property of
+whichever machine answered the job.
 
 ### R8 — Optional 8-worker reproduction of the AC-superposition mismatch
 
@@ -274,6 +282,54 @@ number.
 
 
 
+
+### R9 — casc-j13 FEQ: the `expected` column is empty for 236 of 300 rows
+
+> **Blocked by:** nothing. This invalidates the run's headline number and needs
+> re-running once the grading input is fixed.
+
+`campaign-cascj13-feq-W8C8J1-20261002` reports **16** solves out of 300. The
+prover actually proved **69**:
+
+| `szs_status` | `expected` | `verdict` | rows |
+|---|---|---|---|
+| `Theorem` | *(blank)* | `unknown` | **53** |
+| `Theorem` | `Theorem` | `ok` | 16 |
+| `Timeout` | *(blank)* | `unknown` | 154 |
+| `Timeout` | `Theorem` | `unknown` | 44 |
+| `GaveUp` | *(blank)* | `unknown` | 29 |
+| `GaveUp` | `Theorem` | `unknown` | 4 |
+
+`expected` is blank for 236 of 300 rows, so 53 genuine refutations are graded
+`unknown`. 66 of the 69 proofs are on disk and the strict kernel certifies 47 of
+them. **The 16 is a grading artefact, not a prover result**, and must not be
+quoted.
+
+The blank cells are a property of the casc-j13 FEQ corpus that the harness does
+not handle: casc-30 FEQ populates `expected` for 399 of 400 rows on the same
+host pair and the same code. Anything that reads `verdict == "ok"` as the solve
+count is wrong for this run.
+
+### R10 — `alpha_equiv` over-strictness, surfaced as 16 `VerifiedBad`
+
+`campaign-cascj13-feq-W8C8J1-20261002` is the first run anywhere to report
+`VerifiedBad`. All 16 rows are `leaf cN does not match problem formula X`, all
+16 problems use `%include`, and the mismatch reproduces against **either**
+edition's axiom files — so it is *not* the corpus-mismatch bug above.
+
+Root cause, isolated: `mrs_core::alpha::alpha_equiv` compares `And`/`Or` as a
+binary tree without flattening, so reordering or re-associating three or more
+conjuncts is rejected even though the formulas are identical. Full analysis,
+blast radius and repro in
+[`unresolved-issues.md`](../policies/unresolved-issues.md) **UI-4**.
+
+Not being fixed here: flattening would widen what the strict kernel accepts, and
+`docs/policies/methodology.md` §1.4 requires semantic claims to be checked
+independently rather than taken from the implementation. The regression tests
+are in `crates/mrs-proof-kernel/src/lib.rs` (`alpha_equiv_regression`), marked
+`#[ignore]` so they document the contract without breaking the gate.
+
+---
 
 ## What is *not* remote — measured here, do it here
 
@@ -314,8 +370,6 @@ strictly additive: 189 → 193 certified on that run.
 **Re-auditing cannot close the demodulation gap** (see R1) — that is the one
 place where re-audit and fresh search genuinely differ, and it is worth being
 precise about which is which.
-
----
 
 ## Recording a result
 

@@ -3,7 +3,7 @@
 Known defects and open questions that are **not** being worked on right now,
 recorded so they are not rediscovered from scratch later.
 
-This page exists because that has already happened twice. The FEQ certification
+This page exists because that has already happened repeatedly. The FEQ certification
 figures were once read as coverage when 78 of 144 refutations had never been
 checked. The largest proof in the archive was recorded as "never produced a
 verdict at all" when the real cause was a kernel ceiling a five-minute check
@@ -198,12 +198,12 @@ host with less headroom is not a suitable repro host.
 
 ---
 
-## UI-2 — 15 of 300 UEQ problems produce no SZS output at all
+## UI-2 — Problems that hang before emitting any SZS output (27 across UEQ and FEQ)
 
 | | |
 |---|---|
 | Status | Open, not scheduled |
-| Severity | 5% of casc-30 UEQ; 12% of its timeouts |
+| Severity | 15 of 300 casc-30 UEQ (5%), **and 12 of 400 casc-30 FEQ (3%)** |
 | Soundness | Not a soundness issue. No refutation is lost — these are timeouts either way. |
 
 ### Observation
@@ -229,6 +229,37 @@ All 15 are AC/group-theory word problems, several with tiny inputs
 returning rather than at general slowness — the deadline is observed at
 iteration boundaries (the LRS check at `given_clause.rs:1461` runs every 100
 iterations).
+
+### It is two distinct defects that look identical in the CSV
+
+casc-30 **FEQ** shows the same signature 12 more times
+(`ALG215+2`, `BIO005+1`, `BIO006+1`, `CSR037+5`, `CSR047+5`, `CSR052+4`,
+`HWV090+1`, `HWV128+1`, `ITP015+4`, `NUM925+3`, `NUM925+7`, `SWX070+1`), but it
+hangs in a **different phase**.
+
+`% Problem:` is printed at `src/main.rs:664`, *after* lowering but *before*
+clausification, which runs at `src/main.rs:705` and `:737`; the search starts at
+`src/main.rs:1094`. So:
+
+| division | last line reached | hangs in |
+|---|---|---|
+| UEQ | `% Problem: … 6 cnf clauses` | **search** (clausification finished; input was already CNF) |
+| FEQ | `% Problem: … 0 cnf clauses` | **clausification** (input was FOF; never reaches search) |
+
+Every one of the 12 FEQ cases reports a large FOF input — `CSR037+5` has
+**540 249** axioms, `HWV128+1` 204 845, `CSR052+4` 44 216, down to `SWX070+1`
+at 148 axioms — and all report `0 cnf clauses`, i.e. clausification had produced
+nothing when the clock ran out.
+
+**Clausification has no cancellation support at all.** `main.rs:705` and `:737`
+pass `None` as the deadline argument to `mrs_cnf::clausify_with_provenance`, and
+`crates/mrs-cnf/` contains no reference to `deadline`, `cancel` or `Instant` at
+all. There is no point at which an oversized input can be interrupted, so a
+148-axiom problem that takes over 240 s cannot be stopped.
+
+This matters beyond the lost rows: a hung clausification also means the run
+cannot report *which* stage it reached, so the CSV cannot distinguish "hard
+problem" from "stuck before the search began".
 
 ### Secondary defect, independent of the above
 
@@ -263,3 +294,110 @@ meaningless on input-heavy problems, and `perf_probe` and
 `dual_run_sanity_check` build thresholds from exactly that ratio. Anyone reading
 those thresholds should exclude problems whose input clause count approaches
 their generated count.
+## UI-4 — `alpha_equiv` rejects re-associated conjunctions, costing `VerifiedGood`
+
+| | |
+|---|---|
+| Status | Open, not scheduled. **Fixing it widens what the kernel accepts.** |
+| Severity | 16 of 63 certifiable casc-j13 FEQ refutations reported `VerifiedBad` |
+| Soundness | Fails **closed** — valid proofs are rejected, none are wrongly accepted. Not a soundness risk. |
+| Blocks | The casc-j13 FEQ certification number is unusable until resolved. |
+
+### Observation
+
+`campaign-cascj13-feq-W8C8J1-20261002` is the first run anywhere to report
+`VerifiedBad`: **16 rows**, every one of the form
+
+```
+leaf `c237` does not match problem formula `axiom_53`
+```
+
+All 16 problems use `%include`, and the cited axiom is not in the top-level
+`.p` file. Reproduced locally against **either** edition's axiom files, so it is
+not the corpus-mismatch bug described in the remote-only guide.
+
+The cited proof leaf and the source axiom are the **same formula**, differing
+only in how the conjunction is grouped. Proof leaf `c237` of `SWV453+1`:
+
+```
+![X0]: ![X1]: ( ordered(cons(X0,X1)) <=>
+  ( ordered(X1) & ![X2]: ( ... => leq(pidMsg(X0), pidMsg(X2)) ) ) )
+```
+
+`axiom_53` of casc-j13 `Axioms/SWV011+0.ax`:
+
+```
+![X,Q]: ( ( ordered(Q) & ![Y]: ( ... <= ... ) ) <=> ordered(cons(X,Q)) )
+```
+
+Same conjuncts, mirrored biconditional, different binary grouping of `&`.
+
+### Root cause, isolated
+
+`mrs_core::alpha::alpha_equiv` compares `And`/`Or` as a **binary tree**, with
+greedy backtrack-free multiset matching at each node
+(`crates/mrs-core/src/alpha.rs:37-54`). It never flattens nested
+conjunctions. The TPTP parser builds `a & b & c` as `And([And([a, b]), c])`, so
+the tree shape is fixed by the operand order and any reordering of three or more
+conjuncts is rejected.
+
+Measured with the ignored regression tests in
+`crates/mrs-proof-kernel/src/lib.rs` (`alpha_equiv_regression`):
+
+| case | `alpha_equiv` |
+|---|---|
+| `p & q` vs `q & p` (2 atoms) | `true` |
+| `p & q & r` vs `r & q & p` (3 atoms, reordered) | **`false`** |
+| `(p & q) & r` vs `p & (q & r)` (re-associated) | **`false`** |
+| `(p & q) & r` vs `(p & q) & r` (identical grouping) | `true` |
+| `<=>` mirrored, atomic operands | `true` |
+| `![X,Y]: F` vs `![X]: ![Y]: F` | `true` |
+| `<=` vs `=>` | `true` |
+
+So the defect is specifically **conjunction/ disjunction reordering or
+re-association of three or more operands**. Biconditional mirroring, quantifier
+splitting, and reverse implication are all handled correctly.
+
+Note the module contract is *not* being violated on free variables:
+`crates/mrs-core/src/alpha.rs:3-4` states "Free variables must have the same
+identifiers", and `term_eq` implements exactly that.
+
+### Blast radius
+
+`alpha_equiv` is the leaf comparison used throughout verification:
+
+- `crates/mrs-proof-kernel/src/lib.rs:2610`, `:2627` — input-leaf checking
+- `crates/mrs-proover/src/checks/axiom_leaf.rs:85`, `:171`, `:201`
+- `crates/mrs-proover/src/checks/definition_folding.rs:84`, `:231`
+- `crates/mrs-proover/src/checks/trivial.rs`, `crates/mrs-proover/src/verify.rs`
+
+Every one of those is potentially over-strict in the same way. The 16 rows are
+what this corpus happened to expose; casc-30 FEQ has **61 of 90** certified
+refutations citing a formula absent from their own top-level `.p` and reports
+`VerifiedBad = 0`, so the corpus's own serialisation decides whether the bug
+fires. That is why it went unnoticed.
+
+### Why it is not being fixed here
+
+Flattening `And`/`Or` to n-ary multisets before comparison would accept strictly
+more proofs. `docs/policies/methodology.md` §1.4 requires that semantic claims
+be independently checked rather than taken from the implementation's own
+comments, and §1.6 requires failed or inconclusive validation to stay visible.
+Widening a strict kernel is a soundness-sensitive change and wants a deliberate
+review, not a drive-by fix alongside a docs commit.
+
+The change itself is small — normalise to n-ary before the existing multiset
+match — but the review should confirm that n-ary flattening is exactly the
+intended notion of formula equality here, and that no inference rule *depends*
+on the binary grouping being distinguished.
+
+### Reproduce
+
+```bash
+cargo test -p mrs-proof-kernel alpha_equiv_regression -- --ignored --nocapture
+
+# End to end, from the archived proof:
+TPTP=crates/mrs-bench/problems/casc-j13 \
+  target/release/mrs-proover --problems-dir <cert>/proofs/mrs/feq \
+  --workers 1 --time 180 --strict SWV453+1.s
+```
