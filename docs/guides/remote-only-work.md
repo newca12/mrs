@@ -16,8 +16,7 @@ So each item below states what blocks it. If an item's blocker turns out to be
 absent on your machine, it is not a remote item and belongs on the dev box.
 
 Commands are written to be run **from the repository root**; `--output` is
-resolved against the working directory, not the repo root
-(`crates/mrs-bench/casc.sh:191`).
+resolved against the working directory, not the repo root.
 
 ---
 
@@ -28,8 +27,8 @@ resolved against the working directory, not the repo root
 | physical cores | **2** (4 logical) | **16** (32 logical) |
 | CPU | Xeon Silver 4108 @ 1.80 GHz | Xeon Silver 4108 @ 1.80 GHz |
 | RAM | **15.9 GiB total, ~11.7 GiB usable** | 128 GiB |
-| `nix` | **absent** — call `cargo` directly | absent (same, by design) |
-| rustc | 1.99.0 | 1.98.1 (as of the 2026-09-30 campaigns) |
+| `nix` | **absent in the measured campaign environment** — call `cargo` directly | absent (same, by design) |
+| rustc | 1.99.0 | 1.98.1 (as of the 2026-09-30 campaigns; current runner expects 1.99.0) |
 
 `--hardware casc-sim` pins the process to 8 physical cores and sets an
 `RLIMIT_AS` of 128 GB, because that is what CASC is. Neither is satisfiable
@@ -46,48 +45,31 @@ recording `rustc --version` plus the git revision in every phase output. A
 version mismatch warns but does not stop a campaign; note it in the report
 instead of ignoring it.
 
-> **`AGENTS.md` discrepancy.** It mandates `nix develop -c …` for validation, but
-> `nix` is not installed in the environment these figures were measured in
-> (`nix: command not found`; `/nix/store` absent). Everything here was run with
-> `cargo` directly at `rustc 1.99.0`, which is the version `AGENTS.md` pins, so
-> the toolchain matches the policy even though the wrapper does not exist. Either
-> the doc or the environment should be corrected — do not silently keep
-> substituting one for the other on a machine where `nix` *is* present.
+> **Validation environment note.** The recorded campaign figures came from
+> environments without Nix and were built with plain Cargo. In this repository's
+> NixOS development environment, follow `AGENTS.md` and wrap validation commands
+> with `nix develop`; remote campaign scripts intentionally invoke Cargo
+> directly. The old machine snapshot does not describe the current checkout
+> environment.
 
 ---
 
 ## Before anything runs remotely
 
-These are **not** remote items — they are code fixes that fit here, and they
-gate the value of every remote run below. Running a campaign before they land
-reproduces the failure they were found through.
+These protections are implemented on `main`; keep them in place because they
+guard the value of every campaign.
 
-1. **`casc.sh` must refuse a non-empty `--output`.** It unconditionally
-   truncates `run.csv` with `>` (`crates/mrs-bench/casc.sh:356`) and never
-   checks the directory. Two `casc.sh` processes were once launched
-   concurrently with different `--edition` values and the same `--output`; they
-   overwrote each other's `run.csv`, `run_meta.*`, raw artifacts and proof
-   files. The signature is in the log: two `Total jobs:` lines with one
-   `Output:`, and progress counters that exceed their own total
-   (`600/300 completed`). The result is a run directory whose `Applicable`
-   count is meaningless.
-2. **`audit_casc_proofs::find_problem` must be edition-aware.** It takes one
-   `--problems-dir` for the whole run and ignores the per-row `edition`
-   column, so in a merged directory every `casc-30` proof gets leaf-checked
-   against the `casc-j13` problem files. The two editions are the same problems
-   re-serialised in a different formula order, so the mismatch is invisible
-   except as `VerifiedBad` on the five problems whose cited leaves happen to
-   differ. Those five are *not* prover bugs — every leaf reproduces its own
-   edition's text exactly.
-3. **Proof and raw-artifact paths must include the edition**, or a mixed-edition
-   `run.csv` must be rejected outright. 256 of 600 rows in that directory
-   collided and reported `artifact_mismatch`, i.e. were never checked, and the
-   audit counted them as applicable anyway.
-4. **The audit denominator is fixed** (commit `bdb5674`, branch
-   `fix/no-proof-mgt079-set017`, not yet on `main`): `Other` was a dead column,
-   `proof_omitted` did not exist, and `certification_campaign.sh` divided by
-   only the five statuses it knew about. Merge it before a campaign, or the new
-   campaign's summary will be as misleading as the old one.
+1. **`casc.sh` refuses non-empty `--output` directories and atomically claims
+   new/empty ones.** This prevents reruns or concurrent invocations from
+   truncating `run.csv`, metadata, or raw artifacts.
+2. **The proof audit rejects mixed-edition CSVs.** It previously took one
+   `--problems-dir` for the whole run and ignored per-row `edition`, which could
+   check `casc-30` leaves against `casc-j13` problem text. Keep editions in
+   separate run directories; the audit now fails closed if they are mixed.
+3. **The audit denominator fix is on `main`** (commit `bdb5674`): `Other` captures
+   unclassified outcomes, `proof_omitted` is explicit, and campaign percentages
+   include every refutation. Preserve this invariant when changing audit
+   statuses.
 
 ---
 
@@ -107,10 +89,14 @@ emits the annotation the new replay path needs.
 > problems.
 
 ```bash
-MRS_WORKERS=8 crates/mrs-bench/certification_campaign.sh \
+MRS_WORKERS=8 MRS_HARDWARE=casc crates/mrs-bench/certification_campaign.sh \
     --edition casc-j13 --systems mrs --divisions fne,feq,ueq \
-    --casc-times --jobs 2 --output crates/mrs-bench/results/cert-j13-$(date +%Y%m%d)
+    --casc-times --jobs 1 --output crates/mrs-bench/results/cert-j13-$(date +%Y%m%d-%H%M%S)
 ```
+
+The explicit `casc` profile keeps the run at the canonical 8-worker CASC
+configuration on the 16-core host. One external job avoids competition between
+multiple prover processes for those workers.
 
 Expect the 18 demodulation rows to become `Certified`. If they do not, the
 reason histogram in the campaign output names the shape that still fails — that
@@ -131,19 +117,18 @@ gives FEQ a single 240 s limit. Two invocations that disagreed about the limit
 wrote into one file.
 
 ```bash
-MRS_WORKERS=8 crates/mrs-bench/certification_campaign.sh \
+MRS_WORKERS=8 MRS_HARDWARE=casc crates/mrs-bench/certification_campaign.sh \
     --edition casc-30 --systems mrs --divisions feq \
     --casc-times --jobs 1 \
-    --output crates/mrs-bench/results/campaign-casc30-feq-$(date +%Y%m%d)
+    --output crates/mrs-bench/results/campaign-casc30-feq-$(date +%Y%m%d-%H%M%S)
 ```
 
-One edition, one directory, one `--jobs` value. `--jobs 1` unless the host is
-otherwise idle, because `--jobs N` and `MRS_WORKERS=8` together put N
-searches' worth of workers on the same 8 pinned cores — which is exactly how the
-void campaign's timings became meaningless. This is also the validation for
-prerequisite items 2 and 3 above: after the corpus-resolution fixes land,
-**no** campaign should produce a `VerifiedBad` leaf mismatch. A single one means
-the edition is still being resolved wrongly.
+Set `MRS_HARDWARE=casc` for this campaign too.
+
+One edition, one directory, one `--jobs` value. `--jobs 1` avoids competing
+benchmark processes for the same 8-worker CASC allocation — which is exactly
+how the void campaign's timings became meaningless. Check that the audit has no
+edition-related artifact or leaf-provenance errors.
 
 ### R3 — `SET017+1` re-solve
 
@@ -194,10 +179,10 @@ analysis and the 8 MiB default is the policy.
 here with a warning, but a 2-core row cannot be read against a 16-core run's
 per-worker numbers.
 
-> **Blocked by:** the probe refuses a worker count its ceiling cannot hold; at
-> 32 workers under `rlimit-as` that refusal fires, and on a 2-core box the
-> worker ceiling is reached almost immediately, so the measurement would be of
-> a configuration nobody ships.
+> **Blocked by:** comparability, not whether it can run. The probe runs on the
+> dev box too, but its default `1,<physical cores>` worker counts measure that
+> 2-core machine. A row for the 16-core campaign host must be collected there
+> with the same probe parameters and build variants.
 
 ```bash
 crates/mrs-bench/perf_probe.sh              # measure, bank, and report (~3 min)
@@ -286,8 +271,7 @@ crates/mrs-bench/certification_campaign.sh --audit-only \
 **The four proofs the kernel used to refuse all certify here.** One
 100 000-formula ceiling used to do two jobs — bounding the proof's DAG and
 bounding per-step CNF expansion — so a long-but-honest proof was refused
-outright. Splitting them (`max_proof_nodes`, branch
-`fix/no-proof-mgt079-set017`) admits all four. All from
+outright. Splitting them (`max_proof_nodes`) admits all four. All from
 `casc-j13-W8J2-nosharing-20260923`, `--strict-time 120`:
 
 | proof | formulas | proof bytes | verdict | cost here |

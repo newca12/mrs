@@ -94,12 +94,12 @@ a reason histogram. The `audit_casc_proofs` report is the raw data.
 
 ### Archived CASC-J13 run `casc-j13-W8J2-nosharing-20260923` (180 s, 8 workers)
 
-215 refutations, re-verified on a dev box. **The current figure is 193
+215 refutations, re-verified on a dev box. **The re-audit figure is 193
 `VerifiedGood` (89.8 %), 22 `Unknown`, 0 `VerifiedBad`** — see "The residual 22"
-below for the node-limit fix that moved 189 to 193. The 189 column is kept
-because it is the last figure at `main`.
+below for the node-limit fix that moved 189 to 193. This is not a fresh campaign
+measurement.
 
-| strict verdict | 2026-09-23 (build of that day) | previous HEAD | with `max_proof_nodes` |
+| strict verdict | 2026-09-23 (build of that day) | before proof-node limit fix | after proof-node limit fix |
 |---|---:|---:|---:|
 | `Certified` | 152 | 189 (87.9 %) | **193** (89.8 %) |
 | `Unknown` | 57 | 25 | **22** |
@@ -138,18 +138,17 @@ from 1649.5 to 116.0. Coverage, not certification, is the open question. See
 
 ### The residual 22, and what closes them
 
-One ceiling was doing two jobs: bounding the proof's DAG and bounding per-step
-CNF expansion. A long-but-honest proof was refused outright — `SET017+1`'s
-119 335 formulas drew `proof has 119335 formulas, exceeding limit 100000` —
-which reads in a report exactly like the checker giving up.
+One ceiling had been doing two jobs: bounding the proof's DAG and bounding
+per-step CNF expansion. A long-but-honest proof was refused outright —
+`SET017+1`'s 119 335 formulas drew `proof has 119335 formulas, exceeding limit
+100000` — which reads in a report exactly like the checker giving up.
 `VerificationLimits::max_proof_nodes` (1 000 000) now bounds the input DAG and
-`max_nodes` stays at 100 000 for expansion. On branch
-`fix/no-proof-mgt079-set017`; not yet on `main`.
+`max_nodes` stays at 100 000 for expansion. This fix is included on `main`.
 
 Re-auditing all 215 archived refutations of this run on a 2-core dev box,
 `--strict-time 120`, `--jobs 1`:
 
-| | 2026-09-23 | previous HEAD | with `max_proof_nodes` |
+| | 2026-09-23 | before proof-node limit fix | after proof-node limit fix |
 |---|---:|---:|---:|
 | `VerifiedGood` | 152 | 189 | **193** (89.8 %) |
 | `Unknown` | 57 | 25 | **22** |
@@ -215,8 +214,9 @@ falls back to the bounded search, so a foreign prover's annotation or a recorder
 defect costs speed, never certification.
 
 Those archived proofs predate the annotation, so they still exercise the search
-path and the 189/215 figure is the *fallback* number. The post-change figure
-needs a fresh run on 8-core hardware:
+path and the 193/215 re-audit figure is the *fallback* number after the
+proof-node-limit fix. The post-annotation figure needs a fresh run on 8-core
+hardware:
 
 ```bash
 MRS_WORKERS=8 crates/mrs-bench/certification_campaign.sh \

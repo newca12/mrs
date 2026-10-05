@@ -3,10 +3,9 @@
 This directory contains the documentation for `mrs`, the MRS theorem prover,
 and its proof-verification companion, `mrs-proover`.
 
-**Current source snapshot:** `5a9c687` on `main`, 2026-09-25. The current
-reference pages describe the checked-out source at that snapshot. Benchmark
-reports are not automatically current: each report must name its commit,
-corpus, command, hardware, and environment.
+Reference pages describe the checked-out source; benchmark reports are not
+automatically current. Each report must name its commit, corpus, command,
+hardware, and environment.
 
 ## Start here
 
@@ -19,6 +18,7 @@ corpus, command, hardware, and environment.
 | Check current implementation status | [Current status](reference/status.md) |
 | Choose or study a schedule | [Schedule reference](reference/schedules.md) |
 | Run CASC-style experiments | [Benchmarking guide](guides/benchmarking.md) |
+| Know what requires the campaign host | [Work that needs the remote host](guides/remote-only-work.md) |
 | Know what cannot be measured on a dev box | [Work that needs the remote host](guides/remote-only-work.md) |
 | Know what is known-broken and not being fixed | [Unresolved issues](policies/unresolved-issues.md) |
 | Measure search speed on this machine | [Fixed-work performance probe](results/perf/README.md) |
