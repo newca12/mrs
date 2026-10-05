@@ -166,6 +166,10 @@ rules: `docs/results/perf/README.md`.
 | `--quiet` | — | Suppress non-SZS stderr; **requires `proover` feature** |
 | `-` (positional) | — | Read TPTP from stdin; **requires `proover` feature** |
 | `--certify-ordered` | — | Diagnostic bounded function-free EPR ordered-resolution certification; use with `--workers 1 --strategy N`; unsupported inputs return `GaveUp` |
+| `--pre-phase` | — | Run the pre-phase: measure the problem, print the routing decision and the evidence for it, and — **only when no `--schedule`/`--strategy`/`--portfolio` was named** — let the routed plan replace the portfolio. Experimental; see `docs/reports/prephase/` |
+| `--pre-phase-only` | — | Analyse, print, and exit without searching. For auditing a routing decision |
+| `--pre-phase-probe` | — | Also run the bounded search-behaviour probe and print its trajectory |
+| `--list-rules` | — | Print the pre-phase routing table, one row per rule, with each row's conditions, order and a calibrated/prior flag |
 
 Named schedules live in `mrs_search::strategy::named` (`crates/mrs-search/src/strategy/named.rs`):
 
@@ -238,6 +242,7 @@ The root `Cargo.toml` is both `[workspace]` and `[package]` — valid but unusua
 ## 10. Architecture notes
 
 - **Strategy portfolio:** 15 active strategies run **in parallel**. When `MRS_SHARED_POOL_INTERVAL` is positive they share a pool of derived unit equalities; sharing is disabled by default. A 16th diagnostic strategy (`MRS_SINGLE_STRATEGY=16`) gets `Duration::ZERO` in normal runs.
+- **Pre-phase:** off by default (`--pre-phase` / `MRS_PREPHASE=1` enables it). When enabled and no schedule was named explicitly, it replaces the portfolio with the routed plan. When a schedule *is* named it only reports the decision, so the feature's own A/B stays readable. See §12.
 - **Default time budget:** 30 seconds; overridable with `--time <seconds>`.
 - **LRS (Limited Resource Strategy):** every 100 given-clause iterations, the prover estimates the remaining iteration budget from `elapsed/iteration` and prunes the passive queue to that size (min 2000). This prevents memory explosion and teardown latency on hard problems. Set `TRACE_LRS=1` to see per-prune log lines on stderr.
 - **Refutation-based:** conjectures are negated before search. A problem with no `conjecture` role checks satisfiability (outputs `Unsatisfiable`/`Satisfiable`).
@@ -389,7 +394,55 @@ details.
 
 ---
 
-## 12. Testing
+## 12. Pre-phase (experimental, `exp/prephase-study`)
+
+`mrs-prephase` holds the pre-phase: a bounded analysis of a problem run before
+the first inference, whose output is a class label, a feasibility estimate, and a
+routing plan. It is **off by default** and every routing rule is marked
+`calibrated` or `prior` in `mrs --list-rules`.
+
+**What it does**
+
+| Symbol | Role |
+|--------|------|
+| `mrs_prephase::analyze` | ~80 structural features over the *clausified* clause set: scale, polarity shape, equality/variable structure, symbol and term shape, goal reachability under the engine's own symbol-distance BFS, clause-graph decomposition, measured redundancy (it runs the real PLE/BCE reducer), algebraic signature, propositional-abstraction size |
+| `mrs_prephase::Analysis::label` | the class taxonomy: `logic/shape/scale/goal/decomposition`. 172 distinct values over the 26,990-problem TPTP distribution; 54 of them cover 95.9% of it |
+| `mrs_prephase::Analysis::feasibility` | `LIKELY`/`UNKNOWN`/`UNLIKELY` — the one prediction the sweep supports, with a 5x spread between the extremes |
+| `mrs_prephase::plan::rules` | the routing table: conditions → algorithm → priority order → pre-passes, each row with its own evidence string and calibrated/prior flag |
+| `mrs_search::prephase::schedule_from_plan` | plan → `StrategySchedule`, one strategy per worker, cycled from the plan's priority order |
+| `mrs_search::prephase::probe` | bounded reference search on a fixed *clause* budget, reporting generation/redundancy rates. Its verdict is deliberately discarded |
+| `mrs_prephase::preprocessing` | the tautology / pure-literal / blocked-clause reducer, moved here from `mrs-search` so the analysis can measure the redundancy the engine actually removes |
+
+**Instruments** (`crates/mrs-bench/prephase/`)
+
+| Tool | Role |
+|------|------|
+| `prephase_dump` | one CSV row of features per `.p` file. `--rlimit-mb` isolates each file under an `RLIMIT_AS` ceiling, so a problem too large for the host is recorded as `resource_limit` instead of taking the run out with the OOM killer. `--probe` appends the probe's ten columns |
+| `prephase_sweep` | the label: configuration × problem outcome matrix with time-to-solution and the engine's own telemetry. Stratified sampling, resumable |
+| `analyze.py` | joins the two; coverage, greedy set cover, per-bucket conditional coverage, behavioural taxonomy, portfolio simulation, cross-validation, exact sign tests. `--features-only` runs the label-free corpus taxonomy |
+| `ab.sh` | cooperative A/B of the pre-phase against the shipped per-division portfolio |
+
+```bash
+nix develop -c cargo build --release -p mrs-bench --bin prephase_dump --bin prephase_sweep
+
+TPTP=~/TPTP-v9.3.0 ./target/release/prephase_dump \
+    --root ~/TPTP-v9.3.0/Problems --out features.csv --jobs 2 --rlimit-mb 2500
+TPTP=crates/mrs-bench/problems/casc-30 ./target/release/prephase_sweep \
+    --features features.csv --sample 600 --time 3 --jobs 2 --out labels.csv
+python3 crates/mrs-bench/prephase/analyze.py features.csv labels.csv
+```
+
+**Results.** `docs/reports/prephase/2026-10-prephase-study.md`. The headline is a
+negative one and should be read before any routing work: on CASC-30 at 3 s and on
+the hard tail at 30 s, routing on static structure is *worse* than the shipped
+per-division orders, which are within three problems of the greedy optimum at
+every portfolio width. Feasibility prediction works (5x spread); routing does not.
+Do not add a routing rule without a measurement showing it wins on the subset it
+fires on.
+
+---
+
+## 13. Testing
 
 - Most tests are `#[cfg(test)]` inline modules — no separate test directories, no fixtures.
 - Exception: `mrs-tptp` has integration tests under `crates/mrs-tptp/tests/` with fixture files in `tests/resources/`.
@@ -398,6 +451,6 @@ details.
 
 ---
 
-## 13. Runtime env var
+## 14. Runtime env var
 
 `TPTP=/path/to/TPTP` — only needed at runtime when problems use `%include` pointing to the standard TPTP library. The benchmark harness (`crates/mrs-bench/systems/mrs/invoke.sh`) sets this automatically to `crates/mrs-bench/problems/casc-30`, so it is not required for normal benchmark runs. Only set it manually when running the binary directly on problems that use `%include`.

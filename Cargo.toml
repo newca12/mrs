@@ -20,6 +20,7 @@ mrs-index = { path = "crates/mrs-index", version = "0.2.3" }
 mrs-proof = { path = "crates/mrs-proof", version = "0.2.3" }
 mrs-search = { path = "crates/mrs-search", version = "0.2.3" }
 mrs-proover = { path = "crates/mrs-proover", version = "0.2.3" }
+mrs-prephase = { path = "crates/mrs-prephase", version = "0.2.3" }
 mrs-proof-kernel = { path = "crates/mrs-proof-kernel", version = "0.2.3" }
 mrs-cadical = { path = "crates/mrs-cadical", version = "0.2.3" }
 mrs-cadical-sys = { path = "crates/mrs-cadical-sys", version = "0.2.3" }
@@ -85,6 +86,7 @@ mrs-proof = { workspace = true }
 mrs-proover = { workspace = true }
 mrs-proof-kernel = { workspace = true }
 mrs-cadical = { workspace = true }
+mrs-prephase = { workspace = true }
 wincode = { workspace = true, optional = true }
 num_cpus = { workspace = true }
 mimalloc = { workspace = true }

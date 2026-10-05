@@ -43,7 +43,10 @@ pub mod fvo;
 pub mod given_clause;
 pub mod goal_distance;
 pub mod instgen;
-pub mod preprocessing;
+pub mod prephase;
+
+pub use mrs_prephase::preprocessing;
+pub use mrs_prephase::{Analysis, MetaInput};
 pub mod resource;
 pub mod select;
 pub mod sine;

@@ -10,6 +10,7 @@ mod analyze;
 mod coordinator;
 mod include;
 mod lowering;
+mod pipeline;
 mod sine;
 
 use std::env;
@@ -20,8 +21,6 @@ use std::time::Instant;
 
 use std::time::Duration;
 
-use mrs_core::Formula;
-use mrs_core::clause::{Clause, ClauseSource};
 use mrs_proof_kernel::model::ModelEvaluation;
 use mrs_search::strategy::{StrategySchedule, run_schedule};
 use mrs_search::{ScheduleReport, SearchResult};
@@ -56,6 +55,12 @@ fn main() {
     let mut profile_json_mode = false;
     let mut goal_transform: Option<mrs_cnf::GoalTransformMode> = None;
     let mut certify_ordered = false;
+    // Pre-phase: measure the problem, then route the portfolio from the
+    // measurement. Off unless asked for, so this stays a measurement rather than
+    // a silent behaviour change.
+    let mut pre_phase = false;
+    let mut pre_phase_only = false;
+    let mut pre_phase_probe = false;
     /// What casc-sim does with the wall clock. `Inherit` is every other mode.
     enum SimBudget {
         Inherit,
@@ -327,6 +332,17 @@ fn main() {
             "--certify-ordered" => {
                 certify_ordered = true;
             }
+            "--pre-phase" => {
+                pre_phase = true;
+            }
+            "--pre-phase-only" => {
+                pre_phase = true;
+                pre_phase_only = true;
+            }
+            "--pre-phase-probe" => {
+                pre_phase = true;
+                pre_phase_probe = true;
+            }
             "--proof-bytes-limit" => {
                 let val = args.next().unwrap_or_else(|| {
                     eprintln!("Error: --proof-bytes-limit requires a byte count");
@@ -347,6 +363,10 @@ fn main() {
             // Deprecated alias: --fast is now --schedule fast.
             "--fast" => {
                 schedule_name = Some("fast".to_string());
+            }
+            "--list-rules" => {
+                println!("{}", mrs_prephase::plan::describe_rules());
+                process::exit(0);
             }
             "--list-schedules" => {
                 for name in mrs_search::strategy::named::ALL {
@@ -383,7 +403,7 @@ fn main() {
             _ => {
                 if path.is_some() {
                     eprintln!(
-                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--goal-transform MODE] [--certify-ordered] [--proof-bytes-limit N] [--no-bce] [--no-ple] [--no-instgen] [--no-lrs] [--no-sharing] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"
+                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--goal-transform MODE] [--certify-ordered] [--pre-phase] [--proof-bytes-limit N] [--no-bce] [--no-ple] [--no-instgen] [--no-lrs] [--no-sharing] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"
                     );
                     process::exit(1);
                 }
@@ -393,7 +413,7 @@ fn main() {
     }
     let Some(path) = path else {
         eprintln!(
-            "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--goal-transform MODE] [--certify-ordered] [--proof-bytes-limit N] [--no-bce] [--no-ple] [--no-instgen] [--no-lrs] [--no-sharing] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"
+            "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--goal-transform MODE] [--certify-ordered] [--pre-phase] [--proof-bytes-limit N] [--no-bce] [--no-ple] [--no-instgen] [--no-lrs] [--no-sharing] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"
         );
         eprintln!("  An automated theorem prover for TPTP problems.");
         eprintln!(
@@ -472,29 +492,28 @@ fn main() {
         }
     };
 
-    // Lower to core types
-    let mut lowered = lowering::lower_problem(&problem);
-
-    // Resolve include directives
-    if !problem.includes.is_empty() {
-        let base_dir = Path::new(&path).parent().unwrap_or(Path::new("."));
-
-        // Use $TPTP as a hint for the root directory.  Even if it is wrong
-        // (e.g. pointing at Problems/ instead of TPTP-v9.2.1/), resolve_path
-        // will also auto-detect the root by walking up from base_dir looking
-        // for an ancestor that contains Axioms/.
-        let tptp_root: Option<PathBuf> = env::var("TPTP").ok().map(PathBuf::from);
-
-        match include::resolve_and_lower(&problem, &mut lowered, base_dir, tptp_root.as_deref()) {
-            Ok(()) => {
-                info!("% Resolved {} include directive(s)", problem.includes.len());
-            }
-            Err(e) => {
-                info!("Warning: include resolution failed: {}", e);
-            }
-        }
+    // Lower to core types, resolve includes, and clausify. Shared with the
+    // offline pre-phase dumper so both see exactly the same clause set.
+    let input_bytes = if path == "-" {
+        None
+    } else {
+        fs::metadata(&path).ok().map(|m| m.len())
+    };
+    let resolved_includes = problem.includes.len();
+    let prepared = pipeline::prepare(&problem, Some(&path), input_bytes);
+    if let Some(error) = &prepared.include_error {
+        info!("Warning: include resolution failed: {error}");
+    } else if resolved_includes > 0 {
+        info!("% Resolved {} include directive(s)", resolved_includes);
     }
-
+    let lowered = prepared.lowered;
+    let prephase_meta = prepared.meta;
+    let all_clauses = prepared.clauses;
+    let provenance = prepared.provenance;
+    // The clause-id generator handed to the scheduler is the lowered one, not
+    // the generator the clausification walked: inference steps get ids from it
+    // after every input clause is already numbered.
+    let id_gen = lowered.id_gen.clone();
     let has_logical_formulas = !problem.includes.is_empty()
         || problem.formulas.iter().any(|f| {
             match f {
@@ -670,84 +689,12 @@ fn main() {
         cnf_count
     );
 
-    // --- Clausification ---
-    let mut id_gen = lowered.id_gen.clone();
-    let mut all_clauses: Vec<Clause> = lowered
-        .cnf_clauses
-        .clone()
-        .into_iter()
-        .map(|c| {
-            // CNF clauses with negated_conjecture role are already the
-            // negated goal: give them distance=0 so SOS/GoalDirected
-            // heuristics treat them as goal-connected.
-            let is_nc = matches!(
-                &c.source,
-                ClauseSource::Input { role, .. } if role == "negated_conjecture"
-            );
-            c.with_distance(if is_nc { 0 } else { 100 })
-        })
-        .collect();
-
-    // Non-clausal FOF-level proof steps (NNF conversion, Skolemization, and
-    // the explicit conjecture-negation step) produced alongside `all_clauses`.
-    // These document the FOF-to-CNF translation for the final proof (see
-    // CASC's evaluation criteria: "Translations from one form to another...
-    // must be adequately documented"). They are never added to the live
-    // given-clause search — see `Clause::formula`'s doc comment for why.
-    let mut provenance: Vec<Clause> = Vec::new();
-
-    // Clausify axioms directly
-    for f in &lowered.axioms {
-        let leaf_source = ClauseSource::Input {
-            name: f.name.clone(),
-            role: f.role.clone(),
-        };
-        let (steps, clauses) = mrs_cnf::clausify_with_provenance(
-            &f.formula,
-            &mut lowered.symbols,
-            &mut id_gen,
-            &f.name,
-            leaf_source,
-            None,
-        );
-        provenance.extend(steps);
-        all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(100)));
-    }
-
-    // Negate conjectures for refutation-based proving:
-    // To prove P, we show that axioms ∧ ¬P is unsatisfiable.
-    for f in &lowered.conjectures {
-        // Explicit leaf citing the original (non-negated) conjecture.
-        let conj_leaf_id = id_gen.next();
-        provenance.push(Clause::new_formula_step(
-            conj_leaf_id,
-            f.formula.clone(),
-            ClauseSource::Input {
-                name: f.name.clone(),
-                role: "conjecture".to_string(),
-            },
-        ));
-
-        // The negation step itself is explicitly cited (status cth, single
-        // parent = the conjecture leaf), per the CASC evaluation criteria:
-        // "Proofs that negate the conjecture must correctly annotate the
-        // step as status(cth) and have a single parent with the role
-        // conjecture."
-        let negated = Formula::neg(f.formula.clone());
-        let (steps, clauses) = mrs_cnf::clausify_with_provenance(
-            &negated,
-            &mut lowered.symbols,
-            &mut id_gen,
-            &f.name,
-            ClauseSource::Inference {
-                rule: "negated_conjecture",
-                parents: vec![conj_leaf_id].into(),
-            },
-            None,
-        );
-        provenance.extend(steps);
-        all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(0)));
-    }
+    // Clausification already happened in `pipeline::prepare`; the clause set
+    // the search sees is `all_clauses`, and `provenance` holds the FOF-level
+    // NNF / Skolemization / conjecture-negation steps that document the
+    // translation in the TSTP proof (CASC's evaluation criteria require the
+    // FOF-to-CNF translation to be documented). Those steps never enter the
+    // live search — see `Clause::formula`'s doc comment for why.
 
     if profile_json_mode {
         analyze::analyze_and_print_json_with_counts(
@@ -1026,6 +973,83 @@ fn main() {
                 config.emit_avatar_trace = true;
             }
         }
+        // The pre-phase replaces the portfolio only when no schedule was named
+        // explicitly. An explicit `--schedule` / `--strategy` / `--portfolio` is
+        // a measurement instruction, and silently overriding it would make every
+        // A/B of this feature unreadable.
+        let prephase_enabled = pre_phase || std::env::var("MRS_PREPHASE").is_ok_and(|v| v != "0");
+        let mut decision: Option<mrs_search::prephase::Decision> = None;
+        if prephase_enabled {
+            let mut route = mrs_search::prephase::decide(
+                problem_name,
+                &prephase_meta,
+                &all_clauses,
+                &lowered.symbols,
+            );
+            if pre_phase_probe {
+                route.probe = Some(mrs_search::prephase::probe(
+                    &all_clauses,
+                    lowered.id_gen.clone(),
+                    &lowered.symbols,
+                ));
+                let summary = route
+                    .probe
+                    .as_ref()
+                    .map(|probe| probe.summary())
+                    .unwrap_or_default();
+                info!("% Pre-phase probe: {summary}");
+            }
+            info!("% Pre-phase: {}", route.plan.summary());
+            info!(
+                "% Pre-phase analysis: label={} clauses={} literals={} logic={} shape={} \
+                 goal_reachable={:.2} components={} redundancy={:.2} max_depth={} skolems={} \
+                 abstraction_atoms={} feasibility={}",
+                route.analysis.label,
+                route.analysis.n_clauses,
+                route.analysis.n_literals,
+                route.analysis.logic(),
+                route.analysis.shape_class.as_str(),
+                route.analysis.goal_reachable_ratio,
+                route.analysis.n_components,
+                route.analysis.redundant_ratio,
+                route.analysis.max_term_depth,
+                route.analysis.n_skolems,
+                route.analysis.abstraction_atoms,
+                route.analysis.feasibility.as_str(),
+            );
+            if pre_phase_only {
+                println!("{}", szs_status_line(SzsStatus::GaveUp, problem_name));
+                process::exit(0);
+            }
+            if schedule_name.is_none() && exact_strategy.is_none() && portfolio.is_none() {
+                let mut configs = mrs_search::prephase::schedule_from_plan(
+                    &route.plan,
+                    search_budget,
+                    search_workers,
+                );
+                mrs_search::prephase::apply_pre_passes(&mut configs, &route.plan);
+                schedule = mrs_search::strategy::StrategySchedule {
+                    strategies: configs
+                        .into_iter()
+                        .map(|config| {
+                            let time = config.time_limit;
+                            (config, time)
+                        })
+                        .collect(),
+                };
+                info!(
+                    "% Pre-phase: portfolio replaced with {} routed strategies",
+                    schedule.strategies.len()
+                );
+            } else {
+                info!(
+                    "% Pre-phase: an explicit schedule was requested, so the routing decision \
+                     is reported but not applied"
+                );
+            }
+            decision = Some(route);
+        }
+        let _ = &decision;
         if let Some(gt) = goal_transform {
             for (config, _) in &mut schedule.strategies {
                 config.goal_transformation = Some(gt);

@@ -411,14 +411,8 @@ impl StrategySchedule {
 
     /// Automatically applies parallel SInE threshold tuning across the portfolio strategies.
     pub fn apply_sine_threshold_tuning(&mut self) {
-        let sine_configs = [
-            (Some(1.5), Some(3)), // strict SInE
-            (Some(2.0), Some(5)), // standard SInE
-            (Some(3.5), Some(8)), // relaxed SInE
-            (None, None),         // SInE disabled
-        ];
         for (i, (cfg, _)) in self.strategies.iter_mut().enumerate() {
-            let (sine_tol, sine_depth) = sine_configs[i % sine_configs.len()];
+            let (sine_tol, sine_depth) = sine_threshold_tuning(i);
             cfg.sine_tolerance = sine_tol;
             cfg.sine_depth_limit = sine_depth;
         }
@@ -557,6 +551,25 @@ pub fn auto_schedule_name(clauses: &[Clause]) -> &'static str {
             .any(|l| matches!(l.atom, mrs_core::formula::Atom::Eq(_, _)))
     });
     if !has_eq { "casc_fne" } else { "casc_feq" }
+}
+
+/// The SInE (tolerance, depth-limit) pair for a portfolio slot.
+///
+/// A free function so that the named schedules and the pre-phase's routing table
+/// cannot disagree about what the default preprocessing is. It mattered: the
+/// pre-phase originally *cleared* SInE on the schedules it built, because its plan
+/// happened not to mention SInE. On CASC-30/UEQ that cost five problems — the
+/// large `CSR*-10` sets are refuted by the shipped portfolio in ~40 ms once SInE
+/// has reduced 8,000 unit-equality clauses to under a hundred, and without it the
+/// same portfolio times out. Silence about a preprocessing step must not mean
+/// "off".
+pub fn sine_threshold_tuning(slot: usize) -> (Option<f64>, Option<usize>) {
+    [
+        (Some(1.5), Some(3)), // strict SInE
+        (Some(2.0), Some(5)), // standard SInE
+        (Some(3.5), Some(8)), // relaxed SInE
+        (None, None),         // SInE disabled
+    ][slot % 4]
 }
 
 /// Number of trailing portfolio slots that ML premise pruning is allowed to
