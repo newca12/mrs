@@ -209,8 +209,20 @@ control at that commit and changed nothing: same 44, same 40 certified, same 13
 `GaveUp`, same 43 `Timeout`, zero problems differing in either direction. The
 flag therefore stays off, and the reason is not that the route is unmeasured —
 it is that the cert track already answers the same rows faster than the
-pre-pass can verify a model for them. Evidence and the two cap changes that
-would be the next experiment: [`eps-2026-09.md`](eps-2026-09.md).
+pre-pass can verify a model for them.
+
+A later campaign at `c07cac9` (`campaign-casc30-eps-W8C8J1-20260930`) repeated
+EPS on the canonical shape of 8 workers, 8 physical cores, and `jobs=1`, on a
+third host. It returned the same **44 solved / 40 certified models / zero
+violations**. Row-by-row against three 16-core runs, only `SYO586-1` changed
+between `Timeout` and `GaveUp`; both tracks returned the same results, so the
+division should be graded by solved/unsolved rather than timeout label.
+
+The campaign also decomposed the remaining 56: 18 are early refusals rather
+than deadline-bound searches, including 14 refused by the non-unit-positive-
+equality guard and `HWC004-1`, which has a one-element model but is refused
+before grounding. Only 38 cases reach the deadline. Details and reproduction:
+[`eps-2026-09.md`](eps-2026-09.md).
 
 ### Current CASC-J13 Snapshot
 

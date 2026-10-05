@@ -287,6 +287,16 @@ estimated=… vars=… constants=…`, `refuse=atom_limit atoms=…`,
 per successful certification, following the `TRACE_LRS` precedent, so
 future cap changes stay data-driven.
 
+**Telemetry gap:** `expand_for_certification` can propagate `expand_equality`'s
+`Unsupported` or `Limit` result without a `TRACE_CERTIFY` line, and rejection by
+the pre-grounding fragment gate is also untraced. Consequently, a
+non-unit-positive-equality refusal may show `phase=ground instances=…` without
+an equality-expansion or final `phase=expand` line. The 14 such cases counted in
+the CASC-30 EPS campaign were identified by inspecting the early-bailing
+problems after resolving their includes, rather than from telemetry. Add
+logging to these error paths before using `TRACE_CERTIFY` to measure that
+boundary.
+
 ## Indexed Lookup Equivalence
 
 The given-clause loop retrieves inference partners through `LiteralIndex`
@@ -574,7 +584,8 @@ constants forces them to share an element, so a certificate that gave them
 separate elements is declined. That is the check worth having, because this
 failure mode is a silent wrong answer on a `Satisfiable` verdict rather than
 a crash — and it is a bug that predates the 2026-09 work
-(`non_unit_positive_equality_fails_closed` and `saturation_is_epr_with_equality_only`
+(`non_unit_positive_equality_stays_outside_the_fragment` and
+`saturation_is_epr_with_equality_only`
 were both asserting the old, unsound-safe behaviour: `Unsupported` and a
 class-per-constant certificate respectively).
 `certificate_interprets_merged_constants_as_one_element` is the regression
@@ -602,14 +613,19 @@ legacy fragment observes no change. Design points:
   as parents — no closure needed.
 - **Certification boundary**: a *ground* positive equality between two
   distinct class representatives is false, and a *ground* negative one is
-  true. Deciding them by the unique-name axiom (distinct constants denote
-  distinct elements) is what removes the need for predicate congruence
-  entirely, so the old blanket refusal of non-unit positive equality is gone
-  — the NLP set, whose clauses carry `Y = Z` as one literal among a dozen, is
-  now decidable. What still fails closed is a positive equality with a
-  *non-ground* side, whose value the ground pass cannot determine and which
-  would have to be left to resolution. Function terms remain outside the
-  fragment on every path.
+  true. Although deciding these by the unique-name assumption could remove the
+  need for predicate congruence, that relaxation is **not in the current tree**.
+  `expand_equality` still fails closed on every *non-unit* positive equality,
+  ground or not, with `Unsupported("non-unit positive equality is outside the
+  certified fragment")`, pinned by
+  `non_unit_positive_equality_stays_outside_the_fragment`. A previous attempt
+  measured 48/100 on CASC-30 EPS with kernel-certified models, but was not kept:
+  on `EPS/HWV042-1` the SAT solver called a ground set unsatisfiable although
+  the reference answer is `Satisfiable`, and the source of that discrepancy was
+  not established. On the 2026-09-30 canonical-shape EPS campaign, this guard
+  refused 14 of 100 problems (10 NLP problems, three `HWV` problems, and
+  `MGT066-1`) before search. Function terms remain outside the fragment on
+  every path.
 - **Local Eq partner map**: equality remains a Tier-1-only unit-equality
   path. Tier 2 is predicate-only — but only *after* the pass above has
   resolved every ground Eq literal, so it receives a predicate-only set. What

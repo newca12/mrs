@@ -15,6 +15,29 @@ with a known clean canary.
 
 Do not convert `GaveUp` or `Timeout` into a satisfiability claim.
 
+## Certifier returns `GaveUp` without a `TRACE_CERTIFY` reason
+
+Some certified-path refusals are currently silent. Enable tracing to determine
+how far the problem gets:
+
+```bash
+TRACE_CERTIFY=1 ./target/release/mrs --time 120 --workers 1 \
+    --schedule casc_eps --strategy 1 --certify-ordered EPS/<problem>.p 2>&1 \
+    | grep CERTIFY
+```
+
+- **No output** can mean the input was rejected before grounding. For example,
+  `EPS/HWC004-1` is refused in about 1 ms because its equality sides contain
+  function symbols.
+- **`phase=ground …` followed by silence** can indicate an unsupported
+  non-unit positive equality or an equality-expansion deadline. The current
+  implementation does not log those refusal reasons; the EPS campaign report
+  documents the measured cases and boundary.
+
+Other refusals may include explicit reasons such as `instance_count_overflow`,
+`tier_size`, `atom_limit`, or `closure_time`. Treat a refusal as a fail-closed
+result, not a satisfiability conclusion.
+
 ## Non-reproducible telemetry
 
 Use `--workers 1` for a deterministic strategy diagnosis. Disable sharing with

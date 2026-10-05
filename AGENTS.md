@@ -297,6 +297,17 @@ Maximize the number of CASC problems solved across all entered divisions
 problem to the correct per-division schedule (`casc_feq/fne/ueq/epr`).
 The question is whether those division schedules are optimal for 8 cores.
 
+> **EPS exception — do not run the portfolio-optimisation workflow.** EPS asks
+> for `Satisfiable`; the ordinary portfolio cannot make that claim, even when
+> its clause set saturates, because completeness of the general search path is
+> not established. EPS results come from the certified track. On the canonical
+> shape (8 workers, 8 physical cores, `jobs=1`, campaign at `c07cac9`), the
+> portfolio produced a definitive status on only 2 of 100 problems, both also
+> answered by the certified track, and added 0 unique solves. Thus
+> `greedy_set_cover --division eps` and `cooperative_portfolio_sweep.sh` do not
+> optimize EPS coverage. Focus EPS work on the certified path and grounding
+> tiers; see `docs/reports/benchmarks/eps-2026-09.md`.
+
 ### Decision rule for implementing `--casc`
 
 A dedicated `--casc` flag (hard-coded 8-strategy per-division portfolio,
