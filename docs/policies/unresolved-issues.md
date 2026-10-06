@@ -784,3 +784,88 @@ TPTP=crates/mrs-bench/problems/casc-30 target/release/mrs-proover \\
 
 The retained proofs are under
 `/home/hack/crates/mrs-bench/results/campaign-<edition>-feq-*/certification/proofs/mrs/feq/`.
+
+## UI-8 — Measured: passive-queue retention is not the constraint on the hard tail
+
+| | |
+|---|---|
+| Status | Measured, **negative**. The hypothesis is retired; the underlying question stays open. |
+| Severity | None directly. It redirects where to look for the tail. |
+| Soundness | Unaffected. No proof or model result changed meaning. |
+
+### The experiment
+
+Full casc-30 UEQ division, 300 problems, 240 s, on `teenf9901`
+(16 physical / 32 logical, 128 019 MB), `--jobs 1`:
+
+```
+MRS_WORKERS=8 MRS_HARDWARE=casc-sim MRS_SIM_TIME_FACTOR=1 \
+MRS_NO_LRS=1 MRS_MAX_MEMORY_MB=90000 CERT_JOBS=4 \
+crates/mrs-bench/certification_campaign.sh \
+  --edition casc-30 --systems mrs --divisions ueq --casc-times --jobs 1 \
+  --output crates/mrs-bench/results/campaign-casc30-ueq-W8P8J1-NOLRS-MB90G-20261005
+```
+
+Every knob verifiably took effect: `lrs_discarded == 0` on all 276 rows
+carrying telemetry, `casc_limit_s=238 sim_limit_s=238` (so `MRS_SIM_TIME_FACTOR=1`
+was needed — at the default of 2.0 the budget becomes 476 s while the harness
+SIGTERMs at 250 s), `pinned_cpus=16` across 8 physical cores, and
+`address_space_mb=90000`. Integrity clean: one `Total jobs:`, 300/300, nothing
+reached the rlimit (peak 71 120 MB), no OOM.
+
+### Result
+
+| | baseline (2026-10-02) | LRS off |
+|---|---:|---:|
+| solved | 123 | **111** |
+| certified | 121 | 110 |
+| `GaveUp` | 10 | 6 |
+| `Timeout` | 167 | 183 |
+| silent kills (UI-2) | 15 | **24** |
+
+17 problems lost (all to `Timeout`), 5 gained (`COL009-1`, `COL057-1`,
+`LCL211-10`, `LCL400-10`, `SYN615-10`). **On the 12-problem diagnostic subset
+chosen for the highest discard ratios the effect is +1 / -1 / 10 unchanged** —
+no support for the hypothesis even where it should have been strongest.
+
+### The headline -12 is confounded and should not be read as an LRS effect
+
+The baseline ran `--hardware adaptive` (unpinned, 8 workers spread over 16
+physical cores); this arm ran `casc-sim`, **pinned to 8 physical cores**. Two
+variables moved. The loss distribution points at throughput rather than search
+quality: the 17 lost problems were solved in a **median 144 s** in the baseline,
+with **14 of 17 at 120-238 s**, against an overall baseline solve median of
+**15 s**. Losses concentrate exactly where headroom is thinnest, which is the
+signature of a per-worker slowdown under SMT contention, not of worse search.
+
+Settling this needs the control arm — `casc-sim`, pinned, LRS at default — on the
+12-problem subset first. Without it the -12 is uninterpretable, in either
+direction.
+
+### What it did establish
+
+**LRS is load-bearing.** Turning it off costs solves overall and adds silent
+kills. So raising the LRS floor, which was an earlier suggestion, would move in
+the wrong direction.
+
+**A new cost of large queues, distinct from memory.** Silent kills rose 15 → 24,
+with 12 new ones. Every one of the 12 had a large *baseline* queue
+(`passive` 40 162-95 156, `generated` 380 672-1 993 586), and the LAT family
+appears repeatedly. Memory was **not** the cause — peak 71 GB against a 90 GB
+rlimit, and the new silent kills sit at 10-18 GB. The consistent reading is that
+queue-size-dependent per-iteration work grows without the prune, so an iteration
+outruns the 238 s deadline and the harness SIGTERMs at 250 s with no SZS line:
+UI-2's UEQ mechanism, made worse rather than caused.
+
+### What is still open
+
+Why the tail is slow is now unaddressed by this experiment. Remaining
+candidates: per-worker throughput (favoured by the loss distribution above), or a
+generator producing genuinely distinct heavy clauses, in which case the ~37:1
+generated-per-processed ratio is intrinsic and there is no redundancy to remove.
+
+Note that the ratio itself was never a sound measure: `forward_subsumed` counts
+*selections* discarded (`given_clause.rs:1810`), so `fwd_subsumed/generated` is
+bounded near 1/37 ≈ 2.70% by construction. Any future attempt to measure
+redundancy elimination must compare **discarded against retained**, not generated
+against subsumed.

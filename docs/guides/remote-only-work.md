@@ -341,6 +341,37 @@ The eight FEQ rows that remain are a different question, and two of them are
 *not* remote either: they need a change to the kernel's variable model and a
 different CNF expansion algorithm respectively. See **UI-7**.
 
+### R11 — Hard-tail throughput: the LRS-off A/B on casc-30 UEQ — RUN, NEGATIVE
+
+**Done on `teenf9901`.** The result is negative and the hypothesis it tested is
+retired: passive-queue retention is **not** what limits the hard tail.
+
+```
+MRS_WORKERS=8 MRS_HARDWARE=casc-sim MRS_SIM_TIME_FACTOR=1 \
+MRS_NO_LRS=1 MRS_MAX_MEMORY_MB=90000 CERT_JOBS=4 \
+crates/mrs-bench/certification_campaign.sh \
+  --edition casc-30 --systems mrs --divisions ueq --casc-times --jobs 1 \
+  --output crates/mrs-bench/results/campaign-casc30-ueq-W8P8J1-NOLRS-MB90G-20261005
+```
+
+111 solved against the baseline's 123, but the comparison is **confounded**: the
+baseline ran `--hardware adaptive` unpinned while this arm is `casc-sim` pinned
+to 8 physical cores, so throughput moved too. The loss distribution (14 of 17
+lost problems solved at 120-238 s, against an overall solve median of 15 s)
+looks like per-worker slowdown rather than worse search. Full analysis, the
+required control arm, and what it did establish are in
+[`unresolved-issues.md`](../policies/unresolved-issues.md) **UI-8**.
+
+Two things worth keeping from the run mechanics:
+
+- **`MRS_SIM_TIME_FACTOR=1` is mandatory under `casc-sim`.** The default of 2.0
+  makes `total_budget` 476 s while `casc.sh` SIGTERMs at 250 s, which turns every
+  over-running problem into a silent kill with no SZS line — UI-2's signature,
+  introduced by the harness rather than the prover.
+- **`MRS_MAX_MEMORY_MB` is not a cap.** It feeds a polled watchdog
+  (`given_clause.rs:1576`); the only hard limit is casc-sim's `RLIMIT_AS`. Use
+  both, or a runaway queue ends at the OOM killer.
+
 ---
 
 ## What is *not* remote — measured here, do it here
