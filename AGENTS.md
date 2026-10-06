@@ -372,6 +372,26 @@ between shared and no-sharing runs measures cooperation gain separately from
 strategy diversity. Use `cooperative_portfolio_search.sh` for one-swap local
 search over candidate portfolios.
 
+> **Read this before trusting any single-run A/B.** A single run is not a
+> measurement. Five replicates of an identical configuration over a fixed
+> 25-problem casc-30 UEQ subset solved 21 / 20 / 19 / 21 / 20 — **±1 per 25,
+> i.e. ±12 per 300**. That noise floor is the same size as any portfolio
+> difference these steps are asked to detect, and `cooperative_portfolio_search.sh`
+> maximises over ~120 noisy evaluations per round (`rounds × 8 slots × 15
+> candidates`), which selects on noise. Wrap decisive comparisons in
+> `run_variance.sh` and compare **means over ≥5 replicates**:
+>
+> ```bash
+> nix develop -c ./crates/mrs-bench/run_variance.sh 5 \
+>     --edition casc-30 --systems mrs --divisions ueq --casc-times --jobs 1 \
+>     --output crates/mrs-bench/results/variance-ueq-$(date +%Y%m%d)
+> ```
+>
+> Variance is bimodal per problem, not uniform jitter: `KLE152-10` takes ~118 s or
+> ~217 s with nothing between, because concurrent strategies race and contention
+> picks the winner. `run_variance.sh` reports per-problem spread for that reason.
+> See `docs/policies/unresolved-issues.md` UI-8.
+
 **Step 4 — Act on cooperative results:**
 
 - If greedy FNE portfolio = strategies `[s3, s7, s11, s1, s12, s6, s2, s10]` (example),

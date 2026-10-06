@@ -354,13 +354,28 @@ crates/mrs-bench/certification_campaign.sh \
   --output crates/mrs-bench/results/campaign-casc30-ueq-W8P8J1-NOLRS-MB90G-20261005
 ```
 
-111 solved against the baseline's 123, but the comparison is **confounded**: the
-baseline ran `--hardware adaptive` unpinned while this arm is `casc-sim` pinned
-to 8 physical cores, so throughput moved too. The loss distribution (14 of 17
-lost problems solved at 120-238 s, against an overall solve median of 15 s)
-looks like per-worker slowdown rather than worse search. Full analysis, the
-required control arm, and what it did establish are in
-[`unresolved-issues.md`](../policies/unresolved-issues.md) **UI-8**.
+111 solved against the baseline's 123, but the comparison is **uninterpretable in
+either direction**, for two independent reasons. The baseline ran `--hardware
+adaptive` unpinned while this arm is `casc-sim` pinned to 8 physical cores, so
+throughput moved too; and the -12 is **exactly the measured run-to-run noise
+floor**. Five replicates of a fixed 25-problem subset, identical configuration,
+solved 21 / 20 / 19 / 21 / 20 — ±1 per 25, which scales to ±12 per 300.
+
+The loss distribution (14 of 17 lost problems solved at 120-238 s, against an
+overall solve median of 15 s) looks like per-worker slowdown rather than worse
+search. What survives is the directional sign on this hardware configuration and
+nothing stronger; the earlier "LRS is load-bearing" reading overstated it.
+Settling this needs the control arm — `casc-sim`, pinned, LRS at default — on the
+12-problem subset, **replicated ≥5 times and compared on means**. Full analysis is
+in [`unresolved-issues.md`](../policies/unresolved-issues.md) **UI-8**.
+
+**Every portfolio A/B in this file is affected by this.** `cooperative_portfolio_sweep.sh`
+is a single `casc.sh` exec with no replicates, and `cooperative_portfolio_search.sh`
+maximises over ~120 noisy evaluations per round (`rounds × 8 slots × 15
+candidates`), which selects on noise. `greedy_set_cover` builds each strategy's
+solved-set from one `run.csv`. Against a ±12/300 noise floor, a single-run
+comparison cannot resolve a portfolio difference of the size those tools are asked
+to detect. Use `run_variance.sh` and compare means over ≥5 interleaved reps.
 
 Two things worth keeping from the run mechanics:
 
