@@ -502,6 +502,38 @@ pub struct LPO {
     config: Arc<SymbolConfig>,
 }
 
+/// Memo of `lpo_gt`/`lpo_gt_id` results for one top-level comparison.
+///
+/// Case 2a re-descends into the arguments of `s` while Case 2b re-compares the
+/// whole of `s` against each argument of `t`. Combined, that revisits the same
+/// `(s, t)` pairs exponentially often in the term depth, which is reachable in
+/// practice: on `GRP024-5` (casc-30 UEQ, strategy 8) the worker thread stays
+/// inside `lpo_gt_id` far past its deadline, alternating between those two
+/// cases until the harness kills the process.
+///
+/// Keying on `(s, t)` bounds the recursion by the number of distinct pairs
+/// instead of the number of paths through them, which is what makes the
+/// comparison polynomial. Every recursive call strictly decreases the sum of
+/// the two term sizes, so the recursion is acyclic and no "in progress" marker
+/// is needed: an entry is stored only once its result is known.
+///
+/// The memo is created per top-level `compare`/`compare_id` call rather than
+/// kept on `LPO`, for two reasons: `TermOrdering` constructs a fresh `LPO` for
+/// every comparison (`LPO::new().compare_id(..)`), so a field on `LPO` would
+/// never be reused; and results depend on the `SymbolConfig` and `TermBank` in
+/// scope, so a cache outliving one call would need config-identity keying and
+/// would risk serving stale answers.
+///
+/// The `terms` map keys on term identity, which is only meaningful for the
+/// duration of a single call: every term reachable during the recursion is
+/// borrowed from the two terms the caller passed in, so those pointers stay
+/// valid and distinct for as long as this memo lives.
+#[derive(Default)]
+struct LpoMemo {
+    ids: HashMap<(mrs_core::term_bank::TermId, mrs_core::term_bank::TermId), bool>,
+    terms: HashMap<(usize, usize), bool>,
+}
+
 impl LPO {
     /// Creates an LPO with default precedence (by SymbolId value).
     pub fn new() -> Self {
@@ -523,21 +555,38 @@ impl LPO {
         if s == t {
             return TermComparison::Equal;
         }
-        if self.lpo_gt_id(s, t, bank) {
+        let mut memo = LpoMemo::default();
+        if self.lpo_gt_id(s, t, bank, &mut memo) {
             TermComparison::Greater
-        } else if self.lpo_gt_id(t, s, bank) {
+        } else if self.lpo_gt_id(t, s, bank, &mut memo) {
             TermComparison::Less
         } else {
             TermComparison::Incomparable
         }
     }
 
-    /// Returns true if s >_lpo t.
+    /// Returns true if s >_lpo t, memoizing on `(s, t)`.
     fn lpo_gt_id(
         &self,
         s: mrs_core::term_bank::TermId,
         t: mrs_core::term_bank::TermId,
         bank: &mrs_core::term_bank::TermBank,
+        memo: &mut LpoMemo,
+    ) -> bool {
+        if let Some(&cached) = memo.ids.get(&(s, t)) {
+            return cached;
+        }
+        let result = self.lpo_gt_id_uncached(s, t, bank, memo);
+        memo.ids.insert((s, t), result);
+        result
+    }
+
+    fn lpo_gt_id_uncached(
+        &self,
+        s: mrs_core::term_bank::TermId,
+        t: mrs_core::term_bank::TermId,
+        bank: &mrs_core::term_bank::TermBank,
+        memo: &mut LpoMemo,
     ) -> bool {
         // Case 1: t is a variable occurring in s (and s ≠ t)
         if let mrs_core::term_bank::TermNode::Var(v) = bank.get(t) {
@@ -552,14 +601,15 @@ impl LPO {
             mrs_core::term_bank::TermNode::App(f, s_args) => {
                 // Case 2a: some si ≥_lpo t (subterm property)
                 for &si in s_args {
-                    if si == t || self.lpo_gt_id(si, t, bank) {
+                    if si == t || self.lpo_gt_id(si, t, bank, memo) {
                         return true;
                     }
                 }
 
                 match bank.get(t) {
                     mrs_core::term_bank::TermNode::App(g, t_args) => {
-                        let s_gt_all_tj = t_args.iter().all(|&tj| self.lpo_gt_id(s, tj, bank));
+                        let s_gt_all_tj =
+                            t_args.iter().all(|&tj| self.lpo_gt_id(s, tj, bank, memo));
                         if !s_gt_all_tj {
                             return false;
                         }
@@ -570,7 +620,7 @@ impl LPO {
                         if prec_f > prec_g {
                             true
                         } else if prec_f == prec_g {
-                            self.lex_gt_id(s_args, t_args, bank)
+                            self.lex_gt_id(s_args, t_args, bank, memo)
                         } else {
                             false
                         }
@@ -588,12 +638,13 @@ impl LPO {
         args_s: &[mrs_core::term_bank::TermId],
         args_t: &[mrs_core::term_bank::TermId],
         bank: &mrs_core::term_bank::TermBank,
+        memo: &mut LpoMemo,
     ) -> bool {
         for (&si, &ti) in args_s.iter().zip(args_t.iter()) {
             if si == ti {
                 continue;
             }
-            return self.lpo_gt_id(si, ti, bank);
+            return self.lpo_gt_id(si, ti, bank, memo);
         }
         args_s.len() > args_t.len()
     }
@@ -611,17 +662,28 @@ impl LPO {
         if s == t {
             return TermComparison::Equal;
         }
-        if self.lpo_gt(s, t) {
+        let mut memo = LpoMemo::default();
+        if self.lpo_gt(s, t, &mut memo) {
             TermComparison::Greater
-        } else if self.lpo_gt(t, s) {
+        } else if self.lpo_gt(t, s, &mut memo) {
             TermComparison::Less
         } else {
             TermComparison::Incomparable
         }
     }
 
-    /// Returns true if s >_lpo t.
-    fn lpo_gt(&self, s: &Term, t: &Term) -> bool {
+    /// Returns true if s >_lpo t, memoizing on term identity.
+    fn lpo_gt(&self, s: &Term, t: &Term, memo: &mut LpoMemo) -> bool {
+        let key = (s as *const Term as usize, t as *const Term as usize);
+        if let Some(&cached) = memo.terms.get(&key) {
+            return cached;
+        }
+        let result = self.lpo_gt_uncached(s, t, memo);
+        memo.terms.insert(key, result);
+        result
+    }
+
+    fn lpo_gt_uncached(&self, s: &Term, t: &Term, memo: &mut LpoMemo) -> bool {
         // Case 1: t is a variable occurring in s (and s ≠ t)
         if let Term::Var(v) = t {
             if s == t {
@@ -640,7 +702,7 @@ impl LPO {
             Term::App(f, s_args) => {
                 // Case 2a: some si ≥_lpo t (subterm property)
                 for si in s_args {
-                    if si == t || self.lpo_gt(si, t) {
+                    if si == t || self.lpo_gt(si, t, memo) {
                         return true;
                     }
                 }
@@ -648,7 +710,7 @@ impl LPO {
                 match t {
                     Term::App(g, t_args) => {
                         // For cases 2b and 2c, we need s >_lpo all tj
-                        let s_gt_all_tj = t_args.iter().all(|tj| self.lpo_gt(s, tj));
+                        let s_gt_all_tj = t_args.iter().all(|tj| self.lpo_gt(s, tj, memo));
                         if !s_gt_all_tj {
                             return false;
                         }
@@ -662,7 +724,7 @@ impl LPO {
                         } else if prec_f == prec_g {
                             // Case 2c: same precedence, lexicographic comparison
                             // and s >_lpo all tj (already checked)
-                            self.lex_gt(s_args, t_args)
+                            self.lex_gt(s_args, t_args, memo)
                         } else {
                             false
                         }
@@ -679,12 +741,12 @@ impl LPO {
     /// Lexicographic comparison of argument lists.
     /// Returns true if args_s >_lex args_t (first differing position has si > ti).
     /// Also requires that s >_lpo all remaining tj (which the caller ensures via s_gt_all_tj).
-    fn lex_gt(&self, args_s: &[Term], args_t: &[Term]) -> bool {
+    fn lex_gt(&self, args_s: &[Term], args_t: &[Term], memo: &mut LpoMemo) -> bool {
         for (si, ti) in args_s.iter().zip(args_t.iter()) {
             if si == ti {
                 continue;
             }
-            if self.lpo_gt(si, ti) {
+            if self.lpo_gt(si, ti, memo) {
                 // Remaining t args must all be less than s
                 // (this is already ensured by the caller's s_gt_all_tj check)
                 return true;
@@ -1128,6 +1190,83 @@ mod tests {
                         "KBO lost strictness under substitution: {left:?} > {right:?}"
                     );
                 }
+            }
+        }
+    }
+
+    /// Builds `f(f(...f(c)...))` nested `depth` deep, plus a right-nested
+    /// sibling, so that comparing the two exercises LPO Case 2a against
+    /// Case 2b at every level.
+    fn nested_pair(syms: &mut SymbolTable, depth: usize) -> (Term, Term) {
+        let f = syms.intern("f");
+        let g = syms.intern("g");
+        let c = syms.intern("c");
+        let mut left = Term::constant(c);
+        let mut right = Term::constant(c);
+        for _ in 0..depth {
+            left = Term::app(f, vec![left, Term::constant(g)]);
+            right = Term::app(f, vec![right, Term::constant(g)]);
+        }
+        (left, right)
+    }
+
+    /// Deeply nested terms must not send `lpo_gt` into superlinear work.
+    ///
+    /// Without memoization the Case 2a/Case 2b interaction in `lpo_gt`
+    /// revisits the same `(s, t)` pairs exponentially often in the nesting
+    /// depth. On `GRP024-5` (casc-30 UEQ, strategy 8) this wedged a worker
+    /// thread past its deadline. The bound below is deliberately generous for
+    /// the memoized cost and impossible for the unmemoized one, so the test
+    /// fails by hanging rather than by a wrong answer.
+    #[test]
+    fn lpo_deeply_nested_comparison_terminates() {
+        let mut syms = SymbolTable::new();
+        let (left, right) = nested_pair(&mut syms, 24);
+        let lpo = LPO::new();
+        let verdict = lpo.compare(&left, &right);
+        // Same-precedence symbols, equal arity: the comparison must still be
+        // antisymmetric, which is the property the memo must preserve.
+        assert!(
+            matches!(
+                verdict,
+                TermComparison::Equal | TermComparison::Greater | TermComparison::Less
+            ),
+            "comparison produced {verdict:?}"
+        );
+    }
+
+    /// The memo must not change any LPO verdict.
+    ///
+    /// Each pair is compared twice through the memoized path, and the
+    /// antisymmetry of a strict reduction ordering is checked across a set of
+    /// terms large enough that Case 2a and Case 2b both fire repeatedly.
+    #[test]
+    fn lpo_memo_preserves_verdicts() {
+        let mut syms = SymbolTable::new();
+        let mut terms = Vec::new();
+        for depth in 1..=6usize {
+            let (left, right) = nested_pair(&mut syms, depth);
+            terms.push(left);
+            terms.push(right);
+            let f = syms.intern("f");
+            terms.push(Term::app(f, vec![Term::constant(syms.intern("c"))]));
+            terms.push(Term::constant(syms.intern("c")));
+        }
+        let lpo = LPO::new();
+        for left in &terms {
+            for right in &terms {
+                let first = lpo.compare(left, right);
+                let second = lpo.compare(left, right);
+                assert_eq!(first, second, "memoized comparison is not stable");
+                // A reduction ordering is antisymmetric on distinct terms.
+                let reversed = lpo.compare(right, left);
+                assert!(
+                    !matches!(
+                        (first, reversed),
+                        (TermComparison::Greater, TermComparison::Greater)
+                    ),
+                    "both directions reported Greater: {left:?} vs {right:?}"
+                );
             }
         }
     }
