@@ -523,9 +523,13 @@ impl LPO {
         if s == t {
             return TermComparison::Equal;
         }
-        if self.lpo_gt_id(s, t, bank) {
+        // The subterm and lexicographic cases revisit the same pair many
+        // times on deeply nested equations. Cache only for this comparison:
+        // TermIds belong to the caller's bank and must not escape it.
+        let mut greater = HashMap::default();
+        if self.lpo_gt_id(s, t, bank, &mut greater) {
             TermComparison::Greater
-        } else if self.lpo_gt_id(t, s, bank) {
+        } else if self.lpo_gt_id(t, s, bank, &mut greater) {
             TermComparison::Less
         } else {
             TermComparison::Incomparable
@@ -538,6 +542,22 @@ impl LPO {
         s: mrs_core::term_bank::TermId,
         t: mrs_core::term_bank::TermId,
         bank: &mrs_core::term_bank::TermBank,
+        memo: &mut HashMap<(mrs_core::term_bank::TermId, mrs_core::term_bank::TermId), bool>,
+    ) -> bool {
+        if let Some(&answer) = memo.get(&(s, t)) {
+            return answer;
+        }
+        let answer = self.lpo_gt_id_uncached(s, t, bank, memo);
+        memo.insert((s, t), answer);
+        answer
+    }
+
+    fn lpo_gt_id_uncached(
+        &self,
+        s: mrs_core::term_bank::TermId,
+        t: mrs_core::term_bank::TermId,
+        bank: &mrs_core::term_bank::TermBank,
+        memo: &mut HashMap<(mrs_core::term_bank::TermId, mrs_core::term_bank::TermId), bool>,
     ) -> bool {
         // Case 1: t is a variable occurring in s (and s ≠ t)
         if let mrs_core::term_bank::TermNode::Var(v) = bank.get(t) {
@@ -552,14 +572,15 @@ impl LPO {
             mrs_core::term_bank::TermNode::App(f, s_args) => {
                 // Case 2a: some si ≥_lpo t (subterm property)
                 for &si in s_args {
-                    if si == t || self.lpo_gt_id(si, t, bank) {
+                    if si == t || self.lpo_gt_id(si, t, bank, memo) {
                         return true;
                     }
                 }
 
                 match bank.get(t) {
                     mrs_core::term_bank::TermNode::App(g, t_args) => {
-                        let s_gt_all_tj = t_args.iter().all(|&tj| self.lpo_gt_id(s, tj, bank));
+                        let s_gt_all_tj =
+                            t_args.iter().all(|&tj| self.lpo_gt_id(s, tj, bank, memo));
                         if !s_gt_all_tj {
                             return false;
                         }
@@ -570,7 +591,7 @@ impl LPO {
                         if prec_f > prec_g {
                             true
                         } else if prec_f == prec_g {
-                            self.lex_gt_id(s_args, t_args, bank)
+                            self.lex_gt_id(s_args, t_args, bank, memo)
                         } else {
                             false
                         }
@@ -588,12 +609,13 @@ impl LPO {
         args_s: &[mrs_core::term_bank::TermId],
         args_t: &[mrs_core::term_bank::TermId],
         bank: &mrs_core::term_bank::TermBank,
+        memo: &mut HashMap<(mrs_core::term_bank::TermId, mrs_core::term_bank::TermId), bool>,
     ) -> bool {
         for (&si, &ti) in args_s.iter().zip(args_t.iter()) {
             if si == ti {
                 continue;
             }
-            return self.lpo_gt_id(si, ti, bank);
+            return self.lpo_gt_id(si, ti, bank, memo);
         }
         args_s.len() > args_t.len()
     }
@@ -1024,6 +1046,28 @@ mod tests {
             ),
             TermComparison::Greater
         );
+    }
+
+    #[test]
+    fn lpo_id_shared_deep_terms_compare_without_revisiting_pairs() {
+        use mrs_core::term_bank::TermBank;
+
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("f");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let mut bank = TermBank::new();
+        let mut left = bank.intern_app(a, Vec::new());
+        let mut right = bank.intern_app(b, Vec::new());
+        // Both arms are interned, so the recursive LPO comparison repeatedly
+        // encounters the same pair in its subterm and lexicographic cases.
+        for _ in 0..80 {
+            left = bank.intern_app(f, vec![left, left]);
+            right = bank.intern_app(f, vec![right, right]);
+        }
+        let lpo = LPO::new();
+        assert_eq!(lpo.compare_id(left, right, &bank), TermComparison::Less);
+        assert_eq!(lpo.compare_id(right, left, &bank), TermComparison::Greater);
     }
 
     #[test]
