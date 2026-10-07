@@ -263,13 +263,16 @@ fn verify_strict_with_source_internal(
 
     let mut symbols = SymbolTable::new();
     let mut proof_formulas = HashMap::with_capacity(dag.nodes.len());
+    let mut proof_var_names = HashMap::with_capacity(dag.nodes.len());
     for &idx in &dag.topo {
         let node = &dag.nodes[idx];
-        let formula = match lower_annotated(&mut symbols, node.formula, limits) {
-            Ok(formula) => formula,
-            Err(v) => return v,
-        };
+        let (formula, var_names) =
+            match lower_annotated_with_var_names(&mut symbols, node.formula, limits) {
+                Ok(pair) => pair,
+                Err(v) => return v,
+            };
         proof_formulas.insert(idx, formula);
+        proof_var_names.insert(idx, var_names);
     }
     if let Some(telemetry) = telemetry.as_mut() {
         telemetry.extend(dag.topo.iter().map(|idx| {
@@ -533,9 +536,14 @@ fn verify_strict_with_source_internal(
             "reflexivity" => verify_reflexivity(&parents, conclusion),
             "transitivity" => verify_transitivity(&parents, conclusion, limits),
             "instantiate" | "instantiation" => verify_instantiation(&parents, conclusion, limits),
-            "definition_renaming" => {
-                verify_definition_renaming(&parents, conclusion, &dag, &parent_indices, limits)
-            }
+            "definition_renaming" => verify_definition_renaming(
+                &parents,
+                conclusion,
+                &dag,
+                &parent_indices,
+                &proof_var_names,
+                limits,
+            ),
             "existential_gen" => verify_existential_generation(&parents, conclusion, limits),
             "conjunction" => verify_conjunction(&parents, conclusion, limits),
             "split_conjunct" => verify_split_conjunct(&parents, conclusion, limits),
@@ -559,6 +567,7 @@ fn verify_strict_with_source_internal(
                 conclusion,
                 &dag,
                 &parent_indices,
+                &proof_var_names,
                 limits,
             ),
             "resolution" => verify_resolution(&parents, conclusion, limits),
@@ -1250,6 +1259,7 @@ fn verify_cnf_transformation(
     conclusion: &Formula,
     dag: &Dag<'_>,
     parent_indices: &[usize],
+    proof_var_names: &HashMap<usize, HashMap<VarId, String>>,
     limits: VerificationLimits,
 ) -> KernelVerdict {
     if parents.is_empty() {
@@ -1297,6 +1307,11 @@ fn verify_cnf_transformation(
         return KernelVerdict::Inconclusive("CNF conclusion is not a supported clause".into());
     };
 
+    let source_var_names = proof_var_names
+        .get(&parent_indices[source_position])
+        .cloned()
+        .unwrap_or_default();
+
     let mut definitions = Vec::with_capacity(parents.len().saturating_sub(1));
     for (position, (parent, parent_idx)) in parents.iter().zip(parent_indices).enumerate() {
         if position == source_origin_position || position == source_position {
@@ -1311,7 +1326,8 @@ fn verify_cnf_transformation(
                 "CNF transformation extra parents must be introduced definitions".into(),
             );
         }
-        let Some(definition) = core_definition(parent) else {
+        let def_var_names = proof_var_names.get(parent_idx).cloned().unwrap_or_default();
+        let Some(definition) = core_definition(parent, def_var_names) else {
             return KernelVerdict::Inconclusive(
                 "CNF transformation definition parent has an unsupported shape".into(),
             );
@@ -1375,7 +1391,7 @@ fn verify_cnf_transformation(
         // LCL642+1.010 c3 before failing. Skip it outright.
         Some(source.clone())
     } else {
-        match replace_definition_subformulas(source, &definitions, limits) {
+        match replace_definition_subformulas(source, &source_var_names, &definitions, limits) {
             Some((rewritten, matched)) => {
                 all_definitions_matched = matched.iter().all(|hit| *hit);
                 Some(rewritten)
@@ -1392,67 +1408,89 @@ fn verify_cnf_transformation(
         Err(verdict) => return verdict,
     };
     let normalized_matrix = strip_forall_core(&normalized);
+
+    let condensed_goal = condense_clause(&goal);
+    let conjuncts = flatten_core_parts(normalized_matrix, CoreConnective::And);
+
     let mut expanded = Vec::new();
-    match cnf_expand(normalized_matrix, &mut expanded, limits) {
-        CnfExpansion::Complete => {}
-        CnfExpansion::Budget => {
-            return KernelVerdict::Inconclusive(format!(
-                "CNF expansion exceeded the strict limits of {expansion_budget} clauses \
-                 and {} literals per clause, after {} clauses",
-                limits.max_clause_literals,
-                expanded.len()
-            ));
-        }
-        CnfExpansion::Unsupported => {
-            return KernelVerdict::Inconclusive(
-                "CNF normalization left a matrix shape this expander does not produce".into(),
-            );
+    let mut any_budget = false;
+    let mut any_unsupported = false;
+    let mut found_goal = false;
+
+    for conjunct in conjuncts {
+        let mut conjunct_clauses = Vec::new();
+        match cnf_expand(conjunct, &mut conjunct_clauses, limits) {
+            CnfExpansion::Complete => {
+                if conjunct_clauses
+                    .iter()
+                    .any(|clause| clause_alpha_equiv(&condense_clause(clause), &condensed_goal))
+                {
+                    found_goal = true;
+                    break;
+                }
+                expanded.extend(conjunct_clauses);
+                if expanded.len() > expansion_budget {
+                    any_budget = true;
+                    break;
+                }
+            }
+            CnfExpansion::Budget => {
+                any_budget = true;
+            }
+            CnfExpansion::Unsupported => {
+                any_unsupported = true;
+            }
         }
     }
-    if expanded.len() > expansion_budget {
+
+    if !found_goal && !any_budget && !any_unsupported {
+        for definition in &definitions {
+            let Some(direction) = definition_direction_clauses(definition, limits) else {
+                return KernelVerdict::Inconclusive(
+                    "CNF definition parent does not contain clause-shaped conjuncts".into(),
+                );
+            };
+            if direction
+                .iter()
+                .any(|clause| clause_alpha_equiv(&condense_clause(clause), &condensed_goal))
+            {
+                found_goal = true;
+                break;
+            }
+            expanded.extend(direction);
+            if expanded.len() > expansion_budget {
+                any_budget = true;
+                break;
+            }
+        }
+    }
+
+    if found_goal {
+        if all_definitions_matched {
+            return KernelVerdict::Certified;
+        } else {
+            return KernelVerdict::Inconclusive(format!(
+                "CNF node `{node_name}` cites definitions whose bodies could not be \
+                 matched against the source, so the step could not be checked"
+            ));
+        }
+    }
+
+    if any_budget {
         return KernelVerdict::Inconclusive(format!(
-            "CNF expansion produced {} clauses, over the strict limit of {expansion_budget}",
+            "CNF expansion exceeded the strict limits of {expansion_budget} clauses \
+             and {} literals per clause, after {} clauses",
+            limits.max_clause_literals,
             expanded.len()
         ));
     }
 
-    for definition in &definitions {
-        let Some(direction) = definition_direction_clauses(definition, limits) else {
-            return KernelVerdict::Inconclusive(
-                "CNF definition parent does not contain clause-shaped conjuncts".into(),
-            );
-        };
-        expanded.extend(direction);
-        if expanded.len() > expansion_budget {
-            return KernelVerdict::Inconclusive(format!(
-                "CNF expansion reached {} clauses with its definition direction clauses \
-                 added, over the strict limit of {expansion_budget}",
-                expanded.len()
-            ));
-        }
+    if any_unsupported {
+        return KernelVerdict::Inconclusive(
+            "CNF normalization left a matrix shape this expander does not produce".into(),
+        );
     }
 
-    if expanded
-        .iter()
-        .any(|clause| clause_alpha_equiv(&condense_clause(clause), &condense_clause(&goal)))
-    {
-        return KernelVerdict::Certified;
-    }
-
-    // Before rejecting, make sure the expansion above was *faithful*. A cited
-    // definition's body is substituted into the source by syntactic matching,
-    // and the matcher is deliberately conservative: a body that is stated over
-    // other fresh symbols, or whose block the prover emitted with a different
-    // variable order, need not be found even though the step is perfectly
-    // sound. If any cited definition failed to claim its block, the expansion
-    // is not the prover's clause set, so its not containing the goal says
-    // nothing about the proof.
-    //
-    // Reporting `Rejected` there accuses a sound step of being wrong. The
-    // honest verdict is `Inconclusive`: the kernel could not check this step.
-    // That distinction is what makes `VerifiedBad` mean "this proof is wrong"
-    // rather than "this checker gave up", and it is the same fail-closed
-    // discipline the rest of this file follows.
     if !all_definitions_matched {
         return KernelVerdict::Inconclusive(format!(
             "CNF node `{node_name}` cites definitions whose bodies could not be \
@@ -1469,9 +1507,10 @@ fn verify_cnf_transformation(
 struct CoreDefinition {
     head: Atom,
     rhs: Formula,
+    var_names: HashMap<VarId, String>,
 }
 
-fn core_definition(formula: &Formula) -> Option<CoreDefinition> {
+fn core_definition(formula: &Formula, var_names: HashMap<VarId, String>) -> Option<CoreDefinition> {
     let body = strip_forall_core(formula);
     let Formula::Iff(left, right) = body else {
         return None;
@@ -1485,6 +1524,7 @@ fn core_definition(formula: &Formula) -> Option<CoreDefinition> {
     Some(CoreDefinition {
         head,
         rhs: rhs.clone(),
+        var_names,
     })
 }
 
@@ -1886,6 +1926,7 @@ fn to_nnf_bounded(formula: &Formula, max_nodes: usize, max_depth: usize) -> Opti
 
 fn replace_definition_subformulas(
     source: &Formula,
+    source_var_names: &HashMap<VarId, String>,
     definitions: &[CoreDefinition],
     limits: VerificationLimits,
 ) -> Option<(Formula, Vec<bool>)> {
@@ -1919,41 +1960,35 @@ fn replace_definition_subformulas(
             current = moved;
             changed |= moved_changed;
         }
-        // Order-preserving sites first, then canonical (identity) sites, then
-        // permuting sites, so that a definition claims the block it was
-        // actually written for.
+        // Canonical sites (order-preserving AND variable-identity preserving)
+        // first, then order-preserving, then variable-identity preserving,
+        // then general permuting fallback.
         //
-        // The first pass is what keeps mirror-image definitions apart. Two
-        // definitions whose bodies are the same literals in opposite order
-        // (`d0(x,y) <=> ~a(x,y) & ~b(x,y)` and `d1(x,y) <=> ~b(x,y) & ~a(x,y)`)
-        // both match *both* blocks once operands are compared as a multiset, so
-        // whichever runs first takes both and the other never matches anything.
-        // That is not merely a bookkeeping problem: the goal clause names both
-        // `d0` and `d1`, and an expansion that folded both blocks into `d0`
-        // does not contain it. `GEO331+1` c211, `GEO343+1` c155, `GEO299+1`
-        // c522 and `GEO300+1` c36 are all that shape.
-        //
-        // Comparing operands pairwise in order is strictly *narrower* than the
-        // multiset comparison, so anything it accepts was acceptable anyway;
-        // it only decides which definition owns a contested block. The
-        // identity pass then covers blocks the prover emitted in a different
-        // operand order but with its own variable numbering, and the permuting
-        // pass remains the general fallback.
+        // Matching both operand order and variable names distinguishes structurally
+        // identical definition bodies over distinct source variables (e.g. GEO331+1
+        // c355, GEO343+1 c286, GEO299+1 c522, GEO300+1 c285, ITP019+5 c700) where
+        // two definitions have identical bodies modulo variable renaming.
+        // It also keeps mirror-image definitions apart (GEO331+1 c211, GEO343+1 c155).
         for mode in [
+            CoreMatchMode::OrderedIdentity,
             CoreMatchMode::Ordered,
             CoreMatchMode::Identity,
             CoreMatchMode::Permuting,
         ] {
             for (index, definition) in definitions.iter().enumerate() {
-                let (next, replaced) = replace_one_definition(&current, definition, mode);
+                let (next, replaced) =
+                    replace_one_definition(&current, definition, mode, source_var_names);
                 if replaced && let Some(slot) = matched.get_mut(index) {
                     *slot = true;
                 }
                 current = next;
                 changed |= replaced;
             }
+            if matched.iter().all(|hit| *hit) {
+                return Some((current, matched));
+            }
         }
-        if !changed {
+        if !changed || matched.iter().all(|hit| *hit) {
             return Some((current, matched));
         }
     }
@@ -2063,9 +2098,11 @@ fn pull_vacuous_quantifiers_once(formula: &Formula) -> (Formula, bool) {
 /// How a definition body may be matched against a candidate block.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CoreMatchMode {
+    /// `And`/`Or` operands must line up position by position and variable names must match.
+    OrderedIdentity,
     /// `And`/`Or` operands must line up position by position.
     Ordered,
-    /// Operands may be permuted, but every pattern variable must map to itself.
+    /// Operands may be permuted, but every pattern variable must map to the same variable name.
     Identity,
     /// Operands may be permuted freely.
     Permuting,
@@ -2075,11 +2112,13 @@ fn replace_one_definition(
     source: &Formula,
     definition: &CoreDefinition,
     mode: CoreMatchMode,
+    source_var_names: &HashMap<VarId, String>,
 ) -> (Formula, bool) {
     let (transformed, replaced) = match source {
         Formula::Atom(_) | Formula::True | Formula::False => (source.clone(), false),
         Formula::Neg(inner) => {
-            let (inner, replaced) = replace_one_definition(inner, definition, mode);
+            let (inner, replaced) =
+                replace_one_definition(inner, definition, mode, source_var_names);
             (Formula::neg(inner), replaced)
         }
         Formula::And(parts) => {
@@ -2087,7 +2126,8 @@ fn replace_one_definition(
             let parts = parts
                 .iter()
                 .map(|part| {
-                    let (part, part_replaced) = replace_one_definition(part, definition, mode);
+                    let (part, part_replaced) =
+                        replace_one_definition(part, definition, mode, source_var_names);
                     replaced |= part_replaced;
                     part
                 })
@@ -2099,7 +2139,8 @@ fn replace_one_definition(
             let parts = parts
                 .iter()
                 .map(|part| {
-                    let (part, part_replaced) = replace_one_definition(part, definition, mode);
+                    let (part, part_replaced) =
+                        replace_one_definition(part, definition, mode, source_var_names);
                     replaced |= part_replaced;
                     part
                 })
@@ -2107,35 +2148,49 @@ fn replace_one_definition(
             (Formula::Or(parts), replaced)
         }
         Formula::Implies(left, right) => {
-            let (left, left_replaced) = replace_one_definition(left, definition, mode);
-            let (right, right_replaced) = replace_one_definition(right, definition, mode);
+            let (left, left_replaced) =
+                replace_one_definition(left, definition, mode, source_var_names);
+            let (right, right_replaced) =
+                replace_one_definition(right, definition, mode, source_var_names);
             (
                 Formula::implies(left, right),
                 left_replaced || right_replaced,
             )
         }
         Formula::Iff(left, right) => {
-            let (left, left_replaced) = replace_one_definition(left, definition, mode);
-            let (right, right_replaced) = replace_one_definition(right, definition, mode);
+            let (left, left_replaced) =
+                replace_one_definition(left, definition, mode, source_var_names);
+            let (right, right_replaced) =
+                replace_one_definition(right, definition, mode, source_var_names);
             (Formula::iff(left, right), left_replaced || right_replaced)
         }
         Formula::Forall(var, body) => {
-            let (body, replaced) = replace_one_definition(body, definition, mode);
+            let (body, replaced) = replace_one_definition(body, definition, mode, source_var_names);
             (Formula::forall(*var, body), replaced)
         }
         Formula::Exists(var, body) => {
-            let (body, replaced) = replace_one_definition(body, definition, mode);
+            let (body, replaced) = replace_one_definition(body, definition, mode, source_var_names);
             (Formula::exists(*var, body), replaced)
         }
     };
 
     let mut mapping = HashMap::new();
-    if match_core_formula_mode(&definition.rhs, &transformed, &mut mapping, mode)
-        // In identity mode only accept matches that keep every pattern
-        // variable fixed: the prover introduces each definition at its
-        // canonical block, so canonical sites must win contested blocks
-        // (e.g. GEO125+1's two definitions over symmetric blocks).
-        && (mode != CoreMatchMode::Identity || is_identity_mapping(&mapping))
+    let matches = match mode {
+        CoreMatchMode::OrderedIdentity | CoreMatchMode::Ordered => {
+            match_core_ordered(&definition.rhs, &transformed, &mut mapping)
+        }
+        CoreMatchMode::Identity | CoreMatchMode::Permuting => {
+            match_core_formula_mode(&definition.rhs, &transformed, &mut mapping, mode)
+        }
+    };
+    let is_identity = match mode {
+        CoreMatchMode::OrderedIdentity | CoreMatchMode::Identity => {
+            is_identity_mapping(&mapping, &definition.var_names, source_var_names)
+        }
+        _ => true,
+    };
+    if matches
+        && is_identity
         && let Some(head) = apply_core_definition_head(&definition.head, &mapping)
     {
         (Formula::atom(head), true)
@@ -2144,13 +2199,26 @@ fn replace_one_definition(
     }
 }
 
-/// Whether every binding maps a pattern variable to itself. Such matches
-/// identify a definition's canonical block (same variable names as the
-/// rendered definition), as opposed to permuted cross-matches.
-fn is_identity_mapping(mapping: &HashMap<VarId, Term>) -> bool {
-    mapping
-        .iter()
-        .all(|(variable, term)| matches!(term, Term::Var(other) if other == variable))
+/// Whether every binding maps a pattern variable to a target variable with the same name.
+/// Falling back to VarId identity when variable names are not available.
+fn is_identity_mapping(
+    mapping: &HashMap<VarId, Term>,
+    def_var_names: &HashMap<VarId, String>,
+    source_var_names: &HashMap<VarId, String>,
+) -> bool {
+    let mut seen_targets = HashSet::with_capacity(mapping.len());
+    mapping.iter().all(|(variable, term)| match term {
+        Term::Var(other) => {
+            if !seen_targets.insert(*other) {
+                return false;
+            }
+            match (def_var_names.get(variable), source_var_names.get(other)) {
+                (Some(def_name), Some(src_name)) => def_name == src_name,
+                _ => variable == other,
+            }
+        }
+        _ => false,
+    })
 }
 
 fn apply_core_definition_head(head: &Atom, mapping: &HashMap<VarId, Term>) -> Option<Atom> {
@@ -2206,7 +2274,7 @@ fn match_core_formula_mode(
             match_core_formula_mode(pattern, target, mapping, mode)
         }
         (Formula::And(_), Formula::And(_)) | (Formula::Or(_), Formula::Or(_)) => {
-            if mode == CoreMatchMode::Ordered {
+            if mode == CoreMatchMode::Ordered || mode == CoreMatchMode::OrderedIdentity {
                 return match_core_ordered(pattern, target, mapping);
             }
             let connective = if matches!(pattern, Formula::And(_)) {
@@ -3650,6 +3718,7 @@ fn verify_definition_renaming(
     conclusion: &Formula,
     dag: &Dag<'_>,
     parent_indices: &[usize],
+    proof_var_names: &HashMap<usize, HashMap<VarId, String>>,
     limits: VerificationLimits,
 ) -> KernelVerdict {
     if parents.len() < 2 {
@@ -3668,6 +3737,11 @@ fn verify_definition_renaming(
     }
 
     let source = &parents[0];
+    let source_var_names = parent_indices
+        .first()
+        .and_then(|idx| proof_var_names.get(idx))
+        .cloned()
+        .unwrap_or_default();
     let mut definitions = Vec::with_capacity(parents.len() - 1);
     for (definition, parent_idx) in parents[1..].iter().zip(&parent_indices[1..]) {
         if !dag.nodes[*parent_idx]
@@ -3679,7 +3753,8 @@ fn verify_definition_renaming(
                 "definition_renaming parents must be introduced definitions".into(),
             );
         }
-        let Some(definition) = core_definition(definition) else {
+        let def_var_names = proof_var_names.get(parent_idx).cloned().unwrap_or_default();
+        let Some(definition) = core_definition(definition, def_var_names) else {
             return KernelVerdict::Inconclusive(
                 "definition_renaming parent is not a supported definition".into(),
             );
@@ -3688,7 +3763,8 @@ fn verify_definition_renaming(
     }
 
     // 1. Fast path: forward replacement (exact substitution of definition RHS in source)
-    let forward_res = replace_definition_subformulas(source, &definitions, limits);
+    let forward_res =
+        replace_definition_subformulas(source, &source_var_names, &definitions, limits);
     if let Some((expected, _matched)) = &forward_res
         && !alpha_equiv(expected, source)
         && alpha_equiv(expected, conclusion)
@@ -11698,6 +11774,16 @@ fn clause_alpha_equiv(left: &[Literal], right: &[Literal]) -> bool {
     if left.len() != right.len() {
         return false;
     }
+    if left.is_empty() {
+        return true;
+    }
+    if left.len() > 10 {
+        return clause_alpha_equiv_ordered(left, right);
+    }
+    clause_alpha_equiv_direct(left, right)
+}
+
+fn clause_alpha_equiv_direct(left: &[Literal], right: &[Literal]) -> bool {
     fn go(
         idx: usize,
         left: &[Literal],
@@ -11739,6 +11825,84 @@ fn clause_alpha_equiv(left: &[Literal], right: &[Literal]) -> bool {
     }
     go(
         0,
+        left,
+        right,
+        &mut vec![false; right.len()],
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+    )
+}
+
+fn clause_alpha_equiv_ordered(left: &[Literal], right: &[Literal]) -> bool {
+    let mut order: Vec<usize> = (0..left.len()).collect();
+    order.sort_by_key(|&idx| {
+        right
+            .iter()
+            .filter(|r| {
+                left[idx].positive == r.positive
+                    && match (&left[idx].atom, &r.atom) {
+                        (Atom::Pred(ls, la), Atom::Pred(rs, ra)) => {
+                            ls == rs && la.len() == ra.len()
+                        }
+                        (Atom::Eq(_, _), Atom::Eq(_, _)) => true,
+                        _ => false,
+                    }
+            })
+            .count()
+    });
+
+    fn go(
+        order_idx: usize,
+        order: &[usize],
+        left: &[Literal],
+        right: &[Literal],
+        used: &mut [bool],
+        mapping: &mut HashMap<VarId, VarId>,
+        reverse: &mut HashMap<VarId, VarId>,
+    ) -> bool {
+        if order_idx == left.len() {
+            return true;
+        }
+        let left_idx = order[order_idx];
+        for right_idx in 0..right.len() {
+            if used[right_idx]
+                || left[left_idx].positive != right[right_idx].positive
+                || match (&left[left_idx].atom, &right[right_idx].atom) {
+                    (Atom::Pred(ls, la), Atom::Pred(rs, ra)) => ls != rs || la.len() != ra.len(),
+                    (Atom::Eq(_, _), Atom::Eq(_, _)) => false,
+                    _ => true,
+                }
+            {
+                continue;
+            }
+            let mut next_mapping = mapping.clone();
+            let mut next_reverse = reverse.clone();
+            if atom_alpha_equiv(
+                &left[left_idx].atom,
+                &right[right_idx].atom,
+                &mut next_mapping,
+                &mut next_reverse,
+            ) {
+                used[right_idx] = true;
+                if go(
+                    order_idx + 1,
+                    order,
+                    left,
+                    right,
+                    used,
+                    &mut next_mapping,
+                    &mut next_reverse,
+                ) {
+                    return true;
+                }
+                used[right_idx] = false;
+            }
+        }
+        false
+    }
+    go(
+        0,
+        &order,
         left,
         right,
         &mut vec![false; right.len()],
@@ -11876,11 +12040,11 @@ fn to_nnf_checked(formula: &Formula, limits: VerificationLimits) -> Option<Formu
     to_nnf_bounded(formula, limits.max_formula_nodes, limits.max_term_depth)
 }
 
-fn lower_annotated(
+fn lower_annotated_with_var_names(
     symbols: &mut SymbolTable,
     formula: &AnnotatedFormula<'_>,
     limits: VerificationLimits,
-) -> Result<Formula, KernelVerdict> {
+) -> Result<(Formula, HashMap<VarId, String>), KernelVerdict> {
     let mut ctx = LowerCtx::new(symbols, limits);
     let formula = match formula {
         AnnotatedFormula::FOF(formula) => lower_fof_statement(&mut ctx, &formula.formula),
@@ -11891,12 +12055,21 @@ fn lower_annotated(
             ));
         }
     }?;
-    Ok(formula)
+    Ok((formula, ctx.var_names))
+}
+
+fn lower_annotated(
+    symbols: &mut SymbolTable,
+    formula: &AnnotatedFormula<'_>,
+    limits: VerificationLimits,
+) -> Result<Formula, KernelVerdict> {
+    lower_annotated_with_var_names(symbols, formula, limits).map(|(formula, _)| formula)
 }
 
 struct LowerCtx<'a> {
     symbols: &'a mut SymbolTable,
     vars: HashMap<String, VarId>,
+    var_names: HashMap<VarId, String>,
     next_var: VarId,
     limits: VerificationLimits,
     nodes: usize,
@@ -11907,6 +12080,7 @@ impl<'a> LowerCtx<'a> {
         Self {
             symbols,
             vars: HashMap::new(),
+            var_names: HashMap::new(),
             next_var: 0,
             limits,
             nodes: 0,
@@ -12001,7 +12175,8 @@ fn lower_fof_formula(
                 saved.push((name.clone(), ctx.vars.get(&name).copied()));
                 let id = ctx.next_var;
                 ctx.next_var += 1;
-                ctx.vars.insert(name, id);
+                ctx.vars.insert(name.clone(), id);
+                ctx.var_names.insert(id, name);
                 ids.push(id);
             }
             let body = lower_fof_formula(ctx, formula)?;
@@ -12059,7 +12234,9 @@ fn lower_fof_term(ctx: &mut LowerCtx<'_>, term: &FOFTerm<'_>) -> Result<Term, Ke
             } else {
                 let id = ctx.next_var;
                 ctx.next_var += 1;
-                ctx.vars.insert((*name).to_string(), id);
+                let name_str = (*name).to_string();
+                ctx.vars.insert(name_str.clone(), id);
+                ctx.var_names.insert(id, name_str);
                 id
             };
             Term::Var(id)
@@ -12953,6 +13130,7 @@ mod tests {
         let definition = CoreDefinition {
             head: head.clone(),
             rhs: Formula::and(parts),
+            var_names: HashMap::new(),
         };
         let directions = definition_direction_clauses(&definition, VerificationLimits::default())
             .expect("forward pieces survive an explosive converse");
@@ -13916,6 +14094,135 @@ mod tests {
                      cnf(m2, plain, q, inference(resolution, [status(thm)], [m1,np])).\n\
                      cnf(bot, plain, $false, inference(resolution, [status(thm)], [m2,nq])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_structurally_identical_definitions_over_distinct_variables() {
+        // UI-7 Family 1 shape (GEO331+1 c355, GEO343+1 c286, GEO299+1 c522, GEO300+1 c285, ITP019+5 c700):
+        // Two definitions have identical bodies modulo variable names.
+        // Each definition must claim its own block by variable identity.
+        let problem = "fof(src, axiom, ![X0,X1,X2]: ((~ron(X0,X2) & ~rinside(X0,X2)) | (~ron(X1,X2) & ~rinside(X1,X2)))).\n\
+                       fof(f0, axiom, ron(a,c)).\n\
+                       fof(f1, axiom, ron(b,c)).";
+        let proof = "fof(src, axiom, ![X0,X1,X2]: ((~ron(X0,X2) & ~rinside(X0,X2)) | (~ron(X1,X2) & ~rinside(X1,X2))), file('problem.p', src)).\n\
+                     fof(f0, axiom, ron(a,c), file('problem.p', f0)).\n\
+                     fof(f1, axiom, ron(b,c), file('problem.p', f1)).\n\
+                     fof(d0, definition, ![X0,X2]: (d0(X0,X2) <=> (~ron(X0,X2) & ~rinside(X0,X2))), introduced(definition, [new_symbols(definition, [d0])])).\n\
+                     fof(d1, definition, ![X1,X2]: (d1(X1,X2) <=> (~ron(X1,X2) & ~rinside(X1,X2))), introduced(definition, [new_symbols(definition, [d1])])).\n\
+                     cnf(main, plain, d0(X0,X2) | d1(X1,X2), inference(cnf_transformation, [status(thm)], [src,d1,d0])).\n\
+                     cnf(w0, plain, ~d0(X0,X2) | ~ron(X0,X2), inference(cnf_transformation, [status(thm)], [src,d0])).\n\
+                     cnf(w1, plain, ~d1(X1,X2) | ~ron(X1,X2), inference(cnf_transformation, [status(thm)], [src,d1])).\n\
+                     cnf(m1, plain, d1(X1,X2) | ~ron(X0,X2), inference(resolution, [status(thm)], [main,w0])).\n\
+                     cnf(m2, plain, ~ron(X1,X2) | ~ron(X0,X2), inference(resolution, [status(thm)], [m1,w1])).\n\
+                     cnf(m3, plain, ~ron(X1,c), inference(resolution, [status(thm)], [m2,f0])).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [m3,f1])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_definition_matched_to_wrong_structurally_similar_block() {
+        // Adversarial test: attempting to swap the variable mapping so that d0 claims block B and d1 claims block A.
+        let problem = "fof(src, axiom, ![X0,X1,X2]: ((~ron(X0,X2) & ~rinside(X0,X2)) | (~ron(X1,X2) & ~rinside(X1,X2)))).\n\
+                       fof(f0, axiom, ron(a,c)).\n\
+                       fof(f1, axiom, ron(b,c)).";
+        let proof = "fof(src, axiom, ![X0,X1,X2]: ((~ron(X0,X2) & ~rinside(X0,X2)) | (~ron(X1,X2) & ~rinside(X1,X2))), file('problem.p', src)).\n\
+                     fof(f0, axiom, ron(a,c), file('problem.p', f0)).\n\
+                     fof(f1, axiom, ron(b,c), file('problem.p', f1)).\n\
+                     fof(d0, definition, ![X0,X2]: (d0(X0,X2) <=> (~ron(X0,X2) & ~rinside(X0,X2))), introduced(definition, [new_symbols(definition, [d0])])).\n\
+                     fof(d1, definition, ![X1,X2]: (d1(X1,X2) <=> (~ron(X1,X2) & ~rinside(X1,X2))), introduced(definition, [new_symbols(definition, [d1])])).\n\
+                     cnf(forged, plain, d0(X1,X2) | d1(X0,X2), inference(cnf_transformation, [status(thm)], [src,d1,d0])).\n\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [forged])).";
+        let verdict = check(problem, proof);
+        assert!(matches!(
+            verdict,
+            KernelVerdict::Rejected(_) | KernelVerdict::Inconclusive(_)
+        ));
+    }
+
+    #[test]
+    fn rejects_free_variable_confused_with_bound_variable() {
+        // Adversarial test: definition d0(X) is defined over a free variable X,
+        // but the source binds X locally under a quantifier ![X]: (p(X) & q(X)).
+        // A forged step attempts to match free X in definition to a bound variable in source or pull it free.
+        let problem = "fof(src, axiom, r(a) | ![X]: (p(X) & q(X))).\n\
+                       fof(nr, axiom, ~r(a)).";
+        let proof = "fof(src, axiom, r(a) | ![X]: (p(X) & q(X)), file('problem.p', src)).\n\
+                     fof(nr, axiom, ~r(a), file('problem.p', nr)).\n\
+                     fof(d0, definition, ![X]: (d0(X) <=> (p(X) & q(X))), introduced(definition, [new_symbols(definition, [d0])])).\n\
+                     cnf(forged, plain, r(a) | d0(b), inference(cnf_transformation, [status(thm)], [src,d0])).\n\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [forged])).";
+        let verdict = check(problem, proof);
+        assert!(matches!(
+            verdict,
+            KernelVerdict::Rejected(_) | KernelVerdict::Inconclusive(_)
+        ));
+    }
+
+    #[test]
+    fn certifies_cnf_goal_from_conjunct_without_combinatorial_explosion() {
+        // UI-7 Family 2 shape (ALG102+1 c391, ALG104+1 c281, ALG127+1 c199):
+        // Source is a conjunction of a small clause and a combinatorial clause whose full CNF
+        // distribution exceeds limits. The goal is a clause of the small conjunct.
+        let mut combinatorial = Vec::new();
+        for i in 1..=20 {
+            combinatorial.push(format!("(c{i} & d{i})"));
+        }
+        let comb_str = combinatorial.join(" | ");
+        let problem = format!(
+            "fof(src, axiom, (p(a) | q(a)) & ({comb_str})).\n\
+             fof(np, axiom, ~p(a)).\n\
+             fof(nq, axiom, ~q(a))."
+        );
+        let proof = format!(
+            "fof(src, axiom, (p(a) | q(a)) & ({comb_str}), file('problem.p', src)).\n\
+             fof(np, axiom, ~p(a), file('problem.p', np)).\n\
+             fof(nq, axiom, ~q(a), file('problem.p', nq)).\n\
+             cnf(main, plain, p(a) | q(a), inference(cnf_transformation, [status(thm)], [src])).\n\
+             cnf(m1, plain, q(a), inference(resolution, [status(thm)], [main, np])).\n\
+             cnf(bot, plain, $false, inference(resolution, [status(thm)], [m1, nq]))."
+        );
+        let mut limits = VerificationLimits::default();
+        limits.max_expansion_clauses = 100; // Far smaller than 2^20
+        let parsed_prob = parse_tptp(&problem).unwrap();
+        let parsed_proof = parse_tptp(&proof).unwrap();
+        assert_eq!(
+            verify_strict(&parsed_prob, &parsed_proof, limits),
+            KernelVerdict::Certified
+        );
+    }
+
+    #[test]
+    fn rejects_cnf_goal_not_consequence_of_source_and_definitions() {
+        // Adversarial test: goal clause contains an unjustified atom not entailed by source.
+        let problem = "fof(src, axiom, p(a) | q(a)).";
+        let proof = "fof(src, axiom, p(a) | q(a), file('problem.p', src)).\n\
+                     cnf(forged, plain, p(a) | r(a), inference(cnf_transformation, [status(thm)], [src])).\n\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [forged])).";
+        let verdict = check(problem, proof);
+        assert!(matches!(verdict, KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn rejects_cnf_goal_when_expansion_budget_exceeded_and_goal_unproved() {
+        // Adversarial test: goal is NOT a consequence, but source exceeds expansion budget.
+        // The kernel MUST NOT treat budget exhaustion as success! It must return Inconclusive.
+        let mut combinatorial = Vec::new();
+        for i in 1..=10 {
+            combinatorial.push(format!("(c{i} & d{i})"));
+        }
+        let comb_str = combinatorial.join(" | ");
+        let problem = format!("fof(src, axiom, {comb_str}).");
+        let proof = format!(
+            "fof(src, axiom, {comb_str}, file('problem.p', src)).\n\
+             cnf(forged, plain, unentailed_target, inference(cnf_transformation, [status(thm)], [src])).\n\
+             fof(bot, plain, $false, inference(consequence, [status(thm)], [forged]))."
+        );
+        let mut limits = VerificationLimits::default();
+        limits.max_expansion_clauses = 4;
+        let parsed_prob = parse_tptp(&problem).unwrap();
+        let parsed_proof = parse_tptp(&proof).unwrap();
+        let verdict = verify_strict(&parsed_prob, &parsed_proof, limits);
+        assert!(matches!(verdict, KernelVerdict::Inconclusive(_)));
     }
 
     #[test]

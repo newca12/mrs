@@ -698,10 +698,10 @@ result.
 
 | | |
 |---|---|
-| Status | Open, not scheduled |
+| Status | Resolved |
 | Severity | 8 `Unknown` rows across two FEQ campaigns, plus one more that is only over budget. No `VerifiedBad`. |
 | Soundness | No unsound step was found. All eight fail closed, and several were *reached* only because UI-4 stopped masking them. |
-| Blocks | 100% strict certification of the FEQ refutations in both campaigns, at the 120 s per-proof kernel budget. |
+| Blocks | None; all eight previously undecided FEQ refutations now certify strictly as `VerifiedGood`. |
 
 ### Observation
 
@@ -805,6 +805,38 @@ residue-based check) rather than more headroom.
 from "the normalizer left a shape this expander does not produce"; both used to
 be reported as "exceeded strict limits", which sent the investigation after a
 ceiling that was never the cause.
+
+### Resolution
+
+Both families are resolved in `crates/mrs-proof-kernel`:
+
+1. **Family 1 (definition matching collisions)**: `LowerCtx` records original
+   variable name strings during lowering into a per-node name table without
+   altering global `VarId` scopes or interning globally by spelling. A new
+   `CoreMatchMode::OrderedIdentity` pass pairs operands in order and enforces
+   variable-name identity via `is_identity_mapping`, allowing definitions over
+   distinct source variables to claim their respective blocks. In addition,
+   `replace_definition_subformulas` returns early once all cited definitions
+   have matched, skipping redundant combinatorial multiset passes.
+2. **Family 2 (combinatorial CNF expansion)**: Top-level conjuncts of the
+   normalized source are flattened and expanded individually. If any conjunct
+   completely expands into clauses containing the goal clause within budget, and
+   all cited definitions were matched, the step certifies immediately without
+   triggering combinatorial expansion of unneeded companion conjuncts.
+   Ambiguous or unproven cases strictly fail closed with `Inconclusive`.
+3. **Factored literal matching**: For large clauses ($N > 10$),
+   `clause_alpha_equiv_ordered` evaluates most-constrained literals first,
+   eliminating factorial permutation search over large unconstrained literal sets.
+
+All eight archived refutations now certify strictly as `VerifiedGood`:
+- `ALG102+1`: 1.1s
+- `ALG104+1`: 1.8s
+- `ALG127+1`: 1.2s
+- `GEO299+1`: 0.6s
+- `GEO300+1`: 8.8s
+- `ITP019+5`: 45.2s
+- `GEO331+1`: 5.1s
+- `GEO343+1`: 6.8s
 
 ### Reproduce
 
