@@ -273,21 +273,29 @@ global `alpha_equiv` contract is unchanged and a test pins it. Full write-up,
 including why this was not a limit and why widening here is sound:
 [`policies/unresolved-issues.md`](policies/unresolved-issues.md) UI-4.
 
-Eight rows remain undecided across the two campaigns, in two families, and
-neither is a ceiling that can be raised:
+Eight rows remained undecided across the two campaigns after that work, in two
+families, and neither was a ceiling that could be raised:
 
-* **Five** are `cnf_transformation` steps whose cited definitions have bodies
-  over blocks the matcher cannot tell apart. The discriminator is which source
-  variables each block uses, and the kernel does not have that information:
-  `LowerCtx` numbers variables per formula, so two definitions over the same
-  block shape get identical `VarId`s and the "is this my own block" test cannot
-  succeed. Fixing it means changing the kernel's variable model, not a limit.
-* **Three** are `ALG102+1` c391, `ALG104+1` c281 and `ALG127+1` c199, whose
-  sources expand combinatorially into clauses. `ALG127+1` reaches 12.3 GB and
-  34 s at a 2 000 000-clause ceiling without finishing, so no ceiling helps; the
+* **Five** were `cnf_transformation` steps whose cited definitions have bodies
+  over blocks the greedy fold could not tell apart. The discriminator is which
+  source variables each block uses, and the kernel's variable model does not
+  carry that: `LowerCtx` numbers variables per formula, so two definitions over
+  the same block shape get identical `VarId`s.
+* **Three** were `ALG102+1` c391, `ALG104+1` c281 and `ALG127+1` c199, whose
+  sources expand combinatorially into clauses, so no ceiling helps; the
   whole-source expansion is the wrong algorithm for them.
 
-Details and the measurements: UI-7.
+Both families are now decided by a goal-directed residue check in the kernel
+(`goal_directed_cnf_entailment`): it distributes the goal clause over the
+source's conjunctions and disjunctions instead of expanding the source, which
+needs no block identity — the goal names the definition heads with concrete
+arguments, so only the fold that reproduces those arguments succeeds — and no
+expansion, so the cross product never happens. Six of the eight rows certify;
+`GEO331+1` and `GEO343+1` certify their target step but the rest of those two
+large proofs does not fit in the 120 s per-proof audit budget on the host used.
+
+Details, the per-proof before/after verdicts, and the soundness argument:
+UI-7.
 
 `ALG049+1` deserves its own line because "certifies" and "certifies in budget"
 are different claims. It is the casc-30 `Timeout` in the table above, and given

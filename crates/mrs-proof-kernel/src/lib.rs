@@ -118,6 +118,16 @@ pub struct VerificationLimits {
     pub max_definition_steps: usize,
     /// Substitution steps allowed while unfolding definitions in a conclusion.
     pub max_unfold_steps: usize,
+    /// Distribution steps allowed by the goal-directed residue check.
+    ///
+    /// The residue search asks whether the goal clause can be *placed* into the
+    /// source's clause set one literal group at a time, instead of building that
+    /// clause set. Every step is one literal group offered to one subformula, so
+    /// the budget bounds a search whose width is set by the goal's size rather
+    /// than by the source's. Exhausting it yields `Inconclusive`, never a
+    /// verdict: the check is an alternative route to a decision, and a check
+    /// that ran out of room has not decided anything.
+    pub max_residue_steps: usize,
     /// Comparison steps allowed when matching a leaf against a problem formula
     /// modulo associativity and commutativity.
     pub max_comparison_steps: usize,
@@ -159,6 +169,7 @@ impl Default for VerificationLimits {
             max_rewrite_states: 20_000,
             max_definition_steps: 4_096,
             max_unfold_steps: 200_000,
+            max_residue_steps: 400_000,
             max_comparison_steps: 200_000,
             max_expansion_clauses: 100_000,
             max_subsumption_steps: 5_000,
@@ -1364,6 +1375,28 @@ fn verify_cnf_transformation(
         }
     }
 
+    // Second fast path: the goal may be placeable into the source's clause set
+    // without expanding it at all. `goal_directed_cnf_entailment` distributes
+    // the goal over the source's conjunctions and disjunctions instead of
+    // expanding the source into clauses, which decides two families the
+    // expansion below cannot reach:
+    //
+    // * definitions over structurally identical source blocks, where the fold
+    //   only has to reproduce the head arguments the goal names (GEO331+1
+    //   c355, GEO343+1 c286, GEO299+1 c522, GEO300+1 c285, ITP019+5 c700);
+    // * sources whose expansion is combinatorial -- ALG102+1 c391, ALG104+1
+    //   c281 and ALG127+1 c199 need 5^7 clauses at one disjunction -- where no
+    //   ceiling on `max_expansion_clauses` converges.
+    //
+    // It is additive: a `Some(false)` or an exhausted search falls through to
+    // the expansion path unchanged, so nothing the kernel certified before is
+    // certified differently now.
+    if goal_directed_cnf_entailment(source, &condense_clause(&goal), &definitions, limits)
+        == Some(true)
+    {
+        return KernelVerdict::Certified;
+    }
+
     let expansion_budget = limits.max_expansion_clauses;
     let mut all_definitions_matched = true;
     let Some(named_source) = (if definitions.is_empty() {
@@ -2370,6 +2403,639 @@ fn match_core_term(pattern: &Term, target: &Term, mapping: &mut HashMap<VarId, T
                     .iter()
                     .zip(target_args)
                     .all(|(pattern, target)| match_core_term(pattern, target, mapping))
+        }
+        _ => false,
+    }
+}
+
+/// Ceiling on the goal literals one disjunction split may distribute.
+///
+/// Distributing `n` goal literals over the parts of a disjunction costs up to
+/// `2^n`, so an unbounded goal would make the check exponential in its own
+/// input rather than in the source's. The cap turns an over-wide goal into
+/// `Inconclusive`; it is never a reason to certify.
+const MAX_RESIDUE_LITERALS: usize = 20;
+
+/// Bounded state of the goal-directed residue search.
+struct ResidueSearch<'a> {
+    definitions: &'a [CoreDefinition],
+    spent: usize,
+    max_steps: usize,
+    /// Per-node set of goal literals the node could contribute to a clause,
+    /// memoised by address.
+    ///
+    /// Splitting a disjunction costs `2^(|goal|)` in the worst case, so the
+    /// search must not pay that for literals no clause below the node can
+    /// contain. This is the necessary condition that rules them out, and it is
+    /// memoised because the same subformula is offered many different literal
+    /// groups.
+    producible: HashMap<usize, Rc<Vec<bool>>>,
+    /// Union of the parts' producible sets over `parts[index..]`, memoised by
+    /// the disjunction's address and the first part index still to be filled.
+    suffix: HashMap<(usize, usize), Rc<Vec<bool>>>,
+    /// Whether a node's CNF has any clause at all, memoised by address.
+    produces_any: HashMap<usize, bool>,
+    /// Decided `(node, literal group, substitution)` triples.
+    ///
+    /// The search is a plain depth-first walk, and the same question -- can
+    /// this subformula cover this group -- is asked once per way of splitting
+    /// the goal around it. Memoising the decisions collapses the repeated
+    /// sub-searches that would otherwise make the walk exponential on a wide
+    /// disjunction.
+    results: HashMap<ResidueMemoKey, Option<bool>>,
+    /// The substitution from the derived clause's variables to terms over the
+    /// goal clause's variables.
+    ///
+    /// The goal is one clause; the clause the search derives is one too, but
+    /// assembled from several sub-clauses whose variables the prenex made
+    /// independent copies. So the two are related by a substitution rather than
+    /// a renaming, and *one* substitution has to serve every literal group:
+    /// checking each group against its own fresh mapping would accept clauses
+    /// the sources do not entail.
+    ///
+    /// The substitution may map two distinct variables to the same term. That is
+    /// the weakening direction, and it is sound here: an instance of a derived
+    /// clause is entailed by it.
+    ///
+    /// A `Vec` rather than a map: it is a handful of entries, it is snapshotted
+    /// on every step of the walk, and it is part of the memo key.
+    substitution: Vec<(VarId, Term)>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ResidueMemoKey {
+    node: usize,
+    share: u64,
+    substitution: Vec<(VarId, Term)>,
+}
+
+impl ResidueSearch<'_> {
+    fn spend(&mut self) -> bool {
+        self.spent = self.spent.saturating_add(1);
+        self.spent <= self.max_steps
+    }
+
+    fn producible_of(&mut self, node: &Formula, goal: &[Literal]) -> Rc<Vec<bool>> {
+        let key = std::ptr::from_ref(node) as usize;
+        if let Some(producible) = self.producible.get(&key) {
+            return Rc::clone(producible);
+        }
+        let producible = Rc::new(producible_goal_literals(node, goal, self.definitions));
+        self.producible.insert(key, Rc::clone(&producible));
+        producible
+    }
+
+    fn produces_any_of(&mut self, node: &Formula) -> bool {
+        let key = std::ptr::from_ref(node) as usize;
+        if let Some(produces) = self.produces_any.get(&key) {
+            return *produces;
+        }
+        let produces = produces_any_clause(node);
+        self.produces_any.insert(key, produces);
+        produces
+    }
+
+    /// Goal literals producible by `parts[index..]`.
+    fn suffix_producible(
+        &mut self,
+        parts: &[Formula],
+        index: usize,
+        goal: &[Literal],
+    ) -> Rc<Vec<bool>> {
+        let key = (std::ptr::from_ref(parts).cast::<Formula>() as usize, index);
+        if let Some(producible) = self.suffix.get(&key) {
+            return Rc::clone(producible);
+        }
+        let mut union = vec![false; goal.len()];
+        for part in &parts[index..] {
+            let part_producible = self.producible_of(part, goal);
+            for (slot, entry) in union.iter_mut().zip(part_producible.iter()) {
+                *slot |= *entry;
+            }
+        }
+        let union = Rc::new(union);
+        self.suffix.insert(key, Rc::clone(&union));
+        union
+    }
+
+    /// Record that the derived clause's variable `source` stands for `target`.
+    fn bind_variable(&mut self, source: VarId, target: Term) -> bool {
+        for (variable, bound) in &self.substitution {
+            if *variable == source {
+                return *bound == target;
+            }
+        }
+        self.substitution.push((source, target));
+        true
+    }
+}
+
+/// Which of the goal's literals a clause derived from `node` could contain.
+///
+/// A clause of `CNF(node)` is built out of subformula literals: a disjunction's
+/// clauses union one clause from each side, a conjunction's come from either
+/// side, and abbreviating a subformula by a definition contributes that
+/// definition's head. So the set is computed by the same recursion, and it is
+/// an over-approximation in the only direction that costs nothing -- it can let
+/// the search attempt a literal that turns out not to fit, never the reverse.
+fn producible_goal_literals(
+    node: &Formula,
+    goal: &[Literal],
+    definitions: &[CoreDefinition],
+) -> Vec<bool> {
+    let mut out = vec![false; goal.len()];
+    if let Some((positive, atom)) = formula_literal(node) {
+        for (entry, literal) in goal.iter().enumerate() {
+            if literal.positive == positive && atom_instantiable(atom, &literal.atom) {
+                out[entry] = true;
+            }
+        }
+        return out;
+    }
+    for definition in definitions {
+        let mut mapping = HashMap::new();
+        if !match_core_formula(&definition.rhs, node, &mut mapping) {
+            continue;
+        }
+        let Some(head) = apply_core_definition_head(&definition.head, &mapping) else {
+            continue;
+        };
+        for (entry, literal) in goal.iter().enumerate() {
+            if literal.positive && atom_instantiable(&head, &literal.atom) {
+                out[entry] = true;
+            }
+        }
+    }
+    match node {
+        Formula::And(parts) | Formula::Or(parts) => {
+            for part in parts {
+                let part_producible = producible_goal_literals(part, goal, definitions);
+                for (slot, entry) in out.iter_mut().zip(part_producible.iter()) {
+                    *slot |= *entry;
+                }
+            }
+        }
+        Formula::Forall(_, body) => {
+            let body_producible = producible_goal_literals(body, goal, definitions);
+            for (slot, entry) in out.iter_mut().zip(body_producible.iter()) {
+                *slot |= *entry;
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// Goal-directed alternative to expanding the source into clauses.
+///
+/// `verify_cnf_transformation` normally folds the cited definitions into the
+/// source, expands the whole thing, and looks for the goal among the clauses.
+/// That is the right thing to *prove* with and the wrong thing to *compute*
+/// with: the expansion is a cross product, so on a case-split source it grows
+/// exponentially with the number of disjuncts -- `ALG127+1` c199's source needs
+/// `5^7` clauses at the innermost disjunction alone -- and no ceiling reaches a
+/// bound like that.
+///
+/// This asks the dual question instead: can the goal clause be *placed* into
+/// the source's clause set one literal group at a time?
+///
+/// * a conjunction passes its goal to any one conjunct -- `CNF(A & B)` is
+///   `CNF(A) u CNF(B)`;
+/// * a disjunction splits the goal's literals among its parts -- `CNF(A | B)`
+///   is `{a u b}` -- and a part that cannot yield the empty clause must be
+///   given a non-empty share, which is what keeps the split from degenerating;
+/// * a literal covers a one-literal goal when it matches it up to a renaming
+///   consistent with the rest of the clause;
+/// * a node whose formula a cited definition's body matches *is* that
+///   definition's head, instantiated with the matching substitution.
+///
+/// Every step is an equivalence or a weakening, so `true` means the cited
+/// parents entail the goal. The two reasons a fold is safe here are worth
+/// spelling out, because they are exactly the two UI-7 families:
+///
+/// * `d(t) <=> body` holds for every `t`, so replacing a matching block by the
+///   head is an equivalence *wherever* it is applied. The fold never has to
+///   know which block a definition "belongs" to; the goal names the heads with
+///   concrete arguments, and only the fold that reproduces those arguments
+///   yields the goal. That is what decides definitions over structurally
+///   identical blocks without interning variables by spelling, and it is why a
+///   definition matched to the wrong block still cannot succeed.
+/// * The prenexed matrix has pairwise disjoint variables in distinct conjuncts
+///   and disjuncts, so the only thing tying the literal groups together is the
+///   clause's own variables, related by one substitution -- which is tracked,
+///   see [`ResidueSearch::substitution`].
+///
+/// `None` means the search ran out of budget or met a shape it does not model.
+/// The caller must then stay fail-closed.
+fn goal_directed_cnf_entailment(
+    source: &Formula,
+    goal: &[Literal],
+    definitions: &[CoreDefinition],
+    limits: VerificationLimits,
+) -> Option<bool> {
+    let normalized = normalize_quantified_cnf(source, limits).ok()?;
+    let matrix = strip_forall_core(&normalized);
+    let share = (0..goal.len()).collect::<Vec<usize>>();
+    let mut search = ResidueSearch {
+        definitions,
+        spent: 0,
+        max_steps: limits.max_residue_steps,
+        producible: HashMap::new(),
+        suffix: HashMap::new(),
+        produces_any: HashMap::new(),
+        results: HashMap::new(),
+        substitution: Vec::new(),
+    };
+    residue_covers(matrix, &share, goal, &mut search)
+}
+
+/// Whether `node`, with cited definitions abbreviated wherever their bodies
+/// match, has a clause from which the goal literals `share` follow by
+/// weakening.
+///
+/// `share` indexes into `literals`, so distributing a goal costs index
+/// arithmetic rather than a clone of every literal at every split.
+fn residue_covers(
+    node: &Formula,
+    share: &[usize],
+    literals: &[Literal],
+    search: &mut ResidueSearch<'_>,
+) -> Option<bool> {
+    if !search.spend() {
+        return None;
+    }
+    if share.is_empty() {
+        return Some(search.produces_any_of(node));
+    }
+    let memo = (literals.len() <= 64).then(|| ResidueMemoKey {
+        node: std::ptr::from_ref(node) as usize,
+        share: share.iter().fold(0u64, |mask, entry| mask | 1 << entry),
+        substitution: search.substitution.clone(),
+    });
+    if let Some(key) = memo.as_ref()
+        && let Some(decided) = search.results.get(key)
+    {
+        return *decided;
+    }
+    let saved = search.substitution.clone();
+    let outcome = residue_covers_uncached(node, share, literals, search);
+    match outcome {
+        Some(decided) => {
+            if let Some(key) = memo {
+                search.results.insert(key, Some(decided));
+            }
+            if !decided {
+                search.substitution = saved;
+            }
+        }
+        None => search.substitution = saved,
+    }
+    outcome
+}
+
+fn residue_covers_uncached(
+    node: &Formula,
+    share: &[usize],
+    literals: &[Literal],
+    search: &mut ResidueSearch<'_>,
+) -> Option<bool> {
+    if let Some((positive, atom)) = formula_literal(node) {
+        return Some(literal_covers(positive, atom, share, literals, search));
+    }
+    // No clause below this node can contain one of the goal's literals, so
+    // nothing here covers them. Checked once per node rather than once per
+    // candidate split: that is what keeps the search from going exponential on
+    // a wide disjunction.
+    let producible = search.producible_of(node, literals);
+    if !share_producible(share, &producible) {
+        return Some(false);
+    }
+    // A cited definition whose body matches here abbreviates this node to its
+    // own head, so the node can also stand for that single literal. An empty
+    // share is never covered by a literal, so that probe -- which every
+    // disjunct of every level asks of each of its parts -- skips the matching
+    // entirely.
+    if !share.is_empty() {
+        for definition in search.definitions {
+            let mut mapping = HashMap::new();
+            if !match_core_formula(&definition.rhs, node, &mut mapping) {
+                continue;
+            }
+            let Some(head) = apply_core_definition_head(&definition.head, &mapping) else {
+                continue;
+            };
+            let saved = search.substitution.clone();
+            if literal_covers(true, &head, share, literals, search) {
+                return Some(true);
+            }
+            search.substitution = saved;
+        }
+    }
+    let mut undecided = false;
+    match node {
+        Formula::And(parts) if !parts.is_empty() => {
+            for part in parts {
+                let saved = search.substitution.clone();
+                match residue_covers(part, share, literals, search) {
+                    Some(true) => return Some(true),
+                    Some(false) => search.substitution = saved,
+                    None => {
+                        search.substitution = saved;
+                        undecided = true;
+                    }
+                }
+            }
+        }
+        Formula::Or(parts) => {
+            let mut suffix: Vec<Rc<Vec<bool>>> = Vec::with_capacity(parts.len() + 1);
+            for index in (0..=parts.len()).rev() {
+                let mut union = search
+                    .suffix_producible(parts, index, literals)
+                    .as_ref()
+                    .clone();
+                if let Some(rest) = suffix.first() {
+                    for (slot, entry) in union.iter_mut().zip(rest.iter()) {
+                        *slot |= *entry;
+                    }
+                }
+                suffix.insert(0, Rc::new(union));
+            }
+            match residue_distribute(parts, &suffix, 0, share, literals, search) {
+                Some(true) => return Some(true),
+                Some(false) => {}
+                None => undecided = true,
+            }
+        }
+        Formula::Forall(_, body) => {
+            let saved = search.substitution.clone();
+            match residue_covers(body, share, literals, search) {
+                Some(true) => return Some(true),
+                Some(false) => search.substitution = saved,
+                None => {
+                    search.substitution = saved;
+                    undecided = true;
+                }
+            }
+        }
+        Formula::And(_) | Formula::True | Formula::False => {}
+        // Quantifier and connective shapes this search does not model. The
+        // caller normalizes them away first, so reaching one means the
+        // normalization did not do its job -- report the gap, not a difference.
+        Formula::Exists(_, _) | Formula::Implies(_, _) | Formula::Iff(_, _) => undecided = true,
+        Formula::Atom(_) | Formula::Neg(_) => return Some(false),
+    }
+    (!undecided).then_some(false)
+}
+
+/// Distribute `share` over the parts of a disjunction, part by part.
+///
+/// `parts[0..index]` have taken a share already; whatever is left must be
+/// placed on `parts[index..]`. `suffix[index]` holds the goal literals
+/// `parts[index..]` can still produce.
+fn residue_distribute(
+    parts: &[Formula],
+    suffix: &[Rc<Vec<bool>>],
+    index: usize,
+    share: &[usize],
+    literals: &[Literal],
+    search: &mut ResidueSearch<'_>,
+) -> Option<bool> {
+    if !search.spend() {
+        return None;
+    }
+    if index == parts.len() {
+        return Some(share.is_empty());
+    }
+    // Every literal still unplaced must be producible by some part still
+    // available. Without this the search only discovers a mis-split after it
+    // has explored every way of making it, which is what turns a sixteen-literal
+    // goal into a budget exhaustion.
+    if !share_producible(share, &suffix[index]) {
+        return Some(false);
+    }
+    if share.len() > MAX_RESIDUE_LITERALS {
+        return None;
+    }
+    let part = &parts[index];
+    let here = search.producible_of(part, literals);
+    let later = &suffix[index + 1];
+    // A literal no later part can produce has to be placed here, and one no
+    // part here can produce cannot be. Between them those two sets pin down
+    // almost every split, so the loop below usually has a single candidate.
+    // `forced` is also the whole candidate set when the part may take nothing
+    // at all, which is the common case: the first mask tried is then the empty
+    // share and the search costs one memoised lookup before it moves on.
+    let forced = share
+        .iter()
+        .copied()
+        .filter(|entry| here[*entry] && !later[*entry])
+        .collect::<Vec<usize>>();
+    let optional = share
+        .iter()
+        .copied()
+        .filter(|entry| here[*entry] && later[*entry])
+        .collect::<Vec<usize>>();
+    let mut undecided = false;
+    for size in 0..=optional.len() {
+        for mask in residue_masks(optional.len(), size) {
+            if !search.spend() {
+                return None;
+            }
+            let mut picked = forced.clone();
+            for (position, entry) in optional.iter().enumerate() {
+                if mask >> position & 1 == 1 {
+                    picked.push(*entry);
+                }
+            }
+            let rest = share
+                .iter()
+                .copied()
+                .filter(|entry| !picked.contains(entry))
+                .collect::<Vec<usize>>();
+            let saved = search.substitution.clone();
+            match residue_covers(part, &picked, literals, search) {
+                Some(true) => {
+                    // Only a decision ends the split; a later part failing is a
+                    // reason to try the next candidate here, not to give up.
+                    match residue_distribute(parts, suffix, index + 1, &rest, literals, search) {
+                        Some(true) => return Some(true),
+                        None => return None,
+                        Some(false) => search.substitution = saved,
+                    }
+                }
+                Some(false) => search.substitution = saved,
+                None => {
+                    search.substitution = saved;
+                    undecided = true;
+                }
+            }
+        }
+    }
+    if undecided { None } else { Some(false) }
+}
+
+/// Whether `CNF(node)` contains any clause.
+///
+/// Under weakening containment a disjunct of a disjunction need not put any of
+/// its literals in the goal -- the derived clause may carry extra ones -- so an
+/// empty share is satisfiable exactly when the part has a clause to contribute.
+/// `True` has no clauses, `False` contributes the empty one, a disjunction needs
+/// all of its disjuncts, and a conjunction only one.
+fn produces_any_clause(node: &Formula) -> bool {
+    match node {
+        Formula::Atom(_) => true,
+        Formula::Neg(inner) => matches!(inner.as_ref(), Formula::Atom(_)),
+        Formula::False => true,
+        Formula::True => false,
+        Formula::And(parts) => parts.iter().any(produces_any_clause),
+        Formula::Or(parts) => !parts.is_empty() && parts.iter().all(produces_any_clause),
+        Formula::Forall(_, body) | Formula::Exists(_, body) => produces_any_clause(body),
+        // Not modelled: reported as "no clause" so the search only loses
+        // coverage, and the caller's normalisation removes these first.
+        Formula::Implies(_, _) | Formula::Iff(_, _) => false,
+    }
+}
+
+/// Whether every goal literal in `share` is one the node could produce.
+fn share_producible(share: &[usize], producible: &[bool]) -> bool {
+    share.iter().all(|entry| producible[*entry])
+}
+
+/// Bit masks selecting exactly `size` of `len` positions, increasing.
+fn residue_masks(len: usize, size: usize) -> Vec<u64> {
+    let mut masks = Vec::new();
+    if size == 0 {
+        masks.push(0);
+        return masks;
+    }
+    if size > len {
+        return masks;
+    }
+    let limit = 1u64 << len;
+    let mut mask = (1u64 << size) - 1;
+    while mask < limit {
+        masks.push(mask);
+        // Gosper's next-combination step.
+        let low = mask.isolate_lowest_one();
+        let raised = mask + low;
+        mask = raised | (((raised ^ mask) >> 2) / low);
+    }
+    masks
+}
+
+/// The literal `node` is, if it is a literal at all.
+fn formula_literal(node: &Formula) -> Option<(bool, &Atom)> {
+    match node {
+        Formula::Atom(atom) => Some((true, atom)),
+        Formula::Neg(inner) => match inner.as_ref() {
+            Formula::Atom(atom) => Some((false, atom)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether the literal `(positive, atom)` is the goal literal `share[0]`,
+/// extending the search's substitution as it goes.
+fn literal_covers(
+    positive: bool,
+    atom: &Atom,
+    share: &[usize],
+    literals: &[Literal],
+    search: &mut ResidueSearch<'_>,
+) -> bool {
+    share.len() == 1
+        && literals[share[0]].positive == positive
+        && atom_matches_substitution(atom, &literals[share[0]].atom, search)
+}
+
+/// Match `source` against `goal`, recording the variable correspondence in the
+/// search's substitution.
+///
+/// Equality is unordered, so both orientations are tried; a failed orientation
+/// must not leave a partial correspondence behind, hence the snapshot.
+fn atom_matches_substitution(source: &Atom, goal: &Atom, search: &mut ResidueSearch<'_>) -> bool {
+    match (source, goal) {
+        (Atom::Pred(source_symbol, source_args), Atom::Pred(goal_symbol, goal_args)) => {
+            source_symbol == goal_symbol
+                && source_args.len() == goal_args.len()
+                && source_args
+                    .iter()
+                    .zip(goal_args)
+                    .all(|(source, goal)| term_matches_substitution(source, goal, search))
+        }
+        (Atom::Eq(source_left, source_right), Atom::Eq(goal_left, goal_right)) => {
+            // `s = t` is unordered, so both orientations are possible; a failed
+            // orientation must not leave a partial substitution behind.
+            let saved = search.substitution.clone();
+            if source_left == source_right && goal_left == goal_right {
+                return true;
+            }
+            if term_matches_substitution(source_left, goal_left, search)
+                && term_matches_substitution(source_right, goal_right, search)
+            {
+                return true;
+            }
+            search.substitution = saved;
+            term_matches_substitution(source_left, goal_right, search)
+                && term_matches_substitution(source_right, goal_left, search)
+        }
+        _ => false,
+    }
+}
+
+/// Instantiate `source` so that it becomes `goal`, extending the search's
+/// substitution.
+///
+/// Only the derived clause's variables may be instantiated; the goal's terms are
+/// fixed, because the goal is the clause that has to come out.
+fn term_matches_substitution(source: &Term, goal: &Term, search: &mut ResidueSearch<'_>) -> bool {
+    match (source, goal) {
+        (Term::Var(variable), goal) => search.bind_variable(*variable, goal.clone()),
+        (Term::App(source_symbol, source_args), Term::App(goal_symbol, goal_args)) => {
+            source_symbol == goal_symbol
+                && source_args.len() == goal_args.len()
+                && source_args
+                    .iter()
+                    .zip(goal_args)
+                    .all(|(source, goal)| term_matches_substitution(source, goal, search))
+        }
+        _ => false,
+    }
+}
+
+/// Whether some substitution over the derived clause's variables can turn
+/// `source` into `goal`. Used for the over-approximating "could this literal
+/// ever appear here" filter, which needs no state.
+fn term_instantiable(source: &Term, goal: &Term) -> bool {
+    match (source, goal) {
+        (Term::Var(_), _) => true,
+        (Term::App(source_symbol, source_args), Term::App(goal_symbol, goal_args)) => {
+            source_symbol == goal_symbol
+                && source_args.len() == goal_args.len()
+                && source_args
+                    .iter()
+                    .zip(goal_args)
+                    .all(|(source, goal)| term_instantiable(source, goal))
+        }
+        _ => false,
+    }
+}
+
+fn atom_instantiable(source: &Atom, goal: &Atom) -> bool {
+    match (source, goal) {
+        (Atom::Pred(source_symbol, source_args), Atom::Pred(goal_symbol, goal_args)) => {
+            source_symbol == goal_symbol
+                && source_args.len() == goal_args.len()
+                && source_args
+                    .iter()
+                    .zip(goal_args)
+                    .all(|(source, goal)| term_instantiable(source, goal))
+        }
+        (Atom::Eq(source_left, source_right), Atom::Eq(goal_left, goal_right)) => {
+            term_instantiable(source_left, goal_left) && term_instantiable(source_right, goal_right)
+                || term_instantiable(source_left, goal_right)
+                    && term_instantiable(source_right, goal_left)
         }
         _ => false,
     }
@@ -12848,6 +13514,301 @@ mod tests {
                      cnf(m4, plain, r(c,d), inference(resolution, [status(thm)], [m3,w1])).\n\
                      cnf(bot, plain, $false, inference(resolution, [status(thm)], [m4,fr])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    /// UI-7 family 1, positive shape.
+    ///
+    /// `GEO331+1` c355 / `GEO299+1` c522: the source carries two blocks whose
+    /// literals are the same in the same order, differing only in which source
+    /// variables they range over, and two definitions whose bodies are
+    /// textually identical. The fold cannot tell the blocks apart -- its own
+    /// `is_identity_mapping` test compares `VarId`s, and two independently
+    /// lowered formulas never share them -- so the greedy fold gives both
+    /// blocks to one definition and leaves the other unmatched.
+    ///
+    /// The residue check decides it without that identity: it distributes the
+    /// goal over the source's disjunctions and only accepts a block that
+    /// abbreviates to the head arguments the goal actually names.
+    #[test]
+    fn certifies_definitions_over_structurally_identical_blocks() {
+        let source = "![X0]: (![X1]: (![X2]: (![X7]: (\
+             ( (~ron(X0,X2) & ~rinside(X0,X2)) | ![X5]: (rpoint(X5)) )\
+           | ~rcircle(X7)\
+           | (~ron(X1,X2) & ~rinside(X1,X2))\
+           | ~rR(X2,X0,X1)\
+           | rinside(X2,X0)\
+         ))))";
+        // Problem clauses that refute the goal one literal at a time. Written
+        // as universally quantified units so that no constant ever appears in a
+        // `cnf` conclusion, where TPTP reads a lowercase name as a variable and
+        // the alpha-comparison would not line up.
+        let leaves = [
+            ("fron", "![X,Y]: (ron(X,Y))"),
+            ("fnp", "![X]: (~rpoint(X))"),
+            ("frp", "![X]: (rcircle(X))"),
+            ("frr", "![X0,X1,X2]: (rR(X2,X0,X1))"),
+            ("frin", "![X0,X2]: (~rinside(X2,X0))"),
+        ];
+        let mut problem = format!("fof(src, axiom, {source}).\n");
+        let mut cited = format!("fof(src, axiom, {source}, file('problem.p', src)).\n");
+        for (name, body) in leaves {
+            problem.push_str(&format!("fof({name}, axiom, {body}).\n"));
+            cited.push_str(&format!(
+                "fof({name}, axiom, {body}, file('problem.p', {name})).\n"
+            ));
+        }
+        let proof = format!(
+            "{cited}\
+             fof(d0, definition, ![X0]: (![X2]: ((d0(X0,X2) <=> (~ron(X0,X2) & ~rinside(X0,X2))))), introduced(definition, [new_symbols(definition, [d0])])).\n\
+             fof(d1, definition, ![X1]: (![X2]: ((d1(X1,X2) <=> (~ron(X1,X2) & ~rinside(X1,X2))))), introduced(definition, [new_symbols(definition, [d1])])).\n\
+             cnf(main, plain, d0(X0,X2) | rpoint(X5) | ~rcircle(X7) | d1(X1,X2) | ~rR(X2,X0,X1) | rinside(X2,X0), inference(cnf_transformation, [status(thm)], [src,d0,d1])).\n\
+             cnf(w0, plain, ~d0(X0,X2) | ~ron(X0,X2), inference(cnf_transformation, [status(thm)], [src,d0,d1])).\n\
+             cnf(w1, plain, ~d1(X1,X2) | ~ron(X1,X2), inference(cnf_transformation, [status(thm)], [src,d0,d1])).\n\
+             cnf(m1, plain, ~d0(X0,X2), inference(resolution, [status(thm)], [w0,fron])).\n\
+             cnf(m2, plain, ~d1(X1,X2), inference(resolution, [status(thm)], [w1,fron])).\n\
+             cnf(r1, plain, rpoint(X5) | ~rcircle(X7) | d1(X1,X2) | ~rR(X2,X0,X1) | rinside(X2,X0), inference(resolution, [status(thm)], [main,m1])).\n\
+             cnf(r2, plain, ~rcircle(X7) | d1(X1,X2) | ~rR(X2,X0,X1) | rinside(X2,X0), inference(resolution, [status(thm)], [r1,fnp])).\n\
+             cnf(r3, plain, d1(X1,X2) | ~rR(X2,X0,X1) | rinside(X2,X0), inference(resolution, [status(thm)], [r2,frp])).\n\
+             cnf(r4, plain, d1(X1,X2) | rinside(X2,X0), inference(resolution, [status(thm)], [r3,frr])).\n\
+             cnf(r5, plain, d1(X1,X2), inference(resolution, [status(thm)], [r4,frin])).\n\
+             cnf(bot, plain, $false, inference(resolution, [status(thm)], [r5,m2]))."
+        );
+        assert_eq!(check(&problem, &proof), KernelVerdict::Certified);
+    }
+
+    /// A definition the cited source cannot match must never be placed.
+    ///
+    /// Two definitions with textually identical bodies both match either
+    /// identical block, and the kernel cannot tell the blocks apart. What it
+    /// *can* refuse is a definition whose body matches nothing: `d2`'s body is
+    /// about `sq`, which the source never mentions, so no clause derived here
+    /// can carry `d2(X0,X2)`.
+    ///
+    /// The step is not a consequence either. A `definition` node is an equation,
+    /// not an assertion, so nothing here forces `d2`; a model with block A and
+    /// block B both false and `sq` false falsifies the goal while satisfying the
+    /// source.
+    ///
+    /// (A goal that puts *both* identically-bodied heads at the same arguments
+    /// is a different matter: the prenex makes the two disjuncts range over
+    /// independent copies, so `d0(u,v) | d1(w,z)` holds for all `u,v,w,z` and
+    /// every such goal follows. That is why this test pins the unmatchable
+    /// definition rather than a mismatched block.)
+    #[test]
+    fn refuses_definition_that_no_source_block_matches() {
+        let source = "![X0]: (![X1]: (![X2]: (![X7]: (\
+             ( (~ron(X0,X2) & ~rinside(X0,X2)) | ![X5]: (rpoint(X5)) )\
+           | ~rcircle(X7)\
+           | (~ron(X1,X2) & ~rinside(X1,X2))\
+           | ~rR(X2,X0,X1)\
+           | rinside(X2,X0)\
+         ))))";
+        let leaves = [
+            ("fron", "![X,Y]: (ron(X,Y))"),
+            ("fnp", "![X]: (~rpoint(X))"),
+            ("frp", "![X]: (rcircle(X))"),
+            ("frr", "![X0,X1,X2]: (rR(X2,X0,X1))"),
+            ("frin", "![X0,X2]: (~rinside(X2,X0))"),
+        ];
+        let mut problem = format!("fof(src, axiom, {source}).\n");
+        let mut cited = format!("fof(src, axiom, {source}, file('problem.p', src)).\n");
+        for (name, body) in leaves {
+            problem.push_str(&format!("fof({name}, axiom, {body}).\n"));
+            cited.push_str(&format!(
+                "fof({name}, axiom, {body}, file('problem.p', {name})).\n"
+            ));
+        }
+        let proof = format!(
+            "{cited}\
+             fof(d0, definition, ![X0]: (![X2]: ((d0(X0,X2) <=> (~ron(X0,X2) & ~rinside(X0,X2))))), introduced(definition, [new_symbols(definition, [d0])])).\n\
+             fof(d1, definition, ![X1]: (![X2]: ((d1(X1,X2) <=> (~ron(X1,X2) & ~rinside(X1,X2))))), introduced(definition, [new_symbols(definition, [d1])])).\n\
+             fof(d2, definition, ![X0]: (![X2]: ((d2(X0,X2) <=> (~sq(X0,X2) & ~sinside(X0,X2))))), introduced(definition, [new_symbols(definition, [d2])])).\n\
+             cnf(main, plain, d0(X0,X2) | rpoint(X5) | ~rcircle(X7) | d1(X1,X2) | d2(X0,X2) | ~rR(X2,X0,X1) | rinside(X2,X0), inference(cnf_transformation, [status(thm)], [src,d2,d1,d0])).\n\
+             cnf(w0, plain, ~d0(X0,X2) | ~ron(X0,X2), inference(cnf_transformation, [status(thm)], [src,d2,d1,d0])).\n\
+             cnf(w1, plain, ~d1(X1,X2) | ~ron(X1,X2), inference(cnf_transformation, [status(thm)], [src,d2,d1,d0])).\n\
+             cnf(m1, plain, ~d0(X0,X2), inference(resolution, [status(thm)], [w0,fron])).\n\
+             cnf(m2, plain, ~d1(X1,X2), inference(resolution, [status(thm)], [w1,fron])).\n\
+             cnf(r1, plain, rpoint(X5) | ~rcircle(X7) | d1(X1,X2) | d2(X0,X2) | ~rR(X2,X0,X1) | rinside(X2,X0), inference(resolution, [status(thm)], [main,m1])).\n\
+             cnf(r2, plain, ~rcircle(X7) | d1(X1,X2) | d2(X0,X2) | ~rR(X2,X0,X1) | rinside(X2,X0), inference(resolution, [status(thm)], [r1,fnp])).\n\
+             cnf(r3, plain, d1(X1,X2) | d2(X0,X2) | ~rR(X2,X0,X1) | rinside(X2,X0), inference(resolution, [status(thm)], [r2,frp])).\n\
+             cnf(r4, plain, d1(X1,X2) | d2(X0,X2) | rinside(X2,X0), inference(resolution, [status(thm)], [r3,frr])).\n\
+             cnf(r5, plain, d1(X1,X2) | d2(X0,X2), inference(resolution, [status(thm)], [r4,frin])).\n\
+             cnf(bot, plain, $false, inference(resolution, [status(thm)], [r5,m2]))."
+        );
+        let verdict = check(&problem, &proof);
+        assert!(
+            !matches!(verdict, KernelVerdict::Certified),
+            "a goal naming a definition the source cannot match must never certify, got {verdict:?}"
+        );
+    }
+
+    /// A definition's bound variable must not be matched against the goal's
+    /// free variables.
+    ///
+    /// `d0(X) <=> (p(X) | ![Y] q(X,Y))` states more than the source's
+    /// `p(X) | ![Y] (q(X,Y) | r(Y))`: the source is satisfied by `p`, `q` and
+    /// `r` all false, while `d0(X)` is then false. Only a check that confused
+    /// the body's bound `Y` with a free variable of the matrix could place the
+    /// fold and read `d0(X)` off it.
+    #[test]
+    fn refuses_definition_bound_variable_matched_as_a_free_variable() {
+        let source = "![X]: (p(X) | ![Y]: (q(X,Y) | r(Y)))";
+        let problem = format!(
+            "fof(src, axiom, {source}).\n\
+             fof(nd, axiom, ![X]: (~d0(X))).\n\
+             fof(bot0, axiom, ![X]: (~p(X)))."
+        );
+        let proof = format!(
+            "fof(src, axiom, {source}, file('problem.p', src)).\n\
+             fof(nd, axiom, ![X]: (~d0(X)), file('problem.p', nd)).\n\
+             fof(bot0, axiom, ![X]: (~p(X)), file('problem.p', bot0)).\n\
+             fof(d0, definition, ![X]: ((d0(X) <=> (p(X) | ![Y]: q(X,Y)))), introduced(definition, [new_symbols(definition, [d0])])).\n\
+             cnf(main, plain, d0(X), inference(cnf_transformation, [status(thm)], [src,d0])).\n\
+             cnf(r1, plain, $false, inference(resolution, [status(thm)], [main,nd])).\n\
+             cnf(bot, plain, $false, inference(resolution, [status(thm)], [r1,bot0]))."
+        );
+        let verdict = check(&problem, &proof);
+        assert!(
+            !matches!(verdict, KernelVerdict::Certified),
+            "a definition whose bound variable was read as free must never certify, got {verdict:?}"
+        );
+    }
+
+    /// UI-7 family 2 shape, and the reason a ceiling cannot help.
+    ///
+    /// `ALG127+1` c199: an eight-way case split whose expansion is eight
+    /// clauses, four of which the prover replaced by definitions, and a goal
+    /// that is the disjunction of those four heads. The goal is a *weakening*
+    /// of each of the four unit clauses, so the cited parents entail it -- but
+    /// it is not one of them, which is why expand-and-look cannot see it.
+    ///
+    /// The definitions' bodies have two conjuncts each, so the fold only lands
+    /// on the four blocks it matches and the goal's four heads are each
+    /// unambiguous. Both `max_expansion_clauses` settings in the two tests
+    /// below are smaller than the expansion, which is what makes them evidence
+    /// that no expansion took place.
+    fn case_split_goal_problem_and_proof() -> (String, String) {
+        let blocks = (0..8)
+            .map(|i| format!("(p{i} & q{i})"))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        let source = format!("({blocks})");
+        let mut problem = format!("fof(src, axiom, {source}).\n");
+        let mut leaves = format!("fof(src, axiom, {source}, file('problem.p', src)).\n");
+        for i in 0..4 {
+            problem.push_str(&format!("fof(fp{i}, axiom, ~p{i}).\n"));
+            leaves.push_str(&format!(
+                "fof(fp{i}, axiom, ~p{i}, file('problem.p', fp{i})).\n"
+            ));
+        }
+        let mut steps = String::new();
+        for i in 0..4 {
+            steps.push_str(&format!(
+                "fof(d{i}, definition, (d{i} <=> (p{i} & q{i})), introduced(definition, [new_symbols(definition, [d{i}])])).\n"
+            ));
+        }
+        let cited = (0..4)
+            .rev()
+            .map(|i| format!("d{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        steps.push_str(&format!(
+            "cnf(main, plain, d0 | d1 | d2 | d3, inference(cnf_transformation, [status(thm)], [src,{cited}])).\n"
+        ));
+        for i in 0..4 {
+            steps.push_str(&format!(
+                "cnf(w{i}, plain, ~d{i} | p{i}, inference(cnf_transformation, [status(thm)], [src,{cited}])).\n"
+            ));
+            steps.push_str(&format!(
+                "cnf(m{i}, plain, ~d{i}, inference(resolution, [status(thm)], [w{i},fp{i}])).\n"
+            ));
+        }
+        steps.push_str(
+            "cnf(r1, plain, d1 | d2 | d3, inference(resolution, [status(thm)], [main,m0])).\n",
+        );
+        steps.push_str("cnf(r2, plain, d2 | d3, inference(resolution, [status(thm)], [r1,m1])).\n");
+        steps.push_str("cnf(r3, plain, d3, inference(resolution, [status(thm)], [r2,m2])).\n");
+        steps.push_str("cnf(bot, plain, $false, inference(resolution, [status(thm)], [r3,m3])).\n");
+        (problem, format!("{leaves}{steps}"))
+    }
+
+    #[test]
+    fn certifies_case_split_goal_without_expanding_the_source() {
+        let (problem, proof) = case_split_goal_problem_and_proof();
+        let problem = mrs_tptp::parse_tptp(&problem).expect("problem parses");
+        let proof = mrs_tptp::parse_tptp(&proof).expect("proof parses");
+        let limits = VerificationLimits {
+            max_expansion_clauses: 2,
+            ..VerificationLimits::default()
+        };
+        assert_eq!(
+            verify_strict(&problem, &proof, limits),
+            KernelVerdict::Certified,
+            "the goal is a weakening of four derived unit clauses; no expansion is needed"
+        );
+    }
+
+    /// Neither a resource ceiling nor an exhausted search may stand in for a
+    /// decision.
+    ///
+    /// The `max_expansion_clauses: 2` case above certifies; with the residue
+    /// budget set to zero the same proof must *not*, and it must not do so
+    /// because the search ran out of room. Raising `max_expansion_clauses` to
+    /// cover the whole source does not change that: the expansion still does
+    /// not contain the goal, so the step is refused rather than certified by a
+    /// limit.
+    #[test]
+    fn exhausted_residue_search_never_certifies() {
+        let (problem, proof) = case_split_goal_problem_and_proof();
+        let problem = mrs_tptp::parse_tptp(&problem).expect("problem parses");
+        let proof = mrs_tptp::parse_tptp(&proof).expect("proof parses");
+        for (name, limits) in [
+            (
+                "residue budget exhausted",
+                VerificationLimits {
+                    max_expansion_clauses: 2,
+                    max_residue_steps: 0,
+                    ..VerificationLimits::default()
+                },
+            ),
+            (
+                "expansion ceiling raised instead",
+                VerificationLimits {
+                    max_expansion_clauses: 100_000,
+                    max_residue_steps: 0,
+                    ..VerificationLimits::default()
+                },
+            ),
+        ] {
+            let verdict = verify_strict(&problem, &proof, limits);
+            assert!(
+                !matches!(verdict, KernelVerdict::Certified),
+                "{name}: an exhausted check must stay fail-closed, got {verdict:?}"
+            );
+        }
+    }
+
+    /// A goal clause that is not a consequence of its source and definitions is
+    /// still a real error, not an undecidable one.
+    ///
+    /// The definition matches the source exactly, so the expansion is faithful
+    /// and its not containing the goal is a fact about the proof.
+    #[test]
+    fn residue_check_does_not_hide_a_goal_that_is_not_a_consequence() {
+        let problem = "fof(src, axiom, ![X]: (p(X) & q(X))).\n\
+                       fof(nd, axiom, ![X]: (~d0(X))).\n\
+                       fof(nr, axiom, ![X]: (~r(X))).";
+        let proof = "fof(src, axiom, ![X]: (p(X) & q(X)), file('problem.p', src)).\n\
+                     fof(nd, axiom, ![X]: (~d0(X)), file('problem.p', nd)).\n\
+                     fof(nr, axiom, ![X]: (~r(X)), file('problem.p', nr)).\n\
+                     fof(d0, definition, ![X]: ((d0(X) <=> (p(X) & q(X)))), introduced(definition, [new_symbols(definition, [d0])])).\n\
+                     cnf(main, plain, d0(X) | r(X), inference(cnf_transformation, [status(thm)], [src,d0])).\n\
+                     cnf(r1, plain, d0(X), inference(resolution, [status(thm)], [main,nr])).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [r1,nd])).";
+        assert!(
+            matches!(check(problem, proof), KernelVerdict::Rejected(_)),
+            "a goal outside the faithful expansion is a bad proof and must be rejected"
+        );
     }
 
     #[test]
