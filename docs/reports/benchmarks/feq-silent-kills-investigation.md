@@ -6,7 +6,7 @@ different phase of the run, and the UEQ fix does not touch them.
 
 | | |
 |---|---|
-| Status | Diagnosed. Not fixed. |
+| Status | Diagnosed and fixed |
 | Severity | 12 of 400 casc-30 FEQ (3%) |
 | Soundness | Not a false-positive issue, but the fix must not be a lossy shortcut |
 
@@ -120,29 +120,33 @@ between clausification and the loop, and carries no deadline argument, so it is
 invisible to `TRACE_PROGRESS`, to every `search_deadline` check, and to the
 harness's 250 s outer timeout.
 
-## Fixing it
+## Fixing it (applied)
 
-The naive fix — bound the scan and assume "not blocked" — would be a coverage
-loss but no unsoundness, since the fallback is to run unrestricted. That is the
-wrong trade, because it silently disables SOS on exactly the large FEQ inputs
-where SOS is the point. The fix should preserve the answer:
+Bounding the scan and defaulting to "not blocked" was rejected: it is
+coverage-only in principle, but it silently disables SOS on exactly the large
+FEQ inputs where SOS is the point. The applied fix preserves the answer by
+splitting the work into two passes, each enumerating only what its own question
+needs:
 
 1. **Pass A over the support set only.** The early `return false` requires a
    clause with `distance < sos_depth`, so iterating `i` over support-set clauses
-   and `j` over all clauses finds the same witness. The support set is the
-   negated conjecture and its descendants, typically a handful of clauses, so
-   this is O(|SOS| x n) instead of O(n^2).
-2. **Pass B for `any_inference_at_all`.** Reached only when no support-set clause
-   participates in any inference. This question is "does the input admit any
-   inference at all", which does not need all pairs: index clauses by predicate
-   symbol and test only pairs whose selected literals share one. That reduces
-   the cost from O(n^2) to the sum of |pos_p| x |neg_p| over predicates.
+   and `j` over all clauses finds the same witness — the support-set member can
+   always be named as `i`. The support set is the negated conjecture and its
+   descendants, typically a handful of clauses, so this is O(|support| x n)
+   instead of O(n^2).
+2. **Pass B, predicate-indexed.** Reached only when no support-set clause
+   participates. `selected_atoms_unify` succeeds only for predicate atoms of the
+   same symbol with opposite polarity, so grouping selected literals by
+   predicate symbol yields the **exact** candidate set — every pair that could
+   possibly resolve. This is a reordering, not an over-approximation, which is
+   what makes it safe to rely on.
 
-Pass B is the part that needs care, because `any_inference_at_all` decides
-whether SOS is disabled. A predicate-indexed enumeration must still be exact —
-`pair_can_resolve` includes unification, so "same predicate, opposite polarity,
-unifiable" is the test, and same-predicate opposite-polarity is a sound
-over-approximation to iterate.
+`SWX070+1` now reports `Timeout` at 238 s with `processed=6080 generated=98092`;
+`NUM925+3` and `NUM925+7` are unchanged. Two tests pin the behaviour:
+`sos_verdict_matches_an_all_pairs_reference` compares the verdict against a
+brute-force all-pairs reference, and
+`sos_preflight_is_not_quadratic_in_the_clause_count` fails in 68 s over 4000
+clauses if the quadratic enumeration returns.
 
 ## Reproduction
 

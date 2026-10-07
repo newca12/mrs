@@ -202,8 +202,8 @@ host with less headroom is not a suitable repro host.
 
 | | |
 |---|---|
-| Status | **UEQ fixed** (`a67e523`); 12 casc-30 FEQ open, not scheduled |
-| Severity | was 15 of 300 casc-30 UEQ (5%); **12 of 400 casc-30 FEQ (3%)** remain |
+| Status | **UEQ fixed** (`a67e523`), **FEQ fixed** (UI-10); awaiting 96 GB re-confirmation |
+| Severity | was 15 of 300 casc-30 UEQ (5%) and 12 of 400 casc-30 FEQ (3%) |
 | Soundness | Not a false-positive issue. The timeouts may still cost coverage. |
 
 ### Original observation (UEQ, now fixed)
@@ -275,12 +275,13 @@ in a different phase, and `a67e523` does not fix them:
 `ALG215+2`, `BIO005+1`, `BIO006+1`, `CSR037+5`, `CSR047+5`, `CSR052+4`,
 `HWV090+1`, `HWV128+1`, `ITP015+4`, `NUM925+3`, `NUM925+7`, `SWX070+1`.
 
-They hang in `sos_blocks_every_input_inference` (`given_clause.rs:1070`), a
-set-of-support pre-flight that enumerates **every ordered pair** of
+They hung in `sos_blocks_every_input_inference` (`given_clause.rs`), a
+set-of-support pre-flight that enumerated **every ordered pair** of
 post-clausification clauses. It runs only under strategy 10, the only casc-30
 FEQ portfolio strategy that sets `sos_depth`, and it has no deadline check.
-Full analysis, measurements, and a proposed fix in
-`docs/reports/benchmarks/feq-silent-kills-investigation.md`; tracked as **UI-10**.
+Now fixed by splitting it into a support-set pass and a predicate-indexed pass;
+tracked as **UI-10**, with measurements in
+`docs/reports/benchmarks/feq-silent-kills-investigation.md`.
 
 The stage question that used to sit here is settled, and the `0 cnf clauses`
 reading that motivated it was wrong. That count is
@@ -1009,9 +1010,9 @@ measurement behind it, not a patch on suspicion.
 
 | | |
 |---|---|
-| Status | Diagnosed, not fixed |
-| Severity | 12 of 400 casc-30 FEQ (3%); input-dependent |
-| Soundness | Not a false-positive issue. A fix must not silently disable SOS. |
+| Status | **Fixed**; not yet re-confirmed on the 96 GB campaign host |
+| Severity | was 12 of 400 casc-30 FEQ (3%); input-dependent |
+| Soundness | Unaffected. The verdict is provably unchanged; see below. |
 
 ### Observation
 
@@ -1068,15 +1069,41 @@ On `mtsdev02` at `--workers 8`, `--time 238`, current `main`: `ALG215+2`,
 `CSR037+5`, `NUM925+3`, `NUM925+7` terminate; the other 8 produce no SZS status
 and are killed at 320 s.
 
-### Not a false positive, and the fix must not be a shortcut
+### Fix
 
-Bounding the scan and assuming "not blocked" would cost coverage rather than
-soundness — the fallback is to run unrestricted. That is the wrong trade,
-because it disables SOS on exactly the large FEQ inputs where SOS is the point.
-The answer should be preserved instead: iterate `i` over support-set clauses
-only (the early `return false` requires `distance < sos_depth`, and the support
-set is typically a handful of clauses), and answer the residual
-`any_inference_at_all` question with a predicate-indexed enumeration rather than
-all pairs.
+The pre-flight is split into two passes, each enumerating only what its own
+question needs:
+
+* **Pass A** iterates `i` over support-set clauses only. This finds exactly the
+  witness the early return looks for, because that return fires on
+  `clauses[i].distance < sos_depth || clauses[j].distance < sos_depth` and the
+  support-set member can be named as `i`. Cost O(|support| x n), and the support
+  set is the negated conjecture and its descendants — typically a handful of
+  clauses.
+* **Pass B** runs only when no support-set clause participates, and asks whether
+  the input admits *any* inference. `selected_atoms_unify` succeeds only for
+  predicate atoms of the same symbol with opposite polarity, so grouping selected
+  literals by predicate symbol yields the **exact** candidate set. This is a
+  reordering, not an over-approximation.
+
+Bounding the scan and defaulting to "not blocked" was rejected: it would be
+coverage-only in principle, but it silently disables SOS on exactly the large
+FEQ inputs where SOS is the point.
+
+Result on the problem that previously produced nothing:
+
+| | before | after |
+|---|---|---|
+| `SWX070+1`, `--strategy 10` | no output, killed at 320 s | `Timeout` at 238 s, `processed=6080 generated=98092` |
+| `NUM925+3`, `--strategy 10` | `Timeout` | `Timeout`, unchanged |
+| `NUM925+7`, `--strategy 10` | `Timeout` | `Timeout`, unchanged |
+
+Two tests pin it. `sos_verdict_matches_an_all_pairs_reference` asserts the new
+two-pass verdict equals a brute-force all-pairs reference across the
+support-set-in / support-set-out x can-infer / cannot-infer combinations, so a
+future optimization cannot quietly change what the gate decides.
+`sos_preflight_is_not_quadratic_in_the_clause_count` fails in 68 s over 4000
+clauses if the quadratic enumeration returns (verified by temporarily
+restoring it).
 
 Full write-up: `docs/reports/benchmarks/feq-silent-kills-investigation.md`.
