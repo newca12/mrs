@@ -267,36 +267,28 @@ A 12-second margin story (`GRP690-1` finished at 245 850 ms, 4.15 s of slack) fi
 the *survivors* but not the failures, which had no bound at all. And a coarse
 100-iteration deadline check cannot be the explanation, for the reason in (4).
 
-The FEQ 12 below are **not** covered by this fix and remain open.
+### FEQ: diagnosed separately — see UI-10
 
-### The same CSV symptom may occur in different stages
+The 12 casc-30 FEQ cases with the same CSV signature are a **different defect**,
+in a different phase, and `a67e523` does not fix them:
 
-casc-30 **FEQ** shows the same signature 12 more times
-(`ALG215+2`, `BIO005+1`, `BIO006+1`, `CSR037+5`, `CSR047+5`, `CSR052+4`,
-`HWV090+1`, `HWV128+1`, `ITP015+4`, `NUM925+3`, `NUM925+7`, `SWX070+1`), but it
-hangs in a **different phase**.
+`ALG215+2`, `BIO005+1`, `BIO006+1`, `CSR037+5`, `CSR047+5`, `CSR052+4`,
+`HWV090+1`, `HWV128+1`, `ITP015+4`, `NUM925+3`, `NUM925+7`, `SWX070+1`.
 
-`% Problem:` is printed at `src/main.rs:664`, after include resolution and
-lowering but before clausification, which runs at `src/main.rs:705` and `:737`;
-the search starts at `src/main.rs:1094`. Crucially, the `cnf clauses` count is
-only `lowered.cnf_clauses.len()` — clauses supplied directly in the problem —
-and does **not** count clauses generated from FOF during the following
-clausification loop. Therefore `0 cnf clauses` does not show how much
-clausification had completed when the process was killed.
+They hang in `sos_blocks_every_input_inference` (`given_clause.rs:1070`), a
+set-of-support pre-flight that enumerates **every ordered pair** of
+post-clausification clauses. It runs only under strategy 10, the only casc-30
+FEQ portfolio strategy that sets `sos_depth`, and it has no deadline check.
+Full analysis, measurements, and a proposed fix in
+`docs/reports/benchmarks/feq-silent-kills-investigation.md`; tracked as **UI-10**.
 
-The available log line and source flow suggest a phase distinction, but the
-absence of stage-level progress telemetry means the stage diagnosis is not
-confirmed:
-
-| division | last line reached | hangs in |
-|---|---|---|
-| UEQ | `% Problem: … 6 cnf clauses` | **search** (clausification finished; input was already CNF) |
-| FEQ | `% Problem: … 0 input CNF clauses` | **unknown**; could be clausification or later work |
-
-Every one of the 12 FEQ cases reports a large FOF input — `CSR037+5` has
-**540 249** axioms, `HWV128+1` 204 845, `CSR052+4` 44 216, down to `SWX070+1`
-at 148 axioms. Their `0 cnf clauses` values mean zero clauses were supplied in
-the input as CNF; they are not a count of generated clauses.
+The stage question that used to sit here is settled, and the `0 cnf clauses`
+reading that motivated it was wrong. That count is
+`lowered.cnf_clauses.len()` — clauses supplied **in the input** as CNF — and
+excludes everything clausification generates from FOF, so it says nothing about
+which phase was running. `HWV128+1` reaches `passive=580061` on a small host
+before hitting its memory ceiling, so for it clausification demonstrably
+completes. Both divisions hang in search setup, for different reasons.
 
 `clausify_with_provenance` currently exposes no deadline/cancellation argument.
 The final `None` at `main.rs:705` and `:737` is `leaf_id_override`, not a
@@ -1010,3 +1002,81 @@ A cheap interim mitigation, if a truncation is ever confirmed: give `GoalDirecte
 the same `.or_else(|| unprocessed.pop_age())` fallback `pop_weight` already has.
 That is a behaviour change to a completeness-relevant path, so it wants a
 measurement behind it, not a patch on suspicion.
+
+---
+
+## UI-10 — Strategy 10's set-of-support pre-flight is quadratic in the clause count
+
+| | |
+|---|---|
+| Status | Diagnosed, not fixed |
+| Severity | 12 of 400 casc-30 FEQ (3%); input-dependent |
+| Soundness | Not a false-positive issue. A fix must not silently disable SOS. |
+
+### Observation
+
+`Strategy 10` is the only casc-30 FEQ portfolio strategy that sets `sos_depth`
+(`strategy.rs:280`). Before the given-clause loop starts, the search runs
+`sos_blocks_every_input_inference` (`given_clause.rs:1070`), which enumerates
+**every ordered pair** of post-clausification clauses:
+
+```rust
+for i in 0..clauses.len() {
+    for j in 0..clauses.len() {
+        ...
+        any_inference_at_all = true;
+        if clauses[i].distance < sos_depth || clauses[j].distance < sos_depth {
+            return false;
+        }
+    }
+}
+any_inference_at_all
+```
+
+The scan only exits early on an inference-capable pair with a member inside the
+support set; otherwise it runs to completion. There is no deadline argument, and
+it runs before the iteration loop, so no `search_deadline` check can fire and
+`TRACE_PROGRESS` prints nothing.
+
+### Measurements
+
+`SWX070+1` has 148 FOF axioms and **105 772** clauses after clausification.
+Instrumented, the scan reached `i=548` of 105772 after 50 s — 0.5% of the outer
+loop — for ~1.12x10^10 pairs at ~1.15M pairs/s, i.e. **~2.7 hours**.
+
+The cost cliff is sharp, which is why the failure looks input-dependent:
+
+| problem | clauses after clausification | pairs | outcome |
+|---|---:|---:|---|
+| `NUM925+3` | 2 053 | 4 214 809 | ~3.7 s, then searches normally |
+| `NUM925+7` | 1 989 | 3 956 121 | scans fully, then searches normally |
+| `SWX070+1` | **105 772** | ~1.1x10^10 | never completes |
+
+The TPTP file size predicts nothing: `SWX070+1` has 149 formulas, `CSR037+5`
+has 3.
+
+### Isolation
+
+`CASC_FEQ_ORDER = [11, 12, 1, 6, 10, 8, 14, 4, ...]` and `build_casc_schedule_inner`
+(`named.rs:545-549`) builds the schedule as `order[0..workers]`, so a
+worker-count sweep is a strategy bisect. On `SWX070+1`: `w1`-`w4` clean
+(`[11]`, `[11,12]`, `[11,12,1]`, `[11,12,1,6]`), `w5` hangs once `10` is added.
+`--strategy 8 --workers 1` is clean, which is a false lead — 8 is not in the
+five-strategy prefix that hangs.
+
+On `mtsdev02` at `--workers 8`, `--time 238`, current `main`: `ALG215+2`,
+`CSR037+5`, `NUM925+3`, `NUM925+7` terminate; the other 8 produce no SZS status
+and are killed at 320 s.
+
+### Not a false positive, and the fix must not be a shortcut
+
+Bounding the scan and assuming "not blocked" would cost coverage rather than
+soundness — the fallback is to run unrestricted. That is the wrong trade,
+because it disables SOS on exactly the large FEQ inputs where SOS is the point.
+The answer should be preserved instead: iterate `i` over support-set clauses
+only (the early `return false` requires `distance < sos_depth`, and the support
+set is typically a handful of clauses), and answer the residual
+`any_inference_at_all` question with a predicate-indexed enumeration rather than
+all pairs.
+
+Full write-up: `docs/reports/benchmarks/feq-silent-kills-investigation.md`.
