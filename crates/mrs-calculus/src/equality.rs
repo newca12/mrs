@@ -373,6 +373,12 @@ pub fn equality_factor_id_until(
                     let l1s = sigma.apply_term(left1, bank);
                     let r1s = sigma.apply_term(right1, bank);
                     let comp = ordering.compare_id(l1s, r1s, bank);
+                    // An exhausted LPO comparison is only a placeholder
+                    // `Incomparable`, not an ordering decision. Do not derive
+                    // an equality-factoring inference from it.
+                    if crate::ordering::lpo_budget_expired() {
+                        return results;
+                    }
                     if comp == TermComparison::Less || comp == TermComparison::Equal {
                         continue;
                     }

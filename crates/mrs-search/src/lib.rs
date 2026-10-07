@@ -68,7 +68,29 @@ pub use instgen::{
     try_instgen_epr_with_telemetry,
 };
 pub use mrs_calculus::literal_selection::LiteralSelection;
-pub use mrs_calculus::ordering::TermOrdering;
+pub use mrs_calculus::ordering::{LpoBudgetGuard, TermOrdering, lpo_budget_expired};
+
+/// Default step budget for one LPO comparison.
+///
+/// The memo in `mrs_calculus::ordering` bounds an LPO comparison by the number
+/// of distinct `(s, t)` pairs, which is finite but not related to the wall
+/// clock: `|subterms(s)| x |subterms(t)|` can still be large enough that one
+/// comparison overruns the search's deadline, and every deadline check in the
+/// given-clause loop sits at the *top* of an iteration, so none of them can fire
+/// once a comparison is running. This caps the work per comparison as a
+/// backstop against a term shape larger than any seen so far.
+///
+/// Set well above what real comparisons need. A deliberately pathological
+/// wide-against-narrow pair costs 280 steps at depth 4, 172 016 at depth 12 and
+/// 3 538 924 at depth 16 — all completed in milliseconds once memoized, and all
+/// far below this limit. The backstop is therefore meant to bite only on a shape
+/// whose pair count is orders of magnitude larger still, where a single
+/// comparison would otherwise run for minutes.
+///
+/// On expiry the comparison returns no answer and the search returns `Timeout`.
+/// LPO orients superposition inferences, so it must never invent an answer to
+/// stay inside a budget.
+pub const LPO_STEP_BUDGET: u64 = 64_000_000;
 pub use mrs_cnf::goal_transform::GoalTransformMode;
 pub use preprocessing::{PreprocessingConfig, PreprocessingStats, preprocess_clauses};
 pub use resource::{

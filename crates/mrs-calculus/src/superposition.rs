@@ -248,6 +248,12 @@ fn superpose_with_id(
                 let from_s = sigma.apply_term(from, bank);
                 let to_s = sigma.apply_term(to, bank);
                 let comp = ordering.compare_id(from_s, to_s, bank);
+                // An exhausted LPO comparison is only a placeholder
+                // `Incomparable`, not an ordering decision. In particular, do
+                // not let it orient a superposition inference.
+                if crate::ordering::lpo_budget_expired() {
+                    return;
+                }
                 if comp == TermComparison::Less || comp == TermComparison::Equal {
                     continue;
                 }
