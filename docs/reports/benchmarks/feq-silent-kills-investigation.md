@@ -124,27 +124,19 @@ harness's 250 s outer timeout.
 
 Bounding the scan and defaulting to "not blocked" was rejected: it is
 coverage-only in principle, but it silently disables SOS on exactly the large
-FEQ inputs where SOS is the point. The applied fix preserves the answer by
-splitting the work into two passes, each enumerating only what its own question
-needs:
-
-1. **Pass A over the support set only.** The early `return false` requires a
-   clause with `distance < sos_depth`, so iterating `i` over support-set clauses
-   and `j` over all clauses finds the same witness — the support-set member can
-   always be named as `i`. The support set is the negated conjecture and its
-   descendants, typically a handful of clauses, so this is O(|support| x n)
-   instead of O(n^2).
-2. **Pass B, predicate-indexed.** Reached only when no support-set clause
-   participates. `selected_atoms_unify` succeeds only for predicate atoms of the
-   same symbol with opposite polarity, so grouping selected literals by
-   predicate symbol yields the **exact** candidate set — every pair that could
-   possibly resolve. This is a reordering, not an over-approximation, which is
-   what makes it safe to rely on.
+FEQ inputs where SOS is the point. The applied fix indexes selected positive and
+negative predicate literals by symbol, then examines only opposite-polarity
+pairs within each group. Different predicate symbols cannot resolve, so this is
+the **exact** candidate set, not an over-approximation. Each candidate pair
+answers both whether an inference exists and whether a support-set parent
+participates; unrelated clause pairs are never visited.
 
 `SWX070+1` now reports `Timeout` at 238 s with `processed=6080 generated=98092`;
 `NUM925+3` and `NUM925+7` are unchanged. Two tests pin the behaviour:
 `sos_verdict_matches_an_all_pairs_reference` compares the verdict against a
-brute-force all-pairs reference, and
+brute-force all-pairs reference across four cases (support-connected inference,
+only out-of-support inferences, no inference, and isolated support beside
+out-of-support inferences), and
 `sos_preflight_is_not_quadratic_in_the_clause_count` fails in 68 s over 4000
 clauses if the quadratic enumeration returns.
 

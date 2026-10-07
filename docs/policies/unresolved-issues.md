@@ -279,7 +279,8 @@ They hung in `sos_blocks_every_input_inference` (`given_clause.rs`), a
 set-of-support pre-flight that enumerated **every ordered pair** of
 post-clausification clauses. It runs only under strategy 10, the only casc-30
 FEQ portfolio strategy that sets `sos_depth`, and it has no deadline check.
-Now fixed by splitting it into a support-set pass and a predicate-indexed pass;
+Now fixed by indexing complementary selected predicate literals before testing
+candidate inference pairs;
 tracked as **UI-10**, with measurements in
 `docs/reports/benchmarks/feq-silent-kills-investigation.md`.
 
@@ -1071,20 +1072,12 @@ and are killed at 320 s.
 
 ### Fix
 
-The pre-flight is split into two passes, each enumerating only what its own
-question needs:
-
-* **Pass A** iterates `i` over support-set clauses only. This finds exactly the
-  witness the early return looks for, because that return fires on
-  `clauses[i].distance < sos_depth || clauses[j].distance < sos_depth` and the
-  support-set member can be named as `i`. Cost O(|support| x n), and the support
-  set is the negated conjecture and its descendants — typically a handful of
-  clauses.
-* **Pass B** runs only when no support-set clause participates, and asks whether
-  the input admits *any* inference. `selected_atoms_unify` succeeds only for
-  predicate atoms of the same symbol with opposite polarity, so grouping selected
-  literals by predicate symbol yields the **exact** candidate set. This is a
-  reordering, not an over-approximation.
+The pre-flight indexes selected positive and negative predicate literals by
+symbol, then examines only opposite-polarity pairs in each symbol group.
+Different predicate symbols cannot resolve, so this is the exact candidate set.
+Each candidate pair answers both whether any inference exists and whether the
+support-set restriction permits it. Work therefore tracks complementary
+same-symbol literal pairs rather than all clause pairs.
 
 Bounding the scan and defaulting to "not blocked" was rejected: it would be
 coverage-only in principle, but it silently disables SOS on exactly the large
@@ -1099,8 +1092,9 @@ Result on the problem that previously produced nothing:
 | `NUM925+7`, `--strategy 10` | `Timeout` | `Timeout`, unchanged |
 
 Two tests pin it. `sos_verdict_matches_an_all_pairs_reference` asserts the new
-two-pass verdict equals a brute-force all-pairs reference across the
-support-set-in / support-set-out x can-infer / cannot-infer combinations, so a
+indexed verdict equals a brute-force all-pairs reference across four cases (a
+support-connected inference, only out-of-support inferences, no inference, and
+an isolated support clause beside out-of-support inferences), so a
 future optimization cannot quietly change what the gate decides.
 `sos_preflight_is_not_quadratic_in_the_clause_count` fails in 68 s over 4000
 clauses if the quadratic enumeration returns (verified by temporarily

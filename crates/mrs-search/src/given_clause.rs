@@ -1072,19 +1072,12 @@ const SOS_STALL_LIMIT: u32 = 64;
 /// this runs before the given-clause loop it has no deadline check and produces
 /// no progress output — the run just stops emitting lines after `% Problem:`.
 ///
-/// So the work is split by what each pass actually needs:
-///
-/// * Pass A iterates `i` over support-set clauses only. That is exactly the
-///   witness the early return looks for, because the return fires on
-///   `clauses[i].distance < sos_depth || clauses[j].distance < sos_depth` and
-///   the support-set member can be named as `i`. Cost is O(|support| x n), and
-///   the support set is the negated conjecture and its descendants — typically a
-///   handful of clauses.
-/// * Pass B only runs when no support-set clause participates, and asks whether
-///   the input admits *any* inference at all. `selected_atoms_unify` succeeds
-///   only for predicate atoms of the same symbol with opposite polarity, so
-///   grouping selected literals by predicate symbol yields the exact candidate
-///   set rather than a superset — this is a reordering, not an approximation.
+/// Selected predicate literals are grouped by symbol and polarity first.
+/// Enumerating opposite-polarity members of those groups is an exact candidate
+/// set: predicates with different symbols cannot resolve. Each candidate pair
+/// then answers both questions at once — whether it is support-set connected and
+/// whether any inference exists. The cost is proportional to same-symbol,
+/// opposite-polarity literal pairs rather than all clause pairs.
 ///
 /// The verdict is unchanged in both directions. A wrong `true` runs unrestricted,
 /// which can only cost solves; a wrong `false` keeps a restriction that should
@@ -1110,55 +1103,9 @@ fn sos_blocks_every_input_inference(
         .map(|c| selected_literals_id(c, literal_selection, &state.term_bank))
         .collect();
 
-    // Pass A: does any support-set clause take part in an inference?
-    //
-    // The witness this looks for needs `clauses[i].distance < sos_depth ||
-    // clauses[j].distance < sos_depth`, so naming the support-set member as `i`
-    // finds exactly the same witness. The support set is the negated conjecture
-    // and its descendants — typically a handful of clauses — so this costs
-    // O(|support| x n) rather than O(n^2).
-    for i in 0..clauses.len() {
-        if clauses[i].distance >= sos_depth {
-            continue;
-        }
-        for j in 0..clauses.len() {
-            if i == j {
-                continue;
-            }
-            if !clauses[i]
-                .literals
-                .iter()
-                .enumerate()
-                .any(|(li, _)| selections[i].contains(&li))
-                || !clauses[j]
-                    .literals
-                    .iter()
-                    .enumerate()
-                    .any(|(lj, _)| selections[j].contains(&lj))
-            {
-                continue;
-            }
-            if pair_can_resolve(
-                &clauses[i],
-                &selections[i],
-                &clauses[j],
-                &selections[j],
-                state,
-            ) {
-                return false;
-            }
-        }
-    }
-
-    // Pass B: no support-set clause participates, so does the input admit any
-    // inference at all? This is the question that previously forced the full
-    // quadratic scan to run to completion.
-    //
-    // `selected_atoms_unify` only succeeds for predicate atoms of the same
-    // symbol, so grouping selected literals by predicate symbol yields the exact
-    // candidate set — every pair that could possibly resolve — instead of every
-    // pair in the clause set.
-    // Positive and negative selected literals, keyed by predicate symbol.
+    // Index selected positive and negative predicate literals by symbol. The
+    // old pre-flight paid O(n^2) even when every clause had a distinct
+    // predicate; these postings only generate pairs that could resolve.
     type ByPolarity = (Vec<(usize, usize)>, Vec<(usize, usize)>);
     let mut by_predicate: HashMap<SymbolId, ByPolarity> = HashMap::default();
     for (ci, clause) in clauses.iter().enumerate() {
@@ -1177,6 +1124,7 @@ fn sos_blocks_every_input_inference(
             }
         }
     }
+    let mut any_inference_at_all = false;
     for (positives, negatives) in by_predicate.values() {
         for (i, li) in positives {
             for (j, lj) in negatives {
@@ -1184,12 +1132,15 @@ fn sos_blocks_every_input_inference(
                     continue;
                 }
                 if selected_atoms_unify(&clauses[*i], *li, &clauses[*j], *lj, state) {
-                    return true;
+                    any_inference_at_all = true;
+                    if clauses[*i].distance < sos_depth || clauses[*j].distance < sos_depth {
+                        return false;
+                    }
                 }
             }
         }
     }
-    false
+    any_inference_at_all
 }
 
 /// Largest variable index in a term.
@@ -1211,6 +1162,7 @@ fn shift_vars(term: &Term, offset: u32) -> Term {
 
 /// Whether two clauses can produce at least one resolvent under the given
 /// literal selections.
+#[cfg(test)]
 fn pair_can_resolve(
     left: &IdClause,
     left_sel: &[usize],
@@ -4716,11 +4668,12 @@ mod tests {
         let mut symbols = SymbolTable::new();
         let mut id_gen = ClauseIdGen::new();
         let mut clauses = Vec::with_capacity(CLAUSES);
-        // Each clause gets its own predicate symbol, so no pair can ever resolve
-        // and the support set is irrelevant to the verdict.
+        // Each clause gets its own predicate symbol and remains outside the
+        // support set. The indexed scan therefore has no candidate pairs; a
+        // clause-pair scan would still examine every pair in Pass A and B.
         for i in 0..CLAUSES {
             let p = symbols.intern(&format!("p{i}_{i}"));
-            clauses.push(input_clause(
+            let mut clause = input_clause(
                 &mut id_gen,
                 vec![
                     Literal::pos(Atom::pred(p, vec![])),
@@ -4728,7 +4681,9 @@ mod tests {
                 ],
                 &format!("p{i}"),
                 "axiom",
-            ));
+            );
+            clause.distance = 100;
+            clauses.push(clause);
         }
         let ids: Vec<_> = clauses.iter().map(|c| c.id).collect();
         let mut state = SearchState::new(
@@ -4740,10 +4695,10 @@ mod tests {
         );
 
         let started = std::time::Instant::now();
-        // No two clauses share a predicate, so the input admits no inference and
-        // the gate must report that SOS blocks everything.
+        // No two clauses share a predicate, so the input admits no inference
+        // and the gate reports that there is nothing for SOS to block.
         assert!(
-            !sos_blocks_every_input_inference(&mut state, &ids, 100, &LiteralSelection::All),
+            !sos_blocks_every_input_inference(&mut state, &ids, 50, &LiteralSelection::All),
             "a set with no complementary literals should admit no inference"
         );
         assert!(
@@ -4756,72 +4711,72 @@ mod tests {
     /// The verdict must match the all-pairs definition on inputs where both can
     /// be run.
     ///
-    /// Pass A covers support-set witnesses and pass B covers the residual
-    /// "any inference at all" question through a predicate index. Both are
-    /// asserted against a brute-force all-pairs reference so a future
-    /// optimization cannot quietly change what the gate decides.
+    /// Candidate generation uses a predicate index. Its result is asserted
+    /// against a brute-force all-pairs reference so a future optimization
+    /// cannot quietly change what the gate decides.
     #[test]
     fn sos_verdict_matches_an_all_pairs_reference() {
-        // Distances are varied so all four combinations occur: support-set
-        // members that can and cannot infer, and non-members likewise.
-        let distances = [0u32, 0, 100, 100, 0, 100];
-        for &first_in_support in &[true, false] {
-            for &sos_can_infer in &[true, false] {
-                let mut symbols = SymbolTable::new();
-                let mut id_gen = ClauseIdGen::new();
-                // `p` and `q` resolve with each other; `r` resolves with `s`.
-                let p = symbols.intern("p");
-                let q = symbols.intern("q");
-                let r = symbols.intern("r");
-                let s = symbols.intern("s");
-                let mut next_name = 0usize;
-                let mut clause =
-                    |sym_pos: SymbolId, sym_neg: SymbolId, dist: u32, positive_first: bool| {
-                        let pos = Literal::pos(Atom::pred(sym_pos, vec![]));
-                        let neg = Literal::neg(Atom::pred(sym_neg, vec![]));
-                        let lits = if positive_first {
-                            vec![pos, neg]
-                        } else {
-                            vec![neg, pos]
-                        };
-                        next_name += 1;
-                        let name = format!("c{next_name}");
-                        let mut c = input_clause(&mut id_gen, lits, &name, "axiom");
-                        c.distance = dist;
-                        c
+        // Exercise the four meaningful cases: support-connected inference,
+        // only out-of-support inference, no inference, and a support clause
+        // isolated alongside unrelated out-of-support inferences.
+        let expected = [false, true, false, true];
+        for (case, expected) in expected.into_iter().enumerate() {
+            let mut symbols = SymbolTable::new();
+            let mut id_gen = ClauseIdGen::new();
+            // `p`/`q` and `r`/`s` are complementary pairs; `t` has no
+            // complementary partner.
+            let p = symbols.intern("p");
+            let r = symbols.intern("r");
+            let s = symbols.intern("s");
+            let t = symbols.intern("t");
+            let mut next_name = 0usize;
+            let mut clause =
+                |sym_pos: SymbolId, sym_neg: SymbolId, dist: u32, positive_first: bool| {
+                    let pos = Literal::pos(Atom::pred(sym_pos, vec![]));
+                    let neg = Literal::neg(Atom::pred(sym_neg, vec![]));
+                    let lits = if positive_first {
+                        vec![pos, neg]
+                    } else {
+                        vec![neg, pos]
                     };
-
-                // Clause 0 is the goal; whether it can infer is the variant
-                // under test. Clause 1 always offers a non-support inference so
-                // pass B has something to find when pass A does not fire.
-                let goal = if sos_can_infer {
-                    clause(p, q, if first_in_support { 0 } else { 100 }, true)
-                } else {
-                    clause(r, r, if first_in_support { 0 } else { 100 }, true)
+                    next_name += 1;
+                    let name = format!("c{next_name}");
+                    let mut c = input_clause(&mut id_gen, lits, &name, "axiom");
+                    c.distance = dist;
+                    c
                 };
-                let mut other = clause(r, s, 100, true);
-                other.distance = 100;
-                let clauses = vec![goal, other];
-                let ids: Vec<_> = clauses.iter().map(|c| c.id).collect();
-                let distances_in_order = distances;
-                let _ = distances_in_order;
 
-                let mut state = SearchState::new(
-                    clauses,
-                    id_gen,
-                    Arc::new(SymbolConfig::default()),
-                    Arc::new(symbols),
-                    false,
-                );
+            let clauses = match case {
+                // A support-set negative p literal resolves with positive p.
+                0 => vec![clause(r, p, 0, true), clause(p, s, 100, true)],
+                // Inferences exist, but both complementary literals are outside
+                // the support set.
+                1 => vec![clause(r, p, 100, true), clause(p, s, 100, true)],
+                // No complementary selected literals exist.
+                2 => vec![clause(p, p, 0, true), clause(r, r, 100, true)],
+                // Support clause is isolated while unrelated non-support
+                // clauses still resolve with each other.
+                _ => vec![
+                    clause(t, t, 0, true),
+                    clause(r, p, 100, true),
+                    clause(p, s, 100, true),
+                ],
+            };
+            let ids: Vec<_> = clauses.iter().map(|c| c.id).collect();
 
-                let selection = LiteralSelection::All;
-                let got = sos_blocks_every_input_inference(&mut state, &ids, 100, &selection);
-                let want = all_pairs_reference(&mut state, &ids, 100, &selection);
-                assert_eq!(
-                    got, want,
-                    "first_in_support={first_in_support} sos_can_infer={sos_can_infer}"
-                );
-            }
+            let mut state = SearchState::new(
+                clauses,
+                id_gen,
+                Arc::new(SymbolConfig::default()),
+                Arc::new(symbols),
+                false,
+            );
+
+            let selection = LiteralSelection::All;
+            let got = sos_blocks_every_input_inference(&mut state, &ids, 100, &selection);
+            let want = all_pairs_reference(&mut state, &ids, 100, &selection);
+            assert_eq!(got, want, "case {case}");
+            assert_eq!(got, expected, "unexpected verdict for case {case}");
         }
     }
 
@@ -4847,23 +4802,7 @@ mod tests {
             .collect();
         let mut any_inference_at_all = false;
         for i in 0..clauses.len() {
-            for j in 0..clauses.len() {
-                if i == j {
-                    continue;
-                }
-                if !clauses[i]
-                    .literals
-                    .iter()
-                    .enumerate()
-                    .any(|(li, _)| selections[i].contains(&li))
-                    || !clauses[j]
-                        .literals
-                        .iter()
-                        .enumerate()
-                        .any(|(lj, _)| selections[j].contains(&lj))
-                {
-                    continue;
-                }
+            for j in (i + 1)..clauses.len() {
                 if !pair_can_resolve(
                     &clauses[i],
                     &selections[i],
