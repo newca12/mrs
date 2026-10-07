@@ -182,6 +182,9 @@ impl KBO {
         t: mrs_core::term_bank::TermId,
         bank: &mrs_core::term_bank::TermBank,
     ) -> TermComparison {
+        if budget::expired() {
+            return TermComparison::Incomparable;
+        }
         if s == t {
             return TermComparison::Equal;
         }
@@ -340,6 +343,9 @@ impl KBO {
     /// 3. If `weight(s) = weight(t)` and same top symbol: compare args lexicographically.
     /// 4. If `weight(s) = weight(t)` and different top symbols: compare by precedence.
     pub fn compare(&self, s: &Term, t: &Term) -> TermComparison {
+        if budget::expired() {
+            return TermComparison::Incomparable;
+        }
         if s == t {
             return TermComparison::Equal;
         }
@@ -531,16 +537,14 @@ pub struct LPO {
 ///
 /// # Step budget
 ///
-/// The memo bounds work by the number of *distinct pairs*, which is still
-/// `|subterms(s)| x |subterms(t)|`. That is finite but not bounded by the
-/// deadline, and a single comparison can still exceed it, so `steps` caps the
-/// work per call as well. The cap is a backstop against a term shape larger
-/// than any seen so far, not the primary bound.
+/// The memo bounds recursive pair calculations by `|subterms(s)| x
+/// |subterms(t)|`, while an armed per-comparison step cap bounds actual visits,
+/// including memo hits and argument-list scans.
 ///
 /// **Expiry cannot yield a comparison result.** LPO orients superposition
 /// inferences, so an arbitrary answer on overflow would silently produce an
 /// unsound proof. Instead the call aborts, `expired` is set, and
-/// [`LpoBudget::expired`] lets the caller terminate the search. Callers must
+/// [`lpo_budget_expired`] lets the caller terminate the search. Callers must
 /// treat expiry as a reason to stop, never as an answer — see
 /// `mrs_search::lpo_budget` for the search-side wiring.
 #[derive(Default)]
@@ -565,18 +569,29 @@ impl LpoMemo {
         self.steps += 1;
         Some(())
     }
+
+    /// Charges work proportional to an argument-list scan/allocation without
+    /// overflowing the counter when the requested amount exceeds the budget.
+    fn charge_many(&mut self, count: usize, limit: u64) -> Option<()> {
+        let count = u64::try_from(count).unwrap_or(u64::MAX);
+        if count > limit.saturating_sub(self.steps) {
+            return None;
+        }
+        self.steps += count;
+        Some(())
+    }
 }
 
 /// Per-thread budget for LPO comparisons, armed by the search.
 ///
 /// LPO cannot answer "I give up" with a comparison, so the budget only decides
-/// when to *stop*: the search that armed it checks [`expired`] and returns
+/// when to *stop*: the search that armed it checks [`lpo_budget_expired`] and returns
 /// `Timeout`. Being thread-local matches the search's own structure — one
 /// worker thread per strategy, each with its own deadline — and keeps the
 /// hot-path comparison free of an extra parameter.
 ///
-/// Unarmed, the budget is unlimited, so library callers outside a search
-/// (`mrs-book-labs`, `certified.rs`'s own fixtures) are unaffected.
+/// Unarmed, the budget is unlimited, so library callers outside a search are
+/// unaffected.
 mod budget {
     use std::cell::Cell;
 
@@ -667,11 +682,14 @@ impl LPO {
         t: mrs_core::term_bank::TermId,
         bank: &mrs_core::term_bank::TermBank,
     ) -> TermComparison {
+        if budget::expired() {
+            return TermComparison::Incomparable;
+        }
         if s == t {
             return TermComparison::Equal;
         }
         let mut memo = LpoMemo::default();
-        match self.lpo_gt_id(s, t, bank, &mut memo) {
+        let result = match self.lpo_gt_id(s, t, bank, &mut memo) {
             Some(true) => TermComparison::Greater,
             Some(false) => match self.lpo_gt_id(t, s, bank, &mut memo) {
                 Some(true) => TermComparison::Less,
@@ -679,6 +697,11 @@ impl LPO {
                 None => budget::mark_expired(),
             },
             None => budget::mark_expired(),
+        };
+        if budget::expired() {
+            TermComparison::Incomparable
+        } else {
+            result
         }
     }
 
@@ -695,10 +718,12 @@ impl LPO {
         bank: &mrs_core::term_bank::TermBank,
         memo: &mut LpoMemo,
     ) -> Option<bool> {
+        // Charge every recursive visit, including memo hits, because revisiting
+        // cached children and scanning high-arity nodes are part of the work.
+        memo.charge(budget::limit())?;
         if let Some(&cached) = memo.ids.get(&(s, t)) {
             return Some(cached);
         }
-        memo.charge(budget::limit())?;
         let result = self.lpo_gt_id_uncached(s, t, bank, memo)?;
         memo.ids.insert((s, t), result);
         Some(result)
@@ -716,13 +741,14 @@ impl LPO {
             if s == t {
                 return Some(false);
             }
-            return Some(occurs_in_id(*v, s, bank));
+            return self.occurs_in_id(*v, s, bank, memo);
         }
 
         match bank.get(s) {
             mrs_core::term_bank::TermNode::Var(_) => Some(false),
             mrs_core::term_bank::TermNode::App(f, s_args) => {
                 // Case 2a: some si ≥_lpo t (subterm property)
+                memo.charge_many(s_args.len(), budget::limit())?;
                 for &si in s_args {
                     if si == t {
                         return Some(true);
@@ -737,6 +763,7 @@ impl LPO {
 
                 match bank.get(t) {
                     mrs_core::term_bank::TermNode::App(g, t_args) => {
+                        memo.charge_many(t_args.len(), budget::limit())?;
                         for &tj in t_args {
                             match self.lpo_gt_id(s, tj, bank, memo) {
                                 Some(true) => {}
@@ -771,6 +798,7 @@ impl LPO {
         bank: &mrs_core::term_bank::TermBank,
         memo: &mut LpoMemo,
     ) -> Option<bool> {
+        memo.charge_many(args_s.len().min(args_t.len()), budget::limit())?;
         for (&si, &ti) in args_s.iter().zip(args_t.iter()) {
             if si == ti {
                 continue;
@@ -778,6 +806,33 @@ impl LPO {
             return self.lpo_gt_id(si, ti, bank, memo);
         }
         Some(args_s.len() > args_t.len())
+    }
+
+    /// Checks variable occurrence without leaving the per-comparison work
+    /// budget. Term-bank terms form a DAG, so the walk is charged even when
+    /// shared descendants make it revisit the same node.
+    fn occurs_in_id(
+        &self,
+        variable: VarId,
+        term: mrs_core::term_bank::TermId,
+        bank: &mrs_core::term_bank::TermBank,
+        memo: &mut LpoMemo,
+    ) -> Option<bool> {
+        let mut pending = vec![term];
+        while let Some(current) = pending.pop() {
+            memo.charge(budget::limit())?;
+            match bank.get(current) {
+                mrs_core::term_bank::TermNode::Var(found) if *found == variable => {
+                    return Some(true);
+                }
+                mrs_core::term_bank::TermNode::Var(_) => {}
+                mrs_core::term_bank::TermNode::App(_, args) => {
+                    memo.charge_many(args.len(), budget::limit())?;
+                    pending.extend(args.iter().copied());
+                }
+            }
+        }
+        Some(false)
     }
 
     /// Compares two terms under LPO.
@@ -790,11 +845,14 @@ impl LPO {
     ///    c. t = f(t1,...,tm) and (s1,...,sn) >_lpo_lex (t1,...,tm)
     ///    and s >_lpo all tj.
     pub fn compare(&self, s: &Term, t: &Term) -> TermComparison {
+        if budget::expired() {
+            return TermComparison::Incomparable;
+        }
         if s == t {
             return TermComparison::Equal;
         }
         let mut memo = LpoMemo::default();
-        match self.lpo_gt(s, t, &mut memo) {
+        let result = match self.lpo_gt(s, t, &mut memo) {
             Some(true) => TermComparison::Greater,
             Some(false) => match self.lpo_gt(t, s, &mut memo) {
                 Some(true) => TermComparison::Less,
@@ -802,6 +860,11 @@ impl LPO {
                 None => budget::mark_expired(),
             },
             None => budget::mark_expired(),
+        };
+        if budget::expired() {
+            TermComparison::Incomparable
+        } else {
+            result
         }
     }
 
@@ -810,11 +873,13 @@ impl LPO {
     /// `None` means the step budget ran out, which the caller must not read as
     /// a comparison result.
     fn lpo_gt(&self, s: &Term, t: &Term, memo: &mut LpoMemo) -> Option<bool> {
+        // Charge every recursive visit, including memo hits, to cap traversal
+        // work rather than only the number of cache insertions.
+        memo.charge(budget::limit())?;
         let key = (s as *const Term as usize, t as *const Term as usize);
         if let Some(&cached) = memo.terms.get(&key) {
             return Some(cached);
         }
-        memo.charge(budget::limit())?;
         let result = self.lpo_gt_uncached(s, t, memo)?;
         memo.terms.insert(key, result);
         Some(result)
@@ -826,7 +891,7 @@ impl LPO {
             if s == t {
                 return Some(false);
             }
-            return Some(occurs_in(*v, s));
+            return self.occurs_in(*v, s, memo);
         }
 
         match s {
@@ -838,6 +903,7 @@ impl LPO {
             }
             Term::App(f, s_args) => {
                 // Case 2a: some si ≥_lpo t (subterm property)
+                memo.charge_many(s_args.len(), budget::limit())?;
                 for si in s_args {
                     if si == t {
                         return Some(true);
@@ -852,6 +918,7 @@ impl LPO {
                 match t {
                     Term::App(g, t_args) => {
                         // For cases 2b and 2c, we need s >_lpo all tj
+                        memo.charge_many(t_args.len(), budget::limit())?;
                         for tj in t_args {
                             match self.lpo_gt(s, tj, memo) {
                                 Some(true) => {}
@@ -887,6 +954,7 @@ impl LPO {
     /// Returns true if args_s >_lex args_t (first differing position has si > ti).
     /// Also requires that s >_lpo all remaining tj (which the caller ensures via s_gt_all_tj).
     fn lex_gt(&self, args_s: &[Term], args_t: &[Term], memo: &mut LpoMemo) -> Option<bool> {
+        memo.charge_many(args_s.len().min(args_t.len()), budget::limit())?;
         for (si, ti) in args_s.iter().zip(args_t.iter()) {
             if si == ti {
                 continue;
@@ -900,32 +968,28 @@ impl LPO {
         // since we check s == t at the top.
         Some(false)
     }
+
+    /// Budgeted iterative variable-occurrence check for the owned-term API.
+    fn occurs_in(&self, variable: VarId, term: &Term, memo: &mut LpoMemo) -> Option<bool> {
+        let mut pending = vec![term];
+        while let Some(current) = pending.pop() {
+            memo.charge(budget::limit())?;
+            match current {
+                Term::Var(found) if *found == variable => return Some(true),
+                Term::Var(_) => {}
+                Term::App(_, args) => {
+                    memo.charge_many(args.len(), budget::limit())?;
+                    pending.extend(args.iter());
+                }
+            }
+        }
+        Some(false)
+    }
 }
 
 impl Default for LPO {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// Returns true if variable `v` occurs in term `t`.
-fn occurs_in(v: VarId, t: &Term) -> bool {
-    match t {
-        Term::Var(w) => v == *w,
-        Term::App(_, args) => args.iter().any(|a| occurs_in(v, a)),
-    }
-}
-
-fn occurs_in_id(
-    v: VarId,
-    t: mrs_core::term_bank::TermId,
-    bank: &mrs_core::term_bank::TermBank,
-) -> bool {
-    match bank.get(t) {
-        mrs_core::term_bank::TermNode::Var(w) => v == *w,
-        mrs_core::term_bank::TermNode::App(_, args) => {
-            args.iter().any(|&a| occurs_in_id(v, a, bank))
-        }
     }
 }
 
@@ -1503,14 +1567,12 @@ mod tests {
     fn lpo_generous_budget_preserves_verdicts() {
         let mut syms = SymbolTable::new();
         let lpo = LPO::new();
-        // Depth 16 is the widest shape measured in the GRP024-5 investigation
-        // that still completes in milliseconds once memoized (~3.5M steps), so
-        // the budget here has to exceed that to be "generous" in any useful
-        // sense.
+        // The budget includes memo hits and argument-list scans as well as
+        // newly computed pairs, so give the depth-16 case ample headroom.
         for depth in [1usize, 4, 8, 12, 16] {
             let (left, right) = wide_against_narrow(&mut syms, depth);
             let expected = lpo.compare(&left, &right);
-            let _guard = LpoBudgetGuard::arm(8_000_000);
+            let _guard = LpoBudgetGuard::arm(64_000_000);
             assert_eq!(
                 lpo.compare(&left, &right),
                 expected,

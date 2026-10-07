@@ -498,6 +498,9 @@ fn avatar_refute_branch(
             mrs_cadical::SolveResult::Sat => {
                 update_model(state);
                 sync_active_dormant(state, ordering);
+                if crate::lpo_budget_expired() {
+                    return AvatarBranchResult::Unknown;
+                }
                 AvatarBranchResult::Sat
             }
             mrs_cadical::SolveResult::Unsat => AvatarBranchResult::Unsat,
@@ -527,6 +530,9 @@ fn avatar_refute_branch(
         mrs_cadical::SolveResult::Sat => {
             update_model(state);
             sync_active_dormant(state, ordering);
+            if crate::lpo_budget_expired() {
+                return AvatarBranchResult::Unknown;
+            }
             AvatarBranchResult::Sat
         }
         mrs_cadical::SolveResult::Unsat => AvatarBranchResult::Unsat,
@@ -1182,6 +1188,10 @@ fn pair_can_resolve(
 }
 
 fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
+    // Arm before setup too: removing redundant clauses can update demodulation
+    // indexes through LPO comparisons before the given-clause loop begins.
+    let _lpo_budget = crate::LpoBudgetGuard::arm(crate::LPO_STEP_BUDGET);
+
     let mut ordering = config.ordering.clone();
     let sym_config = ordering.symbol_config();
 
@@ -1231,18 +1241,12 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
 
     for id in to_remove {
         state.remove_clause_and_orphans(id, &ordering);
+        if crate::lpo_budget_expired() {
+            return SearchResult::Timeout;
+        }
     }
-
     let start = Instant::now();
     state.search_deadline = Some(start + config.time_limit);
-
-    // Arm the LPO step budget for this worker's search. Unarmed it is
-    // unlimited, which would leave a single comparison unbounded by the
-    // deadline: every `search_deadline` check below sits at the top of an
-    // iteration, so none of them fires while one is running. The guard restores
-    // the previous state on return, so a nested or subsequent search on this
-    // thread does not inherit a spent budget.
-    let _lpo_budget = crate::LpoBudgetGuard::arm(crate::LPO_STEP_BUDGET);
 
     // Initial memory watchdog check
     if let Some(limit_mb) = config.resource_limits.max_memory_mb
@@ -1265,7 +1269,13 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
     if config.use_avatar {
         state.avatar.current_model.clear();
         match state.avatar.solver.solve() {
-            mrs_cadical::SolveResult::Sat => update_model(state),
+            mrs_cadical::SolveResult::Sat => {
+                update_model(state);
+                sync_active_dormant(state, &ordering);
+                if crate::lpo_budget_expired() {
+                    return SearchResult::Timeout;
+                }
+            }
             mrs_cadical::SolveResult::Unsat => {
                 if std::env::var("TRACE_SEARCH").is_ok() {
                     eprintln!("[TRACE] return site 1 (line 437) called with id = 0");
@@ -1474,6 +1484,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         })
                     });
                     if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                        return SearchResult::Timeout;
+                    }
+                    if crate::lpo_budget_expired() {
                         return SearchResult::Timeout;
                     }
                     if !already_present {
@@ -1751,6 +1764,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
         if start.elapsed() >= config.time_limit {
             return SearchResult::Timeout;
         }
+        if crate::lpo_budget_expired() {
+            return SearchResult::Timeout;
+        }
 
         if given.is_empty() {
             if given.avatar.is_empty() {
@@ -1848,6 +1864,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 given
             }
         };
+        if crate::lpo_budget_expired() {
+            return SearchResult::Timeout;
+        }
 
         // Destructive Equality Resolution (DER)
         let given = if let Some((simplified, steps)) =
@@ -1877,6 +1896,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
         } else {
             given
         };
+        if crate::lpo_budget_expired() {
+            return SearchResult::Timeout;
+        }
 
         // Condensation
         let condensed = if condense_allowed(given.literals.len()) {
@@ -1890,6 +1912,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
             None
         };
         if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+            return SearchResult::Timeout;
+        }
+        if crate::lpo_budget_expired() {
             return SearchResult::Timeout;
         }
         let given = if let Some(condensed) = condensed {
@@ -1912,6 +1937,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 base
             }
         };
+        if crate::lpo_budget_expired() {
+            return SearchResult::Timeout;
+        }
 
         // Generate inferences
         let mut new_clauses = Vec::new();
@@ -1999,6 +2027,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                                 base
                             }
                         };
+                        if crate::lpo_budget_expired() {
+                            return SearchResult::Timeout;
+                        }
                         let resolvents = resolution::resolve_selected_id_until(
                             &given,
                             &partner,
@@ -2019,7 +2050,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                             mark_ac_resolution(&mut r, &state.ac_axiom_ids);
                             new_clauses.push(r);
                         }
-                        if start.elapsed() >= config.time_limit {
+                        if start.elapsed() >= config.time_limit || crate::lpo_budget_expired() {
                             return SearchResult::Timeout;
                         }
                     }
@@ -2097,6 +2128,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                             base
                         }
                     };
+                    if crate::lpo_budget_expired() {
+                        return SearchResult::Timeout;
+                    }
                     let sp = superposition::superpose_selected_id_until(
                         &given,
                         active,
@@ -2114,7 +2148,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         mark_ac_superposition(&mut clause, &state.ac_axiom_ids);
                         clause
                     }));
-                    if start.elapsed() >= config.time_limit {
+                    if start.elapsed() >= config.time_limit || crate::lpo_budget_expired() {
                         return SearchResult::Timeout;
                     }
                 }
@@ -2135,6 +2169,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                             base
                         }
                     };
+                    if crate::lpo_budget_expired() {
+                        return SearchResult::Timeout;
+                    }
                     #[cfg(feature = "parent-guidance")]
                     let (reject_self, self_sample) = state.reject_parent_pair(
                         &given,
@@ -2166,6 +2203,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                             mark_ac_superposition(&mut clause, &state.ac_axiom_ids);
                             clause
                         }));
+                        if crate::lpo_budget_expired() {
+                            return SearchResult::Timeout;
+                        }
                     }
                 }
             }
@@ -2257,6 +2297,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         state.stats.parent_guidance_pruned += 1;
                         continue;
                     }
+                    if crate::lpo_budget_expired() {
+                        return SearchResult::Timeout;
+                    }
                     let sp = superposition::superpose_selected_id_until(
                         active,
                         &given,
@@ -2274,7 +2317,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         mark_ac_superposition(&mut clause, &state.ac_axiom_ids);
                         clause
                     }));
-                    if start.elapsed() >= config.time_limit {
+                    if start.elapsed() >= config.time_limit || crate::lpo_budget_expired() {
                         return SearchResult::Timeout;
                     }
                 }
@@ -2305,6 +2348,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
         if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
             return SearchResult::Timeout;
         }
+        if crate::lpo_budget_expired() {
+            return SearchResult::Timeout;
+        }
         new_clauses.extend(equality::equality_factor_id_until(
             &given,
             &mut state.term_bank,
@@ -2313,6 +2359,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
             state.search_deadline,
         ));
         if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+            return SearchResult::Timeout;
+        }
+        if crate::lpo_budget_expired() {
             return SearchResult::Timeout;
         }
 
@@ -2446,6 +2495,13 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
         state.stats.processed += 1;
 
         publish_shared_chain_counted(state, &given, iteration, config.shared_pool_poll_interval);
+
+        // Ordering comparisons in this worker may have exhausted their per-call
+        // LPO budget while maintaining the demodulation index. Stop before those
+        // partial results can be consumed by later inference steps.
+        if crate::lpo_budget_expired() {
+            return SearchResult::Timeout;
+        }
 
         if is_unit_positive_equality_id(&given)
             && let IdAtom::Eq(l, r) = &given.literals[0].atom
@@ -2795,6 +2851,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     mrs_cadical::SolveResult::Sat => {
                         update_model(state);
                         sync_active_dormant(state, &ordering);
+                        if crate::lpo_budget_expired() {
+                            return SearchResult::Timeout;
+                        }
                     }
                     mrs_cadical::SolveResult::Unsat => {
                         if trace_avatar {
@@ -2906,6 +2965,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     state.search_deadline,
                 );
                 if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                    return SearchResult::Timeout;
+                }
+                if crate::lpo_budget_expired() {
                     return SearchResult::Timeout;
                 }
                 let clause = if let Some(simplified) = demodulated {
@@ -3246,6 +3308,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
     // An empty queue after LRS activity is NOT a genuine saturation;
     // return GaveUp (incomplete) to prevent the portfolio stop-flag from
     // firing and producing a false CounterSatisfiable verdict.
+    if crate::lpo_budget_expired() {
+        return SearchResult::Timeout;
+    }
     if state.stats.lrs_discarded > 0 {
         return SearchResult::GaveUp;
     }
