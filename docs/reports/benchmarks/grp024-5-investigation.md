@@ -1,6 +1,6 @@
 # GRP024-5: associative commutator, UEQ
 
-Investigation branch: `investigate/grp024-5` (starting at `8bc0765`).
+Investigation branched from `8bc0765`; merged to `main` as `a67e523`.
 
 ## Input and expected outcome
 

@@ -202,7 +202,7 @@ host with less headroom is not a suitable repro host.
 
 | | |
 |---|---|
-| Status | **UEQ fixed** (`73c9020`); 12 casc-30 FEQ open, not scheduled |
+| Status | **UEQ fixed** (`a67e523`); 12 casc-30 FEQ open, not scheduled |
 | Severity | was 15 of 300 casc-30 UEQ (5%); **12 of 400 casc-30 FEQ (3%)** remain |
 | Soundness | Not a false-positive issue. The timeouts may still cost coverage. |
 
@@ -226,10 +226,10 @@ the thing the 2 s soft margin exists to avoid.
 
 ### Resolved for UEQ: exponential `lpo_gt_id`
 
-Fixed in `fix/lpo-memoized-comparison` (`73c9020`). All 15 UEQ problems now
-self-terminate with a `Timeout` status under `--strategy 8`, where previously
-the process was killed with no output; under `--workers 8`, `GRP655-13` and
-`LAT168-1` now report `Unsatisfiable`.
+Fixed in `a67e523`. All 15 UEQ problems now self-terminate with a `Timeout`
+status under `--strategy 8`, where previously the process was killed with no
+output; under `--workers 8`, `GRP655-13` and `LAT168-1` now report
+`Unsatisfiable`.
 
 `lpo_gt`/`lpo_gt_id` in `crates/mrs-calculus/src/ordering.rs` had no
 memoization. Case 2a re-descends the arguments of `s` while Case 2b re-compares
@@ -903,7 +903,7 @@ rlimit, and the new silent kills sit at 10-18 GB.
 
 **That reading is now known to be wrong for the UEQ mechanism.** The silent
 kills were not queue-size-dependent per-iteration work at all: they were
-exponential `lpo_gt_id` recursion (UI-2, fixed in `73c9020`), which has nothing
+exponential `lpo_gt_id` recursion (UI-2, fixed in `a67e523`), which has nothing
 to do with queue size. The 12 new ones are better explained as the same LPO
 defect being reached on more inputs, or as the throughput effect below. Either
 way, do not attribute them to LRS.
