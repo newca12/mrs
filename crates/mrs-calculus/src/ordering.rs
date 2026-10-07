@@ -1194,15 +1194,15 @@ mod tests {
         }
     }
 
-    /// Builds `f(f(...f(c)...))` nested `depth` deep, plus a right-nested
-    /// sibling, so that comparing the two exercises LPO Case 2a against
-    /// Case 2b at every level.
+    /// Builds two `f`-nested terms with distinct leaves, so comparison cannot
+    /// return early on structural equality and exercises LPO Case 2a/2b.
     fn nested_pair(syms: &mut SymbolTable, depth: usize) -> (Term, Term) {
         let f = syms.intern("f");
         let g = syms.intern("g");
         let c = syms.intern("c");
+        let d = syms.intern("d");
         let mut left = Term::constant(c);
-        let mut right = Term::constant(c);
+        let mut right = Term::constant(d);
         for _ in 0..depth {
             left = Term::app(f, vec![left, Term::constant(g)]);
             right = Term::app(f, vec![right, Term::constant(g)]);
@@ -1224,15 +1224,9 @@ mod tests {
         let (left, right) = nested_pair(&mut syms, 24);
         let lpo = LPO::new();
         let verdict = lpo.compare(&left, &right);
-        // Same-precedence symbols, equal arity: the comparison must still be
-        // antisymmetric, which is the property the memo must preserve.
-        assert!(
-            matches!(
-                verdict,
-                TermComparison::Equal | TermComparison::Greater | TermComparison::Less
-            ),
-            "comparison produced {verdict:?}"
-        );
+        // d was interned after c, so the different leaves determine the order.
+        assert_eq!(verdict, TermComparison::Less);
+        assert_eq!(lpo.compare(&right, &left), TermComparison::Greater);
     }
 
     /// The memo must not change any LPO verdict.
@@ -1260,12 +1254,14 @@ mod tests {
                 assert_eq!(first, second, "memoized comparison is not stable");
                 // A reduction ordering is antisymmetric on distinct terms.
                 let reversed = lpo.compare(right, left);
-                assert!(
-                    !matches!(
-                        (first, reversed),
-                        (TermComparison::Greater, TermComparison::Greater)
-                    ),
-                    "both directions reported Greater: {left:?} vs {right:?}"
+                assert_eq!(
+                    reversed,
+                    match first {
+                        TermComparison::Greater => TermComparison::Less,
+                        TermComparison::Less => TermComparison::Greater,
+                        other => other,
+                    },
+                    "comparison is not antisymmetric: {left:?} vs {right:?}"
                 );
             }
         }

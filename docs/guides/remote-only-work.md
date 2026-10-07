@@ -375,7 +375,10 @@ maximises over ~120 noisy evaluations per round (`rounds × 8 slots × 15
 candidates`), which selects on noise. `greedy_set_cover` builds each strategy's
 solved-set from one `run.csv`. Against a ±12/300 noise floor, a single-run
 comparison cannot resolve a portfolio difference of the size those tools are asked
-to detect. Use `run_variance.sh` and compare means over ≥5 interleaved reps.
+to detect. Use `run_variance.sh` and compare means over ≥5 reps. It runs full
+campaign replicates sequentially, so it measures within-configuration variance;
+comparisons between configurations should still be paired/interleaved to limit
+host-drift bias.
 
 Two things worth keeping from the run mechanics:
 

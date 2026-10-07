@@ -26,14 +26,14 @@
 #     round (rounds x 8 slots x 15 candidates), which selects on noise.
 #   * `greedy_set_cover` builds each strategy's solved-set from one `run.csv`.
 #
-# Against that noise floor, prefer a mean over >=5 interleaved replicates to a
+# Against that noise floor, prefer a mean over >=5 replicates to a
 # single number. See `docs/policies/unresolved-issues.md` UI-8.
 #
 # Method
 # ------
-# Replicates are **interleaved, not blocked**: round r runs every configuration
-# once before round r+1 starts. Blocking would let any drift in the host over the
-# run land entirely on one arm, which is the mistake this script exists to avoid.
+# Replicates are full casc.sh campaigns and therefore run sequentially (blocked).
+# This measures within-configuration variance, but does not protect a comparison
+# between configurations from host drift; use paired/interleaved runs for that.
 #
 # Variance on this corpus is bimodal per problem rather than a uniform jitter --
 # `KLE152-10` takes ~118 s or ~217 s with nothing in between, while `GRP423-1` is
@@ -117,46 +117,62 @@ parent = pathlib.Path(sys.argv[1])
 reps = int(sys.argv[2])
 
 rows = defaultdict(dict)
+systems = set()
 for r in range(1, reps + 1):
     csv_path = parent / f"rep{r}" / "run.csv"
     if not csv_path.is_file():
         sys.exit(f"variance: missing {csv_path}")
     with csv_path.open(newline="") as fh:
         for row in csv.DictReader(fh):
-            rows[(row["division"], row["problem"])][r] = row
+            key = (row["division"], row["system"], row["problem"])
+            if r in rows[key]:
+                sys.exit(f"variance: duplicate row for {key} in rep{r}")
+            rows[key][r] = row
+            systems.add(row["system"])
 
 def solved(row):
-    """A definitive solve, not a timeout or a gave-up."""
-    return row["szs_status"] in ("Unsatisfiable", "Theorem", "CounterSatisfiable")
+    """A correctly graded solve, not a wrong or ungraded definitive answer."""
+    return row["verdict"] == "ok"
 
-print(f"\n{'division':10} {'problem':16} {'solved':>12} {'verdicts'}")
-print("-" * 62)
+print(f"\n{'division':10} {'system':16} {'problem':16} {'solved':>12} {'verdicts'}")
+print("-" * 82)
 unstable = []
 for key in sorted(rows):
     per_rep = rows[key]
     tally = sorted(r for r, row in per_rep.items() if solved(row))
     marks = "".join("." if r in tally else "x" for r in range(1, reps + 1))
-    statuses = {per_rep[r]["szs_status"] for r in per_rep}
-    print(f"{key[0]:10} {key[1]:16} {marks:>12}   {'/'.join(sorted(statuses))}")
-    # Unstable = the verdict differs between replicates. These are the problems
-    # that a single run cannot speak for.
-    if len(statuses) > 1:
+    outcomes = {
+        (per_rep[r]["szs_status"], per_rep[r]["verdict"])
+        for r in per_rep
+    }
+    print(f"{key[0]:10} {key[1]:16} {key[2]:16} {marks:>12}   "
+          f"{'/'.join(f'{status}:{verdict}' for status, verdict in sorted(outcomes))}")
+    # Unstable = the grading outcome differs between replicates. These are the
+    # problem/system pairs that a single run cannot speak for.
+    if len(outcomes) > 1 or len(per_rep) != reps:
         unstable.append(key)
 
-totals = [
-    sum(1 for k in rows if r in rows[k] and solved(rows[k][r]))
-    for r in range(1, reps + 1)
-]
-print("-" * 62)
-print(f"solved per replicate: {totals}")
-if totals:
-    print(f"mean {sum(totals)/len(totals):.2f}  min {min(totals)}  max {max(totals)}"
-          f"  spread {max(totals)-min(totals)}")
+totals_by_system = {
+    system: [
+        sum(
+            1 for (_, row_system, _), per_rep in rows.items()
+            if row_system == system and r in per_rep and solved(per_rep[r])
+        )
+        for r in range(1, reps + 1)
+    ]
+    for system in sorted(systems)
+}
+print("-" * 82)
+for system, totals in totals_by_system.items():
+    print(f"{system} solved per replicate: {totals}")
+    if totals:
+        print(f"  mean {sum(totals)/len(totals):.2f}  min {min(totals)}  max {max(totals)}"
+              f"  spread {max(totals)-min(totals)}")
 
 if unstable:
     print(f"\n{len(unstable)} problem(s) changed verdict between replicates:")
     for key in unstable:
-        print(f"  {key[0]}/{key[1]}")
+        print(f"  {key[0]}/{key[1]}/{key[2]}")
     print("\nA single-run A/B cannot separate these from a real effect. Report means.")
 else:
     print("\nno problem changed verdict across replicates.")
