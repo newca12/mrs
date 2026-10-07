@@ -198,15 +198,15 @@ host with less headroom is not a suitable repro host.
 
 ---
 
-## UI-2 — Problems that hang before emitting any SZS status (27 across UEQ and FEQ)
+## UI-2 — Problems that hang before emitting any SZS status (12 FEQ remaining)
 
 | | |
 |---|---|
-| Status | Open, not scheduled |
-| Severity | 15 of 300 casc-30 UEQ (5%), **and 12 of 400 casc-30 FEQ (3%)** |
+| Status | **UEQ fixed** (`73c9020`); 12 casc-30 FEQ open, not scheduled |
+| Severity | was 15 of 300 casc-30 UEQ (5%); **12 of 400 casc-30 FEQ (3%)** remain |
 | Soundness | Not a false-positive issue. The timeouts may still cost coverage. |
 
-### Observation
+### Original observation (UEQ, now fixed)
 
 Fifteen casc-30 UEQ problems hit the harness's outer SIGTERM with **empty
 stdout and no `% SZS detail`**, recorded as bare `Timeout`:
@@ -222,13 +222,52 @@ All report `wall_time_s=240.000` exactly, which is the signature of
 
 So on these 15 the prover overran its own deadline by more than 12 s inside a
 non-preemptible section. `invoke.sh:45-48` documents this exact failure mode as
-the thing the 2 s soft margin exists to avoid, so it is a live regression.
+the thing the 2 s soft margin exists to avoid.
 
-All 15 are AC/group-theory word problems, several with tiny inputs
-(`GRP024-5` is 6 CNF clauses), which points at one given-clause iteration not
-returning rather than at general slowness — the deadline is observed at
-iteration boundaries (the LRS check at `given_clause.rs:1461` runs every 100
-iterations).
+### Resolved for UEQ: exponential `lpo_gt_id`
+
+Fixed in `fix/lpo-memoized-comparison` (`73c9020`). All 15 UEQ problems now
+self-terminate with a `Timeout` status under `--strategy 8`, where previously
+the process was killed with no output; under `--workers 8`, `GRP655-13` and
+`LAT168-1` now report `Unsatisfiable`.
+
+`lpo_gt`/`lpo_gt_id` in `crates/mrs-calculus/src/ordering.rs` had no
+memoization. Case 2a re-descends the arguments of `s` while Case 2b re-compares
+the whole of `s` against each argument of `t`, which revisits the same `(s, t)`
+pairs exponentially often in the term depth. A per-top-level-call memo keyed on
+`(s, t)` bounds the recursion by distinct pairs instead of paths through them.
+
+The evidence that located it, in order:
+
+1. **Strategy isolation.** `--workers 2` already hangs, so the trigger is the
+   second slot, `CASC_UEQ_ORDER[1] == 8`, not portfolio width. `--workers 1
+   --strategy 8` reproduces alone; s4, s7, s9, s14 all terminate.
+2. **Not the deadline.** `--time 10` returns `rc=0` where `--time 238` hangs
+   past 600 s, so the search is not broken at startup — it degenerates after
+   growing.
+3. **Not concurrency or resources.** Two threads on an idle 8-core host, 6 input
+   clauses. Memory is 2048 MB/worker × 8 ≈ 16 GB against ~90 GB available.
+4. **`TRACE_PROGRESS`.** `iter` advances to 630 at t=230 s at 0.24 s/iteration,
+   then iteration 631 never prints. One iteration does not return — which is
+   why no deadline check fires, since all 17 `search_deadline` sites sit at the
+   top of an iteration.
+5. **Symbolized backtrace.** `mrs-worker-0` alternating `ordering.rs:555` ⇄
+   `:562` — Case 2a against Case 2b — with `#0` in `occurs_in_id`.
+
+**Why it looked input-general but was not.** LPO looked exonerated, because
+s7/s9 also use it and terminate. They simply never select a term pair large
+enough to matter; s14 is clean because it is **KBO**. The blowup needs `s` wide
+and `t` narrow with disjoint symbol sets, so `si == t` cannot short-circuit
+Case 2a. Measured `lpo_gt` calls at depth 4/8/12/16/20: 280 / 7 668 / 172 016 /
+3 538 924 / 69 205 992 with the memo, against 4 174 / 12 606 720 at depth 4/8
+without it, and unmemoized depth 12 does not finish in 60 s.
+
+**Two earlier hypotheses were wrong and are recorded so they are not retried.**
+A 12-second margin story (`GRP690-1` finished at 245 850 ms, 4.15 s of slack) fit
+the *survivors* but not the failures, which had no bound at all. And a coarse
+100-iteration deadline check cannot be the explanation, for the reason in (4).
+
+The FEQ 12 below are **not** covered by this fix and remain open.
 
 ### The same CSV symptom may occur in different stages
 
@@ -784,3 +823,190 @@ TPTP=crates/mrs-bench/problems/casc-30 target/release/mrs-proover \\
 
 The retained proofs are under
 `/home/hack/crates/mrs-bench/results/campaign-<edition>-feq-*/certification/proofs/mrs/feq/`.
+
+## UI-8 — Measured: passive-queue retention is not the constraint on the hard tail
+
+| | |
+|---|---|
+| Status | Measured, **negative**. The hypothesis is retired; the underlying question stays open. |
+| Severity | None directly. It redirects where to look for the tail. |
+| Soundness | Unaffected. No proof or model result changed meaning. |
+
+### The experiment
+
+Full casc-30 UEQ division, 300 problems, 240 s, on `teenf9901`
+(16 physical / 32 logical, 128 019 MB), `--jobs 1`:
+
+```
+MRS_WORKERS=8 MRS_HARDWARE=casc-sim MRS_SIM_TIME_FACTOR=1 \
+MRS_NO_LRS=1 MRS_MAX_MEMORY_MB=90000 CERT_JOBS=4 \
+crates/mrs-bench/certification_campaign.sh \
+  --edition casc-30 --systems mrs --divisions ueq --casc-times --jobs 1 \
+  --output crates/mrs-bench/results/campaign-casc30-ueq-W8P8J1-NOLRS-MB90G-20261005
+```
+
+Every knob verifiably took effect: `lrs_discarded == 0` on all 276 rows
+carrying telemetry, `casc_limit_s=238 sim_limit_s=238` (so `MRS_SIM_TIME_FACTOR=1`
+was needed — at the default of 2.0 the budget becomes 476 s while the harness
+SIGTERMs at 250 s), `pinned_cpus=16` across 8 physical cores, and
+`address_space_mb=90000`. Integrity clean: one `Total jobs:`, 300/300, nothing
+reached the rlimit (peak 71 120 MB), no OOM.
+
+### Result
+
+| | baseline (2026-10-02) | LRS off |
+|---|---:|---:|
+| solved | 123 | **111** |
+| certified | 121 | 110 |
+| `GaveUp` | 10 | 6 |
+| `Timeout` | 167 | 183 |
+| silent kills (UI-2) | 15 | **24** |
+
+Read the `solved` row together with the noise measurement below: **111 vs 123 is
+within run-to-run variance**, so this table shows a direction, not an effect size.
+
+17 problems lost (all to `Timeout`), 5 gained (`COL009-1`, `COL057-1`,
+`LCL211-10`, `LCL400-10`, `SYN615-10`). **On the 12-problem diagnostic subset
+chosen for the highest discard ratios the effect is +1 / -1 / 10 unchanged** —
+no support for the hypothesis even where it should have been strongest.
+
+### The headline -12 is confounded and should not be read as an LRS effect
+
+The baseline ran `--hardware adaptive` (unpinned, 8 workers spread over 16
+physical cores); this arm ran `casc-sim`, **pinned to 8 physical cores**. Two
+variables moved. The loss distribution points at throughput rather than search
+quality: the 17 lost problems were solved in a **median 144 s** in the baseline,
+with **14 of 17 at 120-238 s**, against an overall baseline solve median of
+**15 s**. Losses concentrate exactly where headroom is thinnest, which is the
+signature of a per-worker slowdown under SMT contention, not of worse search.
+
+Independently of that confound, the -12 is **exactly the size of the measured
+run-to-run noise** (next section). Settling this needs the control arm —
+`casc-sim`, pinned, LRS at default — on the 12-problem subset, replicated ≥5
+times, compared on means. A single run cannot resolve a 12-problem difference.
+
+### What it did establish
+
+**Turning LRS off costs solves on this arm — but the magnitude is not
+interpretable.** The -12 matches the measured run-to-run noise floor exactly (see
+below), so it cannot be read as an LRS effect in either direction. What survives
+is the directional sign on this hardware configuration, and nothing stronger.
+
+Raising the LRS floor, an earlier suggestion, is therefore still in the wrong
+direction; a *quantitative* claim that LRS is worth ~12 solves is not supported.
+
+**A new cost of large queues, distinct from memory.** Silent kills rose 15 → 24,
+with 12 new ones. Every one of the 12 had a large *baseline* queue
+(`passive` 40 162-95 156, `generated` 380 672-1 993 586), and the LAT family
+appears repeatedly. Memory was **not** the cause — peak 71 GB against a 90 GB
+rlimit, and the new silent kills sit at 10-18 GB.
+
+**That reading is now known to be wrong for the UEQ mechanism.** The silent
+kills were not queue-size-dependent per-iteration work at all: they were
+exponential `lpo_gt_id` recursion (UI-2, fixed in `73c9020`), which has nothing
+to do with queue size. The 12 new ones are better explained as the same LPO
+defect being reached on more inputs, or as the throughput effect below. Either
+way, do not attribute them to LRS.
+
+### The -12 is within the measured run-to-run noise
+
+Five replicates of a fixed 25-problem casc-30 UEQ subset, identical
+configuration, on the campaign host (`host_physical_cores=16`,
+`mem_budget_mb=96333`, `/DATA/ai/mrs`):
+
+| rep | solved | not solved |
+|---:|---:|---:|
+| 1 | 21 | 4 |
+| 2 | 20 | 5 |
+| 3 | 19 | 6 |
+| 4 | 21 | 4 |
+| 5 | 20 | 5 |
+
+**Mean 20.2 of 25, range 19–21, with zero configuration changes.** Only
+`REL034-1` (solved 2/5) and `REL028-2` (solved 4/5) flip verdict; four problems
+time out in all five. Scaling to 300 problems, that is **±12** — the same size as
+the entire LRS-off effect.
+
+Wall times are bimodal per problem rather than uniformly noisy, which is the
+signature of a race between strategies deciding the winner: `KLE152-10` takes
+~118 s or ~217 s with nothing between, while `GRP423-1` is stable to ±0.2%. A
+host-drift story is ruled out by the stability of the control problems.
+
+The subset has a far lower timeout rate (16%) than the division (56%), so it is
+selected for solvability and ±12 may understate division-level noise. It does
+not overstate it.
+
+### What is still open
+
+Why the tail is slow is now unaddressed by this experiment. Remaining
+candidates: per-worker throughput (favoured by the loss distribution above), or a
+generator producing genuinely distinct heavy clauses, in which case the ~37:1
+generated-per-processed ratio is intrinsic and there is no redundancy to remove.
+
+Note that the ratio itself was never a sound measure: `forward_subsumed` counts
+*selections* discarded (`given_clause.rs:1810`), so `fwd_subsumed/generated` is
+bounded near 1/37 ≈ 2.70% by construction. Any future attempt to measure
+redundancy elimination must compare **discarded against retained**, not generated
+against subsumed.
+
+---
+
+## UI-9 — `GoalDirected` selection can terminate the search early
+
+| | |
+|---|---|
+| Status | Open, not scheduled |
+| Severity | Unknown; affects strategy 8, which holds 9% of the casc-30 UEQ budget |
+| Soundness | **Potential false result.** Premature termination can be reported as `GaveUp`. |
+
+### Observation
+
+`select::select` guards only the whole-set emptiness
+(`crates/mrs-search/src/select.rs:58`):
+
+```rust
+pub fn select(unprocessed: &mut UnprocessedSet, strategy: &SelectionStrategy,
+              iteration: u64, sos_depth: u32) -> Option<ClauseId> {
+    if unprocessed.is_empty() { return None; }
+    ...
+    SelectionStrategy::GoalDirected(ratio) => {
+        if *ratio == 0 || iteration.is_multiple_of(*ratio as u64) {
+            unprocessed.pop_age()
+        } else {
+            unprocessed.pop_goal_directed()      // ← no age fallback
+        }
+    }
+```
+
+`pop_goal_directed` drains `goal_queue` and returns `None` once it is empty
+(`unprocessed.rs:255-262`), regardless of whether other queues still hold
+clauses. The caller treats `None` as end-of-search (`given_clause.rs:1600`,
+`None => break`). So if `goal_queue` drains while `weight_queue` and `unit_queue`
+are non-empty, the loop exits having left clauses unprocessed, and the search
+reports whatever the post-loop audit concludes from an incomplete clause set.
+
+Every other weight-based pop takes an explicit fallback. `pop_weight` is
+`u.pop_weight_sos(sos_depth).or_else(|| u.pop_age())` — "age fallback when no SOS
+clause is ready" (`select.rs:61-67`). `GoalDirected` is the only path that can
+return `None` on a non-empty set.
+
+### Why it matters
+
+This is **not** the cause of UI-2's UEQ hangs; that was exponential `lpo_gt_id`,
+now fixed. This is the opposite failure — stopping too early rather than never
+stopping — and it is worse in kind, because a premature exit can be recorded as a
+definitive answer rather than a timeout.
+
+### Not yet confirmed
+
+No input has been found where this actually truncates a search. The three
+conditions must hold at once: strategy 8 selected, `goal_queue` emptied ahead of
+the other queues, and the resulting `GaveUp`/`Saturated` recorded without
+independent verification. Finding one needs per-iteration logging of
+`unprocessed.is_empty()` against the individual queue depths at the moment
+`select` returns `None`, over a run that ends in an unverified status.
+
+A cheap interim mitigation, if a truncation is ever confirmed: give `GoalDirected`
+the same `.or_else(|| unprocessed.pop_age())` fallback `pop_weight` already has.
+That is a behaviour change to a completeness-relevant path, so it wants a
+measurement behind it, not a patch on suspicion.
