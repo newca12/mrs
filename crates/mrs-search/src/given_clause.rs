@@ -1236,6 +1236,14 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
     let start = Instant::now();
     state.search_deadline = Some(start + config.time_limit);
 
+    // Arm the LPO step budget for this worker's search. Unarmed it is
+    // unlimited, which would leave a single comparison unbounded by the
+    // deadline: every `search_deadline` check below sits at the top of an
+    // iteration, so none of them fires while one is running. The guard restores
+    // the previous state on return, so a nested or subsequent search on this
+    // thread does not inherit a spent budget.
+    let _lpo_budget = crate::LpoBudgetGuard::arm(crate::LPO_STEP_BUDGET);
+
     // Initial memory watchdog check
     if let Some(limit_mb) = config.resource_limits.max_memory_mb
         && let Some(current_mb) = crate::current_memory_mb()
@@ -1645,6 +1653,11 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 .stop_flag
                 .as_ref()
                 .is_some_and(|f| f.load(Ordering::Relaxed))
+            // An LPO comparison gave up, so this iteration's inferences were
+            // decided from an incomplete comparison set. Stop now, at the top of
+            // the iteration, rather than continuing on a partially ordered term
+            // set.
+            || crate::lpo_budget_expired()
         {
             return SearchResult::Timeout;
         }
@@ -3243,6 +3256,16 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
     let parent_guidance_pruned = 0;
     if parent_guidance_pruned > 0 {
         return SearchResult::GaveUp;
+    }
+    // A spent LPO budget means some comparisons were abandoned rather than
+    // decided, so completeness was never established even if every queue is
+    // empty. Report a timeout, never a saturation result: the run stopped
+    // early rather than exhausting the search space.
+    if crate::lpo_budget_expired() {
+        if std::env::var("TRACE_SEARCH").is_ok() {
+            eprintln!("[TRACE] LPO step budget exhausted; search aborted before saturation");
+        }
+        return SearchResult::Timeout;
     }
     let audit = config.check_completeness(
         state.stats.weight_discarded,
