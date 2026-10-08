@@ -150,6 +150,10 @@ pub struct VerificationLimits {
     pub max_subsumption_steps: usize,
     pub max_skolem_steps: usize,
     pub max_equivalence_steps: usize,
+    /// Recursive unification/multiset candidate steps allowed during one AC
+    /// inference replay. Kept separate from equivalence comparison because
+    /// AC unifier enumeration may branch factorially before comparing a goal.
+    pub max_ac_unifier_steps: usize,
     pub max_avatar_steps: usize,
 }
 
@@ -175,6 +179,7 @@ impl Default for VerificationLimits {
             max_subsumption_steps: 5_000,
             max_skolem_steps: 5_000,
             max_equivalence_steps: 5_000,
+            max_ac_unifier_steps: 50_000,
             max_avatar_steps: 100_000,
         }
     }
@@ -9993,9 +9998,16 @@ fn ac_resolution_replay(
     let shift = max_var_clause(left).saturating_add(1);
     let mut shifted_right = right.to_vec();
     shift_clause(&mut shifted_right, shift);
+    let unifier_budget = AcUnifierBudget::new(limits.max_ac_unifier_steps);
 
     for (left_idx, left_literal) in left.iter().enumerate() {
+        if unifier_budget.exhausted.get() {
+            return false;
+        }
         for (right_idx, right_literal) in shifted_right.iter().enumerate() {
+            if unifier_budget.exhausted.get() {
+                return false;
+            }
             if left_literal.positive == right_literal.positive {
                 continue;
             }
@@ -10016,6 +10028,7 @@ fn ac_resolution_replay(
                 commutative,
                 associative,
                 limits,
+                &unifier_budget,
                 &mut |substitution| {
                     let mut resolvent = Vec::with_capacity(left.len() + shifted_right.len() - 2);
                     for (idx, literal) in left.iter().enumerate() {
@@ -10081,10 +10094,14 @@ fn ac_superposition_replay(
     limits: VerificationLimits,
 ) -> AcReplay {
     let exhausted = std::cell::Cell::new(false);
+    let unifier_budget = AcUnifierBudget::new(limits.max_ac_unifier_steps);
     let target_shift = max_var_clause(equation_clause).saturating_add(1);
     let mut shifted_target = target_clause.to_vec();
     shift_clause(&mut shifted_target, target_shift);
     for (equation_index, equation_literal) in equation_clause.iter().enumerate() {
+        if unifier_budget.exhausted.get() {
+            break;
+        }
         if !equation_literal.positive {
             continue;
         }
@@ -10092,11 +10109,20 @@ fn ac_superposition_replay(
             continue;
         };
         for (from, to) in [(left, right), (right, left)] {
+            if unifier_budget.exhausted.get() {
+                break;
+            }
             if matches!(from, Term::Var(_)) {
                 continue;
             }
             for (target_index, target_literal) in shifted_target.iter().enumerate() {
+                if unifier_budget.exhausted.get() {
+                    break;
+                }
                 for (side, position) in atom_term_positions(&target_literal.atom) {
+                    if unifier_budget.exhausted.get() {
+                        break;
+                    }
                     let base = match &target_literal.atom {
                         Atom::Pred(_, args) => args.get(side),
                         Atom::Eq(left, right) => Some(if side == 0 { left } else { right }),
@@ -10112,6 +10138,7 @@ fn ac_superposition_replay(
                         commutative,
                         associative,
                         limits,
+                        &unifier_budget,
                         &mut |substitution| {
                             let replacement = apply_substitution_term(to, substitution);
                             let replaced_base = replace_term_at(base, &position, replacement);
@@ -10153,13 +10180,40 @@ fn ac_superposition_replay(
             }
         }
     }
-    if exhausted.get() {
+    if exhausted.get() || unifier_budget.exhausted.get() {
         AcReplay::BudgetExhausted
     } else {
         AcReplay::NotFound
     }
 }
 
+/// Bounds the total AC-unifier search performed during one replay. AC
+/// multiset matching can have factorially many candidate pairings, so counting
+/// only the later equivalence checks does not bound the replay's actual work.
+struct AcUnifierBudget {
+    remaining: std::cell::Cell<usize>,
+    exhausted: std::cell::Cell<bool>,
+}
+
+impl AcUnifierBudget {
+    fn new(limit: usize) -> Self {
+        Self {
+            remaining: std::cell::Cell::new(limit),
+            exhausted: std::cell::Cell::new(false),
+        }
+    }
+
+    fn consume(&self) -> bool {
+        if self.remaining.get() == 0 {
+            self.exhausted.set(true);
+            return false;
+        }
+        self.remaining.set(self.remaining.get() - 1);
+        true
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn for_each_ac_unifier(
     left: &Term,
     right: &Term,
@@ -10167,8 +10221,12 @@ fn for_each_ac_unifier(
     commutative: &HashSet<mrs_core::SymbolId>,
     associative: &HashSet<mrs_core::SymbolId>,
     limits: VerificationLimits,
+    budget: &AcUnifierBudget,
     callback: &mut dyn FnMut(&HashMap<VarId, Term>) -> bool,
 ) -> bool {
+    if !budget.consume() {
+        return false;
+    }
     let left_sub = apply_substitution_term(left, substitution);
     let right_sub = apply_substitution_term(right, substitution);
     if left_sub == right_sub {
@@ -10204,6 +10262,7 @@ fn for_each_ac_unifier(
                 commutative,
                 associative,
                 limits,
+                budget,
                 callback,
             )
         }
@@ -10221,6 +10280,7 @@ fn for_each_ac_unifier(
                 commutative,
                 associative,
                 limits,
+                budget,
                 &mut |sub0| {
                     let mut sub0 = sub0.clone();
                     for_each_ac_unifier(
@@ -10230,6 +10290,7 @@ fn for_each_ac_unifier(
                         commutative,
                         associative,
                         limits,
+                        budget,
                         callback,
                     )
                 },
@@ -10245,6 +10306,7 @@ fn for_each_ac_unifier(
                 commutative,
                 associative,
                 limits,
+                budget,
                 &mut |sub0| {
                     let mut sub0 = sub0.clone();
                     for_each_ac_unifier(
@@ -10254,6 +10316,7 @@ fn for_each_ac_unifier(
                         commutative,
                         associative,
                         limits,
+                        budget,
                         callback,
                     )
                 },
@@ -10272,6 +10335,7 @@ fn for_each_ac_unifier(
                 commutative: &HashSet<mrs_core::SymbolId>,
                 associative: &HashSet<mrs_core::SymbolId>,
                 limits: VerificationLimits,
+                budget: &AcUnifierBudget,
                 callback: &mut dyn FnMut(&HashMap<VarId, Term>) -> bool,
             ) -> bool {
                 if idx == left_args.len() {
@@ -10284,6 +10348,7 @@ fn for_each_ac_unifier(
                     commutative,
                     associative,
                     limits,
+                    budget,
                     &mut |next_sub| {
                         unify_args_rec(
                             left_args,
@@ -10293,6 +10358,7 @@ fn for_each_ac_unifier(
                             commutative,
                             associative,
                             limits,
+                            budget,
                             callback,
                         )
                     },
@@ -10306,6 +10372,7 @@ fn for_each_ac_unifier(
                 commutative,
                 associative,
                 limits,
+                budget,
                 callback,
             )
         }
@@ -10322,12 +10389,19 @@ fn for_each_ac_unify_multiset(
     commutative: &HashSet<mrs_core::SymbolId>,
     associative: &HashSet<mrs_core::SymbolId>,
     limits: VerificationLimits,
+    budget: &AcUnifierBudget,
     callback: &mut dyn FnMut(&HashMap<VarId, Term>) -> bool,
 ) -> bool {
+    if !budget.consume() {
+        return false;
+    }
     if index == left.len() {
         return callback(substitution);
     }
     for right_index in 0..right.len() {
+        if budget.exhausted.get() {
+            return false;
+        }
         if used[right_index] {
             continue;
         }
@@ -10340,6 +10414,7 @@ fn for_each_ac_unify_multiset(
             commutative,
             associative,
             limits,
+            budget,
             &mut |sub| {
                 for_each_ac_unify_multiset(
                     left,
@@ -10350,6 +10425,7 @@ fn for_each_ac_unify_multiset(
                     commutative,
                     associative,
                     limits,
+                    budget,
                     callback,
                 )
             },
@@ -13216,6 +13292,36 @@ mod tests {
         let commutative = [f].into_iter().collect();
         let limits = VerificationLimits {
             max_equivalence_steps: 0,
+            ..VerificationLimits::default()
+        };
+
+        assert_eq!(
+            ac_superposition_replay(&left, &right, &right, &commutative, &HashSet::new(), limits),
+            AcReplay::BudgetExhausted
+        );
+    }
+
+    #[test]
+    fn ac_superposition_replay_reports_unifier_budget_exhaustion() {
+        let mut symbols = SymbolTable::new();
+        let f = symbols.intern("f");
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let atom = |left, right| Literal {
+            positive: true,
+            atom: Atom::eq(left, right),
+        };
+        let left = vec![atom(
+            Term::app(f, vec![Term::constant(a), Term::constant(b)]),
+            Term::constant(a),
+        )];
+        let right = vec![atom(
+            Term::app(f, vec![Term::constant(b), Term::constant(a)]),
+            Term::constant(a),
+        )];
+        let commutative = [f].into_iter().collect();
+        let limits = VerificationLimits {
+            max_ac_unifier_steps: 0,
             ..VerificationLimits::default()
         };
 
