@@ -1070,108 +1070,53 @@ against subsumed.
 
 | | |
 |---|---|
-| Status | **Not reproducible.** The premise is wrong; no bug exists on `main` (cd7c4ce) |
-| Severity | None. The `GoalDirected` arm cannot return `None` on a non-empty set |
-| Soundness | Unaffected. Independently of the selector, the ordinary loop has no positive end-of-search verdict to lose |
+| Status | **Closed (Disproved / Not a Bug)** |
+| Severity | None |
+| Soundness | **Unaffected.** Premature termination cannot occur, and uncertified saturation is never reported as a definitive result. |
 
-### Observation
+### Resolution
 
-`select::select` guards only the whole-set emptiness
-(`crates/mrs-search/src/select.rs:59`):
+Investigated and disproved. `SelectionStrategy::GoalDirected` cannot cause premature
+search termination, and ordinary given-clause loop termination cannot produce a false
+definitive result.
 
-```rust
-pub fn select(unprocessed: &mut UnprocessedSet, strategy: &SelectionStrategy,
-              iteration: u64, sos_depth: u32) -> Option<ClauseId> {
-    if unprocessed.is_empty() { return None; }
-    ...
-    SelectionStrategy::GoalDirected(ratio) => {
-        if *ratio == 0 || iteration.is_multiple_of(*ratio as u64) {
-            unprocessed.pop_age()
-        } else {
-            unprocessed.pop_goal_directed()      // ← no age fallback
-        }
-    }
-```
+1. **`goal_queue` is a total priority queue, not a partial queue:**
+   In `crates/mrs-search/src/unprocessed.rs:121-134`, `UnprocessedSet::push()`
+   unconditionally enqueues every single active clause into `goal_queue`. Non-goal
+   clauses (pure axioms or clauses with `goal_distance >= 100`) receive a heavy
+   weight penalty (`+1000`), but remain in `goal_queue`. They are never excluded
+   (unlike `unit_queue`, `horn_queue`, or `sos_queue`).
 
-`pop_goal_directed` drains `goal_queue` and returns `None` once it is empty
-(`unprocessed.rs:255-262`). The caller treats `None` as end-of-search
-(`given_clause.rs:1652`, `None => break`), so the question is whether the goal
-queue can empty while clauses are still *active*.
+2. **Invariant `active_ids ⊆ goal_queue`:**
+   Because all active clauses enter `goal_queue`, and `pop_goal_directed()`
+   only removes active IDs upon returning `Some(id)` (skipping tombstones),
+   `pop_goal_directed()` physically exhausts `goal_queue` if and only if
+   `active_ids.is_empty()` holds. Therefore, `pop_goal_directed()` cannot return
+   `None` while active clauses remain in other queues during normal execution.
 
-### Why it cannot
+3. **Comparison with `pop_weight_sos`:**
+   `pop_weight` only employs an age fallback (`.or_else(|| u.pop_age())`) when
+   `sos_depth < u32::MAX`, because `pop_weight_sos` explicitly filters out non-SOS
+   clauses (skipping clauses with distance >= sos_depth and returning `None` once
+   bounded scan finds no SOS clauses). When `sos_depth == u32::MAX` (the default),
+   `pop_weight` has no age fallback because `weight_queue` is a total queue.
+   `GoalDirected` similarly operates over a total queue and needs no fallback.
 
-The `goal_queue` is a lazy-deletion heap that `push` fills for **every** clause
-(`unprocessed.rs:129`), and `prune` — the only path that rebuilds it — derives the
-rebuild from the surviving active set (`unprocessed.rs:404`). So the queue holds
-an entry for every active clause at all times, and a wrapper is removed from it
-only when the clause is handed to the caller (which also deactivates it) or when
-it is already a tombstone. Therefore:
+4. **Definitive result protection:**
+   Even if an empty-queue condition were artificially induced, `given_clause.rs:3384-3387`
+   unconditionally returns `SearchResult::GaveUp` when the given-clause loop breaks
+   without a refutation ("The ordinary engine has not yet been proven complete... Only
+   certified.rs may return positive saturation evidence. SearchResult::GaveUp").
+   In `src/main.rs:1197`, `SearchResult::GaveUp` maps to SZS `GaveUp`, which is an
+   inconclusive non-success status (`is_success() == false`), never a definitive status
+   (`Theorem`, `Satisfiable`, or `CounterSatisfiable`).
 
-```
-pop_goal_directed() == None   ⟺   goal_queue is physically empty
-                              ⟺   active_ids is empty
-```
-
-The UI-9 scenario is only reachable if the goal queue is *physically* empty
-while other queues still hold entries — which is the normal, harmless state
-after a drain: `weight_queue`, `unit_queue` and `age_queue` then hold tombstones
-for clauses already handed out, and they too return `None`. Every other
-weight-based pop takes an explicit fallback because its *bounded* scan can miss
-eligible clauses (`pop_weight_sos` gives up after 32 skipped), not because its
-queue can drain early: `select.rs:61-67`. `GoalDirected` calls the unbounded
-`pop_goal_directed`, so it needs no fallback.
-
-### Evidence
-
-- **Structural**: `push` inserts into every queue (`unprocessed.rs:121-158`);
-  `pop_age`/`pop_weight`/`pop_goal_directed`/`pop_unit`/`pop_horn`/`pop_sos`
-  deactivate on hand-out; `remove`/`retain` only ever deactivate; `prune`
-  rebuilds `goal_queue` from `protected`, which is derived from the *active*
-  wrappers of `weight_queue`, itself maintained over the active set. The
-  invariant is inductive from the empty set, and `select` now asserts it
-  (`debug_assert` at `select.rs:168`, free in release, checked in `cargo test`).
-- **Mutation-tested**: two deliberate breakages of the invariant were caught by
-  the new tests — (a) `prune` rebuilding `goal_queue` without the survivors
-  (4 tests fail, two through the `debug_assert`); (b) `push` skipping the
-  goal-queue insert for `goal_distance == None` clauses, which is exactly UI-9's
-  failure mode (5 tests fail).
-- **Regression tests**: `unprocessed::tests::goal_queue_drains_only_when_no_clause_is_active`,
-  `unprocessed::tests::pruning_keeps_survivors_reachable_from_the_goal_queue`,
-  `unprocessed::tests::goal_queue_never_drains_early_under_interleaved_operations`
-  (5 000-step deterministic interleaving of push/pop/prune/remove/retain),
-  `select::tests::goal_directed_signals_end_of_search_only_when_the_set_is_empty`,
-  `select::tests::goal_directed_still_selects_everything_that_survived_pruning`,
-  `select::tests::no_strategy_reports_none_while_clauses_remain`,
-  `select::tests::empty_set_terminates_for_every_strategy`,
-  `given_clause::tests::goal_directed_end_of_search_is_never_a_positive_verdict`,
-  `given_clause::tests::end_of_search_is_never_a_positive_verdict_for_any_selector`.
-- **End-to-end probe**: strategy 8 solo (`--workers 1 --strategy 8`, `--time 1`,
-  2 jobs) over the whole casc-30 corpus — 1 060 runs (UEQ 300, FEQ+FNE 500, EPS
-  100, EPU 100, plus a 20-problem pilot) — with temporary instrumentation at the
-  `None => break` site printing `passive`, `is_empty()` and the selection
-  strategy. 29 runs reached that break; **all 29 had `passive=0 empty=true`**,
-  including runs whose passive set had been pruned hard by LRS
-  (`lrs_discarded=41284`). Zero breaks left clauses unprocessed. (Runs that
-  refuted or timed out never reach the break, so the probe's power is limited to
-  the saturating minority: 29/1 060. UI-9's `GaveUp` claim needs exactly that
-  minority, and none of them was early.)
-
-### Why it matters less than it looked
-
-The original severity claim — "a premature exit can be recorded as a definitive
-answer" — does not hold either, independently of the selector. The ordinary
-given-clause loop has **no** positive end-of-search verdict to lose: after the
-loop it returns `GaveUp` for any LRS or parent-guidance discard, `Timeout` for a
-spent LPO budget, and `GaveUp` otherwise, with the comment "Only
-`certified.rs` may return positive saturation evidence"
-(`given_clause.rs:3344-3387`). `GaveUp` also ranks below `Refutation`,
-`Saturated` and `ResourceOut` in portfolio aggregation (`strategy.rs:1731-1772`).
-So even a hypothetical truncation would cost search effort, not soundness.
-
-No code change to the selection policy was made; adding the age fallback would
-have been a behaviour change to a path that provably cannot truncate the search.
-The invariant is now documented at `select::select`, asserted in debug builds,
-and pinned by the tests above.
+5. **Decision:**
+   No code change to `select.rs` or prover search behavior is justified. Adding an age
+   fallback to `GoalDirected` would alter search behavior without justification.
+   Unit tests in `unprocessed.rs`, `select.rs`, and `given_clause.rs` cover the
+   invariant across queue mutations and pruning, genuinely empty termination,
+   selector exhaustion, and non-definitive reporting.
 
 ---
 

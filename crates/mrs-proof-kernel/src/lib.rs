@@ -1426,27 +1426,57 @@ fn verify_cnf_transformation(
     };
     let normalized_matrix = strip_forall_core(&normalized);
     let mut expanded = Vec::new();
-    match cnf_expand(normalized_matrix, &mut expanded, limits) {
-        CnfExpansion::Complete => {}
-        CnfExpansion::Budget => {
-            return KernelVerdict::Inconclusive(format!(
-                "CNF expansion exceeded the strict limits of {expansion_budget} clauses \
-                 and {} literals per clause, after {} clauses",
-                limits.max_clause_literals,
-                expanded.len()
-            ));
-        }
-        CnfExpansion::Unsupported => {
-            return KernelVerdict::Inconclusive(
-                "CNF normalization left a matrix shape this expander does not produce".into(),
-            );
+    let mut expanded_clause_count = 0usize;
+    let conjuncts = flatten_core_parts(normalized_matrix, CoreConnective::And);
+    let mut any_budget = false;
+    let mut any_unsupported = false;
+    let condensed_goal = condense_clause(&goal);
+    for conjunct in conjuncts {
+        let mut conjunct_clauses = Vec::new();
+        match cnf_expand(conjunct, &mut conjunct_clauses, limits) {
+            CnfExpansion::Complete => {
+                if conjunct_clauses
+                    .iter()
+                    .any(|clause| clause_alpha_equiv(&condense_clause(clause), &condensed_goal))
+                {
+                    return if all_definitions_matched {
+                        KernelVerdict::Certified
+                    } else {
+                        KernelVerdict::Inconclusive(format!(
+                            "CNF node `{node_name}` cites definitions whose bodies could not be \
+                             matched against the source, so the step could not be checked"
+                        ))
+                    };
+                }
+                expanded_clause_count =
+                    expanded_clause_count.saturating_add(conjunct_clauses.len());
+                if expanded_clause_count > expansion_budget {
+                    any_budget = true;
+                    expanded.clear();
+                } else if !any_budget {
+                    expanded.extend(conjunct_clauses);
+                }
+            }
+            CnfExpansion::Budget => {
+                any_budget = true;
+                expanded_clause_count =
+                    expanded_clause_count.saturating_add(conjunct_clauses.len());
+            }
+            CnfExpansion::Unsupported => any_unsupported = true,
         }
     }
-    if expanded.len() > expansion_budget {
+
+    if any_budget {
         return KernelVerdict::Inconclusive(format!(
-            "CNF expansion produced {} clauses, over the strict limit of {expansion_budget}",
-            expanded.len()
+            "CNF expansion exceeded the strict limits of {expansion_budget} clauses \
+             and {} literals per clause, after observing at least {} clauses",
+            limits.max_clause_literals, expanded_clause_count
         ));
+    }
+    if any_unsupported {
+        return KernelVerdict::Inconclusive(
+            "CNF normalization left a matrix shape this expander does not produce".into(),
+        );
     }
 
     for definition in &definitions {
@@ -12383,8 +12413,20 @@ fn clause_alpha_equiv(left: &[Literal], right: &[Literal]) -> bool {
     if left.len() != right.len() {
         return false;
     }
+    // Match the most constrained literal shapes first. This keeps the
+    // backtracking search complete (unlike an order-preserving large-clause
+    // shortcut) while avoiding factorial work on clauses with distinct
+    // predicates or polarities.
+    let mut order: Vec<usize> = (0..left.len()).collect();
+    order.sort_by_key(|&left_idx| {
+        right
+            .iter()
+            .filter(|candidate| literal_shape_compatible(&left[left_idx], candidate))
+            .count()
+    });
     fn go(
         idx: usize,
+        order: &[usize],
         left: &[Literal],
         right: &[Literal],
         used: &mut [bool],
@@ -12394,14 +12436,15 @@ fn clause_alpha_equiv(left: &[Literal], right: &[Literal]) -> bool {
         if idx == left.len() {
             return true;
         }
+        let left_idx = order[idx];
         for right_idx in 0..right.len() {
-            if used[right_idx] || left[idx].positive != right[right_idx].positive {
+            if used[right_idx] || !literal_shape_compatible(&left[left_idx], &right[right_idx]) {
                 continue;
             }
             let mut next_mapping = mapping.clone();
             let mut next_reverse = reverse.clone();
             if atom_alpha_equiv(
-                &left[idx].atom,
+                &left[left_idx].atom,
                 &right[right_idx].atom,
                 &mut next_mapping,
                 &mut next_reverse,
@@ -12409,6 +12452,7 @@ fn clause_alpha_equiv(left: &[Literal], right: &[Literal]) -> bool {
                 used[right_idx] = true;
                 if go(
                     idx + 1,
+                    order,
                     left,
                     right,
                     used,
@@ -12424,12 +12468,24 @@ fn clause_alpha_equiv(left: &[Literal], right: &[Literal]) -> bool {
     }
     go(
         0,
+        &order,
         left,
         right,
         &mut vec![false; right.len()],
         &mut HashMap::new(),
         &mut HashMap::new(),
     )
+}
+
+fn literal_shape_compatible(left: &Literal, right: &Literal) -> bool {
+    left.positive == right.positive
+        && match (&left.atom, &right.atom) {
+            (Atom::Pred(left_symbol, left_args), Atom::Pred(right_symbol, right_args)) => {
+                left_symbol == right_symbol && left_args.len() == right_args.len()
+            }
+            (Atom::Eq(_, _), Atom::Eq(_, _)) => true,
+            _ => false,
+        }
 }
 
 /// Remove syntactically duplicate literals, keeping the first of each
@@ -13752,7 +13808,7 @@ mod tests {
     }
 
     #[test]
-    fn certifies_case_split_goal_without_expanding_the_source() {
+    fn certifies_case_split_goal_without_full_source_expansion() {
         let (problem, proof) = case_split_goal_problem_and_proof();
         let problem = mrs_tptp::parse_tptp(&problem).expect("problem parses");
         let proof = mrs_tptp::parse_tptp(&proof).expect("proof parses");
@@ -13763,7 +13819,41 @@ mod tests {
         assert_eq!(
             verify_strict(&problem, &proof, limits),
             KernelVerdict::Certified,
-            "the goal is a weakening of four derived unit clauses; no expansion is needed"
+            "goal-directed residue matching handles the case split within its budget"
+        );
+    }
+
+    #[test]
+    fn certifies_small_conjunct_when_residue_budget_is_exhausted() {
+        let mut combinatorial = Vec::new();
+        for i in 1..=20 {
+            combinatorial.push(format!("(c{i} & d{i})"));
+        }
+        let combinatorial = combinatorial.join(" | ");
+        let problem = format!(
+            "fof(src, axiom, (p(a) | q(a)) & ({combinatorial})).\n\
+             fof(np, axiom, ~p(a)).\n\
+             fof(nq, axiom, ~q(a))."
+        );
+        let proof = format!(
+            "fof(src, axiom, (p(a) | q(a)) & ({combinatorial}), file('problem.p', src)).\n\
+             fof(np, axiom, ~p(a), file('problem.p', np)).\n\
+             fof(nq, axiom, ~q(a), file('problem.p', nq)).\n\
+             cnf(main, plain, p(a) | q(a), inference(cnf_transformation, [status(thm)], [src])).\n\
+             cnf(m1, plain, q(a), inference(resolution, [status(thm)], [main, np])).\n\
+             cnf(bot, plain, $false, inference(resolution, [status(thm)], [m1, nq]))."
+        );
+        let problem = parse_tptp(&problem).expect("problem parses");
+        let proof = parse_tptp(&proof).expect("proof parses");
+        let limits = VerificationLimits {
+            max_expansion_clauses: 100,
+            max_residue_steps: 0,
+            ..VerificationLimits::default()
+        };
+        assert_eq!(
+            verify_strict(&problem, &proof, limits),
+            KernelVerdict::Certified,
+            "the first conjunct yields the goal without expanding its explosive sibling"
         );
     }
 
@@ -17655,6 +17745,33 @@ mod leaf_matching_tests {
         ] {
             assert_eq!(ac_pair(a, b), MatchOutcome::Match, "expected match: {name}");
         }
+    }
+
+    #[test]
+    fn large_clause_alpha_equivalence_is_complete_under_literal_permutation() {
+        let mut symbols = SymbolTable::new();
+        let left = (0..12)
+            .map(|index| Literal {
+                positive: index % 2 == 0,
+                atom: Atom::Pred(symbols.intern(&format!("p{index}")), vec![Term::var(index)]),
+            })
+            .collect::<Vec<_>>();
+        let right = (0..12)
+            .rev()
+            .map(|index| Literal {
+                positive: index % 2 == 0,
+                atom: Atom::Pred(
+                    symbols.intern(&format!("p{index}")),
+                    vec![Term::var(index + 100)],
+                ),
+            })
+            .collect::<Vec<_>>();
+
+        assert!(clause_alpha_equiv(&left, &right));
+
+        let mut different = right;
+        different[0].positive = !different[0].positive;
+        assert!(!clause_alpha_equiv(&left, &different));
     }
 
     #[test]
