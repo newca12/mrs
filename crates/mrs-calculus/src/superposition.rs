@@ -214,6 +214,18 @@ fn superpose_with_id(
     results: &mut Vec<IdClause>,
     deadline: Option<std::time::Instant>,
 ) {
+    // The target's variables are rigid: superposition rewrites a subterm *of*
+    // the target and may only instantiate the equation clause's variables. An
+    // unifier that bound a target variable would make the conclusion a
+    // specialisation of the intended resolvent, which the two cited parents do
+    // not entail — the archived `ac_superposition` steps this produced are what
+    // the strict kernel refused (UI-1). `target` has already been renamed apart
+    // from `eq_clause`, so its variables are exactly the ones to protect.
+    let mut target_vars = HashSet::default();
+    for literal in &target.literals {
+        literal.collect_vars(bank, &mut target_vars);
+    }
+
     for (j, target_lit) in target.literals.iter().enumerate() {
         if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
             return;
@@ -239,8 +251,14 @@ fn superpose_with_id(
                     None => continue,
                 };
 
-                let sigma = match mrs_unify::robinson::unify_ac_id(from, subterm, bank, comm, assoc)
-                {
+                let sigma = match mrs_unify::robinson::unify_ac_rigid_id(
+                    from,
+                    subterm,
+                    bank,
+                    comm,
+                    assoc,
+                    Some(&target_vars),
+                ) {
                     Ok(s) => s,
                     Err(_) => continue,
                 };

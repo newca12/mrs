@@ -209,11 +209,34 @@ pub fn unify_ac_id<S: BuildHasher>(
     comm: &HashSet<SymbolId, S>,
     assoc: &HashSet<SymbolId, S>,
 ) -> Result<IdSubstitution, UnifyError> {
-    if comm.is_empty() && assoc.is_empty() {
+    unify_ac_rigid_id(s, t, bank, comm, assoc, None)
+}
+
+/// AC unification in which the variables in `rigid` may not be bound.
+///
+/// A rule that rewrites a subterm of a *target* clause may only instantiate the
+/// equation's own variables: if the unifier binds a variable of the clause being
+/// rewritten, the conclusion is a *specialisation* of the intended resolvent
+/// rather than the resolvent itself, which the premises do not entail. This is
+/// the standard side condition of superposition (see
+/// [`unify_ac_rigid_id`]'s use in `mrs_calculus::superposition`), and it fails
+/// closed: a match that would need such a binding is rejected rather than
+/// accepted with the binding applied.
+///
+/// `rigid = None` is exactly [`unify_ac_id`].
+pub fn unify_ac_rigid_id<S: BuildHasher>(
+    s: TermId,
+    t: TermId,
+    bank: &TermBank,
+    comm: &HashSet<SymbolId, S>,
+    assoc: &HashSet<SymbolId, S>,
+    rigid: Option<&HashSet<VarId, S>>,
+) -> Result<IdSubstitution, UnifyError> {
+    if comm.is_empty() && assoc.is_empty() && rigid.is_none() {
         return unify_id(s, t, bank);
     }
     let mut subst = IdSubstitution::new();
-    unify_ac_rec_id(s, t, &mut subst, bank, comm, assoc)?;
+    unify_ac_rec_id(s, t, &mut subst, bank, comm, assoc, rigid)?;
     Ok(subst)
 }
 
@@ -244,6 +267,7 @@ fn flatten_assoc<S: BuildHasher>(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 fn unify_ac_rec_id<S: BuildHasher>(
     s: TermId,
     t: TermId,
@@ -251,6 +275,7 @@ fn unify_ac_rec_id<S: BuildHasher>(
     bank: &TermBank,
     comm: &HashSet<SymbolId, S>,
     assoc: &HashSet<SymbolId, S>,
+    rigid: Option<&HashSet<VarId, S>>,
 ) -> Result<(), UnifyError> {
     let s = deref_id(s, subst, bank);
     let t = deref_id(t, subst, bank);
@@ -260,8 +285,8 @@ fn unify_ac_rec_id<S: BuildHasher>(
     }
 
     match (bank.get(s), bank.get(t)) {
-        (TermNode::Var(v), _) => bind_var_id(*v, t, subst, bank),
-        (_, TermNode::Var(v)) => bind_var_id(*v, s, subst, bank),
+        (TermNode::Var(v), _) => bind_var_maybe_rigid(*v, t, subst, bank, rigid),
+        (_, TermNode::Var(v)) => bind_var_maybe_rigid(*v, s, subst, bank, rigid),
         (TermNode::App(f1, _args1), TermNode::App(f2, _args2)) => {
             if f1 != f2 {
                 return Err(UnifyError::SymbolClash {
@@ -302,7 +327,7 @@ fn unify_ac_rec_id<S: BuildHasher>(
                         });
                     }
                     for (a1, a2) in args1.iter().zip(args2.iter()) {
-                        unify_ac_rec_id(*a1, *a2, subst, bank, comm, assoc)?;
+                        unify_ac_rec_id(*a1, *a2, subst, bank, comm, assoc, rigid)?;
                     }
                     return Ok(());
                 }
@@ -317,7 +342,9 @@ fn unify_ac_rec_id<S: BuildHasher>(
                     let mut subst_try = saved.clone();
                     let mut normal_ok = true;
                     for (a1, a2) in flat1.iter().zip(flat2.iter()) {
-                        if unify_ac_rec_id(*a1, *a2, &mut subst_try, bank, comm, assoc).is_err() {
+                        if unify_ac_rec_id(*a1, *a2, &mut subst_try, bank, comm, assoc, rigid)
+                            .is_err()
+                        {
                             normal_ok = false;
                             break;
                         }
@@ -331,7 +358,9 @@ fn unify_ac_rec_id<S: BuildHasher>(
                     let mut subst_rev = saved.clone();
                     let mut rev_ok = true;
                     for (a1, a2) in flat1.iter().zip(flat2.iter().rev()) {
-                        if unify_ac_rec_id(*a1, *a2, &mut subst_rev, bank, comm, assoc).is_err() {
+                        if unify_ac_rec_id(*a1, *a2, &mut subst_rev, bank, comm, assoc, rigid)
+                            .is_err()
+                        {
                             rev_ok = false;
                             break;
                         }
@@ -348,7 +377,7 @@ fn unify_ac_rec_id<S: BuildHasher>(
                 } else {
                     // Associative only, just unify elements left-to-right
                     for (a1, a2) in flat1.iter().zip(flat2.iter()) {
-                        unify_ac_rec_id(*a1, *a2, subst, bank, comm, assoc)?;
+                        unify_ac_rec_id(*a1, *a2, subst, bank, comm, assoc, rigid)?;
                     }
                     return Ok(());
                 }
@@ -371,7 +400,7 @@ fn unify_ac_rec_id<S: BuildHasher>(
 
             let normal_ok: Result<(), UnifyError> = (|| {
                 for (a1, a2) in args1.iter().zip(args2.iter()) {
-                    unify_ac_rec_id(*a1, *a2, subst, bank, comm, assoc)?;
+                    unify_ac_rec_id(*a1, *a2, subst, bank, comm, assoc, rigid)?;
                 }
                 Ok(())
             })();
@@ -383,8 +412,24 @@ fn unify_ac_rec_id<S: BuildHasher>(
             if comm.contains(f1) && args1.len() == 2 {
                 let mut subst_swap = saved.clone();
                 let swap_ok: Result<(), UnifyError> = (|| {
-                    unify_ac_rec_id(args1[0], args2[1], &mut subst_swap, bank, comm, assoc)?;
-                    unify_ac_rec_id(args1[1], args2[0], &mut subst_swap, bank, comm, assoc)?;
+                    unify_ac_rec_id(
+                        args1[0],
+                        args2[1],
+                        &mut subst_swap,
+                        bank,
+                        comm,
+                        assoc,
+                        rigid,
+                    )?;
+                    unify_ac_rec_id(
+                        args1[1],
+                        args2[0],
+                        &mut subst_swap,
+                        bank,
+                        comm,
+                        assoc,
+                        rigid,
+                    )?;
                     Ok(())
                 })();
                 if swap_ok.is_ok() {
@@ -460,6 +505,22 @@ fn bind_var_id(
     subst: &mut IdSubstitution,
     bank: &TermBank,
 ) -> Result<(), UnifyError> {
+    bind_var_maybe_rigid(var, term, subst, bank, None::<&HashSet<VarId>>)
+}
+
+fn bind_var_maybe_rigid<S: BuildHasher>(
+    var: VarId,
+    term: TermId,
+    subst: &mut IdSubstitution,
+    bank: &TermBank,
+    rigid: Option<&HashSet<VarId, S>>,
+) -> Result<(), UnifyError> {
+    if let Some(rigid) = rigid
+        && rigid.contains(&var)
+    {
+        return Err(UnifyError::RigidVariable { var });
+    }
+
     let term = deref_id(term, subst, bank);
 
     if let TermNode::Var(v) = bank.get(term)
