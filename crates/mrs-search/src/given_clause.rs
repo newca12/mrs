@@ -4018,6 +4018,114 @@ mod tests {
         assert!(matches!(search(&mut state, &config), SearchResult::GaveUp));
     }
 
+    /// A small ground problem whose queues genuinely drain: the search runs to
+    /// the end of the unprocessed set and leaves it empty.
+    fn drained_search_state(use_avatar: bool) -> crate::state::SearchState {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let mut id_gen = ClauseIdGen::new();
+        let clauses = vec![
+            input_clause(
+                &mut id_gen,
+                vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+                "ax1",
+                "axiom",
+            ),
+            input_clause(
+                &mut id_gen,
+                vec![Literal::pos(Atom::pred(q, vec![Term::constant(b)]))],
+                "ax2",
+                "axiom",
+            ),
+        ];
+        crate::state::SearchState::new(
+            clauses,
+            id_gen,
+            std::sync::Arc::new(SymbolConfig::default()),
+            std::sync::Arc::new(syms),
+            use_avatar,
+        )
+    }
+
+    /// UI-9: `GoalDirected` must not be able to end the search early, and an
+    /// end-of-search verdict from the ordinary loop is never a positive one.
+    ///
+    /// The goal queue holds an entry for every active clause, so
+    /// `select` returns `None` only when the whole set is empty; this runs the
+    /// full loop under that selector and checks both halves of that claim —
+    /// the set really drained, and the run is reported as `GaveUp`, never
+    /// `Saturated`.
+    #[test]
+    fn goal_directed_end_of_search_is_never_a_positive_verdict() {
+        for use_avatar in [false, true] {
+            for sos_depth in [u32::MAX, 100] {
+                let mut state = drained_search_state(use_avatar);
+                let config = SearchConfig {
+                    selection: crate::SelectionStrategy::GoalDirected(10),
+                    sos_depth,
+                    ..SearchConfig::default()
+                };
+                let result = search(&mut state, &config);
+                assert!(
+                    state.stats.processed > 0,
+                    "the search did not run (use_avatar={use_avatar}, sos_depth={sos_depth})",
+                );
+                assert!(
+                    state.unprocessed.is_empty(),
+                    "GoalDirected left {} clause(s) unprocessed (use_avatar={use_avatar}, \
+                     sos_depth={sos_depth})",
+                    state.unprocessed.active_count(),
+                );
+                assert!(
+                    matches!(result, SearchResult::GaveUp),
+                    "expected GaveUp, got {result:?} (use_avatar={use_avatar}, sos_depth={sos_depth})"
+                );
+            }
+        }
+    }
+
+    /// The same guarantee for every other selector, so a future queue change
+    /// cannot make some other strategy the one that truncates its own search.
+    #[test]
+    fn end_of_search_is_never_a_positive_verdict_for_any_selector() {
+        let selectors = [
+            crate::SelectionStrategy::Fifo,
+            crate::SelectionStrategy::SmallestFirst,
+            crate::SelectionStrategy::AgeWeight(5),
+            crate::SelectionStrategy::GoalDirected(10),
+            crate::SelectionStrategy::GoalDirected(0),
+            crate::SelectionStrategy::MlGuided {
+                ratio: 5,
+                alpha: 0.3,
+            },
+            crate::SelectionStrategy::MultiQueue(vec![
+                (crate::select::QueueType::Goal, 3),
+                (crate::select::QueueType::Unit, 1),
+                (crate::select::QueueType::Age, 1),
+            ]),
+        ];
+        for selection in selectors {
+            let mut state = drained_search_state(false);
+            let config = SearchConfig {
+                selection: selection.clone(),
+                ..SearchConfig::default()
+            };
+            let result = search(&mut state, &config);
+            assert!(
+                state.unprocessed.is_empty(),
+                "{selection:?} left {} clause(s) unprocessed",
+                state.unprocessed.active_count(),
+            );
+            assert!(
+                matches!(result, SearchResult::GaveUp | SearchResult::Timeout),
+                "{selection:?} produced a definitive verdict from an incomplete search: {result:?}"
+            );
+        }
+    }
+
     #[test]
     fn pel27_literal_selection_all() {
         use crate::{LiteralSelection, SelectionStrategy};

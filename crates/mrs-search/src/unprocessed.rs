@@ -183,6 +183,17 @@ impl UnprocessedSet {
         self.active_ids.is_empty()
     }
 
+    /// Test-only: does the goal queue still hold an entry for some active
+    /// clause? This is the invariant the goal-directed selector depends on —
+    /// `pop_goal_directed` can only report "drained" when it returns `None`,
+    /// which this rules out for as long as anything is active.
+    #[cfg(test)]
+    fn goal_queue_reaches_active(&self) -> bool {
+        self.goal_queue
+            .iter()
+            .any(|w| self.active_ids.contains(&w.id))
+    }
+
     /// Returns the number of clauses currently in the unprocessed set.
     pub fn active_count(&self) -> usize {
         self.active_ids.len()
@@ -447,6 +458,219 @@ mod tests {
     use super::*;
     use mrs_core::clause::{Clause, ClauseId, ClauseSource};
     use mrs_core::term_bank::TermBank;
+
+    /// Pushes a clause with an explicit weight and goal distance and returns
+    /// its id. Goal distances differ so the goal queue orders differently from
+    /// the weight queue, which is what makes the two queues worth comparing.
+    /// Every third clause is a unit, so the unit queue is populated too.
+    fn push_weighted(
+        bank: &mut TermBank,
+        set: &mut UnprocessedSet,
+        id: u64,
+        weight: u32,
+        goal_distance: Option<u8>,
+    ) -> ClauseId {
+        let mut syms = mrs_core::SymbolTable::new();
+        let p = syms.intern("p");
+        let num_lits = if id.is_multiple_of(3) { 1 } else { 2 };
+        let lits: Vec<_> = (0..num_lits)
+            .map(|i| mrs_core::Literal::pos(mrs_core::Atom::pred(p, vec![mrs_core::Term::var(i)])))
+            .collect();
+        let legacy = Clause::new(
+            ClauseId(id),
+            lits,
+            ClauseSource::Input {
+                name: format!("test{id}"),
+                role: "axiom".into(),
+            },
+        );
+        let clause = bank.clause_from_legacy(&legacy);
+        set.push(&clause, bank, weight, goal_distance, None);
+        clause.id
+    }
+
+    fn new_set() -> UnprocessedSet {
+        UnprocessedSet::new(Arc::new(SymbolConfig::default()))
+    }
+
+    /// UI-9: the goal queue holds an entry for every active clause, so it can
+    /// only report "drained" once nothing is active — at which point the other
+    /// queues hold only tombstones and cannot produce a clause either.
+    #[test]
+    fn goal_queue_drains_only_when_no_clause_is_active() {
+        let mut bank = TermBank::new();
+        let mut set = new_set();
+        let mut ids = Vec::new();
+        for (id, weight, goal_distance) in [
+            (0u64, 10u32, Some(0u8)),
+            (1, 20, Some(1)),
+            (2, 30, None), // pure axiom: goal weight +1000
+            (3, 40, Some(2)),
+            (4, 50, None),
+            (5, 60, Some(3)),
+        ] {
+            ids.push(push_weighted(
+                &mut bank,
+                &mut set,
+                id,
+                weight,
+                goal_distance,
+            ));
+        }
+        assert_eq!(set.active_count(), 6);
+
+        let mut popped = Vec::new();
+        while let Some(id) = set.pop_goal_directed() {
+            popped.push(id);
+            assert!(
+                !set.is_empty() || popped.len() == 6,
+                "goal queue reported a clause while the set was already empty"
+            );
+        }
+        popped.sort();
+        ids.sort();
+        assert_eq!(popped, ids, "goal queue did not hand out every clause");
+        assert!(
+            set.is_empty(),
+            "goal queue drained with clauses still active"
+        );
+
+        // The remaining queues are physically non-empty (tombstones) but have
+        // nothing active to return.
+        assert!(set.pop_age().is_none());
+        assert!(set.pop_weight().is_none());
+        assert!(set.pop_unit().is_none());
+        assert!(set.pop_horn().is_none());
+        assert!(set.pop_sos().is_none());
+    }
+
+    /// The LRS prune rebuilds the goal queue from the active set. Survivors
+    /// must stay reachable through it, and pruning must never leave the goal
+    /// queue empty while a survivor is active.
+    #[test]
+    fn pruning_keeps_survivors_reachable_from_the_goal_queue() {
+        for reserve_percent in [0usize, 25, 50, 100] {
+            let mut bank = TermBank::new();
+            let mut set = new_set();
+            for id in 0..20u64 {
+                push_weighted(
+                    &mut bank,
+                    &mut set,
+                    id,
+                    10 + id as u32,
+                    if id % 3 == 0 {
+                        None
+                    } else {
+                        Some((id % 5) as u8)
+                    },
+                );
+            }
+            let discarded = set.prune(6, reserve_percent);
+            assert_eq!(discarded, 14);
+            let survivors: Vec<ClauseId> = set.iter().collect();
+            assert_eq!(survivors.len(), 6);
+
+            let mut reached = Vec::new();
+            while let Some(id) = set.pop_goal_directed() {
+                assert!(
+                    survivors.contains(&id),
+                    "{id:?} is not in the active set after pruning"
+                );
+                reached.push(id);
+            }
+            reached.sort();
+            let mut expected = survivors;
+            expected.sort();
+            assert_eq!(
+                reached, expected,
+                "reserve_percent={reserve_percent}: goal queue lost a survivor"
+            );
+            assert!(set.is_empty());
+        }
+    }
+
+    /// Deterministic interleaving of every mutating operation the search can
+    /// perform on the set. After each step, either the set is empty or the goal
+    /// queue still has a live clause to give.
+    #[test]
+    fn goal_queue_never_drains_early_under_interleaved_operations() {
+        let mut bank = TermBank::new();
+        let mut set = new_set();
+        let mut next_id = 0u64;
+        let mut rng = 0x2545_F491_4F6C_DD1Du64;
+
+        for step in 0..5000u64 {
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            // Push-heavy, so the set stays populated and `prune` keeps taking
+            // its discarding branch rather than its no-op early return.
+            match rng % 10 {
+                0..=3 => {
+                    push_weighted(
+                        &mut bank,
+                        &mut set,
+                        next_id,
+                        10 + (rng >> 32) as u32 % 90,
+                        match (rng >> 40) % 3 {
+                            0 => None,
+                            1 => Some(0),
+                            _ => Some((rng >> 48) as u8 % 100),
+                        },
+                    );
+                    next_id += 1;
+                }
+                4 => {
+                    if set.pop_goal_directed().is_none() {
+                        assert!(set.is_empty(), "step {step}: goal queue drained early");
+                    }
+                }
+                5 => {
+                    if set.pop_age().is_none() {
+                        assert!(set.is_empty(), "step {step}: age queue drained early");
+                    }
+                }
+                6 => {
+                    if set.pop_weight().is_none() {
+                        assert!(set.is_empty(), "step {step}: weight queue drained early");
+                    }
+                }
+                7 => {
+                    // An empty unit queue can also mean "no active clause is a
+                    // unit", so only the goal/age/weight queues are asserted on
+                    // directly; the unit pop is here for tombstone pressure.
+                    let _ = set.pop_unit();
+                }
+                8 => {
+                    let target = 1 + (rng >> 32) as usize % 4;
+                    set.prune(target, (rng >> 48) as usize % 101);
+                }
+                _ => {
+                    // `retain`/`remove` deactivate clauses without touching the
+                    // physical queues, so this is the tombstone-producing path.
+                    let live: Vec<ClauseId> = set.iter().collect();
+                    if let Some(&victim) = live.get((rng >> 40) as usize % live.len().max(1)) {
+                        if (rng >> 56) & 1 == 0 {
+                            set.remove(victim);
+                        } else {
+                            set.retain(|id| id != victim);
+                        }
+                    }
+                }
+            }
+
+            // The invariant the given-clause loop relies on, checked every step
+            // without consuming anything: a non-empty set always has a live
+            // entry in the goal queue.
+            assert_eq!(
+                set.is_empty(),
+                !set.goal_queue_reaches_active(),
+                "step {step}: {} active clause(s) but goal queue has {} entry",
+                set.active_count(),
+                set.goal_queue.len(),
+            );
+        }
+    }
 
     #[test]
     fn test_unprocessed_pruning() {
