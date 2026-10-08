@@ -1070,14 +1070,14 @@ against subsumed.
 
 | | |
 |---|---|
-| Status | Open, not scheduled |
-| Severity | Unknown; affects strategy 8, which holds 9% of the casc-30 UEQ budget |
-| Soundness | **Potential false result.** Premature termination can be reported as `GaveUp`. |
+| Status | **Not reproducible.** The premise is wrong; no bug exists on `main` (cd7c4ce) |
+| Severity | None. The `GoalDirected` arm cannot return `None` on a non-empty set |
+| Soundness | Unaffected. Independently of the selector, the ordinary loop has no positive end-of-search verdict to lose |
 
 ### Observation
 
 `select::select` guards only the whole-set emptiness
-(`crates/mrs-search/src/select.rs:58`):
+(`crates/mrs-search/src/select.rs:59`):
 
 ```rust
 pub fn select(unprocessed: &mut UnprocessedSet, strategy: &SelectionStrategy,
@@ -1094,37 +1094,84 @@ pub fn select(unprocessed: &mut UnprocessedSet, strategy: &SelectionStrategy,
 ```
 
 `pop_goal_directed` drains `goal_queue` and returns `None` once it is empty
-(`unprocessed.rs:255-262`), regardless of whether other queues still hold
-clauses. The caller treats `None` as end-of-search (`given_clause.rs:1600`,
-`None => break`). So if `goal_queue` drains while `weight_queue` and `unit_queue`
-are non-empty, the loop exits having left clauses unprocessed, and the search
-reports whatever the post-loop audit concludes from an incomplete clause set.
+(`unprocessed.rs:255-262`). The caller treats `None` as end-of-search
+(`given_clause.rs:1652`, `None => break`), so the question is whether the goal
+queue can empty while clauses are still *active*.
 
-Every other weight-based pop takes an explicit fallback. `pop_weight` is
-`u.pop_weight_sos(sos_depth).or_else(|| u.pop_age())` — "age fallback when no SOS
-clause is ready" (`select.rs:61-67`). `GoalDirected` is the only path that can
-return `None` on a non-empty set.
+### Why it cannot
 
-### Why it matters
+The `goal_queue` is a lazy-deletion heap that `push` fills for **every** clause
+(`unprocessed.rs:129`), and `prune` — the only path that rebuilds it — derives the
+rebuild from the surviving active set (`unprocessed.rs:404`). So the queue holds
+an entry for every active clause at all times, and a wrapper is removed from it
+only when the clause is handed to the caller (which also deactivates it) or when
+it is already a tombstone. Therefore:
 
-This is **not** the cause of UI-2's UEQ hangs; that was exponential `lpo_gt_id`,
-now fixed. This is the opposite failure — stopping too early rather than never
-stopping — and it is worse in kind, because a premature exit can be recorded as a
-definitive answer rather than a timeout.
+```
+pop_goal_directed() == None   ⟺   goal_queue is physically empty
+                              ⟺   active_ids is empty
+```
 
-### Not yet confirmed
+The UI-9 scenario is only reachable if the goal queue is *physically* empty
+while other queues still hold entries — which is the normal, harmless state
+after a drain: `weight_queue`, `unit_queue` and `age_queue` then hold tombstones
+for clauses already handed out, and they too return `None`. Every other
+weight-based pop takes an explicit fallback because its *bounded* scan can miss
+eligible clauses (`pop_weight_sos` gives up after 32 skipped), not because its
+queue can drain early: `select.rs:61-67`. `GoalDirected` calls the unbounded
+`pop_goal_directed`, so it needs no fallback.
 
-No input has been found where this actually truncates a search. The three
-conditions must hold at once: strategy 8 selected, `goal_queue` emptied ahead of
-the other queues, and the resulting `GaveUp`/`Saturated` recorded without
-independent verification. Finding one needs per-iteration logging of
-`unprocessed.is_empty()` against the individual queue depths at the moment
-`select` returns `None`, over a run that ends in an unverified status.
+### Evidence
 
-A cheap interim mitigation, if a truncation is ever confirmed: give `GoalDirected`
-the same `.or_else(|| unprocessed.pop_age())` fallback `pop_weight` already has.
-That is a behaviour change to a completeness-relevant path, so it wants a
-measurement behind it, not a patch on suspicion.
+- **Structural**: `push` inserts into every queue (`unprocessed.rs:121-158`);
+  `pop_age`/`pop_weight`/`pop_goal_directed`/`pop_unit`/`pop_horn`/`pop_sos`
+  deactivate on hand-out; `remove`/`retain` only ever deactivate; `prune`
+  rebuilds `goal_queue` from `protected`, which is derived from the *active*
+  wrappers of `weight_queue`, itself maintained over the active set. The
+  invariant is inductive from the empty set, and `select` now asserts it
+  (`debug_assert` at `select.rs:168`, free in release, checked in `cargo test`).
+- **Mutation-tested**: two deliberate breakages of the invariant were caught by
+  the new tests — (a) `prune` rebuilding `goal_queue` without the survivors
+  (4 tests fail, two through the `debug_assert`); (b) `push` skipping the
+  goal-queue insert for `goal_distance == None` clauses, which is exactly UI-9's
+  failure mode (5 tests fail).
+- **Regression tests**: `unprocessed::tests::goal_queue_drains_only_when_no_clause_is_active`,
+  `unprocessed::tests::pruning_keeps_survivors_reachable_from_the_goal_queue`,
+  `unprocessed::tests::goal_queue_never_drains_early_under_interleaved_operations`
+  (5 000-step deterministic interleaving of push/pop/prune/remove/retain),
+  `select::tests::goal_directed_signals_end_of_search_only_when_the_set_is_empty`,
+  `select::tests::goal_directed_still_selects_everything_that_survived_pruning`,
+  `select::tests::no_strategy_reports_none_while_clauses_remain`,
+  `select::tests::empty_set_terminates_for_every_strategy`,
+  `given_clause::tests::goal_directed_end_of_search_is_never_a_positive_verdict`,
+  `given_clause::tests::end_of_search_is_never_a_positive_verdict_for_any_selector`.
+- **End-to-end probe**: strategy 8 solo (`--workers 1 --strategy 8`, `--time 1`,
+  2 jobs) over the whole casc-30 corpus — 1 060 runs (UEQ 300, FEQ+FNE 500, EPS
+  100, EPU 100, plus a 20-problem pilot) — with temporary instrumentation at the
+  `None => break` site printing `passive`, `is_empty()` and the selection
+  strategy. 29 runs reached that break; **all 29 had `passive=0 empty=true`**,
+  including runs whose passive set had been pruned hard by LRS
+  (`lrs_discarded=41284`). Zero breaks left clauses unprocessed. (Runs that
+  refuted or timed out never reach the break, so the probe's power is limited to
+  the saturating minority: 29/1 060. UI-9's `GaveUp` claim needs exactly that
+  minority, and none of them was early.)
+
+### Why it matters less than it looked
+
+The original severity claim — "a premature exit can be recorded as a definitive
+answer" — does not hold either, independently of the selector. The ordinary
+given-clause loop has **no** positive end-of-search verdict to lose: after the
+loop it returns `GaveUp` for any LRS or parent-guidance discard, `Timeout` for a
+spent LPO budget, and `GaveUp` otherwise, with the comment "Only
+`certified.rs` may return positive saturation evidence"
+(`given_clause.rs:3344-3387`). `GaveUp` also ranks below `Refutation`,
+`Saturated` and `ResourceOut` in portfolio aggregation (`strategy.rs:1731-1772`).
+So even a hypothetical truncation would cost search effort, not soundness.
+
+No code change to the selection policy was made; adding the age fallback would
+have been a behaviour change to a path that provably cannot truncate the search.
+The invariant is now documented at `select::select`, asserted in debug builds,
+and pinned by the tests above.
 
 ---
 

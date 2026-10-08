@@ -49,7 +49,23 @@ pub enum SelectionStrategy {
 /// `sos_depth`: if `< u32::MAX`, the weight-based pop uses SOS restriction
 /// (only returns clauses with `distance < sos_depth`).
 ///
-/// Returns `None` if the set is empty.
+/// Returns `None` **only** when the set is empty. `None` is the given-clause
+/// loop's end-of-search signal (`given_clause.rs`: `None => break`), so a
+/// strategy arm that can report "no clause here" must fall back to another
+/// queue, and `GoalDirected` provably does not need one:
+///
+/// - `UnprocessedSet::push` inserts every clause into *every* queue, and the
+///   priority pops delete lazily, skipping ids that are no longer active. A
+///   queue is therefore physically empty only after every clause it held has
+///   been returned to the caller or deactivated, so `pop_goal_directed`
+///   cannot report "goal queue drained" while a still-active clause is
+///   missing from it — the goal queue is drained only when no clause remains
+///   at all. Any *other* queue holding entries at that point holds tombstones.
+/// - `UnprocessedSet::prune` (the LRS path) rebuilds the goal queue from the
+///   active set, so pruning cannot strand a surviving clause outside it.
+///
+/// The `debug_assert` below pins that invariant: it is free in release builds
+/// and is checked on every selection in `cargo test` and debug runs.
 pub fn select(
     unprocessed: &mut UnprocessedSet,
     strategy: &SelectionStrategy,
@@ -68,7 +84,7 @@ pub fn select(
         }
     };
 
-    match strategy {
+    let chosen = match strategy {
         SelectionStrategy::Fifo => unprocessed.pop_age(),
 
         SelectionStrategy::SmallestFirst => pop_weight(unprocessed),
@@ -87,6 +103,8 @@ pub fn select(
             if *ratio == 0 || iteration.is_multiple_of(*ratio as u64) {
                 unprocessed.pop_age()
             } else {
+                // No age fallback is needed: the goal queue holds an entry for
+                // every active clause, so it cannot drain ahead of the set.
                 unprocessed.pop_goal_directed()
             }
         }
@@ -111,40 +129,48 @@ pub fn select(
         SelectionStrategy::MultiQueue(queues) => {
             let total_weight: u32 = queues.iter().map(|(_, w)| *w).sum();
             if total_weight == 0 {
-                return unprocessed.pop_age();
-            }
-            let mut step = (iteration % (total_weight as u64)) as u32;
-            let mut chosen = QueueType::Weight;
-            for (q_type, w) in queues {
-                if step < *w {
-                    chosen = *q_type;
-                    break;
+                unprocessed.pop_age()
+            } else {
+                let mut step = (iteration % (total_weight as u64)) as u32;
+                let mut chosen = QueueType::Weight;
+                for (q_type, w) in queues {
+                    if step < *w {
+                        chosen = *q_type;
+                        break;
+                    }
+                    step -= *w;
                 }
-                step -= *w;
-            }
 
-            match chosen {
-                QueueType::Age => unprocessed.pop_age().or_else(|| pop_weight(unprocessed)),
-                QueueType::Weight => pop_weight(unprocessed).or_else(|| unprocessed.pop_age()),
-                QueueType::Goal => unprocessed
-                    .pop_goal_directed()
-                    .or_else(|| pop_weight(unprocessed))
-                    .or_else(|| unprocessed.pop_age()),
-                QueueType::Unit => unprocessed
-                    .pop_unit()
-                    .or_else(|| pop_weight(unprocessed))
-                    .or_else(|| unprocessed.pop_age()),
-                QueueType::Horn => unprocessed
-                    .pop_horn()
-                    .or_else(|| pop_weight(unprocessed))
-                    .or_else(|| unprocessed.pop_age()),
-                QueueType::Sos => unprocessed
-                    .pop_sos()
-                    .or_else(|| pop_weight(unprocessed))
-                    .or_else(|| unprocessed.pop_age()),
+                match chosen {
+                    QueueType::Age => unprocessed.pop_age().or_else(|| pop_weight(unprocessed)),
+                    QueueType::Weight => pop_weight(unprocessed).or_else(|| unprocessed.pop_age()),
+                    QueueType::Goal => unprocessed
+                        .pop_goal_directed()
+                        .or_else(|| pop_weight(unprocessed))
+                        .or_else(|| unprocessed.pop_age()),
+                    QueueType::Unit => unprocessed
+                        .pop_unit()
+                        .or_else(|| pop_weight(unprocessed))
+                        .or_else(|| unprocessed.pop_age()),
+                    QueueType::Horn => unprocessed
+                        .pop_horn()
+                        .or_else(|| pop_weight(unprocessed))
+                        .or_else(|| unprocessed.pop_age()),
+                    QueueType::Sos => unprocessed
+                        .pop_sos()
+                        .or_else(|| pop_weight(unprocessed))
+                        .or_else(|| unprocessed.pop_age()),
+                }
             }
         }
-    }
+    };
+
+    debug_assert!(
+        chosen.is_some() || unprocessed.is_empty(),
+        "select returned None with {} unprocessed clause(s) left under {strategy:?}",
+        unprocessed.active_count(),
+    );
+    chosen
 }
 
 #[cfg(test)]
@@ -183,6 +209,249 @@ mod tests {
             &mrs_calculus::ordering::SymbolConfig::default(),
         );
         unproc.push(&c, bank, w, None, None);
+    }
+
+    fn new_set() -> UnprocessedSet {
+        UnprocessedSet::new(std::sync::Arc::new(
+            mrs_calculus::ordering::SymbolConfig::default(),
+        ))
+    }
+
+    /// Pushes a clause with an explicit goal distance, so the goal queue orders
+    /// differently from the weight queue.
+    fn push_clause_with_goal_distance(
+        id: u64,
+        num_lits: usize,
+        goal_distance: Option<u8>,
+        bank: &mut TermBank,
+        unproc: &mut UnprocessedSet,
+    ) -> ClauseId {
+        let c = make_id_clause(id, num_lits, bank);
+        let w = crate::weight::clause_weight_id(
+            &c,
+            bank,
+            &mrs_calculus::ordering::SymbolConfig::default(),
+        );
+        unproc.push(&c, bank, w, goal_distance, None);
+        c.id
+    }
+
+    /// A set whose queues genuinely disagree: units (unit queue only), wide
+    /// clauses (weight/age only), and mixed goal distances (goal queue).
+    fn mixed_set(bank: &mut TermBank) -> (UnprocessedSet, Vec<ClauseId>) {
+        let mut unproc = new_set();
+        let mut ids = Vec::new();
+        for (id, lits, goal_distance) in [
+            (0u64, 1usize, Some(0u8)), // unit, closest to the goal
+            (1, 3, None),              // wide pure axiom: heaviest goal weight
+            (2, 1, Some(2)),           // unit, mid distance
+            (3, 2, Some(1)),           //
+            (4, 4, None),              // widest, unit-free, farthest
+            (5, 1, Some(3)),           // unit, farthest reachable
+        ] {
+            ids.push(push_clause_with_goal_distance(
+                id,
+                lits,
+                goal_distance,
+                bank,
+                &mut unproc,
+            ));
+        }
+        (unproc, ids)
+    }
+
+    /// UI-9: the goal queue must never report "drained" while clauses are
+    /// still active. The goal queue holds an entry for every active clause, so
+    /// draining it removes exactly the clauses that are still selectable —
+    /// `select` reports `None` only once the set itself is empty.
+    #[test]
+    fn goal_directed_signals_end_of_search_only_when_the_set_is_empty() {
+        let mut bank = TermBank::new();
+        let (mut unproc, ids) = mixed_set(&mut bank);
+        let strat = SelectionStrategy::GoalDirected(10);
+
+        let mut selected = Vec::new();
+        let mut iteration = 0u64;
+        loop {
+            match select(&mut unproc, &strat, iteration, u32::MAX) {
+                Some(id) => selected.push(id),
+                None => {
+                    assert!(
+                        unproc.is_empty(),
+                        "select reported end of search with {} clause(s) still active: {:?}",
+                        unproc.active_count(),
+                        unproc.iter().collect::<Vec<_>>(),
+                    );
+                    break;
+                }
+            }
+            iteration += 1;
+        }
+
+        // Every clause was handed out exactly once before `None`.
+        selected.sort();
+        let mut expected = ids;
+        expected.sort();
+        assert_eq!(selected, expected);
+        assert_eq!(iteration, expected.len() as u64);
+
+        // The other queues still hold entries at that point — they are
+        // tombstones for the clauses the goal queue handed out, which is why
+        // they cannot be popped again.
+        assert!(unproc.pop_age().is_none());
+        assert!(unproc.pop_weight().is_none());
+        assert!(unproc.pop_unit().is_none());
+        assert!(unproc.pop_horn().is_none());
+        assert!(unproc.pop_sos().is_none());
+    }
+
+    /// The same property after LRS pruning, which is the only path that
+    /// rebuilds the goal queue rather than lazily draining it.
+    #[test]
+    fn goal_directed_still_selects_everything_that_survived_pruning() {
+        let mut bank = TermBank::new();
+        let (mut unproc, _) = mixed_set(&mut bank);
+        // Six more clauses, so pruning has something to choose between.
+        for id in 6..12u64 {
+            push_clause_with_goal_distance(id, (id % 3) as usize + 1, None, &mut bank, &mut unproc);
+        }
+        assert_eq!(unproc.active_count(), 12);
+
+        // The LRS prune: keep the oldest quarter plus the lightest of the rest.
+        let discarded = unproc.prune(4, 25);
+        assert_eq!(discarded, 8);
+        let survivors: Vec<ClauseId> = unproc.iter().collect();
+        assert_eq!(survivors.len(), 4);
+
+        let strat = SelectionStrategy::GoalDirected(10);
+        let mut selected = Vec::new();
+        for iteration in 0.. {
+            match select(&mut unproc, &strat, iteration, u32::MAX) {
+                Some(id) => {
+                    assert!(
+                        survivors.contains(&id),
+                        "{id:?} was not in the surviving active set after pruning"
+                    );
+                    selected.push(id);
+                }
+                None => {
+                    assert!(unproc.is_empty());
+                    break;
+                }
+            }
+        }
+        selected.sort();
+        let mut expected = survivors;
+        expected.sort();
+        assert_eq!(selected, expected);
+    }
+
+    /// A genuinely empty set still terminates normally, on every selector.
+    #[test]
+    fn empty_set_terminates_for_every_strategy() {
+        let strategies = [
+            SelectionStrategy::Fifo,
+            SelectionStrategy::SmallestFirst,
+            SelectionStrategy::AgeWeight(5),
+            SelectionStrategy::GoalDirected(10),
+            SelectionStrategy::GoalDirected(0),
+            SelectionStrategy::MlGuided {
+                ratio: 5,
+                alpha: 0.3,
+            },
+            SelectionStrategy::MultiQueue(vec![(QueueType::Goal, 3), (QueueType::Age, 1)]),
+            SelectionStrategy::MultiQueue(vec![]),
+        ];
+        for strategy in strategies {
+            for iteration in 0..4u64 {
+                let mut unproc = new_set();
+                assert!(select(&mut unproc, &strategy, iteration, u32::MAX).is_none());
+                assert!(unproc.is_empty());
+            }
+        }
+    }
+
+    /// Every strategy, every queue type: `None` implies empty. Checked over a
+    /// mixed set driven to exhaustion through interleaved operations, which is
+    /// the state the given-clause loop observes at the `None => break` site.
+    #[test]
+    fn no_strategy_reports_none_while_clauses_remain() {
+        let strategies = [
+            SelectionStrategy::Fifo,
+            SelectionStrategy::SmallestFirst,
+            SelectionStrategy::AgeWeight(5),
+            SelectionStrategy::AgeWeight(1),
+            SelectionStrategy::GoalDirected(10),
+            SelectionStrategy::GoalDirected(2),
+            SelectionStrategy::GoalDirected(0),
+            SelectionStrategy::MlGuided {
+                ratio: 5,
+                alpha: 0.3,
+            },
+            SelectionStrategy::MultiQueue(vec![
+                (QueueType::Goal, 3),
+                (QueueType::Unit, 1),
+                (QueueType::Sos, 2),
+                (QueueType::Horn, 1),
+                (QueueType::Weight, 1),
+                (QueueType::Age, 1),
+            ]),
+            SelectionStrategy::MultiQueue(vec![(QueueType::Goal, 1)]),
+            SelectionStrategy::MultiQueue(vec![(QueueType::Sos, 1)]),
+        ];
+        for strategy in strategies {
+            let mut bank = TermBank::new();
+            let (mut unproc, _) = mixed_set(&mut bank);
+            for id in 6..14u64 {
+                push_clause_with_goal_distance(
+                    id,
+                    (id % 4) as usize,
+                    if id % 2 == 0 { None } else { Some(1) },
+                    &mut bank,
+                    &mut unproc,
+                );
+            }
+            for iteration in 0..200u64 {
+                if iteration % 5 == 4 {
+                    // Keep LRS pruning in the mix so the queue rebuilds run.
+                    unproc.prune(3, 50);
+                }
+                if select(&mut unproc, &strategy, iteration, u32::MAX).is_none() {
+                    assert!(
+                        unproc.is_empty(),
+                        "{strategy:?} reported end of search with {} clause(s) left",
+                        unproc.active_count(),
+                    );
+                    break;
+                }
+            }
+            assert!(
+                unproc.is_empty(),
+                "{strategy:?} did not drain the set within 200 iterations"
+            );
+        }
+    }
+
+    /// `GoalDirected` with SOS enabled exercises the other pop that can report
+    /// "nothing available here": `pop_weight_sos` skips goal-ineligible clauses
+    /// in a bounded window, which is why `pop_weight` keeps its age fallback.
+    #[test]
+    fn goal_directed_with_sos_depth_drains_the_set() {
+        let mut bank = TermBank::new();
+        let (mut unproc, ids) = mixed_set(&mut bank);
+        let strat = SelectionStrategy::GoalDirected(10);
+        let mut selected = 0;
+        for iteration in 0..100u64 {
+            match select(&mut unproc, &strat, iteration, 100) {
+                Some(_) => selected += 1,
+                None => {
+                    assert!(unproc.is_empty());
+                    break;
+                }
+            }
+        }
+        assert_eq!(selected, ids.len());
+        assert!(unproc.is_empty());
     }
 
     #[test]
