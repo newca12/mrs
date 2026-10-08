@@ -845,6 +845,14 @@ a counterexample — it really is entailed, and the kernel is right to certify i
 The family-1 negative test pins the case that is: a cited definition whose body
 matches no block at all.
 
+Review of the memoized search found one further substitution invariant: a cached
+successful `(node, literal group, incoming substitution)` decision must replay
+the substitution produced by that match. Caching only the Boolean answer let a
+later literal group continue without those bindings on a cache hit. Memo entries
+now retain the resulting substitution, and
+`residue_memo_hit_replays_the_substitution` forces a cache hit and checks that a
+subsequent group cannot choose a conflicting binding.
+
 ### Measured
 
 `audit_casc_proofs --checks strict --strict-time 120 --jobs 1` over the two

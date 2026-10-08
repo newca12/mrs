@@ -2442,7 +2442,7 @@ struct ResidueSearch<'a> {
     /// the goal around it. Memoising the decisions collapses the repeated
     /// sub-searches that would otherwise make the walk exponential on a wide
     /// disjunction.
-    results: HashMap<ResidueMemoKey, Option<bool>>,
+    results: HashMap<ResidueMemoKey, ResidueMemoResult>,
     /// The substitution from the derived clause's variables to terms over the
     /// goal clause's variables.
     ///
@@ -2467,6 +2467,14 @@ struct ResidueMemoKey {
     node: usize,
     share: u64,
     substitution: Vec<(VarId, Term)>,
+}
+
+enum ResidueMemoResult {
+    /// A successful match must replay the bindings it established. Returning
+    /// only `true` would let a later literal group choose an incompatible
+    /// substitution on a cache hit.
+    Covered(Vec<(VarId, Term)>),
+    NotCovered,
 }
 
 impl ResidueSearch<'_> {
@@ -2675,14 +2683,25 @@ fn residue_covers(
     if let Some(key) = memo.as_ref()
         && let Some(decided) = search.results.get(key)
     {
-        return *decided;
+        return match decided {
+            ResidueMemoResult::Covered(substitution) => {
+                search.substitution.clone_from(substitution);
+                Some(true)
+            }
+            ResidueMemoResult::NotCovered => Some(false),
+        };
     }
     let saved = search.substitution.clone();
     let outcome = residue_covers_uncached(node, share, literals, search);
     match outcome {
         Some(decided) => {
             if let Some(key) = memo {
-                search.results.insert(key, Some(decided));
+                let result = if decided {
+                    ResidueMemoResult::Covered(search.substitution.clone())
+                } else {
+                    ResidueMemoResult::NotCovered
+                };
+                search.results.insert(key, result);
             }
             if !decided {
                 search.substitution = saved;
@@ -13786,6 +13805,62 @@ mod tests {
                 "{name}: an exhausted check must stay fail-closed, got {verdict:?}"
             );
         }
+    }
+
+    #[test]
+    fn residue_memo_hit_replays_the_substitution() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let q = symbols.intern("q");
+        let x = Term::var(0);
+        let y = Term::var(1);
+        let z = Term::var(2);
+        let p_of_x = Formula::atom(Atom::Pred(p, vec![x.clone()]));
+        let q_of_x = Formula::atom(Atom::Pred(q, vec![x.clone()]));
+        let goal = vec![
+            Literal {
+                positive: true,
+                atom: Atom::Pred(p, vec![y.clone()]),
+            },
+            Literal {
+                positive: true,
+                atom: Atom::Pred(q, vec![z]),
+            },
+        ];
+        let mut search = ResidueSearch {
+            definitions: &[],
+            spent: 0,
+            max_steps: 100,
+            producible: HashMap::new(),
+            suffix: HashMap::new(),
+            produces_any: HashMap::new(),
+            results: HashMap::new(),
+            substitution: Vec::new(),
+        };
+
+        assert_eq!(
+            residue_covers(&p_of_x, &[0], &goal, &mut search),
+            Some(true)
+        );
+        assert_eq!(search.substitution, vec![(0, y.clone())]);
+
+        // Repeat the same question from the same incoming substitution so it
+        // is answered from the memo table. The successful bindings must be
+        // restored just as they were by the original traversal.
+        search.substitution.clear();
+        assert_eq!(
+            residue_covers(&p_of_x, &[0], &goal, &mut search),
+            Some(true)
+        );
+        assert_eq!(search.substitution, vec![(0, y)]);
+
+        // A later group using the same source variable must observe that
+        // binding; it cannot independently instantiate x to a different goal
+        // variable.
+        assert_eq!(
+            residue_covers(&q_of_x, &[1], &goal, &mut search),
+            Some(false)
+        );
     }
 
     /// A goal clause that is not a consequence of its source and definitions is
