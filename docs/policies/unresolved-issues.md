@@ -493,13 +493,25 @@ verifying it inside the budget.
 ### Reproduce
 
 ```bash
+# The residue check: positive shapes, the three negative shapes, and the
+# budget case.
+nix develop -c cargo test -p mrs-proof-kernel residue
+nix develop -c cargo test -p mrs-proof-kernel -- identical unmatched bound_variable
+
+# The leaf-matching and alpha-equivalence contracts this work must not move.
 nix develop -c cargo test -p mrs-proof-kernel leaf_matching -- --nocapture
 nix develop -c cargo test -p mrs-proof-kernel alpha_equiv_shape_characterization
 
-# End to end, from the retained proofs:
-crates/mrs-bench/certification_campaign.sh \
-  --audit-only /home/hack/crates/mrs-bench/results/campaign-cascj13-feq-W8C8J1-20261002 \
-  --edition casc-j13
+# One archived proof, end to end.
+TPTP=crates/mrs-bench/problems/casc-30 target/release/mrs-proover \
+  --strict --no-atp --workers 1 --time 240 \
+  /home/hack/crates/mrs-bench/results/campaign-casc30-feq-W8C8J1-20261002/certification/proofs/mrs/feq/ALG127+1.s
+
+# Whole-campaign re-audit, like for like with the numbers above.
+target/release/audit_casc_proofs \
+  --run /home/hack/crates/mrs-bench/results/campaign-casc30-feq-W8C8J1-20261002/run.csv \
+  --problems-dir crates/mrs-bench/problems/casc-30 \
+  --checks strict --strict-time 120 --jobs 1 --output /tmp/audit-feq30
 ```
 
 ## UI-5 — EPU: equality InstGen is unsupported on many inputs; its contribution needs measurement
@@ -694,122 +706,231 @@ result.
 
 ---
 
-## UI-7 — Eight FEQ refutations the strict kernel cannot decide
+## UI-7 — Six of the eight FEQ refutations decided; two now certify outside the audit budget
 
 | | |
 |---|---|
-| Status | Open, not scheduled |
-| Severity | 8 `Unknown` rows across two FEQ campaigns, plus one more that is only over budget. No `VerifiedBad`. |
-| Soundness | No unsound step was found. All eight fail closed, and several were *reached* only because UI-4 stopped masking them. |
-| Blocks | 100% strict certification of the FEQ refutations in both campaigns, at the 120 s per-proof kernel budget. |
+| Status | **Measured**. Six of the eight rows now certify; two certify but need more than the audit's 120 s per-proof budget. |
+| Severity | Residual: 2 rows at `casc-j13` are over budget rather than undecided. |
+| Soundness | The change only ever accepts more, and each acceptance is an entailment argument recorded in `goal_directed_cnf_entailment`. Writing that argument exposed a soundness gap in its first draft -- per-literal-group renaming instead of one substitution for the clause -- which was fixed before landing and is what the adversarial tests exist to catch; see "What the adversarial tests found". `mrs_core::alpha::alpha_equiv` is untouched. |
+| Blocks | Nothing structural. The 120 s audit budget for `GEO331+1` and `GEO343+1`. |
 
 ### Observation
 
-After UI-4 and the demodulation replay fixes (`cert/feq-kernel-limits`,
-`2ffedfe` and `32356a6`), replaying the archived FEQ proofs through
-`mrs-proover --strict` leaves eight rows undecided, in two families. The
-remaining 64 casc-j13 and 92 casc-30 rows certify, and `ALG049+1` certifies in
-396 s given a budget it does not have (see
-[CERTIFICATION_STATUS.md](../CERTIFICATION_STATUS.md) §2).
+The starting point, on `main` at `d74f842`, reproduced exactly from the
+archived proofs:
 
-| problem | campaign | node | verdict |
+```
+TPTP=crates/mrs-bench/problems/<edition> target/release/mrs-proover \
+  --strict --no-atp --workers 1 --time 240 <campaign>/certification/proofs/mrs/feq/<P>.s
+```
+
+| problem | campaign | node | verdict before |
 |---|---|---|---|
-| `GEO331+1` | casc-j13 | `c355` | definitions whose bodies could not be matched against the source |
+| `GEO331+1` | casc-j13 | `c355` | `Unknown` — definitions whose bodies could not be matched against the source |
 | `GEO343+1` | casc-j13 | `c286` | same |
 | `GEO299+1` | casc-30 | `c522` | same |
 | `GEO300+1` | casc-30 | `c285` | same |
 | `ITP019+5` | casc-30 | `c700` | same |
-| `ALG102+1` | casc-30 | `c391` | CNF expansion exceeded strict limits |
+| `ALG102+1` | casc-30 | `c391` | `Unknown` — CNF expansion exceeded the strict limits |
 | `ALG104+1` | casc-30 | `c281` | same |
 | `ALG127+1` | casc-30 | `c199` | same |
 
-Node ids are not stable across runs; quote the conclusion text.
+Node ids are not stable across runs; the conclusion and rule identify a step.
 
-### Family 1 — definitions over structurally identical blocks
+### Root cause, family 1 — the fold needs block identity, the goal already has it
 
-Each `cnf_transformation` step cites several introduced definitions whose bodies
-are the same literals, sometimes in opposite order, and the source contains a
-block for each. `GEO331+1` c355 is the clearest:
+`GEO331+1` c355, quoted exactly:
 
 ```
-source block A:  ~ron(X0,X2) & ~rinside(X0,X2)
-source block B:  ~ron(X1,X2) & ~rinside(X1,X2)
-c349: def_..._0(X0,X2) <=> ~ron(X0,X2) & ~rinside(X0,X2)
-c350: def_..._1(X1,X2) <=> ~ron(X1,X2) & ~rinside(X1,X2)
-goal clause:     ... | def_..._0(X0,X2) | ... | def_..._1(X1,X2) | ...
+source:      ~ron(X0,X2) & ~rinside(X0,X2)   ...   ~ron(X1,X2) & ~rinside(X1,X2)
+c349:        def_..._0(X0,X2) <=> ~ron(X0,X2) & ~rinside(X0,X2)
+c350:        def_..._1(X1,X2) <=> ~ron(X1,X2) & ~rinside(X1,X2)
+goal c355:   ... | def_..._0(X0,X2) | ... | def_..._1(X1,X2) | ...
 ```
 
-`match_core_multiset` compares `And`/`Or` operands as multisets, so `c349` and
-`c350` both match both blocks and the greedy fold gives both blocks to whichever
-definition runs first. The other is then left unmatched and the guard reports
-`Inconclusive`.
+The two blocks carry the same literals in the same order; only the source
+variables they range over differ. The fold cannot see that, and neither can
+`is_identity_mapping`: it compares `VarId`s, and `LowerCtx` numbers variables per
+annotated formula, so `c349`'s two variables and `c350`'s two are the *same*
+`VarId`s. Both definitions therefore match both blocks and the greedy fold hands
+both blocks to whichever runs first.
 
-Two things were established:
+The goal-directed residue check replaces "find the definition's block" with
+"place the goal clause into the source's clause set": it distributes the goal over
+the source's conjunctions and disjunctions and folds a definition only where the
+result reproduces the head arguments the goal names. Block identity is then not
+needed — it is *implied* by the goal.
 
-* Comparing operands **in order** first separates mirror-image definitions
-  (`GEO331+1` c211, `GEO343+1` c155, `GEO300+1` c36 now certify; that pass is in
-  the tree and is strictly narrower than the multiset comparison, so it only ever
-  accepts less). It does **not** separate the c355 family, because there the two
-  bodies have the *same* operand order and nothing but variable identity
-  distinguishes the blocks.
-* Reversing the order of the definitions does not help either, because the
-  collision is not about order: the first definition takes both blocks whichever
-  order it runs in. A block-to-definition *matching* is needed, which needs
-  block identity.
+This is the third family-1 attempt and the first that does not change the
+variable model. Interning one `VarId` per variable *name* would also work, and is
+still not attempted: it is a change to the kernel's variable model with its own
+capture hazard, and it is now unnecessary.
+`mrs_core::alpha::alpha_equiv` is untouched and its contract test still passes.
 
-### The blocker: variable identity is not available
+### Root cause, family 2 — the expansion is combinatorial, and the goal is a weakening of it
 
-The discriminator is which source variables each definition's block uses: block
-A is over the source's `X0,X2` and belongs to `def_..._0`, block B is over `X1,X2`
-and belongs to `def_..._1`. The kernel cannot see that. `LowerCtx` assigns
-`VarId`s per annotated formula, in order of first appearance, so:
+`ALG127+1` c199, quoted exactly:
 
-* `c349`'s `X0` and the source's `X0` get different `VarId`s;
-* `c349` and `c350` get *identical* `VarId`s for their two bound variables, so
-  they are the same formula to the matcher.
+```
+source c78:  (B0 | B1 | B2 | B3) & (C0 | ... | C15)
+c79..c82:    def_ax10_i <=> Bi                       (the four blocks of the first group)
+goal c199:   def_ax10_0 | def_ax10_1 | def_ax10_2 | def_ax10_3
+```
 
-`is_identity_mapping` -- the "is this the definition's own block" test, whose own
-comment says "same variable names as the rendered definition" -- compares
-`VarId`s and therefore can essentially never succeed across two independently
-lowered formulas. It was written for a shared name space that does not exist.
+Two facts, both measured, not assumed:
 
-Interning one `VarId` per variable *name* for the whole verification would fix
-it, but it is a change to the kernel's variable model, not to a limit, and it
-introduces a capture hazard: a formula that uses one name both free and bound
-would conflate them, and `alpha_equiv`'s depth-indexed relation would then treat
-a free variable as bound. That is a widening of leaf matching and needs its own
-independent validation before it lands. **Not attempted here.**
+* `CNF` of the *folded* source is small — four unit clauses plus sixteen more —
+  but the second group is a 16-way case split whose blocks are themselves
+  case splits, and the kernel's expander cross-products them: `5^7 = 78 125`
+  clauses at one disjunction, so the 100 000-clause ceiling is reached having
+  produced 1. The ceiling is a symptom; the cross product is the cause.
+* The goal `def_ax10_0 | ... | def_ax10_3` is **not one of the derived clauses**.
+  It is a *weakening* of each of them: `CNF` contains `def_ax10_0`, and a clause
+  entails each of its subclause weakenings. So the step is sound — and
+  expand-and-look cannot see it, because no clause equals it. The prover's own
+  clause set contains only this weakening, not the four unit clauses.
 
-### Family 2 — the CNF expansion is combinatorial, not under-budgeted
+Both facts point the same way: verify entailment, not a particular algorithm's
+output. `ALG104+1` c281 is the same shape with 16 definitions and
+`ALG102+1` c391 with 4.
 
-`ALG102+1` c391, `ALG104+1` c281 and `ALG127+1` c199 report `CNF expansion
-exceeded strict limits`, which reads like a ceiling. It is not. The ceiling is
-100 000 clauses, and raising it does not converge:
+### The change
 
-| ceiling | `ALG127+1` c199 | `ALG102+1` c391 |
-|---|---|---|
-| 100 000 (current) | 0.47 GB, 1.4 s, declined | 0.29 GB, 1.0 s, declined |
-| 200 000 | 0.77 GB, 1.9 s, declined | 0.48 GB, 1.4 s, declined |
-| 500 000 | 2.6 GB, 6.7 s, declined | 1.4 GB, 3.7 s, declined |
-| 2 000 000 | 12.3 GB, 33.6 s, still not finished | 6.2 GB, 15.3 s, declined |
+One function, `goal_directed_cnf_entailment` in
+`crates/mrs-proof-kernel/src/lib.rs`, run as a second fast path in
+`verify_cnf_transformation` after the existing direction-clause fast path and
+before the expansion. It is additive: `Some(false)` and an exhausted search both
+fall through to the expansion path unchanged, so no step changes verdict except
+from undecided/decided to decided.
 
-The kernel expands the *whole* source into clauses and then asks whether the goal
-is among them. For these sources that expansion is exponential in the number of
-disjuncts, so no ceiling helps: it is an algorithmic choice, not a resource
-number. The file already contains the right idea -- the goal-directed
-direction-clause fast path, which certifies `ALG102+1` c103 without expanding
-anything -- and these three nodes need that treatment (or an equivalent
-residue-based check) rather than more headroom.
+The relation it decides is: *is the goal a sub-multiset of the literals of some
+clause of the CNF of the cited source, with the cited definitions abbreviated
+wherever their bodies match, under one substitution?* Every step is an
+equivalence (the definition fold) or a weakening (the disjunction split), so a
+`true` answer is an entailment.
 
-`cnf_expand` now reports *why* it stopped, separating "a ceiling was reached"
-from "the normalizer left a shape this expander does not produce"; both used to
-be reported as "exceeded strict limits", which sent the investigation after a
-ceiling that was never the cause.
+Three things make it terminate where the expansion does not:
+
+* the split width is the *goal's* literal count, not the source's;
+* a literal no part below a node can produce rules the node out, computed once
+  per node and memoised (`producible_goal_literals`);
+* a literal no later part can produce is forced onto the current part, and one
+  no current part can produce is ruled out, which usually leaves one candidate.
+
+The search is memoised on `(node, literal group, substitution)`; without that it
+re-asks the same question once per way of splitting the goal around it and
+`GEO300+1` exhausts its budget.
+
+Budget: `max_residue_steps`, default 400 000 distribution steps, counted per
+step. Exhausting it yields `Inconclusive`, as does a matrix shape the search does
+not model. `exhausted_residue_search_never_certifies` pins that.
+
+### What the adversarial tests found
+
+The first implementation matched each literal group against the goal with its own
+fresh renaming. That is **unsound**, and the test
+`refuses_definition_that_no_source_block_matches` is where it showed up: with
+`d0(X0,X2)` matched through block A and `d1(X0,X2)` matched through a block over
+`X1,X2`, the two groups disagree about what `X0` is. The fix threads *one*
+substitution for the whole clause (`ResidueSearch::substitution`), which is what
+an entailment argument needs.
+
+The same analysis changed what the family-1 negative test can be. After the fix
+the search decides `G ⊆ Dσ` for some substitution `σ`, and prenexing gives the
+disjuncts *independent* copies of the shared variables, so `d0(u,v) | d1(w,z)`
+holds for all independent `u,v,w,z` and consequently `B` holds everywhere. A goal
+that puts both identically-bodied heads at the same arguments is therefore **not**
+a counterexample — it really is entailed, and the kernel is right to certify it.
+The family-1 negative test pins the case that is: a cited definition whose body
+matches no block at all.
+
+Review of the memoized search found one further substitution invariant: a cached
+successful `(node, literal group, incoming substitution)` decision must replay
+the substitution produced by that match. Caching only the Boolean answer let a
+later literal group continue without those bindings on a cache hit. Memo entries
+now retain the resulting substitution, and
+`residue_memo_hit_replays_the_substitution` forces a cache hit and checks that a
+subsequent group cannot choose a conflicting binding.
+
+### Measured
+
+`audit_casc_proofs --checks strict --strict-time 120 --jobs 1` over the two
+campaigns' own retained proofs, so before/after is like for like and the
+proofs are not re-searched:
+
+```
+target/release/audit_casc_proofs \
+  --run /home/hack/crates/mrs-bench/results/<campaign>/run.csv \
+  --problems-dir crates/mrs-bench/problems/<edition> \
+  --checks strict --strict-time 120 --jobs 1 --output <dir>
+```
+
+| campaign | before | after | audit wall | peak RSS |
+|---|---|---|---:|---:|
+| `campaign-cascj13-feq-W8C8J1-20261002` | 64 `VerifiedGood`, 0 `VerifiedBad`, **2 `Unknown`** | 64 `VerifiedGood`, 0 `VerifiedBad`, 0 `Unknown`, **2 `Timeout`** | 272 s | 749 MB |
+| `campaign-casc30-feq-W8C8J1-20261002` | 92 `VerifiedGood`, 0 `VerifiedBad`, **6 `Unknown`**, 1 `Timeout` | **98 `VerifiedGood`**, 0 `VerifiedBad`, 0 `Unknown`, 1 `Timeout` | 221 s | 2.0 GB |
+
+No `VerifiedBad` appears and no row that certified before stops certifying.
+
+The casc-30 rows, one at a time, `rustc 1.99.0`, release build, `--workers 1`:
+
+```
+TPTP=crates/mrs-bench/problems/casc-30 target/release/mrs-proover \
+  --strict --no-atp --workers 1 --time 240 <campaign>/certification/proofs/mrs/feq/<P>.s
+```
+
+| problem | before | after | wall | max RSS |
+|---|---|---|---:|---:|
+| `GEO299+1` | `Unknown` (`c522`) | **`VerifiedGood`** | 1.9 s | 41 MB |
+| `GEO300+1` | `Unknown` (`c285`) | **`VerifiedGood`** | 24.7 s | 36 MB |
+| `ALG102+1` | `Unknown` (`c391`) | **`VerifiedGood`** | 0.9 s | 29 MB |
+| `ALG104+1` | `Unknown` (`c281`) | **`VerifiedGood`** | 0.4 s | 30 MB |
+| `ALG127+1` | `Unknown` (`c199`) | **`VerifiedGood`** | 0.3 s | 24 MB |
+| `ITP019+5` | `Unknown` (`c700`) | **`VerifiedGood`** | 58 s | 2.0 GB |
+
+`ALG127+1` went from 1.4 s / 468 MB to 0.3 s / 24 MB: the step no longer expands
+anything, so the proof never allocates the cross product. `GEO300+1` went from
+0.7 s to 24.7 s because the kernel now verifies the whole proof instead of
+stopping at `c285`.
+
+The two casc-j13 rows are a change of *kind*, not of count. `GEO331+1` and
+`GEO343+1` are 1.3 MB and 1.1 MB proofs; the kernel now certifies `c355` and
+`c286` and then has to verify everything downstream of them, which does not fit
+in the audit's 120 s per-proof budget on two cores. At that budget they are
+recorded as `Timeout` rather than `Unknown`: the step is decided, the proof is
+not finished.
+
+How long "not finished" is: `GEO331+1` alone on an otherwise idle 2-core /
+12 GiB host, `timeout 3000`, reached no verdict in **50 min** at 41 MB RSS. So
+the cost is not the kernel's memory on those proofs -- it is the number of
+steps, and the per-step work is the expansion path these two proofs still go
+through. A single clean run of `GEO343+1` was not done; both were measured past
+3000 s under load, which is a lower bound on the time, not a clean number.
+
+### Remaining
+
+* `GEO331+1` and `GEO343+1` are **over budget, not undecided**. The target steps
+  are decided; the rest of those proofs is the cost. A re-audit with a larger
+  `--strict-time` would settle whether they certify inside 120 s, and this
+  workspace did not have the cores or the memory to settle it.
+* The residue check does not decide every `cnf_transformation` step. It is a
+  second route, not a replacement, and a step it cannot place falls back to the
+  expansion, which is still where the residual `Unknown`s would come from.
+* Only the two FEQ campaigns were re-audited. The other archived campaigns
+  (`casc-30-fne`, `ueq`, `eps`, `epu`, `icu`) have `cnf_transformation` steps
+  this check never saw, because those runs stopped earlier. A full re-audit of
+  them is the outstanding evidence that the widening hides nothing -- it is
+  entailment-only, so it can only turn `Unknown` into `Certified`, never into
+  `VerifiedBad` by an unsound step, but "cannot" is an argument and the
+  measurement is cheap on a machine with the cores for it.
 
 ### Reproduce
 
 ```bash
-# Each row, from the retained proof:
+nix develop -c cargo test -p mrs-proof-kernel residue
+nix develop -c cargo test -p mrs-proof-kernel -- identical unmatched bound_variable
+
 TPTP=crates/mrs-bench/problems/casc-30 target/release/mrs-proover \\
   --strict --no-atp --workers 1 --time 240 \\
   /home/hack/crates/mrs-bench/results/campaign-casc30-feq-W8C8J1-20261002/certification/proofs/mrs/feq/ALG127+1.s
