@@ -470,6 +470,37 @@ inflated by 168 and 68 problems that appear in only one of the two sets.
 The two runs also differ in `binary_sha256` and in host RAM (see R7), so they are
 not a controlled comparison in the first place.
 
+### UEQ follow-up — casc-30, 2026-10-07
+
+A follow-up campaign on `teenf9901` used the same 300-problem casc-30 UEQ set,
+8 workers, `jobs=1`, and official 240 s limits as the 2026-10-02 campaign. It
+solved **128/300 (42.7 %)**: 128 `Unsatisfiable`, 162 `Timeout`, 10 `GaveUp`,
+0 `Error`. Its strict audit found **127 `VerifiedGood`, 0 `VerifiedBad`, and 1
+`Unknown`**: `KLE145-10`, an `ac_superposition` replay rejected as “not a valid
+rewrite.” This is the known UI-1 failure mode, not a new category of audit
+result.
+
+The 10 `GaveUp` rows have `timeout=4..7`, `elapsed_ms` near 238 000, and search
+telemetry; all 162 `Timeout` rows have `timeout=8`. This repeats the
+timeout-shaped `GaveUp` artefact described in the UEQ report. All 300 rows have
+telemetry, with no resource-limit reason recorded.
+
+Against the 2026-10-02 campaign (123/300), this is +5 solves, with 7 gains and
+2 losses. The solved-time medians are 15.0 s in both runs; the gains and losses
+are predominantly boundary cases. The difference is within the documented
+±12/300 run-variance floor, so it should be read as a second observation, not a
+resolved coverage change. Both runs used `adaptive` hardware with eight workers,
+not the canonical CASC hardware mode.
+
+The 2026-10-07 binary was built at `0180d85` (`perf(calculus): memoize LPO term
+comparisons`), but the tree was dirty and the binary differs from the 2026-10-02
+build. On common timeout rows, aggregate `generated/s` was +0.7 % and
+`processed/s` +0.6 %. This campaign therefore does **not** isolate or establish
+a performance effect for the LPO memoization; use a fixed-work benchmark for
+that question. The run directory and raw streams are not banked in this repo;
+the source artifacts are at
+`~/crates/mrs-bench/results/campaign-casc30-ueq-W8C8J1-20261007`.
+
 ### The six casc-30 divisions, as measured on 2026-10-02
 
 Worth keeping together, because the per-division numbers are otherwise quoted
