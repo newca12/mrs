@@ -337,9 +337,10 @@ refuses the archived pair. The campaign now audits 64/66 `VerifiedGood` with 0
 `VerifiedBad`. Full write-up and repro in
 [`unresolved-issues.md`](../policies/unresolved-issues.md) **UI-4**.
 
-The eight FEQ rows that remain are a different question, and two of them are
-*not* remote either: they need a change to the kernel's variable model and a
-different CNF expansion algorithm respectively. See **UI-7**.
+The eight FEQ rows that remained after UI-4 were resolved by the UI-7 kernel
+work. A 16-core, 128-GB like-for-like audit of the retained FEQ proofs raised
+`VerifiedGood` from 94 to 100 with no `VerifiedBad`; see **UI-7** in
+[`unresolved-issues.md`](../policies/unresolved-issues.md).
 
 ### R11 — Hard-tail throughput: the LRS-off A/B on casc-30 UEQ — RUN, NEGATIVE
 

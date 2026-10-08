@@ -285,14 +285,17 @@ families, and neither was a ceiling that could be raised:
   sources expand combinatorially into clauses, so no ceiling helps; the
   whole-source expansion is the wrong algorithm for them.
 
-Both families are now decided by a goal-directed residue check in the kernel
-(`goal_directed_cnf_entailment`): it distributes the goal clause over the
-source's conjunctions and disjunctions instead of expanding the source, which
-needs no block identity — the goal names the definition heads with concrete
-arguments, so only the fold that reproduces those arguments succeeds — and no
-expansion, so the cross product never happens. Six of the eight rows certify;
-`GEO331+1` and `GEO343+1` certify their target step but the rest of those two
-large proofs does not fit in the 120 s per-proof audit budget on the host used.
+Both families are now decided by complementary bounded kernel checks. The
+goal-directed residue check (`goal_directed_cnf_entailment`) distributes the
+goal clause over the source instead of expanding the entire source. The
+variable-name-aware definition matcher uses original per-formula names without
+changing `VarId` scopes, and the conjunct-local path expands only the relevant
+top-level conjunct when that suffices. The residue check remains as a fast path;
+all checks fail closed when their bounds or matching preconditions are not met.
+On a 16-core, 128-GB host, the strict audit of the same retained FEQ proofs
+improved from 94 to 100 `VerifiedGood` out of 109 applicable refutations, with
+no `VerifiedBad`. Two `Unknown`, one timeout, and six withheld proofs remain for
+other reasons.
 
 Details, the per-proof before/after verdicts, and the soundness argument:
 UI-7.

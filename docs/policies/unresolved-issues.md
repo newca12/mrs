@@ -706,14 +706,14 @@ result.
 
 ---
 
-## UI-7 — Six of the eight FEQ refutations decided; two now certify outside the audit budget
+## UI-7 — FEQ strict-certification gaps resolved
 
 | | |
 |---|---|
-| Status | **Measured**. Six of the eight rows now certify; two certify but need more than the audit's 120 s per-proof budget. |
-| Severity | Residual: 2 rows at `casc-j13` are over budget rather than undecided. |
-| Soundness | The change only ever accepts more, and each acceptance is an entailment argument recorded in `goal_directed_cnf_entailment`. Writing that argument exposed a soundness gap in its first draft -- per-literal-group renaming instead of one substitution for the clause -- which was fixed before landing and is what the adversarial tests exist to catch; see "What the adversarial tests found". `mrs_core::alpha::alpha_equiv` is untouched. |
-| Blocks | Nothing structural. The 120 s audit budget for `GEO331+1` and `GEO343+1`. |
+| Status | **Resolved and measured** on retained FEQ proofs. The merged kernel certifies all eight previously undecided UI-7 proofs. |
+| Severity | None for the eight UI-7 cases. The FEQ campaign still has two `Unknown`, one `Timeout`, and six withheld proofs for other reasons. |
+| Soundness | The kernel records per-formula variable names without changing `VarId` scopes, uses bounded conjunct-local checks, and keeps the goal-directed residue path. Adversarial counterexamples remain fail-closed. |
+| Evidence | Like-for-like strict audit on a 16-core, 128-GB host: 94 to 100 `VerifiedGood`, with no `VerifiedBad` and the same six withheld proofs and one timeout. |
 
 ### Observation
 
@@ -853,7 +853,33 @@ now retain the resulting substitution, and
 `residue_memo_hit_replays_the_substitution` forces a cache hit and checks that a
 subsequent group cannot choose a conflicting binding.
 
-### Measured
+### Like-for-like comparison and resolution
+
+The official strict audit was run against the same retained FEQ proofs on the
+same 16-core, 128-GB host, with `--strict-time 120`. `main` reports 94
+`VerifiedGood`, 0 `VerifiedBad`, 8 `Unknown`, 1 `Timeout`, and 6 withheld proofs
+out of 109 applicable refutations. The variable-name-aware implementation
+reports 100 `VerifiedGood`, 0 `VerifiedBad`, 2 `Unknown`, 1 `Timeout`, and the
+same 6 withheld proofs. The six additional certified proofs are the previously
+unresolved UI-7 CNF-transformation cases. No previously certified proof was
+rejected, and no new `VerifiedBad` appeared. The evidence justified integrating
+the alternative's definition matching, conjunct-local CNF check, and
+large-clause matching improvements while retaining the residue check already
+in `main`.
+
+The six withheld proofs are not kernel verdicts: MRS did not emit proofs for
+them (`proof_emitted=false`). Both arms also retain the same one timeout, so the
+gain is six additional strict certifications, not a change in proof generation
+or the separate timeout. The two remaining `Unknown` rows and the timeout have
+their own report reasons; do not attribute them to UI-7 without inspecting
+their per-proof `strict_detail` entries.
+
+### Earlier measurement of the residue-only implementation
+
+This is the historical result before the variable-name-aware matching and
+conjunct-local improvements were integrated. It explains why the residue check
+was initially selected, but the 16-core comparison above is now the current
+coverage result.
 
 `audit_casc_proofs --checks strict --strict-time 120 --jobs 1` over the two
 campaigns' own retained proofs, so before/after is like for like and the
@@ -908,22 +934,41 @@ steps, and the per-step work is the expansion path these two proofs still go
 through. A single clean run of `GEO343+1` was not done; both were measured past
 3000 s under load, which is a lower bound on the time, not a clean number.
 
-### Remaining
+### Historical follow-up notes
 
-* `GEO331+1` and `GEO343+1` are **over budget, not undecided**. The target steps
-  are decided; the rest of those proofs is the cost. A re-audit with a larger
-  `--strict-time` would settle whether they certify inside 120 s, and this
-  workspace did not have the cores or the memory to settle it.
-* The residue check does not decide every `cnf_transformation` step. It is a
-  second route, not a replacement, and a step it cannot place falls back to the
-  expansion, which is still where the residual `Unknown`s would come from.
-* Only the two FEQ campaigns were re-audited. The other archived campaigns
-  (`casc-30-fne`, `ueq`, `eps`, `epu`, `icu`) have `cnf_transformation` steps
-  this check never saw, because those runs stopped earlier. A full re-audit of
-  them is the outstanding evidence that the widening hides nothing -- it is
-  entailment-only, so it can only turn `Unknown` into `Certified`, never into
-  `VerifiedBad` by an unsound step, but "cannot" is an argument and the
-  measurement is cheap on a machine with the cores for it.
+* The residue check remains useful for source shapes it can decide directly; it
+  is retained as a fast path alongside the variable-identity-aware fallback.
+* The 16-core campaign compared these implementations only on the two archived
+  FEQ campaigns. Other divisions should be audited independently before making
+  claims about their coverage.
+
+### Resolution
+
+Both families are resolved in `crates/mrs-proof-kernel`:
+
+1. **Family 1 (definition matching collisions)**: `LowerCtx` records original
+   variable name strings during lowering into a per-node name table without
+   altering global `VarId` scopes or interning globally by spelling. A new
+   `CoreMatchMode::OrderedIdentity` pass pairs operands in order and enforces
+   variable-name identity via `is_identity_mapping`, allowing definitions over
+   distinct source variables to claim their respective blocks. In addition,
+   `replace_definition_subformulas` returns early once all cited definitions
+   have matched, skipping redundant combinatorial multiset passes.
+2. **Family 2 (combinatorial CNF expansion)**: Top-level conjuncts of the
+   normalized source are flattened and expanded individually. If any conjunct
+   completely expands into clauses containing the goal clause within budget, and
+   all cited definitions were matched, the step certifies immediately without
+   triggering combinatorial expansion of unneeded companion conjuncts.
+   Ambiguous or unproven cases strictly fail closed with `Inconclusive`.
+3. **Large-clause alpha-equivalence**: Keep the complete backtracking matcher
+   used by `main`, ordering the most constrained literal shapes first. This
+   avoids factorial searches over unconstrained literal permutations without
+   imposing an order-sensitive cutoff.
+
+The 16-core, 128-GB audit confirms all eight target UI-7 proof steps are
+strictly certifiable within the 120 s per-proof limit. Keep the full campaign
+CSV as the source of per-proof timings and statuses; the aggregate result above
+is the headline measurement.
 
 ### Reproduce
 
