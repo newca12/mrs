@@ -601,6 +601,64 @@ reports 63 662 processed clauses at 10.8 s and a final `GaveUp`; aggregate
 detail does not establish that loading dominates or which worker/result caused
 the final status. Use stage and per-strategy timing before selecting a fix.
 
+### Controlled diagnostic measurement (2026-10 Refresh)
+
+To evaluate whether the opt-in EPR grounding path (`MRS_EPR_GROUND=1`, implemented
+in `crates/mrs-search/src/epr_ground.rs`) improves certified coverage on equality-bearing
+EPR EPU problems, a paired measurement was conducted on refreshed `main`
+(commit `176a9f9`, `rustc 1.99.0`).
+
+#### Subset selection criteria
+A representative 10-problem subset was selected spanning:
+1. Synthetic pure-equality EPR (`SYN914-1`, 100% equality literals).
+2. Hardware verification encodings with high equality ratio (`HWV051-1`, `HWV039-1`, `HWV087-1`).
+3. Problems with boolean distinctness equality `true != false` / `false != true` (`HWV078-1`, `MSC024-1`, `PLA037-1`, `HWV065-1`).
+4. The sole equality-bearing problem refuted in the archived 100-problem campaign (`HWV107-1`).
+5. A smoke test requiring equational demodulation (`eq_unit_ground.p`).
+
+#### Experimental configuration
+Sequential paired runs were executed with `--workers 1 --schedule casc_epu --self-check --time 15`
+under matching resource ceilings on Intel Core i7-10610U (2 physical cores / 4 threads, 15 GiB RAM,
+NixOS WSL2):
+- **Baseline**: `target/release/mrs --time 15 --workers 1 --schedule casc_epu --self-check <problem>` (`MRS_EPR_GROUND` unset)
+- **Opt-in**: `MRS_EPR_GROUND=1 target/release/mrs --time 15 --workers 1 --schedule casc_epu --self-check <problem>`
+- **Verification**: In-process `--self-check` candidate certification coordinator, plus offline verification with `mrs-proover --strict --problems-dir <casc30_root>`.
+
+#### Paired results
+
+| Problem | Clauses | Eq Lits | Arm | SZS Status | Elapsed | Peak RSS | Telemetry (EPR / InstGen) | Result Category & Verification |
+|---|---:|---:|---|---|---:|---:|---|---|
+| `eq_unit_ground` | 3 | 1 | Baseline | Theorem | 0.009s | 1358 MB | `instgen_fallback=unsupported_epr_profile` | Portfolio refuted; Strict certified (0.55ms) |
+| `eq_unit_ground` | 3 | 1 | Opt-in | Theorem | 0.009s | 1358 MB | `epr_result=fallback epr_fallback=grounding_exhausted` | Portfolio refuted; Strict certified (0.55ms) |
+| `SYN914-1` | 56 | 65 | Baseline | Timeout | 15.02s | 1358 MB | `instgen_fallback=unsupported_epr_profile` | Timed out |
+| `SYN914-1` | 56 | 65 | Opt-in | Timeout | 15.02s | 1358 MB | `epr_result=fallback epr_fallback=grounding_exhausted epr_gen=12` | Timed out |
+| `HWV051-1` | 828 | 201 | Baseline | GaveUp | 0.05s | 1358 MB | `instgen_fallback=unsupported_epr_profile` | Gave up (passive exhausted) |
+| `HWV051-1` | 828 | 201 | Opt-in | GaveUp | 0.32s | 1371 MB | `epr_result=fallback epr_fallback=grounding_exhausted epr_gen=56124` | Gave up |
+| `HWV039-1` | 869 | 201 | Baseline | GaveUp | 0.04s | 1358 MB | `instgen_fallback=unsupported_epr_profile` | Gave up (passive exhausted) |
+| `HWV039-1` | 869 | 201 | Opt-in | GaveUp | 0.47s | 1369 MB | `epr_result=fallback epr_fallback=grounding_exhausted epr_gen=64536` | Gave up |
+| `HWV078-1` | 449 | 1 | Baseline | Timeout | 15.07s | 1358 MB | `instgen_fallback=unsupported_epr_profile` | Timed out |
+| `HWV078-1` | 449 | 1 | Opt-in | Timeout | 15.03s | 1365 MB | `epr_result=fallback epr_fallback=proof_extraction_failed epr_gen=21666` | Timed out |
+| `MSC024-1` | 1762 | 1 | Baseline | Timeout | 15.06s | 1358 MB | `instgen_fallback=unsupported_epr_profile` | Timed out |
+| `MSC024-1` | 1762 | 1 | Opt-in | Timeout | 17.47s | 4843 MB | `epr_result=fallback epr_fallback=proof_extraction_failed epr_gen=385707` | Timed out |
+| `HWV087-1` | 2972 | 419 | Baseline | GaveUp | 0.12s | 1358 MB | `instgen_fallback=unsupported_epr_profile` | Gave up |
+| `HWV087-1` | 2972 | 419 | Opt-in | GaveUp | 4.91s | 1386 MB | `epr_result=fallback epr_fallback=grounding_timeout epr_gen=163685` | Gave up |
+| `PLA037-1` | 5213 | 1 | Baseline | Timeout | 15.13s | 1358 MB | `instgen_fallback=unsupported_epr_profile` | Timed out |
+| `PLA037-1` | 5213 | 1 | Opt-in | Timeout | 15.08s | 1375 MB | `epr_result=fallback epr_fallback=grounding_timeout epr_gen=74740` | Timed out |
+| `HWV065-1` | 15233 | 1 | Baseline | Timeout | 15.20s | 1358 MB | `instgen_fallback=unsupported_epr_profile` | Timed out |
+| `HWV065-1` | 15233 | 1 | Opt-in | Timeout | 15.19s | 1369 MB | `epr_result=fallback epr_fallback=grounding_exhausted epr_gen=61944` | Timed out |
+| `HWV107-1` | 40269 | 769 | Baseline | Timeout | 15.32s | 1358 MB | `instgen_fallback=unsupported_epr_profile` | Timed out (15s limit) |
+| `HWV107-1` | 40269 | 769 | Opt-in | Timeout | 15.33s | 1384 MB | `epr_result=fallback epr_fallback=grounding_timeout epr_gen=113107` | Timed out (15s limit) |
+
+#### Structural Diagnosis
+1. **Zero coverage improvement**: The opt-in path achieved 0 prepass refutations across the entire subset (`epr_result=fallback` on 100% of attempts).
+2. **Uninterpreted equality in SAT abstraction**: In `crates/mrs-search/src/epr_ground.rs`, ground equality literals are mapped to uninterpreted boolean variables in CaDiCaL without transitivity or congruence axioms. Problems requiring equational reasoning evaluate as satisfiable in the SAT solver, causing the model-driven widening ladder to search in vain until `grounding_exhausted` or `grounding_timeout`.
+3. **Proof extraction bottleneck**: On problems whose abstraction is propositionally contradictory without equational reasoning (`HWV078-1`, `MSC024-1`), CaDiCaL UNSAT triggers `extract_refutation`, where propositional resolution BFS blows up on large ground sets and given-clause fallback does not close within the prepass slice, yielding `proof_extraction_failed`.
+4. **Memory and latency penalty**: Grounding large expansions significantly inflates peak RSS (e.g. 4.8 GiB on `MSC024-1`) and adds latency (up to ~5 s on `HWV087-1`) without solving the problems.
+5. **Portfolio independence**: In the archived 100-problem campaign at 120s (`campaign-casc30-epu-W8C8J1-20261002`), `HWV107-1` was refuted in ~45s by ordinary superposition search in the given-clause portfolio and verified `VerifiedGood`, completely independent of the grounding prepass.
+
+#### Decision and Next Steps
+Default activation of `MRS_EPR_GROUND` must **not** proceed. The feature remains correctly opt-in. Further work should only be considered if a principled theory solver (e.g. congruence closure or CDCL(T)) or ground superposition is integrated into the prepass rather than pure uninterpreted propositional abstraction.
+
 ## UI-6 — ICU: 44 rows lack a decisive reference, and `verdict = ok` does not mean certified
 
 | | |
