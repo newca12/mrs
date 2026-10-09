@@ -518,9 +518,9 @@ target/release/audit_casc_proofs \
 
 | | |
 |---|---|
-| Status | Open, not scheduled |
+| Status | Partly discharged 2026-10-09. One boundedness defect found and fixed; +1 certified solve on a 10-problem local subset. Still open for the division. |
 | Severity | The archived campaign records 9/100 `verdict=ok`; this is a low result |
-| Soundness | No soundness finding is made here. |
+| Soundness | No soundness finding is made here. The 2026-10-09 fix removes a premature `GaveUp`; it does not change any reported status except to add a kernel-certified refutation. |
 
 ### Observation
 
@@ -600,6 +600,121 @@ tail (`HWV*` at 155 k–697 k clauses) is a candidate for profiling. `HWV092-1`
 reports 63 662 processed clauses at 10.8 s and a final `GaveUp`; aggregate
 detail does not establish that loading dominates or which worker/result caused
 the final status. Use stage and per-strategy timing before selecting a fix.
+
+### 2026-10-09 measurement: one boundedness defect found and fixed, coverage gain +1 certified
+
+The 43 `unsupported_epr_profile` rows above are **InstGen** telemetry, and the
+question this section asks is about a different route. Two things had to be kept
+apart, and the archived A/B could not: `epu-sweep-epu-A-baseline` and
+`epu-sweep-epu-B-prepass` were run at the same commit `cb03c254` but with
+**different binaries** (`bdff9958` vs `1cc1492e`, both `git_dirty=true`) on
+**different hosts** (`teenf9901`, 128 GB / `tlpnf9701`, 64 GB), at
+`EPU_JOBS=4` on a 32-core box. Neither `conditions.txt` records
+`binary_sha256`, so the arms cannot be shown to be the same instrument. They
+also predate `f73d427` (Herbrand universe) and `e79b562` (ladder enumeration),
+so their silence is not evidence about the current instrument.
+
+#### Method
+
+Local, bounded, paired, sequential. Revision `176a9f9`, `rustc 1.99.0
+(b940084d7 2026-09-28)`, Intel i3-5010U, **2 physical cores / 4 logical**, 15 GB
+RAM, TPTP root `crates/mrs-bench/problems/casc-30` (100 EPU problems, 352 MB)
+plus `~/TPTP-v9.3.0`. `--schedule casc_epu`, `--workers 1` for the paired sweep
+and `--workers 2` for the two decisive runs, `--time 40`, one problem at a time,
+no concurrent pairs. Local runs are **relative**, not CASC numbers.
+
+Subset: the 10 equality-bearing (`epr_route=epr_equality`) CASC-30 EPU problems
+that exercise every fallback bucket the archived telemetry names —
+`proof_extraction_failed` (`HWV078-1`, `MSC024-1`), `grounding_exhausted`
+(`HWV065-1`, `SYN914-1`, `HWV051-1`, `HWV039-1`), `sat_solver_unknown`
+(`PLA037-1`), `grounding_timeout` (`SYO591-1`, `HWV057-1`, `HWV103-1`) — plus
+and not including `HWV107-1`; the table below records the ten paired cases.
+`HWV107-1`, the one `epr_equality` problem the archived run refuted and
+certified, was considered as a control in separate local runs, but those runs
+used different worker counts/budgets and are not part of this paired table. This
+is not an easy-wins subset: 9 of the 10 paired cases are `Timeout`/`GaveUp` in
+**both** arms.
+
+#### The defect
+
+`proof_extraction_failed` was never a search-power result. That bucket is reached
+only after CaDiCaL has returned `Unsat` on the instance set, so unsatisfiability
+is already settled and the remaining task is turning it into a derivation. The
+loop doing that ran with `lrs_policy` at its `WallClock` default, and LRS
+discarded **184 808 clauses** from `HWV078-1`, drained the queue, and returned
+`GaveUp` after **1.1 s of an 18 s budget** (`TRACE_LRS=1 TRACE_EPR=1`). The
+pre-pass was reporting failure to certify a refutation it had already proved
+existed. Fixed in `crates/mrs-search/src/epr_ground.rs`:
+`epr_fallback_lrs_policy()` returns `LrsPolicy::Disabled`, with `MRS_EPR_LRS=1`
+restoring pruning so the fix stays falsifiable.
+
+#### Results (paired, same host, same subset)
+
+| problem | arm | SZS | wall | peak RSS | EPR telemetry | strict kernel |
+|---|---|---|---|---|---|---|
+| **`HWV078-1`** | off | `Timeout` | 40.2 s | 1348 MB | — | n/a |
+| **`HWV078-1`** | **on** | **`Unsatisfiable`** | **32.5 s** | **1097 MB** | `refutation`, 52 857 nodes, `epr_ms=1113` | **`VerifiedGood`** |
+| `MSC024-1` | off / on | `Timeout` / `Timeout` | 40.2 / 40.1 s | 1237 / 3475 MB | `proof_extraction_failed` | n/a |
+| `HWV065-1` | off / on | `Timeout` / `Timeout` | 40.4 / 40.5 s | 1509 / 1584 MB | `grounding_exhausted` | n/a |
+| `SYN914-1` | off / on | `Timeout` / `Timeout` | 40.0 / 40.0 s | 236 / 234 MB | `grounding_exhausted` | n/a |
+| `HWV051-1` | off / on | `GaveUp` / `GaveUp` | 40.1 / 40.1 s | 570 / 590 MB | `grounding_exhausted` | n/a |
+| `HWV039-1` | off / on | `GaveUp` / `GaveUp` | 40.1 / 40.1 s | 577 / 591 MB | `grounding_exhausted` | n/a |
+| `PLA037-1` | off / on | `Timeout` / `Timeout` | 40.1 / 40.1 s | 126 / 417 MB | `grounding_timeout` | n/a |
+| `SYO591-1` | off / on | `Timeout` / `Timeout` | 40.2 / 40.2 s | 846 / 1277 MB | `grounding_timeout` | n/a |
+| `HWV057-1` | off / on | `Timeout` / `Timeout` | 40.4 / 40.3 s | 1200 / 2849 MB | `grounding_timeout` | n/a |
+| `HWV103-1` | off / on | `Timeout` / `Timeout` | 40.3 / 40.3 s | 867 / 868 MB | `grounding_timeout` | n/a |
+
+**One status change in 10 problems, and it is a certified gain: +1
+`VerifiedGood`, no regression, no `ko`, no timeout→solve inversion.** The gain
+is strictly larger than it looks, because the baseline cannot reach the problem
+at all: `HWV078-1` is `Timeout` with the pre-pass off at **40 s, 120 s and
+240 s** on this host, and `Timeout` in the archived 120 s / 8-worker campaign.
+The proof is 52 857 nodes / 13.4 MB, so it needs
+`--proof-bytes-limit 268435456`; the default 8 MB limit reports the refutation
+with `proof_emitted=false`. The kernel certifies it under `--strict --no-atp`.
+
+**The pre-pass stays opt-in.** One certified solve in ten at 40 s on 2 cores is
+not a division-level result, and the cost is real: the arm's peak RSS is up to
+2.4x the baseline's on the `grounding_timeout` rows (`HWV057-1` 1200 → 2849 MB),
+and on `PUZ036-1.005` (archived `VerifiedGood` via the portfolio) the pre-pass
+turns a 5.0 s solve into 23.0 s for no coverage change. Default behaviour is
+unchanged; the fix only affects runs that already set `MRS_EPR_GROUND=1`.
+
+#### Limitations
+
+- **Diagnostic, not conclusive.** 2 physical cores and `--workers 1` cannot
+  represent an 8-worker CASC entry, and 10 of 100 problems is not the division.
+  `HWV107-1` timed out in every local configuration (20 s/1 worker, 120 s/2, 150
+  s/4) though the archived run refuted it in 32.8 s, so the subset does not even
+  reproduce the archived baseline.
+- **Single replicate per cell.** AGENTS.md records ±1 per 25 for this repo; a
+  1-problem delta on a 10-problem subset is inside that band. The HWV078-1
+  result is nonetheless robust here because it is not a timing race: the
+  baseline is `Timeout` at every budget tried, and the win is a certified proof.
+- **The remaining `proof_extraction_failed` case is unexplained.**
+  `MSC024-1` still reports it with LRS off, so the bucket has at least one
+  further cause. Its 3.5 GB peak with the pre-pass on is the worst in the subset.
+- **`sat_solver_unknown` is untouched.** `PLA037-1` still returns it; the
+  archived report calls it a defect and it remains undiagnosed.
+
+#### Recommended next bounded measurement
+
+Not a default change, and not a broader local run. In order:
+
+1. **Re-run the paired arms on the full 100 at the CASC shape** (8 workers,
+   120 s, `--hardware casc`, `--jobs 1`) and compare `binary_sha256`, commit,
+   host and toolchain for both arms. `epr_ab_sweep.sh` records these in
+   `conditions.txt`; `casc.sh` independently records and verifies the actual
+   worker binary in `run_meta.json`.
+2. **Diagnose `MSC024-1`'s `proof_extraction_failed`** before any further
+   coverage claim; the `HWV078-1` instance was fixed, but this case remains open.
+3. **Diagnose `sat_solver_unknown`** (`PLA037-1`, and archived `HWV064-1`,
+   `HWV090-1`, `HWV127-1`): CaDiCaL returning `Unknown` on a ground instance set
+   is not expected and blocks the ladder outright.
+4. Only after (1) shows a certified gain on the division, consider whether the
+   pre-pass's RSS cost on `grounding_timeout` rows needs a per-instance ceiling.
+
+Do not accept the pre-pass or the fix as a new default from this subset.
 
 ## UI-6 — ICU: 44 rows lack a decisive reference, and `verdict = ok` does not mean certified
 

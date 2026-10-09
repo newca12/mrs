@@ -231,11 +231,11 @@ KERNEL_VER="$(uname -r 2>/dev/null || echo "unknown")"
 HOSTNAME_STR="$(hostname 2>/dev/null || echo "unknown")"
 TOTAL_RAM_MB="$(free -m 2>/dev/null | awk '/^Mem:/{print $2}' || echo "0")"
 RUSTC_VER="$(rustc --version 2>/dev/null || /home/fr22192/.cargo/bin/rustc --version 2>/dev/null || echo "unknown")"
-MRS_BIN="${SCRIPT_DIR}/../../target/release/mrs"
-MRS_BIN_SHA256="unknown"
-if [[ -f "${MRS_BIN}" ]]; then
-    MRS_BIN_SHA256="$(sha256sum "${MRS_BIN}" | awk '{print $1}')"
+MRS_BIN="${MRS_BINARY:-${SCRIPT_DIR}/../../target/release/mrs}"
+if command -v realpath >/dev/null 2>&1; then
+    MRS_BIN="$(realpath -m "${MRS_BIN}")"
 fi
+MRS_BIN_SHA256="unknown"
 
 # Record every MRS_* variable in the run's own metadata.
 #
@@ -295,6 +295,26 @@ cat <<EOF > "${OUTPUT}/run_meta.json"
   }
 }
 EOF
+
+# Hash the resolved executable immediately before the run starts. This makes
+# run_meta identify the exact artifact available to the worker invocation, not
+# merely the file state from initial harness setup.
+if [[ -f "${MRS_BIN}" && -r "${MRS_BIN}" ]]; then
+    MRS_BIN_SHA256="$(sha256sum "${MRS_BIN}" | awk '{print $1}')"
+    python3 - "${OUTPUT}/run_meta.json" "${MRS_BIN_SHA256}" <<'PY'
+import json
+import sys
+
+path, digest = sys.argv[1:]
+with open(path, encoding="utf-8") as stream:
+    metadata = json.load(stream)
+metadata["binary_sha256"] = digest
+with open(path, "w", encoding="utf-8") as stream:
+    json.dump(metadata, stream, indent=2)
+    stream.write("\n")
+PY
+fi
+export CASC_EXPECTED_BINARY_SHA256="${MRS_BIN_SHA256}"
 
 # Redirect harness stderr to run.log (tee so it still shows on terminal)
 exec 2> >(tee -a "${OUTPUT}/run.log" >&2)
@@ -371,15 +391,11 @@ echo "edition,division,problem,system,timeout,szs_status,expected,verdict,wall_t
 
 # Warn on a stale `mrs`. The run itself is unaffected, but a run.csv from an
 # out-of-date prover looks exactly like a measurement of the current one.
-MRS_BIN="${SCRIPT_DIR}/systems/mrs/mrs"
-if [[ ! -e "${MRS_BIN}" ]]; then
-    MRS_BIN="${ROOT:-${SCRIPT_DIR}/../..}/target/release/mrs"
-    if [[ -e "${MRS_BIN}" ]] \
-       && [[ -n "$(find "${SCRIPT_DIR}/../.." -path '*/target' -prune -o \
-                          -name '*.rs' -newer "${MRS_BIN}" -print -quit 2>/dev/null)" ]]; then
-        echo "WARNING: ${MRS_BIN} is older than the sources; run 'cargo build --release'" >&2
-        echo "         or the results below describe a stale prover." >&2
-    fi
+if [[ -e "${MRS_BIN}" ]] \
+   && [[ -n "$(find "${SCRIPT_DIR}/../.." -path '*/target' -prune -o \
+                       -name '*.rs' -newer "${MRS_BIN}" -print -quit 2>/dev/null)" ]]; then
+    echo "WARNING: ${MRS_BIN} is older than the sources; run 'cargo build --release'" >&2
+    echo "         or the results below describe a stale prover." >&2
 fi
 
 # Record how this run was resolved, so a post-hoc tool (certification_campaign.sh
@@ -391,6 +407,8 @@ fi
     echo "problems_dir=${PROBLEMS_DIR}"
     echo "divisions=${DIVISIONS}"
     echo "systems=${SYSTEMS}"
+    echo "mrs_binary_path=${MRS_BIN}"
+    echo "mrs_binary_sha256=${MRS_BIN_SHA256}"
     echo "time_limit=${TIME_LIMIT}"
     echo "use_casc_times=${USE_CASC_TIMES}"
     echo "subset_file=${SUBSET_FILE}"

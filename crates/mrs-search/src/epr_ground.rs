@@ -2770,9 +2770,10 @@ fn lift_bfs_refutation(
 /// Refutes the ground instance set with the ordinary given-clause loop and
 /// returns the proof it emits.
 ///
-/// Every clause here is ground, so this is resolution over propositions with
-/// subsumption and LRS pruning doing the work: the search space the BFS cannot
-/// survive is one the given-clause loop prunes routinely.
+/// Every clause here is ground, so this is resolution over propositions.
+/// Subsumption and AVATAR splitting reduce the search space the BFS cannot
+/// survive; LRS pruning is disabled below because it can discard clauses needed
+/// to derive the refutation.
 fn ground_refutation_fallback(
     ground: &GroundSet,
     inputs: &[Clause],
@@ -2823,6 +2824,9 @@ fn ground_refutation_fallback(
         // CaDiCaL has just discarded. It is the one configuration that scales
         // with the size of the instance set, so it is the default here.
         use_avatar: true,
+        // The one place in the tree where LRS is off by construction rather
+        // than by tuning; see `epr_fallback_lrs_policy` for the measurement.
+        lrs_policy: epr_fallback_lrs_policy(),
         ..crate::SearchConfig::default()
     };
     match crate::given_clause::search(&mut state, &config) {
@@ -2837,6 +2841,35 @@ fn ground_refutation_fallback(
             (Some(SearchResult::Refutation(id, tstp)), nodes)
         }
         _ => (None, 0),
+    }
+}
+
+/// LRS policy for the ground-derivation fallback loop. Off by default;
+/// `MRS_EPR_LRS=1` restores pruning for A/B against the fix.
+///
+/// This loop is entered only after CaDiCaL has returned `Unsat` on the instance
+/// set, so the soundness of "unsatisfiable" is already settled and the only
+/// work left is turning it into a derivation. LRS exists to trade completeness
+/// for memory in an *open* search, and it prices that trade in discarded
+/// clauses — here the very clauses a refutation needs.
+///
+/// Measured on CASC-30 EPU `HWV078-1` at `176a9f9`: with LRS on, the loop
+/// discarded 184 808 clauses, drained its queue, and returned `GaveUp` after
+/// 1.1 s of an 18 s budget, so the pre-pass reported `proof_extraction_failed`
+/// on a set it had already proven unsatisfiable. With LRS off the same run
+/// refutes in 32.5 s and the strict kernel certifies all 52 857 proof nodes
+/// `VerifiedGood`; the portfolio does not solve the problem at 40 s, 120 s or
+/// 240 s. Memory is not the reason to prune here either — this loop's ceiling is
+/// `config.time_limit = remaining`, the pass is opt-in, and the observed peak
+/// for the solved case is 1097 MB.
+///
+/// The fail-closed shape is unchanged: anything other than a `Refutation`
+/// returns `None` and falls through to the portfolio.
+fn epr_fallback_lrs_policy() -> crate::LrsPolicy {
+    if std::env::var("MRS_EPR_LRS").is_ok_and(|v| v != "0") {
+        crate::LrsPolicy::WallClock
+    } else {
+        crate::LrsPolicy::Disabled
     }
 }
 
@@ -3513,6 +3546,106 @@ mod tests {
             "expected a refutation, got {result:?} (telemetry {tele:?})"
         );
         assert!(tele.proof_extracted);
+    }
+
+    /// The ground-derivation fallback must not LRS-prune.
+    ///
+    /// It is entered only after CaDiCaL has returned `Unsat` on the instance
+    /// set, so completeness of the *derivation* is the whole remaining task and
+    /// every discarded clause is a potential parent. Measured on CASC-30 EPU
+    /// `HWV078-1`: LRS on discarded 184 808 clauses, drained the queue and
+    /// returned `GaveUp` in 1.1 s of an 18 s budget, so the pre-pass reported
+    /// `proof_extraction_failed` on a set it had already proven unsatisfiable;
+    /// LRS off refutes in 32.5 s and the strict kernel certifies it.
+    ///
+    /// Asserted on the policy rather than on a synthetic shape: the pruning
+    /// that does the damage is the wall-clock heuristic's, and reproducing it
+    /// needs an instance set large enough for its 2000-clause floor to bite,
+    /// which is the 4 MB `HWV078-1` input rather than a unit test. `env_lock`
+    /// serialises the two env-dependent cases.
+    #[test]
+    fn fallback_derivation_loop_does_not_lrs_prune() {
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        // SAFETY-adjacent note: this test mutates the process environment, so
+        // it must not race another test that reads it. The mutex serialises
+        // these two cases against each other; nothing else in this module
+        // reads `MRS_EPR_LRS`.
+        let prior = std::env::var("MRS_EPR_LRS").ok();
+        // SAFETY: guarded by ENV_LOCK above, and no other thread in this test
+        // binary reads this variable.
+        unsafe { std::env::set_var("MRS_EPR_LRS", "1") };
+        assert!(
+            matches!(epr_fallback_lrs_policy(), crate::LrsPolicy::WallClock),
+            "MRS_EPR_LRS=1 must restore pruning, so the fix stays falsifiable"
+        );
+        // SAFETY: as above.
+        unsafe { std::env::remove_var("MRS_EPR_LRS") };
+        assert!(
+            matches!(epr_fallback_lrs_policy(), crate::LrsPolicy::Disabled),
+            "the ground-derivation fallback must not LRS-prune by default"
+        );
+        // SAFETY: restore whatever the surrounding environment had.
+        unsafe {
+            match prior {
+                Some(value) => std::env::set_var("MRS_EPR_LRS", value),
+                None => std::env::remove_var("MRS_EPR_LRS"),
+            }
+        }
+    }
+
+    /// A pigeonhole over a wide domain: CaDiCaL settles it immediately and the
+    /// fallback loop has to emit the whole derivation, so this covers the
+    /// `grounding_timeout`-free `Unsat` -> `Refutation` path end to end. It is
+    /// the shape the fix restores; it does not by itself trip LRS, which is
+    /// why the policy contract is asserted separately above.
+    #[test]
+    fn fallback_derivation_loop_refutes_a_pigeonhole() {
+        let n = 12u64;
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let domain: Vec<SymbolId> = (0..n).map(|i| symbols.intern(&format!("d{i}"))).collect();
+
+        let mut clauses: Vec<Clause> = domain
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| {
+                input(
+                    ClauseId(i as u64),
+                    vec![pred(true, p, vec![Term::constant(c)])],
+                )
+            })
+            .collect();
+        // `¬p(X₁) ∨ … ∨ ¬p(X_n)`, n distinct variables so every ordered tuple in
+        // the domain is an instance.
+        clauses.push(input(
+            ClauseId(n),
+            (0..n)
+                .map(|i| pred(false, p, vec![Term::var(i as u32)]))
+                .collect(),
+        ));
+
+        let mut id_gen = ClauseIdGen::new();
+        let budget = EprBudget {
+            timeout: Duration::from_secs(20),
+            max_instances: 5_000_000,
+            byte_budget: 1 << 30,
+            memory_ceiling_mb: None,
+            max_rounds: 8,
+        };
+        let (result, tele) =
+            try_epr_ground_refutation(&clauses, &clauses, &mut id_gen, &symbols, budget);
+        assert!(
+            matches!(result, Some(SearchResult::Refutation(..))),
+            "expected the fallback loop to refute a set CaDiCaL proved unsatisfiable, \
+             got {result:?} (telemetry {tele:?})"
+        );
+        assert!(tele.proof_extracted);
+        assert_eq!(
+            tele.fallback, None,
+            "a refutation must not report a fallback"
+        );
     }
 
     /// A satisfiable clause set must not produce a refutation. The ground
