@@ -832,14 +832,13 @@ pub fn run_schedule_with_candidate_receiver(
     // change the fact that this entire grounding route is opt-in pending a
     // certified full-division coverage gain.
     //
-    // 2026-10-09: one boundedness defect on this route is fixed (the
-    // ground-derivation fallback no longer LRS-prunes; see `epr_ground`). On a
-    // 10-problem equality subset it turns `HWV078-1` from `Timeout` into a
-    // kernel-`VerifiedGood` refutation of 52 857 nodes, at every budget the
-    // baseline was tried at. One certified solve in ten on 2 physical cores is
-    // not a division result, so the route stays opt-in; see UI-5 in
-    // `docs/policies/unresolved-issues.md` for the measurement and for the
-    // unexplained `proof_extraction_failed` that is still open on `MSC024-1`.
+    // 2026-10-09: boundedness and extraction defects on this route are fixed (the
+    // ground-derivation fallback no longer LRS-prunes, and LRAT proof reconstruction
+    // resolves RUP steps; see `epr_ground`). On a 10-problem equality subset it
+    // turns `HWV078-1` (52 857 nodes) and `MSC024-1` (26 189 nodes) from `Timeout`
+    // into kernel-`VerifiedGood` refutations. Two certified solves in ten on 2 physical
+    // cores is not a division result, so the route stays opt-in; see UI-5 in
+    // `docs/policies/unresolved-issues.md`.
     //
     // 2026-10-10: that `MSC024-1` case is diagnosed and it is not an algorithm
     // gap. Its complete grounding is 385 830 clauses over 101 860 atoms and no
