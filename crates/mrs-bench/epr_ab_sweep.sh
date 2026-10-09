@@ -181,6 +181,17 @@ fi
   printf '# problems_dir=%s division=%s problems=%s\n' \
     "$PROBLEMS_DIR" "$DIVISION" "$([ "$MODE" = full ] && echo 100 || echo "${#SUBSET_DEFAULT[@]}")"
   printf '# MRS_EPR_GROUND=%s MRS_HARDWARE=%s\n' "${MRS_EPR_GROUND:-0}" "$HARDWARE"
+  printf '# git_commit=%s\n' "$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
+  printf '# git_dirty=%s\n' "$(git -C "$REPO" status --porcelain 2>/dev/null | grep -q . && echo 1 || echo 0)"
+  # The binary's own identity. `git_commit` alone cannot establish that two arms
+  # ran the same instrument: the archived A/B at `cb03c254` records two different
+  # `binary_sha256` values with `git_dirty=true`, on two different hosts, so that
+  # comparison cannot be shown to be matched. Record the hash and the host here
+  # and an A/B that is not matched says so in its own output.
+  printf '# binary=%s\n' "${MRS_BINARY:-$REPO/target/release/mrs}"
+  printf '# binary_sha256=%s\n' "$(sha256sum "${MRS_BINARY:-$REPO/target/release/mrs}" 2>/dev/null | cut -d' ' -f1 || echo unavailable)"
+  printf '# host=%s\n' "$(uname -n)"
+  printf '# rustc=%s\n' "$(rustc --version 2>/dev/null || echo unavailable)"
   printf '# shape_valid=%s\n' "$([[ $SHAPE_OK -eq 1 ]] && echo 1 || echo 0)"
   printf '# shape %s\n' "$SHAPE_NOTE"
   printf '# shape %s\n' "$MEM_NOTE"

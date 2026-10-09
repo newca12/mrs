@@ -832,6 +832,15 @@ pub fn run_schedule_with_candidate_receiver(
     // change the fact that this entire grounding route is opt-in pending a
     // certified full-division coverage gain.
     //
+    // 2026-10-09: one boundedness defect on this route is fixed (the
+    // ground-derivation fallback no longer LRS-prunes; see `epr_ground`). On a
+    // 10-problem equality subset it turns `HWV078-1` from `Timeout` into a
+    // kernel-`VerifiedGood` refutation of 52 857 nodes, at every budget the
+    // baseline was tried at. One certified solve in ten on 2 physical cores is
+    // not a division result, so the route stays opt-in; see UI-5 in
+    // `docs/policies/unresolved-issues.md` for the measurement and for the
+    // unexplained `proof_extraction_failed` that is still open on `MSC024-1`.
+    //
     // A refutation here is the final answer, so it goes through the candidate
     // receiver like any other winner and can be certified.
     let mut epr_telemetry: Option<crate::EprTelemetry> = None;
