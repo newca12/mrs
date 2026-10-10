@@ -5070,6 +5070,131 @@ cnf('cClauseId(3)',axiom,~r(a)).\n";
         assert!(lrat_refute(&ground, &dangling).is_none());
     }
 
+    /// The empty clause is present but forged: it is cited from a single
+    /// antecedent that cannot RUP-derive it.
+    ///
+    /// The neighbour test above covers a trace that stops before the empty
+    /// clause and one that cites an antecedent it never defines. Neither is
+    /// this shape. Here the conclusion the solver trace rests on *is* in the
+    /// capture, and every antecedent resolves to a real clause, so nothing
+    /// upstream of the citation check notices the defect: the step is refused
+    /// because `[]` does not follow from `p(a)` alone. That is the shape a
+    /// compromised or buggy capture would take, and it is the one that would
+    /// otherwise be lifted into a refutation.
+    ///
+    /// Read together with `a_well_cited_empty_clause_yields_a_refutation`, which
+    /// pins that the same ground set does reconstruct when the citation is
+    /// correct — without that control this assertion could hold for the wrong
+    /// reason.
+    #[test]
+    fn a_forged_empty_clause_cannot_yield_a_refutation() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let clauses = [
+            input(ClauseId(0), vec![pred(true, p, vec![Term::constant(a)])]),
+            input(ClauseId(1), vec![pred(false, p, vec![Term::constant(a)])]),
+        ];
+        let mut ground = GroundSet::new(8, &clauses, &clauses, &symbols);
+        for clause in &clauses {
+            assert!(ground.add(clause.clone()));
+        }
+
+        // `p(a)` abstracts to literal 1 and `~p(a)` to -1, so both originals map
+        // onto real ground clauses and the derived step is well formed in every
+        // respect except its citation. Resolving literal 1 with itself is not a
+        // step, so `[]` cannot be reached from antecedent 1 alone.
+        let forged = ProofTrace {
+            events: vec![
+                ProofEvent::OriginalClause {
+                    id: 1,
+                    redundant: false,
+                    clause: vec![1],
+                    restored: false,
+                },
+                ProofEvent::OriginalClause {
+                    id: 2,
+                    redundant: false,
+                    clause: vec![-1],
+                    restored: false,
+                },
+                ProofEvent::DerivedClause {
+                    id: 3,
+                    redundant: false,
+                    witness: 0,
+                    clause: vec![],
+                    antecedents: vec![1],
+                },
+            ],
+        };
+        assert!(
+            lrat_refute(&ground, &forged).is_none(),
+            "an empty clause forged from a single antecedent must be refused"
+        );
+    }
+
+    /// Positive control for the refusal above: the same ground set, with the
+    /// empty clause correctly cited from both antecedents, *does* reconstruct.
+    ///
+    /// `a_forged_empty_clause_cannot_yield_a_refutation` and the truncated and
+    /// dangling cases beside it all assert that `lrat_refute` returns `None`.
+    /// A reader cannot tell from those alone whether it refuses the forged
+    /// step or merely fails on this setup for some unrelated reason. This pins
+    /// the difference to the citation: the identical originals and ground set
+    /// reconstruct, so the refusal is about the step and not the input.
+    #[test]
+    fn a_well_cited_empty_clause_yields_a_refutation() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let clauses = [
+            input(ClauseId(0), vec![pred(true, p, vec![Term::constant(a)])]),
+            input(ClauseId(1), vec![pred(false, p, vec![Term::constant(a)])]),
+        ];
+        let mut ground = GroundSet::new(8, &clauses, &clauses, &symbols);
+        for clause in &clauses {
+            assert!(ground.add(clause.clone()));
+        }
+
+        // The same trace as the forged case with the citation corrected: the
+        // empty clause follows from resolving literal 1 against -1.
+        let correct = ProofTrace {
+            events: vec![
+                ProofEvent::OriginalClause {
+                    id: 1,
+                    redundant: false,
+                    clause: vec![1],
+                    restored: false,
+                },
+                ProofEvent::OriginalClause {
+                    id: 2,
+                    redundant: false,
+                    clause: vec![-1],
+                    restored: false,
+                },
+                ProofEvent::DerivedClause {
+                    id: 3,
+                    redundant: false,
+                    witness: 0,
+                    clause: vec![],
+                    antecedents: vec![1, 2],
+                },
+            ],
+        };
+        let (reconstructed, sources, empty_idx) = lrat_refute(&ground, &correct)
+            .expect("a correctly cited empty clause must reconstruct");
+        assert!(
+            reconstructed[empty_idx].is_empty(),
+            "the reconstructed conclusion at the empty clause's index must be empty"
+        );
+        assert!(
+            sources
+                .iter()
+                .any(|src| matches!(src, PSrc::Resolvent { .. })),
+            "a refutation must be built from resolution steps, not lifted inputs"
+        );
+    }
+
     #[test]
     fn unknown_solver_result_records_round_and_clock_origin_without_claiming() {
         let mut telemetry = EprTelemetry::default();
