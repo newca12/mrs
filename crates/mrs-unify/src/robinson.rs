@@ -130,6 +130,84 @@ pub fn unify_comm<S: BuildHasher>(s: &Term, t: &Term, comm: &HashSet<SymbolId, S
     Ok(subst)
 }
 
+/// Unifies a pattern against a target while refusing to bind target variables.
+///
+/// Variables in `pattern` may be instantiated as usual; variables listed in
+/// `rigid` are treated as constants. This is the one-way side condition needed
+/// by rules such as superposition when variables in the rewritten clause must
+/// remain unchanged.
+pub fn unify_comm_rigid<S: BuildHasher, R: BuildHasher>(
+    s: &Term,
+    t: &Term,
+    comm: &HashSet<SymbolId, S>,
+    rigid: &HashSet<VarId, R>,
+) -> UnifyResult {
+    let mut subst = Substitution::new();
+    unify_comm_rigid_rec(s, t, &mut subst, comm, rigid)?;
+    Ok(subst)
+}
+
+fn unify_comm_rigid_rec<S: BuildHasher, R: BuildHasher>(
+    s: &Term,
+    t: &Term,
+    subst: &mut Substitution,
+    comm: &HashSet<SymbolId, S>,
+    rigid: &HashSet<VarId, R>,
+) -> Result<(), UnifyError> {
+    let s = subst.apply_term(s);
+    let t = subst.apply_term(t);
+
+    if s == t {
+        return Ok(());
+    }
+
+    match (&s, &t) {
+        (Term::Var(v), _) => bind_term_var_maybe_rigid(*v, &t, subst, Some(rigid)),
+        (_, Term::Var(v)) => bind_term_var_maybe_rigid(*v, &s, subst, Some(rigid)),
+        (Term::App(f1, args1), Term::App(f2, args2)) => {
+            if f1 != f2 {
+                return Err(UnifyError::SymbolClash {
+                    left: format!("{:?}", f1),
+                    right: format!("{:?}", f2),
+                });
+            }
+            if args1.len() != args2.len() {
+                return Err(UnifyError::ArityMismatch {
+                    expected: args1.len(),
+                    found: args2.len(),
+                });
+            }
+
+            let saved = subst.clone();
+            let normal_ok: Result<(), UnifyError> = (|| {
+                for (a1, a2) in args1.iter().zip(args2.iter()) {
+                    unify_comm_rigid_rec(a1, a2, subst, comm, rigid)?;
+                }
+                Ok(())
+            })();
+            if normal_ok.is_ok() {
+                return Ok(());
+            }
+
+            if comm.contains(f1) && args1.len() == 2 {
+                let mut subst_swap = saved.clone();
+                let swap_ok: Result<(), UnifyError> = (|| {
+                    unify_comm_rigid_rec(&args1[0], &args2[1], &mut subst_swap, comm, rigid)?;
+                    unify_comm_rigid_rec(&args1[1], &args2[0], &mut subst_swap, comm, rigid)?;
+                    Ok(())
+                })();
+                if swap_ok.is_ok() {
+                    *subst = subst_swap;
+                    return Ok(());
+                }
+            }
+
+            *subst = saved;
+            normal_ok
+        }
+    }
+}
+
 /// Recursive unification with commutativity, accumulating bindings in `subst`.
 fn unify_comm_rec<S: BuildHasher>(
     s: &Term,
@@ -481,6 +559,18 @@ fn bind_var(var: VarId, term: &Term, subst: &mut Substitution) -> Result<(), Uni
 
     subst.bind(var, term);
     Ok(())
+}
+
+fn bind_term_var_maybe_rigid<S: BuildHasher>(
+    var: VarId,
+    term: &Term,
+    subst: &mut Substitution,
+    rigid: Option<&HashSet<VarId, S>>,
+) -> Result<(), UnifyError> {
+    if rigid.is_some_and(|vars| vars.contains(&var)) {
+        return Err(UnifyError::RigidVariable { var });
+    }
+    bind_var(var, term, subst)
 }
 
 fn deref_id(mut t: TermId, subst: &IdSubstitution, bank: &TermBank) -> TermId {

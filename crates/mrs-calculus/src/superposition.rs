@@ -74,6 +74,7 @@ pub fn superpose_selected(
 ) -> Vec<Clause> {
     let offset = max_var(eq_clause);
     let target_r = rename_clause(target, offset);
+    let target_vars = target_r.free_vars();
     let mut results = Vec::new();
 
     for (i, eq_lit) in eq_clause.literals.iter().enumerate() {
@@ -105,6 +106,7 @@ pub fn superpose_selected(
                 id_gen,
                 target_sel,
                 comm,
+                &target_vars,
                 &mut results,
             );
         }
@@ -380,6 +382,7 @@ fn superpose_with(
     id_gen: &mut ClauseIdGen,
     target_sel: Option<&[usize]>,
     comm: &HashSet<SymbolId>,
+    target_vars: &HashSet<u32>,
     results: &mut Vec<Clause>,
 ) {
     for (j, target_lit) in target.literals.iter().enumerate() {
@@ -400,10 +403,11 @@ fn superpose_with(
                 };
 
                 // Try to unify `from` with this subterm
-                let sigma = match mrs_unify::unify_comm(from, subterm, comm) {
-                    Ok(s) => s,
-                    Err(_) => continue,
-                };
+                let sigma =
+                    match mrs_unify::robinson::unify_comm_rigid(from, subterm, comm, target_vars) {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
 
                 // Check ordering: from·σ ≻ to·σ (or incomparable)
                 let from_s = sigma.apply_term(from);
@@ -701,6 +705,38 @@ mod tests {
             })
         });
         assert!(has_pa, "should contain ¬p(a)");
+    }
+
+    #[test]
+    fn superpose_does_not_instantiate_target_variable() {
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("f");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let p = syms.intern("p");
+        let mut id_gen = ClauseIdGen::new();
+        let equation = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::eq(
+                Term::app(f, vec![Term::constant(a)]),
+                Term::constant(b),
+            ))],
+            "eq",
+        );
+        let target = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::pred(
+                p,
+                vec![Term::app(f, vec![Term::var(0)])],
+            ))],
+            "target",
+        );
+
+        let results = superpose(&equation, &target, &TermOrdering::KBO, &mut id_gen);
+        assert!(
+            results.is_empty(),
+            "superposition must not specialize the target by binding its variable"
+        );
     }
 
     #[test]
