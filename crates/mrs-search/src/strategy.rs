@@ -832,23 +832,12 @@ pub fn run_schedule_with_candidate_receiver(
     // change the fact that this entire grounding route is opt-in pending a
     // certified full-division coverage gain.
     //
-    // 2026-10-09: boundedness and extraction defects on this route are fixed (the
-    // ground-derivation fallback no longer LRS-prunes, and LRAT proof reconstruction
-    // resolves RUP steps; see `epr_ground`). On a 10-problem equality subset it
-    // turns `HWV078-1` (52 857 nodes) and `MSC024-1` (26 189 nodes) from `Timeout`
-    // into kernel-`VerifiedGood` refutations. Two certified solves in ten on 2 physical
-    // cores is not a division result, so the route stays opt-in; see UI-5 in
-    // `docs/policies/unresolved-issues.md`.
-    //
-    // 2026-10-10: that `MSC024-1` case is diagnosed and it is not an algorithm
-    // gap. Its complete grounding is 385 830 clauses over 101 860 atoms and no
-    // bound tried closes it — a 20x larger BFS cap fails at the deadline with
-    // 3.1 M derived clauses — so the correct reading of
-    // `proof_extraction_failed` on a whole-set grounding is "the image is too
-    // big to certify here", not "a refutation was missed". Nothing in the route
-    // depends on that reading today; the telemetry now names which bounded
-    // extractor ran last (`epr_extraction=`), which is what made the diagnosis
-    // possible without an instrumented build. UI-5 has the full record.
+    // 2026-10-10: `MSC024-1` is now reconstructed from CaDiCaL's bounded LRAT
+    // trace: the local `--workers 1 --time 15 --schedule casc_epu` run produced a
+    // 26 189-node proof in 3.1 s, certified `VerifiedGood` by the strict kernel.
+    // `HWV078-1` still uses the ground-derivation fallback because its LRAT
+    // dependency cone exceeds the cap. The route stays opt-in: two certified
+    // solves in ten on 2 physical cores is not a division result; see UI-5.
     //
     // A refutation here is the final answer, so it goes through the candidate
     // receiver like any other winner and can be certified.

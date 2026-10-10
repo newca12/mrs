@@ -518,9 +518,9 @@ target/release/audit_casc_proofs \
 
 | | |
 |---|---|
-| Status | Partly discharged 2026-10-09. `MSC024-1`'s `proof_extraction_failed` diagnosed 2026-10-10; two extractor defects closed; no coverage change. Still open for the division. |
+| Status | Partly discharged 2026-10-09; `MSC024-1` diagnosed and its extraction route fixed 2026-10-10. The opt-in path now produces a strict-kernel-certified proof locally; division coverage remains unmeasured. |
 | Severity | The archived campaign records 9/100 `verdict=ok`; this is a low result |
-| Soundness | No soundness finding is made here. The 2026-10-09 fix removes a premature `GaveUp`; it does not change any reported status except to add a kernel-certified refutation. The 2026-10-10 changes only make the ground-refutation lifter refuse more: a forged resolvent and an ambiguous clause id can no longer emit a proof at all. |
+| Soundness | No soundness finding is made here. The LRS fix removes a premature `GaveUp`; the extraction changes fail closed on unsupported/oversized traces and only emit binary resolution steps recomputed from their cited ground parents. |
 
 ### Observation
 
@@ -721,13 +721,12 @@ Not a default change, and not a broader local run. In order:
 
 Do not accept the pre-pass or the fix as a new default from this subset.
 
-### 2026-10-10: `MSC024-1`'s `proof_extraction_failed` is a representation limit, not an algorithm gap
+### 2026-10-10 initial diagnosis: BFS and given-clause extraction exhausted their bounds
 
-**Not a coverage change.** No default moved. The pre-pass is still opt-in
-(`MRS_EPR_GROUND=1`), no new problem is solved, and the fail-closed shape is
-unchanged: anything other than a `Refutation` falls through to the portfolio.
-What changed is that the reason is now known, the telemetry names it, and two
-extractor defects found on the way are closed.
+This records the bounded failure of the original BFS and ground given-clause
+extractors. A later same-day update below adds a CaDiCaL LRAT reconstruction
+route that succeeds on `MSC024-1`. The pre-pass remains opt-in; this local result
+is not division-level coverage evidence.
 
 | | |
 |---|---|
@@ -798,18 +797,13 @@ Not established, and not claimed:
   the 385 830-clause image admits a short resolution derivation is unmeasured,
   and it is the one question a fix would turn on (see "Next step").
 
-#### Root cause
+#### Why the original extraction routes failed
 
-**A budget/representation limit, on all three counts the diagnosis was asked to
-separate.** It is not an unsupported ground-resolution shape: every step the
-lifter emits is an ordinary first-order resolution between two ground instances,
-and no equality congruence lemma is needed, because ground equality atoms are
-propositionally atomic and reflexive equalities are simplified away. It is not
-an instance/provenance mapping defect: the instance→input-clause citation is
-sound (and two hazards in it were found and closed, below). It is that the
-extractor is handed the complete 385 830-clause / 101 860-atom image and its
-lifter is bounded at 400 000 clauses, which it exhausts, after which the
-superposition fallback cannot close the remainder.
+The original BFS exhausted its 400 000-clause cap, and the ground
+given-clause fallback failed to derive a contradiction within its remaining
+budget. The LRAT trace demonstrated that a much smaller useful derivation was
+available, so the broader claim that this image had no practical derivation
+route was premature.
 
 The LRS defect fixed at `f59ca34` was a *fourth* cause of the same bucket, and
 `HWV078-1` was it. `MSC024-1` was never that cause, which is why disabling LRS
@@ -951,16 +945,32 @@ tautological, and this derivation never came from the BFS at all —
 `epr_extraction=derivation_loop` means it was produced by the ground
 given-clause loop the id-reservation and the `resolve_prop` fix do not touch.
 
-#### Next step
+#### 2026-10-10 follow-up: bounded LRAT reconstruction certifies `MSC024-1`
 
-Not a bound change. The untested question is whether a **small unsat core** of
-the 385 830-clause image admits a short resolution derivation. Measure it: dump
-the image at the `Unsat` verdict (`TRACE_EPR_DUMP` only fires on the `Sat`/probe
-path today), extract a core with assumption literals, and re-run the bounded BFS
-over the core alone. If the core is small and the BFS closes it, the fix is
-core-first extraction and it is bounded; if the core is not small, this bucket
-should be reclassified as "the route cannot certify images of this size" and the
-pre-pass should not spend 106 s and 3.5 GB reaching it.
+CaDiCaL now captures a bounded antecedent-bearing proof trace while deciding
+the ground set. `lrat_refute` takes the dependency cone of the empty clause,
+expands RUP steps into binary resolution, and passes the resulting clauses
+through the same hardened proof lifter. It refuses traces whose dependency cone
+exceeds 10,000 derived clauses, whose expanded proof exceeds 100,000 clauses,
+or that contain unsupported RAT steps. Trace capture is capped at 1,000,000
+events; any capture/reconstruction failure falls through to bounded BFS and the
+ground given-clause fallback as before.
+
+On this workspace host (4 physical / 8 logical cores), with
+`MRS_EPR_GROUND=1 --workers 1 --time 15 --schedule casc_epu`,
+`MSC024-1` returned `Unsatisfiable` in 3.7 s: 385,830 ground clauses, 864,607
+trace events, 26,189 emitted proof nodes, and `epr_extraction=lrat_lift`.
+`mrs-proover --strict --no-atp` returned `VerifiedGood`. This is a local,
+single-run validation of the extraction route, not a CASC result or a division
+coverage claim. The generated proof is about 8 MB; the default proof-output
+limit may need to be raised when retaining it.
+
+The 10,000-clause LRAT cone bound is deliberate: larger traces, including the
+`HWV078-1` shape, continue to use the ground given-clause fallback. Re-run the
+paired EPU measurements at the 8-worker CASC shape before considering any
+default or division-level claim. The remaining open work is measuring coverage
+and resource cost across the division, not diagnosing `MSC024-1`'s former
+`proof_extraction_failed` outcome.
 
 ## UI-6 — ICU: 44 rows lack a decisive reference, and `verdict = ok` does not mean certified
 

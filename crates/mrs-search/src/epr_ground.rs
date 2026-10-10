@@ -29,8 +29,9 @@
 //!    the model that produced it, so adding it forces the model to change: the
 //!    loop cannot stall the way the MGU loop does.
 //! 3. **Decide** — CaDiCaL decides the ground instance set. On `UNSAT` a bounded
-//!    propositional BFS over ground atoms is lifted clause by clause into a
-//!    first-order resolution proof.
+//!    CaDiCaL's LRAT trace is reconstructed into binary resolution when it is
+//!    compact enough; otherwise a bounded propositional BFS over ground atoms
+//!    is lifted clause by clause into a first-order resolution proof.
 //!
 //! Equality needs no special case in *instance generation*. `⊥ = c` is as
 //! much a ground instance as `p(⊥)` is, and ground instances carry real
@@ -60,28 +61,26 @@
 //! # What this route cannot do
 //!
 //! Turning the SAT solver's `Unsat` into a derivation is the hard half, and it is
-//! bounded. `prop_bfs_refute` runs unit-free propositional resolution over the
-//! *whole* image and is capped at [`PROP_BFS_CLAUSE_CAP`] clauses plus a share of
-//! the clock; if it runs out, the ground given-clause loop takes the remainder.
+//! bounded. `lrat_refute` first tries CaDiCaL's bounded RUP trace; if it is
+//! missing, unsupported or too large, `prop_bfs_refute` tries unit-free
+//! resolution over the whole image, capped at [`PROP_BFS_CLAUSE_CAP`] clauses
+//! plus a share of the clock, before the ground given-clause loop takes over.
 //! A whole-set grounding can therefore be decided by CaDiCaL in milliseconds and
 //! still produce no proof.
 //!
-//! Measured on CASC-30 EPU `MSC024-1` at `f59ca34` (`--workers 1 --time 120
-//! --schedule casc_epu`): its complete expansion is 385 830 clauses over 101 860
-//! atoms, the BFS exhausts its clause cap after 2.7 s, and raising the cap 20× to
-//! 8 000 000 only moves the failure to the deadline at 3 103 544 derived clauses.
-//! The bound is not what stands between that image and a derivation. The
-//! pre-pass reports `proof_extraction_failed` and falls through — which is the
-//! correct fail-closed answer, not a coverage claim. UI-5 in
-//! `docs/policies/unresolved-issues.md` records the measurement, the two
-//! extractor defects it exposed, and what is left to try.
+//! On CASC-30 EPU `MSC024-1`, the bounded LRAT route reconstructs a compact
+//! 26,189-node refutation from the 385,830-clause ground image. The dependency
+//! cone and trace event caps keep reconstruction bounded; unsupported or larger
+//! traces fail closed and continue through the BFS and given-clause fallbacks.
+//! UI-5 in `docs/policies/unresolved-issues.md` records the measurement and
+//! division-level limitations.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use smallvec::SmallVec;
 
-use mrs_cadical::{SolveResult, Solver};
+use mrs_cadical::{ProofEvent, ProofTrace, SolveResult, Solver, TraceConfig};
 use mrs_core::clause::{Clause, ClauseId, ClauseIdGen, ClauseSource, Literal};
 use mrs_core::formula::Atom;
 use mrs_core::model::{EqualitySemantics, ModelCertificate, PredicateTable};
@@ -254,19 +253,28 @@ struct GroundSet {
     provenance: Vec<Clause>,
     /// Symbol table for diagnostics; the search itself is name-free.
     symbols: SymbolTable,
+    /// Proof trace captured when CaDiCaL settles the instance set unsatisfiable.
+    trace: Option<ProofTrace>,
 }
 
 impl GroundSet {
     fn new(cap: usize, inputs: &[Clause], provenance: &[Clause], symbols: &SymbolTable) -> Self {
+        let mut solver = Solver::new();
+        let _ = solver.connect_trace(TraceConfig {
+            antecedents: true,
+            finalize_clauses: true,
+            max_events: 1_000_000,
+        });
         Self {
             abs: GroundAbstraction::default(),
-            solver: Solver::new(),
+            solver,
             clauses: Vec::new(),
             seen: HashSet::default(),
             cap,
             inputs: inputs.to_vec(),
             provenance: provenance.to_vec(),
             symbols: symbols.clone(),
+            trace: None,
         }
     }
 
@@ -1446,13 +1454,18 @@ fn try_epr_ground_with_model(
             SolveResult::Unsat => {
                 tele.elapsed_ms = start.elapsed().as_millis() as u64;
                 tele.rounds = round;
+                ground.trace = ground.solver.disconnect_trace().ok();
+                if trace {
+                    eprintln!(
+                        "[EPR] proof trace: events={} present={}",
+                        ground.trace.as_ref().map_or(0, |trace| trace.events.len()),
+                        ground.trace.is_some()
+                    );
+                }
                 // CaDiCaL knows the instance set is unsatisfiable; all that is
-                // left is a derivation. The BFS below produces one only for
-                // small sets — resolution without subsumption blows up well
-                // before the SAT solver does — so the ground given-clause loop
-                // takes over for anything larger. It has subsumption and the
-                // other prunings that make a ground refutation findable, and it
-                // emits a proof the same way any other refutation does.
+                // left is a derivation. Prefer compact reconstruction from the
+                // solver's checked RUP trace; retain bounded BFS and the ground
+                // given-clause loop as fail-closed fallbacks.
                 let extraction = extract_refutation(
                     &ground,
                     clauses,
@@ -2590,15 +2603,10 @@ impl BfsExhaustion {
     }
 }
 
-/// Clause ceiling for [`prop_bfs_refute`].
-///
-/// Unit-free resolution over a large ground set grows without a useful bound of
-/// its own, so the BFS is capped rather than allowed to exhaust memory. Measured
-/// on CASC-30 EPU `MSC024-1` at `f59ca34`: its 385 830-clause image exhausted
-/// this cap after 2.7 s, and raising the cap to 8 000 000 only moved the failure
-/// to the deadline at 3 103 544 derived clauses — the bound is not what stands
-/// between that instance set and a derivation. See UI-5 in
-/// `docs/policies/unresolved-issues.md`.
+/// Clause ceiling for [`prop_bfs_refute`]. Unit-free resolution over a large
+/// ground set grows rapidly, so the BFS is capped rather than allowed to exhaust
+/// memory. LRAT reconstruction is attempted first; this path remains a fallback
+/// for traces it cannot handle.
 const PROP_BFS_CLAUSE_CAP: usize = 400_000;
 
 /// Bounded propositional BFS: grow the clause set by unit-free resolution until
@@ -2769,6 +2777,252 @@ struct Extraction {
 /// names a complete derivation. A `None` result means the bounded routes did not
 /// reach the empty clause, which says nothing about the problem — only that this
 /// proof route did not produce one.
+/// Expand one CaDiCaL RUP step into binary resolution steps. Every generated
+/// resolvent is recomputed by `resolve_prop`; unsupported propagation chains
+/// fail closed.
+fn expand_rup_step(
+    conclusion: &[i32],
+    antecedents: &[usize],
+    clauses: &mut Vec<Pc>,
+    sources: &mut Vec<PSrc>,
+) -> Option<usize> {
+    let conclusion_set: HashSet<i32> = conclusion.iter().copied().collect();
+    let mut assignment: HashSet<i32> = conclusion.iter().map(|&lit| -lit).collect();
+    let mut unit_clause_idx: HashMap<i32, usize> = HashMap::default();
+    let mut processed = HashSet::default();
+    let conflict_idx = loop {
+        let mut progressed = false;
+        let mut conflict = None;
+        for &antecedent_idx in antecedents {
+            if processed.contains(&antecedent_idx) {
+                continue;
+            }
+            let antecedent = clauses.get(antecedent_idx)?;
+            let mut satisfied = false;
+            let mut unit = None;
+            let mut multiple_unassigned = false;
+            for &lit in antecedent {
+                if assignment.contains(&lit) {
+                    satisfied = true;
+                    break;
+                }
+                if !assignment.contains(&-lit) && unit.replace(lit).is_some() {
+                    multiple_unassigned = true;
+                    break;
+                }
+            }
+            if satisfied {
+                processed.insert(antecedent_idx);
+                continue;
+            }
+            if multiple_unassigned {
+                continue;
+            }
+            let Some(unit) = unit else {
+                conflict = Some(antecedent_idx);
+                break;
+            };
+
+            let mut current_idx = antecedent_idx;
+            let mut current = antecedent.clone();
+            loop {
+                let mut next = None;
+                for &lit in &current {
+                    if lit == unit || conclusion_set.contains(&lit) {
+                        continue;
+                    }
+                    if let Some(&unit_idx) = unit_clause_idx.get(&-lit)
+                        && let Some(resolvent) = resolve_prop(&current, &clauses[unit_idx], lit)
+                    {
+                        next = Some((unit_idx, resolvent));
+                        break;
+                    }
+                }
+                let Some((unit_idx, resolvent)) = next else {
+                    break;
+                };
+                let idx = clauses.len();
+                clauses.push(resolvent.clone());
+                sources.push(PSrc::Resolvent {
+                    left: current_idx,
+                    right: unit_idx,
+                });
+                current_idx = idx;
+                current = resolvent;
+            }
+            if !current
+                .iter()
+                .all(|&lit| lit == unit || conclusion_set.contains(&lit))
+            {
+                return None;
+            }
+            unit_clause_idx.insert(unit, current_idx);
+            assignment.insert(unit);
+            processed.insert(antecedent_idx);
+            progressed = true;
+        }
+        if let Some(conflict) = conflict {
+            break conflict;
+        }
+        if !progressed {
+            return None;
+        }
+    };
+
+    let mut current_idx = conflict_idx;
+    let mut current = clauses.get(current_idx)?.clone();
+    loop {
+        let mut next = None;
+        for &lit in &current {
+            if conclusion_set.contains(&lit) {
+                continue;
+            }
+            if let Some(&unit_idx) = unit_clause_idx.get(&-lit)
+                && let Some(resolvent) = resolve_prop(&current, &clauses[unit_idx], lit)
+            {
+                next = Some((unit_idx, resolvent));
+                break;
+            }
+        }
+        let Some((unit_idx, resolvent)) = next else {
+            break;
+        };
+        let idx = clauses.len();
+        clauses.push(resolvent.clone());
+        sources.push(PSrc::Resolvent {
+            left: current_idx,
+            right: unit_idx,
+        });
+        current_idx = idx;
+        current = resolvent;
+    }
+    current
+        .iter()
+        .all(|lit| conclusion_set.contains(lit))
+        .then_some(current_idx)
+}
+
+const MAX_LRAT_DERIVED_CLAUSES: usize = 10_000;
+const MAX_LRAT_TOTAL_CLAUSES: usize = 100_000;
+
+/// Reconstruct the bounded dependency cone of a CaDiCaL RUP trace as binary
+/// resolution. Original clauses are matched position-by-position against the
+/// exact ground clauses fed to the solver, so trace ids cannot miscite inputs.
+fn lrat_refute(ground: &GroundSet, trace: &ProofTrace) -> Option<(Vec<Pc>, Vec<PSrc>, usize)> {
+    let empty_id = trace.events.iter().find_map(|event| match event {
+        ProofEvent::DerivedClause { id, clause, .. } if clause.is_empty() => Some(*id),
+        _ => None,
+    });
+    let empty_id = empty_id?;
+    let derived: HashMap<i64, (&Vec<i32>, &Vec<i64>)> = trace
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            ProofEvent::DerivedClause {
+                id,
+                clause,
+                antecedents,
+                ..
+            } => Some((*id, (clause, antecedents))),
+            _ => None,
+        })
+        .collect();
+    let mut needed = HashSet::default();
+    let mut stack = vec![empty_id];
+    needed.insert(empty_id);
+    while let Some(id) = stack.pop() {
+        let (_, antecedents) = derived.get(&id)?;
+        for &antecedent in *antecedents {
+            if derived.contains_key(&antecedent) && needed.insert(antecedent) {
+                stack.push(antecedent);
+            }
+        }
+        if needed.len() > MAX_LRAT_DERIVED_CLAUSES {
+            if std::env::var("TRACE_EPR").is_ok() {
+                eprintln!("[EPR] LRAT dependency cone exceeds cap: {}", needed.len());
+            }
+            return None;
+        }
+    }
+
+    let mut clauses: Vec<Pc> = ground.clauses.iter().map(|g| g.pc.clone()).collect();
+    let mut sources: Vec<PSrc> = (0..ground.clauses.len()).map(PSrc::Input).collect();
+    let mut ground_by_pc: HashMap<Pc, usize> = HashMap::default();
+    for (idx, clause) in clauses.iter().enumerate() {
+        ground_by_pc.insert(clause.clone(), idx);
+    }
+    let mut id_to_idx = HashMap::default();
+    for event in &trace.events {
+        if let ProofEvent::OriginalClause { id, clause, .. } = event {
+            let mut traced = clause.clone();
+            traced.sort_unstable();
+            let Some(idx) = ground_by_pc.get(&traced).copied() else {
+                if std::env::var("TRACE_EPR").is_ok() {
+                    eprintln!(
+                        "[EPR] LRAT original mapping mismatch id={id} literals={}",
+                        traced.len()
+                    );
+                }
+                return None;
+            };
+            if id_to_idx.insert(*id, idx).is_some() {
+                return None;
+            }
+        }
+    }
+
+    let mut empty_idx = None;
+    for event in &trace.events {
+        let ProofEvent::DerivedClause {
+            id,
+            clause,
+            antecedents,
+            witness,
+            ..
+        } = event
+        else {
+            continue;
+        };
+        if !needed.contains(id) {
+            continue;
+        }
+        if *witness != 0 {
+            if std::env::var("TRACE_EPR").is_ok() {
+                eprintln!("[EPR] LRAT unsupported RAT witness id={id}");
+            }
+            return None;
+        }
+        let antecedent_indices: Vec<usize> = antecedents
+            .iter()
+            .map(|antecedent| id_to_idx.get(antecedent).copied())
+            .collect::<Option<_>>()?;
+        let Some(derived_idx) =
+            expand_rup_step(clause, &antecedent_indices, &mut clauses, &mut sources)
+        else {
+            if std::env::var("TRACE_EPR").is_ok() {
+                eprintln!(
+                    "[EPR] LRAT RUP expansion failed id={id} antecedents={}",
+                    antecedents.len()
+                );
+            }
+            return None;
+        };
+        if clauses.len() > ground.clauses.len() + MAX_LRAT_TOTAL_CLAUSES
+            || id_to_idx.insert(*id, derived_idx).is_some()
+        {
+            return None;
+        }
+        if *id == empty_id {
+            if !clauses[derived_idx].is_empty() {
+                return None;
+            }
+            empty_idx = Some(derived_idx);
+            break;
+        }
+    }
+    Some((clauses, sources, empty_idx?))
+}
+
 fn extract_refutation(
     ground: &GroundSet,
     inputs: &[Clause],
@@ -2778,6 +3032,26 @@ fn extract_refutation(
     start: Instant,
     budget: EprBudget,
 ) -> Extraction {
+    if let Some(trace) = &ground.trace
+        && let Some(found) = lrat_refute(ground, trace)
+    {
+        if std::env::var("TRACE_EPR").is_ok() {
+            eprintln!("[EPR] LRAT dependency cone reconstructed");
+        }
+        let (result, nodes) = lift_bfs_refutation(ground, id_gen, symbols, found);
+        if result.is_some() {
+            return Extraction {
+                result,
+                nodes,
+                route: "lrat_lift",
+            };
+        }
+        if std::env::var("TRACE_EPR").is_ok() {
+            eprintln!("[EPR] LRAT reconstruction did not lift");
+        }
+    } else if std::env::var("TRACE_EPR").is_ok() {
+        eprintln!("[EPR] LRAT reconstruction unavailable or out of bounds");
+    }
     // BFS gets a minority of what is left: it is the fast route and worth trying
     // first, but on a large ground set it is the route that runs out.
     let bfs_budget = budget
@@ -4621,6 +4895,78 @@ mod tests {
             "an ambiguous id must not produce a proof, got {result:?} with {nodes} nodes"
         );
         assert_eq!(nodes, 0);
+    }
+
+    #[test]
+    fn lrat_extraction_refutes_and_certifies_chained_derivation_shape() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let q = symbols.intern("q");
+        let r = symbols.intern("r");
+        let a = symbols.intern("a");
+        let clauses = vec![
+            input(
+                ClauseId(0),
+                vec![
+                    pred(true, p, vec![Term::constant(a)]),
+                    pred(true, q, vec![Term::constant(a)]),
+                ],
+            ),
+            input(
+                ClauseId(1),
+                vec![
+                    pred(false, p, vec![Term::var(0)]),
+                    pred(true, r, vec![Term::var(0)]),
+                ],
+            ),
+            input(
+                ClauseId(2),
+                vec![
+                    pred(false, q, vec![Term::var(0)]),
+                    pred(true, r, vec![Term::var(0)]),
+                ],
+            ),
+            input(ClauseId(3), vec![pred(false, r, vec![Term::constant(a)])]),
+        ];
+        let mut id_gen = ClauseIdGen::new();
+        id_gen.reserve_at_least(ClauseId(10));
+        let budget = EprBudget {
+            timeout: Duration::from_secs(5),
+            max_instances: 10_000,
+            byte_budget: 1 << 20,
+            memory_ceiling_mb: None,
+            max_rounds: 5,
+        };
+        let (result, telemetry) =
+            try_epr_ground_refutation(&clauses, &clauses, &mut id_gen, &symbols, budget);
+        assert!(matches!(result, Some(SearchResult::Refutation(..))));
+        assert!(telemetry.proof_extracted);
+        assert!(matches!(telemetry.extraction, "lrat_lift" | "bfs_lift"));
+        let Some(SearchResult::Refutation(_, tstp)) = result else {
+            panic!("expected refutation");
+        };
+        let problem = "cnf('cClauseId(0)',axiom,p(a) | q(a)).\n\
+cnf('cClauseId(1)',axiom,~p(X) | r(X)).\n\
+cnf('cClauseId(2)',axiom,~q(X) | r(X)).\n\
+cnf('cClauseId(3)',axiom,~r(a)).\n";
+        let parsed_problem = mrs_tptp::parse_tptp(problem).expect("problem parses");
+        let parsed_proof = mrs_tptp::parse_tptp(&tstp).expect("proof parses");
+        assert_eq!(
+            mrs_proof_kernel::verify_strict(
+                &parsed_problem,
+                &parsed_proof,
+                mrs_proof_kernel::VerificationLimits::default(),
+            ),
+            mrs_proof_kernel::KernelVerdict::Certified,
+            "extracted proof must pass the strict kernel:\n{tstp}"
+        );
+    }
+
+    #[test]
+    fn lrat_extraction_rejects_forged_rup_conclusions() {
+        let mut clauses = vec![vec![1, 2], vec![-1, 3]];
+        let mut sources = vec![PSrc::Input(0), PSrc::Input(1)];
+        assert!(expand_rup_step(&[4], &[0, 1], &mut clauses, &mut sources).is_none());
     }
 }
 
