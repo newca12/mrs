@@ -150,6 +150,10 @@ pub struct VerificationLimits {
     pub max_subsumption_steps: usize,
     pub max_skolem_steps: usize,
     pub max_equivalence_steps: usize,
+    /// Recursive unification/multiset candidate steps allowed during one AC
+    /// inference replay. Kept separate from equivalence comparison because
+    /// AC unifier enumeration may branch factorially before comparing a goal.
+    pub max_ac_unifier_steps: usize,
     pub max_avatar_steps: usize,
 }
 
@@ -175,6 +179,7 @@ impl Default for VerificationLimits {
             max_subsumption_steps: 5_000,
             max_skolem_steps: 5_000,
             max_equivalence_steps: 5_000,
+            max_ac_unifier_steps: 50_000,
             max_avatar_steps: 100_000,
         }
     }
@@ -9897,7 +9902,21 @@ fn verify_ac_superposition(
         }
     }
 
-    match ac_superposition_replay(&source, &target, &goal, &commutative, &associative, limits) {
+    let replay_verdict = match ac_superposition_replay(
+        &source,
+        &target,
+        &goal,
+        &commutative,
+        &associative,
+        limits,
+    ) {
+        AcReplay::Matched => AcReplay::Matched,
+        AcReplay::BudgetExhausted => AcReplay::BudgetExhausted,
+        AcReplay::NotFound => {
+            ac_superposition_replay(&target, &source, &goal, &commutative, &associative, limits)
+        }
+    };
+    match replay_verdict {
         AcReplay::Matched => KernelVerdict::Certified,
         AcReplay::BudgetExhausted => KernelVerdict::Inconclusive(format!(
             "ac_superposition replay exhausted the AC-equivalence budget ({} steps) before deciding",
@@ -9979,9 +9998,16 @@ fn ac_resolution_replay(
     let shift = max_var_clause(left).saturating_add(1);
     let mut shifted_right = right.to_vec();
     shift_clause(&mut shifted_right, shift);
+    let unifier_budget = AcUnifierBudget::new(limits.max_ac_unifier_steps);
 
     for (left_idx, left_literal) in left.iter().enumerate() {
+        if unifier_budget.exhausted.get() {
+            return false;
+        }
         for (right_idx, right_literal) in shifted_right.iter().enumerate() {
+            if unifier_budget.exhausted.get() {
+                return false;
+            }
             if left_literal.positive == right_literal.positive {
                 continue;
             }
@@ -9993,47 +10019,55 @@ fn ac_resolution_replay(
             if left_symbol != right_symbol || left_args.len() != right_args.len() {
                 continue;
             }
-            let mut substitution = HashMap::new();
-            if !left_args.iter().zip(right_args).all(|(l, r)| {
-                ac_unify_terms(l, r, &mut substitution, commutative, associative, limits)
-            }) {
-                continue;
-            }
-            let mut resolvent = Vec::with_capacity(left.len() + shifted_right.len() - 2);
-            for (idx, literal) in left.iter().enumerate() {
-                if idx != left_idx {
-                    resolvent.push(apply_substitution_literal(literal, &substitution));
-                }
-            }
-            for (idx, literal) in shifted_right.iter().enumerate() {
-                if idx != right_idx {
-                    resolvent.push(apply_substitution_literal(literal, &substitution));
-                }
-            }
-            if ac_clause_alpha_equiv(
-                &resolvent,
-                goal,
+            let left_app = Term::app(*left_symbol, left_args.clone());
+            let right_app = Term::app(*right_symbol, right_args.clone());
+            let matched = for_each_ac_unifier(
+                &left_app,
+                &right_app,
+                &mut HashMap::new(),
                 commutative,
                 associative,
                 limits,
-                &std::cell::Cell::new(false),
-            ) {
-                return true;
-            }
-            let mut deduplicated = Vec::with_capacity(resolvent.len());
-            for lit in &resolvent {
-                if !deduplicated.contains(lit) {
-                    deduplicated.push(lit.clone());
-                }
-            }
-            if ac_clause_alpha_equiv(
-                &deduplicated,
-                goal,
-                commutative,
-                associative,
-                limits,
-                &std::cell::Cell::new(false),
-            ) {
+                &unifier_budget,
+                &mut |substitution| {
+                    let mut resolvent = Vec::with_capacity(left.len() + shifted_right.len() - 2);
+                    for (idx, literal) in left.iter().enumerate() {
+                        if idx != left_idx {
+                            resolvent.push(apply_substitution_literal(literal, substitution));
+                        }
+                    }
+                    for (idx, literal) in shifted_right.iter().enumerate() {
+                        if idx != right_idx {
+                            resolvent.push(apply_substitution_literal(literal, substitution));
+                        }
+                    }
+                    if ac_clause_alpha_equiv(
+                        &resolvent,
+                        goal,
+                        commutative,
+                        associative,
+                        limits,
+                        &std::cell::Cell::new(false),
+                    ) {
+                        return true;
+                    }
+                    let mut deduplicated = Vec::with_capacity(resolvent.len());
+                    for lit in &resolvent {
+                        if !deduplicated.contains(lit) {
+                            deduplicated.push(lit.clone());
+                        }
+                    }
+                    ac_clause_alpha_equiv(
+                        &deduplicated,
+                        goal,
+                        commutative,
+                        associative,
+                        limits,
+                        &std::cell::Cell::new(false),
+                    )
+                },
+            );
+            if matched {
                 return true;
             }
         }
@@ -10060,10 +10094,14 @@ fn ac_superposition_replay(
     limits: VerificationLimits,
 ) -> AcReplay {
     let exhausted = std::cell::Cell::new(false);
+    let unifier_budget = AcUnifierBudget::new(limits.max_ac_unifier_steps);
     let target_shift = max_var_clause(equation_clause).saturating_add(1);
     let mut shifted_target = target_clause.to_vec();
     shift_clause(&mut shifted_target, target_shift);
     for (equation_index, equation_literal) in equation_clause.iter().enumerate() {
+        if unifier_budget.exhausted.get() {
+            break;
+        }
         if !equation_literal.positive {
             continue;
         }
@@ -10071,11 +10109,20 @@ fn ac_superposition_replay(
             continue;
         };
         for (from, to) in [(left, right), (right, left)] {
+            if unifier_budget.exhausted.get() {
+                break;
+            }
             if matches!(from, Term::Var(_)) {
                 continue;
             }
             for (target_index, target_literal) in shifted_target.iter().enumerate() {
+                if unifier_budget.exhausted.get() {
+                    break;
+                }
                 for (side, position) in atom_term_positions(&target_literal.atom) {
+                    if unifier_budget.exhausted.get() {
+                        break;
+                    }
                     let base = match &target_literal.atom {
                         Atom::Pred(_, args) => args.get(side),
                         Atom::Eq(left, right) => Some(if side == 0 { left } else { right }),
@@ -10084,94 +10131,129 @@ fn ac_superposition_replay(
                     let Some(subterm) = term_at_position(base, &position) else {
                         continue;
                     };
-                    let mut substitution = HashMap::new();
-                    if !ac_unify_terms(
+                    let matched = for_each_ac_unifier(
                         from,
                         subterm,
-                        &mut substitution,
+                        &mut HashMap::new(),
                         commutative,
                         associative,
                         limits,
-                    ) {
-                        continue;
-                    }
-                    let replacement = apply_substitution_term(to, &substitution);
-                    let replaced_base = replace_term_at(base, &position, replacement);
-                    let replaced_atom =
-                        replace_atom_side(&target_literal.atom, side, replaced_base);
-                    let mut expected = Vec::new();
-                    for (index, literal) in equation_clause.iter().enumerate() {
-                        if index != equation_index {
-                            expected.push(apply_substitution_literal(literal, &substitution));
-                        }
-                    }
-                    for (index, literal) in shifted_target.iter().enumerate() {
-                        if index != target_index {
-                            expected.push(apply_substitution_literal(literal, &substitution));
-                        } else {
-                            expected.push(Literal {
-                                positive: literal.positive,
-                                atom: apply_substitution_atom(&replaced_atom, &substitution),
-                            });
-                        }
-                    }
-                    if clause_alpha_equiv(&expected, goal)
-                        || ac_clause_alpha_equiv(
-                            &expected,
-                            goal,
-                            commutative,
-                            associative,
-                            limits,
-                            &exhausted,
-                        )
-                    {
+                        &unifier_budget,
+                        &mut |substitution| {
+                            let replacement = apply_substitution_term(to, substitution);
+                            let replaced_base = replace_term_at(base, &position, replacement);
+                            let replaced_atom =
+                                replace_atom_side(&target_literal.atom, side, replaced_base);
+                            let mut expected = Vec::new();
+                            for (index, literal) in equation_clause.iter().enumerate() {
+                                if index != equation_index {
+                                    expected
+                                        .push(apply_substitution_literal(literal, substitution));
+                                }
+                            }
+                            for (index, literal) in shifted_target.iter().enumerate() {
+                                if index != target_index {
+                                    expected
+                                        .push(apply_substitution_literal(literal, substitution));
+                                } else {
+                                    expected.push(Literal {
+                                        positive: literal.positive,
+                                        atom: apply_substitution_atom(&replaced_atom, substitution),
+                                    });
+                                }
+                            }
+                            clause_alpha_equiv(&expected, goal)
+                                || ac_clause_alpha_equiv(
+                                    &expected,
+                                    goal,
+                                    commutative,
+                                    associative,
+                                    limits,
+                                    &exhausted,
+                                )
+                        },
+                    );
+                    if matched {
                         return AcReplay::Matched;
                     }
                 }
             }
         }
     }
-    if exhausted.get() {
+    if exhausted.get() || unifier_budget.exhausted.get() {
         AcReplay::BudgetExhausted
     } else {
         AcReplay::NotFound
     }
 }
 
-fn ac_unify_terms(
+/// Bounds the total AC-unifier search performed during one replay. AC
+/// multiset matching can have factorially many candidate pairings, so counting
+/// only the later equivalence checks does not bound the replay's actual work.
+struct AcUnifierBudget {
+    remaining: std::cell::Cell<usize>,
+    exhausted: std::cell::Cell<bool>,
+}
+
+impl AcUnifierBudget {
+    fn new(limit: usize) -> Self {
+        Self {
+            remaining: std::cell::Cell::new(limit),
+            exhausted: std::cell::Cell::new(false),
+        }
+    }
+
+    fn consume(&self) -> bool {
+        if self.remaining.get() == 0 {
+            self.exhausted.set(true);
+            return false;
+        }
+        self.remaining.set(self.remaining.get() - 1);
+        true
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn for_each_ac_unifier(
     left: &Term,
     right: &Term,
     substitution: &mut HashMap<VarId, Term>,
     commutative: &HashSet<mrs_core::SymbolId>,
     associative: &HashSet<mrs_core::SymbolId>,
     limits: VerificationLimits,
+    budget: &AcUnifierBudget,
+    callback: &mut dyn FnMut(&HashMap<VarId, Term>) -> bool,
 ) -> bool {
-    let left = apply_substitution_term(left, substitution);
-    let right = apply_substitution_term(right, substitution);
-    if left == right {
-        return true;
+    if !budget.consume() {
+        return false;
     }
-    match (&left, &right) {
+    let left_sub = apply_substitution_term(left, substitution);
+    let right_sub = apply_substitution_term(right, substitution);
+    if left_sub == right_sub {
+        return callback(substitution);
+    }
+    match (&left_sub, &right_sub) {
         (Term::Var(var), term) | (term, Term::Var(var)) => {
             if occurs(*var, term, substitution) {
                 false
             } else {
-                substitution.insert(*var, term.clone());
-                true
+                let mut next = substitution.clone();
+                next.insert(*var, term.clone());
+                callback(&next)
             }
         }
-        (Term::App(left_symbol, left_args), Term::App(right_symbol, right_args))
+        (Term::App(left_symbol, _), Term::App(right_symbol, _))
             if left_symbol == right_symbol
                 && associative.contains(left_symbol)
                 && commutative.contains(left_symbol) =>
         {
-            let left_leaves = flatten_ac_term(&left, *left_symbol, associative);
-            let right_leaves = flatten_ac_term(&right, *right_symbol, associative);
+            let left_leaves = flatten_ac_term(&left_sub, *left_symbol, associative);
+            let right_leaves = flatten_ac_term(&right_sub, *right_symbol, associative);
             if left_leaves.len() != right_leaves.len() {
                 return false;
             }
             let mut used = vec![false; right_leaves.len()];
-            ac_unify_multiset(
+            for_each_ac_unify_multiset(
                 &left_leaves,
                 &right_leaves,
                 0,
@@ -10180,15 +10262,9 @@ fn ac_unify_terms(
                 commutative,
                 associative,
                 limits,
+                budget,
+                callback,
             )
-        }
-        (Term::App(left_symbol, left_args), Term::App(right_symbol, right_args))
-            if left_symbol == right_symbol && associative.contains(left_symbol) =>
-        {
-            left_args.len() == right_args.len()
-                && left_args.iter().zip(right_args).all(|(left, right)| {
-                    ac_unify_terms(left, right, substitution, commutative, associative, limits)
-                })
         }
         (Term::App(left_symbol, left_args), Term::App(right_symbol, right_args))
             if left_symbol == right_symbol
@@ -10197,59 +10273,114 @@ fn ac_unify_terms(
                 && right_args.len() == 2 =>
         {
             let mut direct = substitution.clone();
-            if ac_unify_terms(
+            let found = for_each_ac_unifier(
                 &left_args[0],
                 &right_args[0],
                 &mut direct,
                 commutative,
                 associative,
                 limits,
-            ) && ac_unify_terms(
-                &left_args[1],
+                budget,
+                &mut |sub0| {
+                    let mut sub0 = sub0.clone();
+                    for_each_ac_unifier(
+                        &left_args[1],
+                        &right_args[1],
+                        &mut sub0,
+                        commutative,
+                        associative,
+                        limits,
+                        budget,
+                        callback,
+                    )
+                },
+            );
+            if found {
+                return true;
+            }
+            let mut swapped = substitution.clone();
+            for_each_ac_unifier(
+                &left_args[0],
                 &right_args[1],
-                &mut direct,
+                &mut swapped,
                 commutative,
                 associative,
                 limits,
-            ) {
-                *substitution = direct;
-                true
-            } else {
-                let mut swapped = substitution.clone();
-                if ac_unify_terms(
-                    &left_args[0],
-                    &right_args[1],
-                    &mut swapped,
-                    commutative,
-                    associative,
-                    limits,
-                ) && ac_unify_terms(
-                    &left_args[1],
-                    &right_args[0],
-                    &mut swapped,
-                    commutative,
-                    associative,
-                    limits,
-                ) {
-                    *substitution = swapped;
-                    true
-                } else {
-                    false
-                }
-            }
+                budget,
+                &mut |sub0| {
+                    let mut sub0 = sub0.clone();
+                    for_each_ac_unifier(
+                        &left_args[1],
+                        &right_args[0],
+                        &mut sub0,
+                        commutative,
+                        associative,
+                        limits,
+                        budget,
+                        callback,
+                    )
+                },
+            )
         }
         (Term::App(left_symbol, left_args), Term::App(right_symbol, right_args)) => {
-            left_symbol == right_symbol
-                && left_args.len() == right_args.len()
-                && left_args.iter().zip(right_args).all(|(left, right)| {
-                    ac_unify_terms(left, right, substitution, commutative, associative, limits)
-                })
+            if left_symbol != right_symbol || left_args.len() != right_args.len() {
+                return false;
+            }
+            #[allow(clippy::too_many_arguments)]
+            fn unify_args_rec(
+                left_args: &[Term],
+                right_args: &[Term],
+                idx: usize,
+                subst: &mut HashMap<VarId, Term>,
+                commutative: &HashSet<mrs_core::SymbolId>,
+                associative: &HashSet<mrs_core::SymbolId>,
+                limits: VerificationLimits,
+                budget: &AcUnifierBudget,
+                callback: &mut dyn FnMut(&HashMap<VarId, Term>) -> bool,
+            ) -> bool {
+                if idx == left_args.len() {
+                    return callback(subst);
+                }
+                for_each_ac_unifier(
+                    &left_args[idx],
+                    &right_args[idx],
+                    subst,
+                    commutative,
+                    associative,
+                    limits,
+                    budget,
+                    &mut |next_sub| {
+                        unify_args_rec(
+                            left_args,
+                            right_args,
+                            idx + 1,
+                            &mut next_sub.clone(),
+                            commutative,
+                            associative,
+                            limits,
+                            budget,
+                            callback,
+                        )
+                    },
+                )
+            }
+            unify_args_rec(
+                left_args,
+                right_args,
+                0,
+                substitution,
+                commutative,
+                associative,
+                limits,
+                budget,
+                callback,
+            )
         }
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn ac_unify_multiset(
+fn for_each_ac_unify_multiset(
     left: &[&Term],
     right: &[&Term],
     index: usize,
@@ -10258,38 +10389,50 @@ fn ac_unify_multiset(
     commutative: &HashSet<mrs_core::SymbolId>,
     associative: &HashSet<mrs_core::SymbolId>,
     limits: VerificationLimits,
+    budget: &AcUnifierBudget,
+    callback: &mut dyn FnMut(&HashMap<VarId, Term>) -> bool,
 ) -> bool {
+    if !budget.consume() {
+        return false;
+    }
     if index == left.len() {
-        return true;
+        return callback(substitution);
     }
     for right_index in 0..right.len() {
+        if budget.exhausted.get() {
+            return false;
+        }
         if used[right_index] {
             continue;
         }
+        used[right_index] = true;
         let mut next = substitution.clone();
-        if ac_unify_terms(
+        let found = for_each_ac_unifier(
             left[index],
             right[right_index],
             &mut next,
             commutative,
             associative,
             limits,
-        ) {
-            used[right_index] = true;
-            if ac_unify_multiset(
-                left,
-                right,
-                index + 1,
-                used,
-                &mut next,
-                commutative,
-                associative,
-                limits,
-            ) {
-                *substitution = next;
-                return true;
-            }
-            used[right_index] = false;
+            budget,
+            &mut |sub| {
+                for_each_ac_unify_multiset(
+                    left,
+                    right,
+                    index + 1,
+                    used,
+                    &mut sub.clone(),
+                    commutative,
+                    associative,
+                    limits,
+                    budget,
+                    callback,
+                )
+            },
+        );
+        used[right_index] = false;
+        if found {
+            return true;
         }
     }
     false
@@ -13149,6 +13292,36 @@ mod tests {
         let commutative = [f].into_iter().collect();
         let limits = VerificationLimits {
             max_equivalence_steps: 0,
+            ..VerificationLimits::default()
+        };
+
+        assert_eq!(
+            ac_superposition_replay(&left, &right, &right, &commutative, &HashSet::new(), limits),
+            AcReplay::BudgetExhausted
+        );
+    }
+
+    #[test]
+    fn ac_superposition_replay_reports_unifier_budget_exhaustion() {
+        let mut symbols = SymbolTable::new();
+        let f = symbols.intern("f");
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let atom = |left, right| Literal {
+            positive: true,
+            atom: Atom::eq(left, right),
+        };
+        let left = vec![atom(
+            Term::app(f, vec![Term::constant(a), Term::constant(b)]),
+            Term::constant(a),
+        )];
+        let right = vec![atom(
+            Term::app(f, vec![Term::constant(b), Term::constant(a)]),
+            Term::constant(a),
+        )];
+        let commutative = [f].into_iter().collect();
+        let limits = VerificationLimits {
+            max_ac_unifier_steps: 0,
             ..VerificationLimits::default()
         };
 
@@ -17235,6 +17408,46 @@ mod tests {
             ),
             KernelVerdict::Certified
         );
+    }
+
+    #[test]
+    fn certifies_kle145_ac_superposition_shape() {
+        fn lower(input: &str, symbols: &mut SymbolTable) -> Formula {
+            let problem = parse_tptp(input).expect("formula parses");
+            lower_annotated(symbols, &problem.formulas[0], VerificationLimits::default())
+                .expect("formula lowers")
+        }
+
+        let mut symbols = SymbolTable::new();
+        let c40326 = lower(
+            "cnf(c40326, plain, true = leq(X8, addition(X7, X8))).",
+            &mut symbols,
+        );
+        let c345 = lower(
+            "cnf(c345, plain, true = ifeq(leq(addition(one, X3), addition(X5, addition(X6, multiplication(X5, X3)))), true, leq(addition(one, X3), multiplication(strong_iteration(X5), X6)), true)).",
+            &mut symbols,
+        );
+        let c3 = lower(
+            "cnf(c3, axiom, addition(addition(X0, X1), X2) = addition(X0, addition(X1, X2))).",
+            &mut symbols,
+        );
+        let c21 = lower(
+            "cnf(c21, axiom, addition(X0, X1) = addition(X1, X0)).",
+            &mut symbols,
+        );
+        let c40513 = lower(
+            "cnf(c40513, plain, true = ifeq(true, true, leq(addition(one, X14), multiplication(strong_iteration(X14), one)), true)).",
+            &mut symbols,
+        );
+
+        let verdict = verify_ac_superposition(
+            &[c40326, c345, c3, c21],
+            &c40513,
+            VerificationLimits::default(),
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+        );
+        assert_eq!(verdict, KernelVerdict::Certified);
     }
 
     #[test]

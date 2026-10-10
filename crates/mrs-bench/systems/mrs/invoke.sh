@@ -18,6 +18,16 @@ if [[ ! -x "${BINARY}" ]]; then
     exit 1
 fi
 
+# casc.sh hashes the resolved prover before scheduling jobs. Check the file at
+# invocation too, so run_meta.json identifies the executable the worker starts.
+if [[ -n "${CASC_EXPECTED_BINARY_SHA256:-}" ]]; then
+    ACTUAL_BINARY_SHA256="$(sha256sum "${BINARY}" | cut -d' ' -f1)"
+    if [[ "${ACTUAL_BINARY_SHA256}" != "${CASC_EXPECTED_BINARY_SHA256}" ]]; then
+        echo "% SZS status Error (mrs binary changed after benchmark provenance was recorded)"
+        exit 1
+    fi
+fi
+
 # Set TPTP root so %include directives resolve.
 # Prefer an already-set TPTP env var; fall back to the CASC-30 extracted archive.
 if [[ -z "${TPTP:-}" ]]; then

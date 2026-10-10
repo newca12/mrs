@@ -40,6 +40,7 @@
 #   EPU_TIME              per-problem seconds; unset means --casc-times (120 s)
 #   EPU_SUBSET_FILE       replace the stratified subset
 #   EPU_SWEEP_ROOT        where run directories are written
+#   MRS_BINARY            override the prover executable; its hash is recorded
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -158,6 +159,27 @@ fi
 OUT="$OUT_ROOT/epu-sweep-$LABEL"
 mkdir -p "$OUT"
 
+# Match systems/mrs/invoke.sh's binary resolution. casc.sh records the same
+# resolved executable in run_meta.json; conditions.txt preserves the identity
+# next to this arm's settings.
+MRS_BIN="${MRS_BINARY:-$REPO/target/release/mrs}"
+if command -v realpath >/dev/null 2>&1; then
+  MRS_BIN="$(realpath -m "$MRS_BIN")"
+fi
+if [[ ! -x "$MRS_BIN" ]]; then
+  echo "[epr-sweep] prover binary is missing or not executable: $MRS_BIN" >&2
+  exit 1
+fi
+MRS_BIN_SHA256="$(sha256sum "$MRS_BIN" 2>/dev/null | cut -d' ' -f1)"
+if [[ -z "$MRS_BIN_SHA256" ]]; then
+  echo "[epr-sweep] could not hash prover binary: $MRS_BIN" >&2
+  exit 1
+fi
+GIT_COMMIT="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
+GIT_DIRTY="$(git -C "$REPO" status --porcelain 2>/dev/null | grep -q . && echo 1 || echo 0)"
+HOST="$(uname -n)"
+RUSTC="$(rustc --version 2>/dev/null || echo unavailable)"
+
 SUBSET_ARGS=()
 if [[ "$MODE" == "subset" ]]; then
   SUBSET_FILE="${EPU_SUBSET_FILE:-$OUT/subset.txt}"
@@ -181,6 +203,17 @@ fi
   printf '# problems_dir=%s division=%s problems=%s\n' \
     "$PROBLEMS_DIR" "$DIVISION" "$([ "$MODE" = full ] && echo 100 || echo "${#SUBSET_DEFAULT[@]}")"
   printf '# MRS_EPR_GROUND=%s MRS_HARDWARE=%s\n' "${MRS_EPR_GROUND:-0}" "$HARDWARE"
+  printf '# git_commit=%s\n' "$GIT_COMMIT"
+  printf '# git_dirty=%s\n' "$GIT_DIRTY"
+  # The binary's own identity. `git_commit` alone cannot establish that two arms
+  # ran the same instrument: the archived A/B at `cb03c254` records two different
+  # `binary_sha256` values with `git_dirty=true`, on two different hosts, so that
+  # comparison cannot be shown to be matched. Record the hash and the host here
+  # and an A/B that is not matched says so in its own output.
+  printf '# binary=%s\n' "$MRS_BIN"
+  printf '# binary_sha256=%s\n' "$MRS_BIN_SHA256"
+  printf '# host=%s\n' "$HOST"
+  printf '# rustc=%s\n' "$RUSTC"
   printf '# shape_valid=%s\n' "$([[ $SHAPE_OK -eq 1 ]] && echo 1 || echo 0)"
   printf '# shape %s\n' "$SHAPE_NOTE"
   printf '# shape %s\n' "$MEM_NOTE"
@@ -205,6 +238,19 @@ fi
 RUN_CSV="$OUT/run/run.csv"
 if [[ ! -f "$RUN_CSV" ]]; then
   echo "[epr-sweep] no run.csv at $RUN_CSV" >&2
+  exit 1
+fi
+
+# Compare the run's own provenance with the pre-run conditions. This catches
+# stale alternate binaries and changes between hashing and worker startup.
+RUN_META="$OUT/run/run_meta.json"
+if [[ ! -f "$RUN_META" ]]; then
+  echo "[epr-sweep] missing harness provenance: $RUN_META" >&2
+  exit 1
+fi
+RUN_BINARY_SHA256="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("binary_sha256", "unknown"))' "$RUN_META")"
+if [[ "$RUN_BINARY_SHA256" != "$MRS_BIN_SHA256" ]]; then
+  echo "[epr-sweep] binary hash mismatch: conditions=$MRS_BIN_SHA256 run_meta=$RUN_BINARY_SHA256" >&2
   exit 1
 fi
 

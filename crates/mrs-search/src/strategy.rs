@@ -832,6 +832,13 @@ pub fn run_schedule_with_candidate_receiver(
     // change the fact that this entire grounding route is opt-in pending a
     // certified full-division coverage gain.
     //
+    // 2026-10-10: `MSC024-1` is now reconstructed from CaDiCaL's bounded LRAT
+    // trace: the local `--workers 1 --time 15 --schedule casc_epu` run produced a
+    // 26 189-node proof in 3.1 s, certified `VerifiedGood` by the strict kernel.
+    // `HWV078-1` still uses the ground-derivation fallback because its LRAT
+    // dependency cone exceeds the cap. The route stays opt-in: two certified
+    // solves in ten on 2 physical cores is not a division result; see UI-5.
+    //
     // A refutation here is the final answer, so it goes through the candidate
     // receiver like any other winner and can be certified.
     let mut epr_telemetry: Option<crate::EprTelemetry> = None;
