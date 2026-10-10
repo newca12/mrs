@@ -602,6 +602,14 @@ pub struct EprTelemetry {
     pub falsifying: usize,
     /// Wall-clock milliseconds spent in the pre-pass.
     pub elapsed_ms: u64,
+    /// Elapsed time around entered `solve_until` calls in this pre-pass,
+    /// including wrapper overhead but excluding pre-entry deadline skips.
+    pub solve_ms: u64,
+    /// Number of solve attempts, including attempts short-circuited before
+    /// entering CaDiCaL.
+    pub solves: u32,
+    /// Number of solve attempts that entered CaDiCaL.
+    pub solve_entries: u32,
     /// Wall-clock milliseconds spent turning an `Unsat` verdict into a
     /// derivation. Zero unless the SAT solver answered `Unsat`.
     ///
@@ -660,6 +668,9 @@ impl Default for EprTelemetry {
             rounds: 0,
             falsifying: 0,
             elapsed_ms: 0,
+            solve_ms: 0,
+            solves: 0,
+            solve_entries: 0,
             proof_extracted: false,
             proof_nodes: 0,
             extraction_ms: 0,
@@ -1450,7 +1461,16 @@ fn try_epr_ground_with_model(
         tele.sat_clauses = ground.clauses.len();
         tele.sat_vars = ground.abs.var_to_atom.len();
 
-        match ground.solver.solve_until(deadline) {
+        let solve_started = Instant::now();
+        let (solve_result, entered_solver) = ground.solver.solve_until_with_entry(deadline);
+        tele.solves = tele.solves.saturating_add(1);
+        if entered_solver {
+            tele.solve_entries = tele.solve_entries.saturating_add(1);
+            tele.solve_ms = tele
+                .solve_ms
+                .saturating_add(solve_started.elapsed().as_millis() as u64);
+        }
+        match solve_result {
             SolveResult::Unsat => {
                 tele.elapsed_ms = start.elapsed().as_millis() as u64;
                 tele.rounds = round;
@@ -1497,8 +1517,7 @@ fn try_epr_ground_with_model(
             }
             SolveResult::Unknown => {
                 tele.elapsed_ms = start.elapsed().as_millis() as u64;
-                tele.fallback = Some("sat_solver_unknown");
-                tele.result = "fallback";
+                record_sat_unknown(&mut tele, round, entered_solver);
                 return (None, tele);
             }
             SolveResult::Sat => {
@@ -1656,6 +1675,16 @@ fn try_epr_ground_with_model(
             continue;
         }
     }
+}
+
+fn record_sat_unknown(tele: &mut EprTelemetry, round: usize, entered_solver: bool) {
+    tele.rounds = round;
+    tele.fallback = Some(if entered_solver {
+        "sat_solver_unknown"
+    } else {
+        "grounding_timeout"
+    });
+    tele.result = "fallback";
 }
 
 /// Model-driven grounding. For every input clause, build the ground instance
@@ -4220,6 +4249,34 @@ mod tests {
     }
 
     #[test]
+    fn equality_grounding_does_not_claim_a_model_from_propositional_equality() {
+        let mut symbols = SymbolTable::new();
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let clauses = [input(
+            ClauseId(0),
+            vec![Literal {
+                positive: true,
+                atom: Atom::eq(Term::constant(a), Term::constant(b)),
+            }],
+        )];
+        let mut id_gen = ClauseIdGen::new();
+        let budget = EprBudget {
+            timeout: Duration::from_secs(5),
+            max_instances: 10_000,
+            byte_budget: 1 << 20,
+            memory_ceiling_mb: None,
+            max_rounds: 8,
+        };
+
+        let (result, telemetry) =
+            try_epr_ground_with_originals(&clauses, &clauses, &[], &mut id_gen, &symbols, budget);
+        assert!(!matches!(result, Some(SearchResult::Saturated(_))));
+        assert!(!telemetry.model_verified);
+        assert_eq!(telemetry.result, "fallback");
+    }
+
+    #[test]
     fn epr_model_path_rechecks_preprocessed_candidate_against_originals() {
         let mut symbols = SymbolTable::new();
         let p = symbols.intern("p");
@@ -4967,6 +5024,120 @@ cnf('cClauseId(3)',axiom,~r(a)).\n";
         let mut clauses = vec![vec![1, 2], vec![-1, 3]];
         let mut sources = vec![PSrc::Input(0), PSrc::Input(1)];
         assert!(expand_rup_step(&[4], &[0, 1], &mut clauses, &mut sources).is_none());
+    }
+
+    #[test]
+    fn incomplete_or_dangling_solver_trace_cannot_become_a_refutation() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let clauses = [
+            input(ClauseId(0), vec![pred(true, p, vec![Term::constant(a)])]),
+            input(ClauseId(1), vec![pred(false, p, vec![Term::constant(a)])]),
+        ];
+        let mut ground = GroundSet::new(8, &clauses, &clauses, &symbols);
+        for clause in &clauses {
+            assert!(ground.add(clause.clone()));
+        }
+
+        let truncated = ProofTrace {
+            events: vec![ProofEvent::OriginalClause {
+                id: 1,
+                redundant: false,
+                clause: vec![1],
+                restored: false,
+            }],
+        };
+        assert!(lrat_refute(&ground, &truncated).is_none());
+
+        let dangling = ProofTrace {
+            events: vec![
+                ProofEvent::OriginalClause {
+                    id: 1,
+                    redundant: false,
+                    clause: vec![1],
+                    restored: false,
+                },
+                ProofEvent::DerivedClause {
+                    id: 2,
+                    redundant: false,
+                    witness: 0,
+                    clause: vec![],
+                    antecedents: vec![999],
+                },
+            ],
+        };
+        assert!(lrat_refute(&ground, &dangling).is_none());
+    }
+
+    #[test]
+    fn unknown_solver_result_records_round_and_clock_origin_without_claiming() {
+        let mut telemetry = EprTelemetry::default();
+        record_sat_unknown(&mut telemetry, 7, true);
+        assert_eq!(telemetry.rounds, 7);
+        assert_eq!(telemetry.fallback, Some("sat_solver_unknown"));
+        assert_eq!(telemetry.result, "fallback");
+
+        record_sat_unknown(&mut telemetry, 8, false);
+        assert_eq!(telemetry.rounds, 8);
+        assert_eq!(telemetry.fallback, Some("grounding_timeout"));
+        assert_eq!(telemetry.result, "fallback");
+        assert!(!telemetry.proof_extracted);
+        assert!(!telemetry.model_verified);
+    }
+
+    #[test]
+    fn expired_solve_deadline_is_counted_as_attempt_but_not_solver_entry() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let clauses = [input(
+            ClauseId(0),
+            vec![pred(true, p, vec![Term::constant(a)])],
+        )];
+        let mut id_gen = ClauseIdGen::new();
+        let budget = EprBudget {
+            timeout: Duration::ZERO,
+            max_instances: 1_000,
+            byte_budget: 1 << 20,
+            memory_ceiling_mb: None,
+            max_rounds: 4,
+        };
+
+        let (result, telemetry) =
+            try_epr_ground_refutation(&clauses, &clauses, &mut id_gen, &symbols, budget);
+        assert!(result.is_none());
+        assert_eq!(telemetry.result, "fallback");
+        assert_eq!(telemetry.fallback, Some("grounding_timeout"));
+        assert_eq!(telemetry.solves, 1);
+        assert_eq!(telemetry.solve_entries, 0);
+        assert_eq!(telemetry.solve_ms, 0);
+    }
+
+    #[test]
+    fn solver_entry_telemetry_counts_a_decisive_call() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let clauses = [
+            input(ClauseId(0), vec![pred(true, p, vec![Term::constant(a)])]),
+            input(ClauseId(1), vec![pred(false, p, vec![Term::constant(a)])]),
+        ];
+        let mut id_gen = ClauseIdGen::new();
+        let budget = EprBudget {
+            timeout: Duration::from_secs(5),
+            max_instances: 1_000,
+            byte_budget: 1 << 20,
+            memory_ceiling_mb: None,
+            max_rounds: 4,
+        };
+
+        let (result, telemetry) =
+            try_epr_ground_refutation(&clauses, &clauses, &mut id_gen, &symbols, budget);
+        assert!(matches!(result, Some(SearchResult::Refutation(..))));
+        assert!(telemetry.solves >= 1);
+        assert!(telemetry.solve_entries >= 1);
+        assert!(telemetry.solve_ms <= telemetry.elapsed_ms + 50);
     }
 }
 

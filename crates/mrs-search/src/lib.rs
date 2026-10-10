@@ -325,6 +325,7 @@ impl ScheduleReport {
                 " epr_attempted={} epr_route={} epr_domain={} epr_est={} epr_full_grounding={} \
                  epr_generated={} epr_vars={} epr_clauses={} epr_rounds={} epr_falsifying={} \
                  epr_ms={} epr_proof_nodes={} epr_ematch_instances={} epr_pivots={} epr_splitting={} epr_split_clauses={} \
+                 epr_solves={} epr_solver_entries={} epr_solve_ms={} \
                  epr_model_verified={} epr_model_assignments={} epr_extraction_ms={} epr_extraction={}",
                 epr.attempted,
                 epr.route,
@@ -342,6 +343,9 @@ impl ScheduleReport {
                 epr.pivots,
                 epr.splitting,
                 epr.split_clauses,
+                epr.solves,
+                epr.solve_entries,
+                epr.solve_ms,
                 epr.model_verified,
                 epr.model_assignments,
                 epr.extraction_ms,
@@ -1154,6 +1158,25 @@ mod tests {
         let detail = report.telemetry_detail("GaveUp");
         assert!(detail.contains("parent_guidance_pruned=3"));
         assert!(detail.contains("parent_guidance_sampled=40"));
+    }
+
+    #[test]
+    fn epr_solver_entry_counters_are_reported_in_telemetry() {
+        let report = ScheduleReport {
+            epr: Some(EprTelemetry {
+                attempted: true,
+                solves: 3,
+                solve_entries: 2,
+                solve_ms: 17,
+                ..EprTelemetry::default()
+            }),
+            ..ScheduleReport::default()
+        };
+
+        let detail = report.telemetry_detail("GaveUp");
+        assert!(detail.contains("epr_solves=3"));
+        assert!(detail.contains("epr_solver_entries=2"));
+        assert!(detail.contains("epr_solve_ms=17"));
     }
 
     #[cfg(feature = "parent-guidance")]

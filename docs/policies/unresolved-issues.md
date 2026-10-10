@@ -671,7 +671,7 @@ target/release/audit_casc_proofs \
 
 | | |
 |---|---|
-| Status | Partly discharged 2026-10-09; `MSC024-1` diagnosed and its extraction route fixed 2026-10-10. The opt-in path now produces a strict-kernel-certified proof locally; division coverage remains unmeasured. |
+| Status | Partly discharged 2026-10-09; `MSC024-1` diagnosed and its extraction route fixed 2026-10-10; `sat_solver_unknown` reporting clarified 2026-10-10. The opt-in path now produces a strict-kernel-certified proof locally; division coverage remains unmeasured. |
 | Severity | The archived campaign records 9/100 `verdict=ok`; this is a low result |
 | Soundness | No soundness finding is made here. The LRS fix removes a premature `GaveUp`; the extraction changes fail closed on unsupported/oversized traces and only emit binary resolution steps recomputed from their cited ground parents. |
 
@@ -850,8 +850,9 @@ unchanged; the fix only affects runs that already set `MRS_EPR_GROUND=1`.
   → **Diagnosed 2026-10-10; see the section below.** It is a
   representation/budget limit, not the LRS defect `f59ca34` fixed, and it is why
   the bucket had to be read as "at least one further cause" rather than one.
-- **`sat_solver_unknown` is untouched.** `PLA037-1` still returns it; the
-  archived report calls it a defect and it remains undiagnosed.
+- **The archived `sat_solver_unknown` cause remains unconfirmed.** The
+  entry-aware telemetry added below distinguishes future cases, but does not
+  retroactively establish which path those rows took.
 
 #### Recommended next bounded measurement
 
@@ -866,9 +867,9 @@ Not a default change, and not a broader local run. In order:
    coverage claim; the `HWV078-1` instance was fixed, but this case remains open.
    → **Done 2026-10-10; see below.** What remains open is the *fix*, not the
    diagnosis.
-3. **Diagnose `sat_solver_unknown`** (`PLA037-1`, and archived `HWV064-1`,
-    `HWV090-1`, `HWV127-1`): CaDiCaL returning `Unknown` on a ground instance set
-    is not expected and blocks the ladder outright.
+3. **Reproduce the archived `sat_solver_unknown` rows** (`PLA037-1`,
+   `HWV064-1`, `HWV090-1`, `HWV127-1`) with entry-aware solver telemetry before
+   attributing their cause.
 4. Only after (1) shows a certified gain on the division, consider whether the
    pre-pass's RSS cost on `grounding_timeout` rows needs a per-instance ceiling.
 
@@ -1124,6 +1125,36 @@ paired EPU measurements at the 8-worker CASC shape before considering any
 default or division-level claim. The remaining open work is measuring coverage
 and resource cost across the division, not diagnosing `MSC024-1`'s former
 `proof_extraction_failed` outcome.
+
+### 2026-10-10: `Unknown` telemetry now separates clock expiry from solver interruption
+
+`mrs_cadical::Solver::solve_until` returns `Unknown` both when its deadline has
+already expired (without entering CaDiCaL) and when CaDiCaL is entered but its
+terminator stops the solve. The EPR grounding route previously reported both
+cases as `sat_solver_unknown` and left `epr_rounds` at its default on this arm.
+The archived `PLA037-1`, `HWV064-1`, `HWV090-1`, and `HWV127-1` rows therefore do
+not establish which cause applied.
+
+The wrapper now offers `solve_until_with_entry`, which returns whether it
+actually entered CaDiCaL along with the ordinary result. EPR telemetry records
+`epr_solves` (attempts), `epr_solver_entries` (calls entering CaDiCaL), and
+`epr_solve_ms` (elapsed time for entered calls), and records the ladder round on
+`Unknown`. A pre-entry `Unknown` is labelled `grounding_timeout`; an entered
+solver returning `Unknown` remains `sat_solver_unknown`. Both are fail-closed
+and return no result. The separate entry count is important because a second
+deadline read after an `Unknown` cannot reliably identify the path taken.
+
+The older pure-relational InstGen path also records its current round and calls
+an `Unknown` a `timeout` when its selected deadline has elapsed; otherwise it
+retains `sat_solver_unknown`.
+
+Focused tests cover both CaDiCaL entry cases, EPR telemetry and fallback
+classification, equality-model refusal, and proof extraction's fail-closed
+behavior. These changes improve attribution only; they do not alter the
+pre-pass's verdict policy. The archived bucket's cause remains unverified at
+the current loop revision, and division coverage/resource impact remain
+unmeasured. Re-run the paired EPU arms at the 8-worker CASC shape before
+changing defaults or drawing coverage conclusions.
 
 ## UI-6 — ICU: 44 rows lack a decisive reference, and `verdict = ok` does not mean certified
 

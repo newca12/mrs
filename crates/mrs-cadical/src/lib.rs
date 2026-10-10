@@ -636,8 +636,21 @@ impl Solver {
     /// this bounds solver time without polling from a second thread or
     /// accessing the solver concurrently.
     pub fn solve_until(&mut self, deadline: Instant) -> SolveResult {
+        self.solve_until_with_entry(deadline).0
+    }
+
+    /// Solve until `deadline`, also reporting whether the call entered
+    /// CaDiCaL's solver API rather than returning from the expired-deadline
+    /// guard above it.
+    ///
+    /// This distinguishes a deadline already spent before a solve attempt from
+    /// an `Unknown` returned by a solver call whose terminator fired. The entry
+    /// flag is authoritative because the deadline check and the call happen in
+    /// the same method; callers should not try to reconstruct it with a second
+    /// clock read.
+    pub fn solve_until_with_entry(&mut self, deadline: Instant) -> (SolveResult, bool) {
         if Instant::now() >= deadline {
-            return SolveResult::Unknown;
+            return (SolveResult::Unknown, false);
         }
         let mut state = DeadlineState { deadline };
         unsafe {
@@ -651,7 +664,7 @@ impl Solver {
         unsafe {
             sys::mrs_cadical_set_terminate(self.raw.as_ptr(), std::ptr::null_mut(), None);
         }
-        result
+        (result, true)
     }
 
     pub fn status(&self) -> SolveResult {
@@ -1062,9 +1075,12 @@ mod tests {
         let mut solver = Solver::new();
         solver.add_clause([1]);
         solver.add_clause([-1]);
-        assert_eq!(
-            solver.solve_until(Instant::now() - std::time::Duration::from_secs(1)),
-            SolveResult::Unknown
+        let (result, entered) =
+            solver.solve_until_with_entry(Instant::now() - std::time::Duration::from_secs(1));
+        assert_eq!(result, SolveResult::Unknown);
+        assert!(
+            !entered,
+            "expired deadline must short-circuit before CaDiCaL"
         );
     }
 
@@ -1091,10 +1107,10 @@ mod tests {
                 }
             }
         }
-        assert_eq!(
-            solver.solve_until(Instant::now() + std::time::Duration::from_millis(1)),
-            SolveResult::Unknown
-        );
+        let (result, entered) =
+            solver.solve_until_with_entry(Instant::now() + std::time::Duration::from_millis(1));
+        assert_eq!(result, SolveResult::Unknown);
+        assert!(entered, "short future deadline must enter CaDiCaL");
     }
 
     #[test]

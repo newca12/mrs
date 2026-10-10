@@ -777,7 +777,9 @@ pub fn try_instgen_epr_with_telemetry(
         // inputs. Use the pre-pass deadline inside CDCL as well as between
         // rounds; checking `start_time` only at the loop boundary lets one
         // solve run far beyond the selected per-problem budget.
-        match solver.solve_until(start_time + budget.timeout) {
+        let (solve_result, entered_solver) =
+            solver.solve_until_with_entry(start_time + budget.timeout);
+        match solve_result {
             SolveResult::Unsat => {
                 if trace {
                     eprintln!(
@@ -1155,7 +1157,12 @@ pub fn try_instgen_epr_with_telemetry(
 
             SolveResult::Unknown => {
                 tele.elapsed_ms = start_time.elapsed().as_millis() as u64;
-                tele.fallback_reason = Some("sat_solver_unknown");
+                tele.rounds = round;
+                tele.fallback_reason = Some(if entered_solver {
+                    "sat_solver_unknown"
+                } else {
+                    "timeout"
+                });
                 tele.return_reason = Some("fallback");
                 return (None, tele);
             }
