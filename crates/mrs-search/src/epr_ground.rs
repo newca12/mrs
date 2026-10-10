@@ -56,6 +56,25 @@
 //! every clause in it is an instance of an input clause, and the SAT problem is
 //! stated over ground atoms only. So any refutation of the abstraction refutes
 //! the input, and it lifts.
+//!
+//! # What this route cannot do
+//!
+//! Turning the SAT solver's `Unsat` into a derivation is the hard half, and it is
+//! bounded. `prop_bfs_refute` runs unit-free propositional resolution over the
+//! *whole* image and is capped at [`PROP_BFS_CLAUSE_CAP`] clauses plus a share of
+//! the clock; if it runs out, the ground given-clause loop takes the remainder.
+//! A whole-set grounding can therefore be decided by CaDiCaL in milliseconds and
+//! still produce no proof.
+//!
+//! Measured on CASC-30 EPU `MSC024-1` at `f59ca34` (`--workers 1 --time 120
+//! --schedule casc_epu`): its complete expansion is 385 830 clauses over 101 860
+//! atoms, the BFS exhausts its clause cap after 2.7 s, and raising the cap 20× to
+//! 8 000 000 only moves the failure to the deadline at 3 103 544 derived clauses.
+//! The bound is not what stands between that image and a derivation. The
+//! pre-pass reports `proof_extraction_failed` and falls through — which is the
+//! correct fail-closed answer, not a coverage claim. UI-5 in
+//! `docs/policies/unresolved-issues.md` records the measurement, the two
+//! extractor defects it exposed, and what is left to try.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -575,6 +594,24 @@ pub struct EprTelemetry {
     pub falsifying: usize,
     /// Wall-clock milliseconds spent in the pre-pass.
     pub elapsed_ms: u64,
+    /// Wall-clock milliseconds spent turning an `Unsat` verdict into a
+    /// derivation. Zero unless the SAT solver answered `Unsat`.
+    ///
+    /// `elapsed_ms` stops at the SAT verdict on purpose, so the two numbers stay
+    /// comparable with runs taken before this field existed; the pre-pass's true
+    /// cost is their sum. Reporting only `elapsed_ms` under-reported the pass by
+    /// the whole extraction phase — 3.2 s recorded against 106 s spent on
+    /// `MSC024-1`.
+    pub extraction_ms: u64,
+    /// Which bounded extractor ran last. One of `none`, `bfs_lift`,
+    /// `bfs_lift_incomplete`, `bfs_clause_cap`, `bfs_deadline`,
+    /// `derivation_loop`.
+    ///
+    /// `proof_extraction_failed` names the *outcome*; this names the route that
+    /// produced it. They were one string until `MSC024-1` had to be diagnosed
+    /// with an instrumented build to separate "the BFS ran out of clause room"
+    /// from "the ground derivation loop ran out of clock".
+    pub extraction: &'static str,
     /// Whether a first-order proof was emitted.
     pub proof_extracted: bool,
     /// Proof size in nodes.
@@ -617,6 +654,8 @@ impl Default for EprTelemetry {
             elapsed_ms: 0,
             proof_extracted: false,
             proof_nodes: 0,
+            extraction_ms: 0,
+            extraction: "none",
             ematch_instances: 0,
             pivots: 0,
             splitting: false,
@@ -1241,6 +1280,21 @@ fn try_epr_ground_with_model(
     let pivots = pivot_constants(clauses, PIVOT_LIMIT);
     tele.pivots = pivots.len();
 
+    // Ground instances are handed the caller's `ClauseIdGen`, so a generator
+    // that was not reserved past the clauses it is handed would mint ids those
+    // clauses already own. Two clauses answering to one id makes the lift's
+    // clause store answer a citation with the wrong one, which is a proof whose
+    // parents do not determine its steps. Advancing the shared counter past
+    // every id in the handed-over sets costs one `fetch_max` and is a no-op for
+    // the pipeline, whose generator is already past the lowered input ids.
+    let highest = clauses
+        .iter()
+        .chain(provenance.iter())
+        .map(|c| c.id)
+        .max()
+        .unwrap_or(ClauseId(0));
+    let _ = id_gen.reserve_at_least(highest);
+
     // Equality splitting, per clause. A clause's split support never changes, so
     // it is computed once here rather than once per clause per round.
     //
@@ -1391,6 +1445,7 @@ fn try_epr_ground_with_model(
         match ground.solver.solve_until(deadline) {
             SolveResult::Unsat => {
                 tele.elapsed_ms = start.elapsed().as_millis() as u64;
+                tele.rounds = round;
                 // CaDiCaL knows the instance set is unsatisfiable; all that is
                 // left is a derivation. The BFS below produces one only for
                 // small sets — resolution without subsumption blows up well
@@ -1398,7 +1453,7 @@ fn try_epr_ground_with_model(
                 // takes over for anything larger. It has subsumption and the
                 // other prunings that make a ground refutation findable, and it
                 // emits a proof the same way any other refutation does.
-                let (result, nodes) = extract_refutation(
+                let extraction = extract_refutation(
                     &ground,
                     clauses,
                     provenance,
@@ -1407,10 +1462,16 @@ fn try_epr_ground_with_model(
                     start,
                     budget,
                 );
-                return match result {
+                // The SAT verdict is `elapsed_ms`; the derivation is separate.
+                // They used to share one number, which under-reported the
+                // pre-pass by the whole extraction phase — 3.2 s recorded against
+                // 106 s spent on `MSC024-1`.
+                tele.extraction_ms = start.elapsed().as_millis() as u64 - tele.elapsed_ms;
+                tele.extraction = extraction.route;
+                return match extraction.result {
                     Some(r) => {
                         tele.proof_extracted = true;
-                        tele.proof_nodes = nodes;
+                        tele.proof_nodes = extraction.nodes;
                         tele.result = "refutation";
                         (Some(r), tele)
                     }
@@ -1456,11 +1517,7 @@ fn try_epr_ground_with_model(
                         provenance,
                         id_gen,
                         &local_symbols,
-                        start,
-                        EprBudget {
-                            timeout: budget.timeout.saturating_sub(start.elapsed()),
-                            ..budget
-                        },
+                        budget.timeout.saturating_sub(start.elapsed()),
                     );
                     return match result {
                         Some(r) => {
@@ -2472,18 +2529,28 @@ fn literal_value(
     Some(if lit.positive { val } else { !val })
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 enum PSrc {
     Input(usize),
     Resolvent { left: usize, right: usize },
 }
 
+/// The binary propositional resolvent of two ground clauses on `lit`.
+///
+/// The pivot is removed from **each side separately**: `lit` from `c1` and `-lit`
+/// from `c2`, and nothing else. Removing the pivot from both parents would, if
+/// either parent were propositionally tautological, emit a clause that is not the
+/// first-order resolvent of the two parents the citation names — with
+/// `c1 = {v,-v,x}`, `c2 = {v,y}` and pivot `v` it would emit `{x,y}`, which the
+/// two cited parents do not entail. The correct resolvent is
+/// `(c1 \ {v}) ∪ (c2 \ {-v}) = {-v,x,y}`, a tautology, which the caller then
+/// refuses. See `resolution_step_matches_its_cited_ground_parents`.
 fn resolve_prop(c1: &[Pl], c2: &[Pl], lit: Pl) -> Option<Pc> {
     let mut result: Vec<Pl> = c1
         .iter()
-        .chain(c2.iter())
         .copied()
-        .filter(|&l| l != lit && l != -lit)
+        .filter(|&l| l != lit)
+        .chain(c2.iter().copied().filter(|&l| l != -lit))
         .collect::<HashSet<Pl>>()
         .into_iter()
         .collect();
@@ -2496,14 +2563,55 @@ fn resolve_prop(c1: &[Pl], c2: &[Pl], lit: Pl) -> Option<Pc> {
     Some(result)
 }
 
+/// Why the bounded propositional BFS stopped without the empty clause.
+///
+/// None of the variants says anything about the problem: the extractor ran out
+/// of room, ran out of clock, or the set is satisfiable and there is nothing to
+/// extract. Recording *which* is what lets a diagnosis tell an
+/// under-provisioned extractor from a search that is simply too slow.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BfsExhaustion {
+    /// The clause cap was reached before the empty clause appeared.
+    ClauseCap,
+    /// The deadline was reached before the empty clause appeared.
+    Deadline,
+    /// Resolution reached its fixpoint without the empty clause, so the set is
+    /// satisfiable and there is no refutation to extract.
+    Satisfiable,
+}
+
+impl BfsExhaustion {
+    fn route(self) -> &'static str {
+        match self {
+            BfsExhaustion::ClauseCap => "bfs_clause_cap",
+            BfsExhaustion::Deadline => "bfs_deadline",
+            BfsExhaustion::Satisfiable => "bfs_satisfiable",
+        }
+    }
+}
+
+/// Clause ceiling for [`prop_bfs_refute`].
+///
+/// Unit-free resolution over a large ground set grows without a useful bound of
+/// its own, so the BFS is capped rather than allowed to exhaust memory. Measured
+/// on CASC-30 EPU `MSC024-1` at `f59ca34`: its 385 830-clause image exhausted
+/// this cap after 2.7 s, and raising the cap to 8 000 000 only moved the failure
+/// to the deadline at 3 103 544 derived clauses — the bound is not what stands
+/// between that instance set and a derivation. See UI-5 in
+/// `docs/policies/unresolved-issues.md`.
+const PROP_BFS_CLAUSE_CAP: usize = 400_000;
+
 /// Bounded propositional BFS: grow the clause set by unit-free resolution until
 /// the empty clause appears, recording each resolvent's parents so the result
 /// lifts to first order.
+///
+/// [`BfsExhaustion`] on failure, so the caller can report which bound fired
+/// rather than a single undifferentiated "did not find it".
 fn prop_bfs_refute(
     input: &[Pc],
     cap: usize,
     deadline: Instant,
-) -> Option<(Vec<Pc>, Vec<PSrc>, usize)> {
+) -> Result<(Vec<Pc>, Vec<PSrc>, usize), BfsExhaustion> {
     let mut clauses: Vec<Pc> = Vec::new();
     let mut sources: Vec<PSrc> = Vec::new();
     let mut seen: HashSet<Pc> = HashSet::default();
@@ -2515,7 +2623,7 @@ fn prop_bfs_refute(
             sources.push(PSrc::Input(i));
             if is_empty {
                 let idx = clauses.len() - 1;
-                return Some((clauses, sources, idx));
+                return Ok((clauses, sources, idx));
             }
         }
     }
@@ -2539,7 +2647,7 @@ fn prop_bfs_refute(
                 if since_check >= 4096 {
                     since_check = 0;
                     if Instant::now() >= deadline {
-                        return None;
+                        return Err(BfsExhaustion::Deadline);
                     }
                 }
                 let Some(resolvent) = resolve_prop(&c_head, &c_j, lit) else {
@@ -2554,17 +2662,17 @@ fn prop_bfs_refute(
                     });
                     if is_empty {
                         let idx = clauses.len() - 1;
-                        return Some((clauses, sources, idx));
+                        return Ok((clauses, sources, idx));
                     }
                     if clauses.len() > cap {
-                        return None;
+                        return Err(BfsExhaustion::ClauseCap);
                     }
                 }
             }
         }
         head += 1;
     }
-    None
+    Err(BfsExhaustion::Satisfiable)
 }
 
 /// Writes the asserted ground instance set to `path` as a TPTP CNF file, so it
@@ -2641,6 +2749,26 @@ fn dump_ground_set(ground: &GroundSet, path: &str) -> std::io::Result<()> {
 /// names a complete derivation. `None` means the bounded BFS did not reach the
 /// empty clause, which says nothing about the problem — only that this proof
 /// route did not produce one.
+/// What the bounded extractors did, so the telemetry can say which one ran last.
+///
+/// The two routes fail for different reasons — one runs out of clause room, the
+/// other out of clock — and a single `proof_extraction_failed` string hid that
+/// from every diagnosis until now.
+struct Extraction {
+    result: Option<SearchResult>,
+    nodes: usize,
+    /// The deepest extractor that ran.
+    route: &'static str,
+}
+
+/// Lifts a propositional refutation over ground atoms into a first-order
+/// resolution proof.
+///
+/// Every clause in `ground` is an instance of an input clause, so a resolvent of
+/// two ground clauses is a legal first-order resolvent and the parent chain
+/// names a complete derivation. A `None` result means the bounded routes did not
+/// reach the empty clause, which says nothing about the problem — only that this
+/// proof route did not produce one.
 fn extract_refutation(
     ground: &GroundSet,
     inputs: &[Clause],
@@ -2649,7 +2777,7 @@ fn extract_refutation(
     symbols: &SymbolTable,
     start: Instant,
     budget: EprBudget,
-) -> (Option<SearchResult>, usize) {
+) -> Extraction {
     // BFS gets a minority of what is left: it is the fast route and worth trying
     // first, but on a large ground set it is the route that runs out.
     let bfs_budget = budget
@@ -2658,12 +2786,40 @@ fn extract_refutation(
         .checked_div(3)
         .unwrap_or_default();
     let pcs: Vec<Pc> = ground.clauses.iter().map(|g| g.pc.clone()).collect();
-    let Some(found) = prop_bfs_refute(&pcs, 400_000, start + bfs_budget) else {
-        return ground_refutation_fallback(
-            ground, inputs, provenance, id_gen, symbols, start, budget,
-        );
-    };
-    lift_bfs_refutation(ground, id_gen, symbols, found)
+    match prop_bfs_refute(&pcs, PROP_BFS_CLAUSE_CAP, start + bfs_budget) {
+        Ok(found) => {
+            let (result, nodes) = lift_bfs_refutation(ground, id_gen, symbols, found);
+            // A BFS that found the empty clause but could not lift it is not a
+            // refutation either, and must not be reported as one.
+            let route = if result.is_some() {
+                "bfs_lift"
+            } else {
+                "bfs_lift_incomplete"
+            };
+            Extraction {
+                result,
+                nodes,
+                route,
+            }
+        }
+        Err(exhausted) => {
+            let remaining = budget.timeout.saturating_sub(start.elapsed());
+            // With nothing left to give the derivation loop there is no route to
+            // report but the one that just ran out.
+            let route = if remaining.is_zero() {
+                exhausted.route()
+            } else {
+                "derivation_loop"
+            };
+            let (result, nodes) =
+                ground_refutation_fallback(ground, inputs, provenance, id_gen, symbols, remaining);
+            Extraction {
+                result,
+                nodes,
+                route,
+            }
+        }
+    }
 }
 
 /// Turns a propositional BFS derivation over ground atoms into a first-order
@@ -2688,6 +2844,33 @@ fn lift_bfs_refutation(
     }
     for c in &ground.provenance {
         store.insert(c.id, c.clone());
+    }
+
+    // Two distinct clauses answering to one id make `store[&id]` resolve a
+    // citation to whichever of them was inserted last, so a `resolution` node's
+    // parents would not determine the clauses the step was computed from. The
+    // entry point reserves the generator above the ids it is handed, so this can
+    // only be a caller handing the same id to two different clauses — refuse
+    // rather than emit a proof whose citations are ambiguous, and fall through
+    // to the portfolio.
+    let mut seen_ids: HashMap<ClauseId, &[Literal]> = HashMap::default();
+    for source in ground
+        .clauses
+        .iter()
+        .map(|g| (g.clause.id, g.clause.literals.as_slice()))
+        .chain(ground.inputs.iter().map(|c| (c.id, c.literals.as_slice())))
+        .chain(
+            ground
+                .provenance
+                .iter()
+                .map(|c| (c.id, c.literals.as_slice())),
+        )
+    {
+        if let Some(existing) = seen_ids.insert(source.0, source.1)
+            && existing != source.1
+        {
+            return (None, 0);
+        }
     }
 
     // Input clauses first, so a derived clause's id is a fresh one and the
@@ -2758,13 +2941,14 @@ fn lift_bfs_refutation(
     }
 
     let nodes = complete.len();
-    (
-        Some(SearchResult::Refutation(
-            eid,
-            format_tstp(&complete, symbols),
-        )),
-        nodes,
-    )
+    let tstp = format_tstp(&complete, symbols);
+    // An empty rendering means the step graph did not topologically sort: the
+    // proof exists in memory but is not emittable, and an unemitted proof cannot
+    // be certified. Report nothing rather than a blank one.
+    if tstp.is_empty() {
+        return (None, 0);
+    }
+    (Some(SearchResult::Refutation(eid, tstp)), nodes)
 }
 
 /// Refutes the ground instance set with the ordinary given-clause loop and
@@ -2780,10 +2964,8 @@ fn ground_refutation_fallback(
     provenance: &[Clause],
     id_gen: &mut ClauseIdGen,
     symbols: &SymbolTable,
-    start: Instant,
-    budget: EprBudget,
+    remaining: Duration,
 ) -> (Option<SearchResult>, usize) {
-    let remaining = budget.timeout.saturating_sub(start.elapsed());
     if remaining.is_zero() {
         return (None, 0);
     }
@@ -3825,6 +4007,620 @@ mod tests {
         let pivots = pivot_constants(&clauses, 2);
         assert_eq!(pivots, vec![skolem, rare]);
         assert_eq!(pivot_constants(&clauses, 2), pivots);
+    }
+
+    // -------------------------------------------------------------------------
+    // Extraction: what the bounded lifters may and may not certify
+    // -------------------------------------------------------------------------
+
+    /// A printed atom split into its name and argument texts. Enough structure
+    /// to test that a proof step is a *substitution instance* of the clause it
+    /// cites, which is what an `instantiation` step claims.
+    fn atom_parts(atom: &str) -> (String, Vec<String>) {
+        if let Some((l, r)) = atom.split_once(" = ") {
+            return ("=".to_string(), vec![l.to_string(), r.to_string()]);
+        }
+        if let Some((l, r)) = atom.split_once(" != ") {
+            return ("!=".to_string(), vec![l.to_string(), r.to_string()]);
+        }
+        if let Some((name, args)) = atom.split_once('(') {
+            let args = args.strip_suffix(')').unwrap_or(args);
+            return (
+                name.to_string(),
+                args.split(", ")
+                    .map(str::to_string)
+                    .filter(|a| !a.is_empty())
+                    .collect(),
+            );
+        }
+        (atom.to_string(), Vec::new())
+    }
+
+    /// A literal as printed: its polarity and its atom, as owned text.
+    fn printed_literal(text: &str) -> (bool, String, Vec<String>) {
+        let (positive, atom) = match text.strip_prefix('~') {
+            Some(rest) => (false, rest),
+            None => (true, text),
+        };
+        let (name, args) = atom_parts(atom);
+        (positive, name, args)
+    }
+
+    /// The literals of one printed clause body, as polarity + atom triples.
+    fn printed_literals(body: &str) -> Vec<(bool, String, Vec<String>)> {
+        if body == "$false" {
+            return Vec::new();
+        }
+        body.split(" | ").map(printed_literal).collect()
+    }
+
+    /// Canonical, order-independent key for a set of printed literals.
+    fn literals_key(lits: &[(bool, String, Vec<String>)]) -> Vec<(bool, String, Vec<String>)> {
+        let mut out = lits.to_vec();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// One step of an emitted TSTP proof, as text.
+    ///
+    /// Re-checking the *emitted* proof rather than the in-memory clauses is the
+    /// point: the emitted string is the artifact a strict kernel or an
+    /// independent checker is handed, so that is what has to be recomputable
+    /// from its citations.
+    #[derive(Debug)]
+    struct TstpStep<'a> {
+        id: &'a str,
+        body: &'a str,
+        rule: &'a str,
+        parents: Vec<&'a str>,
+    }
+
+    fn parse_tstp_steps(tstp: &str) -> Vec<TstpStep<'_>> {
+        let mut out = Vec::new();
+        for line in tstp.lines() {
+            let Some(inner) = line.strip_prefix("cnf(").and_then(|s| s.strip_suffix(").")) else {
+                continue;
+            };
+            let Some((id, rest)) = inner.split_once(", ") else {
+                continue;
+            };
+            let Some((_role, rest)) = rest.split_once(", ") else {
+                continue;
+            };
+            let Some(split) = rest.find(", inference(").or_else(|| rest.find(", file('")) else {
+                continue;
+            };
+            let body = &rest[..split];
+            let ann = &rest[split + 2..];
+            if let Some(file) = ann.strip_prefix("file(") {
+                // `file('<path>', '<name>')` — an input leaf, no inference.
+                let _ = file.strip_suffix(')');
+                out.push(TstpStep {
+                    id,
+                    body,
+                    rule: "input",
+                    parents: Vec::new(),
+                });
+                continue;
+            }
+            let Some(ann) = ann
+                .strip_prefix("inference(")
+                .and_then(|s| s.strip_suffix(')'))
+            else {
+                continue;
+            };
+            let Some((rule, rest)) = ann.split_once(", [") else {
+                continue;
+            };
+            let Some((_info, ids)) = rest.split_once("], [") else {
+                continue;
+            };
+            let parents = ids
+                .strip_suffix(']')
+                .unwrap_or(ids)
+                .split(", ")
+                .filter(|s| !s.is_empty())
+                .collect();
+            out.push(TstpStep {
+                id,
+                body,
+                rule,
+                parents,
+            });
+        }
+        out
+    }
+
+    fn is_variable(term: &str) -> bool {
+        term.starts_with('X') && term[1..].chars().all(|c| c.is_ascii_digit())
+    }
+
+    /// Whether `conclusion` is a substitution instance of `parent`: one
+    /// assignment of the parent's variables to the conclusion's ground terms.
+    ///
+    /// Brute force over the parent's variables, because that is the definition
+    /// and the clauses here are small. A wider instance check belongs in the
+    /// strict kernel, not in a unit test.
+    fn is_ground_instance(
+        parent: &[(bool, String, Vec<String>)],
+        conclusion: &[(bool, String, Vec<String>)],
+    ) -> bool {
+        let mut vars: Vec<String> = Vec::new();
+        for (_, _, args) in parent {
+            for a in args {
+                if is_variable(a) && !vars.contains(a) {
+                    vars.push(a.clone());
+                }
+            }
+        }
+        let mut domain: Vec<String> = Vec::new();
+        for lits in [parent, conclusion] {
+            for (_, _, args) in lits {
+                for a in args {
+                    if is_variable(a) || domain.contains(a) {
+                        continue;
+                    }
+                    domain.push(a.clone());
+                }
+            }
+        }
+        if vars.is_empty() || domain.is_empty() {
+            return literals_key(parent) == literals_key(conclusion);
+        }
+        let mut choice = vec![0usize; vars.len()];
+        loop {
+            let grounded: Vec<(bool, String, Vec<String>)> = parent
+                .iter()
+                .map(|(p, n, args)| {
+                    let mapped = args
+                        .iter()
+                        .map(|a| {
+                            match choice.get(vars.iter().position(|v| v == a).unwrap_or(usize::MAX))
+                            {
+                                Some(&slot) if is_variable(a) => domain[slot].clone(),
+                                _ => a.clone(),
+                            }
+                        })
+                        .collect();
+                    (*p, n.clone(), mapped)
+                })
+                .collect();
+            if literals_key(&grounded) == literals_key(conclusion) {
+                return true;
+            }
+            // Odometer over the domain.
+            let mut i = 0usize;
+            loop {
+                if i == choice.len() {
+                    return false;
+                }
+                choice[i] += 1;
+                if choice[i] < domain.len() {
+                    break;
+                }
+                choice[i] = 0;
+                i += 1;
+            }
+        }
+    }
+
+    /// Recomputes every step of an emitted proof from its citations.
+    ///
+    /// Returns the failing step's description, so a test can print it rather than
+    /// assert a bare `false`. A step is legal only if:
+    ///
+    /// - an `instantiation` step's conclusion is a substitution instance of its
+    ///   single cited parent — the provenance mapping from ground instance back
+    ///   to the input clause it came from;
+    /// - a `resolution` step's conclusion is the binary resolvent of its two
+    ///   cited parents on some literal.
+    fn recheck_tstp(tstp: &str) -> Result<(), String> {
+        let steps = parse_tstp_steps(tstp);
+        assert!(!steps.is_empty(), "no cnf steps parsed from:\n{tstp}");
+        let literals_of = |id: &str| -> Result<Vec<(bool, String, Vec<String>)>, String> {
+            let step = steps
+                .iter()
+                .find(|s| s.id == id)
+                .ok_or_else(|| format!("step {id} is cited but not emitted"))?;
+            Ok(printed_literals(step.body))
+        };
+        for step in &steps {
+            let conclusion = printed_literals(step.body);
+            match step.rule {
+                "input" => {}
+                "instantiation" => {
+                    let [parent] = step.parents.as_slice() else {
+                        return Err(format!(
+                            "step {}: instantiation cites {} parents",
+                            step.id,
+                            step.parents.len()
+                        ));
+                    };
+                    let parent_lits = literals_of(parent)?;
+                    if !is_ground_instance(&parent_lits, &conclusion) {
+                        return Err(format!(
+                            "step {}: [{}] is not an instance of {parent}",
+                            step.id, step.body
+                        ));
+                    }
+                }
+                "resolution" => {
+                    let [a, b] = step.parents.as_slice() else {
+                        return Err(format!(
+                            "step {}: resolution cites {} parents",
+                            step.id,
+                            step.parents.len()
+                        ));
+                    };
+                    let pa = literals_of(a)?;
+                    let pb = literals_of(b)?;
+                    let want = literals_key(&conclusion);
+                    let mut legal = false;
+                    for (pos, name, args) in &pa {
+                        if !pb.contains(&(!*pos, name.clone(), args.clone())) {
+                            continue;
+                        }
+                        let mut res = literals_key(&pa);
+                        res.retain(|l| l != &(*pos, name.clone(), args.clone()));
+                        let mut from_b = literals_key(&pb);
+                        from_b.retain(|l| l != &(!*pos, name.clone(), args.clone()));
+                        res.extend(from_b);
+                        res.sort();
+                        res.dedup();
+                        if res == want {
+                            legal = true;
+                            break;
+                        }
+                    }
+                    if !legal {
+                        return Err(format!(
+                            "step {}: [{}] is not the resolvent of {a} and {b}",
+                            step.id, step.body
+                        ));
+                    }
+                }
+                other => return Err(format!("step {}: rule {other} is not recomputed", step.id)),
+            }
+        }
+        let last = steps.last().expect("steps");
+        if !printed_literals(last.body).is_empty() {
+            return Err(format!(
+                "the proof does not end in the empty clause: {}",
+                last.body
+            ));
+        }
+        Ok(())
+    }
+
+    /// MSC024-1's shape in miniature, on the route that *does* certify it end to
+    /// end.
+    ///
+    /// The real problem has a two-element Herbrand universe — its only
+    /// constant-bearing clause is `cnf(true_not_false, axiom, false != true)` —
+    /// and wide arity-8 predicates, so each clause grounds to `2^k` instances
+    /// and a refutation is a propositional resolution derivation over them. Its
+    /// 385 830-clause image cannot be closed by the bounded lifters, which is
+    /// what UI-5 records; this pins the same shape small enough that the lift
+    /// runs to completion, so the ground-to-first-order extraction stays
+    /// exercised rather than only ever being reached on instances too large to
+    /// finish.
+    #[test]
+    fn two_element_domain_refutation_lifts_from_its_ground_parents() {
+        let mut symbols = SymbolTable::new();
+        let q = symbols.intern("q");
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        // Two constants, so the domain is {a, b} and a two-variable clause has
+        // four ground instances. `q` is wide enough that the refutation cannot
+        // be seen without enumerating them.
+        let clauses = vec![
+            input(
+                ClauseId(0),
+                vec![
+                    pred(false, q, vec![Term::var(0), Term::var(1)]),
+                    pred(true, p, vec![Term::var(0)]),
+                ],
+            ),
+            input(
+                ClauseId(1),
+                vec![
+                    pred(false, q, vec![Term::var(0), Term::var(1)]),
+                    pred(true, p, vec![Term::var(1)]),
+                ],
+            ),
+            input(
+                ClauseId(2),
+                vec![pred(true, q, vec![Term::constant(a), Term::constant(b)])],
+            ),
+            input(
+                ClauseId(3),
+                vec![pred(true, q, vec![Term::constant(b), Term::constant(a)])],
+            ),
+            input(
+                ClauseId(4),
+                vec![
+                    pred(false, p, vec![Term::constant(a)]),
+                    pred(false, p, vec![Term::constant(b)]),
+                ],
+            ),
+        ];
+        // The generator must start above the input ids: the public entry point
+        // takes the caller's generator, and the input clauses already own ids
+        // 0..5 from the lowering that produced them.
+        let mut id_gen = ClauseIdGen::new();
+        id_gen.reserve_at_least(ClauseId(4));
+        let budget = EprBudget {
+            timeout: Duration::from_secs(30),
+            max_instances: 100_000,
+            byte_budget: 1 << 28,
+            memory_ceiling_mb: None,
+            max_rounds: 8,
+        };
+        let (result, tele) =
+            try_epr_ground_refutation(&clauses, &clauses, &mut id_gen, &symbols, budget);
+        let Some(SearchResult::Refutation(_, tstp)) = result else {
+            panic!("expected a refutation over the two-element domain, got {result:?}");
+        };
+        assert!(tele.proof_extracted, "telemetry {tele:?}");
+        assert_eq!(
+            tele.fallback, None,
+            "a refutation must not report a fallback"
+        );
+        assert_eq!(tele.domain, 2, "the universe must be the two constants");
+        assert!(
+            tele.est_instances > 4,
+            "the wide clause must be enumerated, not skipped"
+        );
+        assert_eq!(
+            tele.rounds, 0,
+            "whole-set grounding answers before round one"
+        );
+        // Every emitted step must be recomputable from its citations.
+        recheck_tstp(&tstp).unwrap_or_else(|e| panic!("{e}\n---\n{tstp}"));
+    }
+
+    /// A propositionally tautological parent must not yield a clause the two
+    /// cited parents do not entail.
+    ///
+    /// With `c1 = {v,-v,x}`, `c2 = {v,y}` and pivot `v`, removing the pivot from
+    /// *both* parents emits `{x,y}` — which `c1 ∪ c2` does not entail, since `c1`
+    /// is a tautology that constrains nothing. The first-order resolvent is
+    /// `(c1 \ {v}) ∪ (c2 \ {-v}) = {-v,x,y}`, a tautology, so the correct answer
+    /// is to refuse. The test set is satisfiable (`v=F, x=F, y=F`), so any
+    /// refutation derived from it would be a forged one.
+    #[test]
+    fn a_tautological_parent_cannot_forge_a_resolvent() {
+        let taut = vec![1i32, -1, 3];
+        let partner = vec![1, 4];
+        let negs = vec![-3];
+        let other = vec![-4];
+        assert_eq!(
+            resolve_prop(&taut, &partner, 1),
+            None,
+            "the resolvent {{-v,x,y}} is a tautology and must be refused, not emitted as {{x,y}}"
+        );
+        // The whole set is satisfiable, so no refutation may be reported at all.
+        let pcs = vec![taut, partner, negs, other];
+        let far = Instant::now() + Duration::from_secs(60);
+        assert!(
+            prop_bfs_refute(&pcs, 1 << 20, far).is_err(),
+            "a satisfiable set must not produce the empty clause"
+        );
+    }
+
+    /// `resolve_prop` must be exactly the first-order binary resolvent, for
+    /// every shape of parent — including the tautological ones that used to be
+    /// mishandled. The oracle here is written independently of the
+    /// implementation: remove the pivot from each side, and refuse a tautology.
+    #[test]
+    fn resolution_is_the_binary_resolvent_of_its_cited_parents() {
+        let oracle = |c1: &[i32], c2: &[i32], lit: i32| -> Option<Vec<i32>> {
+            let mut out: Vec<i32> = c1
+                .iter()
+                .copied()
+                .filter(|&l| l != lit)
+                .chain(c2.iter().copied().filter(|&l| l != -lit))
+                .collect::<HashSet<i32>>()
+                .into_iter()
+                .collect();
+            out.sort_unstable();
+            for &l in &out {
+                if l > 0 && out.binary_search(&-l).is_ok() {
+                    return None;
+                }
+            }
+            Some(out)
+        };
+        let universe = [1i32, -1, 2, -2, 3];
+        // Every ordered pair of clauses over a three-variable alphabet, so the
+        // tautological parents are in the sweep too.
+        for mask in 0u32..(1u32 << universe.len()) {
+            let c1: Vec<i32> = universe
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| mask >> i & 1 == 1)
+                .map(|(_, l)| *l)
+                .collect();
+            for mask2 in 0u32..(1u32 << universe.len()) {
+                let c2: Vec<i32> = universe
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| mask2 >> i & 1 == 1)
+                    .map(|(_, l)| *l)
+                    .collect();
+                for &lit in &c1 {
+                    if !c2.contains(&-lit) {
+                        continue;
+                    }
+                    assert_eq!(
+                        resolve_prop(&c1, &c2, lit),
+                        oracle(&c1, &c2, lit),
+                        "mismatch on c1={c1:?} c2={c2:?} lit={lit}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// An exhausted bound is not a refutation.
+    ///
+    /// This is the fail-closed half of the extractor. `proof_extraction_failed`
+    /// is the correct report when the bounded lifters run out of room or clock,
+    /// and the caller must fall through to the portfolio rather than claim a
+    /// refutation. Measured on CASC-30 EPU `MSC024-1` at `f59ca34`: its image is
+    /// 385 830 clauses over 101 860 atoms, the BFS exhausts
+    /// [`PROP_BFS_CLAUSE_CAP`] after 2.7 s, and raising the cap to 8 000 000 only
+    /// moves the failure to the deadline at 3 103 544 derived clauses — the bound
+    /// is not what stands between that set and a derivation, and no amount of it
+    /// converts exhaustion into a refutation.
+    #[test]
+    fn an_exhausted_bound_is_inconclusive() {
+        // `p | q`, `~p | q`, `~q` — unsatisfiable, and the empty clause needs two
+        // resolutions.
+        let unsat = vec![vec![1i32, 2], vec![-1, 2], vec![-2]];
+        let far = Instant::now() + Duration::from_secs(60);
+        // The set fits, so the lift happens.
+        assert!(
+            prop_bfs_refute(&unsat, PROP_BFS_CLAUSE_CAP, far).is_ok(),
+            "the positive control: this set must refute"
+        );
+        // No clause room: exhausted at the cap, and nothing is claimed.
+        assert_eq!(
+            prop_bfs_refute(&unsat, 0, far).err(),
+            Some(BfsExhaustion::ClauseCap),
+            "a zero clause cap must report exhaustion, not a refutation"
+        );
+        // No clock: exhausted at the deadline, and nothing is claimed. The
+        // deadline is only sampled every 4096 resolution attempts, so the set
+        // has to offer more attempts than that before it can be reached — this
+        // one is satisfiable, offers one complementary pair per index, and never
+        // produces the empty clause.
+        let mut sat = Vec::new();
+        let shared = 8_000i32;
+        for i in 1..=6_000i32 {
+            sat.push(vec![i, shared]);
+            sat.push(vec![-i, shared]);
+        }
+        assert_eq!(
+            prop_bfs_refute(&sat, 1 << 20, Instant::now()).err(),
+            Some(BfsExhaustion::Deadline),
+            "a spent deadline must report exhaustion, not a refutation"
+        );
+        // The same set, with clock to spare, reaches its fixpoint without the
+        // empty clause: a statement about the set, and still not a refutation.
+        assert_eq!(
+            prop_bfs_refute(&sat, 1 << 20, far).err(),
+            Some(BfsExhaustion::Satisfiable),
+            "a satisfiable set must not produce the empty clause"
+        );
+    }
+
+    /// The lift must never name a parent the proof does not contain.
+    ///
+    /// `lift_bfs_refutation` builds the clause store from the ground instances,
+    /// the pre-pass inputs and the original provenance before it walks the
+    /// dependency closure, so a `resolution` node's two citations must both
+    /// resolve to a clause that was actually emitted. A provenance mapping that
+    /// dropped one of those sources would produce a dangling citation here.
+    #[test]
+    fn a_lifted_proof_cites_only_clauses_it_contains() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let clauses = vec![
+            input(ClauseId(0), vec![pred(true, p, vec![Term::constant(a)])]),
+            input(ClauseId(1), vec![pred(true, p, vec![Term::constant(b)])]),
+            goal(
+                ClauseId(2),
+                vec![
+                    pred(false, p, vec![Term::constant(a)]),
+                    pred(false, p, vec![Term::constant(b)]),
+                ],
+            ),
+        ];
+        let mut id_gen = ClauseIdGen::new();
+        id_gen.reserve_at_least(ClauseId(2));
+        let mut ground = GroundSet::new(16, &clauses, &clauses, &symbols);
+        for c in &clauses {
+            assert!(
+                ground.add(c.clone()),
+                "the ground set must take these instances"
+            );
+        }
+        let pcs: Vec<Pc> = ground.clauses.iter().map(|g| g.pc.clone()).collect();
+        let far = Instant::now() + Duration::from_secs(30);
+        let found = prop_bfs_refute(&pcs, PROP_BFS_CLAUSE_CAP, far).expect("the unit pair refutes");
+        let (result, nodes) = lift_bfs_refutation(&ground, &mut id_gen, &symbols, found);
+        let Some(SearchResult::Refutation(_, tstp)) = result else {
+            panic!("expected the unit pair to lift, got {result:?}");
+        };
+        assert!(nodes > 0);
+        let steps = parse_tstp_steps(&tstp);
+        let ids: Vec<&str> = steps.iter().map(|s| s.id).collect();
+        for step in &steps {
+            for parent in &step.parents {
+                assert!(
+                    ids.contains(parent),
+                    "step {} cites {parent}, which the proof does not contain:\n{tstp}",
+                    step.id
+                );
+            }
+        }
+        // And the provenance still points back at the input clause the instance
+        // came from, rather than at a fresh id with nothing behind it.
+        recheck_tstp(&tstp).unwrap_or_else(|e| panic!("{e}\n---\n{tstp}"));
+    }
+
+    /// Two clauses answering to one id must not yield a certified refutation.
+    ///
+    /// `try_epr_ground_refutation` takes the caller's `ClauseIdGen`, and nothing
+    /// inside it can tell a generator reserved past the input ids from one that
+    /// was not. With an unreserved generator the ground instances and the input
+    /// clauses collide, `store[&id]` then resolves a citation to whichever of
+    /// the two was inserted last, and the emitted proof cites parents whose
+    /// literals are not the ones the step was computed from. Observed exactly
+    /// that while building the regression above: a step printed as
+    /// `p(a)` from parents `q(b,a)` and `q(a,b)`, which resolve to nothing.
+    ///
+    /// The lift must refuse, and the pre-pass must fall through rather than
+    /// hand a proof whose parents are ambiguous.
+    #[test]
+    fn an_ambiguous_clause_id_cannot_produce_a_certified_refutation() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let clauses = vec![
+            input(ClauseId(0), vec![pred(true, p, vec![Term::constant(a)])]),
+            input(ClauseId(1), vec![pred(true, p, vec![Term::constant(b)])]),
+            goal(
+                ClauseId(2),
+                vec![
+                    pred(false, p, vec![Term::constant(a)]),
+                    pred(false, p, vec![Term::constant(b)]),
+                ],
+            ),
+        ];
+        let mut ground = GroundSet::new(16, &clauses, &clauses, &symbols);
+        for c in &clauses {
+            assert!(ground.add(c.clone()));
+        }
+        let pcs: Vec<Pc> = ground.clauses.iter().map(|g| g.pc.clone()).collect();
+        let far = Instant::now() + Duration::from_secs(30);
+        let found = prop_bfs_refute(&pcs, PROP_BFS_CLAUSE_CAP, far)
+            .expect("the unit pair refutes; the ground set is small");
+        // A generator that was *not* reserved past the input ids: the first
+        // `next()` returns ClauseId(0), which the input already owns.
+        let mut colliding = ClauseIdGen::new();
+        let (result, nodes) = lift_bfs_refutation(&ground, &mut colliding, &symbols, found);
+        assert!(
+            result.is_none(),
+            "an ambiguous id must not produce a proof, got {result:?} with {nodes} nodes"
+        );
+        assert_eq!(nodes, 0);
     }
 }
 

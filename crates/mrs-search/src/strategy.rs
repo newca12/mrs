@@ -841,6 +841,16 @@ pub fn run_schedule_with_candidate_receiver(
     // `docs/policies/unresolved-issues.md` for the measurement and for the
     // unexplained `proof_extraction_failed` that is still open on `MSC024-1`.
     //
+    // 2026-10-10: that `MSC024-1` case is diagnosed and it is not an algorithm
+    // gap. Its complete grounding is 385 830 clauses over 101 860 atoms and no
+    // bound tried closes it — a 20x larger BFS cap fails at the deadline with
+    // 3.1 M derived clauses — so the correct reading of
+    // `proof_extraction_failed` on a whole-set grounding is "the image is too
+    // big to certify here", not "a refutation was missed". Nothing in the route
+    // depends on that reading today; the telemetry now names which bounded
+    // extractor ran last (`epr_extraction=`), which is what made the diagnosis
+    // possible without an instrumented build. UI-5 has the full record.
+    //
     // A refutation here is the final answer, so it goes through the candidate
     // receiver like any other winner and can be certified.
     let mut epr_telemetry: Option<crate::EprTelemetry> = None;
