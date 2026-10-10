@@ -1336,6 +1336,25 @@ earlier. These two rows explain the archived strict result of 3 `VerifiedGood`,
 2 `Unknown` among five `Theorem` rows; they do not establish a general ICU
 certification rate of 3/5.
 
+### Bounded goal-directed NNF check
+
+The strict kernel now checks an NNF step against its proposed conclusion
+without first constructing the expanded formula. It has independent NNF
+step/depth ceilings; exhaustion still falls through to the existing bounded
+conversion, which remains `Inconclusive` if it also cannot decide. An iterative
+bounded shape check likewise lets quantified-CNF normalization retain an
+already-NNF input without consuming the converter's smaller term-depth budget.
+The checker models implication, biconditional (including negated
+biconditional), quantifier polarity, and scoped variable identity. Regression
+tests cover deep linear formulas, those connective cases, mismatches, and
+budget exhaustion.
+
+This addresses the kernel's bounded-NNF decision path, but the archived ICU
+proofs are not present in this checkout. UI-6 remains open until the retained
+`EEE001+1` and `CSE007+1` proofs are replayed through the strict kernel and the
+resulting audit is checked; this code-level regression result is not a new
+campaign certification measurement.
+
 ### One OS OOM kill despite the reported adaptive memory budget
 
 `CSI008+1` was killed by the OS OOM killer at **94 161 MB** according to the

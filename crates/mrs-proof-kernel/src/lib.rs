@@ -128,6 +128,18 @@ pub struct VerificationLimits {
     /// verdict: the check is an alternative route to a decision, and a check
     /// that ran out of room has not decided anything.
     pub max_residue_steps: usize,
+    /// Source subformulas the goal-directed NNF check may visit, counted across
+    /// the walk *and* the leaf comparisons it makes.
+    ///
+    /// The check reads the conclusion instead of building the source's NNF. The
+    /// budget is an independent ceiling on its total walk and leaf-comparison
+    /// work; exhausting it falls through to the expansion unchanged, so a step
+    /// it could not decide stays `Inconclusive`.
+    pub max_nnf_steps: usize,
+    /// Maximum traversal depth for goal-directed NNF and already-NNF CNF
+    /// checks. Independent of term depth: formulas may be deeper than terms
+    /// without having expanded.
+    pub max_nnf_depth: usize,
     /// Comparison steps allowed when matching a leaf against a problem formula
     /// modulo associativity and commutativity.
     pub max_comparison_steps: usize,
@@ -174,6 +186,8 @@ impl Default for VerificationLimits {
             max_definition_steps: 4_096,
             max_unfold_steps: 200_000,
             max_residue_steps: 400_000,
+            max_nnf_steps: 400_000,
+            max_nnf_depth: 4_096,
             max_comparison_steps: 200_000,
             max_expansion_clauses: 100_000,
             max_subsumption_steps: 5_000,
@@ -1579,7 +1593,16 @@ fn normalize_quantified_cnf(
     formula: &Formula,
     limits: VerificationLimits,
 ) -> Result<Formula, KernelVerdict> {
-    let Some(normalized) = to_nnf_checked(formula, limits) else {
+    // NNF can be recognized without constructing it. In particular, a deep
+    // conjunction/disjunction that is already NNF must not be rejected just
+    // because the NNF converter's recursion-depth guard is lower than the
+    // formula's (linear) depth. This is a bounded identity path: if the
+    // iterative shape check cannot establish NNF within the input-size limit,
+    // retain the existing bounded conversion and its fail-closed behavior.
+    let Some(normalized) =
+        already_nnf_bounded(formula, limits.max_formula_nodes, limits.max_nnf_depth)
+            .or_else(|| to_nnf_checked(formula, limits))
+    else {
         return Err(KernelVerdict::Inconclusive(
             "quantified CNF normalization exceeded strict formula-size limit".into(),
         ));
@@ -1602,6 +1625,51 @@ fn normalize_quantified_cnf(
         result = Formula::forall(variable, result);
     }
     Ok(result)
+}
+
+/// Return a copy of an already-NNF formula, using an iterative and bounded
+/// shape check so deep but linear `And`/`Or` trees do not consume the NNF
+/// converter's formula-depth allowance. `None` means either non-NNF or over
+/// budget; callers then use their ordinary bounded conversion path.
+fn already_nnf_bounded(formula: &Formula, max_nodes: usize, max_depth: usize) -> Option<Formula> {
+    let mut pending = vec![(formula, false, 0usize)];
+    let mut visited = 0usize;
+    while let Some((current, under_negation, depth)) = pending.pop() {
+        visited = visited.checked_add(1)?;
+        if visited > max_nodes || depth > max_depth {
+            return None;
+        }
+        match current {
+            Formula::Atom(_) => {}
+            Formula::True | Formula::False => {
+                if under_negation {
+                    return None;
+                }
+            }
+            Formula::Neg(inner) => {
+                if under_negation || !matches!(inner.as_ref(), Formula::Atom(_)) {
+                    return None;
+                }
+                pending.push((inner, true, depth + 1));
+            }
+            Formula::And(parts) | Formula::Or(parts) if !under_negation => {
+                pending.extend(parts.iter().map(|part| (part, false, depth + 1)));
+            }
+            Formula::Forall(_, body) if !under_negation => {
+                pending.push((body, false, depth + 1));
+            }
+            Formula::Exists(_, body) if !under_negation => {
+                pending.push((body, false, depth + 1));
+            }
+            Formula::And(_)
+            | Formula::Or(_)
+            | Formula::Forall(_, _)
+            | Formula::Exists(_, _)
+            | Formula::Implies(_, _)
+            | Formula::Iff(_, _) => return None,
+        }
+    }
+    Some(formula.clone())
 }
 
 fn prenex_quantified_cnf(
@@ -3970,6 +4038,22 @@ fn verify_negated_conjecture(
             node.name
         ));
     }
+    // Fast paths, before either side is normalised. Both sides are, so the
+    // obligation is really `conclusion === ~parent`, and each path decides a
+    // sufficient form of that without expanding either formula:
+    //
+    // * the conclusion is already the parent's NNF, read goal-directedly;
+    // * the conclusion is the parent's literal negation, compared as written.
+    //
+    // `EEE001+1` c71 is the second shape: a 319-deep conjunction and its
+    // negation, with an NNF that is one linear pass over the input. Only the
+    // depth ceiling stands between it and a verdict.
+    if goal_directed_nnf_agrees(&parents[0], true, conclusion, limits) {
+        return KernelVerdict::Certified;
+    }
+    if alpha_equiv(&Formula::neg(parents[0].clone()), conclusion) {
+        return KernelVerdict::Certified;
+    }
     let (Some(expected), Some(actual)) = (
         to_nnf_checked(&Formula::neg(parents[0].clone()), limits),
         to_nnf_checked(conclusion, limits),
@@ -3996,6 +4080,9 @@ fn verify_nnf(
     if parents.len() != 1 {
         return KernelVerdict::Rejected("NNF rule must have one parent".into());
     }
+    if goal_directed_nnf_agrees(&parents[0], false, conclusion, limits) {
+        return KernelVerdict::Certified;
+    }
     let Some(expected) = to_nnf_checked(&parents[0], limits) else {
         return KernelVerdict::Inconclusive("NNF rule exceeded strict formula-size limit".into());
     };
@@ -4003,6 +4090,262 @@ fn verify_nnf(
         KernelVerdict::Certified
     } else {
         KernelVerdict::Rejected("conclusion is not the parent's NNF".into())
+    }
+}
+
+/// Whether `to_nnf(source)` under polarity `negated` *is* `conclusion`.
+///
+/// This reads the conclusion instead of building the result, which is what
+/// makes it useful where the expansion cannot run. `to_nnf_bounded` refuses
+/// anything deeper than `max_term_depth`, and that ceiling is reached by
+/// ordinary formulas long before any biconditional expansion becomes the
+/// problem: `EEE001+1`'s `negated_conjecture` cites a 319-deep conjunction and
+/// `CSE007+1`'s `fof_nnf_transformation` cites a 461-deep one, both with no
+/// `<=>` anywhere and an NNF that is a single linear pass over the input. The
+/// archived ICU audit blamed nested biconditionals for both; the reproduction
+/// shows that diagnosis does not hold, and that the two failures are one
+/// ceiling rather than an exponential one.
+///
+/// So the check models `to_nnf_bounded`'s construction case for case and reads
+/// the goal against it. The relation it decides is exactly the one the
+/// expansion decides, with one restriction: operands are matched *positionally*
+/// rather than by `alpha_equiv`'s greedy first-fit pairing of equal-arity
+/// `And`/`Or` nodes. That can only lose answers, never gain them -- a
+/// positional pairing is one of the pairings `alpha_equiv` would consider -- so
+/// a goal this check cannot read positionally simply falls through to the
+/// expansion below it and is decided there, exactly as before.
+///
+/// Leaf and binder comparison are [`AcState`]'s, which is `alpha_equiv`'s own
+/// relation: bound variables match at equal binder depth, a free variable only
+/// itself, and `=` matches in either orientation. Free-variable identity and
+/// bound-variable scope therefore come out the same as they do everywhere else
+/// in the kernel, and `alpha_equiv` itself is untouched.
+///
+/// `false` covers both "not the NNF" and "out of budget"; the caller cannot and
+/// must not tell them apart, because both leave the expansion to decide.
+fn goal_directed_nnf_agrees(
+    source: &Formula,
+    negated: bool,
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> bool {
+    let mut state = AcState {
+        bindings: AcBindings::default(),
+        budget: Rc::new(Cell::new(limits.max_nnf_steps)),
+    };
+    nnf_agrees(
+        source,
+        negated,
+        conclusion,
+        &mut state,
+        0,
+        limits.max_nnf_depth,
+    ) == MatchOutcome::Match
+}
+
+/// One step of [`goal_directed_nnf_agrees`], mirroring [`to_nnf_bounded`]'s
+/// `visit`: the connective `visit` would have *built* is the one `goal` has to
+/// *be*, and the parts `visit` would have concatenated are matched in order.
+fn nnf_agrees(
+    source: &Formula,
+    negated: bool,
+    goal: &Formula,
+    state: &mut AcState,
+    depth: usize,
+    max_depth: usize,
+) -> MatchOutcome {
+    if depth > max_depth {
+        return MatchOutcome::Undecided;
+    }
+    if !state.spend() {
+        return MatchOutcome::Undecided;
+    }
+    match source {
+        Formula::Atom(atom) => match (negated, goal) {
+            (false, Formula::Atom(goal_atom)) => state.atom_eq(atom, goal_atom),
+            (true, Formula::Neg(inner)) => match inner.as_ref() {
+                Formula::Atom(goal_atom) => state.atom_eq(atom, goal_atom),
+                _ => MatchOutcome::Differ,
+            },
+            _ => MatchOutcome::Differ,
+        },
+        Formula::True => match goal {
+            Formula::True if !negated => MatchOutcome::Match,
+            Formula::False if negated => MatchOutcome::Match,
+            _ => MatchOutcome::Differ,
+        },
+        Formula::False => match goal {
+            Formula::False if !negated => MatchOutcome::Match,
+            Formula::True if negated => MatchOutcome::Match,
+            _ => MatchOutcome::Differ,
+        },
+        Formula::Neg(inner) => nnf_agrees(inner, !negated, goal, state, depth + 1, max_depth),
+        Formula::And(parts) | Formula::Or(parts) => {
+            // `Formula::and`/`Formula::or` collapse a one-element operand list
+            // to the operand itself, so a single-part node is transparent.
+            let [only] = parts.as_slice() else {
+                let is_and = matches!(source, Formula::And(_)) != negated;
+                let shape = if is_and {
+                    FormulaShape::And
+                } else {
+                    FormulaShape::Or
+                };
+                let goal_parts = match (shape, goal) {
+                    (FormulaShape::And, Formula::And(parts)) => parts.as_slice(),
+                    (FormulaShape::Or, Formula::Or(parts)) => parts.as_slice(),
+                    _ => return MatchOutcome::Differ,
+                };
+                if parts.len() != goal_parts.len() {
+                    return MatchOutcome::Differ;
+                }
+                return parts.iter().zip(goal_parts).fold(
+                    MatchOutcome::Match,
+                    |outcome, (part, goal_part)| {
+                        outcome.and_then(|| {
+                            nnf_agrees(part, negated, goal_part, state, depth + 1, max_depth)
+                        })
+                    },
+                );
+            };
+            nnf_agrees(only, negated, goal, state, depth + 1, max_depth)
+        }
+        // `A => B` becomes `~A | B` and `~(A => B)` becomes `A & ~B`.
+        Formula::Implies(left, right) => {
+            let shape = if negated {
+                FormulaShape::And
+            } else {
+                FormulaShape::Or
+            };
+            let Some((goal_left, goal_right)) = nnf_binary(goal, shape) else {
+                return MatchOutcome::Differ;
+            };
+            nnf_agrees(left, !negated, goal_left, state, depth + 1, max_depth)
+                .and_then(|| nnf_agrees(right, negated, goal_right, state, depth + 1, max_depth))
+        }
+        // `A <=> B` becomes `(~A | B) & (~B | A)` and
+        // `~(A <=> B)` becomes `(A | B) & (~A | ~B)`: one conjunction of two
+        // disjunctions, each side visited twice. Only a goal that already *is*
+        // that shape gets this far, which is what keeps a right-nested chain of
+        // them expensive rather than affordable -- an exponential NNF is still
+        // refused, by the node ceiling on the conclusion itself.
+        Formula::Iff(left, right) => {
+            let Some((goal_first, goal_second)) = nnf_binary(goal, FormulaShape::And) else {
+                return MatchOutcome::Differ;
+            };
+            let Some((first_left, first_right)) = nnf_binary(goal_first, FormulaShape::Or) else {
+                return MatchOutcome::Differ;
+            };
+            let Some((second_left, second_right)) = nnf_binary(goal_second, FormulaShape::Or)
+            else {
+                return MatchOutcome::Differ;
+            };
+            let (
+                first_left_negated,
+                first_right_negated,
+                second_left_negated,
+                second_right_negated,
+            ) = if negated {
+                (false, false, true, true)
+            } else {
+                (true, false, false, true)
+            };
+            nnf_agrees(
+                left,
+                first_left_negated,
+                first_left,
+                state,
+                depth + 1,
+                max_depth,
+            )
+            .and_then(|| {
+                nnf_agrees(
+                    right,
+                    first_right_negated,
+                    first_right,
+                    state,
+                    depth + 1,
+                    max_depth,
+                )
+            })
+            .and_then(|| {
+                nnf_agrees(
+                    left,
+                    second_left_negated,
+                    second_left,
+                    state,
+                    depth + 1,
+                    max_depth,
+                )
+            })
+            .and_then(|| {
+                nnf_agrees(
+                    right,
+                    second_right_negated,
+                    second_right,
+                    state,
+                    depth + 1,
+                    max_depth,
+                )
+            })
+        }
+        Formula::Forall(var, body) | Formula::Exists(var, body) => {
+            let is_forall = matches!(source, Formula::Forall(..)) != negated;
+            let goal_body = match (is_forall, goal) {
+                (true, Formula::Forall(_, body)) => body.as_ref(),
+                (false, Formula::Exists(_, body)) => body.as_ref(),
+                _ => return MatchOutcome::Differ,
+            };
+            // The same binder scope `alpha_equiv` builds: the goal's binder is
+            // entered at the same depth, so a variable bound here matches the
+            // goal's bound variable there and only there.
+            let depth = state.bindings.depth;
+            state.bindings.depth += 1;
+            let goal_var = match goal {
+                Formula::Forall(goal_var, _) | Formula::Exists(goal_var, _) => *goal_var,
+                _ => unreachable!("quantifier shape already matched"),
+            };
+            let old_left = state.bindings.left.insert(*var, depth);
+            let old_right = state.bindings.right.insert(goal_var, depth);
+            let outcome = nnf_agrees(
+                body,
+                negated,
+                goal_body,
+                state,
+                (depth + 1) as usize,
+                max_depth,
+            );
+            restore_binding(&mut state.bindings.left, *var, old_left);
+            restore_binding(&mut state.bindings.right, goal_var, old_right);
+            state.bindings.depth = depth;
+            outcome
+        }
+    }
+}
+
+/// The connective a goal must be built from to be a source's NNF.
+///
+/// `A => B` and `A <=> B` both *produce* a connective of their own, so the goal
+/// is read by asking for that shape explicitly rather than by inferring it.
+#[derive(Clone, Copy)]
+enum FormulaShape {
+    And,
+    Or,
+}
+
+/// The two operands of `goal` when it is a binary `And`/`Or` of `shape`.
+///
+/// `to_nnf_bounded` always builds implication and biconditional results
+/// through `Formula::and`/`Formula::or` with two operands, so a goal that is
+/// not exactly that node is not that goal's NNF.
+fn nnf_binary(goal: &Formula, shape: FormulaShape) -> Option<(&Formula, &Formula)> {
+    let parts = match (shape, goal) {
+        (FormulaShape::And, Formula::And(parts)) => parts,
+        (FormulaShape::Or, Formula::Or(parts)) => parts,
+        _ => return None,
+    };
+    match parts.as_slice() {
+        [left, right] => Some((left, right)),
+        _ => None,
     }
 }
 
@@ -14823,6 +15166,192 @@ mod tests {
         }
         assert!(to_nnf_bounded(&nested, 256, 256).is_none());
         assert!(to_nnf_bounded(&nested, 100_000, 256).is_some());
+    }
+
+    fn nnf_test_atom(symbols: &mut SymbolTable, name: &str) -> Formula {
+        Formula::atom(Atom::Pred(symbols.intern(name), Vec::new()))
+    }
+
+    #[test]
+    fn goal_directed_nnf_handles_deep_linear_and_supported_connective_shapes() {
+        let mut symbols = SymbolTable::new();
+        let p = nnf_test_atom(&mut symbols, "nnf_p");
+        let q = nnf_test_atom(&mut symbols, "nnf_q");
+        let r = nnf_test_atom(&mut symbols, "nnf_r");
+
+        // A 320-deep linear tree exceeds the current NNF converter's formula
+        // depth allowance, while its NNF is the same tree and costs linear
+        // work. This mirrors the depth shape of the ICU sources.
+        let mut deep = p.clone();
+        for _ in 0..320 {
+            deep = Formula::and(vec![deep, q.clone()]);
+        }
+        assert_eq!(
+            verify_nnf(&[deep.clone()], &deep, VerificationLimits::default()),
+            KernelVerdict::Certified
+        );
+
+        // Cover negation polarity, implication, biconditional duplication,
+        // and quantifier polarity with the ordinary bounded converter as the
+        // positive oracle for shapes that fit its explicit bounds.
+        for (index, source) in [
+            Formula::neg(Formula::or(vec![p.clone(), q.clone()])),
+            Formula::implies(p.clone(), Formula::neg(q.clone())),
+            Formula::iff(Formula::implies(p.clone(), q.clone()), r.clone()),
+            // Negating an IFF changes both disjunctions in the expanded NNF;
+            // keep this separate from the positive IFF case above.
+            Formula::neg(Formula::iff(p.clone(), q.clone())),
+            Formula::forall(
+                7,
+                Formula::implies(
+                    Formula::atom(Atom::Pred(symbols.intern("nnf_bound"), vec![Term::var(7)])),
+                    Formula::exists(
+                        8,
+                        Formula::atom(Atom::Pred(
+                            symbols.intern("nnf_pair"),
+                            vec![Term::var(7), Term::var(8)],
+                        )),
+                    ),
+                ),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let expected = to_nnf_checked(&source, VerificationLimits::default())
+                .expect("small positive control fits the bounded converter");
+            assert_eq!(
+                verify_nnf(&[source.clone()], &expected, VerificationLimits::default()),
+                KernelVerdict::Certified
+            );
+            assert!(
+                goal_directed_nnf_agrees(&source, false, &expected, VerificationLimits::default()),
+                "goal-directed NNF missed positive source {index}: {source:?}; expected {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn goal_directed_negated_conjecture_accepts_deep_equivalent_conclusions_only() {
+        let proof_text = "fof(neg, negated_conjecture, $false, \
+                            inference(negated_conjecture, [status(cth)], [goal])).";
+        let parsed = parse_tptp(proof_text).expect("step parses");
+        let formula = &parsed.formulas[0];
+        let node = Node {
+            name: "neg",
+            role: FormulaRole::NegatedConjecture,
+            parents: Vec::new(),
+            rule: Some("negated_conjecture"),
+            formula,
+            is_false: false,
+        };
+
+        let mut symbols = SymbolTable::new();
+        let p = nnf_test_atom(&mut symbols, "neg_deep_p");
+        let q = nnf_test_atom(&mut symbols, "neg_deep_q");
+        let mut conjecture = p.clone();
+        for _ in 0..320 {
+            conjecture = Formula::and(vec![conjecture, q.clone()]);
+        }
+        let literal_negation = Formula::neg(conjecture.clone());
+        assert_eq!(
+            verify_negated_conjecture(
+                &node,
+                &[conjecture.clone()],
+                Some(FormulaRole::Conjecture),
+                &literal_negation,
+                VerificationLimits::default(),
+            ),
+            KernelVerdict::Certified
+        );
+
+        let small_parent = Formula::and(vec![p.clone(), q.clone()]);
+        let wrong = Formula::neg(Formula::or(vec![p, q]));
+        assert!(matches!(
+            verify_negated_conjecture(
+                &node,
+                &[small_parent],
+                Some(FormulaRole::Conjecture),
+                &wrong,
+                VerificationLimits::default(),
+            ),
+            KernelVerdict::Rejected(_)
+        ));
+    }
+
+    #[test]
+    fn goal_directed_nnf_rejects_wrong_connective_and_variable_identity() {
+        let mut symbols = SymbolTable::new();
+        let p = nnf_test_atom(&mut symbols, "bad_p");
+        let q = nnf_test_atom(&mut symbols, "bad_q");
+
+        let implication = Formula::implies(p.clone(), q.clone());
+        let wrong_implication = Formula::or(vec![p.clone(), q.clone()]);
+        assert!(matches!(
+            verify_nnf(
+                &[implication],
+                &wrong_implication,
+                VerificationLimits::default()
+            ),
+            KernelVerdict::Rejected(_)
+        ));
+
+        let pred = symbols.intern("bound_identity");
+        let quantified = Formula::forall(0, Formula::atom(Atom::Pred(pred, vec![Term::var(0)])));
+        let renamed_free = Formula::forall(1, Formula::atom(Atom::Pred(pred, vec![Term::var(2)])));
+        assert!(matches!(
+            verify_nnf(&[quantified], &renamed_free, VerificationLimits::default()),
+            KernelVerdict::Rejected(_)
+        ));
+
+        let free_left = Formula::atom(Atom::Pred(pred, vec![Term::var(3)]));
+        let free_right = Formula::atom(Atom::Pred(pred, vec![Term::var(4)]));
+        assert!(matches!(
+            verify_nnf(&[free_left], &free_right, VerificationLimits::default()),
+            KernelVerdict::Rejected(_)
+        ));
+    }
+
+    #[test]
+    fn goal_directed_nnf_budget_exhaustion_stays_inconclusive() {
+        let mut symbols = SymbolTable::new();
+        let p = nnf_test_atom(&mut symbols, "budget_p");
+        let q = nnf_test_atom(&mut symbols, "budget_q");
+        let mut deep = p;
+        for _ in 0..320 {
+            deep = Formula::and(vec![deep, q.clone()]);
+        }
+        let limits = VerificationLimits {
+            max_nnf_steps: 0,
+            ..VerificationLimits::default()
+        };
+        assert!(!goal_directed_nnf_agrees(&deep, false, &deep, limits));
+        assert!(matches!(
+            verify_nnf(&[deep.clone()], &deep, limits),
+            KernelVerdict::Inconclusive(_)
+        ));
+    }
+
+    #[test]
+    fn already_nnf_cnf_path_is_iterative_and_bounded() {
+        let mut symbols = SymbolTable::new();
+        let mut clause = nnf_test_atom(&mut symbols, "cnf_deep_p");
+        for _ in 0..320 {
+            clause = Formula::or(vec![clause, nnf_test_atom(&mut symbols, "cnf_deep_q")]);
+        }
+        assert!(already_nnf_bounded(&clause, 1_000, 1_000).is_some());
+        assert!(already_nnf_bounded(&clause, 100, 1_000).is_none());
+        assert!(
+            already_nnf_bounded(
+                &Formula::implies(
+                    nnf_test_atom(&mut symbols, "cnf_imp_p"),
+                    nnf_test_atom(&mut symbols, "cnf_imp_q"),
+                ),
+                100,
+                1_000,
+            )
+            .is_none()
+        );
     }
 
     fn flat_definition_proof() -> &'static str {
