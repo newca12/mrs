@@ -170,7 +170,33 @@ Reasons for the residual 22 (one row per proof):
 | 5 | `demodulation` replay could not reach the conclusion within the implemented search | **fixed, awaiting re-measurement** |
 | 3 | `demodulation` intermediate clause exceeds the strict size bound | **fixed, awaiting re-measurement** |
 | 3 | a `fof_nnf` step whose parent's NNF exceeds the 100 000-node budget (`BIO006+1`, `CSR115+8`, `CSR116+19`) | open, deliberate |
-| 1 | `ac_superposition` replay incomplete | open |
+| 1 | `ac_superposition` replay incomplete | **root-caused and fixed — and it was a prover soundness defect, not a kernel gap** |
+
+The `ac_superposition` row is the one `Unknown` in that table, and it was the
+wrong kind of problem. Superposition was deriving *specialisations* of its
+resolvents: `mrs_unify::robinson::unify_ac_id` bound the **target** clause's
+variables, so a derived clause could be strictly stronger than its two cited
+parents entail. Replaying the archived parents of all three affected nodes
+through the prover's own superposition reproduces their conclusions character for
+character — the prover computed what the proof says, it just was not a
+superposition. `unify_ac_rigid_id` now refuses to bind the variables a caller
+declares rigid and superposition passes the target's variables as rigid.
+
+Two consequences for this file's numbers, stated plainly:
+
+- **The kernel was right and the prover was wrong.** `VerifiedBad` was never
+  recorded for these because `verify_superposition` happens to reject most of
+  them, not because it accepted them. A kernel that accepted such a step would
+  have certified an unsound refutation.
+- **The archived figures above do not move, and cannot.** Those proofs are
+  artifacts of the old binary; the kernel reads their text as written. Only a
+  fresh campaign re-measures anything, and it will measure *less* coverage: the
+  fix also removes sound inferences the prover could only find by way of the
+  unsound one, which costs 5 of the 48 local `problems/*.p` regression rows
+  (the AC equational ones). Full analysis, the measured loss, and the bounded
+  next step — AC superposition has to match the equation's side into a *subset*
+  of the target's AC arguments — are in
+  [`policies/unresolved-issues.md`](policies/unresolved-issues.md) UI-1.
 
 Re-auditing the *archived* proofs cannot close the 18 demodulation rows, and
 the reason matters: those proofs predate the `demodulation_steps(...)`

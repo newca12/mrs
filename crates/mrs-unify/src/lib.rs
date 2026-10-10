@@ -47,6 +47,12 @@ pub enum UnifyError {
     ArityMismatch { expected: usize, found: usize },
     /// A variable occurs in the term it would be unified with (infinite term).
     OccursCheck { var: u32 },
+    /// The match would require binding a variable the caller declared rigid.
+    ///
+    /// Superposition and the other rewriting rules must not instantiate the
+    /// clause being rewritten; see
+    /// [`robinson::unify_ac_rigid_id`].
+    RigidVariable { var: u32 },
 }
 
 impl fmt::Display for UnifyError {
@@ -60,6 +66,9 @@ impl fmt::Display for UnifyError {
             }
             UnifyError::OccursCheck { var } => {
                 write!(f, "occurs check failed for X{}", var)
+            }
+            UnifyError::RigidVariable { var } => {
+                write!(f, "refused to bind rigid variable X{}", var)
             }
         }
     }

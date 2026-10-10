@@ -33,12 +33,134 @@ what is blocked on hardware rather than on knowledge.
 
 | | |
 |---|---|
-| Status | Open, not scheduled |
-| Severity | The examined examples lose `VerifiedGood`; no `VerifiedBad` |
-| Soundness | No `VerifiedBad` was recorded. An under-cited inference node alone does not establish that the final refutation is sound. |
-| Blocks | None identified; evidence does not establish a hardware blocker. |
+| Status | **Root cause found and fixed** — superposition was deriving *specialisations* of its resolvents |
+| Severity | Was `Unknown` on 3 archived proofs; the inferences it accepted were **not entailed by the cited parents**, so any refutation passing through one was not a valid refutation |
+| Soundness | The leading suspicion (`clause_store` / `LiteralIndex` divergence) is **ruled out**. The real cause was in the calculus: `mrs_unify::robinson::unify_ac_id` bound the *target* clause's variables |
+| Blocks | Nothing. A fresh campaign is needed to re-measure coverage, not to close the defect |
 
-### Observation
+### Root cause
+
+**Observation (verified).** For each of the three archived nodes below, feeding
+the two clauses the node cites — taken verbatim from the archived proof — into
+`mrs_calculus::superposition::superpose_selected_id_until` reproduces the
+archived conclusion **character for character**, including the variable names.
+For casc-30 `KLE145-10`:
+
+```
+eq     : true() = leq(X8, addition(X7, X8))                       # c425221
+target : true() = ifeq(leq(addition(one(), X3),
+                   addition(X5, addition(X6, multiplication(X5, X3)))), true(),
+                   leq(addition(one(), X3),
+                   multiplication(strong_iteration(X5), X6)), true())   # c2428
+  eq->tgt: true() = ifeq(true(), true(),
+                   leq(addition(one(), X14),
+                   multiplication(strong_iteration(X14), one())), true()) # c431338
+```
+
+So the conclusion *is* what the prover computed from its cited parents. What it
+is **not** is a superposition of them.
+
+**Cause.** `superpose_with_id` (`crates/mrs-calculus/src/superposition.rs`)
+unifies the equation clause's side with a subterm *of the target* and then
+applies the resulting substitution to the whole target. That is a superposition
+only while the unifier binds **the equation clause's variables alone**. The AC
+unifier did not: `unify_ac_rec_id`'s `(_, TermNode::Var(v)) => bind_var_id(v, s)`
+arm binds `v` unconditionally, and the assoc/comm argument-alignment fallback
+(`flat1.len() != flat2.len()` → positional unification of the original
+arguments) reaches that arm whenever the equation side has fewer AC arguments
+than the target subterm. In the `KLE145-10` pair, matching
+`leq(V8, addition(V7,V8))` against
+`leq(addition(one,X3), addition(X5, addition(X6, multiplication(X5,X3))))`
+binds `X3` and `X6` — target variables. Directly measured:
+
+```
+unifier succeeded; target-variable bindings: [(3, "X5"), (6, "one()")]
+```
+
+`X6 ↦ one` is the `multiplication(strong_iteration(X5), one)` in the conclusion;
+the `X3`/`X5` identification is why the conclusion has one variable where the
+target has three. The same signature explains the two earlier observations this
+register recorded without an explanation — `LAT044-1`'s "merely duplicates a
+`meet` subtree the parents do not contain" (`X0 ↦ goal_d4`) and `LAT241-10`'s
+extra inner `meet`. A specialisation of an entailed clause is *stronger* than
+the premises support, so these nodes were unsound inferences, not merely
+under-cited ones. That also explains the register's unresolved puzzle of a
+`demodulation` node appearing immediately downstream in every case: the
+`demodulation` step was legitimately derived from the specialisation, so it
+replayed cleanly and made the bad step look even more credible.
+
+**Fix.** `mrs_unify::robinson::unify_ac_rigid_id` takes the set of variables the
+caller declares rigid and refuses to bind them
+(`UnifyError::RigidVariable`), and superposition calls it with the target's
+variables. Demodulation is unaffected because it uses one-way
+`match_term_id`, which only ever binds the pattern's variables; resolution and
+factoring are unaffected because an mgu over both clauses' variables is what
+those rules are defined with.
+
+**What the fix does not do.** It drops the offending inference; it does not find
+the *legitimate* AC match that a complete AC unifier with backtracking would
+have found in its place, so **this change costs coverage on AC-heavy
+equational problems**. Measured on the local regression corpus
+(`problems/*.p`, `--workers 2`, `--time 5`, re-checked at `--time 10` and
+`--time 30` on both `--schedule casc_feq` and the default schedule): 42/48 proved
+before, 37/48 after. The five regressions are all AC equational rewriting:
+
+| problem | before | after |
+|---|---|---|
+| `group.p` | Theorem | GaveUp |
+| `group_right_inv.p` | Theorem | GaveUp |
+| `group_unique_inv.p` | Theorem | GaveUp |
+| `lattice_absorb.p` | Theorem | GaveUp |
+| `ring_idem.p` | Theorem | GaveUp |
+
+Those five pre-fix proofs all come back `VerifiedGood` from the strict kernel, so
+the lost inferences were sound ones: this is a real capability loss, not the
+removal of bogus solves.
+
+**Why the loss happens (bounded diagnostic, 10 s on `group.p`).** The lost
+matches are the ones where the equation side is a *nested* AC tree and the target
+subterm is flatter. Running both the rigid and the unrestricted unifier on every
+rejected match gives, verbatim (`*` is the problem's AC symbol, `e` its
+identity; the equation side is the associativity axiom):
+
+```
+[rigid-probe] RigidVariable { var: 3 } lost-from=*(X0,*(X1,X2)) lost-subterm=*(e,X3) binds=[3]
+[rigid-probe] RigidVariable { var: 4 } lost-from=*(X0,*(X1,X2)) lost-subterm=*(X3,X4) binds=[4]
+[rigid-probe] RigidVariable { var: 3 } lost-from=*(*(X0,X1),X2) lost-subterm=*(X3,X4) binds=[3]
+[rigid-probe] RigidVariable { var: 5 } lost-from=*(X0,*(X1,X2)) lost-subterm=*(X4,X5) binds=[5]
+```
+
+`unify_ac_rec_id` flattens both sides — flat1 = `[X0, X1, X2]` against flat2 =
+`[e, X3]` — sees an arity mismatch, and falls back to aligning the *original*
+nested arguments positionally, which lands `*(X1,X2)` on the target variable
+`X3`. That is the binding the guard now refuses, and the alternative it should
+have tried — matching the subset `{X1,X2}` of the equation's arguments onto the
+target's `{e, X3}`, binding only `X1` and `X2` — is never attempted, because the
+current architecture expresses AC superposition as *unifying `from` with a whole
+target subterm*, and that cannot consume only part of the target's arguments.
+Before the fix the unsound binding papered over the gap.
+
+**Next bounded diagnostic.** Make AC superposition match the equation's side
+into a *non-empty subset* of the target's AC arguments instead of unifying it
+with the whole subterm, with backtracking over the subsets and the rigid
+condition enforced throughout. That is the change that recovers the five rows
+above *and* keeps the soundness fix; it is a real algorithmic addition to the
+prover's hottest function, so it is deliberately not folded into a soundness
+fix. Everything else in this entry is measured and closed.
+
+### The leading suspicion is ruled out
+
+The `clause_store` / `LiteralIndex` divergence hypothesis (below) is **not** the
+cause, and no divergence is needed to explain any of the three nodes: replaying
+the two *stored* parent clauses through the prover's own superposition
+reproduces the conclusion exactly. The debug-only invariant
+`assert_indexed_clause_matches_store` (`given_clause.rs`, both the
+given-as-equation-source and given-as-target-source loops, plus its unit test)
+is kept — it remains a cheap guard — but it cannot fire on this defect, and the
+two bounded local runs that failed to trip it were not close to a reproduction
+of anything.
+
+### The archived nodes
 
 The strict kernel's archived campaign audit refused a small number of
 `ac_superposition` nodes:
@@ -67,6 +189,12 @@ distinguishes these was added in commit `1edb13b` on branch
 collapsed into one `Unknown` and this was undiagnosable from an audit report.
 
 ### Evidence: the two shapes differ
+
+Everything below was read off the archived proofs while the cause was still
+unknown. It is kept because the shapes are what make the cause checkable, but
+read it with the root-cause section above: the "extra rewriting by uncited
+premises" is not extra rewriting at all — it is the target's variables being
+instantiated.
 
 **casc-30 `KLE145-10`, node `c431338`** (archived campaign run; quoted ids are
 from `certification/proofs/mrs/ueq/KLE145-10.s`):
@@ -129,14 +257,14 @@ cases*, and — in `LAT044-1` — why a `demodulation` node is one of the
 
 | Candidate | Why not it |
 |---|---|
-| `mrs-calculus/src/superposition.rs` | no demodulation, simplification or folding anywhere in it |
-| forward demodulation (`given_clause.rs:2874`, `:1796`) | `demodulate_id_until` already returns a correctly attributed `demodulation` node (`demodulation.rs:452-466`) |
+| `mrs-calculus/src/superposition.rs` | no demodulation, simplification or folding anywhere in it — **but the unification it calls was binding the target's variables, which was the cause; see above** |
+| forward demodulation (`given_clause.rs:2874`, `:1796`) | `demodulate_id_until` already returns a correctly attributed `demodulation` node (`demodulation.rs:452-466`), and uses one-way `match_term_id`, which cannot bind the subject's variables |
 | `state.rs:616` `ac_normalize_for_search` | `ac_normalize_clause` preserves `clause.id` and `clause.source` |
 | `term_bank.rs:467` `ac_normalize` | pure flatten/sort/rebuild; cannot introduce `multiplication` or an `iteq` shell |
 | condensation / DER / forward SR | each sets its own rule name when it fires |
 | `restrict_to_maximal_id` | returns literal indices only |
 
-### Leading suspicion, not yet confirmed
+### Leading suspicion: ruled out
 
 Superposition takes its partners from `LiteralIndex` (`given_clause.rs:1903`),
 which returns **clones held in the index** (`literal_index.rs:224`), while
@@ -146,17 +274,58 @@ copies of the same clause id. Meanwhile `SearchState::store_clause`
 last write wins — while `register_clause` (`state.rs:541`) uses
 `or_insert_with` and is first-write-wins, and `push_unprocessed`
 (`state.rs:371`) routes through `store_clause`. A partner whose index copy and
-store copy disagree would produce exactly this shape. **Unconfirmed**: no
-evidence yet distinguishes the two copies as the culprit.
+store copy disagree would produce exactly this shape.
 
-### Next step
+**Ruled out.** Replaying the two *stored* parent clauses of each failing node
+through `superpose_selected_id_until` reproduces the archived conclusion exactly,
+so no second, divergent copy of either parent is involved: the store copies are
+the ones the prover used. The structural possibility remains (the two copies are
+independent and written by different code), and the debug assertion below is
+kept as a guard against it, but it is not what produced these nodes.
 
-The search now has a debug-only invariant assertion on both indexed-partner
+### Reproduction and regression
+
+The defect does not need the search to be reproduced. `mrs-calculus`'s
+superposition on the archived parent pair reproduces the archived conclusion,
+so it is pinned directly:
+
+`crates/mrs-calculus/tests/superposition_target_rigidity.rs`
+
+- `archived_ac_superposition_conclusions_are_not_derived_anymore` — replays all
+  three archived nodes (casc-30 `KLE145-10` `c431338`, casc-j13 `LAT044-1`
+  `c659171`, casc-j13 `LAT241-10` `c53874`) and fails if any archived conclusion
+  is derivable again. Verified to fail on the pre-fix rule and pass after.
+- `valid_ac_superposition_still_goes_through` — a genuine AC superposition that
+  binds only the equation's variables still goes through, so the guard is a side
+  condition and not a blanket refusal.
+- `rigid_unifier_refuses_target_bindings` — the unifier accepts the offending
+  match without the rigid set and rejects it with it, so the test is measuring
+  the guard and not a change in the pair.
+
+Re-measuring coverage needs a fresh campaign, not a local run: all three problems
+time out on a 2-worker box inside 60 s (`LAT044-1` at 20 s / 2 workers:
+`result=Timeout processed=2274 generated=28075`, 1357 MB peak), so a local
+before/after A/B on them cannot separate anything from noise.
+
+```bash
+# Coverage re-measurement (8-core campaign host, not local work).
+MRS_WORKERS=8 crates/mrs-bench/certification_campaign.sh \
+    --edition casc-30 --systems mrs --divisions ueq --casc-times --jobs 2 \
+    --output crates/mrs-bench/results/cert-c30-ueq-$(date +%Y%m%d)
+```
+
+The archived proofs cannot show the fix: they are artifacts of the old binary and
+the kernel reads their text as written. `crates/mrs-bench/results/campaign-casc30-ueq-W8C8J1-20261007`
+still reports `Unknown` for `KLE145-10` at HEAD, and it will keep doing so.
+
+### The debug invariant, kept
+
+The search has a debug-only invariant assertion on both indexed-partner
 superposition paths (`given_clause.rs`, the given-as-equation-source and
 given-as-target-source loops). Bounded local attempts on this 2-core dev box
 used `--workers 2`; KLE145-10 timed out after 60.1 s and LAT044-1 after 45.1 s,
-both at 1.36 GB peak RSS, without reaching a mismatching partner. These are
-inconclusive, not reproductions.
+both at 1.36 GB peak RSS, without reaching a mismatching partner. Those runs were
+inconclusive — and, as established above, they were never going to fire.
 
 > For every clause emitted with rule `superposition`/`ac_superposition`, the
 > literals used were identical in `clause_store` and in `LiteralIndex` at the
@@ -164,27 +333,11 @@ inconclusive, not reproductions.
 
 It fires only on divergence and prints the clause id and both sources. A unit
 test inserts a deliberately stale processed-index copy and confirms the
-assertion detects it. The assertion and focused test run locally; they do not
-require the 8-worker reproduction.
+assertion detects it.
 
 ```bash
-# Focused reproduction, respecting this dev box's 2 physical cores and RAM.
-# Previously measured: timed out after 60 s (1.36 GB peak) before the mismatch.
-nix develop -c cargo build --bin mrs
-./target/debug/mrs --time 200 --workers 2 --schedule casc_ueq \
-    crates/mrs-bench/problems/casc-30/UEQ/KLE145-10.p
-
-# If repeating locally, cap at --time 60 and --workers 2; this is a diagnostic,
-# not a CASC coverage measurement. Do not raise the worker count on this host.
+nix develop -c cargo test -p mrs-search superposition_partner_consistency
 ```
-
-**Remote-only reproduction, only if the local run fails to trigger the
-assertion:** use the campaign host with 8 physical cores and at least 12 GiB
-available RAM; no trace is needed. Run the same debug build and problem command
-with `--workers 8`, capped at 200 s. Record the `rustc` version, git revision,
-available RAM and whether the assertion fired. Do not run a full CASC sweep for
-this diagnosis. The earlier 8-worker solve was measured at 8.9 GB peak, so a
-host with less headroom is not a suitable repro host.
 
 ### Two traps that cost real time here
 
