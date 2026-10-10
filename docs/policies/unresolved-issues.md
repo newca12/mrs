@@ -518,9 +518,9 @@ target/release/audit_casc_proofs \
 
 | | |
 |---|---|
-| Status | Partly discharged 2026-10-09. One boundedness defect found and fixed; +1 certified solve on a 10-problem local subset. Still open for the division. |
+| Status | Partly discharged 2026-10-09. `MSC024-1`'s `proof_extraction_failed` diagnosed 2026-10-10; two extractor defects closed; no coverage change. Still open for the division. |
 | Severity | The archived campaign records 9/100 `verdict=ok`; this is a low result |
-| Soundness | No soundness finding is made here. The 2026-10-09 fix removes a premature `GaveUp`; it does not change any reported status except to add a kernel-certified refutation. |
+| Soundness | No soundness finding is made here. The 2026-10-09 fix removes a premature `GaveUp`; it does not change any reported status except to add a kernel-certified refutation. The 2026-10-10 changes only make the ground-refutation lifter refuse more: a forged resolvent and an ambiguous clause id can no longer emit a proof at all. |
 
 ### Observation
 
@@ -694,6 +694,9 @@ unchanged; the fix only affects runs that already set `MRS_EPR_GROUND=1`.
 - **The remaining `proof_extraction_failed` case is unexplained.**
   `MSC024-1` still reports it with LRS off, so the bucket has at least one
   further cause. Its 3.5 GB peak with the pre-pass on is the worst in the subset.
+  → **Diagnosed 2026-10-10; see the section below.** It is a
+  representation/budget limit, not the LRS defect `f59ca34` fixed, and it is why
+  the bucket had to be read as "at least one further cause" rather than one.
 - **`sat_solver_unknown` is untouched.** `PLA037-1` still returns it; the
   archived report calls it a defect and it remains undiagnosed.
 
@@ -708,13 +711,256 @@ Not a default change, and not a broader local run. In order:
    worker binary in `run_meta.json`.
 2. **Diagnose `MSC024-1`'s `proof_extraction_failed`** before any further
    coverage claim; the `HWV078-1` instance was fixed, but this case remains open.
+   → **Done 2026-10-10; see below.** What remains open is the *fix*, not the
+   diagnosis.
 3. **Diagnose `sat_solver_unknown`** (`PLA037-1`, and archived `HWV064-1`,
-   `HWV090-1`, `HWV127-1`): CaDiCaL returning `Unknown` on a ground instance set
-   is not expected and blocks the ladder outright.
+    `HWV090-1`, `HWV127-1`): CaDiCaL returning `Unknown` on a ground instance set
+    is not expected and blocks the ladder outright.
 4. Only after (1) shows a certified gain on the division, consider whether the
    pre-pass's RSS cost on `grounding_timeout` rows needs a per-instance ceiling.
 
 Do not accept the pre-pass or the fix as a new default from this subset.
+
+### 2026-10-10: `MSC024-1`'s `proof_extraction_failed` is a representation limit, not an algorithm gap
+
+**Not a coverage change.** No default moved. The pre-pass is still opt-in
+(`MRS_EPR_GROUND=1`), no new problem is solved, and the fail-closed shape is
+unchanged: anything other than a `Refutation` falls through to the portfolio.
+What changed is that the reason is now known, the telemetry names it, and two
+extractor defects found on the way are closed.
+
+| | |
+|---|---|
+| Revision | `f59ca34` (`fix(search): preserve EPR ground refutations from LRS`) |
+| Toolchain | `rustc 1.99.0 (b940084d7 2026-09-28)` |
+| Host | Intel i7-10610U, **4 physical / 8 logical**, 15.7 GB RAM (~9.2 GB available) |
+| Local editions | `crates/mrs-bench/problems/casc-30` (via a symlink to an out-of-tree corpus) and `/home/fr22192/pve/TPTP-v9.3.0` |
+| Shape | `--schedule casc_epu --workers 1 --time 120`, one problem at a time, `ulimit -v 9000000` |
+
+`MSC024-1` **reproduced** the archived outcome, both arms, before anything was
+changed:
+
+| arm | SZS | wall | peak RSS | EPR telemetry |
+|---|---|---|---|---|
+| off | `Timeout` | 120.1 s | 336 MB (GNU `time`) / 1230 MB self-reported | — |
+| on (`MRS_EPR_GROUND=1`) | `Timeout` | 134.7 s | **3475 MB** (GNU `time`) / 4715 MB self-reported | `epr_route=epr_equality epr_domain=2 epr_est=395131 epr_full_grounding=true epr_generated=385707 epr_vars=101860 epr_clauses=385830 epr_rounds=0 epr_result=fallback epr_fallback=proof_extraction_failed` |
+
+#### What the problem is
+
+`MSC024-1` is a propositional problem *encoded as EPR*. Its 1762 CNF clauses are
+84 nullary `eskNN_0` atoms plus `eskNNN_8(X1,…,X8)` clauses, and its only
+constant-bearing clause is `cnf(true_not_false, axiom, false != true)`. So the
+Herbrand universe is the two constants `{true, false}` and every arity-8 clause
+grounds to `2^8 = 256` instances. CaDiCaL settles it in milliseconds. The whole
+difficulty is that the *complete* grounding — which this route takes, because
+`est = 395131 <= FULL_GROUNDING_INSTANCE_CEILING = 500_000` — is a 385 830-clause
+propositional CNF over 101 860 distinct ground atoms.
+
+A refutation of that image exists and is genuine: every clause in it is a
+substitution instance of an input clause, and the image is unsatisfiable, so a
+first-order refutation of the input exists by completeness. What is missing is a
+*derivation* small enough for the bounded lifters to find.
+
+#### Observed facts, separated from hypotheses
+
+Measured, not inferred (each line was an instrumented run at `f59ca34`):
+
+1. `prop_bfs_refute` is exhausted by its **clause cap**, not by the clock. With
+   the production `PROP_BFS_CLAUSE_CAP` it stopped at **400 001 clauses after
+   2.7 s of a 29.2 s budget**.
+2. **A larger cap does not fix it.** Raising the cap 20× to 8 000 000 moved the
+   failure to the deadline at **3 103 544 derived clauses** after 29.7 s, peak
+   RSS 3.86 GB, still without the empty clause. The bound is not what stands
+   between this image and a derivation, so "give it more room" is refuted as a
+   fix by measurement.
+3. The full expansion is not what forces the size. With whole-set grounding
+   suppressed, the widening ladder reached `Unsat` at **192 862 clauses / 51 172
+   atoms** after 60 rounds, and the BFS then failed at its 16.7 s deadline at
+   196 506 clauses. The lazy search converges to a set of the same class.
+4. The ground-derivation fallback (`ground_refutation_fallback`: the ordinary
+   given-clause loop over the ground instances, AVATAR on, LRS off since
+   `f59ca34`) did **not** refute within its remaining budget — 87 s in the
+   whole-set arm, 50 s in the lazy arm.
+5. CaDiCaL's own LRAT proof over the 192 862-clause image has **51 920 added
+   clauses** (checked with `mrs_cadical::trace_manifest`). So a derivation of the
+   right order exists: the information is there, and the BFS is simply not
+   directed enough to reach it from 385 830 clauses.
+
+Not established, and not claimed:
+
+- That any rewrite of the *bounds* recovers a refutation here. Point 2 measures
+  one direction of that and it does not.
+- That the extraction is *incomplete* in principle. Unit-free propositional
+  resolution and superposition over the same instances are both complete; the
+  failure is that the complete procedures are bounded and these images are far
+  outside every bound tried.
+- That the ground image is the only obstacle. Whether a *small* unsat core of
+  the 385 830-clause image admits a short resolution derivation is unmeasured,
+  and it is the one question a fix would turn on (see "Next step").
+
+#### Root cause
+
+**A budget/representation limit, on all three counts the diagnosis was asked to
+separate.** It is not an unsupported ground-resolution shape: every step the
+lifter emits is an ordinary first-order resolution between two ground instances,
+and no equality congruence lemma is needed, because ground equality atoms are
+propositionally atomic and reflexive equalities are simplified away. It is not
+an instance/provenance mapping defect: the instance→input-clause citation is
+sound (and two hazards in it were found and closed, below). It is that the
+extractor is handed the complete 385 830-clause / 101 860-atom image and its
+lifter is bounded at 400 000 clauses, which it exhausts, after which the
+superposition fallback cannot close the remainder.
+
+The LRS defect fixed at `f59ca34` was a *fourth* cause of the same bucket, and
+`HWV078-1` was it. `MSC024-1` was never that cause, which is why disabling LRS
+did not move it.
+
+#### Telemetry that hid this, now fixed
+
+- **`epr_ms` stopped at the SAT verdict.** It is recorded *before* extraction
+  runs, so it under-reported the pre-pass by the whole extraction phase: `epr_ms=3239`
+  against 106 s actually spent on `MSC024-1`. A new `epr_extraction_ms` field
+  covers extraction; `elapsed_ms` keeps its old meaning so archived numbers stay
+  comparable, and the pre-pass's true cost is the sum.
+- **`epr_extraction` names the route that ran last** — one of `none`,
+  `bfs_lift`, `bfs_lift_incomplete`, `bfs_clause_cap`, `bfs_deadline`,
+  `bfs_satisfiable`, `derivation_loop`. `proof_extraction_failed` names the
+  *outcome*; this names the route that produced it. Both were one string until
+  this diagnosis, which is why telling cap-exhaustion from clock-exhaustion
+  needed an instrumented build rather than a run.
+- **`epr_rounds` was not recorded on the `Unsat` path.** A 60-round ladder
+  reported `epr_rounds=0`. Set now.
+
+#### Two extractor defects found while building the regression, both closed
+
+Both are in `crates/mrs-search/src/epr_ground.rs` and both can only make the
+lifter *refuse* more, so neither can turn a non-refutation into a refutation.
+
+1. **`resolve_prop` removed the pivot from both parents.** For a
+   propositionally tautological parent that emits a clause that is *not* the
+   first-order resolvent of the two cited clauses. With `c1 = {v,-v,x}`,
+   `c2 = {v,y}` and pivot `v` the old code emitted `{x,y}`, which `c1 ∪ c2` does
+   not entail — `c1` is a tautology and constrains nothing. The correct
+   resolvent `(c1 \ {v}) ∪ (c2 \ {-v}) = {-v,x,y}` is itself a tautology, so the
+   right answer is to refuse. `a_tautological_parent_cannot_forge_a_resolvent`
+   pins it on a set that is satisfiable (`v=F, x=F, y=F`), so a refutation
+   derived from it would be a forged one; the sweep in
+   `resolution_is_the_binary_resolvent_of_its_cited_parents` checks every clause
+   pair over a three-variable alphabet against an independently written oracle.
+   The fix is a no-op whenever neither parent is tautological, which is every
+   clause set the tautology-filtering generators can produce today.
+2. **The lift's clause store could answer one id with two different clauses.**
+   `try_epr_ground_refutation` takes the caller's `ClauseIdGen`, and nothing
+   inside it could tell a generator reserved past the input ids from one that
+   was not. With a colliding generator an instance and an input clause share an
+   id, `store[&id]` hands the dependency walk the wrong one, and the printed
+   proof cites parents whose literals are not the ones the step was computed
+   from — observed exactly that while building the regression: a step printed
+   `p(a)` from parents `q(b,a)` and `q(a,b)`, which resolve to nothing. The entry
+   point now `reserve_at_least`s the generator above every id it is handed, and
+   `lift_bfs_refutation` refuses outright when the store answers one id with two
+   different clauses. It also refuses an unemittable proof, where
+   `format_tstp` returns the empty string because the step graph did not
+   topologically sort.
+
+#### Tests
+
+All in `crates/mrs-search/src/epr_ground.rs`, module `tests`.
+
+| test | what it pins |
+|---|---|
+| `two_element_domain_refutation_lifts_from_its_ground_parents` | positive regression for the established shape: a two-element universe over wide predicates, grounded, refuted, and **every emitted TSTP step recomputed from its citations** |
+| `recheck_tstp` (helper) | `instantiation` conclusions must be substitution instances of their one cited parent; `resolution` conclusions must be the binary resolvent of their two cited parents; the proof must end in the empty clause |
+| `a_tautological_parent_cannot_forge_a_resolvent` | adversarial: a forged ground inference cannot produce the empty clause |
+| `resolution_is_the_binary_resolvent_of_its_cited_parents` | adversarial: `resolve_prop` equals the first-order resolvent for every clause pair over a three-variable alphabet |
+| `an_ambiguous_clause_id_cannot_produce_a_certified_refutation` | adversarial: two input clauses sharing an id produce no proof at all |
+| `a_lifted_proof_cites_only_clauses_it_contains` | a lifted proof cites only clauses it contains, and `recheck_tstp` re-derives it |
+| `an_exhausted_bound_is_inconclusive` | boundedness: cap-exhaustion, deadline-exhaustion and a satisfiable fixpoint all report exhaustion and never a refutation |
+
+#### Verified after the change
+
+```bash
+nix develop -c cargo check
+nix develop -c cargo clippy --all -- -D warnings     # clean
+nix develop -c cargo fmt --all --check                # clean
+nix develop -c cargo test --workspace                 # 69 suites, 0 failed
+nix develop -c cargo test -p mrs-search --lib epr_ground   # 40 passed
+```
+
+An extracted refutation from a locally-generated stand-in for this shape
+(arity-17 predicates over a two-element universe, whole-set grounded) was
+re-checked by the strict kernel. The `HWV078-1` +1 certified solve was checked
+too — see the re-verification section below, which is the result that actually
+gates this change:
+
+```bash
+MRS_EPR_GROUND=1 ./target/release/mrs --time 30 --workers 1 --schedule casc_epu \
+    /tmp/opencode/msc024/stand_in.p                     # 1.9 s, % SZS status Unsatisfiable, 4 proof nodes
+./target/release/mrs-proover --strict --no-atp --workers 1 --time 60 \
+    /tmp/opencode/msc024/stand_in.proof                 # % SZS status VerifiedGood
+```
+
+#### Re-verification against the new telemetry, after the corpus was restored
+
+The out-of-tree corpus that `crates/mrs-bench/problems` symlinks to was deleted
+while this investigation was running and later restored. Nothing above was
+affected — every measurement had completed first — and the two checks that had
+been left open were then run. Same revision, same commands, this host.
+
+**`MSC024-1`** — identical outcome, now with the reason named rather than
+inferred:
+
+```
+epr_route=epr_equality epr_domain=2 epr_est=395131 epr_full_grounding=true
+epr_generated=385707 epr_vars=101860 epr_clauses=385830 epr_rounds=0
+epr_ms=2558 epr_extraction_ms=109356 epr_extraction=derivation_loop
+epr_result=fallback epr_fallback=proof_extraction_failed
+```
+
+`Timeout` at 120.0 s, peak 4715 MB self-reported / 3550 MB GNU. The two numbers
+that settle the question: `epr_extraction=derivation_loop` says the BFS was
+exhausted and the ground given-clause loop ran last, and
+`epr_extraction_ms=109356` against `epr_ms=2558` is the under-reporting the new
+field exists for — the pre-pass really cost 112 s, not 3 s.
+
+**`HWV078-1` — the +1 `VerifiedGood` still holds.** This was the check that
+mattered, because the changes were to the extractor. At `--time 40 --workers 2`
+this host returns `Timeout`, and the *unmodified* `f59ca34` build does too, so
+that is a host difference from the 2026-10-09 i3-5010U measurement rather than a
+regression. At `--time 60 --workers 2` the same command with the changes in
+place gives:
+
+```
+% SZS status Unsatisfiable for HWV078-1        % Proof: 52857 nodes, 13376537 bytes
+% Termination reason: Refutation               % Time elapsed: 37.718 s
+% Peak memory usage: 2072 MB
+epr_clauses=21823 epr_ms=995 epr_proof_nodes=52857 epr_extraction_ms=36647
+epr_extraction=derivation_loop epr_result=refutation
+```
+
+52 857 nodes and 13 376 537 bytes, the same as the archived 52 857 / 13.4 MB, and
+the strict kernel certifies it:
+
+```
+./target/release/mrs-proover --strict --no-atp --workers 1 --time 300     <the run's stdout>          # % SZS status VerifiedGood, 9.5 s, 354 MB
+```
+
+Structurally it could not have been affected, and the run confirms it: both
+changes only refuse, `resolve_prop` is a no-op whenever neither parent is
+tautological, and this derivation never came from the BFS at all —
+`epr_extraction=derivation_loop` means it was produced by the ground
+given-clause loop the id-reservation and the `resolve_prop` fix do not touch.
+
+#### Next step
+
+Not a bound change. The untested question is whether a **small unsat core** of
+the 385 830-clause image admits a short resolution derivation. Measure it: dump
+the image at the `Unsat` verdict (`TRACE_EPR_DUMP` only fires on the `Sat`/probe
+path today), extract a core with assumption literals, and re-run the bounded BFS
+over the core alone. If the core is small and the BFS closes it, the fix is
+core-first extraction and it is bounded; if the core is not small, this bucket
+should be reclassified as "the route cannot certify images of this size" and the
+pre-pass should not spend 106 s and 3.5 GB reaching it.
 
 ## UI-6 — ICU: 44 rows lack a decisive reference, and `verdict = ok` does not mean certified
 
