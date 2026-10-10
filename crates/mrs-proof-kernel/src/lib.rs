@@ -9913,7 +9913,24 @@ fn verify_ac_superposition(
         AcReplay::Matched => AcReplay::Matched,
         AcReplay::BudgetExhausted => AcReplay::BudgetExhausted,
         AcReplay::NotFound => {
-            ac_superposition_replay(&target, &source, &goal, &commutative, &associative, limits)
+            match ac_superposition_replay(
+                &target,
+                &source,
+                &goal,
+                &commutative,
+                &associative,
+                limits,
+            ) {
+                AcReplay::NotFound => ac_subset_superposition_replay(
+                    &source,
+                    &target,
+                    &goal,
+                    &commutative,
+                    &associative,
+                    limits,
+                ),
+                other => other,
+            }
         }
     };
     match replay_verdict {
@@ -10070,6 +10087,398 @@ fn ac_resolution_replay(
             if matched {
                 return true;
             }
+        }
+    }
+    false
+}
+
+/// Replays the prover's AC subset-superposition shape independently. A source
+/// side must match at least two operands of an AC target subterm; all unmatched
+/// target operands are retained in the rewritten term. Target variables are
+/// rigid, and every recursive search shares the kernel's AC-unifier budget.
+fn ac_subset_superposition_replay(
+    equation_clause: &[Literal],
+    target_clause: &[Literal],
+    goal: &[Literal],
+    commutative: &HashSet<mrs_core::SymbolId>,
+    associative: &HashSet<mrs_core::SymbolId>,
+    limits: VerificationLimits,
+) -> AcReplay {
+    let budget = AcUnifierBudget::new(limits.max_ac_unifier_steps);
+    let target_shift = max_var_clause(equation_clause).saturating_add(1);
+    let mut shifted_target = target_clause.to_vec();
+    shift_clause(&mut shifted_target, target_shift);
+    let mut rigid: HashSet<VarId> = HashSet::new();
+    for literal in &shifted_target {
+        rigid.extend(literal.atom.free_vars());
+    }
+
+    for (equation_index, equation_literal) in equation_clause.iter().enumerate() {
+        if budget.exhausted.get() {
+            return AcReplay::BudgetExhausted;
+        }
+        if !equation_literal.positive {
+            continue;
+        }
+        let Atom::Eq(left, right) = &equation_literal.atom else {
+            continue;
+        };
+        for (from, to) in [(left, right), (right, left)] {
+            if matches!(from, Term::Var(_)) {
+                continue;
+            }
+            for (target_index, target_literal) in shifted_target.iter().enumerate() {
+                for (side, position) in atom_term_positions(&target_literal.atom) {
+                    if budget.exhausted.get() {
+                        return AcReplay::BudgetExhausted;
+                    }
+                    let base = match &target_literal.atom {
+                        Atom::Pred(_, args) => args.get(side),
+                        Atom::Eq(left, right) => Some(if side == 0 { left } else { right }),
+                    };
+                    let Some(base) = base else { continue };
+                    let Some(subterm) = term_at_position(base, &position) else {
+                        continue;
+                    };
+                    let Some((symbol, _)) = (match subterm {
+                        Term::App(symbol, args)
+                            if commutative.contains(symbol) && associative.contains(symbol) =>
+                        {
+                            Some((*symbol, args))
+                        }
+                        _ => None,
+                    }) else {
+                        continue;
+                    };
+                    let Some((substitution, consumed)) = match_ac_operand_subset(
+                        from,
+                        subterm,
+                        symbol,
+                        &rigid,
+                        commutative,
+                        associative,
+                        &budget,
+                    ) else {
+                        continue;
+                    };
+
+                    let Term::App(_, _) = subterm else {
+                        unreachable!()
+                    };
+                    let operands = flatten_ac_term(subterm, symbol, associative);
+                    let mut rewritten_operands =
+                        Vec::with_capacity(operands.len() - consumed.len() + 1);
+                    let mut consumed_index = 0;
+                    for (index, operand) in operands.iter().enumerate() {
+                        if consumed_index < consumed.len() && consumed[consumed_index] == index {
+                            consumed_index += 1;
+                        } else {
+                            rewritten_operands
+                                .push(apply_substitution_term(operand, &substitution));
+                        }
+                    }
+                    rewritten_operands.push(apply_substitution_term(to, &substitution));
+                    let replacement = rebuild_ac_term(rewritten_operands, symbol);
+                    let replaced_base = replace_term_at(base, &position, replacement);
+                    let replaced_atom =
+                        replace_atom_side(&target_literal.atom, side, replaced_base);
+
+                    let mut expected = Vec::with_capacity(
+                        equation_clause.len() + shifted_target.len().saturating_sub(1),
+                    );
+                    for (index, literal) in equation_clause.iter().enumerate() {
+                        if index != equation_index {
+                            expected.push(apply_substitution_literal(literal, &substitution));
+                        }
+                    }
+                    for (index, literal) in shifted_target.iter().enumerate() {
+                        if index != target_index {
+                            expected.push(apply_substitution_literal(literal, &substitution));
+                        } else {
+                            expected.push(Literal {
+                                positive: literal.positive,
+                                atom: apply_substitution_atom(&replaced_atom, &substitution),
+                            });
+                        }
+                    }
+                    if clause_alpha_equiv(&expected, goal)
+                        || ac_clause_alpha_equiv(
+                            &expected,
+                            goal,
+                            commutative,
+                            associative,
+                            limits,
+                            &std::cell::Cell::new(false),
+                        )
+                    {
+                        return AcReplay::Matched;
+                    }
+                }
+            }
+        }
+    }
+    if budget.exhausted.get() {
+        AcReplay::BudgetExhausted
+    } else {
+        AcReplay::NotFound
+    }
+}
+
+fn rebuild_ac_term(mut operands: Vec<Term>, symbol: mrs_core::SymbolId) -> Term {
+    let mut result = operands
+        .pop()
+        .expect("AC subset rewrite retains an operand");
+    while let Some(operand) = operands.pop() {
+        result = Term::app(symbol, vec![operand, result]);
+    }
+    result
+}
+
+fn match_ac_operand_subset(
+    pattern: &Term,
+    target: &Term,
+    symbol: mrs_core::SymbolId,
+    rigid: &HashSet<VarId>,
+    commutative: &HashSet<mrs_core::SymbolId>,
+    associative: &HashSet<mrs_core::SymbolId>,
+    budget: &AcUnifierBudget,
+) -> Option<(HashMap<VarId, Term>, Vec<usize>)> {
+    let Term::App(pattern_symbol, _) = pattern else {
+        return None;
+    };
+    if *pattern_symbol != symbol {
+        return None;
+    }
+    let pattern_operands = flatten_ac_term(pattern, symbol, associative);
+    let target_operands = flatten_ac_term(target, symbol, associative);
+    if pattern_operands.len() < 2 || pattern_operands.len() > target_operands.len() {
+        return None;
+    }
+    let mut used = vec![false; target_operands.len()];
+    let mut chosen = Vec::with_capacity(pattern_operands.len());
+    let mut substitution = HashMap::new();
+    if match_subset_operands(
+        &pattern_operands,
+        &target_operands,
+        0,
+        &mut used,
+        &mut chosen,
+        &mut substitution,
+        rigid,
+        commutative,
+        associative,
+        budget,
+    ) {
+        chosen.sort_unstable();
+        Some((substitution, chosen))
+    } else {
+        None
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn match_subset_operands(
+    pattern: &[&Term],
+    target: &[&Term],
+    index: usize,
+    used: &mut [bool],
+    chosen: &mut Vec<usize>,
+    substitution: &mut HashMap<VarId, Term>,
+    rigid: &HashSet<VarId>,
+    commutative: &HashSet<mrs_core::SymbolId>,
+    associative: &HashSet<mrs_core::SymbolId>,
+    budget: &AcUnifierBudget,
+) -> bool {
+    if !budget.consume() {
+        return false;
+    }
+    if index == pattern.len() {
+        return true;
+    }
+    for candidate in 0..target.len() {
+        if used[candidate] {
+            continue;
+        }
+        let mut next = substitution.clone();
+        if !rigid_match_term(
+            pattern[index],
+            target[candidate],
+            &mut next,
+            rigid,
+            commutative,
+            associative,
+            budget,
+        ) {
+            continue;
+        }
+        used[candidate] = true;
+        chosen.push(candidate);
+        if match_subset_operands(
+            pattern,
+            target,
+            index + 1,
+            used,
+            chosen,
+            &mut next,
+            rigid,
+            commutative,
+            associative,
+            budget,
+        ) {
+            *substitution = next;
+            return true;
+        }
+        chosen.pop();
+        used[candidate] = false;
+        if budget.exhausted.get() {
+            return false;
+        }
+    }
+    false
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rigid_match_term(
+    pattern: &Term,
+    target: &Term,
+    substitution: &mut HashMap<VarId, Term>,
+    rigid: &HashSet<VarId>,
+    commutative: &HashSet<mrs_core::SymbolId>,
+    associative: &HashSet<mrs_core::SymbolId>,
+    budget: &AcUnifierBudget,
+) -> bool {
+    if !budget.consume() {
+        return false;
+    }
+    let pattern = apply_substitution_term(pattern, substitution);
+    let target = apply_substitution_term(target, substitution);
+    if pattern == target {
+        return true;
+    }
+    match (&pattern, &target) {
+        (Term::Var(var), term) => {
+            if rigid.contains(var) || term.free_vars().contains(var) {
+                return false;
+            }
+            substitution.insert(*var, term.clone());
+            true
+        }
+        (_, Term::Var(_)) => false,
+        (Term::App(left_symbol, left_args), Term::App(right_symbol, right_args)) => {
+            if left_symbol != right_symbol {
+                return false;
+            }
+            if associative.contains(left_symbol) {
+                let left = flatten_ac_term(&pattern, *left_symbol, associative);
+                let right = flatten_ac_term(&target, *left_symbol, associative);
+                if left.len() != right.len() {
+                    return false;
+                }
+                if commutative.contains(left_symbol) {
+                    if left.len() != right.len() {
+                        return false;
+                    }
+                    let mut used = vec![false; right.len()];
+                    return match_exact_operands(
+                        &left,
+                        &right,
+                        0,
+                        &mut used,
+                        substitution,
+                        rigid,
+                        commutative,
+                        associative,
+                        budget,
+                    );
+                }
+                left.iter().zip(right.iter()).all(|(left, right)| {
+                    rigid_match_term(
+                        left,
+                        right,
+                        substitution,
+                        rigid,
+                        commutative,
+                        associative,
+                        budget,
+                    )
+                })
+            } else if left_args.len() != right_args.len() {
+                false
+            } else {
+                left_args
+                    .iter()
+                    .zip(right_args.iter())
+                    .all(|(left, right)| {
+                        rigid_match_term(
+                            left,
+                            right,
+                            substitution,
+                            rigid,
+                            commutative,
+                            associative,
+                            budget,
+                        )
+                    })
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn match_exact_operands(
+    pattern: &[&Term],
+    target: &[&Term],
+    index: usize,
+    used: &mut [bool],
+    substitution: &mut HashMap<VarId, Term>,
+    rigid: &HashSet<VarId>,
+    commutative: &HashSet<mrs_core::SymbolId>,
+    associative: &HashSet<mrs_core::SymbolId>,
+    budget: &AcUnifierBudget,
+) -> bool {
+    if !budget.consume() {
+        return false;
+    }
+    if index == pattern.len() {
+        return true;
+    }
+    for candidate in 0..target.len() {
+        if used[candidate] {
+            continue;
+        }
+        let mut next = substitution.clone();
+        if !rigid_match_term(
+            pattern[index],
+            target[candidate],
+            &mut next,
+            rigid,
+            commutative,
+            associative,
+            budget,
+        ) {
+            if budget.exhausted.get() {
+                return false;
+            }
+            continue;
+        }
+        used[candidate] = true;
+        if match_exact_operands(
+            pattern,
+            target,
+            index + 1,
+            used,
+            &mut next,
+            rigid,
+            commutative,
+            associative,
+            budget,
+        ) {
+            *substitution = next;
+            return true;
+        }
+        used[candidate] = false;
+        if budget.exhausted.get() {
+            return false;
         }
     }
     false
@@ -13269,6 +13678,105 @@ mod tests {
             ),
             KernelVerdict::Certified
         );
+    }
+
+    #[test]
+    fn certifies_ac_subset_superposition_replay() {
+        let mut symbols = SymbolTable::new();
+        let f = symbols.intern("subset_f");
+        let p = symbols.intern("subset_p");
+        let a = symbols.intern("subset_a");
+        let b = symbols.intern("subset_b");
+        let c = symbols.intern("subset_c");
+        let d = symbols.intern("subset_d");
+        let commutativity = Formula::atom(Atom::eq(
+            Term::app(f, vec![Term::var(0), Term::var(1)]),
+            Term::app(f, vec![Term::var(1), Term::var(0)]),
+        ));
+        let associativity = Formula::atom(Atom::eq(
+            Term::app(
+                f,
+                vec![Term::app(f, vec![Term::var(0), Term::var(1)]), Term::var(2)],
+            ),
+            Term::app(
+                f,
+                vec![Term::var(0), Term::app(f, vec![Term::var(1), Term::var(2)])],
+            ),
+        ));
+        let source = Formula::atom(Atom::eq(
+            Term::app(f, vec![Term::constant(a), Term::constant(b)]),
+            Term::constant(d),
+        ));
+        let target = Formula::atom(Atom::Pred(
+            p,
+            vec![Term::app(
+                f,
+                vec![Term::constant(a), Term::constant(b), Term::constant(c)],
+            )],
+        ));
+        let conclusion = Formula::atom(Atom::Pred(
+            p,
+            vec![Term::app(f, vec![Term::constant(c), Term::constant(d)])],
+        ));
+
+        assert_eq!(
+            verify_ac_superposition(
+                &[source, target, commutativity, associativity],
+                &conclusion,
+                VerificationLimits::default(),
+                &HashSet::new(),
+                &HashSet::new(),
+            ),
+            KernelVerdict::Certified
+        );
+    }
+
+    #[test]
+    fn rejects_ac_subset_superposition_that_drops_unmatched_target_operands() {
+        let mut symbols = SymbolTable::new();
+        let f = symbols.intern("subset_drop_f");
+        let p = symbols.intern("subset_drop_p");
+        let a = symbols.intern("subset_drop_a");
+        let b = symbols.intern("subset_drop_b");
+        let c = symbols.intern("subset_drop_c");
+        let d = symbols.intern("subset_drop_d");
+        let commutativity = Formula::atom(Atom::eq(
+            Term::app(f, vec![Term::var(0), Term::var(1)]),
+            Term::app(f, vec![Term::var(1), Term::var(0)]),
+        ));
+        let associativity = Formula::atom(Atom::eq(
+            Term::app(
+                f,
+                vec![Term::app(f, vec![Term::var(0), Term::var(1)]), Term::var(2)],
+            ),
+            Term::app(
+                f,
+                vec![Term::var(0), Term::app(f, vec![Term::var(1), Term::var(2)])],
+            ),
+        ));
+        let source = Formula::atom(Atom::eq(
+            Term::app(f, vec![Term::constant(a), Term::constant(b)]),
+            Term::constant(d),
+        ));
+        let target = Formula::atom(Atom::Pred(
+            p,
+            vec![Term::app(
+                f,
+                vec![Term::constant(a), Term::constant(b), Term::constant(c)],
+            )],
+        ));
+        let forged = Formula::atom(Atom::Pred(p, vec![Term::constant(d)]));
+
+        assert!(matches!(
+            verify_ac_superposition(
+                &[source, target, commutativity, associativity],
+                &forged,
+                VerificationLimits::default(),
+                &HashSet::new(),
+                &HashSet::new(),
+            ),
+            KernelVerdict::Inconclusive(_) | KernelVerdict::Rejected(_)
+        ));
     }
 
     #[test]

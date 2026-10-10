@@ -140,13 +140,105 @@ current architecture expresses AC superposition as *unifying `from` with a whole
 target subterm*, and that cannot consume only part of the target's arguments.
 Before the fix the unsound binding papered over the gap.
 
-**Next bounded diagnostic.** Make AC superposition match the equation's side
-into a *non-empty subset* of the target's AC arguments instead of unifying it
-with the whole subterm, with backtracking over the subsets and the rigid
-condition enforced throughout. That is the change that recovers the five rows
-above *and* keeps the soundness fix; it is a real algorithmic addition to the
-prover's hottest function, so it is deliberately not folded into a soundness
-fix. Everything else in this entry is measured and closed.
+**The next bounded diagnostic has been run, and it does not recover the five
+rows.** AC subset superposition is implemented
+(`mrs_unify::ac_subset`, `superposition::ac_subset_replacement`, budgeted by
+`AC_SUBSET_MATCH_BUDGET = 4096`, pinned by
+`crates/mrs-calculus/tests/ac_subset_superposition.rs`). What it actually
+recovers, and what it does not, is measured below.
+
+#### The subset rule, and the two things that were believed about it
+
+The rule: under a symbol the prover detects as both commutative and
+associative, the equation's side may equal a **non-empty subset** of a target
+subterm's AC arguments. If `σ(s) = S ⊆ flatten(u)` then `u ≈ f((A \ S) ∪ σ(t))`,
+so replacing `u` by that term and instantiating by `σ` is a consequence of the
+two cited parents. Target variables stay rigid at every depth, the pairing
+search is under a deterministic per-call budget, and exhaustion is
+`UnifyError::BudgetExhausted` — a non-success, never a partial match.
+
+**It does recover real inferences.** On a bounded sample (60 casc-30 UEQ
+problems, `--workers 1 --time 3`, instrumented build) it emitted 260
+inferences. That count is wall-clock sensitive and is reported as a
+magnitude, not a rate. On the constructed problem
+`problems/force_subset2.p` (`prod(a,X) = b` superposed into
+`prod(prod(a,b),c)`) the prover goes from `GaveUp` to `Theorem`, and the step is
+`cnf(c21, …, prod(b,c) != prod(c,b), inference(ac_superposition, …))` — the
+whole-subterm rigid unifier cannot produce it, because the two terms have equal
+*direct* arity (so its alignment fallback fires) and unequal flattened arity (so
+the fallback cannot align them).
+
+**It does not recover the five rows, and cannot.** Two independent reasons,
+both measured rather than argued:
+
+1. **`mult` in `group.p`, `group_right_inv.p`, `group_unique_inv.p` and
+   `plus`/`times` in `ring_idem.p` is declared associative but not commutative.**
+   The prover's own AC detection (`detect_ac_symbols`) puts a symbol in `comm`
+   only when a commutativity axiom is among the input clauses, and none of those
+   four problems has one. Consuming an arbitrary sub-multiset is licensed by
+   commutativity, so the rule refuses them (`UnsupportedShape`) — correctly.
+   Instrumented run, `--workers 1 --time 10`: `group.p` 660 matcher entries, all
+   rejected as not-AC; `ring_idem.p` 2455, all not-AC. `lattice_absorb.p` is the
+   fifth, and its `join`/`meet` *are* both AC, so it is not covered by this
+   reason — it is covered by the next one.
+2. **The inference these five actually lost needs a *target-variable binding*.**
+   `group.s`'s `cnf(c26, …, mult(e,X3) = mult(inv(X2), mult(X2,X3)))` is
+   `mult(inv(V), V) = e` superposed into the subterm `mult(A, B)` of the
+   associativity axiom; it needs `A := inv(V)`. Same shape in
+   `lattice_absorb.s`'s `cnf(c33, …, X2 = join(X2, X2), inference(ac_superposition,
+   …, [c32, c30, …]))`: the `meet(X0, X1)` inside the target has to be paired with
+   the equation's `meet(U0, join(U0, U1))`, which binds target variables. A
+   subset match cannot supply such a binding — both of the pattern's arguments
+   would still have to land on target variables, and the rule is what refuses
+   that. Pinning it is `archived_group_c26_target_specialization_is_still_refused`.
+
+   The four unarchived problems (`group_right_inv.p`, `group_unique_inv.p`,
+   `ring_idem.p`, and `lattice_absorb.p` beyond the node above) are inferred
+   rather than observed: their axiom sets are the same or a subset of
+   `group.p`'s and `lattice_absorb.p`'s, and with the rule switched off all five
+   saturate in 0.01–0.02 s having derived nothing that closes the goal.
+
+So the "recover the five rows above" claim in the previous revision of this
+entry was wrong. Subset matching is a real capability, and it is not the
+missing half of *that* fix.
+
+**What the five would actually need.** `c26` is an ordinary superposition step
+with a *most general* unifier — `{X1 ↦ inv(V), V ↦ X2}` — and the strict kernel
+already certifies it, which is why `crates/mrs-proover/tests/resources/mrs_proofs/group.s`
+verifies `VerifiedGood` today. The blocker is not soundness of target-variable
+binding, it is that `unify_ac_rec_id` is not most-general: the
+associative-length-mismatch fallback aligns *original* nested arguments
+positionally and returns that as if it were an unifier. Recovering the five
+means making the AC unifier return a genuine MGU (or returning nothing when it
+cannot), which is a different and larger change than the one requested here.
+The measurement that this is what recovers them: a build with the rigid set
+passed as `None` — i.e. the pre-soundness-fix rule — solves all five
+(`Theorem` in 0.01–8.6 s, `--workers 1 --time 60`) where `main` returns `GaveUp`
+in 0.01–0.02 s.
+
+#### Independent proof replay
+
+The strict kernel now independently replays the bounded subset shape in
+`ac_subset_superposition_replay` (`crates/mrs-proof-kernel/src/lib.rs`). It
+requires a non-empty match of at least two operands, keeps all unmatched target
+operands, refuses target-variable bindings, and uses the kernel's own AC search
+budget. Focused kernel tests certify a valid subset step and reject a conclusion
+that drops unmatched operands. The prover's `force_subset2.p` regression and
+the kernel regression together pin production and proof replay.
+
+Budget exhaustion remains inconclusive rather than being accepted as a proof.
+
+#### Two inefficiencies the implementation measurement exposed
+
+Both were found by instrumenting the matcher, and both are fixed:
+
+- The subset path is entered after *every* failed whole-subterm superposition,
+  including on non-AC symbols. On `ALG240-1` that was 643 635 matcher entries in
+  a 10 s run, all rejected on sight. A `comm.contains(f) && assoc.contains(f)`
+  gate before the call removes them.
+- The nested commutative permutation search could reuse a target operand. It is
+  now an injective permutation search with dedicated positive and negative
+  nested-match tests.
 
 ### The leading suspicion is ruled out
 
@@ -348,6 +440,16 @@ nix develop -c cargo test -p mrs-search superposition_partner_consistency
   grep-based probes silently matched *nothing* and their nulls were briefly read
   as findings. Any name-based probe must resolve through
   `SymbolTable::iter_names()` *before* matching.
+
+**The archived proofs of all three problems certify `VerifiedGood` today.** The
+`Unknown` nodes this entry is built around (`c431338`, `c659171`, `c53874`) are
+not in the copies that survive on disk: all 18 archived `KLE145-10` / `LAT044-1`
+/ `LAT241-10` proofs under `~/crates/mrs-bench/results/*/certification/proofs/mrs/ueq/`
+audit `VerifiedGood` at HEAD, in under 0.1 s each, and they do contain
+`ac_superposition` nodes (19 to 88 per proof) — just not the offending ones.
+That is consistent with the node ids not being stable across runs, and it is the
+concrete form of "the archived proofs cannot show the fix". Auditing them needs
+`TPTP=crates/mrs-bench/problems/casc-30` for the `%include` resolution.
 
 ---
 

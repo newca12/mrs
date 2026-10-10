@@ -19,8 +19,11 @@ use mrs_core::term::Term;
 
 use crate::ordering::{TermComparison, TermOrdering};
 use crate::rename::{max_var, max_var_id, rename_clause, rename_clause_id};
-use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank, TermId};
+use mrs_core::term_bank::{
+    IdAtom, IdClause, IdLiteral, IdSubstitution, TermBank, TermId, TermNode,
+};
 use mrs_core::witness::{ProofNodeId, ProofWitness};
+use mrs_unify::ac_subset::AcSubsetBudget;
 
 /// Performs all superposition inferences from `eq_clause` into `target`.
 ///
@@ -154,6 +157,42 @@ pub fn superpose_selected_id_until(
     assoc: &HashSet<SymbolId>,
     deadline: Option<std::time::Instant>,
 ) -> Vec<IdClause> {
+    superpose_selected_id_until_budgeted(
+        eq_clause,
+        target,
+        bank,
+        ordering,
+        id_gen,
+        target_sel,
+        comm,
+        assoc,
+        AC_SUBSET_MATCH_BUDGET,
+        deadline,
+    )
+}
+
+/// [`superpose_selected_id_until`] with the AC subset/permutation search budget
+/// stated explicitly rather than taken from [`AC_SUBSET_MATCH_BUDGET`].
+///
+/// The budget is a *total* for the call, shared across every equation literal,
+/// orientation and rewrite position. Running out is not an error the caller has
+/// to handle: the affected positions simply produce no inference, which is the
+/// same outcome as "no match here". Nothing partial is ever returned, so a
+/// truncated search cannot be mistaken for a match.
+#[allow(clippy::too_many_arguments)]
+pub fn superpose_selected_id_until_budgeted(
+    eq_clause: &IdClause,
+    target: &IdClause,
+    bank: &mut TermBank,
+    ordering: &TermOrdering,
+    id_gen: &mut ClauseIdGen,
+    target_sel: Option<&[usize]>,
+    comm: &HashSet<SymbolId>,
+    assoc: &HashSet<SymbolId>,
+    ac_subset_budget: u32,
+    deadline: Option<std::time::Instant>,
+) -> Vec<IdClause> {
+    let mut ac_subset_budget = AcSubsetBudget::new(ac_subset_budget);
     let offset = max_var_id(eq_clause, bank);
     let target_r = rename_clause_id(target, offset, bank);
     let mut results = Vec::new();
@@ -190,6 +229,7 @@ pub fn superpose_selected_id_until(
                 target_sel,
                 comm,
                 assoc,
+                &mut ac_subset_budget,
                 &mut results,
                 deadline,
             );
@@ -213,6 +253,7 @@ fn superpose_with_id(
     target_sel: Option<&[usize]>,
     comm: &HashSet<SymbolId>,
     assoc: &HashSet<SymbolId>,
+    ac_subset_budget: &mut AcSubsetBudget,
     results: &mut Vec<IdClause>,
     deadline: Option<std::time::Instant>,
 ) {
@@ -253,7 +294,18 @@ fn superpose_with_id(
                     None => continue,
                 };
 
-                let sigma = match mrs_unify::robinson::unify_ac_rigid_id(
+                // Two shapes, tried in this order.
+                //
+                // 1. The ordinary one: unify the equation side with the *whole*
+                //    subterm. This is the behaviour the rigid guard was added
+                //    to keep, and it is tried first so that nothing that used
+                //    to go through changes.
+                // 2. The AC subset shape: under a commutative-associative
+                //    symbol the equation side may instead fit into a *non-empty
+                //    subset* of the subterm's AC arguments. The rigid whole-
+                //    subterm unifier cannot express that shape at all, and it
+                //    is the shape UI-1 records as lost capability.
+                let (sigma, replacement) = match mrs_unify::robinson::unify_ac_rigid_id(
                     from,
                     subterm,
                     bank,
@@ -261,8 +313,20 @@ fn superpose_with_id(
                     assoc,
                     Some(&target_vars),
                 ) {
-                    Ok(s) => s,
-                    Err(_) => continue,
+                    Ok(sigma) => (sigma, to),
+                    Err(_) => match ac_subset_replacement(
+                        from,
+                        to,
+                        subterm,
+                        bank,
+                        comm,
+                        assoc,
+                        &target_vars,
+                        ac_subset_budget,
+                    ) {
+                        Ok(replacement) => replacement,
+                        Err(_) => continue,
+                    },
                 };
 
                 let from_s = sigma.apply_term(from, bank);
@@ -278,7 +342,7 @@ fn superpose_with_id(
                     continue;
                 }
 
-                let replaced_term = bank.replace_at(base_term, &pos, to);
+                let replaced_term = bank.replace_at(base_term, &pos, replacement);
                 let replaced_lit = rebuild_literal_id(target_lit, arg_idx, replaced_term);
                 let replaced_lit = sigma.apply_literal(&replaced_lit, bank);
 
@@ -319,6 +383,106 @@ fn superpose_with_id(
                 results.push(derived);
             }
         }
+    }
+}
+
+/// Deterministic ceiling on the AC subset/permutation search of one
+/// `superpose_selected_id_until` call.
+///
+/// Matching a `k`-element pattern into an `m`-element argument list has
+/// `m!/(m-k)!` candidate pairings, and each element comparison recurses, so the
+/// search is bounded rather than merely hoped to terminate. Exhaustion is a
+/// non-success (see [`mrs_unify::ac_subset::AcSubsetBudget`]); the value is a
+/// per-call total, not a per-position one, so widening the rule cannot make its
+/// cost grow with the size of the target clause.
+pub const AC_SUBSET_MATCH_BUDGET: u32 = 4096;
+
+/// The AC-subset shape of superposition: rewrite the arguments a match consumed
+/// and leave every other argument of the target term in place.
+///
+/// Returns `(σ, replacement)` on success, where `replacement` is the term that
+/// takes the subterm's place, built with `to` *uninstantiated* — the caller
+/// applies `σ` to the rebuilt literal, exactly as it does for the whole-subterm
+/// shape.
+///
+/// Every failure is a non-success: an unsupported AC shape, a match that would
+/// bind a target variable, and an exhausted budget all return `Err`, so a
+/// truncated or partial search can never be read as a match.
+#[allow(clippy::too_many_arguments)]
+fn ac_subset_replacement(
+    from: TermId,
+    to: TermId,
+    subterm: TermId,
+    bank: &mut TermBank,
+    comm: &HashSet<SymbolId>,
+    assoc: &HashSet<SymbolId>,
+    target_vars: &HashSet<u32>,
+    budget: &mut AcSubsetBudget,
+) -> Result<(IdSubstitution, TermId), mrs_unify::UnifyError> {
+    // Cheap gate before the matcher's own shape check: the whole-subterm
+    // unifier fails on every non-AC symbol too, and without this the matcher is
+    // entered tens of millions of times per bounded run just to be told the
+    // symbol is not AC.
+    let TermNode::App(symbol, _) = bank.get(subterm) else {
+        return Err(mrs_unify::UnifyError::UnsupportedShape);
+    };
+    let symbol = *symbol;
+    if !comm.contains(&symbol) || !assoc.contains(&symbol) {
+        return Err(mrs_unify::UnifyError::UnsupportedShape);
+    }
+
+    let found = mrs_unify::ac_subset::match_ac_subset_rigid_id(
+        from,
+        subterm,
+        bank,
+        comm,
+        assoc,
+        Some(target_vars),
+        budget,
+    )?;
+
+    let args = mrs_unify::ac_subset::flatten_ac(subterm, symbol, &found.subst, bank);
+    if args.len() < 2 {
+        return Err(mrs_unify::UnifyError::UnsupportedShape);
+    }
+
+    // Keep every argument the match did not consume, then append `to`. Dropping
+    // an unmatched argument would be a different rule — one that can delete
+    // hypotheses for free — so it is not available here.
+    let mut kept: Vec<TermId> = Vec::with_capacity(args.len());
+    let mut next = 0usize;
+    for (index, &arg) in args.iter().enumerate() {
+        if next < found.consumed.len() && found.consumed[next] == index {
+            next += 1;
+            continue;
+        }
+        kept.push(arg);
+    }
+    // `next == consumed.len()` says the consumed indices really were a subset of
+    // this argument list. A match that took *every* argument is kept: it is the
+    // whole-subterm shape under a permutation the rigid AC unifier never tries
+    // (it looks at the flat list in order and reversed, not at all `m!`
+    // pairings), and it cannot duplicate that path because the path is only
+    // reached after the unifier has already failed.
+    if next != found.consumed.len() {
+        return Err(mrs_unify::UnifyError::UnsupportedShape);
+    }
+    kept.push(to);
+
+    Ok((found.subst, rebuild_ac_term(kept, symbol, bank)))
+}
+
+/// Rebuilds an AC term from a non-empty argument list in the prover's canonical
+/// shape: right-nested, matching [`TermBank::ac_normalize`].
+fn rebuild_ac_term(args: Vec<TermId>, symbol: SymbolId, bank: &mut TermBank) -> TermId {
+    let mut rebuilt = args[args.len() - 1];
+    for &arg in args[..args.len() - 1].iter().rev() {
+        rebuilt = bank.intern_app(symbol, smallvec::smallvec![arg, rebuilt]);
+    }
+    if args.len() == 1 {
+        bank.intern_app(symbol, smallvec::smallvec![args[0]])
+    } else {
+        rebuilt
     }
 }
 
