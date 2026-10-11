@@ -4,8 +4,7 @@ use burn::lr_scheduler::constant::ConstantLr;
 use burn::nn::loss::BinaryCrossEntropyLossConfig;
 use burn::optim::AdamConfig;
 use burn::prelude::*;
-use burn::record::BinFileRecorder;
-use burn::tensor::backend::AutodiffBackend;
+use burn::tensor::Device;
 use burn::train::metric::LossMetric;
 use burn::train::metric::store::{Aggregate, Direction, Split};
 use burn::train::{
@@ -20,21 +19,17 @@ use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 
 #[derive(Clone, Debug)]
-pub struct PremiseBatch<B: Backend> {
-    inputs: Tensor<B, 2>,
-    targets_bce: Tensor<B, 2, Int>,
-    targets_class: Tensor<B, 1, Int>,
+pub struct PremiseBatch {
+    inputs: Tensor<2>,
+    targets_bce: Tensor<2, Int>,
+    targets_class: Tensor<1, Int>,
 }
 
 #[derive(Clone)]
-struct PremiseBatcher<B: Backend> {
-    _b: std::marker::PhantomData<B>,
-}
+struct PremiseBatcher;
 
-impl<B: Backend> burn::data::dataloader::batcher::Batcher<B, PremiseSample, PremiseBatch<B>>
-    for PremiseBatcher<B>
-{
-    fn batch(&self, items: Vec<PremiseSample>, device: &B::Device) -> PremiseBatch<B> {
+impl burn::data::dataloader::batcher::Batcher<PremiseSample, PremiseBatch> for PremiseBatcher {
+    fn batch(&self, items: Vec<PremiseSample>, device: &Device) -> PremiseBatch {
         let batch_size = items.len();
         let mut inputs = Vec::with_capacity(batch_size * PREMISE_FEATURE_DIM);
         let mut targets_ints = Vec::with_capacity(batch_size);
@@ -44,12 +39,12 @@ impl<B: Backend> burn::data::dataloader::batcher::Batcher<B, PremiseSample, Prem
             targets_ints.push(item.label as i32);
         }
 
-        let inputs = Tensor::<B, 1>::from_floats(inputs.as_slice(), device)
+        let inputs = Tensor::<1>::from_floats(inputs.as_slice(), device)
             .reshape([batch_size, PREMISE_FEATURE_DIM]);
-        let targets_bce = Tensor::<B, 1, Int>::from_ints(targets_ints.as_slice(), device)
-            .reshape([batch_size, 1]);
+        let targets_bce =
+            Tensor::<1, Int>::from_ints(targets_ints.as_slice(), device).reshape([batch_size, 1]);
         let targets_class =
-            Tensor::<B, 1, Int>::from_ints(targets_ints.as_slice(), device).reshape([batch_size]);
+            Tensor::<1, Int>::from_ints(targets_ints.as_slice(), device).reshape([batch_size]);
 
         PremiseBatch {
             inputs,
@@ -60,15 +55,15 @@ impl<B: Backend> burn::data::dataloader::batcher::Batcher<B, PremiseSample, Prem
 }
 
 #[derive(burn::module::Module, Debug)]
-pub struct TrainingPremise<B: Backend> {
-    model: PremiseModel<B>,
+pub struct TrainingPremise {
+    model: PremiseModel,
 }
 
-impl<B: AutodiffBackend> TrainStep for TrainingPremise<B> {
-    type Input = PremiseBatch<B>;
-    type Output = ClassificationOutput<B>;
+impl TrainStep for TrainingPremise {
+    type Input = PremiseBatch;
+    type Output = ClassificationOutput;
 
-    fn step(&self, batch: PremiseBatch<B>) -> TrainOutput<ClassificationOutput<B>> {
+    fn step(&self, batch: PremiseBatch) -> TrainOutput<ClassificationOutput> {
         let logits = self.model.forward(batch.inputs);
         let loss = BinaryCrossEntropyLossConfig::new()
             .with_logits(true)
@@ -87,11 +82,11 @@ impl<B: AutodiffBackend> TrainStep for TrainingPremise<B> {
     }
 }
 
-impl<B: Backend> InferenceStep for TrainingPremise<B> {
-    type Input = PremiseBatch<B>;
-    type Output = ClassificationOutput<B>;
+impl InferenceStep for TrainingPremise {
+    type Input = PremiseBatch;
+    type Output = ClassificationOutput;
 
-    fn step(&self, batch: PremiseBatch<B>) -> ClassificationOutput<B> {
+    fn step(&self, batch: PremiseBatch) -> ClassificationOutput {
         let logits = self.model.forward(batch.inputs);
         let loss = BinaryCrossEntropyLossConfig::new()
             .with_logits(true)
@@ -150,8 +145,8 @@ fn load_dataset(dir: &str) -> Vec<PremiseSample> {
     samples
 }
 
-pub fn train_premise<B: AutodiffBackend>(
-    device: B::Device,
+pub fn train_premise(
+    device: Device,
     dir: &str,
     out_prefix: &str,
     epochs: usize,
@@ -199,27 +194,25 @@ pub fn train_premise<B: AutodiffBackend>(
     train_set.shuffle(&mut rng);
     valid_set.shuffle(&mut rng);
 
-    let batcher_train = PremiseBatcher::<B> {
-        _b: std::marker::PhantomData,
-    };
-    let batcher_valid = PremiseBatcher::<B::InnerBackend> {
-        _b: std::marker::PhantomData,
-    };
+    let batcher_train = PremiseBatcher;
+    let batcher_valid = PremiseBatcher;
 
     let dataloader_train = DataLoaderBuilder::new(batcher_train)
         .batch_size(8192)
         .shuffle(42)
         .num_workers(4)
+        .set_device(device.clone())
         .build(std::sync::Arc::new(InMemDataset::new(train_set)));
     let dataloader_valid = DataLoaderBuilder::new(batcher_valid)
         .batch_size(8192)
         .shuffle(42)
         .num_workers(4)
+        .set_device(device.clone())
         .build(std::sync::Arc::new(InMemDataset::new(valid_set)));
 
     let learner_config = Learner::new(
         TrainingPremise {
-            model: PremiseModel::<B>::new(&device),
+            model: PremiseModel::new(&device),
         },
         AdamConfig::new().init(),
         ConstantLr::new(3e-4),
@@ -235,7 +228,7 @@ pub fn train_premise<B: AutodiffBackend>(
     .with_checkpointing_strategy(burn::train::checkpoint::KeepLastNCheckpoints::new(2))
     .num_epochs(epochs)
     .early_stopping(MetricEarlyStoppingStrategy::new(
-        &LossMetric::<B>::new(),
+        &LossMetric::new(),
         Aggregate::Mean,
         Direction::Lowest,
         Split::Valid,
@@ -245,11 +238,10 @@ pub fn train_premise<B: AutodiffBackend>(
 
     let learning_result = supervised.launch(learner_config);
 
-    let recorder = BinFileRecorder::<burn::record::HalfPrecisionSettings>::default();
     learning_result
         .model
         .model
-        .save_file(out_prefix, &recorder)
+        .save_file(format!("{out_prefix}.bpk"))
         .unwrap();
 
     std::fs::write(
@@ -260,5 +252,5 @@ pub fn train_premise<B: AutodiffBackend>(
         ),
     )
     .unwrap();
-    println!("Saved {}.bin and {}_meta.json", out_prefix, out_prefix);
+    println!("Saved {}.bpk and {}_meta.json", out_prefix, out_prefix);
 }

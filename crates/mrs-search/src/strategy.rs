@@ -1332,17 +1332,14 @@ pub fn run_schedule_with_candidate_receiver(
     }
     #[cfg(feature = "ml-guidance")]
     let ml_model = ml.weights.as_ref().and_then(|path| {
-        use burn::backend::NdArray;
         use burn::module::Module;
-        use burn::record::{BinFileRecorder, Recorder};
+        use burn::store::ModuleRecord;
         use mrs_core::ml::model::ClauseClassifier;
 
-        match BinFileRecorder::<burn::record::HalfPrecisionSettings>::default()
-            .load(path.into(), &Default::default())
-        {
+        match ModuleRecord::load(path) {
             Ok(record) => {
                 let model =
-                    ClauseClassifier::<NdArray>::new(&Default::default()).load_record(record);
+                    ClauseClassifier::new(&burn::tensor::Device::flex()).load_record(record);
                 Some(Arc::new(model))
             }
             Err(e) => {

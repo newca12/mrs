@@ -4,8 +4,7 @@ use burn::lr_scheduler::constant::ConstantLr;
 use burn::nn::loss::CrossEntropyLossConfig;
 use burn::optim::AdamConfig;
 use burn::prelude::*;
-use burn::record::BinFileRecorder;
-use burn::tensor::backend::AutodiffBackend;
+use burn::tensor::Device;
 use burn::train::metric::store::{Aggregate, Direction, Split};
 use burn::train::metric::{AccuracyMetric, LossMetric};
 use burn::train::{
@@ -20,20 +19,16 @@ use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 
 #[derive(Clone, Debug)]
-pub struct ScheduleBatch<B: Backend> {
-    inputs: Tensor<B, 2>,
-    targets: Tensor<B, 1, Int>,
+pub struct ScheduleBatch {
+    inputs: Tensor<2>,
+    targets: Tensor<1, Int>,
 }
 
 #[derive(Clone)]
-struct ScheduleBatcher<B: Backend> {
-    _b: std::marker::PhantomData<B>,
-}
+struct ScheduleBatcher;
 
-impl<B: Backend> burn::data::dataloader::batcher::Batcher<B, ScheduleSample, ScheduleBatch<B>>
-    for ScheduleBatcher<B>
-{
-    fn batch(&self, items: Vec<ScheduleSample>, device: &B::Device) -> ScheduleBatch<B> {
+impl burn::data::dataloader::batcher::Batcher<ScheduleSample, ScheduleBatch> for ScheduleBatcher {
+    fn batch(&self, items: Vec<ScheduleSample>, device: &Device) -> ScheduleBatch {
         let batch_size = items.len();
         let mut inputs = Vec::with_capacity(batch_size * SCHEDULE_FEATURE_DIM);
         let mut targets_ints = Vec::with_capacity(batch_size);
@@ -43,24 +38,24 @@ impl<B: Backend> burn::data::dataloader::batcher::Batcher<B, ScheduleSample, Sch
             targets_ints.push(item.label_idx as i32);
         }
 
-        let inputs = Tensor::<B, 1>::from_floats(inputs.as_slice(), device)
+        let inputs = Tensor::<1>::from_floats(inputs.as_slice(), device)
             .reshape([batch_size, SCHEDULE_FEATURE_DIM]);
-        let targets = Tensor::<B, 1, Int>::from_ints(targets_ints.as_slice(), device);
+        let targets = Tensor::<1, Int>::from_ints(targets_ints.as_slice(), device);
 
         ScheduleBatch { inputs, targets }
     }
 }
 
 #[derive(burn::module::Module, Debug)]
-pub struct TrainingSchedule<B: Backend> {
-    model: ScheduleModel<B>,
+pub struct TrainingSchedule {
+    model: ScheduleModel,
 }
 
-impl<B: AutodiffBackend> TrainStep for TrainingSchedule<B> {
-    type Input = ScheduleBatch<B>;
-    type Output = ClassificationOutput<B>;
+impl TrainStep for TrainingSchedule {
+    type Input = ScheduleBatch;
+    type Output = ClassificationOutput;
 
-    fn step(&self, batch: ScheduleBatch<B>) -> TrainOutput<ClassificationOutput<B>> {
+    fn step(&self, batch: ScheduleBatch) -> TrainOutput<ClassificationOutput> {
         let logits = self.model.forward(batch.inputs);
         let loss = CrossEntropyLossConfig::new()
             .init(&logits.device())
@@ -78,11 +73,11 @@ impl<B: AutodiffBackend> TrainStep for TrainingSchedule<B> {
     }
 }
 
-impl<B: Backend> InferenceStep for TrainingSchedule<B> {
-    type Input = ScheduleBatch<B>;
-    type Output = ClassificationOutput<B>;
+impl InferenceStep for TrainingSchedule {
+    type Input = ScheduleBatch;
+    type Output = ClassificationOutput;
 
-    fn step(&self, batch: ScheduleBatch<B>) -> ClassificationOutput<B> {
+    fn step(&self, batch: ScheduleBatch) -> ClassificationOutput {
         let logits = self.model.forward(batch.inputs);
         let loss = CrossEntropyLossConfig::new()
             .init(&logits.device())
@@ -140,13 +135,7 @@ fn load_dataset(dir: &str) -> Vec<ScheduleSample> {
     samples
 }
 
-pub fn train_schedule<B: AutodiffBackend>(
-    device: B::Device,
-    dir: &str,
-    out_prefix: &str,
-    epochs: usize,
-    val_split: f32,
-) {
+pub fn train_schedule(device: Device, dir: &str, out_prefix: &str, epochs: usize, val_split: f32) {
     let mut samples = load_dataset(dir);
     println!("Loaded schedule dataset with {} samples", samples.len());
     if samples.is_empty() {
@@ -158,27 +147,25 @@ pub fn train_schedule<B: AutodiffBackend>(
     let val_count = ((samples.len() as f32) * val_split) as usize;
     let (valid_set, train_set) = samples.split_at(val_count);
 
-    let batcher_train = ScheduleBatcher::<B> {
-        _b: std::marker::PhantomData,
-    };
-    let batcher_valid = ScheduleBatcher::<B::InnerBackend> {
-        _b: std::marker::PhantomData,
-    };
+    let batcher_train = ScheduleBatcher;
+    let batcher_valid = ScheduleBatcher;
 
     let dataloader_train = DataLoaderBuilder::new(batcher_train)
         .batch_size(8192)
         .shuffle(42)
         .num_workers(4)
+        .set_device(device.clone())
         .build(std::sync::Arc::new(InMemDataset::new(train_set.to_vec())));
     let dataloader_valid = DataLoaderBuilder::new(batcher_valid)
         .batch_size(8192)
         .shuffle(42)
         .num_workers(4)
+        .set_device(device.clone())
         .build(std::sync::Arc::new(InMemDataset::new(valid_set.to_vec())));
 
     let learner_config = Learner::new(
         TrainingSchedule {
-            model: ScheduleModel::<B>::new(&device),
+            model: ScheduleModel::new(&device),
         },
         AdamConfig::new().init(),
         ConstantLr::new(3e-4),
@@ -196,7 +183,7 @@ pub fn train_schedule<B: AutodiffBackend>(
     .with_checkpointing_strategy(burn::train::checkpoint::KeepLastNCheckpoints::new(2))
     .num_epochs(epochs)
     .early_stopping(MetricEarlyStoppingStrategy::new(
-        &LossMetric::<B>::new(),
+        &LossMetric::new(),
         Aggregate::Mean,
         Direction::Lowest,
         Split::Valid,
@@ -206,11 +193,10 @@ pub fn train_schedule<B: AutodiffBackend>(
 
     let learning_result = supervised.launch(learner_config);
 
-    let recorder = BinFileRecorder::<burn::record::HalfPrecisionSettings>::default();
     learning_result
         .model
         .model
-        .save_file(out_prefix, &recorder)
+        .save_file(format!("{out_prefix}.bpk"))
         .unwrap();
 
     std::fs::write(
@@ -221,5 +207,5 @@ pub fn train_schedule<B: AutodiffBackend>(
         ),
     )
     .unwrap();
-    println!("Saved {}.bin and {}_meta.json", out_prefix, out_prefix);
+    println!("Saved {}.bpk and {}_meta.json", out_prefix, out_prefix);
 }

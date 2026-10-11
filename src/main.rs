@@ -774,7 +774,7 @@ fn main() {
     #[cfg(feature = "ml")]
     {
         if let Some(ratio) = ml_prune_ratio {
-            use burn::backend::ndarray::NdArrayDevice;
+            use burn::tensor::Device;
             use mrs_core::ml::premise_selector::PremiseSelector;
             use mrs_core::term_bank::TermBank;
             let mut bank = TermBank::new();
@@ -783,16 +783,14 @@ fn main() {
                 id_clauses.push(bank.clause_from_legacy(c));
             }
 
-            let device = NdArrayDevice::Cpu;
+            let device = Device::flex();
             let Some(weights) = &ml_premise_weights else {
                 eprintln!(
                     "Error: --ml-prune requires --ml-premise-weights; refusing to prune with a randomly initialized model."
                 );
                 std::process::exit(1);
             };
-            let selector = match PremiseSelector::<burn::backend::ndarray::NdArray>::load_from_file(
-                weights, &device,
-            ) {
+            let selector = match PremiseSelector::load_from_file(weights, &device) {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("Failed to load premise weights from {}: {}", weights, e);

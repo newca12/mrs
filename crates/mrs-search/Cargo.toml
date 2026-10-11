@@ -9,7 +9,7 @@ rust-version.workspace = true
 
 [features]
 default = []
-ml-guidance = ["mrs-core/ml", "dep:rand", "dep:wincode", "dep:burn", "burn?/ndarray", "burn?/std"]
+ml-guidance = ["mrs-core/ml", "dep:rand", "dep:wincode", "dep:burn", "burn?/flex", "burn?/std"]
 parent-guidance = ["mrs-core/ml", "dep:serde_json"]
 
 [dependencies]

@@ -120,7 +120,7 @@ pub struct SearchState {
     pub parent_guidance_model: Option<Arc<mrs_core::ml::parent_guidance::ParentGuidanceModel>>,
     /// Loaded ML model for clause scoring.
     #[cfg(feature = "ml-guidance")]
-    pub ml_model: Option<Arc<mrs_core::ml::model::ClauseClassifier<burn::backend::NdArray>>>,
+    pub ml_model: Option<Arc<mrs_core::ml::model::ClauseClassifier>>,
     /// Cached scores for clauses
     #[cfg(feature = "ml-guidance")]
     pub scores: HashMap<ClauseId, f32>,
@@ -387,8 +387,7 @@ impl SearchState {
                 mrs_core::ml::features::extract(clause, &self.term_bank, &self.symbols, weight);
 
             use burn::tensor::Tensor;
-            let tensor =
-                Tensor::<burn::backend::NdArray, 1>::from_floats(feats, &Default::default());
+            let tensor = Tensor::<1>::from_floats(feats, &burn::tensor::Device::flex());
             let tensor = tensor.reshape([1, 128]); // batch size 1
             let logit = model.forward(tensor).into_scalar();
             self.scores.insert(clause.id, logit);

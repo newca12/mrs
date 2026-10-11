@@ -10,7 +10,7 @@ rust-version.workspace = true
 [features]
 default = []
 proover = []
-ml = ["dep:burn", "dep:wincode", "burn/ndarray", "burn/std"]
+ml = ["dep:burn", "dep:wincode", "burn/flex", "burn/std"]
 
 [dependencies]
 smallvec = { workspace = true }

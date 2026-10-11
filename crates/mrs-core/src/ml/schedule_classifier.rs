@@ -175,22 +175,22 @@ use burn::module::Module;
 #[cfg(feature = "ml")]
 use burn::nn::{Linear, LinearConfig};
 #[cfg(feature = "ml")]
-use burn::tensor::Tensor;
+use burn::store::{ModuleRecord, RecordError};
 #[cfg(feature = "ml")]
-use burn::tensor::backend::Backend;
+use burn::tensor::{Device, Tensor};
 
 #[cfg(feature = "ml")]
 #[derive(Module, Debug)]
-pub struct ScheduleModel<B: Backend> {
-    layer1: Linear<B>,
-    layer2: Linear<B>,
-    layer3: Linear<B>,
-    output: Linear<B>,
+pub struct ScheduleModel {
+    layer1: Linear,
+    layer2: Linear,
+    layer3: Linear,
+    output: Linear,
 }
 
 #[cfg(feature = "ml")]
-impl<B: Backend> ScheduleModel<B> {
-    pub fn new(device: &B::Device) -> Self {
+impl ScheduleModel {
+    pub fn new(device: &Device) -> Self {
         Self {
             layer1: LinearConfig::new(SCHEDULE_FEATURE_DIM, 256).init(device),
             layer2: LinearConfig::new(256, 128).init(device),
@@ -199,7 +199,7 @@ impl<B: Backend> ScheduleModel<B> {
         }
     }
 
-    pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
+    pub fn forward(&self, x: Tensor<2>) -> Tensor<2> {
         let x = burn::tensor::activation::relu(self.layer1.forward(x));
         let x = burn::tensor::activation::relu(self.layer2.forward(x));
         let x = burn::tensor::activation::relu(self.layer3.forward(x));
@@ -208,27 +208,22 @@ impl<B: Backend> ScheduleModel<B> {
 }
 
 #[cfg(feature = "ml")]
-pub struct ScheduleClassifier<B: Backend> {
-    model: ScheduleModel<B>,
-    device: B::Device,
+pub struct ScheduleClassifier {
+    model: ScheduleModel,
+    device: Device,
 }
 
 #[cfg(feature = "ml")]
-impl<B: Backend> ScheduleClassifier<B> {
-    pub fn new(device: B::Device) -> Self {
+impl ScheduleClassifier {
+    pub fn new(device: Device) -> Self {
         Self {
             model: ScheduleModel::new(&device),
             device,
         }
     }
 
-    pub fn load_from_file(
-        path: &str,
-        device: &B::Device,
-    ) -> Result<Self, burn::record::RecorderError> {
-        use burn::record::{BinFileRecorder, Recorder};
-        let recorder = BinFileRecorder::<burn::record::HalfPrecisionSettings>::default();
-        let record = recorder.load(path.into(), device)?;
+    pub fn load_from_file(path: &str, device: &Device) -> Result<Self, RecordError> {
+        let record = ModuleRecord::load(path)?;
         let model = ScheduleModel::new(device).load_record(record);
         Ok(Self {
             model,
@@ -236,13 +231,13 @@ impl<B: Backend> ScheduleClassifier<B> {
         })
     }
 
-    pub fn with_model(model: ScheduleModel<B>, device: B::Device) -> Self {
+    pub fn with_model(model: ScheduleModel, device: Device) -> Self {
         Self { model, device }
     }
 
     pub fn classify(&self, features: [f32; SCHEDULE_FEATURE_DIM]) -> &'static str {
         let tensor =
-            Tensor::<B, 1>::from_data(features, &self.device).reshape([1, SCHEDULE_FEATURE_DIM]);
+            Tensor::<1>::from_data(features, &self.device).reshape([1, SCHEDULE_FEATURE_DIM]);
         let logits = self.model.forward(tensor);
         let selected_idx = logits.argmax(1).into_data().as_slice::<i64>().unwrap()[0] as usize;
         match selected_idx {
@@ -259,13 +254,13 @@ impl<B: Backend> ScheduleClassifier<B> {
 #[cfg(all(test, feature = "ml"))]
 mod tests {
     use super::*;
-    use burn::backend::NdArray;
+    use burn::tensor::Device;
 
     #[test]
     fn test_schedule_model_shape() {
-        let device = burn::backend::ndarray::NdArrayDevice::Cpu;
-        let model = ScheduleModel::<NdArray>::new(&device);
-        let x = Tensor::<NdArray, 2>::zeros([2, SCHEDULE_FEATURE_DIM], &device);
+        let device = Device::flex();
+        let model = ScheduleModel::new(&device);
+        let x = Tensor::<2>::zeros([2, SCHEDULE_FEATURE_DIM], &device);
         let out = model.forward(x);
         assert_eq!(out.shape().dims(), [2, 5]);
     }

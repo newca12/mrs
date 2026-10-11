@@ -90,12 +90,10 @@ fn main() {
 
     #[cfg(feature = "cuda")]
     {
-        println!("Using CUDA (LibTorch) Backend");
-        type MyBackend = burn::backend::libtorch::LibTorch;
-        type MyAutodiffBackend = burn::backend::autodiff::Autodiff<MyBackend>;
-        let device = burn::backend::libtorch::LibTorchDevice::Cuda(0);
+        println!("Using CUDA Backend");
+        let device = burn::tensor::Device::cuda(0).autodiff();
         if cfg.mode == "premise" {
-            premise_train::train_premise::<MyAutodiffBackend>(
+            premise_train::train_premise(
                 device,
                 &log_dir,
                 &cfg.out_prefix,
@@ -104,7 +102,7 @@ fn main() {
                 cfg.neg_per_pos,
             );
         } else if cfg.mode == "schedule" {
-            schedule_train::train_schedule::<MyAutodiffBackend>(
+            schedule_train::train_schedule(
                 device,
                 &log_dir,
                 &cfg.out_prefix,
@@ -130,11 +128,9 @@ fn main() {
     #[cfg(all(feature = "wgpu", not(feature = "cuda")))]
     {
         println!("Using Wgpu Backend");
-        type MyBackend = burn::backend::wgpu::Wgpu;
-        type MyAutodiffBackend = burn::backend::autodiff::Autodiff<MyBackend>;
-        let device = burn::backend::wgpu::WgpuDevice::default();
+        let device = burn::tensor::Device::wgpu(Default::default()).autodiff();
         if cfg.mode == "premise" {
-            premise_train::train_premise::<MyAutodiffBackend>(
+            premise_train::train_premise(
                 device,
                 &log_dir,
                 &cfg.out_prefix,
@@ -143,7 +139,7 @@ fn main() {
                 cfg.neg_per_pos,
             );
         } else if cfg.mode == "schedule" {
-            schedule_train::train_schedule::<MyAutodiffBackend>(
+            schedule_train::train_schedule(
                 device,
                 &log_dir,
                 &cfg.out_prefix,
@@ -168,12 +164,10 @@ fn main() {
 
     #[cfg(all(feature = "ndarray", not(any(feature = "cuda", feature = "wgpu"))))]
     {
-        println!("Using NdArray (CPU) Backend");
-        type MyBackend = burn::backend::ndarray::NdArray;
-        type MyAutodiffBackend = burn::backend::autodiff::Autodiff<MyBackend>;
-        let device = burn::backend::ndarray::NdArrayDevice::Cpu;
+        println!("Using Flex (CPU) Backend");
+        let device = burn::tensor::Device::flex().autodiff();
         if cfg.mode == "premise" {
-            premise_train::train_premise::<MyAutodiffBackend>(
+            premise_train::train_premise(
                 device,
                 &log_dir,
                 &cfg.out_prefix,
@@ -182,7 +176,7 @@ fn main() {
                 cfg.neg_per_pos,
             );
         } else if cfg.mode == "schedule" {
-            schedule_train::train_schedule::<MyAutodiffBackend>(
+            schedule_train::train_schedule(
                 device,
                 &log_dir,
                 &cfg.out_prefix,
