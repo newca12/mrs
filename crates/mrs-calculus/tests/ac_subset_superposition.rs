@@ -698,6 +698,95 @@ fn associative_only_symbols_do_not_take_the_subset_path() {
     );
 }
 
+#[test]
+fn associative_only_matches_preserve_order_and_keep_target_variables_rigid() {
+    let mut fx = Fixture::new(&["f", "p", "a", "b", "c"]);
+    let x = fx.var(0);
+    let target_y = fx.var(7);
+    let a = fx.constant("a");
+    let b = fx.constant("b");
+    let c = fx.constant("c");
+    let eq = unit_eq(fx.app("f", vec![x, a]), b, "axiom");
+    let target = negated_pred(fx.r("p"), vec![fx.app("f", vec![c, a, target_y])]);
+    let assoc = AcSets::new(&fx, &[("f", false)]);
+
+    let run = fx.superpose_both(&eq, &target, &assoc);
+    assert!(
+        run.contains("~p(f(b(), X8))"),
+        "ordered associative matching should rewrite the first two operands while leaving the target variable untouched: {:#?}",
+        run.rendered
+    );
+    assert!(run.rendered.iter().all(|clause| !clause.contains("X0")));
+}
+
+#[test]
+fn associative_only_pattern_variable_absorbs_an_ordered_segment() {
+    let mut fx = Fixture::new(&["f", "p", "a", "b", "c", "d"]);
+    let x = fx.var(0);
+    let a = fx.constant("a");
+    let b = fx.constant("b");
+    let c = fx.constant("c");
+    let d = fx.constant("d");
+    let target_y = fx.var(7);
+    let eq = unit_eq(fx.app("f", vec![x, a]), b, "axiom");
+    let target_term = fx.app("f", vec![c, d, a, target_y]);
+    let target = negated_pred(fx.r("p"), vec![target_term]);
+    let assoc = AcSets::new(&fx, &[("f", false)]);
+
+    let run = fx.superpose_both(&eq, &target, &assoc);
+    assert!(
+        run.contains("~p(f(b(), X8))"),
+        "X must bind to the ordered segment f(c,d), while the trailing a is matched separately and the target variable remains rigid: {:#?}",
+        run.rendered
+    );
+    assert!(!run.rendered.iter().any(|clause| clause.contains("X7")));
+}
+
+#[test]
+fn associative_only_matching_does_not_permute_or_drop_operands() {
+    let mut fx = Fixture::new(&["f", "p", "a", "b", "c"]);
+    let a = fx.constant("a");
+    let b = fx.constant("b");
+    let c = fx.constant("c");
+    let eq = unit_eq(fx.app("f", vec![a, b]), c, "axiom");
+    let target = negated_pred(fx.r("p"), vec![fx.app("f", vec![b, a])]);
+    let assoc = AcSets::new(&fx, &[("f", false)]);
+
+    assert!(
+        fx.superpose_both(&eq, &target, &assoc).rendered.is_empty(),
+        "associativity alone must not authorize a commutative permutation"
+    );
+
+    let empty_match_eq = unit_eq(fx.app("f", vec![a, b]), c, "axiom");
+    let shorter_target = negated_pred(fx.r("p"), vec![fx.app("f", vec![a])]);
+    assert!(
+        fx.superpose_both(&empty_match_eq, &shorter_target, &assoc)
+            .rendered
+            .is_empty(),
+        "an unmatched operand must not be deleted"
+    );
+}
+
+#[test]
+fn associative_matching_budget_exhaustion_is_not_a_result() {
+    let mut fx = Fixture::new(&["f", "p", "a", "b", "c", "d"]);
+    let x = fx.var(0);
+    let a = fx.constant("a");
+    let b = fx.constant("b");
+    let c = fx.constant("c");
+    let d = fx.constant("d");
+    let eq = unit_eq(fx.app("f", vec![x, a]), b, "axiom");
+    let target = negated_pred(fx.r("p"), vec![fx.app("f", vec![c, d, a])]);
+    let assoc = AcSets::new(&fx, &[("f", false)]);
+
+    assert!(
+        fx.superpose_both_budgeted(&eq, &target, &assoc, 0)
+            .rendered
+            .is_empty(),
+        "no associative match may be returned after its budget is exhausted"
+    );
+}
+
 /// The default entry point and the explicit-budget one agree at the production
 /// budget, so the budget is a knob rather than a second behaviour.
 #[test]
@@ -735,7 +824,7 @@ fn a_tiny_budget_on_a_wide_target_is_refused() {
         mrs_unify::ac_subset::match_ac_subset_rigid_id(
             pattern,
             target,
-            &fx.bank,
+            &mut fx.bank,
             &comm,
             &assoc,
             None,
@@ -751,7 +840,7 @@ fn a_tiny_budget_on_a_wide_target_is_refused() {
             mrs_unify::ac_subset::match_ac_subset_rigid_id(
                 pattern,
                 target,
-                &fx.bank,
+                &mut fx.bank,
                 &comm,
                 &assoc,
                 None,

@@ -68,7 +68,7 @@ impl AcSubsetBudget {
     }
 
     /// `false` once the budget is gone. Exhaustion is never a success.
-    fn consume(&mut self) -> bool {
+    pub fn consume(&mut self) -> bool {
         if self.remaining == 0 {
             return false;
         }
@@ -113,7 +113,7 @@ impl AcSubsetMatch {
 pub fn match_ac_subset_rigid_id<S: BuildHasher>(
     pattern: TermId,
     target: TermId,
-    bank: &TermBank,
+    bank: &mut TermBank,
     comm: &HashSet<SymbolId, S>,
     assoc: &HashSet<SymbolId, S>,
     rigid: Option<&HashSet<VarId, S>>,
@@ -183,7 +183,7 @@ pub fn match_ac_subset_rigid_id<S: BuildHasher>(
 }
 
 struct MatchCtx<'a, S: BuildHasher> {
-    bank: &'a TermBank,
+    bank: &'a mut TermBank,
     comm: &'a HashSet<SymbolId, S>,
     assoc: &'a HashSet<SymbolId, S>,
     rigid: Option<&'a HashSet<VarId, S>>,
@@ -268,9 +268,8 @@ fn match_element<S: BuildHasher>(
         return Ok(());
     }
 
-    match (ctx.bank.get(pattern), ctx.bank.get(target)) {
+    match (ctx.bank.get(pattern).clone(), ctx.bank.get(target).clone()) {
         (TermNode::Var(var), _) => {
-            let var = *var;
             if ctx.rigid.is_some_and(|rigid| rigid.contains(&var)) {
                 return Err(UnifyError::RigidVariable { var });
             }
@@ -282,7 +281,7 @@ fn match_element<S: BuildHasher>(
         }
         // A variable on the target side is either already bound (and would have
         // been dereferenced above) or rigid. Either way it is never bound here.
-        (_, TermNode::Var(var)) => Err(UnifyError::RigidVariable { var: *var }),
+        (_, TermNode::Var(var)) => Err(UnifyError::RigidVariable { var }),
         (TermNode::App(left_symbol, left_args), TermNode::App(right_symbol, right_args)) => {
             if left_symbol != right_symbol {
                 return Err(UnifyError::SymbolClash {
@@ -292,10 +291,10 @@ fn match_element<S: BuildHasher>(
             }
 
             let saved = subst.clone();
-            if ctx.assoc.contains(left_symbol) {
-                let left_flat = flatten_ac(pattern, *left_symbol, subst, ctx.bank);
-                let right_flat = flatten_ac(target, *left_symbol, subst, ctx.bank);
-                if left_flat.len() == right_flat.len() && ctx.comm.contains(left_symbol) {
+            if ctx.assoc.contains(&left_symbol) {
+                let left_flat = flatten_ac(pattern, left_symbol, subst, ctx.bank);
+                let right_flat = flatten_ac(target, left_symbol, subst, ctx.bank);
+                if left_flat.len() == right_flat.len() && ctx.comm.contains(&left_symbol) {
                     let mut used = vec![false; right_flat.len()];
                     let outcome =
                         match_flat_permutations(ctx, &left_flat, &right_flat, 0, &mut used, subst);
@@ -304,19 +303,15 @@ fn match_element<S: BuildHasher>(
                     }
                     return outcome;
                 }
-                if left_flat.len() != right_flat.len() {
-                    // Associativity alone cannot align different numbers of
-                    // arguments: the only sound alignment is positional, and it
-                    // exists exactly when the counts agree.
-                    return Err(UnifyError::ArityMismatch {
-                        expected: left_flat.len(),
-                        found: right_flat.len(),
-                    });
-                }
-                for (left_arg, right_arg) in left_flat.iter().zip(right_flat.iter()) {
-                    match_element(ctx, *left_arg, *right_arg, subst)?;
-                }
-                return Ok(());
+                return match_assoc_sequences(
+                    ctx,
+                    left_symbol,
+                    &left_flat,
+                    &right_flat,
+                    0,
+                    0,
+                    subst,
+                );
             }
 
             if left_args.len() != right_args.len() {
@@ -334,7 +329,7 @@ fn match_element<S: BuildHasher>(
             if positional.is_ok() {
                 return Ok(());
             }
-            if ctx.comm.contains(left_symbol) && left_args.len() == 2 {
+            if ctx.comm.contains(&left_symbol) && left_args.len() == 2 {
                 let mut swapped = saved.clone();
                 let swap_ok = (|| {
                     match_element(ctx, left_args[0], right_args[1], &mut swapped)?;
@@ -352,6 +347,109 @@ fn match_element<S: BuildHasher>(
             })
         }
     }
+}
+
+/// Matches ordered associative argument sequences. Pattern variables may stand
+/// for one or more consecutive target operands; they never stand for an empty
+/// sequence. Each successful branch is an ordinary most-general match for its
+/// chosen segmentation, and target variables are still rigid in `match_element`.
+///
+/// Associative matching is not unitary in general, so the deterministic budget
+/// bounds segmentation backtracking. The first successful segmentation is
+/// returned; exhaustion is always an error, never a partial substitution.
+fn match_assoc_sequences<S: BuildHasher>(
+    ctx: &mut MatchCtx<'_, S>,
+    symbol: SymbolId,
+    pattern: &[TermId],
+    target: &[TermId],
+    pattern_index: usize,
+    target_index: usize,
+    subst: &mut IdSubstitution,
+) -> Result<(), UnifyError> {
+    if !ctx.budget.consume() {
+        return Err(UnifyError::BudgetExhausted);
+    }
+    if pattern_index == pattern.len() {
+        return if target_index == target.len() {
+            Ok(())
+        } else {
+            Err(UnifyError::NoAcSubsetMatch)
+        };
+    }
+    let remaining_pattern = pattern.len() - pattern_index - 1;
+    if target.len().saturating_sub(target_index) <= remaining_pattern {
+        return Err(UnifyError::NoAcSubsetMatch);
+    }
+
+    let current = deref_id(pattern[pattern_index], subst, ctx.bank);
+    if matches!(ctx.bank.get(current), TermNode::Var(_)) {
+        let max_segment = target.len() - target_index - remaining_pattern;
+        for segment_len in 1..=max_segment {
+            if !ctx.budget.consume() {
+                return Err(UnifyError::BudgetExhausted);
+            }
+            let saved = subst.clone();
+            let segment = rebuild_assoc_segment(
+                &target[target_index..target_index + segment_len],
+                symbol,
+                ctx.bank,
+            );
+            match match_element(ctx, current, segment, subst) {
+                Ok(()) => match match_assoc_sequences(
+                    ctx,
+                    symbol,
+                    pattern,
+                    target,
+                    pattern_index + 1,
+                    target_index + segment_len,
+                    subst,
+                ) {
+                    Ok(()) => return Ok(()),
+                    Err(err) if fatal(&err) => return Err(err),
+                    Err(_) => *subst = saved,
+                },
+                Err(err) if fatal(&err) => return Err(err),
+                Err(_) => *subst = saved,
+            }
+        }
+        return Err(UnifyError::NoAcSubsetMatch);
+    }
+
+    if target_index >= target.len() {
+        return Err(UnifyError::NoAcSubsetMatch);
+    }
+    let saved = subst.clone();
+    match match_element(ctx, current, target[target_index], subst) {
+        Ok(()) => match match_assoc_sequences(
+            ctx,
+            symbol,
+            pattern,
+            target,
+            pattern_index + 1,
+            target_index + 1,
+            subst,
+        ) {
+            Ok(()) => Ok(()),
+            Err(err) if fatal(&err) => Err(err),
+            Err(err) => {
+                *subst = saved;
+                Err(err)
+            }
+        },
+        Err(err) => Err(err),
+    }
+}
+
+fn rebuild_assoc_segment(args: &[TermId], symbol: SymbolId, bank: &mut TermBank) -> TermId {
+    debug_assert!(!args.is_empty());
+    if args.len() == 1 {
+        return args[0];
+    }
+    let mut rebuilt = args[args.len() - 1];
+    for &arg in args[..args.len() - 1].iter().rev() {
+        rebuilt = bank.intern_app(symbol, vec![arg, rebuilt]);
+    }
+    rebuilt
 }
 
 /// Matches two equal-length flattened AC argument lists under a commutative
@@ -531,7 +629,7 @@ mod tests {
         let found = match_ac_subset_rigid_id(
             pattern,
             target,
-            &fx.bank,
+            &mut fx.bank,
             &fx.comm,
             &fx.assoc,
             None,
@@ -557,7 +655,7 @@ mod tests {
         let result = match_ac_subset_rigid_id(
             pattern,
             target,
-            &fx.bank,
+            &mut fx.bank,
             &fx.comm,
             &fx.assoc,
             None,
@@ -584,7 +682,7 @@ mod tests {
         let found = match_ac_subset_rigid_id(
             pattern,
             target,
-            &fx.bank,
+            &mut fx.bank,
             &fx.comm,
             &fx.assoc,
             Some(&rigid),
@@ -617,7 +715,7 @@ mod tests {
         let outcome = match_ac_subset_rigid_id(
             pattern,
             target,
-            &fx.bank,
+            &mut fx.bank,
             &fx.comm,
             &fx.assoc,
             Some(&rigid),
@@ -648,7 +746,7 @@ mod tests {
         let outcome = match_ac_subset_rigid_id(
             pattern,
             target,
-            &fx.bank,
+            &mut fx.bank,
             &fx.comm,
             &fx.assoc,
             Some(&rigid),
@@ -674,7 +772,7 @@ mod tests {
         let err = match_ac_subset_rigid_id(
             pattern,
             target,
-            &fx.bank,
+            &mut fx.bank,
             &fx.comm,
             &fx.assoc,
             None,
@@ -695,7 +793,7 @@ mod tests {
         let err = match_ac_subset_rigid_id(
             pattern,
             target,
-            &fx.bank,
+            &mut fx.bank,
             &fx.comm,
             &fx.assoc,
             None,
@@ -722,7 +820,15 @@ mod tests {
         let mut budget = AcSubsetBudget::new(4096);
 
         assert!(matches!(
-            match_ac_subset_rigid_id(pattern, target, &fx.bank, &comm, &assoc, None, &mut budget,),
+            match_ac_subset_rigid_id(
+                pattern,
+                target,
+                &mut fx.bank,
+                &comm,
+                &assoc,
+                None,
+                &mut budget,
+            ),
             Err(UnifyError::NoAcSubsetMatch)
         ));
     }
@@ -744,8 +850,16 @@ mod tests {
         let mut budget = AcSubsetBudget::new(4096);
 
         assert!(
-            match_ac_subset_rigid_id(pattern, target, &fx.bank, &comm, &assoc, None, &mut budget,)
-                .is_ok()
+            match_ac_subset_rigid_id(
+                pattern,
+                target,
+                &mut fx.bank,
+                &comm,
+                &assoc,
+                None,
+                &mut budget,
+            )
+            .is_ok()
         );
     }
 }

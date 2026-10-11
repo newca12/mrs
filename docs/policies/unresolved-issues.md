@@ -202,19 +202,50 @@ So the "recover the five rows above" claim in the previous revision of this
 entry was wrong. Subset matching is a real capability, and it is not the
 missing half of *that* fix.
 
-**What the five would actually need.** `c26` is an ordinary superposition step
-with a *most general* unifier — `{X1 ↦ inv(V), V ↦ X2}` — and the strict kernel
-already certifies it, which is why `crates/mrs-proover/tests/resources/mrs_proofs/group.s`
-verifies `VerifiedGood` today. The blocker is not soundness of target-variable
-binding, it is that `unify_ac_rec_id` is not most-general: the
-associative-length-mismatch fallback aligns *original* nested arguments
-positionally and returns that as if it were an unifier. Recovering the five
-means making the AC unifier return a genuine MGU (or returning nothing when it
-cannot), which is a different and larger change than the one requested here.
-The measurement that this is what recovers them: a build with the rigid set
-passed as `None` — i.e. the pre-soundness-fix rule — solves all five
-(`Theorem` in 0.01–8.6 s, `--workers 1 --time 60`) where `main` returns `GaveUp`
-in 0.01–0.02 s.
+**Why a previous inference that solved them is not enough.** `c26` is an
+ordinary superposition step with MGU `{X1 ↦ inv(V), V ↦ X2}` *only if its target
+variables are treated as unifiable*. Here the target is the associativity
+clause, and `A := inv(V)` specializes that clause. The strict kernel's current
+acceptance of the archived `group.s` is not a certificate of that inference:
+the proof was checked before the target-rigidity issue was applied to all
+ordinary superposition replay paths. The same restriction applies to the
+archived AC conclusions: a former-build `Theorem` status is not evidence that
+every inference in that proof was sound.
+
+The positional fallback is not an MGU. For example, on associative `f`, the
+flattened equations `f(X,Y,Z) = f(a,b)` cannot be solved by pairing original
+binary children after the flat lengths differ. The fallback can instead return
+`X := a`, `f(Y,Z) := b` (and, recursively, bind a variable inside `b`), which
+selects one shape rather than describing the general associativity solutions.
+More simply, matching a pattern variable `X` to target compound `g(Y)` yields
+`X ↦ g(Y)`: this is a valid binding for the equation-side variable and does not
+bind `Y`. Binding target `Y` to a constant or compound would specialize the
+target, e.g. the resolvent `p(Y)` would incorrectly become `p(a)`.
+
+The justified recovery rule is **ordered associative superposition**, not AC
+subset matching and not a commutative permutation. Under a registered
+associativity law, a non-empty contiguous sequence of target operands may match
+the ordered source sequence; source variables may bind to non-empty ordered
+segments, while target variables remain rigid. The matched segment is replaced
+by the equality's right side and every unmatched operand is retained. This
+follows by repeated associativity of the cited law and ordinary equality
+replacement. A deterministic per-call search budget bounds segmentations; an
+exhausted budget declines the inference. Permutations remain exclusive to
+symbols for which commutativity is registered. Identities are not elided by
+this rule; the identity axioms in group/ring problems remain separate ordinary
+rewrite equalities.
+
+The former build with `rigid=None` solved the five at 0.01–8.6 s, while the
+rigid build returned `GaveUp` at 0.01–0.02 s. This demonstrates that the
+unguarded path affected coverage, not that all its accepted inferences were
+valid. A bounded ordered-associative matcher is now present, but the first local
+post-change run on the five inputs still returns `GaveUp` for all five; this
+does not yet recover the documented problem-level coverage. In particular, the
+retained `group.s` proof depends on target specialization at c26 and is refused
+under the rigid rule. The remaining four problem proofs are not retained in this
+repository, so their exact historical derivations cannot be independently
+audited here. Keep UI-1 open for problem-level recovery and sound archived proof
+evidence; unit-test positives establish only the matcher shape.
 
 #### Independent proof replay
 

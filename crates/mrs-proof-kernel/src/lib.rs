@@ -9966,6 +9966,10 @@ fn verify_superposition(
 
     let target_shift = max_var_clause(&equation_clause).saturating_add(1);
     shift_clause(&mut target_clause, target_shift);
+    let rigid_target_vars: HashSet<VarId> = target_clause
+        .iter()
+        .flat_map(|literal| literal.atom.free_vars())
+        .collect();
     for (equation_idx, equation_literal) in equation_clause.iter().enumerate() {
         if !equation_literal.positive {
             continue;
@@ -9995,7 +9999,12 @@ fn verify_superposition(
                         continue;
                     };
                     let mut substitution = HashMap::new();
-                    if !unify_terms(from, subterm, &mut substitution) {
+                    if !unify_superposition_terms(
+                        from,
+                        subterm,
+                        &mut substitution,
+                        &rigid_target_vars,
+                    ) {
                         continue;
                     }
                     let replacement = apply_substitution_term(to, &substitution);
@@ -10128,6 +10137,10 @@ fn unit_rewrite_closure_matches(
         if clause_alpha_equiv(&condense_clause(&state), &condensed_goal) {
             return true;
         }
+        let rigid_target_vars: HashSet<VarId> = state
+            .iter()
+            .flat_map(|literal| literal.atom.free_vars())
+            .collect();
         for (literal_idx, literal) in state.iter().enumerate() {
             for (from, to) in [(left, right), (right, left)] {
                 if matches!(from, Term::Var(_)) {
@@ -10149,7 +10162,12 @@ fn unit_rewrite_closure_matches(
                         continue;
                     };
                     let mut substitution = HashMap::new();
-                    if !unify_terms(from, subterm, &mut substitution) {
+                    if !unify_superposition_terms(
+                        from,
+                        subterm,
+                        &mut substitution,
+                        &rigid_target_vars,
+                    ) {
                         continue;
                     }
                     // Simplifications only: the replacement instance must
@@ -10483,17 +10501,16 @@ fn ac_subset_superposition_replay(
                     let Some(subterm) = term_at_position(base, &position) else {
                         continue;
                     };
-                    let Some((symbol, _)) = (match subterm {
-                        Term::App(symbol, args)
-                            if commutative.contains(symbol) && associative.contains(symbol) =>
-                        {
-                            Some((*symbol, args))
-                        }
+                    let Some(symbol) = (match subterm {
+                        Term::App(symbol, _) if associative.contains(symbol) => Some(*symbol),
                         _ => None,
                     }) else {
                         continue;
                     };
-                    let Some((substitution, consumed)) = match_ac_operand_subset(
+                    if budget.exhausted.get() {
+                        return AcReplay::BudgetExhausted;
+                    }
+                    let Some(match_result) = match_ac_operand_subset(
                         from,
                         subterm,
                         symbol,
@@ -10502,17 +10519,24 @@ fn ac_subset_superposition_replay(
                         associative,
                         &budget,
                     ) else {
+                        return AcReplay::BudgetExhausted;
+                    };
+                    let Some((substitution, consumed)) = match_result else {
                         continue;
                     };
-
-                    let Term::App(_, _) = subterm else {
-                        unreachable!()
-                    };
-                    let operands = flatten_ac_term(subterm, symbol, associative);
+                    if consumed.windows(2).any(|pair| pair[1] != pair[0] + 1) {
+                        // Non-contiguous consumption is licensed by AC, but not
+                        // by associativity alone. The AC branch below proves it
+                        // only when commutativity was cited/detected.
+                        if !commutative.contains(&symbol) {
+                            continue;
+                        }
+                    }
+                    let target_operands = flatten_ac_term(subterm, symbol, associative);
                     let mut rewritten_operands =
-                        Vec::with_capacity(operands.len() - consumed.len() + 1);
+                        Vec::with_capacity(target_operands.len() - consumed.len() + 1);
                     let mut consumed_index = 0;
-                    for (index, operand) in operands.iter().enumerate() {
+                    for (index, operand) in target_operands.iter().enumerate() {
                         if consumed_index < consumed.len() && consumed[consumed_index] == index {
                             consumed_index += 1;
                         } else {
@@ -10556,6 +10580,9 @@ fn ac_subset_superposition_replay(
                     {
                         return AcReplay::Matched;
                     }
+                    if budget.exhausted.get() {
+                        return AcReplay::BudgetExhausted;
+                    }
                 }
             }
         }
@@ -10577,6 +10604,7 @@ fn rebuild_ac_term(mut operands: Vec<Term>, symbol: mrs_core::SymbolId) -> Term 
     result
 }
 
+#[allow(clippy::type_complexity)]
 fn match_ac_operand_subset(
     pattern: &Term,
     target: &Term,
@@ -10585,38 +10613,156 @@ fn match_ac_operand_subset(
     commutative: &HashSet<mrs_core::SymbolId>,
     associative: &HashSet<mrs_core::SymbolId>,
     budget: &AcUnifierBudget,
-) -> Option<(HashMap<VarId, Term>, Vec<usize>)> {
+) -> Option<Option<(HashMap<VarId, Term>, Vec<usize>)>> {
     let Term::App(pattern_symbol, _) = pattern else {
-        return None;
+        return Some(None);
     };
     if *pattern_symbol != symbol {
-        return None;
+        return Some(None);
     }
     let pattern_operands = flatten_ac_term(pattern, symbol, associative);
     let target_operands = flatten_ac_term(target, symbol, associative);
-    if pattern_operands.len() < 2 || pattern_operands.len() > target_operands.len() {
-        return None;
+    if pattern_operands.len() < 2 {
+        return Some(None);
     }
-    let mut used = vec![false; target_operands.len()];
-    let mut chosen = Vec::with_capacity(pattern_operands.len());
-    let mut substitution = HashMap::new();
-    if match_subset_operands(
-        &pattern_operands,
-        &target_operands,
-        0,
-        &mut used,
-        &mut chosen,
-        &mut substitution,
-        rigid,
-        commutative,
-        associative,
-        budget,
-    ) {
-        chosen.sort_unstable();
-        Some((substitution, chosen))
+    if commutative.contains(&symbol) {
+        if pattern_operands.len() > target_operands.len() {
+            return Some(None);
+        }
+        let mut used = vec![false; target_operands.len()];
+        let mut chosen = Vec::with_capacity(pattern_operands.len());
+        let mut substitution = HashMap::new();
+        if match_subset_operands(
+            &pattern_operands,
+            &target_operands,
+            0,
+            &mut used,
+            &mut chosen,
+            &mut substitution,
+            rigid,
+            commutative,
+            associative,
+            budget,
+        ) {
+            chosen.sort_unstable();
+            Some(Some((substitution, chosen)))
+        } else {
+            Some(None)
+        }
     } else {
-        None
+        for start in 0..target_operands.len() {
+            for end in start + 2..=target_operands.len() {
+                if !budget.consume() {
+                    return None;
+                }
+                let mut substitution = HashMap::new();
+                if match_assoc_exact(
+                    symbol,
+                    &pattern_operands,
+                    &target_operands[start..end],
+                    &mut substitution,
+                    rigid,
+                    commutative,
+                    associative,
+                    budget,
+                ) {
+                    return Some(Some((substitution, (start..end).collect())));
+                }
+                if budget.exhausted.get() {
+                    return None;
+                }
+            }
+        }
+        Some(None)
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn match_assoc_exact(
+    symbol: mrs_core::SymbolId,
+    pattern: &[&Term],
+    target: &[&Term],
+    substitution: &mut HashMap<VarId, Term>,
+    rigid: &HashSet<VarId>,
+    commutative: &HashSet<mrs_core::SymbolId>,
+    associative: &HashSet<mrs_core::SymbolId>,
+    budget: &AcUnifierBudget,
+) -> bool {
+    if !budget.consume() {
+        return false;
+    }
+    if pattern.is_empty() {
+        return target.is_empty();
+    }
+    let current = apply_substitution_term(pattern[0], substitution);
+    let Term::Var(var) = &current else {
+        if target.is_empty() {
+            return false;
+        }
+        let mut next = substitution.clone();
+        if !rigid_match_term(
+            &current,
+            target[0],
+            &mut next,
+            rigid,
+            commutative,
+            associative,
+            budget,
+        ) {
+            return false;
+        }
+        if match_assoc_exact(
+            symbol,
+            &pattern[1..],
+            &target[1..],
+            &mut next,
+            rigid,
+            commutative,
+            associative,
+            budget,
+        ) {
+            *substitution = next;
+            return true;
+        }
+        return false;
+    };
+
+    // A pattern variable can absorb a non-empty contiguous target sequence.
+    let max_length = target.len().saturating_sub(pattern.len() - 1);
+    if max_length == 0 {
+        return false;
+    }
+    for length in 1..=max_length {
+        if !budget.consume() {
+            return false;
+        }
+        let mut value = target[0].clone();
+        for operand in &target[1..length] {
+            value = Term::app(symbol, vec![value, (*operand).clone()]);
+        }
+        if rigid.contains(var) || value.free_vars().contains(var) {
+            continue;
+        }
+        let mut next = substitution.clone();
+        next.insert(*var, value);
+        if match_assoc_exact(
+            symbol,
+            &pattern[1..],
+            &target[length..],
+            &mut next,
+            rigid,
+            commutative,
+            associative,
+            budget,
+        ) {
+            *substitution = next;
+            return true;
+        }
+        if budget.exhausted.get() {
+            return false;
+        }
+    }
+    false
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -10714,9 +10860,6 @@ fn rigid_match_term(
             if associative.contains(left_symbol) {
                 let left = flatten_ac_term(&pattern, *left_symbol, associative);
                 let right = flatten_ac_term(&target, *left_symbol, associative);
-                if left.len() != right.len() {
-                    return false;
-                }
                 if commutative.contains(left_symbol) {
                     if left.len() != right.len() {
                         return false;
@@ -10734,17 +10877,18 @@ fn rigid_match_term(
                         budget,
                     );
                 }
-                left.iter().zip(right.iter()).all(|(left, right)| {
-                    rigid_match_term(
-                        left,
-                        right,
-                        substitution,
-                        rigid,
-                        commutative,
-                        associative,
-                        budget,
-                    )
-                })
+                match_assoc_sequence(
+                    *left_symbol,
+                    &left,
+                    &right,
+                    0,
+                    0,
+                    substitution,
+                    rigid,
+                    commutative,
+                    associative,
+                    budget,
+                )
             } else if left_args.len() != right_args.len() {
                 false
             } else {
@@ -10764,6 +10908,96 @@ fn rigid_match_term(
                     })
             }
         }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn match_assoc_sequence(
+    symbol: mrs_core::SymbolId,
+    pattern: &[&Term],
+    target: &[&Term],
+    pattern_index: usize,
+    target_index: usize,
+    substitution: &mut HashMap<VarId, Term>,
+    rigid: &HashSet<VarId>,
+    commutative: &HashSet<mrs_core::SymbolId>,
+    associative: &HashSet<mrs_core::SymbolId>,
+    budget: &AcUnifierBudget,
+) -> bool {
+    if !budget.consume() {
+        return false;
+    }
+    if pattern_index == pattern.len() {
+        return target_index == target.len();
+    }
+    let remaining_pattern = pattern.len() - pattern_index - 1;
+    if target.len().saturating_sub(target_index) <= remaining_pattern {
+        return false;
+    }
+    let current = apply_substitution_term(pattern[pattern_index], substitution);
+    if let Term::Var(var) = &current {
+        let max_segment = target.len() - target_index - remaining_pattern;
+        for length in 1..=max_segment {
+            if !budget.consume() {
+                return false;
+            }
+            let mut segment = (*target[target_index]).clone();
+            for operand in &target[target_index + 1..target_index + length] {
+                segment = Term::app(symbol, vec![segment, (*operand).clone()]);
+            }
+            let mut next = substitution.clone();
+            if !rigid.contains(var) && !segment.free_vars().contains(var) {
+                next.insert(*var, segment);
+                if match_assoc_sequence(
+                    symbol,
+                    pattern,
+                    target,
+                    pattern_index + 1,
+                    target_index + length,
+                    &mut next,
+                    rigid,
+                    commutative,
+                    associative,
+                    budget,
+                ) {
+                    *substitution = next;
+                    return true;
+                }
+            }
+            if budget.exhausted.get() {
+                return false;
+            }
+        }
+        return false;
+    }
+    if target_index >= target.len() {
+        return false;
+    }
+    let mut next = substitution.clone();
+    if rigid_match_term(
+        &current,
+        target[target_index],
+        &mut next,
+        rigid,
+        commutative,
+        associative,
+        budget,
+    ) && match_assoc_sequence(
+        symbol,
+        pattern,
+        target,
+        pattern_index + 1,
+        target_index + 1,
+        &mut next,
+        rigid,
+        commutative,
+        associative,
+        budget,
+    ) {
+        *substitution = next;
+        true
+    } else {
+        false
     }
 }
 
@@ -10850,6 +11084,10 @@ fn ac_superposition_replay(
     let target_shift = max_var_clause(equation_clause).saturating_add(1);
     let mut shifted_target = target_clause.to_vec();
     shift_clause(&mut shifted_target, target_shift);
+    let rigid_target_vars: HashSet<VarId> = shifted_target
+        .iter()
+        .flat_map(|literal| literal.atom.free_vars())
+        .collect();
     for (equation_index, equation_literal) in equation_clause.iter().enumerate() {
         if unifier_budget.exhausted.get() {
             break;
@@ -10892,6 +11130,12 @@ fn ac_superposition_replay(
                         limits,
                         &unifier_budget,
                         &mut |substitution| {
+                            if substitution
+                                .keys()
+                                .any(|variable| rigid_target_vars.contains(variable))
+                            {
+                                return false;
+                            }
                             let replacement = apply_substitution_term(to, substitution);
                             let replaced_base = replace_term_at(base, &position, replacement);
                             let replaced_atom =
@@ -13240,6 +13484,40 @@ fn collect_term_vars(term: &Term, out: &mut Vec<VarId>) {
     }
 }
 
+fn unify_superposition_terms(
+    left: &Term,
+    right: &Term,
+    substitution: &mut HashMap<VarId, Term>,
+    rigid: &HashSet<VarId>,
+) -> bool {
+    let left = apply_substitution_term(left, substitution);
+    let right = apply_substitution_term(right, substitution);
+    if left == right {
+        return true;
+    }
+    match (&left, &right) {
+        (Term::Var(var), term) if !rigid.contains(var) => {
+            if term.free_vars().contains(var) {
+                return false;
+            }
+            substitution.insert(*var, term.clone());
+            true
+        }
+        (Term::Var(_), _) => false,
+        (_, Term::Var(_)) => false,
+        (Term::App(left_symbol, left_args), Term::App(right_symbol, right_args)) => {
+            left_symbol == right_symbol
+                && left_args.len() == right_args.len()
+                && left_args
+                    .iter()
+                    .zip(right_args.iter())
+                    .all(|(left, right)| {
+                        unify_superposition_terms(left, right, substitution, rigid)
+                    })
+        }
+    }
+}
+
 fn unify_terms(left: &Term, right: &Term, substitution: &mut HashMap<VarId, Term>) -> bool {
     let left = resolve_term(left, substitution);
     let right = resolve_term(right, substitution);
@@ -13966,7 +14244,7 @@ mod tests {
     }
 
     #[test]
-    fn certifies_ac_superposition_replay() {
+    fn ac_superposition_replay_refuses_target_specialization() {
         let mut symbols = SymbolTable::new();
         let positive = symbols.intern("positive_part");
         let lub = symbols.intern("least_upper_bound");
@@ -14011,7 +14289,7 @@ mod tests {
             app(glb, vec![x.clone(), app(glb, vec![y.clone(), z.clone()])]),
         );
 
-        assert_eq!(
+        assert!(matches!(
             verify_ac_superposition(
                 &[source, target, lub_assoc, lub_comm, glb_comm, glb_assoc],
                 &conclusion,
@@ -14019,8 +14297,8 @@ mod tests {
                 &std::collections::HashSet::new(),
                 &std::collections::HashSet::new(),
             ),
-            KernelVerdict::Certified
-        );
+            KernelVerdict::Rejected(_) | KernelVerdict::Inconclusive(_)
+        ));
     }
 
     #[test]
@@ -14120,6 +14398,134 @@ mod tests {
             ),
             KernelVerdict::Inconclusive(_) | KernelVerdict::Rejected(_)
         ));
+    }
+
+    #[test]
+    fn certifies_ordered_associative_superposition_with_rigid_target_variables() {
+        let mut symbols = SymbolTable::new();
+        let f = symbols.intern("ordered_assoc_f");
+        let p = symbols.intern("ordered_assoc_p");
+        let a = symbols.intern("ordered_assoc_a");
+        let b = symbols.intern("ordered_assoc_b");
+        let c = symbols.intern("ordered_assoc_c");
+        let d = symbols.intern("ordered_assoc_d");
+        let associativity = Formula::atom(Atom::eq(
+            Term::app(
+                f,
+                vec![Term::app(f, vec![Term::var(0), Term::var(1)]), Term::var(2)],
+            ),
+            Term::app(
+                f,
+                vec![Term::var(0), Term::app(f, vec![Term::var(1), Term::var(2)])],
+            ),
+        ));
+        let source = Formula::atom(Atom::eq(
+            Term::app(f, vec![Term::var(0), Term::constant(a)]),
+            Term::constant(b),
+        ));
+        let target = Formula::atom(Atom::Pred(
+            p,
+            vec![Term::app(
+                f,
+                vec![Term::constant(c), Term::constant(d), Term::constant(a)],
+            )],
+        ));
+        let conclusion = Formula::atom(Atom::Pred(p, vec![Term::constant(b)]));
+        assert_eq!(
+            verify_ac_superposition(
+                &[source, target, associativity],
+                &conclusion,
+                VerificationLimits::default(),
+                &HashSet::new(),
+                &HashSet::new(),
+            ),
+            KernelVerdict::Certified
+        );
+    }
+
+    #[test]
+    fn refuses_commutative_permutation_when_only_associativity_is_cited() {
+        let mut symbols = SymbolTable::new();
+        let f = symbols.intern("assoc_only_f");
+        let p = symbols.intern("assoc_only_p");
+        let a = symbols.intern("assoc_only_a");
+        let b = symbols.intern("assoc_only_b");
+        let c = symbols.intern("assoc_only_c");
+        let associativity = Formula::atom(Atom::eq(
+            Term::app(
+                f,
+                vec![Term::app(f, vec![Term::var(0), Term::var(1)]), Term::var(2)],
+            ),
+            Term::app(
+                f,
+                vec![Term::var(0), Term::app(f, vec![Term::var(1), Term::var(2)])],
+            ),
+        ));
+        let source = Formula::atom(Atom::eq(
+            Term::app(f, vec![Term::constant(a), Term::constant(b)]),
+            Term::constant(c),
+        ));
+        let target = Formula::atom(Atom::Pred(
+            p,
+            vec![Term::app(f, vec![Term::constant(b), Term::constant(a)])],
+        ));
+        let forged = Formula::atom(Atom::Pred(p, vec![Term::constant(c)]));
+        let verdict = verify_ac_superposition(
+            &[source, target, associativity],
+            &forged,
+            VerificationLimits::default(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert!(
+            matches!(
+                verdict,
+                KernelVerdict::Rejected(_) | KernelVerdict::Inconclusive(_)
+            ),
+            "associativity alone authorized a permutation: {verdict:?}"
+        );
+    }
+
+    #[test]
+    fn refuses_ordered_associative_target_variable_specialization() {
+        let mut symbols = SymbolTable::new();
+        let f = symbols.intern("rigid_assoc_f");
+        let p = symbols.intern("rigid_assoc_p");
+        let a = symbols.intern("rigid_assoc_a");
+        let b = symbols.intern("rigid_assoc_b");
+        let associativity = Formula::atom(Atom::eq(
+            Term::app(
+                f,
+                vec![Term::app(f, vec![Term::var(0), Term::var(1)]), Term::var(2)],
+            ),
+            Term::app(
+                f,
+                vec![Term::var(0), Term::app(f, vec![Term::var(1), Term::var(2)])],
+            ),
+        ));
+        let source = Formula::atom(Atom::eq(
+            Term::app(f, vec![Term::constant(a), Term::constant(b)]),
+            Term::constant(a),
+        ));
+        let target = Formula::atom(Atom::Pred(
+            p,
+            vec![Term::app(f, vec![Term::var(3), Term::constant(b)])],
+        ));
+        let forged = Formula::atom(Atom::Pred(p, vec![Term::constant(a)]));
+        let verdict = verify_ac_superposition(
+            &[source, target, associativity],
+            &forged,
+            VerificationLimits::default(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert!(
+            matches!(
+                verdict,
+                KernelVerdict::Inconclusive(_) | KernelVerdict::Rejected(_)
+            ),
+            "unexpected verdict: {verdict:?}"
+        );
     }
 
     #[test]
@@ -14252,7 +14658,7 @@ mod tests {
     }
 
     #[test]
-    fn certifies_grp167_ac_superposition_shape() {
+    fn refuses_grp167_ac_superposition_target_specialization() {
         fn lower(input: &str, symbols: &mut SymbolTable) -> Formula {
             let problem = parse_tptp(input).expect("formula parses");
             lower_annotated(symbols, &problem.formulas[0], VerificationLimits::default())
@@ -14289,7 +14695,7 @@ mod tests {
             &mut symbols,
         );
 
-        assert_eq!(
+        assert!(matches!(
             verify_ac_superposition(
                 &[source, target, lub_assoc, lub_comm, glb_comm, glb_assoc],
                 &conclusion,
@@ -14297,8 +14703,8 @@ mod tests {
                 &std::collections::HashSet::new(),
                 &std::collections::HashSet::new(),
             ),
-            KernelVerdict::Certified
-        );
+            KernelVerdict::Rejected(_) | KernelVerdict::Inconclusive(_)
+        ));
     }
 
     #[test]
@@ -18352,11 +18758,8 @@ mod tests {
     }
 
     #[test]
-    fn certifies_superposition_with_background_commutativity() {
-        // SWV486+1 shape: the step needs commutativity of `plus`, but is
-        // exported as plain `superposition` without AC citations. The
-        // kernel retries against problem-theory AC axioms, which are
-        // premises of the problem itself.
+    fn refuses_background_commutativity_that_specializes_target() {
+        // The required commutative pairing binds target variable Y to `one`.
         let problem = "fof(comm, axiom, ![X,Y] : (plus(X,Y) = plus(Y,X))).\n\
                        fof(eq, axiom, plus(X1,one) = plus(X1,sk(X1))).\n\
                        fof(target, axiom, p(plus(Y,sk0)) | q(Y)).\n\
@@ -18370,7 +18773,10 @@ mod tests {
                      cnf(s, plain, p(plus(sk0,sk(sk0))) | q(one), inference(superposition, [status(thm)], [eq,target])).\n\
                      cnf(m1, plain, q(one), inference(resolution, [status(thm)], [s,n1])).\n\
                      cnf(bot, plain, $false, inference(resolution, [status(thm)], [m1,n2])).";
-        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+        assert!(matches!(
+            check(problem, proof),
+            KernelVerdict::Rejected(_) | KernelVerdict::Inconclusive(_)
+        ));
     }
 
     #[test]
@@ -18397,10 +18803,11 @@ mod tests {
     }
 
     #[test]
-    fn certifies_superposition_with_folded_demodulation() {
+    fn refuses_folded_superposition_that_specializes_target() {
         // SET637+1 c21169 shape: the single rewrite leaves a redex
         // (`inter(es,es)`) that the prover demodulates with the cited
-        // equation itself before emitting the conclusion.
+        // equation itself before emitting the conclusion. It would bind the
+        // target variable X8 to `es`, which superposition must refuse.
         let problem = "fof(eq, axiom, inter(X,es) = es).\n\
                        fof(target, axiom, d(X8) | m(sk(X8), inter(X8,inter(X8,X8)))).\n\
                        fof(nd, axiom, ~d(es)).\n\
@@ -18412,7 +18819,10 @@ mod tests {
                      cnf(s, plain, d(es) | m(sk(es),es), inference(superposition, [status(thm)], [eq,target])).\n\
                      cnf(m1, plain, m(sk(es),es), inference(resolution, [status(thm)], [s,nd])).\n\
                      cnf(bot, plain, $false, inference(resolution, [status(thm)], [m1,nm])).";
-        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+        assert!(matches!(
+            check(problem, proof),
+            KernelVerdict::Rejected(_) | KernelVerdict::Inconclusive(_)
+        ));
     }
 
     #[test]
@@ -18448,7 +18858,7 @@ mod tests {
     }
 
     #[test]
-    fn certifies_kle145_ac_superposition_shape() {
+    fn refuses_kle145_ac_superposition_target_specialization() {
         fn lower(input: &str, symbols: &mut SymbolTable) -> Formula {
             let problem = parse_tptp(input).expect("formula parses");
             lower_annotated(symbols, &problem.formulas[0], VerificationLimits::default())
@@ -18484,7 +18894,10 @@ mod tests {
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
         );
-        assert_eq!(verdict, KernelVerdict::Certified);
+        assert!(matches!(
+            verdict,
+            KernelVerdict::Rejected(_) | KernelVerdict::Inconclusive(_)
+        ));
     }
 
     #[test]

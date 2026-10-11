@@ -305,28 +305,74 @@ fn superpose_with_id(
                 //    subset* of the subterm's AC arguments. The rigid whole-
                 //    subterm unifier cannot express that shape at all, and it
                 //    is the shape UI-1 records as lost capability.
-                let (sigma, replacement) = match mrs_unify::robinson::unify_ac_rigid_id(
-                    from,
-                    subterm,
-                    bank,
-                    comm,
-                    assoc,
-                    Some(&target_vars),
-                ) {
-                    Ok(sigma) => (sigma, to),
-                    Err(_) => match ac_subset_replacement(
+                let from_root = match bank.get(from) {
+                    TermNode::App(symbol, _) if assoc.contains(symbol) => Some(*symbol),
+                    _ => None,
+                };
+                let assoc_only_root = from_root.is_some_and(|symbol| {
+                    matches!(bank.get(subterm), TermNode::App(target_symbol, _) if *target_symbol == symbol)
+                        && !comm.contains(&symbol)
+                });
+                let (sigma, replacement) = if assoc_only_root {
+                    match assoc_replacement(
                         from,
                         to,
                         subterm,
                         bank,
-                        comm,
                         assoc,
                         &target_vars,
                         ac_subset_budget,
                     ) {
                         Ok(replacement) => replacement,
-                        Err(_) => continue,
-                    },
+                        Err(_) => match mrs_unify::robinson::unify_ac_rigid_id(
+                            from,
+                            subterm,
+                            bank,
+                            comm,
+                            assoc,
+                            Some(&target_vars),
+                        ) {
+                            Ok(sigma) => (sigma, to),
+                            Err(_) => continue,
+                        },
+                    }
+                } else {
+                    match mrs_unify::robinson::unify_ac_rigid_id(
+                        from,
+                        subterm,
+                        bank,
+                        comm,
+                        assoc,
+                        Some(&target_vars),
+                    ) {
+                        Ok(sigma) => (sigma, to),
+                        Err(_) => {
+                            if let Ok(replacement) = ac_subset_replacement(
+                                from,
+                                to,
+                                subterm,
+                                bank,
+                                comm,
+                                assoc,
+                                &target_vars,
+                                ac_subset_budget,
+                            ) {
+                                replacement
+                            } else if let Ok(replacement) = assoc_replacement(
+                                from,
+                                to,
+                                subterm,
+                                bank,
+                                assoc,
+                                &target_vars,
+                                ac_subset_budget,
+                            ) {
+                                replacement
+                            } else {
+                                continue;
+                            }
+                        }
+                    }
                 };
 
                 let from_s = sigma.apply_term(from, bank);
@@ -390,11 +436,13 @@ fn superpose_with_id(
 /// `superpose_selected_id_until` call.
 ///
 /// Matching a `k`-element pattern into an `m`-element argument list has
-/// `m!/(m-k)!` candidate pairings, and each element comparison recurses, so the
-/// search is bounded rather than merely hoped to terminate. Exhaustion is a
-/// non-success (see [`mrs_unify::ac_subset::AcSubsetBudget`]); the value is a
-/// per-call total, not a per-position one, so widening the rule cannot make its
-/// cost grow with the size of the target clause.
+/// `m!/(m-k)!` candidate pairings for AC subset matching; ordered associative
+/// matching has at most `m-k+1` segment starts per position. Each element
+/// comparison recurses, so both are bounded rather than merely hoped to
+/// terminate. Exhaustion is a non-success (see
+/// [`mrs_unify::ac_subset::AcSubsetBudget`]); the value is a per-call total, not
+/// a per-position one, so widening the rule cannot make its cost grow with the
+/// size of the target clause.
 pub const AC_SUBSET_MATCH_BUDGET: u32 = 4096;
 
 /// The AC-subset shape of superposition: rewrite the arguments a match consumed
@@ -470,6 +518,242 @@ fn ac_subset_replacement(
     kept.push(to);
 
     Ok((found.subst, rebuild_ac_term(kept, symbol, bank)))
+}
+
+/// Ordered associative superposition. The source's flattened operands match a
+/// contiguous segment of the target's flattened operands, in order. The segment
+/// is replaced by the equation's right side and all remaining target operands
+/// are retained. This is justified solely by associativity; no identity or
+/// commutativity law is assumed here.
+#[allow(clippy::too_many_arguments)]
+fn assoc_replacement(
+    from: TermId,
+    to: TermId,
+    subterm: TermId,
+    bank: &mut TermBank,
+    assoc: &HashSet<SymbolId>,
+    target_vars: &HashSet<u32>,
+    budget: &mut AcSubsetBudget,
+) -> Result<(IdSubstitution, TermId), mrs_unify::UnifyError> {
+    let TermNode::App(symbol, _) = bank.get(subterm) else {
+        return Err(mrs_unify::UnifyError::UnsupportedShape);
+    };
+    let symbol = *symbol;
+    if !assoc.contains(&symbol) {
+        return Err(mrs_unify::UnifyError::UnsupportedShape);
+    }
+    let subst = IdSubstitution::new();
+    let source = mrs_unify::ac_subset::flatten_ac(from, symbol, &subst, bank);
+    let target = mrs_unify::ac_subset::flatten_ac(subterm, symbol, &subst, bank);
+    // A unary f(X) is not an operand-level match: associativity cannot erase
+    // the outer f. A source with at least two operands may match a contiguous
+    // target segment of any length >= 2 through variable segment bindings.
+    if source.len() < 2 {
+        return Err(mrs_unify::UnifyError::UnsupportedShape);
+    }
+
+    let mut last_error = mrs_unify::UnifyError::NoAcSubsetMatch;
+    for start in 0..target.len() {
+        for end in start + 2..=target.len() {
+            if !budget.consume() {
+                return Err(mrs_unify::UnifyError::BudgetExhausted);
+            }
+            let mut candidate = IdSubstitution::new();
+            if let Err(err) = assoc_match_sequence(
+                &source,
+                &target[start..end],
+                symbol,
+                &mut candidate,
+                bank,
+                assoc,
+                target_vars,
+                budget,
+            ) {
+                last_error = err;
+                if last_error == mrs_unify::UnifyError::BudgetExhausted {
+                    return Err(last_error);
+                }
+                continue;
+            }
+            if start == 0 && end == target.len() {
+                return Ok((candidate, to));
+            }
+            let mut rewritten = target[..start].to_vec();
+            rewritten.push(to);
+            rewritten.extend_from_slice(&target[end..]);
+            return Ok((candidate, rebuild_ac_term(rewritten, symbol, bank)));
+        }
+    }
+    Err(last_error)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn assoc_match_sequence(
+    pattern: &[TermId],
+    target: &[TermId],
+    symbol: SymbolId,
+    subst: &mut IdSubstitution,
+    bank: &mut TermBank,
+    assoc: &HashSet<SymbolId>,
+    rigid: &HashSet<u32>,
+    budget: &mut AcSubsetBudget,
+) -> Result<(), mrs_unify::UnifyError> {
+    if !budget.consume() {
+        return Err(mrs_unify::UnifyError::BudgetExhausted);
+    }
+    if pattern.is_empty() {
+        return if target.is_empty() {
+            Ok(())
+        } else {
+            Err(mrs_unify::UnifyError::NoAcSubsetMatch)
+        };
+    }
+    if target.is_empty() || target.len() < pattern.len() {
+        return Err(mrs_unify::UnifyError::NoAcSubsetMatch);
+    }
+
+    let current = assoc_deref(pattern[0], subst, bank);
+    if matches!(bank.get(current), TermNode::Var(_)) {
+        for length in 1..=target.len() - pattern.len() + 1 {
+            if !budget.consume() {
+                return Err(mrs_unify::UnifyError::BudgetExhausted);
+            }
+            let segment = rebuild_ac_term(target[..length].to_vec(), symbol, bank);
+            let mut candidate = subst.clone();
+            if let Err(err) =
+                assoc_unify_element(current, segment, &mut candidate, bank, assoc, rigid, budget)
+            {
+                if err == mrs_unify::UnifyError::BudgetExhausted {
+                    return Err(err);
+                }
+                continue;
+            }
+            match assoc_match_sequence(
+                &pattern[1..],
+                &target[length..],
+                symbol,
+                &mut candidate,
+                bank,
+                assoc,
+                rigid,
+                budget,
+            ) {
+                Ok(()) => {
+                    *subst = candidate;
+                    return Ok(());
+                }
+                Err(mrs_unify::UnifyError::BudgetExhausted) => {
+                    return Err(mrs_unify::UnifyError::BudgetExhausted);
+                }
+                Err(_) => {}
+            }
+        }
+        return Err(mrs_unify::UnifyError::NoAcSubsetMatch);
+    }
+
+    let mut candidate = subst.clone();
+    assoc_unify_element(
+        current,
+        target[0],
+        &mut candidate,
+        bank,
+        assoc,
+        rigid,
+        budget,
+    )?;
+    assoc_match_sequence(
+        &pattern[1..],
+        &target[1..],
+        symbol,
+        &mut candidate,
+        bank,
+        assoc,
+        rigid,
+        budget,
+    )?;
+    *subst = candidate;
+    Ok(())
+}
+
+fn assoc_unify_element(
+    pattern: TermId,
+    target: TermId,
+    subst: &mut IdSubstitution,
+    bank: &mut TermBank,
+    assoc: &HashSet<SymbolId>,
+    rigid: &HashSet<u32>,
+    budget: &mut AcSubsetBudget,
+) -> Result<(), mrs_unify::UnifyError> {
+    use mrs_core::term_bank::TermNode;
+    if !budget.consume() {
+        return Err(mrs_unify::UnifyError::BudgetExhausted);
+    }
+    let pattern = assoc_deref(pattern, subst, bank);
+    let target = assoc_deref(target, subst, bank);
+    if pattern == target {
+        return Ok(());
+    }
+    match (bank.get(pattern).clone(), bank.get(target).clone()) {
+        (TermNode::Var(var), _) => {
+            if rigid.contains(&var) {
+                return Err(mrs_unify::UnifyError::RigidVariable { var });
+            }
+            if assoc_occurs(var, target, subst, bank) {
+                return Err(mrs_unify::UnifyError::OccursCheck { var });
+            }
+            subst.bind(var, target);
+            Ok(())
+        }
+        (_, TermNode::Var(var)) => Err(mrs_unify::UnifyError::RigidVariable { var }),
+        (TermNode::App(left_symbol, left_args), TermNode::App(right_symbol, right_args)) => {
+            if left_symbol != right_symbol {
+                return Err(mrs_unify::UnifyError::SymbolClash {
+                    left: format!("{left_symbol:?}"),
+                    right: format!("{right_symbol:?}"),
+                });
+            }
+            if assoc.contains(&left_symbol) {
+                let left = mrs_unify::ac_subset::flatten_ac(pattern, left_symbol, subst, bank);
+                let right = mrs_unify::ac_subset::flatten_ac(target, left_symbol, subst, bank);
+                return assoc_match_sequence(
+                    &left,
+                    &right,
+                    left_symbol,
+                    subst,
+                    bank,
+                    assoc,
+                    rigid,
+                    budget,
+                );
+            }
+            if left_args.len() != right_args.len() {
+                return Err(mrs_unify::UnifyError::ArityMismatch {
+                    expected: left_args.len(),
+                    found: right_args.len(),
+                });
+            }
+            for (left, right) in left_args.into_iter().zip(right_args) {
+                assoc_unify_element(left, right, subst, bank, assoc, rigid, budget)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn assoc_deref(mut term: TermId, subst: &IdSubstitution, bank: &TermBank) -> TermId {
+    while let TermNode::Var(var) = bank.get(term) {
+        let Some(next) = subst.get(*var) else { break };
+        term = next;
+    }
+    term
+}
+
+fn assoc_occurs(var: u32, term: TermId, subst: &IdSubstitution, bank: &TermBank) -> bool {
+    let term = assoc_deref(term, subst, bank);
+    match bank.get(term) {
+        TermNode::Var(found) => *found == var,
+        TermNode::App(_, args) => args.iter().any(|&arg| assoc_occurs(var, arg, subst, bank)),
+    }
 }
 
 /// Rebuilds an AC term from a non-empty argument list in the prover's canonical
