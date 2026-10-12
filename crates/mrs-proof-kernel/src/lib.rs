@@ -14302,6 +14302,52 @@ mod tests {
     }
 
     #[test]
+    fn rejects_swv406_c502_archived_target_specialization() {
+        // Archived casc-j13 FEQ proof node SWV406+1 c502. Before target
+        // variables were made rigid, the search unified the right side of
+        // c27's equality with a subterm of c39 and specialized c39's X2 to
+        // c27's X2. This is not an instance of superposition: the two parents
+        // do not entail the resulting specialization. Keep the exact archived
+        // parent/conclusion triple here so a future relaxation of the kernel's
+        // side condition cannot silently recertify the old proof.
+        fn lower(input: &str, symbols: &mut SymbolTable) -> Formula {
+            let parsed = parse_tptp(input).expect("archived clause parses");
+            lower_annotated(symbols, &parsed.formulas[0], VerificationLimits::default())
+                .expect("archived clause lowers")
+        }
+
+        let mut symbols = SymbolTable::new();
+        let c27 = lower(
+            "cnf(c27, plain, ~contains_slb(X0, X2) | X2 = X1 | \
+             remove_slb(insert_slb(X0, pair(X1, X3)), X2) = \
+             insert_slb(remove_slb(X0, X2), pair(X1, X3))).",
+            &mut symbols,
+        );
+        let c39 = lower(
+            "cnf(c39, plain, remove_slb(insert_slb(X0, pair(X1, X2)), X1) = X0).",
+            &mut symbols,
+        );
+        let c502 = lower(
+            "cnf(c502, plain, ~contains_slb(X0, X2) | X2 = X5 | \
+             remove_slb(remove_slb(insert_slb(X0, pair(X5, X6)), X2), X5) = \
+             remove_slb(X0, X2)).",
+            &mut symbols,
+        );
+
+        assert_eq!(
+            verify_superposition(
+                &[c27, c39],
+                &c502,
+                VerificationLimits::default(),
+                &HashSet::new(),
+                &HashSet::new(),
+            ),
+            KernelVerdict::Rejected("superposition conclusion is not a valid rewrite".into()),
+            "the strict kernel must reject archived node c502, not certify or defer it"
+        );
+    }
+
+    #[test]
     fn certifies_ac_subset_superposition_replay() {
         let mut symbols = SymbolTable::new();
         let f = symbols.intern("subset_f");

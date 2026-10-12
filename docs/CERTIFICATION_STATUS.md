@@ -148,17 +148,23 @@ per-step CNF expansion. A long-but-honest proof was refused outright —
 Re-auditing all 215 archived refutations of this run on a 2-core dev box,
 `--strict-time 120`, `--jobs 1`:
 
-| | 2026-09-23 | before proof-node limit fix | after proof-node limit fix |
+| | 2026-09-23 kernel | before proof-node limit fix | after proof-node limit fix, pre-target-rigidity kernel |
 |---|---:|---:|---:|
 | `VerifiedGood` | 152 | 189 | **193** (89.8 %) |
 | `Unknown` | 57 | 25 | **22** |
 | `VerifiedBad` | 5 | 0 | **0** |
 | killed (wall clock) | 0 | 1 | **0** |
 
-The four that moved are exactly the three node-limit rows plus the killed one,
-and all four now certify on the dev box: `SWV406+1` (657 454 formulas) in
-98.9 s / 4.8 GB, `MGT079+1` (227 551) in 26.4 s / 970 MB, `SET017+1` (119 335)
-in 14.4 s / 660 MB, `KRS234+1` (103 464) in 13.8 s / 531 MB.
+The four that moved in that audit were exactly the three node-limit rows plus
+the killed one. **This is a historical result from the pre-target-rigidity
+kernel and is superseded for `SWV406+1`:** its archived proof contains
+superposition node `c502`, which the current kernel rejects because it
+specializes a target-clause variable. The 98.9 s / 4.8 GB run established only
+that the older kernel accepted the archived artifact; it is not current
+certification evidence. `MGT079+1` (227 551 formulas) certified in 26.4 s /
+970 MB, `SET017+1` (119 335) in 14.4 s / 660 MB, and `KRS234+1` (103 464) in
+13.8 s / 531 MB in that historical audit; those verdicts also refer to the
+kernel revision used for that audit.
 Cost of the whole re-audit: **310 s wall, 4.77 GB peak RSS** — re-auditing an
 archived run is not remote work.
 

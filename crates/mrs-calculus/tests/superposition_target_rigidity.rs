@@ -565,3 +565,108 @@ fn rigid_unifier_refuses_target_bindings() {
         "the rigid AC unifier accepted a match that binds a target variable"
     );
 }
+
+/// CASC-J13 FEQ `SWV406+1`, archived node `c502`.
+///
+/// This ordinary `superposition` cites `c27` as the source/equation clause and
+/// `c39` as the target. Its archived conclusion specializes a variable in the
+/// target clause while matching the right side of c27's equality. That was
+/// accepted by the old unrestricted unifier; the current calculus must not
+/// regenerate it.
+#[test]
+fn swv406_c502_archived_target_specialization_is_refused() {
+    let mut symbols = SymbolTable::new();
+    for name in ["contains_slb", "remove_slb", "insert_slb", "pair"] {
+        symbols.intern(name);
+    }
+    let resolve = |name: &str| symbols.resolve_name(name).expect(name);
+    let v = Term::var;
+    let app = |name: &str, args: Vec<Term>| Term::app(resolve(name), args);
+
+    // c27:
+    // ~contains_slb(X0,X2) | X2=X1 |
+    // remove_slb(insert_slb(X0,pair(X1,X3)),X2) =
+    // insert_slb(remove_slb(X0,X2),pair(X1,X3))
+    let c27 = Clause::new(
+        ClauseId(27),
+        vec![
+            Literal::neg(Atom::pred(resolve("contains_slb"), vec![v(0), v(2)])),
+            Literal::pos(Atom::eq(v(2), v(1))),
+            Literal::pos(Atom::eq(
+                app(
+                    "remove_slb",
+                    vec![
+                        app("insert_slb", vec![v(0), app("pair", vec![v(1), v(3)])]),
+                        v(2),
+                    ],
+                ),
+                app(
+                    "insert_slb",
+                    vec![
+                        app("remove_slb", vec![v(0), v(2)]),
+                        app("pair", vec![v(1), v(3)]),
+                    ],
+                ),
+            )),
+        ],
+        ClauseSource::Input {
+            name: "c27".into(),
+            role: "axiom".into(),
+        },
+    );
+
+    // c39: remove_slb(insert_slb(X0,pair(X1,X2)),X1) = X0
+    let c39 = Clause::new(
+        ClauseId(39),
+        vec![Literal::pos(Atom::eq(
+            app(
+                "remove_slb",
+                vec![
+                    app("insert_slb", vec![v(0), app("pair", vec![v(1), v(2)])]),
+                    v(1),
+                ],
+            ),
+            v(0),
+        ))],
+        ClauseSource::Input {
+            name: "c39".into(),
+            role: "axiom".into(),
+        },
+    );
+
+    let archived = "~contains_slb(X0, X2) | X2 = X5 | \
+        remove_slb(remove_slb(insert_slb(X0, pair(X5, X6)), X2), X5) = \
+        remove_slb(X0, X2)";
+
+    let mut bank = TermBank::new();
+    let c27_id = bank.clause_from_legacy(&c27);
+    let c39_id = bank.clause_from_legacy(&c39);
+    let mut id_gen = ClauseIdGen::new();
+    let no_ac_symbols: FxSet<SymbolId> = FxSet::default();
+    let derived = superpose_selected_id_until(
+        &c27_id,
+        &c39_id,
+        &mut bank,
+        &TermOrdering::KBO,
+        &mut id_gen,
+        None,
+        &no_ac_symbols,
+        &no_ac_symbols,
+        None,
+    );
+    let rendered: Vec<String> = derived
+        .iter()
+        .map(|clause| render_clause(&bank, &symbols, clause))
+        .collect();
+    let wanted = squash(archived);
+    let reproduced = rendered.iter().any(|clause| squash(clause) == wanted);
+    println!(
+        "SWV406+1 c502 replay under current superposition: {} ({} derived clauses)",
+        if reproduced { "REPRODUCED" } else { "refused" },
+        rendered.len()
+    );
+    assert!(
+        !reproduced,
+        "HEAD regenerated the archived target-specializing conclusion c502:\n{rendered:#?}"
+    );
+}

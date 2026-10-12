@@ -206,7 +206,10 @@ The first strict kernel implementation certifies only:
 - bounded `superposition` into a cited target clause, with background
   associative/commutative replay when the problem (or its negated
   conjecture, which is a premise of every refutation of that conjecture)
-  supplies the AC law the rewrite used
+  supplies the AC law the rewrite used. Parents are standardized apart; target
+  variables are rigid and only equation/source variables may be instantiated.
+  This side condition is checked by the kernel's replay, not inferred from the
+  producer's search behavior.
 
 Unannotated multi-parent E-style `skolemize` forms and general directional
 multi-parent CNF transformations remain inconclusive until their kernel rules
@@ -261,6 +264,14 @@ by default:
 - no adversarial mutation reaches `Certified`;
 - no strict kernel dependency reaches `mrs-search`;
 - every accepted conclusion is derived from actual parent content;
+- superposition replay keeps target variables rigid in ordinary, AC, associative,
+  and background-theory paths;
 - AVATAR/CWA proofs carry complete case-split certificates;
 - clean-checkout benchmark results are reproducible from committed inputs,
   checksums, binary hashes, and commands.
+
+When the accepted semantics of a rule change, archived `VerifiedGood` results
+from earlier kernel revisions are historical until re-audited with the new
+kernel. Record the kernel revision with audit totals. Preserve each discovered
+unsound inference as both a strict-kernel rejection test and, where the producer
+is expected to refuse it, a producer-side regression test.

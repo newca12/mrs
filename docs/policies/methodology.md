@@ -173,6 +173,16 @@ For a new inference rule, specify:
 4. The independent replay/checking procedure.
 5. The behavior when the rule is outside the supported fragment.
 
+The producer and strict kernel must each enforce the rule's side conditions.
+Sharing the rule name or replaying the producer's derivation is not independent
+verification: two implementations can share the same mistaken interpretation.
+For superposition, standardize the parents apart, keep target-clause variables
+rigid, and instantiate only source/equation variables. Pin this as both a
+producer-side refusal test and a strict-kernel rejection test using an archived
+counterexample when one exists. A producer-only test cannot establish that the
+checker rejects the inference, and a checker-only positive test cannot establish
+that the producer recorded the right derivation.
+
 ## 6. Test Design
 
 Tests must be designed to falsify the implementation, not merely demonstrate
@@ -208,6 +218,13 @@ downgraded. Include cases where:
 Do not use only hand-constructed examples that mirror the implementation.
 Generate adversarial variants by changing variable sharing, constants,
 literal order, polarity, and clause order.
+
+For inference rules, include both sides of the certificate boundary in the
+regression suite: a valid positive replay and a forged negative replay that
+violates one side condition while otherwise matching the implementation's
+expected shape. When a real archived proof exposes a defect, preserve the exact
+parent/conclusion triple as a kernel test and the same case as a producer test;
+minimize it further only as an additional test.
 
 ### 6.3 Metamorphic tests
 
@@ -285,6 +302,27 @@ The semantic reviewer must be independent of the implementation author. For
 AI-assisted work, a second model may perform this review, but the prompt must
 explicitly require challenging the algorithm's mathematical claims rather
 than summarizing the design document.
+
+### Semantic changes to inference rules
+
+When a change tightens, relaxes, or otherwise changes the accepted instances of
+an inference rule:
+
+- review the producer and strict-kernel implementations separately against the
+  written rule, including every fallback and theory-aware replay path;
+- run positive and negative rule tests in both components, including archived
+  counterexamples and mutations of the relevant side condition;
+- re-audit archived proofs previously marked `VerifiedGood` with the new kernel;
+- label old audit totals with the checker revision that produced them, and do
+  not present them as current certification results until that re-audit finishes;
+- if an old proof becomes `Rejected`, retain the artifact and report the exact
+  first rejected node and rule rather than treating the old verdict as proof
+  that the new checker is wrong.
+
+A clean re-audit is evidence for the archived set and the audited kernel
+revision, not a proof that every possible proof is accepted soundly. Keep the
+rule-level negative test that exposed the defect as a permanent regression
+canary.
 
 Useful review prompt:
 

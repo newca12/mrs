@@ -1159,7 +1159,7 @@ mod tests {
         let mut clause_store = HashMap::default();
         clause_store.insert(unit_id, unit);
         let mut index = mrs_index::stree::STreeId::new();
-        index.insert(fa, &mut bank, (fa, cb, unit_id));
+        index.insert(fa, &bank, (fa, cb, unit_id));
 
         let full = demodulate_id(
             &target,

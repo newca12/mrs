@@ -411,23 +411,28 @@ crates/mrs-bench/certification_campaign.sh --audit-only \
     crates/mrs-bench/results/casc-j13-W8J2-nosharing-20260923
 ```
 
-**The four proofs the kernel used to refuse all certify here.** One
-100 000-formula ceiling used to do two jobs — bounding the proof's DAG and
-bounding per-step CNF expansion — so a long-but-honest proof was refused
-outright. Splitting them (`max_proof_nodes`) admits all four. All from
+**Historical audit note: the proof-node limit fix admitted four long archived
+proofs, but the `SWV406+1` certification was later invalidated by the
+superposition target-rigidity fix.** One 100 000-formula ceiling used to do two
+jobs — bounding the proof's DAG and bounding per-step CNF expansion — so a
+long-but-honest proof was refused outright. Splitting them (`max_proof_nodes`)
+admitted all four to that older kernel. Results from
 `casc-j13-W8J2-nosharing-20260923`, `--strict-time 120`:
 
 | proof | formulas | proof bytes | verdict | cost here |
 |---|---:|---:|---|---|
-| `feq/SWV406+1` | 657 454 | 169.9 MB | `VerifiedGood` | 98.9 s, 4.77 GB |
+| `feq/SWV406+1` | 657 454 | 169.9 MB | **historical `VerifiedGood`; current kernel rejects c502** | 98.9 s, 4.77 GB |
 | `feq/MGT079+1` | 227 551 | 38.6 MB | `VerifiedGood` | 26.4 s, 970 MB |
 | `feq/SET017+1` | 119 335 | 31.1 MB | `VerifiedGood` | 14.4 s, 660 MB |
 | `fne/KRS234+1` | 103 464 | 21.1 MB | `VerifiedGood` | 13.8 s, 531 MB |
 
 `SWV406+1` at 4.8 GB is the largest single allocation on this box. It fits, but
-do not run it concurrently with anything else memory-hungry. Note the four were
-`Unknown` before the split and are `VerifiedBad`-free after it, so this is
-strictly additive: 189 → 193 certified on that run.
+do not run it concurrently with anything else memory-hungry. The old kernel
+reported 193 certified (up from 189); that aggregate is historical and must not
+be quoted as current certification coverage. The archived `SWV406+1` proof has
+node `c502`, rejected by the target-rigid superposition replay now in `HEAD`.
+The campaign must be re-audited with the current kernel before reporting a
+current certified total. See `docs/CERTIFICATION_STATUS.md` §"The residual 22".
 
 **Re-auditing cannot close the demodulation gap** (see R1) — that is the one
 place where re-audit and fresh search genuinely differ, and it is worth being
