@@ -225,7 +225,11 @@ RUN_ID="mrs_bench_${TIMESTAMP}_$(head -c 4 /dev/urandom 2>/dev/null | xxd -p 2>/
 GIT_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo "unknown")"
 GIT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")"
 GIT_DIRTY="$(git status --porcelain 2>/dev/null | grep -q . && echo "true" || echo "false")"
-CPU_MODEL="$(lscpu 2>/dev/null | grep "Model name:" | sed 's/Model name:[ \t]*//' || grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs || echo "unknown")"
+CPU_MODEL="$(lscpu 2>/dev/null | awk -F: '$1 == "Model name" { sub(/^[ \t]*/, "", $2); print $2; exit }')"
+if [[ -z "${CPU_MODEL}" ]]; then
+    CPU_MODEL="$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs || true)"
+fi
+CPU_MODEL="${CPU_MODEL:-unknown}"
 CPU_CORES="$(nproc 2>/dev/null || echo "8")"
 KERNEL_VER="$(uname -r 2>/dev/null || echo "unknown")"
 HOSTNAME_STR="$(hostname 2>/dev/null || echo "unknown")"
