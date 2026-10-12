@@ -145,23 +145,25 @@ needs the machine.
 
 ### R4 — `--proof-bytes-limit` policy, measured against the CASC allowance
 
-The default is 8 MiB and the harness never overrides it, so proofs above it are
+The default is 32 MiB and the harness never overrides it, so proofs above it are
 *omitted with a diagnostic* rather than truncated — a deliberate trade, because
 an over-budget proof that the harness kills takes the status line with it and
 loses the solve too. The cost is that a solved problem arrives with no
 evidence. In the void FEQ campaign that was 2 of 144 refutations (21.2 MB and
 38.0 MB).
 
-> **Blocked by:** a measurement, not a code change. Deciding the right limit
-> needs the real CASC output allowance on the real hardware, and the
-> proof-size distribution at CASC wall clocks.
+> **Still requires measurement:** the exact CASC output allowance on the real
+> hardware and the proof-size distribution at CASC wall clocks. The 32 MiB
+> default is a practical bounded setting, not a claim that every CASC setup
+> permits that much per proof.
 
 Two things worth measuring while there:
 
 - **Proof size varies with portfolio width, not just with the problem.**
   `MGT079+1`'s archived 8-worker proof is 38.6 MB / 227 551 formulas and the
-  kernel refuses to print it under the default limit; a fresh **2-worker** run on
-  the same problem produces a 2.8 MB / 17 792-node proof. A 7× swing from
+  kernel refuses to print it under the current default limit; a fresh
+  **2-worker** run on the same problem produces a 2.8 MB / 17 792-node proof. A
+  7× swing from
   scheduling alone. Whether a portfolio's proofs fit the allowance is partly a
   schedule decision, which makes this an argument for measuring per-division
   rather than picking one global number.
@@ -169,8 +171,13 @@ Two things worth measuring while there:
   certifies (98.9 s, 4.8 GB, within the harness's 120 s `--strict-time`), but a
   fresh solve at CASC limits is what produces a proof that size today.
 
-Until this is measured, `docs/PROOF_SIZE_BUDGET.md` §"Reducing the tail" is the
-analysis and the 8 MiB default is the policy.
+The current 32 MiB default is above the old 8 MiB cap but below the archived
+38.6 MB `MGT079+1` and 170 MB `SWV406+1` examples. Over-cap proofs remain omitted
+with size telemetry rather than truncated.
+
+See `docs/PROOF_SIZE_BUDGET.md` §"Reducing the tail" for the analysis. The
+current 32 MiB default accommodates the measured HWV078-1 EPU proof; the CASC
+output allowance itself remains to be confirmed on the competition host.
 
 ### R5 — Performance probe on the campaign host
 

@@ -411,7 +411,7 @@ failure mode is `Unknown`.
 Median 17 KB, p90 1.0 MB, max 170 MB over 215 archived refutations; three
 proofs exceed the 10 MB output floor the CASC rules state. The tail is
 AVATAR-dominated — about half those nodes are `avatar_split_clause`
-certificates. `--proof-bytes-limit` (default 8 MiB) omits an over-budget proof
+certificates. `--proof-bytes-limit` (default 32 MiB) omits an over-budget proof
 with a diagnostic instead of letting it be killed, and proof size is now in the
 `% SZS detail` telemetry. The default has never been measured against the real
 CASC allowance on the real hardware, and proof size depends on portfolio width

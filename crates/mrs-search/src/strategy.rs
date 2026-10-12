@@ -15,6 +15,10 @@ const CONDENSED_DETACHMENT_BUDGET_MS: u64 = 1_000;
 /// per-problem cap on every input problem.
 const CONDENSED_DETACHMENT_PROCESS_MS: u64 = 5_000;
 
+fn epr_ground_prepass_enabled(value: Option<&str>) -> bool {
+    value != Some("0")
+}
+
 static CONDENSED_DETACHMENT_PROCESS_START: OnceLock<Instant> = OnceLock::new();
 
 fn condensed_detachment_process_elapsed() -> Duration {
@@ -787,30 +791,26 @@ pub fn run_schedule_with_candidate_receiver(
     // minutes with no way to interrupt it.
     let is_problem_epr = is_epr(&clauses_owned);
 
-    // EPR grounding pre-pass — opt-in via `MRS_EPR_GROUND=1`.
+    // EPR grounding pre-pass — enabled by default for EPR problems. Set
+    // `MRS_EPR_GROUND=0` to disable it. `MRS_EPR_GROUND=1` also explicitly
+    // enables it for benchmark scripts and compatibility.
     //
-    // Grounding is the division's natural mode, and this is the only thing in
-    // the tree that searches the `epr_equality` profile *by grounding* — the
-    // pre-pass below refuses that profile outright, on 40 of the 100 CASC-30
-    // EPU problems by measurement. "By grounding" is load-bearing and was an
-    // overstatement in an earlier cut of this comment: the ordinary engine
-    // handles equality by superposition, so the profile is searched by default
-    // too, and the recorded EPU run refuted 9 problems including the
-    // epr_equality `HWV107-1`. What is missing here is the conservative
-    // grounding, not the ability to search the profile.
+    // Grounding is the division's natural mode and now also covers the
+    // `epr_equality` profile. The ordinary engine continues to search that
+    // profile by superposition; the pre-pass is a complementary bounded route.
     //
-    // It is not yet strong enough to be worth its budget by default. The
-    // measurement that established this was taken with a ladder whose narrow
-    // rungs emitted partial instances the ground-set abstraction discarded, so
-    // on wide clauses it searched nothing and returned nothing; that is fixed
-    // (see `epr_ground`), which makes the earlier "refuted nothing" result a
-    // statement about a broken instrument rather than about the route.
-    // Enabling it by default would trade the portfolio's slice for a pre-pass
-    // with no measured coverage, and shipping that is the thing this repo's
-    // discipline exists to prevent.
+    // A matched full-division CASC-30 EPU A/B at commit 3e9c004, on teenf9901
+    // with identical binary hashes and official limits, measured 9
+    // Unsatisfiable / 9 VerifiedGood with this refutation pre-pass disabled and
+    // 11 Unsatisfiable / 10 VerifiedGood with it enabled. HWV078-1 and MSC024-1
+    // were the additional refutations; HWV078-1's 13.38 MB proof was omitted by
+    // the then-default 8 MiB output cap, so that run did not certify it. This is
+    // one paired run, not replicated variance evidence. The pre-pass is now on
+    // by default with MRS_EPR_GROUND=0 as an opt-out; keep the results labeled
+    // as one campaign until replicated. See UI-5.
     //
-    // The full-division measurement that was pending is now taken, for the
-    // *model* arm (`MRS_EPR_MODEL=1`) on CASC-30 EPS, and it is null: 44/100
+    // The separate *model* arm (`MRS_EPR_MODEL=1`) on CASC-30 EPS was null:
+    // 44/100
     // `Satisfiable` and 40/40 kernel-certified models with the arm on and with
     // it off, identical problem-for-problem, both at commit `8a1fdd0`. The
     // 12 rows where the pre-pass verified a model were already `Satisfiable`
@@ -818,33 +818,33 @@ pub fn run_schedule_with_candidate_receiver(
     // rows already solved rather than coverage. See
     // `docs/reports/benchmarks/eps-2026-09.md`.
     //
-    // Two limits on that result, so it is not read as settling the whole
-    // route. It is the EPS/model arm, not the EPU refutation arm: the
-    // `MRS_EPR_GROUND=1` refutation path still has no post-fix full-division
-    // measurement, so "pending" is discharged for one arm and not the other.
-    // And 61 of the 100 EPS problems never reach the model branch at all —
+    // The EPS result is a different arm/division from EPU refutation. Also, 61
+    // of the 100 EPS problems never reach the model branch at all —
     // 34 are `epr_equality`, 1 is not EPR, and the branch is entered only for
     // `pure_relational_epr` and `ground`.
     //
     // Equality splitting (`MRS_EPR_SPLIT=1`) and complementary-unit E-matching
     // (`MRS_EPR_EMATCH=1`) are bounded experiments and remain independently
-    // gated. E-matching adds ordinary ground substitution instances; it does not
-    // change the fact that this entire grounding route is opt-in pending a
-    // certified full-division coverage gain.
+    // gated. E-matching adds ordinary ground substitution instances.
     //
-    // 2026-10-10: `MSC024-1` is now reconstructed from CaDiCaL's bounded LRAT
-    // trace: the local `--workers 1 --time 15 --schedule casc_epu` run produced a
-    // 26 189-node proof in 3.1 s, certified `VerifiedGood` by the strict kernel.
+    // `MSC024-1` is reconstructed from CaDiCaL's bounded LRAT trace: the local
+    // `--workers 1 --time 15 --schedule casc_epu` run produced a 26 189-node
+    // proof, certified `VerifiedGood` by the strict kernel. A
     // `HWV078-1` still uses the ground-derivation fallback because its LRAT
-    // dependency cone exceeds the cap. The route stays opt-in: two certified
-    // solves in ten on 2 physical cores is not a division result; see UI-5.
+    // dependency cone exceeds the cap, but its derivation-loop proof is 13.38 MB.
+    // The 2026-10-12 matched full-division EPU A/B found two additional
+    // refutations with grounding on, one strict-certified with the old 8 MiB
+    // cap; the other was omitted solely by that cap. Grounding now defaults on,
+    // with MRS_EPR_GROUND=0 as an opt-out. The measurement is one replicate;
+    // see UI-5 for the exact counts and limitations.
     //
     // A refutation here is the final answer, so it goes through the candidate
     // receiver like any other winner and can be certified.
     let mut epr_telemetry: Option<crate::EprTelemetry> = None;
-    let epr_ground_enabled = ["MRS_EPR_GROUND", "MRS_EPR_MODEL"]
-        .iter()
-        .any(|name| std::env::var(name).is_ok_and(|v| v != "0"));
+    let epr_ground_enabled =
+        epr_ground_prepass_enabled(std::env::var("MRS_EPR_GROUND").ok().as_deref());
+    let epr_model_enabled = std::env::var("MRS_EPR_MODEL").is_ok_and(|v| v != "0");
+    let epr_ground_enabled = epr_ground_enabled || epr_model_enabled;
     if is_problem_epr && epr_ground_enabled {
         let memory_budget_mb = actual_configs
             .iter()
@@ -859,10 +859,9 @@ pub fn run_schedule_with_candidate_receiver(
         // the 500 ms floor, which the proof reserve then eats whole) and the
         // maximum slice (a 14% share would starve grounding on short runs).
         // Known limitation, documented in `epr_ground`: worker budgets are
-        // not reduced by pre-pass elapsed, so an opt-in run's total wall is
-        // the pre-pass share *plus* the full portfolio, not a partition of
-        // `--time`.
-        let model_search = std::env::var("MRS_EPR_MODEL").is_ok_and(|v| v != "0");
+        // not reduced by pre-pass elapsed, so total wall includes the pre-pass
+        // share plus the full portfolio, not merely `--time`.
+        let model_search = epr_model_enabled;
         let mut budget = crate::epr_budget(memory_budget_mb, total_budget);
         if model_search {
             // Model checking should be a bounded EPS experiment. Never let this
@@ -1895,6 +1894,13 @@ mod tests {
 
     use mrs_core::clause::{ClauseIdGen, ClauseSource};
     use mrs_core::{Atom, Literal, SymbolTable, Term};
+
+    #[test]
+    fn epr_ground_prepass_defaults_on_and_supports_explicit_opt_out() {
+        assert!(epr_ground_prepass_enabled(None));
+        assert!(epr_ground_prepass_enabled(Some("1")));
+        assert!(!epr_ground_prepass_enabled(Some("0")));
+    }
 
     #[test]
     fn spawn_budget_stops_at_the_first_refusal_and_reports_the_truth() {

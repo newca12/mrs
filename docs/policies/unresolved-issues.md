@@ -804,7 +804,7 @@ target/release/audit_casc_proofs \
 
 | | |
 |---|---|
-| Status | Partly discharged 2026-10-09; `MSC024-1` diagnosed and its extraction route fixed 2026-10-10; `sat_solver_unknown` reporting clarified 2026-10-10. The opt-in path now produces a strict-kernel-certified proof locally; division coverage remains unmeasured. |
+| Status | EPR grounding enabled by default on 2026-10-12 after a matched full-division EPU A/B; one additional strict-certified solve on the measured run. Replicated coverage/variance evidence remains open. |
 | Severity | The archived campaign records 9/100 `verdict=ok`; this is a low result |
 | Soundness | No soundness finding is made here. The LRS fix removes a premature `GaveUp`; the extraction changes fail closed on unsupported/oversized traces and only emit binary resolution steps recomputed from their cited ground parents. |
 
@@ -887,7 +887,7 @@ reports 63 662 processed clauses at 10.8 s and a final `GaveUp`; aggregate
 detail does not establish that loading dominates or which worker/result caused
 the final status. Use stage and per-strategy timing before selecting a fix.
 
-### 2026-10-09 measurement: one boundedness defect found and fixed, coverage gain +1 certified
+### 2026-10-09 local subset measurement: one boundedness defect found and fixed
 
 The 43 `unsupported_epr_profile` rows above are **InstGen** telemetry, and the
 question this section asks is about a different route. Two things had to be kept
@@ -956,15 +956,16 @@ is strictly larger than it looks, because the baseline cannot reach the problem
 at all: `HWV078-1` is `Timeout` with the pre-pass off at **40 s, 120 s and
 240 s** on this host, and `Timeout` in the archived 120 s / 8-worker campaign.
 The proof is 52 857 nodes / 13.4 MB, so it needs
-`--proof-bytes-limit 268435456`; the default 8 MB limit reports the refutation
-with `proof_emitted=false`. The kernel certifies it under `--strict --no-atp`.
+`--proof-bytes-limit 268435456` under the then-current default; the kernel
+certifies it under `--strict --no-atp`.
 
-**The pre-pass stays opt-in.** One certified solve in ten at 40 s on 2 cores is
-not a division-level result, and the cost is real: the arm's peak RSS is up to
+At the time of this local subset measurement the pre-pass remained opt-in. One
+certified solve in ten at 40 s on 2 cores was not division-level evidence, and
+the cost was real: the arm's peak RSS was up to
 2.4x the baseline's on the `grounding_timeout` rows (`HWV057-1` 1200 → 2849 MB),
 and on `PUZ036-1.005` (archived `VerifiedGood` via the portfolio) the pre-pass
-turns a 5.0 s solve into 23.0 s for no coverage change. Default behaviour is
-unchanged; the fix only affects runs that already set `MRS_EPR_GROUND=1`.
+turns a 5.0 s solve into 23.0 s for no coverage change. This is a local subset
+measurement, not the later full-division result below.
 
 #### Limitations
 
@@ -987,33 +988,114 @@ unchanged; the fix only affects runs that already set `MRS_EPR_GROUND=1`.
   entry-aware telemetry added below distinguishes future cases, but does not
   retroactively establish which path those rows took.
 
-#### Recommended next bounded measurement
+#### Follow-up after the local subset measurement
 
-Not a default change, and not a broader local run. In order:
+The local subset was not used to change defaults. The following paired
+full-division measurement subsequently ran on the CASC host; see below. The
+remaining follow-up is replication and review of the resource/certification
+trade-offs, not treating a single A/B as a variance estimate.
 
-1. **Re-run the paired arms on the full 100 at the CASC shape** (8 workers,
-   120 s, `--hardware casc`, `--jobs 1`) and compare `binary_sha256`, commit,
-   host and toolchain for both arms. `epr_ab_sweep.sh` records these in
-   `conditions.txt`; `casc.sh` independently records and verifies the actual
-   worker binary in `run_meta.json`.
+1. Re-run paired arms with replicates at the CASC shape and compare
+   `binary_sha256`, commit, host and toolchain for each arm.
 2. **Diagnose `MSC024-1`'s `proof_extraction_failed`** before any further
-   coverage claim; the `HWV078-1` instance was fixed, but this case remains open.
-   → **Done 2026-10-10; see below.** What remains open is the *fix*, not the
-   diagnosis.
+   coverage claim. → **Done 2026-10-10; see below.**
 3. **Reproduce the archived `sat_solver_unknown` rows** (`PLA037-1`,
    `HWV064-1`, `HWV090-1`, `HWV127-1`) with entry-aware solver telemetry before
    attributing their cause.
-4. Only after (1) shows a certified gain on the division, consider whether the
-   pre-pass's RSS cost on `grounding_timeout` rows needs a per-instance ceiling.
+4. Review whether the pre-pass RSS cost on `grounding_timeout` rows needs a
+   per-instance ceiling before altering its budget policy.
 
-Do not accept the pre-pass or the fix as a new default from this subset.
+### 2026-10-12 matched full-division EPU measurement and default change
+
+The paired sweep directories are:
+
+- `epu-sweep-teenf9901-3e9c004-20261012-105351-baseline`
+- `epu-sweep-teenf9901-3e9c004-20261012-105351-grounding`
+
+Both ran the full 100-problem CASC-30 EPU division sequentially on host
+`teenf9901`, commit `3e9c004de2d3b3492499ce3f45b22131e0784a91`, Rust
+`1.99.0 (b940084d7 2026-09-28)`, identical prover SHA-256
+`f8825f9170e2b8de6c191d5a2b648a86beb7133f9642ef59739da1bd56703d80`,
+`--hardware casc`, one job, 8 workers, and the official 120 s limit. The
+checkout was dirty in both arms; the binary hashes nevertheless match. Host
+memory was 128019 MB, about 2% below the configured 131072 MB CASC allowance.
+
+| Measure | Grounding off | Grounding on |
+|---|---:|---:|
+| `Unsatisfiable` | 9/100 | 11/100 |
+| strict `VerifiedGood` | 9 | 10 |
+| strict proof omitted | 0 | 1 |
+| `GaveUp` | 29 | 26 |
+| `Timeout` | 62 | 63 |
+| sum of recorded per-problem wall | 10782.6 s | 10720.9 s |
+| maximum per-problem RSS | 38807 MB | 28864 MB |
+
+The two additional refutations are `HWV078-1` and `MSC024-1`. `MSC024-1` is
+`VerifiedGood`. `HWV078-1` emitted a refutation of 52,857 nodes / 13,382,374
+bytes, but was **omitted** by the 8 MiB proof cap in this run, so this matched
+audit adds one strict-certified solve, not two. A fresh bounded local run with
+the 32 MiB cap emitted the proof, and the strict kernel certified it; see below.
+This does not retroactively certify the archived run.
+
+The EPR pre-pass attempted all EPR-routed rows where eligible. Among telemetry
+with `epr_attempted=true`, outcomes included 51 `grounding_exhausted`, 33
+`grounding_timeout`, 5 `sat_solver_unknown`, 3 `model_fixpoint`, and 2
+`refutation`. The pre-pass changes status on five rows: `HWV078-1` and
+`MSC024-1` from Timeout to Unsatisfiable; `HWV083-1`, `PLA042-1`, and
+`SYO589-1` from GaveUp to Timeout. No `ko` or `VerifiedBad` occurred. Existing
+solves also slowed substantially: `PUZ036-1.005` 5.4 s to 40.9 s, `SYN837-1`
+39.5 s to 78.3 s, and `HWV107-1` 43.7 s to 80.9 s. Thus the measured
+full-division comparison shows +1 strict-certified solve with an explicit
+latency trade-off, but it is one replicate and does not estimate variance.
+
+**Decision:** EPR grounding is enabled by default on EPR problems. Set
+`MRS_EPR_GROUND=0` to opt out; `MRS_EPR_GROUND=1` remains an explicit enable
+spelling. The route remains bounded and falls through on exhaustion. This
+decision uses the matched full-division CASC-shaped measurement, not the earlier
+10-problem subset. It is one replicate; repeat the A/B before claiming a
+replicated coverage or competition-rate gain.
+
+```bash
+# Reproduce the two paired arms with the full-division sweep wrapper.
+MRS_EPR_GROUND=0 MRS_HARDWARE=casc EPU_JOBS=1 \
+  crates/mrs-bench/epr_ab_sweep.sh teenf9901-3e9c004-20261012-105351-baseline
+MRS_EPR_GROUND=1 MRS_HARDWARE=casc EPU_JOBS=1 \
+  crates/mrs-bench/epr_ab_sweep.sh teenf9901-3e9c004-20261012-105351-grounding
+
+# HWV078-1, bounded local follow-up from the repository root.
+MRS_HARDWARE=casc MRS_EPR_GROUND=1 TPTP=/home/fr22192/pve/TPTP-v9.3.0 \
+  timeout 150 ./target/release/mrs --workers 1 --time 120 --schedule casc_epu \
+    --proof-bytes-limit 33554432 \
+    crates/mrs-bench/problems/casc-30/EPU/HWV078-1.p \
+    > /tmp/opencode/HWV078-1.s 2>/tmp/opencode/HWV078-1.stderr
+
+TPTP=/home/fr22192/pve/TPTP-v9.3.0 timeout 120 \
+  ./target/release/mrs-proover --strict --no-atp --workers 1 --time 120 \
+    --problems-dir crates/mrs-bench/problems/casc-30 /tmp/opencode/HWV078-1.s
+```
+
+Observed 2026-10-12 at revision `313b9237ceff11c5db6f5e4889ced685538ce02e`,
+Rust `1.99.0 (b940084d7 2026-09-28)`, on an i7-10610U WSL host (4 physical
+cores, about 4.1 GiB available RAM at run time). The command returned
+`Unsatisfiable`; MRS reports 47.161 s elapsed, 52,857 proof nodes,
+13,376,537 bytes, and 2,072 MB peak RSS. The emitted proof at
+`/tmp/opencode/HWV078-1.s` has SHA-256
+`eeb6dfe435d50d624f7d79e11e2bbf10c77d48dc5d0439c42c1585d637ebd9ae` and returned
+strict `VerifiedGood`. This is a single local verification, not a replacement
+for a replicated campaign-host audit.
+
+This post-A/B confirmation shows the former omitted proof is certifiable with
+the new output cap. Recomputed outcome including this confirmation: 11
+`Unsatisfiable`, 11 strict `VerifiedGood`, 0 `VerifiedBad`; no claims about
+replicated variance are made.
 
 ### 2026-10-10 initial diagnosis: BFS and given-clause extraction exhausted their bounds
 
 This records the bounded failure of the original BFS and ground given-clause
 extractors. A later same-day update below adds a CaDiCaL LRAT reconstruction
-route that succeeds on `MSC024-1`. The pre-pass remains opt-in; this local result
-is not division-level coverage evidence.
+route that succeeds on `MSC024-1`. These historical runs predate the 2026-10-12
+default-on decision; the local results themselves are not division-level
+coverage evidence.
 
 | | |
 |---|---|

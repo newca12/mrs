@@ -67,10 +67,10 @@ fn main() {
         Scaled(Duration),
         UntilResourceCap,
     }
-    // Default 8 MiB: below the smallest output allowance CASC has stated
-    // (10MB per system in CASC-23), so a runaway AVATAR certificate cannot
-    // get the process killed before the SZS status line is flushed.
-    let mut proof_bytes_limit: usize = 8 * 1024 * 1024;
+    // Default 32 MiB: accommodates large and useful certificates such as the
+    // measured 13.38 MB HWV078-1 EPR proof while keeping output explicitly
+    // bounded. Deployments with a lower output allowance can override it.
+    let mut proof_bytes_limit: usize = 32 * 1024 * 1024;
     #[cfg(feature = "ml")]
     let mut ml_premise_weights: Option<String> = None;
 

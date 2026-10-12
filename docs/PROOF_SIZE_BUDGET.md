@@ -56,12 +56,12 @@ risk rather than a systemic one, and it is confined to one division.
 
 ## The output budget
 
-`--proof-bytes-limit N` (default 8 MiB) caps the proof body. A proof larger
+`--proof-bytes-limit N` (default 32 MiB) caps the proof body. A proof larger
 than the cap is *omitted* rather than truncated:
 
 ```
 % SZS status Theorem for SWV406+1
-% Proof omitted: 169921314 bytes / 657454 nodes exceeds the --proof-bytes-limit of 8388608 bytes
+% Proof omitted: 169921314 bytes / 657454 nodes exceeds the --proof-bytes-limit of 33554432 bytes
 ```
 
 and the machine-readable detail line always carries the true size:
@@ -70,12 +70,15 @@ and the machine-readable detail line always carries the true size:
 % SZS detail … result=Refutation … proof_nodes=657454 proof_bytes=169921314 proof_emitted=false
 ```
 
-The default sits below the smallest allowance the CASC rules state on purpose.
-An over-budget proof that the harness kills takes the *status line* with it,
-so the solve is lost as well as the proof; a proof that is deliberately
+The 32 MiB default accommodates the measured 13.38 MB `HWV078-1` EPU grounding
+proof that was omitted by the previous 8 MiB cap. It remains an explicit
+bounded-output setting, not a claim that every CASC environment permits 32 MiB
+per proof; set a lower `--proof-bytes-limit` when the output allowance is
+stricter. An over-budget proof that the harness kills takes the *status line*
+with it, so the solve is lost as well as the proof; a proof that is deliberately
 omitted keeps the solve and reports exactly what was dropped. Every number is
-recorded in `run.csv` via `failure_detail`, so the benchmark harness can
-track the distribution without re-running anything.
+recorded in `run.csv` via `failure_detail`, so the benchmark harness can track
+the distribution without re-running anything.
 
 ## Reducing the tail
 

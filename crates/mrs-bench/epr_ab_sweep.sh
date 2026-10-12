@@ -23,13 +23,13 @@
 #     number — see "Running this where the shape is not available" below.
 #
 # Usage:
-#   epr_ab_sweep.sh <label>                  # whole division, pre-pass off
+#   MRS_EPR_GROUND=0 epr_ab_sweep.sh <label> # whole division, pre-pass off
 #   MRS_EPR_GROUND=1 epr_ab_sweep.sh <label> # whole division, pre-pass on
 #   epr_ab_sweep.sh --subset <label>         # the stratified subset, for a quick look
 #   epr_ab_sweep.sh --list-subset            # print the subset
 #
 # Environment:
-#   MRS_EPR_GROUND=1      enable the EPR grounding pre-pass (this is the A arm)
+#   MRS_EPR_GROUND        default 1; set to 0 to disable the EPR grounding pre-pass
 #   MRS_HARDWARE          passed through; defaults to `casc`
 #   EPU_JOBS              casc.sh --jobs, default 1 (one problem at a time: the
 #                         honest shape when each problem already wants all 8
@@ -52,8 +52,12 @@ DIVISION="epu"
 OUT_ROOT="${EPU_SWEEP_ROOT:-$REPO/crates/mrs-bench/results}"
 JOBS="${EPU_JOBS:-1}"
 HARDWARE="${MRS_HARDWARE:-casc}"
-PRE_PASS="off"
-[[ "${MRS_EPR_GROUND:-}" == "1" ]] && PRE_PASS="on"
+EPR_GROUND="${MRS_EPR_GROUND:-1}"
+case "$EPR_GROUND" in
+  0) PRE_PASS="off" ;;
+  1) PRE_PASS="on" ;;
+  *) echo "[epr-sweep] MRS_EPR_GROUND must be 0 or 1, got '$EPR_GROUND'" >&2; exit 2 ;;
+esac
 
 # Stratified: one problem per EPR profile and per observed outcome, plus the
 # axiom-only counterexample, so a subset moves when a change helps one profile
@@ -202,7 +206,7 @@ fi
     "$LABEL" "$PRE_PASS" "$HARDWARE" "$JOBS" "$MODE" "${TIME_ARGS[*]}"
   printf '# problems_dir=%s division=%s problems=%s\n' \
     "$PROBLEMS_DIR" "$DIVISION" "$([ "$MODE" = full ] && echo 100 || echo "${#SUBSET_DEFAULT[@]}")"
-  printf '# MRS_EPR_GROUND=%s MRS_HARDWARE=%s\n' "${MRS_EPR_GROUND:-0}" "$HARDWARE"
+  printf '# MRS_EPR_GROUND=%s MRS_HARDWARE=%s\n' "$EPR_GROUND" "$HARDWARE"
   printf '# git_commit=%s\n' "$GIT_COMMIT"
   printf '# git_dirty=%s\n' "$GIT_DIRTY"
   # The binary's own identity. `git_commit` alone cannot establish that two arms
@@ -225,7 +229,7 @@ echo "[epr-sweep] shape: $MEM_NOTE"
 [[ "$SHAPE_OK" -eq 0 ]] && echo "[epr-sweep] shape: WARNING - this run is NOT a CASC-shaped number" >&2
 echo "[epr-sweep] conditions: $OUT/conditions.txt"
 
-MRS_HARDWARE="$HARDWARE" "$CASC" \
+MRS_HARDWARE="$HARDWARE" MRS_EPR_GROUND="$EPR_GROUND" "$CASC" \
   --edition "$EDITION" --systems mrs --divisions "$DIVISION" \
   --jobs "$JOBS" --output "$OUT/run" \
   "${TIME_ARGS[@]+"${TIME_ARGS[@]}"}" "${SUBSET_ARGS[@]+"${SUBSET_ARGS[@]}"}"
@@ -336,7 +340,7 @@ fi
 # `% Hardware:` line, which is what makes the limitation visible instead of
 # silent. On such a host, prefer the honest statement over a flattering subset:
 #
-#   EPU_TIME=15 EPU_JOBS=1 MRS_HARDWARE=adaptive epr_ab_sweep.sh quick
+#   EPU_TIME=15 EPU_JOBS=1 MRS_HARDWARE=adaptive MRS_EPR_GROUND=1 epr_ab_sweep.sh quick
 #
 # and record that it is relative. What must not happen is quoting a subset's
 # solved count as a division number, or a number without its `VerifiedGood`
