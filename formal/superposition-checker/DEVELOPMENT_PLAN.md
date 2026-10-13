@@ -12,7 +12,7 @@ the item itself is explicitly marked `ABANDONED`.
 
 | Milestone | Status | Implemented evidence / remaining gate |
 |---|---|---|
-| M0 — Verus baseline and environment | **PARTIAL** | Verus/Rust versions and Linux x86_64 SHA-256 are pinned; `verify.sh` and a path-filtered GitHub Actions job run all three files. Still needs a clean-checkout run and explicit audit for unchecked assumptions/ignored proof obligations. |
+| M0 — Verus baseline and environment | **PARTIAL** | Verus/Rust versions and Linux x86_64 SHA-256 are pinned; `verify.sh` and regular CI run all formal files. Still needs a clean-checkout run and explicit audit for unchecked assumptions/ignored proof obligations. |
 | M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` has recursive terms, evaluation/clause predicates, a general term substitution/evaluation theorem, substitution-instance lemmas, and constrained target-binding examples. It lacks fully verified literal/clause substitution preservation and standardized-apart semantics. |
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution application and duplicate-domain checking are verified in the first-order prototype. There is no general unifier/MGU checker, position/replacement replay, standardization-apart implementation, or resource-bounded term IR. |
 | M3 — Superposition checker | **PARTIAL** | `superposition_checker.rs` verifies a ground unit fragment; `variable_superposition.rs` checks and proves one fixed variable-bearing two-literal schema with whole-target substitution. General term-tree certificates, arbitrary positions, clauses, ordering, and c502 remain unsupported/unanalysed. |
@@ -22,7 +22,7 @@ the item itself is explicitly marked `ABANDONED`.
 | M7 — Assurance/release gates | **TODO** | No supported-rule manifest, full assurance case, mutation campaign, or release/default-enable gate. |
 
 **What is DONE now:** the pinned local command `formal/superposition-checker/verify.sh`
-passes all three Verus files (`5`, `19`, and `5` verified functions respectively),
+passes all four Verus files (`5`, `19`, `5`, and `5` verified functions respectively),
 and the existing Rust regression `rejects_swv406_c502_archived_target_specialization`
 passes. These results establish only the current narrow verified artifacts; they
 do not complete M0–M3 or decide c502.

@@ -28,8 +28,11 @@ pub struct Clause {
 
 pub struct Interpretation {
     domain: Set<u64>,
-    functions: Map<(u64, Seq<u64>), u64>,
-    predicates: Map<(u64, Seq<u64>), bool>,
+    // These finite maps act as total interpretations only when their domains
+    // contain every signature application used by the formula. Semantic
+    // lemmas state those definedness preconditions explicitly.
+    functions: IMap<(u64, Seq<u64>), u64>,
+    predicates: IMap<(u64, Seq<u64>), bool>,
 }
 
 pub struct Valuation {
@@ -111,14 +114,27 @@ spec fn eval(term: Term, interp: Interpretation, valuation: Valuation) -> u64
     }
 }
 
-/// The valuation obtained by interpreting each substitution RHS in the old
-/// valuation. This definition is the semantic bridge needed for the usual
-/// substitution/evaluation lemma.
+/// Update variables simultaneously: each replacement is interpreted using
+/// the original valuation and unmapped variables retain their original value.
 spec fn valuation_after(
     interp: Interpretation,
     valuation: Valuation,
     sigma: Substitution,
 ) -> Valuation {
+    Valuation {
+        values: IMap::total(|x: u64| match lookup(sigma, x) {
+            Some(replacement) => eval(replacement, interp, valuation),
+            None => valuation.values[x],
+        }),
+    }
+}
+
+/// A model pointwise updated by the simultaneous substitution. Keeping the
+/// denotation as a total IMap makes instance semantics available for every
+/// variable in a parent clause.
+spec fn update_valuation(interp: Interpretation, valuation: Valuation, sigma: Substitution)
+    -> Valuation
+{
     Valuation {
         values: IMap::total(|x: u64| match lookup(sigma, x) {
             Some(replacement) => eval(replacement, interp, valuation),
@@ -137,8 +153,8 @@ proof fn eval_after_substitution(
     valuation: Valuation,
 )
     requires
-        forall|key: (u64, Seq<u64>)| interp.functions.dom().contains(key),
-        forall|x: u64| valuation.values.dom().contains(x),
+        interp.functions.is_full(),
+        valuation.values.is_full(),
     ensures eval(apply(term, sigma), interp, valuation)
         == eval(term, interp, valuation_after(interp, valuation, sigma))
     decreases term
@@ -183,6 +199,29 @@ spec fn atom_holds(atom: Atom, interp: Interpretation, valuation: Valuation) -> 
     }
 }
 
+spec fn substitute_atom(atom: Atom, sigma: Substitution) -> Atom
+    decreases atom
+{
+    match atom {
+        Atom::Pred0(p) => Atom::Pred0(p),
+        Atom::Pred1(p, arg) => Atom::Pred1(p, Box::new(apply(*arg, sigma))),
+        Atom::Pred2(p, left, right) =>
+            Atom::Pred2(p, Box::new(apply(*left, sigma)), Box::new(apply(*right, sigma))),
+        Atom::Eq(left, right) => Atom::Eq(apply(left, sigma), apply(right, sigma)),
+    }
+}
+
+spec fn substitute_literal(literal: Literal, sigma: Substitution) -> Literal {
+    Literal { positive: literal.positive, atom: substitute_atom(literal.atom, sigma) }
+}
+
+spec fn substitute_clause(clause: Clause, sigma: Substitution) -> Clause {
+    Clause {
+        literals: clause.literals.map(|_i: int, literal: Literal|
+            substitute_literal(literal, sigma)),
+    }
+}
+
 spec fn literal_holds(literal: Literal, interp: Interpretation, valuation: Valuation) -> bool {
     literal.positive == atom_holds(literal.atom, interp, valuation)
 }
@@ -197,6 +236,16 @@ proof fn universal_clause_instance(p: IMap<u64, bool>, instance: u64)
     ensures p[instance]
 {
     assert(p[instance]);
+}
+
+spec fn positive_clause_holds_after(
+    clause: Clause,
+    interp: Interpretation,
+    valuation: Valuation,
+) -> bool {
+    exists|i: int| 0 <= i < clause.literals.len()
+        && clause.literals[i].positive
+        && atom_holds(clause.literals[i].atom, interp, valuation)
 }
 
 /// A semantic superposition instance where the ground source equality

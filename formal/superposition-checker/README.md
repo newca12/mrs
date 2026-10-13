@@ -32,7 +32,8 @@ Set `VERUS=/path/to/verus` to verify with an already installed binary.
 The checks were verified against the Verus `0.2026.10.04.426d8b0` Linux x86_64
 release with Rust toolchain `1.98.1`; Verus uses its bundled Z3. Results:
 `5 verified, 0 errors` for the original pilot, `19 verified, 0 errors` for
-the first-order core, and `5 verified, 0 errors` for the superposition checker.
+the first-order core, `5 verified, 0 errors` for the ground superposition
+checker, and `5 verified, 0 errors` for the variable two-literal schema.
 
 ## Scope and limitations
 
@@ -53,6 +54,15 @@ variables/MGUs, recursive term checker, nested positions, multi-literal clauses,
 ordering, AC, proof-DAG replay, c502 audit, or integration with
 `mrs-proof-kernel`. It also does not establish that Verus, its SMT solver,
 Rust/LLVM, or any future input adapter is verified.
+
+`variable_superposition.rs` now checks and proves one variable-bearing,
+two-literal superposition schema (`f(a)=b`, `q(X) | p(f(X))` deriving
+`q(a) | p(b)`). Its verifier rejects a forged partial target substitution that
+leaves `q(X)` unchanged, and a forged rewrite conclusion; the model-level
+soundness proof for the schema also verifies. This confirms whole-clause target
+instantiation is sound in that constrained case; it is not a general unifier,
+clause checker, or c502 verdict. The checks use a fixed schema certificate, not
+a parser/replay implementation for arbitrary clauses.
 
 The archived c502 clauses are kept in
 [`fixtures/SWV406+1-c502-clauses.p`](fixtures/SWV406+1-c502-clauses.p). The

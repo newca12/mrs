@@ -16,3 +16,4 @@ export RUSTUP_TOOLCHAIN="$(jq -r '.rust_toolchain' "$(dirname "$0")/verus-toolch
 "$VERUS_BIN" --triggers-mode silent "$(dirname "$0")/target_rigidity.rs"
 "$VERUS_BIN" --triggers-mode silent "$(dirname "$0")/first_order_core.rs"
 "$VERUS_BIN" --triggers-mode silent "$(dirname "$0")/superposition_checker.rs"
+"$VERUS_BIN" --triggers-mode silent "$(dirname "$0")/variable_superposition.rs"
