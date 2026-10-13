@@ -87,6 +87,10 @@ required Rust toolchain are pinned separately. Changes to the formal
 specification, executable checker, toolchain pins, or archived fixtures must
 keep this verification gate passing.
 
+GitHub Actions runs on ordinary Ubuntu runners: workspace Rust checks use
+installed Cargo directly, and the pinned Verus installer/verifier scripts run
+without Nix there.
+
 ## 4. mrs-tptp
 
 Zero-copy TPTP parser built with [winnow](https://crates.io/crates/winnow). Lives at `crates/mrs-tptp/`; crate name `mrs-tptp`. The AST borrows `&str` slices directly from the input — no per-token allocation. Single library crate, edition 2024.

@@ -7,11 +7,19 @@ not establish that target rigidity is a soundness requirement.
 
 ## Verify
 
-Install Verus following its [Linux instructions](https://github.com/verus-lang/verus/blob/main/INSTALL.md), including the Rust toolchain version required by the selected Verus release, then run:
+In this repository's NixOS/WSL development environment:
 
 ```sh
 nix develop .#verus -c formal/superposition-checker/install-verus.sh  # once per pinned version
 nix develop .#verus -c formal/superposition-checker/verify.sh
+```
+
+On ordinary Linux x86_64 hosts with `rustup`, `curl`, `unzip`, `jq`, and
+`sha256sum`, run the scripts directly (CI uses this path):
+
+```sh
+formal/superposition-checker/install-verus.sh  # once per pinned version
+formal/superposition-checker/verify.sh
 ```
 
 The installer checksum-verifies the pinned Linux x86_64 release, installs its

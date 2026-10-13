@@ -17,13 +17,13 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Check
-        run: nix develop -c cargo check
+        run: cargo check
       - name: Clippy
-        run: nix develop -c cargo clippy --all -- -D warnings
+        run: cargo clippy --all -- -D warnings
       - name: Format
-        run: nix develop -c cargo fmt --all --check
+        run: cargo fmt --all --check
       - name: Test
-        run: nix develop -c cargo test --workspace
+        run: cargo test --workspace
 
   formal-superposition-checker:
     runs-on: ubuntu-24.04
@@ -34,9 +34,9 @@ jobs:
         env:
           VERUS_INSTALL_DIR: ${{ runner.temp }}/mrs-verus
           RUSTUP_HOME: ${{ runner.temp }}/mrs-verus-rustup
-        run: nix develop .#verus -c formal/superposition-checker/install-verus.sh
+        run: formal/superposition-checker/install-verus.sh
       - name: Verify superposition checker specifications and executable refinements
         env:
           VERUS: ${{ runner.temp }}/mrs-verus/0.2026.10.04.426d8b0/verus
           RUSTUP_HOME: ${{ runner.temp }}/mrs-verus-rustup
-        run: nix develop .#verus -c formal/superposition-checker/verify.sh
+        run: formal/superposition-checker/verify.sh
