@@ -34,7 +34,7 @@ fn contains_var(vars: &Vec<u64>, needle: u64) -> (found: bool)
     false
 }
 
-/// Check the superposition side condition that a proposed substitution does
+/// Pilot: check the proposed superposition side condition that a substitution does
 /// not bind variables belonging to the target clause.
 fn target_rigid(bindings: &Vec<Binding>, target_vars: &Vec<u64>) -> (accepted: bool)
     ensures

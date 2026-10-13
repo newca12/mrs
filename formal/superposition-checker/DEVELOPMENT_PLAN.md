@@ -1,4 +1,4 @@
-# Plan: Build a Verus-verified superposition checker
+# Verus superposition checker: development plan
 
 ## Implementation status (2026-10-13)
 
@@ -17,7 +17,7 @@ gate is not complete; `TODO` = work has not been implemented.
 | M6 — Broader rules | **TODO** | Resolution, AC, demodulation, transformations, and AVATAR/LRAT are not implemented in the Verus checker. |
 | M7 — Assurance/release gates | **TODO** | No supported-rule manifest, full assurance case, mutation campaign, or release/default-enable gate. |
 
-**What is DONE now:** the pinned local command `formal/verus-target-rigidity/verify.sh`
+**What is DONE now:** the pinned local command `formal/superposition-checker/verify.sh`
 passes all three Verus files (`5`, `19`, and `5` verified functions respectively),
 and the existing Rust regression `rejects_swv406_c502_archived_target_specialization`
 passes. These results establish only the current narrow verified artifacts; they

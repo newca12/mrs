@@ -1,20 +1,25 @@
-# Verus target-rigidity pilot
+# Verus superposition checker
 
-This directory contains a guard-policy pilot, first-order substitution work,
-and an initial verified ground-unit superposition checker. The original
-`target_rigidity.rs` demonstrates only that a particular policy loop behaves
-as written; it does not establish that target rigidity is a soundness
-requirement.
+This is MRS's Verus superposition-checker project. It contains the original
+target-rigidity policy pilot, first-order substitution model, and an initial
+checker for one ground-unit fragment. The pilot tests a chosen policy; it does
+not establish that target rigidity is a soundness requirement.
 
 ## Verify
 
 Install Verus following its [Linux instructions](https://github.com/verus-lang/verus/blob/main/INSTALL.md), including the Rust toolchain version required by the selected Verus release, then run:
 
 ```sh
-formal/verus-target-rigidity/verify.sh
+nix develop .#verus -c formal/superposition-checker/install-verus.sh  # once per pinned version
+nix develop .#verus -c formal/superposition-checker/verify.sh
 ```
 
-Set `VERUS=/path/to/verus` if the binary is not on `PATH`.
+The installer checksum-verifies the pinned Linux x86_64 release, installs its
+required Rust toolchain, and stores Verus under
+`$HOME/.local/opt/mrs-verus/`. Override the binary location with
+`VERUS_INSTALL_DIR=/path/to/install`. The dedicated Nix shell isolates its
+`RUSTUP_HOME` and `CARGO_HOME` under the user cache; override them if needed.
+Set `VERUS=/path/to/verus` to verify with an already installed binary.
 
 The checks were verified against the Verus `0.2026.10.04.426d8b0` Linux x86_64
 release with Rust toolchain `1.98.1`; Verus uses its bundled Z3. Results:
@@ -48,7 +53,8 @@ ground-unit fragment.
 
 Verus `0.2026.10.04.426d8b0` and Rust `1.98.1` are pinned in
 [`verus-toolchain.json`](verus-toolchain.json); CI downloads and checksum-checks
-the corresponding Linux binary. See [`GENERALIZATION_PLAN.md`](GENERALIZATION_PLAN.md)
+the corresponding Linux binary. CI runs this as a regular required project
+check. See [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md)
 for the staged scope. Next proof obligations are the executable/model
 refinement, substitution semantics under valuations, standardization-apart, a
 complete MGU certificate checker, and a clause-level superposition entailment

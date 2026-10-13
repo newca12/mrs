@@ -71,6 +71,9 @@
             git
             cargo-nextest
             python3
+            jq
+            curl
+            unzip
           ];
 
           # Make the wgpu/vulkan loader discoverable for `--features
@@ -87,6 +90,27 @@
             echo "  default build:  cargo build --release"
             echo "  proover build:  cargo build --release --features proover --bin mrs"
             echo "  tests:          cargo test --workspace"
+          '';
+        };
+
+        # Verus uses its own Rust toolchain, isolated from the workspace's
+        # pinned Rust 1.99 toolchain. Use `nix develop .#verus -c ...` for
+        # Verus install/verification so rustup cannot change the main shell.
+        devShells.verus = pkgs.mkShell {
+          packages = with pkgs; [
+            git
+            jq
+            curl
+            unzip
+            rustup
+          ];
+
+          shellHook = ''
+            export RUSTUP_HOME="''${RUSTUP_HOME:-''${XDG_CACHE_HOME:-$HOME/.cache}/mrs-verus/rustup}"
+            export CARGO_HOME="''${CARGO_HOME:-''${XDG_CACHE_HOME:-$HOME/.cache}/mrs-verus/cargo}"
+            echo "mrs Verus shell — rustup home: $RUSTUP_HOME"
+            echo "  install: formal/superposition-checker/install-verus.sh"
+            echo "  verify:  formal/superposition-checker/verify.sh"
           '';
         };
 

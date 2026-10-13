@@ -2,7 +2,7 @@ use vstd::prelude::*;
 
 verus! {
 
-/// Semantic interpretation for ground term IDs and unary predicate IDs.
+/// Superposition step checker for ground term IDs and unary predicate IDs.
 pub struct GroundModel {
     term_values: IMap<u64, u64>,
     predicate_values: IMap<(u64, u64), bool>,

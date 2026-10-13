@@ -62,6 +62,31 @@ To maintain the highest repository standards, any AI agent working in this works
 
 `mrs` is an automated theorem prover in Rust targeting the CASC competition. It reads **TPTP** problem files and outputs **SZS/TSTP**-formatted results. It employs a **parallel strategy portfolio scheduler** running a **superposition calculus** within a **given-clause loop**, augmented by **AVATAR** (using CaDiCaL) for advanced clause splitting and **cross-strategy clause sharing**.
 
+### Formal superposition checker
+
+The Verus project is a first-class component at
+`formal/superposition-checker/`, developed alongside the Rust workspace and
+checked by regular CI. It is not a Cargo crate. Its current verified scope is
+the ground unit-superposition fragment; it is **not yet integrated** into
+`mrs-proof-kernel` and makes no c502 verdict. The pinned Verus version/toolchain
+and checksums are recorded in `formal/superposition-checker/verus-toolchain.json`.
+
+Use the isolated Verus Nix shell (separate from the workspace Rust 1.99
+toolchain):
+
+```bash
+nix develop .#verus -c formal/superposition-checker/install-verus.sh  # one-time install
+nix develop .#verus -c formal/superposition-checker/verify.sh
+```
+
+`VERUS=/path/to/verus formal/superposition-checker/verify.sh` can select an
+already installed binary. The `verus` shell uses a separate `RUSTUP_HOME` and
+`CARGO_HOME` by default, so installing Verus's required Rust 1.98 toolchain
+does not alter the workspace Rust 1.99 toolchain. The verifier release and its
+required Rust toolchain are pinned separately. Changes to the formal
+specification, executable checker, toolchain pins, or archived fixtures must
+keep this verification gate passing.
+
 ## 4. mrs-tptp
 
 Zero-copy TPTP parser built with [winnow](https://crates.io/crates/winnow). Lives at `crates/mrs-tptp/`; crate name `mrs-tptp`. The AST borrows `&str` slices directly from the input — no per-token allocation. Single library crate, edition 2024.
