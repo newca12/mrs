@@ -1,0 +1,7 @@
+{
+  "verus": "0.2026.10.04.426d8b0",
+  "release_tag": "release/0.2026.10.04.426d8b0",
+  "rust_toolchain": "1.98.1-x86_64-unknown-linux-gnu",
+  "linux_x86_64_asset": "verus-0.2026.10.04.426d8b0-x86-linux.zip",
+  "linux_x86_64_sha256": "624018662868563a7bec0dd07be5e4dd0c3d61124b4b55105765884bf2d4d1a0"
+}

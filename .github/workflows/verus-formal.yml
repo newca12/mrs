@@ -1,0 +1,29 @@
+name: Verus formal checks
+
+on:
+  push:
+    paths:
+      - "formal/verus-target-rigidity/**"
+      - ".github/workflows/verus-formal.yml"
+  pull_request:
+    paths:
+      - "formal/verus-target-rigidity/**"
+      - ".github/workflows/verus-formal.yml"
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - name: Install pinned Verus release
+        shell: bash
+        run: |
+          curl --fail --location --output /tmp/verus.zip \
+            https://github.com/verus-lang/verus/releases/download/release/0.2026.10.04.426d8b0/verus-0.2026.10.04.426d8b0-x86-linux.zip
+          echo "624018662868563a7bec5e4dd07be5e4dd0c3d61124b4b55105765884bf2d4d1a0  /tmp/verus.zip" | sha256sum --check
+          unzip -q /tmp/verus.zip -d /tmp/verus
+          echo "/tmp/verus/verus-x86-linux" >> "$GITHUB_PATH"
+      - name: Verify formal checking-core slice
+        run: formal/verus-target-rigidity/verify.sh

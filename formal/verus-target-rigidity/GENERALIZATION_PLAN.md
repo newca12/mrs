@@ -1,0 +1,550 @@
+# Plan: Build a Verus-verified superposition checker
+
+## Implementation status (2026-10-13)
+
+**Status key:** `DONE` = deliverable and its stated acceptance gate are complete;
+`PARTIAL` = an explicitly narrower slice exists and verifies, but the milestone
+gate is not complete; `TODO` = work has not been implemented.
+
+| Milestone | Status | Implemented evidence / remaining gate |
+|---|---|---|
+| M0 — Verus baseline and environment | **PARTIAL** | Verus/Rust versions and Linux x86_64 SHA-256 are pinned; `verify.sh` and a path-filtered GitHub Actions job run all three files. Still needs a clean-checkout run and explicit audit for unchecked assumptions/ignored proof obligations. |
+| M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` has recursive terms, evaluation/clause predicates, substitution-instance lemmas, and one constrained target-binding example. It lacks a proved general substitution/evaluation theorem and standardized-apart semantics. |
+| M2 — Replay primitives | **PARTIAL** | Recursive substitution application and duplicate-domain checking are verified in the first-order prototype. There is no general unifier/MGU checker, position/replacement replay, standardization-apart implementation, or resource-bounded term IR. |
+| M3 — Superposition checker | **PARTIAL** | `superposition_checker.rs` verifies executable shape checking and semantic soundness for **positive ground unit equality into a positive unary-predicate unit clause, rewriting the whole argument**. Variable-bearing/multi-literal clauses, actual term IDs/term trees, certificates with positions, ordering, and c502 remain unsupported/unanalysed. |
+| M4 — Proof-DAG validation | **TODO** | No proof graph, parent closure, rule dispatcher, or empty-clause refutation checker. |
+| M5 — MRS integration | **TODO** | The Verus executable is not called by `mrs-proof-kernel`; no interchange format or production adapter exists. |
+| M6 — Broader rules | **TODO** | Resolution, AC, demodulation, transformations, and AVATAR/LRAT are not implemented in the Verus checker. |
+| M7 — Assurance/release gates | **TODO** | No supported-rule manifest, full assurance case, mutation campaign, or release/default-enable gate. |
+
+**What is DONE now:** the pinned local command `formal/verus-target-rigidity/verify.sh`
+passes all three Verus files (`5`, `19`, and `5` verified functions respectively),
+and the existing Rust regression `rejects_swv406_c502_archived_target_specialization`
+passes. These results establish only the current narrow verified artifacts; they
+do not complete M0–M3 or decide c502.
+
+The detailed milestone text below is the target specification. A milestone is
+not complete merely because a related prototype exists; update this ledger and
+its acceptance checkboxes as each gate is actually met.
+
+## Executive objective
+
+Generalize the target-rigidity pilot into a small, fail-closed **superposition
+step checker** whose acceptance decisions are backed by explicit first-order
+semantics, a proved superposition soundness theorem, and Verus verification of
+the executable checker against that specification. The primary deliverable is
+the checker for individual superposition certificates—not a general-purpose
+proof kernel. Establish exactly which ordinary superposition steps are sound,
+including the conditions on standardization apart, unification, substitution
+application, equality orientation, and target-variable instantiation. Then
+connect this verified checker to MRS's strict kernel and certification path.
+
+The goal is **not** to verify the search engine, its heuristics, completeness,
+or every feature of TSTP. The first formal claim is local and precise: every
+superposition step accepted by the checker is entailed by its cited parent
+clauses under the declared first-order semantics. The first integration claim
+is that this checker—not a parallel reimplementation—decides superposition
+steps in MRS proofs. Proof-DAG certification follows after the local rule
+checker is established. Unsupported shapes, malformed certificates, exceeded
+resource bounds, and inconclusive checks must fail closed.
+
+## Read this correctly: pilot status
+
+The original [`target_rigidity.rs`](target_rigidity.rs) verifies that a small
+loop accepts exactly when no proposed substitution binding has a domain
+variable in the supplied target-variable list. Its RHS is an opaque `u64`; it
+does not define substitutions over terms or establish the guard as a soundness
+condition. [`first_order_core.rs`](first_order_core.rs) now adds recursive
+first-order term and substitution specifications plus executable lookup and
+application refinement checks, a duplicate-domain validation check, a
+universal-instance lemma, and a small superposition-shaped entailment example
+with target-variable substitution. The executable/model bridge is not yet
+completely refined; the model does not prove general superposition soundness,
+full clause semantics, or a connection to `mrs-proof-kernel`.
+
+The current results (`5 verified, 0 errors` for the original policy pilot;
+`19 verified, 0 errors` for first-order core; `5 verified, 0 errors` for the
+ground unit-superposition checker) are successful early proof steps. The ground
+checker proves only the stated positive, ground, unit-clause rule; it is not a
+general superposition checker, proof kernel, or prover. Keep that distinction in
+release notes and certification reports until the relevant gates below are
+passed.
+
+The pilot verifies an implementation of a chosen guard; it does not prove that
+the guard is mathematically necessary or sufficient for superposition. The
+formalization must not promote the guard into an axiom merely because both MRS
+implementations and current documentation state it. In standard first-order
+semantics, a universally closed clause entails each of its instances. Therefore
+an MGU may bind variables from either standardized-apart parent, provided the
+substitution is applied consistently to the entire inference conclusion. A
+“target variables are always rigid” policy may be an implementation restriction
+or a special matching discipline; it is not automatically a soundness
+requirement. Derive the exact rule from clause semantics and investigate c502
+as a semantic counterexample rather than choosing its verdict in advance.
+
+## Intended trust boundary
+
+The first deliverable checks one inference certificate:
+
+```text
+two cited parent clauses + superposition certificate
+  -> validated supported-rule IR
+  -> verified executable superposition replay
+  -> Certified / Rejected / Unknown
+```
+
+The checker recomputes the inference from parent clauses and certificate
+fields. Its specification covers terms, clauses, substitutions, parent
+standardization, selected equality/literal/position, unification, replacement,
+whole-clause substitution, and conclusion comparison. It does not trust
+producer metadata that can be independently recomputed. Resource limits can
+reject or return `Unknown`; they cannot cause acceptance. Proof-DAG closure and
+empty-clause certification are later layers over the verified step checker.
+
+Verus verification itself has a trusted computing base: the Verus tool,
+verification condition generation, SMT solver, Rust/LLVM toolchain, and any
+unverified input-decoding boundary. Verus explicitly does not aim to verify
+its own verifier or the Rust/LLVM compilers. The project must publish this
+boundary; “verified in Verus” must not be described as a proof with no trusted
+tools.
+
+## Architecture decision
+
+Maintain a small Verus crate/project under `formal/`, centered on a callable
+superposition-step checker, with:
+
+1. mathematical specification functions/types for first-order syntax and
+   semantics;
+2. executable, bounded checking functions written in Verus-supported Rust;
+3. refinement/postcondition proofs that executable checks implement their
+   specifications; and
+4. a narrow, versioned superposition-certificate IR with explicit limits and
+   fail-closed verdicts; and
+5. a thin adapter so the verified step checker can replace or gate the existing
+   Rust replay for that rule.
+
+Do not assume that verifying a separate model verifies the existing Rust
+kernel. The integration target is one of:
+
+- **Preferred:** compile the Verus-verified executable superposition checker and
+  invoke that artifact at the superposition-check boundary (in-process or as a deterministic
+  subprocess), retiring duplicate implementations for the covered rules; or
+- **Transitional:** independently compare it against the Rust strict kernel,
+  while continuing to call the Rust kernel authoritative. Differential
+  agreement is useful evidence, but is not a proof of correspondence and must
+  not be advertised as formal verification of that Rust code.
+
+Before production integration, specify and test the input bridge. Any Rust
+lowering/serialization adapter that can turn an invalid proof into a valid IR
+is in the trusted boundary unless it is itself verified or the verified side
+independently validates a lossless canonical encoding of the original proof.
+Avoid relying on a parser that silently drops unsupported constructs.
+
+## Workstreams and milestones
+
+### M0 — Freeze the pilot baseline and verification environment (**PARTIAL**)
+
+**Deliverables**
+
+- Keep the original domain-check example, recursive substitution slice, and
+  ground superposition checker as distinct smoke tests; report proof counts
+  separately.
+- Pin the Verus release, required Rust toolchain, Z3/tool versions, and command
+  in a reproducible Nix dev shell or a dedicated lock/installer script.
+- Add CI that runs the Verus verifier and fails on either verification errors
+  or unreviewed assumptions/ignored proof obligations.
+- Record tool versions and the verifier output as build artifacts.
+
+**Acceptance gate**
+
+- A clean checkout can run one documented command and reproduce each proof
+  result; changing any verified executable/specification relationship makes CI
+  fail.
+- Documentation labels the original file as a guard pilot and the extended
+  deliverable as a superposition-step-checker prototype, not a proof-DAG kernel.
+
+### M1 — Define the mathematical contract for superposition (**PARTIAL**)
+
+**Current status**
+
+- **DONE:** first-order term/atom/clause data types, interpretation and valuation
+  declarations, semantic evaluation/holding definitions, and bounded instance
+  examples exist in `first_order_core.rs`.
+- **DONE:** a substitution/evaluation theorem is now proved for recursive term
+  substitution, assuming the interpretation function and valuation have full
+  domains. It establishes the semantic bridge used by clause-instantiation
+  proofs.
+- **TODO:** complete universally quantified clause semantics and its non-empty
+  domain assumptions, standardization-apart theorem, and a formal derivation of
+  the general superposition rule from the term/equality lemmas. The current
+  clause declarations are not yet connected to a fully proved calculus theorem.
+
+**Deliverables**
+
+- Recursive terms: variables, constants, and unary/binary function
+  applications, with symbols and arities represented explicitly; generalize to
+  arbitrary arity after the structural recursion proof patterns are stable.
+- Atoms: predicates and equality; literals: polarity plus atom; clauses as
+  finite disjunctions whose free variables are universally quantified.
+- A semantic domain consisting of a non-empty carrier, function
+  interpretations, predicate interpretations, equality as identity, and a
+  valuation from variables to domain elements.
+- Recursive term evaluation and clause satisfaction.
+- Definitions/lemmas for free variables, substitution domains/ranges,
+  renaming, positions/subterms, and equality of clauses modulo variable
+  renaming and literal permutation.
+- A written, independently reviewed choice of clause semantics (including
+  universal closure), substitution convention, and the exact superposition
+  rule being formalized; compare target-rigid matching with ordinary
+  standardized-apart unification.
+
+**Proof obligations**
+
+- Evaluation respects structural recursion and arity.
+- A clause’s universal-closure semantics agrees with the defined valuation
+  semantics.
+- Variable renaming and standardization-apart preserve clause meaning.
+- Substitution application/evaluation lemma: evaluating `t[σ]` under a
+  valuation agrees with evaluating `t` under the valuation updated by `σ`,
+  under stated freshness/domain assumptions.
+- A formal lemma that universal closure entails substitution instances, plus a
+  formal argument identifying when target-clause specialization is sound and
+  what whole-clause substitution/freshness conditions it requires. Decide
+  whether rigidity is a soundness condition, a completeness/performance
+  restriction, or a necessary condition of a narrower rule before encoding it.
+- First-order core now includes a universal-clause instance lemma and a small
+  ground-source, target-variable superposition-shaped entailment example. It
+  proves entailment for that explicitly constrained case; finish the general
+  substitution/valuation lemma and prove the full rule theorem before claiming
+  general superposition soundness.
+- A separate `superposition_checker.rs` now verifies executable acceptance and
+  a semantic soundness theorem for positive ground unit equalities rewriting
+  whole unary-predicate unit arguments. It is the first actual checker slice;
+  it does not yet cover variable-bearing or multi-literal clauses.
+
+**Acceptance gate**
+
+- These definitions are independent of `mrs-core` data structures and do not
+  appeal to MRS tests as semantic axioms.
+- Finite executable examples plus quantified lemmas cover constants,
+  repeated variables, nested terms, empty clauses, and alpha-renaming.
+
+### M2 — Verify the superposition replay primitives (**PARTIAL**)
+
+**Current status**
+
+- **DONE:** recursive substitution application, executable lookup/copy,
+  duplicate-domain validation, general term substitution/evaluation
+  correspondence, and a finite proposed-unifier checker (domain uniqueness plus
+  post-substitution equality) have Verus postconditions/proofs in
+  `first_order_core.rs`.
+- **TODO:** exercise positive and negative unifier certificates, complete the
+  executable-to-model refinement under all constructors, add occurs-check,
+  variable/position traversal, subterm replacement, and standardization-apart.
+
+**Deliverables**
+
+- Bounded executable term traversal: variable collection, occurrence checks,
+  subterm-at-position, replacement-at-position, and selected-position
+  validation.
+- A finite substitution representation with explicit duplicate-key policy,
+  lookup, application to terms/atoms/literals/clauses, and a well-formedness
+  predicate (including acyclicity or a clearly specified one-step/idempotent
+  convention).
+- A proposed-substitution checker for the supported syntactic fragment:
+  duplicate-free domain, simultaneous application, occurs-check/acyclicity as
+  required by its representation, repeated-variable consistency, and a
+  fail-closed resource budget. Start by validating supplied unifiers; computing
+  complete MGUs is a later optimization, not a requirement for sound replay.
+- Standardization-apart and certificate-side conditions: source equality
+  orientation, positive polarity, non-variable rewrite side, target literal,
+  term path, and any ordered-calculus restrictions selected by M1.
+
+**Proof obligations**
+
+- Each executable traversal refines its recursive specification.
+- Applying a substitution preserves the expected syntax and has the stated
+  evaluation property.
+- A concrete duplicate-domain detector refines the mathematical
+  `domain_unique` predicate and rejects ambiguous finite substitutions.
+- A successful unifier certificate makes the two selected terms equal after
+  substitution, and the same substitution is applied to all required literals
+  of both parents.
+- A successful one-way match binds pattern/source variables only. For general
+  unification, prove the MGU properties and semantic soundness when variables
+  from either parent are instantiated and the substitution is applied to both
+  parent clauses as specified.
+- Failure, budget exhaustion, or unsupported terms cannot return success.
+
+**Acceptance gate**
+
+- Universal proofs are not replaced by bounded enumeration. Bounded enumeration
+  is supplementary regression testing only.
+- Adversarial lemmas/tests include repeated versus distinct variables, target
+  variables occurring below function symbols, variable-to-variable matches,
+  cycles/occurs-check failures, and variable-ID collisions before/after
+  standardization apart.
+
+### M3 — Prove and implement the superposition checker (**PARTIAL: ground unit slice only**)
+
+**Current status**
+
+- **DONE:** `superposition_checker.rs` checks the exact ground-unit certificate
+  shape, rejects forged predicate/target fields, and proves local semantic
+  preservation under the provided model.
+- **TODO:** general term IDs/trees, variables and unifiers, non-unit clauses,
+  arbitrary selected positions, whole-clause substitution, ordered conditions,
+  and the full universally quantified superposition soundness theorem. The
+  archived c502 fixture is retained but not replayed by this checker.
+
+**Deliverables**
+
+- A declarative definition of the exact ordinary superposition rule supported
+  by the checker: choose a positive source equality, orientation, non-variable
+  source side, target literal and term position; standardize parents apart;
+  specify whether matching or general unification is used and exactly which
+  substitutions apply to each parent; replace the selected target subterm and
+  form the resolvent/union of remaining literals. The base rule should use
+  standardized-apart unification; a rigid-target variant, if retained, is a
+  separately specified restricted rule.
+- A central soundness theorem for that exact rule: for every model and
+  valuation, if both standardized-apart parent clauses hold, then the checked
+  conclusion holds.
+- Verified executable replay for superposition certificates, including checks for
+  parent roles, selected literals, positions, polarity, orientation, variable
+  hygiene, conclusion construction, and exact comparison modulo the explicitly
+  permitted clause equivalences.
+
+**Central theorem**
+
+For every interpretation and valuation, if both standardized-apart parent
+clauses hold, then the clause produced by an accepted superposition step holds.
+Prove this from the semantic definitions; do not
+encode it as an assumption or restate an implementation guard as the theorem.
+The proof must explicitly settle whether target variables may be instantiated
+under the selected calculus and ensure that the computed substitution is
+applied to all relevant literals of both parents. For standard universally
+closed clauses, general standardized-apart unification is expected to be
+sound; prove the theorem rather than assume either this expectation or the
+current rigid-target policy. If a restricted rigid-target mode is retained,
+document whether it is merely a completeness/performance restriction and prove
+that every inference it does accept is sound. Any ordering, selection, and
+freshness conditions must also be justified by the calculus contract.
+
+**Acceptance gate**
+
+- Positive valid steps and negative forged steps are both covered.
+- **DONE for the ground unit fragment:** the checker accepts a correctly
+  shaped step and rejects forged predicate/target fields; its executable
+  postcondition and local model-soundness lemma verify.
+- **TODO for the planned general checker:** variable-bearing and multi-literal
+  positive/negative certificates, term-position replay, substitution across all
+  target literals, general semantic soundness, and c502 analysis.
+- The superposition checker is the named primary artifact: the specification,
+  proof obligations, executable API, and test suite are all organized around
+  accepting/rejecting one superposition step.
+- `SWV406+1:c502` is translated losslessly into the verified IR and analyzed
+  against the formal semantics. Its result—rejected as unsound, accepted as
+  sound, or left inconclusive because required context is absent—is derived
+  from the proved rule, not chosen in advance. Preserve the exact archived
+  parents/conclusion and relevant context as a regression fixture. Also verify
+  a small independently derived example where unification instantiates a
+  target variable and the substitution is consistently applied to the entire
+  target clause.
+- Valid steps with source-variable substitutions into target terms are
+  accepted; equivalent variable renamings and literal permutations preserve
+  the verdict.
+- Mutate the checker to apply a unifier to only the selected term/literal while
+  leaving other parent literals untouched; show that the refinement or
+  semantic soundness theorem fails. Separately confirm that merely removing an
+  optional rigid-target restriction does not invalidate the general
+  whole-clause soundness theorem. These mutation checks are diagnostic, not a
+  replacement for theorem review.
+
+### M4 — Wrap the verified step checker in proof-DAG validation (**TODO**)
+
+**Deliverables**
+
+- A finite proof graph model with input leaves, inference nodes, parent IDs,
+  root selection, and an explicit input problem.
+- A verified DAG/parent-closure traversal (or a decreasing topological-order
+  certificate checker) that rejects missing parents, cycles, disconnected or
+  forged leaves, duplicate/ambiguous IDs, and a non-empty claimed root.
+- A verified dispatcher that invokes the superposition checker for every such
+  node. Any other inference rule is unsupported and returns `Unknown` until
+  separately specified and verified.
+- A three-way result contract: `Certified`, `Rejected`, `Unknown`; only
+  `Certified` follows from complete checks, and unsupported rules/limits yield
+  `Unknown`.
+
+**Proof obligation**
+
+Induction over the verified DAG establishes that every certified node is
+entailed by the original input; therefore a certified empty-clause node proves
+the input unsatisfiable. Clarify the theorem/conjecture-negation pipeline: the
+checker certifies the actual clause problem it receives, and any preprocessing
+or negated-conjecture transformation must be either part of this verified
+front-end or a separately justified premise transformation.
+
+**Acceptance gate**
+
+- Test small complete TSTP proofs and malformed/mutated variants, including
+  missing parent, wrong parent, changed conclusion, wrong root, forged leaf,
+  cycle, unsupported rule, and resource cutoff.
+- Every unknown/rejected outcome suppresses certification in the caller.
+
+### M5 — Integrate the verified superposition checker with MRS (**TODO**)
+
+**Deliverables**
+
+- A canonical, versioned interchange format for supported proof steps, with
+  bounds on bytes, nodes, term depth, arguments, literals, variables, parents,
+  and traversal work.
+- Parsing and decoding that preserve every construct relevant to the checking
+  theorem. Preferred: parse the original TSTP/proof IR inside the verified
+  checker for its initial supported subset. Otherwise provide a separately
+  verified refinement bridge from MRS AST to verified IR.
+- A production adapter that calls the compiled verified superposition checker,
+  handles
+  process errors/timeouts as `Unknown`, and records tool/build/version
+  provenance in telemetry.
+- An explicit rollout mode: shadow/differential first, opt-in certification
+  second, default only after the gates below.
+
+**Acceptance gate**
+
+- Actual archived proof artifacts (including c502) traverse the production
+  adapter; the test does not hand-construct an already-trusted verified IR.
+- Mutations at the serialized-input boundary cannot be silently dropped or
+  reinterpreted into acceptance.
+- The same executable artifact whose Verus proof passes is the artifact used in
+  certification; record its hash and verification build identity.
+- On Verus crash, version mismatch, timeout, parse error, panic, resource bound,
+  or protocol violation, return `Unknown` and suppress theorem output.
+- Existing strict kernel remains an independent secondary checker through the
+  initial rollout. Disagreement blocks certification and is retained for
+  diagnosis; agreement alone is not described as a formal proof.
+
+### M6 — Expand beyond the superposition checker (**TODO**)
+
+Only expand after M1–M5 are stable. Each family gets a written rule contract,
+semantic theorem, verified executable replay, positive/negative mutations,
+archived cases, and a versioned support declaration.
+
+1. **Additional clause inference:** resolution, factoring, equality resolution,
+   equality factoring, subsumption resolution, weakening/condensation, with
+   precise set-versus-multiset and variable-renaming semantics.
+2. **Equality simplification:** ground equality normalization, demodulation,
+   unit rewriting and recorded rewrite traces. Prove orientation/position and
+   every intermediate state; resource exhaustion is `Unknown`.
+3. **Associative/commutative reasoning:** first define the equivalence relation
+   and what an AC unifier/match means, then prove replay soundness and the
+   applicable variable conditions. Do not inherit the prover’s AC matching
+   algorithm by assumption.
+4. **Formula/proof transformations:** NNF, Skolemization, CNF/Tseitin
+   definitions, instantiation, existential generalization, and other currently
+   supported non-clausal rules. Keep freshness, quantifier scope, and introduced
+   symbol provenance explicit.
+5. **AVATAR/CWA certificates:** split coverage, branch assumptions, SAT/LRAT
+   traces, branch roots and roll-up. Treat the SAT proof checker as a distinct
+   verified/refined component and prove certificate closure across branches.
+6. **Additional TSTP dialect/rules:** add only when a rule’s semantics and
+   input representation are specified. Unsupported dialect/rule forms remain
+   visibly inconclusive.
+
+### M7 — Release, audit, and maintain the assurance case (**TODO**)
+
+**Deliverables**
+
+- CI gates for Verus verification, mutation-negative checks, supported proof
+  corpus, formatting, and deterministic build/hash recording.
+- A machine-readable list of certified rules and limits emitted with each run.
+- An assurance note listing definitions/theorems, verified functions, trusted
+  tools, unverified adapters, assumptions, unsupported cases, and known
+  limitations.
+- A re-audit policy: a semantic theorem, verifier version, IR format, rule
+  implementation, or trusted bridge change invalidates affected historical
+  certification totals until rechecked.
+
+**Default-enable gate**
+
+- The initial supported corpus is accepted/rejected exactly as specified and
+  all archived soundness regressions—including c502—behave correctly.
+- No mutation in the threat model produces a certified result.
+- Every feature outside the verified whitelist fails closed.
+- Proof reviewers independently inspect the definitions and central soundness
+  theorems; automated verification success is necessary, not sufficient review.
+- The formal checker is integrated into the actual certification path and its
+  binary/source provenance is reproducible.
+
+## Cross-cutting test and review strategy
+
+For every inference rule, retain both sides of the boundary:
+
+- valid positive certificate(s), including renaming/permutation variants;
+- forged conclusion, wrong parent, wrong position, invalid polarity/orientation;
+- target-variable-binding cases on both sides: sound whole-clause MGU instances
+  must be accepted where the rule permits them; genuinely invalid partial
+  substitutions must be rejected;
+- explicit semantic decision for disputed rule side conditions, independently
+  reviewed rather than inherited from the producer, kernel, or existing docs;
+- resource and malformed-input cases that must return `Unknown` or `Rejected`;
+- archived real proof nodes plus minimized synthetic cases;
+- mutations that remove one guard or alter one premise, to establish that the
+  acceptance result depends on the intended checks.
+
+Use the existing strict Rust kernel and external proof tools as differential
+oracles during development, never as axioms for the Verus semantic theorems.
+Keep bounded testing distinct from unbounded universal proof obligations.
+
+## Initial supported-core target
+
+**Status: TODO.** The list below is the intended first release target; it is
+broader than the currently implemented ground-unit slice described in the
+status ledger above.
+
+The first meaningful release target is a **verified superposition step checker**.
+It does not need to verify an entire prover proof DAG to demonstrate the core
+claim. Its supported input is:
+
+- two already-lowered first-order clauses with predicates, equality, literals,
+  and universal-closure semantics;
+- an explicit certificate naming the source equality/orientation, target
+  literal/position, and proposed unifier;
+- standardized-apart parents and whole-clause substitution semantics;
+- recomputed conclusion equality modulo only proved variable-renaming and
+  literal-order equivalences; and
+- bounded syntax/certificate sizes with fail-closed `Unknown` behavior.
+
+The first end-to-end proof-DAG/refutation checker is a follow-on milestone that
+uses this verified step checker and adds validated input leaves, parent closure,
+and empty-clause root checking. Explicitly defer AC superposition,
+demodulation, ordered-calculus side conditions until specified, Skolemization/
+CNF proof transformations, other inference rules, AVATAR/LRAT,
+satisfiability/model claims, and unrestricted full TSTP.
+
+## Immediate next tasks
+
+- [x] Pin Verus/toolchain and add the verification script plus CI workflow (M0
+  partial; clean-checkout and assumptions audit remain TODO).
+- [x] Implement and verify the restricted ground unit-superposition checker,
+  soundness lemma, and forged-field examples (M3 partial).
+- [x] Preserve the archived c502 clauses as a fixture, explicitly marked
+  unsupported by the current checker (c502 audit remains TODO).
+- [ ] Complete and review universally quantified clause semantics and
+  standardization-apart proofs (M1).
+- [x] Add a proposed finite-unifier checker that requires a duplicate-free
+  domain and equal terms after simultaneous substitution (M2 initial slice).
+- [ ] Exercise positive/negative unifier certificates; finish constructor-wide
+  executable/model refinement, occurs-check, positions, replacement, and
+  standardization-apart before widening the checker (M2).
+- [x] Specify and prove the recursive term substitution/evaluation lemma under
+  full interpretation/valuation domains (M1 initial term-level obligation).
+- [ ] Use it with clause semantics to prove general ordinary superposition
+  soundness and extend the checker beyond ground-unit clauses (M1–M3).
+- [ ] Encode the exact `SWV406+1:c502` parents/conclusion and relevant context;
+  establish whether the substitution was applied consistently and whether the
+  conclusion is entailed before changing producer/kernel behavior (M3).
+- [ ] Decide the interchange boundary and integrate this verified step checker
+  into the Rust strict-kernel path before adding proof-DAG or broader-rule
+  coverage (M5 architecture gate).
