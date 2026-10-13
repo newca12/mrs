@@ -4,14 +4,18 @@
 
 **Status key:** `DONE` = deliverable and its stated acceptance gate are complete;
 `PARTIAL` = an explicitly narrower slice exists and verifies, but the milestone
-gate is not complete; `TODO` = work has not been implemented.
+gate is not complete; `TODO` = work remains active and unimplemented; `DIFFICULT`
+is a TODO modifier for an identified substantial obstacle or research task;
+`ABANDONED` marks a specific approach deliberately stopped, with its reason
+recorded. Abandoning an approach does not abandon the underlying TODO unless
+the item itself is explicitly marked `ABANDONED`.
 
 | Milestone | Status | Implemented evidence / remaining gate |
 |---|---|---|
 | M0 — Verus baseline and environment | **PARTIAL** | Verus/Rust versions and Linux x86_64 SHA-256 are pinned; `verify.sh` and a path-filtered GitHub Actions job run all three files. Still needs a clean-checkout run and explicit audit for unchecked assumptions/ignored proof obligations. |
-| M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` has recursive terms, evaluation/clause predicates, substitution-instance lemmas, and one constrained target-binding example. It lacks a proved general substitution/evaluation theorem and standardized-apart semantics. |
+| M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` has recursive terms, evaluation/clause predicates, a general term substitution/evaluation theorem, substitution-instance lemmas, and constrained target-binding examples. It lacks fully verified literal/clause substitution preservation and standardized-apart semantics. |
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution application and duplicate-domain checking are verified in the first-order prototype. There is no general unifier/MGU checker, position/replacement replay, standardization-apart implementation, or resource-bounded term IR. |
-| M3 — Superposition checker | **PARTIAL** | `superposition_checker.rs` verifies executable shape checking and semantic soundness for **positive ground unit equality into a positive unary-predicate unit clause, rewriting the whole argument**. Variable-bearing/multi-literal clauses, actual term IDs/term trees, certificates with positions, ordering, and c502 remain unsupported/unanalysed. |
+| M3 — Superposition checker | **PARTIAL** | `superposition_checker.rs` verifies a ground unit fragment; `variable_superposition.rs` checks and proves one fixed variable-bearing two-literal schema with whole-target substitution. General term-tree certificates, arbitrary positions, clauses, ordering, and c502 remain unsupported/unanalysed. |
 | M4 — Proof-DAG validation | **TODO** | No proof graph, parent closure, rule dispatcher, or empty-clause refutation checker. |
 | M5 — MRS integration | **TODO** | The Verus executable is not called by `mrs-proof-kernel`; no interchange format or production adapter exists. |
 | M6 — Broader rules | **TODO** | Resolution, AC, demodulation, transformations, and AVATAR/LRAT are not implemented in the Verus checker. |
@@ -64,9 +68,11 @@ full clause semantics, or a connection to `mrs-proof-kernel`.
 
 The current results (`5 verified, 0 errors` for the original policy pilot;
 `19 verified, 0 errors` for first-order core; `5 verified, 0 errors` for the
-ground unit-superposition checker) are successful early proof steps. The ground
-checker proves only the stated positive, ground, unit-clause rule; it is not a
-general superposition checker, proof kernel, or prover. Keep that distinction in
+ground unit-superposition checker; `5 verified, 0 errors` for the variable
+two-literal schema) are successful early proof steps. The ground checker proves
+only the stated positive, ground, unit-clause rule; the variable checker covers
+one fixed multi-literal schema. Neither is a general superposition checker,
+proof kernel, or prover. Keep that distinction in
 release notes and certification reports until the relevant gates below are
 passed.
 
@@ -174,10 +180,23 @@ Avoid relying on a parser that silently drops unsupported constructs.
   substitution, assuming the interpretation function and valuation have full
   domains. It establishes the semantic bridge used by clause-instantiation
   proofs.
-- **TODO:** complete universally quantified clause semantics and its non-empty
-  domain assumptions, standardization-apart theorem, and a formal derivation of
-  the general superposition rule from the term/equality lemmas. The current
-  clause declarations are not yet connected to a fully proved calculus theorem.
+- **DONE:** a variable-bearing two-literal superposition schema proves the
+  target-side substitution must also be applied to the other target literal;
+  its model-level soundness theorem verifies, and the partial-substitution
+  mutation is rejected by the executable shape checker.
+- **TODO — DIFFICULT:** complete universally quantified clause semantics and its non-empty
+  domain assumptions, standardization-apart theorem, and formal derivation of
+  general superposition.
+- **TODO — DIFFICULT:** prove atom/literal/clause substitution preservation.
+  The current finite predicate-map model does not yet provide sufficient
+  definedness facts for arbitrary predicate applications; resolve the semantic
+  interpretation/domain interface before attempting the proof again.
+- **ABANDONED approach:** the direct atom/clause lifting proof was attempted
+  against the current partial finite predicate-map model. It failed its proof
+  obligations because predicate lookups could be undefined for substituted
+  argument tuples. That proof attempt was removed rather than weakening its
+  theorem or smuggling in stronger assumptions. The general preservation result
+  remains active as the difficult TODO above.
 
 **Deliverables**
 
@@ -221,6 +240,10 @@ Avoid relying on a parser that silently drops unsupported constructs.
   a semantic soundness theorem for positive ground unit equalities rewriting
   whole unary-predicate unit arguments. It is the first actual checker slice;
   it does not yet cover variable-bearing or multi-literal clauses.
+- `variable_superposition.rs` verifies the specific `f(a)=b`,
+  `q(X) | p(f(X))` to `q(a) | p(b)` schema, including a model soundness proof
+  and rejection of forged partial-substitution/wrong-rewrite conclusions. It is
+  still a fixed schema checker, not general superposition replay.
 
 **Acceptance gate**
 
@@ -289,10 +312,13 @@ Avoid relying on a parser that silently drops unsupported constructs.
 
 **Current status**
 
-- **DONE:** `superposition_checker.rs` checks the exact ground-unit certificate
-  shape, rejects forged predicate/target fields, and proves local semantic
-  preservation under the provided model.
-- **TODO:** general term IDs/trees, variables and unifiers, non-unit clauses,
+- **DONE:** `superposition_checker.rs` checks and proves soundness for its
+  positive ground unit fragment. `variable_superposition.rs` verifies a
+  variable-bearing two-literal schema and rejects leaving the non-selected
+  target literal unsubstituted.
+- **DONE:** both checker modules are run by the pinned Verus verification
+  script/CI gate as distinct modules.
+- **TODO — DIFFICULT:** general term IDs/trees, variables and unifiers, non-unit clauses,
   arbitrary selected positions, whole-clause substitution, ordered conditions,
   and the full universally quantified superposition soundness theorem. The
   archived c502 fixture is retained but not replayed by this checker.
@@ -361,7 +387,7 @@ freshness conditions must also be justified by the calculus contract.
   whole-clause soundness theorem. These mutation checks are diagnostic, not a
   replacement for theorem review.
 
-### M4 — Wrap the verified step checker in proof-DAG validation (**TODO**)
+### M4 — Wrap the verified step checker in proof-DAG validation (**TODO — DIFFICULT**)
 
 **Deliverables**
 
@@ -393,7 +419,7 @@ front-end or a separately justified premise transformation.
   cycle, unsupported rule, and resource cutoff.
 - Every unknown/rejected outcome suppresses certification in the caller.
 
-### M5 — Integrate the verified superposition checker with MRS (**TODO**)
+### M5 — Integrate the verified superposition checker with MRS (**TODO — DIFFICULT**)
 
 **Deliverables**
 
@@ -452,7 +478,7 @@ archived cases, and a versioned support declaration.
    input representation are specified. Unsupported dialect/rule forms remain
    visibly inconclusive.
 
-### M7 — Release, audit, and maintain the assurance case (**TODO**)
+### M7 — Release, audit, and maintain the assurance case (**TODO — DIFFICULT**)
 
 **Deliverables**
 
@@ -505,7 +531,7 @@ status ledger above.
 
 The first meaningful release target is a **verified superposition step checker**.
 It does not need to verify an entire prover proof DAG to demonstrate the core
-claim. Its supported input is:
+claim. Its intended supported input is:
 
 - two already-lowered first-order clauses with predicates, equality, literals,
   and universal-closure semantics;
@@ -515,6 +541,11 @@ claim. Its supported input is:
 - recomputed conclusion equality modulo only proved variable-renaming and
   literal-order equivalences; and
 - bounded syntax/certificate sizes with fail-closed `Unknown` behavior.
+
+**Implemented slices, not the release target:** the ground unit checker and the
+single `f(a)=b`, `q(X) | p(f(X))` two-literal schema are implemented and
+verified. Arbitrary terms, substitutions, clause width, positions and general
+superposition soundness are still outstanding.
 
 The first end-to-end proof-DAG/refutation checker is a follow-on milestone that
 uses this verified step checker and adds validated input leaves, parent closure,
