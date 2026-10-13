@@ -1235,6 +1235,10 @@ fn try_epr_ground_with_model(
     symbols: &SymbolTable,
     budget: EprBudget,
 ) -> (Option<SearchResult>, EprTelemetry) {
+    // Count classification and size estimation against the pre-pass wall cap;
+    // these run before any SAT or instance-generation work but still consume
+    // the caller's shared schedule deadline.
+    let start = Instant::now();
     let route = crate::instgen::classify_epr_profile(clauses);
     let mut domain = crate::instgen::collect_constants(clauses);
     let domain_size = domain.len().max(1);
@@ -1253,8 +1257,13 @@ fn try_epr_ground_with_model(
     }
     tele.attempted = true;
 
-    let start = Instant::now();
     let deadline = start + budget.timeout;
+    if Instant::now() >= deadline {
+        tele.elapsed_ms = start.elapsed().as_millis() as u64;
+        tele.fallback = Some("grounding_timeout");
+        tele.result = "fallback";
+        return (None, tele);
+    }
     // Diagnostics, off unless asked for.
     //
     // `TRACE_EPR_DUMP=<path>` writes the asserted ground instance set as TPTP,
@@ -5212,7 +5221,7 @@ cnf('cClauseId(3)',axiom,~r(a)).\n";
     }
 
     #[test]
-    fn expired_solve_deadline_is_counted_as_attempt_but_not_solver_entry() {
+    fn expired_prepass_deadline_skips_solver_entry() {
         let mut symbols = SymbolTable::new();
         let p = symbols.intern("p");
         let a = symbols.intern("a");
@@ -5234,7 +5243,7 @@ cnf('cClauseId(3)',axiom,~r(a)).\n";
         assert!(result.is_none());
         assert_eq!(telemetry.result, "fallback");
         assert_eq!(telemetry.fallback, Some("grounding_timeout"));
-        assert_eq!(telemetry.solves, 1);
+        assert_eq!(telemetry.solves, 0);
         assert_eq!(telemetry.solve_entries, 0);
         assert_eq!(telemetry.solve_ms, 0);
     }

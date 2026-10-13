@@ -302,6 +302,24 @@ pub fn try_componentwise_refute(
     symbols: std::sync::Arc<SymbolTable>,
     sym_config: Arc<SymbolConfig>,
 ) -> Option<SearchResult> {
+    try_componentwise_refute_until(clauses, provenance, id_gen, symbols, sym_config, None)
+}
+
+/// Scheduler variant that caps the sum of branch searches at a shared wall
+/// deadline. The standalone diagnostic API retains its per-branch bound.
+pub(crate) fn try_componentwise_refute_until(
+    clauses: &[Clause],
+    provenance: &[Clause],
+    id_gen: &mut ClauseIdGen,
+    symbols: std::sync::Arc<SymbolTable>,
+    sym_config: Arc<SymbolConfig>,
+    deadline: Option<std::time::Instant>,
+) -> Option<SearchResult> {
+    let fixed_budget_deadline =
+        std::time::Instant::now() + PER_BRANCH_TIME.saturating_mul(MIN_BRANCHES as u32);
+    let deadline = Some(deadline.map_or(fixed_budget_deadline, |deadline| {
+        deadline.min(fixed_budget_deadline)
+    }));
     let top = detect_top_disjunction(clauses)?;
     let n = top.branch_predicates.len();
     let branches = extract_branch_clauses(&top, clauses);
@@ -331,6 +349,16 @@ pub fn try_componentwise_refute(
 
     #[allow(clippy::needless_range_loop)]
     for k in 0..n {
+        let remaining =
+            deadline.map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()));
+        if remaining.is_some_and(|remaining| remaining.is_zero()) {
+            return None;
+        }
+        let branch_config = SearchConfig {
+            time_limit: remaining
+                .map_or(PER_BRANCH_TIME, |remaining| remaining.min(PER_BRANCH_TIME)),
+            ..sub_config.clone()
+        };
         let mut branch_clauses: Vec<Clause> =
             branches[k].iter().map(|&i| clauses[i].clone()).collect();
         let unit = make_branch_unit(top_clause, k, id_gen);
@@ -347,7 +375,7 @@ pub fn try_componentwise_refute(
             false,
             crate::ClauseWeightFn::Standard,
         );
-        let result = search(&mut state, &sub_config);
+        let result = search(&mut state, &branch_config);
 
         // Advance the caller's id_gen past any IDs used by this sub-search.
         *id_gen = state.id_gen.clone();
@@ -391,6 +419,9 @@ pub fn try_componentwise_refute(
             // Any non-refutation outcome aborts CWA: if a single branch
             // doesn't refute within its budget we cannot conclude UNSAT.
             _ => return None,
+        }
+        if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+            return None;
         }
     }
 

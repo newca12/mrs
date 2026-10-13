@@ -691,8 +691,27 @@ pub fn try_instgen_epr_with_telemetry(
     id_gen: &mut ClauseIdGen,
     symbols: &SymbolTable,
 ) -> (Option<SearchResult>, InstGenTelemetry) {
+    try_instgen_epr_with_telemetry_and_timeout(clauses, provenance, id_gen, symbols, None)
+}
+
+/// As [`try_instgen_epr_with_telemetry`], with an optional caller deadline cap.
+/// The strategy scheduler uses this so InstGen shares the same wall budget as
+/// EPR grounding and the portfolio.
+pub(crate) fn try_instgen_epr_with_telemetry_and_timeout(
+    clauses: &[Clause],
+    provenance: &[Clause],
+    id_gen: &mut ClauseIdGen,
+    symbols: &SymbolTable,
+    timeout_cap: Option<Duration>,
+) -> (Option<SearchResult>, InstGenTelemetry) {
+    let start_time = Instant::now();
     let route = classify_epr_profile(clauses);
-    let (budget, est) = adaptive_instgen_budget(clauses);
+    let (mut budget, est) = adaptive_instgen_budget(clauses);
+    if let Some(timeout_cap) = timeout_cap {
+        budget.timeout = budget
+            .timeout
+            .min(timeout_cap.saturating_sub(start_time.elapsed()));
+    }
     let mut tele = InstGenTelemetry {
         attempted: false,
         route,
@@ -717,6 +736,11 @@ pub fn try_instgen_epr_with_telemetry(
     }
 
     tele.attempted = true;
+    if budget.timeout.is_zero() {
+        tele.fallback_reason = Some("timeout");
+        tele.return_reason = Some("fallback");
+        return (None, tele);
+    }
     // Enforce the cap before constructing the SAT solver or copying the input
     // into the active InstGen set. The cap includes the input clauses, so a
     // large ground EPR corpus cannot bypass the adaptive fail-fast tier.
@@ -726,7 +750,6 @@ pub fn try_instgen_epr_with_telemetry(
         return (None, tele);
     }
     let trace = std::env::var("TRACE_INSTGEN").is_ok();
-    let start_time = Instant::now();
 
     if trace {
         eprintln!(
@@ -1216,6 +1239,29 @@ mod tests {
                 role: "axiom".into(),
             },
         )
+    }
+
+    #[test]
+    fn caller_timeout_cap_bounds_instgen_and_zero_cap_fails_closed() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let mut id_gen = ClauseIdGen::new();
+        let clause = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::var(0)]))],
+            "p",
+        );
+        let (result, telemetry) = try_instgen_epr_with_telemetry_and_timeout(
+            &[clause],
+            &[],
+            &mut id_gen,
+            &symbols,
+            Some(Duration::ZERO),
+        );
+        assert!(result.is_none());
+        assert_eq!(telemetry.budget_ms, 0);
+        assert_eq!(telemetry.fallback_reason, Some("timeout"));
+        assert_eq!(telemetry.return_reason, Some("fallback"));
     }
 
     #[test]

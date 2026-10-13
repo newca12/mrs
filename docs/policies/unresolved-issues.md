@@ -1089,6 +1089,54 @@ the new output cap. Recomputed outcome including this confirmation: 11
 `Unsatisfiable`, 11 strict `VerifiedGood`, 0 `VerifiedBad`; no claims about
 replicated variance are made.
 
+### 2026-10-12 budget-flow audit
+
+At refreshed `main` revision `8b4d9fbf22759bc75ee8ec984285c4175835ee54`, the
+older statement above that EPR pre-pass time was added to a *full* portfolio
+budget did not describe every current route. `run_schedule` records
+`schedule_start` before EPR grounding, and each portfolio worker computes
+`total_budget - schedule_start.elapsed()` before launching work. Therefore an
+EPR refutation pass that falls back already consumes the portfolio's shared
+wall allowance in the refutation arm and in normal `casc`/`adaptive` modes.
+`casc-sim` intentionally uses its extended simulation allowance, so that is its
+deadline rather than the CASC reference limit.
+
+Two concrete accounting defects did remain. First, the default `casc` strategy
+weights added to 111%, so its `total_budget` (the sum of the strategy time
+limits) exceeded the caller's budget; unlike that schedule, the named division
+portfolios partition their input budget exactly. Second, EPR's local timeout
+was started inside the pre-pass after scheduler setup and had a 500 ms minimum,
+so on a nearly exhausted short run it could outlive the scheduler deadline
+before workers noticed the expired shared clock. Other sequential EPR-adjacent
+passes were also inspected: InstGen had its own independent shape budget, and
+componentwise search used a fixed per-branch budget whose sum could exceed the
+caller deadline. Both are now clamped to the same scheduler deadline.
+
+The default weights are now normalized to sum to the caller's budget. Both EPR
+arms retain their existing grounding/model caps but clamp the pass timeout to
+the remaining shared deadline; an already exhausted deadline skips another
+phase and returns `Timeout`. A verified finite model and an un-rejected
+refutation retain their early-return path; `Unknown`, `GaveUp`, timeout,
+resource exhaustion, and a model candidate without a model certificate remain
+inconclusive and fall through only while budget remains. Focused deterministic
+tests pin the remainder calculation, exhausted-phase gate, model/refutation
+caps, and fail-closed outcomes.
+
+`main` now re-scales the selected schedule to the actual time remaining after
+schedule construction and optional pre-phase routing, preventing those setup
+stages from leaving the search with a stale snapshot of the original budget.
+The InstGen and componentwise pre-passes also receive the same scheduler
+deadline, and workers re-check the deadline after SInE, premise filtering and
+state construction before beginning inference.
+
+Investigation environment: Rust `1.99.0 (b940084d7 2026-09-28)`, 2 physical
+cores / 4 logical CPUs, `MemTotal` 15.5 GiB and `MemAvailable` 14.3 GiB. No
+runtime reproduction or division campaign was run. The required Nix-wrapped
+checks could not run in that shell because `nix`/`direnv` were not installed;
+the implementation still needs the focused and workspace checks in the
+repository's Nix development environment. The 2026-10-12 EPU coverage decision
+and its one-replicate limitation are unchanged.
+
 ### 2026-10-10 initial diagnosis: BFS and given-clause extraction exhausted their bounds
 
 This records the bounded failure of the original BFS and ground given-clause

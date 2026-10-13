@@ -1099,6 +1099,13 @@ fn main() {
             config.shared_pool_poll_interval = 0;
         }
 
+        // Schedule construction and optional routing are setup work under the
+        // caller's wall clock. Re-scale the portfolio to the time still
+        // available now so the scheduler's own deadline cannot inherit an
+        // earlier, stale budget snapshot.
+        let search_budget = total_budget.saturating_sub(start.elapsed());
+        schedule.rescale_to_budget(search_budget);
+
         let (result, schedule_report, cert_telemetry) = if self_check {
             let coordinator =
                 coordinator::AsyncCoordinator::new(coordinator::AsyncCoordinatorConfig {

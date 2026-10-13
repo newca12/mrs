@@ -19,6 +19,36 @@ fn epr_ground_prepass_enabled(value: Option<&str>) -> bool {
     value != Some("0")
 }
 
+fn epr_ground_prepass_should_run(is_epr: bool, enabled: bool, model_enabled: bool) -> bool {
+    is_epr && (enabled || model_enabled)
+}
+
+/// Remaining wall budget shared by the pre-passes and portfolio.
+fn remaining_schedule_budget(total_budget: Duration, elapsed: Duration) -> Option<Duration> {
+    let remaining = total_budget.saturating_sub(elapsed);
+    (!remaining.is_zero()).then_some(remaining)
+}
+
+fn epr_budget_with_remaining_time(
+    mut budget: crate::EprBudget,
+    remaining: Duration,
+) -> Option<crate::EprBudget> {
+    if remaining.is_zero() {
+        return None;
+    }
+    budget.timeout = budget.timeout.min(remaining);
+    Some(budget)
+}
+
+fn run_epr_prepass<T>(
+    budget: crate::EprBudget,
+    remaining: Option<Duration>,
+    run: impl FnOnce(crate::EprBudget) -> T,
+) -> Option<T> {
+    let pass_budget = epr_budget_with_remaining_time(budget, remaining?)?;
+    Some(run(pass_budget))
+}
+
 static CONDENSED_DETACHMENT_PROCESS_START: OnceLock<Instant> = OnceLock::new();
 
 fn condensed_detachment_process_elapsed() -> Duration {
@@ -51,10 +81,9 @@ use mrs_proof::extract::extract_proof;
 use mrs_proof::tstp::format_tstp;
 
 use crate::condensed_detachment::try_refutation as try_condensed_detachment_refutation;
-use crate::cwa::try_componentwise_refute;
 use crate::fvo::try_fvo_refutation;
 use crate::given_clause::search;
-use crate::instgen::{InstGenTelemetry, is_epr, try_instgen_epr_with_telemetry};
+use crate::instgen::{InstGenTelemetry, is_epr};
 use crate::state::SearchState;
 use crate::{
     LiteralSelection, SearchConfig, SearchResult, SelectionStrategy, SharedClauseChain,
@@ -71,19 +100,45 @@ pub struct StrategySchedule {
 }
 
 impl StrategySchedule {
+    /// Rescale all strategy slices proportionally so they sum to `total_time`.
+    /// The last slice absorbs rounding just like the schedule constructors do
+    /// at their initial allocation.
+    pub fn rescale_to_budget(&mut self, total_time: Duration) {
+        if self.strategies.is_empty() {
+            return;
+        }
+        let current: Duration = self.strategies.iter().map(|(_, slice)| *slice).sum();
+        if current.is_zero() {
+            return;
+        }
+        let mut allocated = Duration::ZERO;
+        let len = self.strategies.len();
+        for (index, (config, slice)) in self.strategies.iter_mut().enumerate() {
+            let time = if index + 1 == len {
+                total_time.saturating_sub(allocated)
+            } else {
+                let nanos = slice.as_nanos() * total_time.as_nanos() / current.as_nanos();
+                Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
+            };
+            config.time_limit = time;
+            *slice = time;
+            allocated = allocated.saturating_add(time);
+        }
+    }
+
     /// Creates the default strategy schedule.
     ///
-    ///  1. AgeWeight(5) + AllNegative + KBO — balanced exploration (14%)
-    ///  2. SmallestFirst + AllNegative + KBO + no weight limit + no AVATAR — deep chain proofs (10%)
-    ///  3. SmallestFirst + AllNegative + KBO — pure best-first (10%)
-    ///  4. AgeWeight(5) + MaxNegative + KBO — aggressive selection (9%)
-    ///  5. AgeWeight(5) + All + KBO — unrestricted literal selection (9%)
-    ///  6. AgeWeight(5) + All + KBO + no AVATAR — FNE/definitional CNF proofs (10%)
-    ///  7. AgeWeight(5) + AllNegative + LPO — LPO balanced exploration (14%)
-    ///  8. GoalDirected(10) + AllNegative + LPO — LPO goal-directed (9%)
-    ///  9. SmallestFirst + AllNegative + LPO — LPO best-first (9%)
-    /// 10. SmallestFirst + All + KBO + max_weight=30 + no AVATAR — FEQ (4%)
-    /// 11. AgeWeight(5) + All + LPO + no weight limit + no AVATAR — FEQ (remainder ~2%)
+    ///  1. AgeWeight(5) + AllNegative + KBO — balanced exploration (weight 14)
+    ///  2. SmallestFirst + AllNegative + KBO + no weight limit + no AVATAR — deep chain proofs (weight 10)
+    ///  3. SmallestFirst + AllNegative + KBO — pure best-first (weight 10)
+    ///  4. AgeWeight(5) + MaxNegative + KBO — aggressive selection (weight 9)
+    ///  5. AgeWeight(5) + All + KBO — unrestricted literal selection (weight 9)
+    ///  6. AgeWeight(5) + All + KBO + no AVATAR — FNE/definitional CNF proofs (weight 10)
+    ///  7. AgeWeight(5) + AllNegative + LPO — LPO balanced exploration (weight 14)
+    ///  8. GoalDirected(10) + AllNegative + LPO — LPO goal-directed (weight 9)
+    ///  9. SmallestFirst + AllNegative + LPO — LPO best-first (weight 9)
+    /// 10. SmallestFirst + All + KBO + max_weight=30 + no AVATAR — FEQ (weight 2)
+    /// 11. AgeWeight(5) + All + LPO + no weight limit + no AVATAR — FEQ (weight 5)
     pub fn default_schedule(total_time: Duration, workers: usize) -> Self {
         // Allow overriding to a single strategy for diagnosis: MRS_SINGLE_STRATEGY=N
         // runs only strategy N (1-indexed) for the full time budget.
@@ -104,27 +159,30 @@ impl StrategySchedule {
 
     pub(crate) fn _all_strategies(total_time: Duration, _workers: usize) -> Self {
         let ms = total_time.as_millis() as u64;
-        // s1–s9: restored close to original proportions (92% combined for a 30 s budget)
-        // s10–s11: small FEQ-targeted bonus budgets (8% combined)
-        let t1 = Duration::from_millis(ms * 14 / 100); // 14% (was 15%)
-        let t2 = Duration::from_millis(ms * 10 / 100); // 10%
-        let t3 = Duration::from_millis(ms * 10 / 100); // 10%
-        let t4 = Duration::from_millis(ms * 9 / 100); //   9% (was 10%)
-        let t5 = Duration::from_millis(ms * 9 / 100); //   9% (was 10%)
-        let t6 = Duration::from_millis(ms * 10 / 100); // 10%
-        let t7 = Duration::from_millis(ms * 14 / 100); // 14% (was 15%)
-        let t8 = Duration::from_millis(ms * 9 / 100); //   9% (was 10%)
-        let t9 = Duration::from_millis(ms * 9 / 100); //   9% (was ~10%)
-        // s1–s9 total: 94%
-        // s1-s9: proven baseline portfolio (88% combined)
-        // s10-s15: new strategies exploiting distance propagation, SOS, and
-        //          goal-symbol heuristics (~12% combined)
-        let t10 = Duration::from_millis(ms * 5 / 100); //  5% SOS
-        let t11 = Duration::from_millis(ms * 5 / 100); //  5% ConjSymbolBoost
-        let t12 = Duration::from_millis(ms * 3 / 100); //  3% HornPenalty (FNE)
-        let t13 = Duration::from_millis(ms * 2 / 100); //  2% SOS + GoalDirected + LPO
-        let t14 = Duration::from_millis(ms * 2 / 100); //  2% ConjSymbolBoost + All (FEQ)
-        // t15 absorbs rounding remainder (~1% at 30 s) — FunctionDepth + LPO
+        // Strategy priority weights. Normalize these below to the caller's
+        // budget; s15 absorbs integer rounding.
+        // These weights used to be applied as percentages directly, but their
+        // sum (including s10–s14) is 111%. Normalize against the total weight
+        // so the default portfolio, like the named portfolios, cannot allocate
+        // more wall time than its caller supplied. s15 absorbs rounding.
+        const TOTAL_WEIGHT: u64 = 111;
+        let t1 = Duration::from_millis(ms * 14 / TOTAL_WEIGHT);
+        let t2 = Duration::from_millis(ms * 10 / TOTAL_WEIGHT);
+        let t3 = Duration::from_millis(ms * 10 / TOTAL_WEIGHT);
+        let t4 = Duration::from_millis(ms * 9 / TOTAL_WEIGHT);
+        let t5 = Duration::from_millis(ms * 9 / TOTAL_WEIGHT);
+        let t6 = Duration::from_millis(ms * 10 / TOTAL_WEIGHT);
+        let t7 = Duration::from_millis(ms * 14 / TOTAL_WEIGHT);
+        let t8 = Duration::from_millis(ms * 9 / TOTAL_WEIGHT);
+        let t9 = Duration::from_millis(ms * 9 / TOTAL_WEIGHT);
+        // s10–s15 add strategies exploiting distance propagation, SOS, and
+        // goal-symbol heuristics.
+        let t10 = Duration::from_millis(ms * 5 / TOTAL_WEIGHT); // SOS
+        let t11 = Duration::from_millis(ms * 5 / TOTAL_WEIGHT); // ConjSymbolBoost
+        let t12 = Duration::from_millis(ms * 3 / TOTAL_WEIGHT); // HornPenalty (FNE)
+        let t13 = Duration::from_millis(ms * 2 / TOTAL_WEIGHT); // SOS + GoalDirected + LPO
+        let t14 = Duration::from_millis(ms * 2 / TOTAL_WEIGHT); // ConjSymbolBoost + All (FEQ)
+        // t15 absorbs rounding remainder — FunctionDepth + LPO
         let t15 = total_time
             .saturating_sub(t1)
             .saturating_sub(t2)
@@ -670,6 +728,11 @@ pub fn run_schedule_with_candidate_receiver(
     workers: Option<usize>,
     candidate_receiver: Option<Arc<dyn CandidateReceiver>>,
 ) -> (SearchResult, crate::ScheduleReport) {
+    // Pre-passes and workers share one clock. `total_budget` below is the sum
+    // of the schedule slices, rescaled by the CLI to the caller's remaining
+    // wall time at the point search starts.
+    let schedule_start = Instant::now();
+
     if let Some(cert_config) = schedule
         .strategies
         .iter()
@@ -780,8 +843,18 @@ pub fn run_schedule_with_candidate_receiver(
 
     let clauses_owned = clauses.to_vec();
 
-    let mut total_budget: Duration = actual_configs.iter().map(|c| c.time_limit).sum();
-    let schedule_start = Instant::now();
+    let total_budget: Duration = actual_configs.iter().map(|c| c.time_limit).sum();
+    let schedule_total_budget = total_budget;
+    let schedule_deadline = schedule_start + total_budget;
+    if total_budget.is_zero() || Instant::now() >= schedule_deadline {
+        return (
+            SearchResult::Timeout,
+            crate::ScheduleReport {
+                workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                ..crate::ScheduleReport::default()
+            },
+        );
+    }
 
     // Detect EPR structure even when the full expansion exceeds MAX_INSTANCES.
     // EPR problems (only variables and ground terms, no function symbols of
@@ -845,24 +918,15 @@ pub fn run_schedule_with_candidate_receiver(
         epr_ground_prepass_enabled(std::env::var("MRS_EPR_GROUND").ok().as_deref());
     let epr_model_enabled = std::env::var("MRS_EPR_MODEL").is_ok_and(|v| v != "0");
     let epr_ground_enabled = epr_ground_enabled || epr_model_enabled;
-    if is_problem_epr && epr_ground_enabled {
+    if epr_ground_prepass_should_run(is_problem_epr, epr_ground_enabled, epr_model_enabled) {
         let memory_budget_mb = actual_configs
             .iter()
             .find_map(|c| c.resource_limits.max_memory_mb);
-        // Sized from the sum of strategy budgets. That sum is the right scale
-        // because every schedule constructor partitions the CLI wall clock
-        // into per-strategy slices (the default schedule's shares add to
-        // ~100%, `mini`/`fast`/cooperative portfolios to exactly 100%), and
-        // the pre-pass runs sequentially, so its timeout is a share of the
-        // wall clock in every worker mode. Two things this is *not*: the
-        // minimum slice (a 2% diagnostic share would clamp the pre-pass to
-        // the 500 ms floor, which the proof reserve then eats whole) and the
-        // maximum slice (a 14% share would starve grounding on short runs).
-        // Known limitation, documented in `epr_ground`: worker budgets are
-        // not reduced by pre-pass elapsed, so total wall includes the pre-pass
-        // share plus the full portfolio, not merely `--time`.
+        // The EPR pass and portfolio observe the same scheduler deadline.
+        // Keep the existing per-pass cap, but clamp it to the wall time still
+        // available after setup and any earlier pre-passes.
         let model_search = epr_model_enabled;
-        let mut budget = crate::epr_budget(memory_budget_mb, total_budget);
+        let mut budget = crate::epr_budget(memory_budget_mb, schedule_total_budget);
         if model_search {
             // Model checking should be a bounded EPS experiment. Never let this
             // opt-in pre-pass scale its instance cap with a large competition
@@ -879,28 +943,34 @@ pub fn run_schedule_with_candidate_receiver(
             // and it has to be an A/B against this null baseline rather than a
             // default change. See `docs/reports/benchmarks/eps-2026-09.md`.
             let bounded_memory_mb = memory_budget_mb.unwrap_or(128).min(128);
-            let bounded = crate::epr_budget(Some(bounded_memory_mb), total_budget);
+            let bounded = crate::epr_budget(Some(bounded_memory_mb), schedule_total_budget);
             budget = crate::EprBudget {
                 timeout: bounded.timeout.min(Duration::from_millis(500)),
                 max_instances: bounded.max_instances.min(1_000),
                 ..bounded
             };
+            budget.timeout = budget.timeout.min(schedule_total_budget);
             // Equality-bearing profiles continue to the portfolio until the
             // model path has a complete congruence-closure certificate.
             if matches!(
                 crate::instgen::classify_epr_profile(&clauses_owned),
                 "pure_relational_epr" | "ground"
             ) {
-                let mut model_id_gen = id_gen.clone();
-                let (model_result, telemetry) = crate::epr_ground::try_epr_ground_with_originals(
-                    &clauses_owned,
-                    &original_clauses,
-                    provenance,
-                    &mut model_id_gen,
-                    symbols,
-                    budget,
-                );
-                epr_telemetry = Some(telemetry);
+                let remaining = remaining_schedule_budget(total_budget, schedule_start.elapsed());
+                let model_result = run_epr_prepass(budget, remaining, |pass_budget| {
+                    let mut model_id_gen = id_gen.clone();
+                    let (result, telemetry) = crate::epr_ground::try_epr_ground_with_originals(
+                        &clauses_owned,
+                        &original_clauses,
+                        provenance,
+                        &mut model_id_gen,
+                        symbols,
+                        pass_budget,
+                    );
+                    epr_telemetry = Some(telemetry);
+                    result
+                })
+                .flatten();
                 let report = crate::ScheduleReport {
                     workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
                     elapsed_ms: schedule_start.elapsed().as_millis() as u64,
@@ -910,9 +980,11 @@ pub fn run_schedule_with_candidate_receiver(
                     cert_tier: None,
                     cert_ordering: None,
                 };
-                if let Some(SearchResult::Saturated(witness)) = model_result.as_ref()
-                    && witness.model().is_some()
-                {
+                let certified_model = matches!(
+                    model_result.as_ref(),
+                    Some(SearchResult::Saturated(witness)) if witness.model().is_some()
+                );
+                if certified_model {
                     return (model_result.unwrap(), report);
                 }
                 if let Some(SearchResult::Refutation(id, tstp)) = model_result {
@@ -935,22 +1007,29 @@ pub fn run_schedule_with_candidate_receiver(
                         return (SearchResult::Refutation(id, tstp), report);
                     }
                 }
-                // The opt-in pre-pass consumes the same per-problem wall
-                // budget as the portfolio. Do not extend an EPS run past its
-                // configured deadline just because model construction ran.
-                total_budget = total_budget.saturating_sub(schedule_start.elapsed());
+                if remaining_schedule_budget(schedule_total_budget, schedule_start.elapsed())
+                    .is_none()
+                {
+                    return (SearchResult::Timeout, report);
+                }
             }
         }
         let mut epr_id_gen = id_gen.clone();
         if !model_search {
-            let (epr_result, tele) = crate::try_epr_ground_refutation(
-                &clauses_owned,
-                provenance,
-                &mut epr_id_gen,
-                symbols,
-                budget,
-            );
-            epr_telemetry = Some(tele);
+            let remaining =
+                remaining_schedule_budget(schedule_total_budget, schedule_start.elapsed());
+            let epr_result = run_epr_prepass(budget, remaining, |pass_budget| {
+                let (result, telemetry) = crate::try_epr_ground_refutation(
+                    &clauses_owned,
+                    provenance,
+                    &mut epr_id_gen,
+                    symbols,
+                    pass_budget,
+                );
+                epr_telemetry = Some(telemetry);
+                result
+            })
+            .flatten();
             if let Some(SearchResult::Refutation(id, tstp)) = epr_result {
                 let report = crate::ScheduleReport {
                     workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
@@ -981,6 +1060,17 @@ pub fn run_schedule_with_candidate_receiver(
                 }
             }
         }
+        if remaining_schedule_budget(schedule_total_budget, schedule_start.elapsed()).is_none() {
+            return (
+                SearchResult::Timeout,
+                crate::ScheduleReport {
+                    workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                    elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                    epr: epr_telemetry,
+                    ..crate::ScheduleReport::default()
+                },
+            );
+        }
     }
 
     // FVO pre-pass: for clause sets where all predicate arguments are variables
@@ -991,10 +1081,11 @@ pub fn run_schedule_with_candidate_receiver(
     // emits, so the reported refutation is a real derivation -- see `fvo`.
     //
     // The pre-pass gets a wall-clock ceiling because it runs before any
-    // portfolio thread exists, so its cost is *added* to the run rather than
-    // taken from the strategies' budgets.  It previously had no ceiling at all
-    // and only a clause-count cap, which on an instance whose resolution closure
-    // lands under the cap let it run for many minutes past `--time`.
+    // portfolio thread exists. Its elapsed time is included in the shared
+    // schedule clock and therefore reduces the time available to workers. It
+    // previously had no ceiling at all and only a clause-count cap, which on
+    // an instance whose resolution closure lands under the cap let it run for
+    // many minutes past `--time`.
     //
     // Note that it does not fire on the divisions it was written for: across the
     // 800 CASC-J13 FNE, UEQ and FEQ problems, `mrs --profile` reports FVO on
@@ -1005,7 +1096,10 @@ pub fn run_schedule_with_candidate_receiver(
     // carrying the schedule.  `fvo`'s module docs record the measurements.
     {
         let mut fvo_id_gen = id_gen.clone();
-        let fvo_budget = crate::fvo::fvo_budget(total_budget);
+        let fvo_budget = crate::fvo::fvo_budget(schedule_total_budget).min(
+            remaining_schedule_budget(schedule_total_budget, schedule_start.elapsed())
+                .unwrap_or_default(),
+        );
         if let Some(result) = try_fvo_refutation(
             &clauses_owned,
             provenance,
@@ -1075,14 +1169,17 @@ pub fn run_schedule_with_candidate_receiver(
         && condensed_detachment_process_elapsed() < cd_process_ceiling
         && candidate_receiver.is_none()
     {
-        let cd_start = Instant::now();
         let mut cd_id_gen = id_gen.clone();
-        let cd_budget = total_budget
+        let cd_budget = schedule_total_budget
             .min(Duration::from_millis(condensed_detachment_env_bound(
                 "MRS_CD_BUDGET_MS",
                 CONDENSED_DETACHMENT_BUDGET_MS,
             )))
             .min(cd_process_ceiling.saturating_sub(condensed_detachment_process_elapsed()));
+        let cd_budget = cd_budget.min(
+            remaining_schedule_budget(schedule_total_budget, schedule_start.elapsed())
+                .unwrap_or_default(),
+        );
         let cd_limits = crate::condensed_detachment::Limits {
             max_facts: condensed_detachment_env_bound(
                 "MRS_CD_MAX_FACTS",
@@ -1136,7 +1233,6 @@ pub fn run_schedule_with_candidate_receiver(
             };
             return (result, report);
         }
-        total_budget = total_budget.saturating_sub(cd_start.elapsed());
     }
 
     // Diagnostic harnesses can measure the pre-pass even when no fragment was
@@ -1153,6 +1249,20 @@ pub fn run_schedule_with_candidate_receiver(
         );
     }
 
+    if remaining_schedule_budget(schedule_total_budget, schedule_start.elapsed()).is_none() {
+        return (
+            SearchResult::Timeout,
+            crate::ScheduleReport {
+                workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                epr: epr_telemetry,
+                ..crate::ScheduleReport::default()
+            },
+        );
+    }
+
+    // The following legacy InstGen pre-pass is independently deadline-capped
+    // below, and also shares the portfolio's total wall clock.
     // InstGen pre-pass for EPR:
     // For pure relational EPR problems (all terms are variables or constants, no
     // function symbols with arity >= 1, no equality), the InstGen loop combines
@@ -1161,12 +1271,26 @@ pub fn run_schedule_with_candidate_receiver(
     // without combinatorial explosion.
     let mut instgen_telemetry: Option<InstGenTelemetry> = None;
     if is_problem_epr && std::env::var("MRS_NO_INSTGEN").is_err() {
+        if remaining_schedule_budget(schedule_total_budget, schedule_start.elapsed()).is_none() {
+            return (
+                SearchResult::Timeout,
+                crate::ScheduleReport {
+                    workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                    elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                    epr: epr_telemetry,
+                    ..crate::ScheduleReport::default()
+                },
+            );
+        }
         let mut instgen_id_gen = id_gen.clone();
-        let (instgen_result, tele) = try_instgen_epr_with_telemetry(
+        let remaining = remaining_schedule_budget(schedule_total_budget, schedule_start.elapsed())
+            .expect("deadline checked before InstGen launch");
+        let (instgen_result, tele) = crate::instgen::try_instgen_epr_with_telemetry_and_timeout(
             &clauses_owned,
             provenance,
             &mut instgen_id_gen,
             symbols,
+            Some(remaining),
         );
         instgen_telemetry = Some(tele.clone());
         // A variable-bearing SAT abstraction deliberately returns GaveUp:
@@ -1218,6 +1342,18 @@ pub fn run_schedule_with_candidate_receiver(
                 return (result, single_report);
             }
         }
+        if remaining_schedule_budget(schedule_total_budget, schedule_start.elapsed()).is_none() {
+            return (
+                SearchResult::Timeout,
+                crate::ScheduleReport {
+                    workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                    elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                    instgen: instgen_telemetry,
+                    epr: epr_telemetry,
+                    ..crate::ScheduleReport::default()
+                },
+            );
+        }
     }
 
     // Clone the symbol table into an Arc once; threads and the componentwise
@@ -1239,12 +1375,13 @@ pub fn run_schedule_with_candidate_receiver(
             .any(|(config, _)| config.emit_avatar_trace);
         let mut cwa_id_gen = id_gen.clone();
         if !strict_trace
-            && let Some(result) = try_componentwise_refute(
+            && let Some(result) = crate::cwa::try_componentwise_refute_until(
                 &clauses_owned,
                 provenance,
                 &mut cwa_id_gen,
                 symbols_arc.clone(),
                 default_config.clone(),
+                Some(schedule_deadline),
             )
         {
             if let SearchResult::Refutation(id, ref tstp) = result {
@@ -1410,10 +1547,12 @@ pub fn run_schedule_with_candidate_receiver(
                     // launch; using one snapshot from thread creation lets a
                     // sequence of short strategies run past the schedule
                     // deadline.
-                    let remaining = total_budget.saturating_sub(schedule_start.elapsed());
-                    if remaining.is_zero() {
+                    let Some(remaining) = remaining_schedule_budget(
+                        total_budget,
+                        schedule_start.elapsed(),
+                    ) else {
                         break;
-                    }
+                    };
 
             let mut sc = search_config.clone();
                     // Scale the individual time slice by the number of workers, capped by wall-clock limit.
@@ -1523,6 +1662,18 @@ pub fn run_schedule_with_candidate_receiver(
                     }
                     state.stop_flag = Some(Arc::clone(&stop));
                     state.shared_pool = Some(Arc::clone(&pool));
+
+                    // Thread setup (SInE, premise filtering, cloning and state
+                    // construction) is sequential work under the same wall
+                    // deadline too. Do not start given-clause search with the
+                    // stale allowance captured before that setup.
+                    let Some(remaining) = remaining_schedule_budget(
+                        total_budget,
+                        schedule_start.elapsed(),
+                    ) else {
+                        break;
+                    };
+                    sc.time_limit = sc.time_limit.min(remaining);
 
                     let strategy_start = std::time::Instant::now();
                     let raw = search(&mut state, &sc);
@@ -1900,6 +2051,327 @@ mod tests {
         assert!(epr_ground_prepass_enabled(None));
         assert!(epr_ground_prepass_enabled(Some("1")));
         assert!(!epr_ground_prepass_enabled(Some("0")));
+        assert!(!epr_ground_prepass_should_run(false, true, false));
+        assert!(!epr_ground_prepass_should_run(true, false, false));
+        assert!(epr_ground_prepass_should_run(true, true, false));
+        assert!(epr_ground_prepass_should_run(true, false, true));
+    }
+
+    #[test]
+    fn default_schedule_allocates_exactly_the_callers_wall_budget() {
+        for total in [
+            Duration::from_millis(1),
+            Duration::from_secs(1),
+            Duration::from_secs(30),
+            Duration::from_secs(120),
+        ] {
+            let schedule = StrategySchedule::_all_strategies(total, 8);
+            let allocated: Duration = schedule.strategies.iter().map(|(_, slice)| *slice).sum();
+            assert_eq!(allocated, total);
+        }
+    }
+
+    #[test]
+    fn schedule_rescaling_preserves_ratios_and_exact_total() {
+        let mut schedule = StrategySchedule {
+            strategies: vec![
+                (
+                    SearchConfig {
+                        time_limit: Duration::from_secs(2),
+                        ..SearchConfig::default()
+                    },
+                    Duration::from_secs(2),
+                ),
+                (
+                    SearchConfig {
+                        time_limit: Duration::from_secs(3),
+                        ..SearchConfig::default()
+                    },
+                    Duration::from_secs(3),
+                ),
+            ],
+        };
+        schedule.rescale_to_budget(Duration::from_secs(10));
+        let allocated: Duration = schedule.strategies.iter().map(|(_, slice)| *slice).sum();
+        assert_eq!(allocated, Duration::from_secs(10));
+        assert_eq!(schedule.strategies[0].0.time_limit, Duration::from_secs(4));
+        assert_eq!(schedule.strategies[1].0.time_limit, Duration::from_secs(6));
+    }
+
+    #[test]
+    fn schedule_rescaling_shrinks_existing_budgets() {
+        let mut schedule = StrategySchedule {
+            strategies: vec![
+                (
+                    SearchConfig {
+                        time_limit: Duration::from_secs(4),
+                        ..SearchConfig::default()
+                    },
+                    Duration::from_secs(4),
+                ),
+                (
+                    SearchConfig {
+                        time_limit: Duration::from_secs(6),
+                        ..SearchConfig::default()
+                    },
+                    Duration::from_secs(6),
+                ),
+            ],
+        };
+        schedule.rescale_to_budget(Duration::from_secs(5));
+        let allocated: Duration = schedule.strategies.iter().map(|(_, slice)| *slice).sum();
+        assert_eq!(allocated, Duration::from_secs(5));
+        assert_eq!(schedule.strategies[0].0.time_limit, Duration::from_secs(2));
+        assert_eq!(schedule.strategies[1].0.time_limit, Duration::from_secs(3));
+    }
+
+    #[test]
+    fn schedule_rescaling_updates_config_and_reported_slice() {
+        let mut schedule = StrategySchedule {
+            strategies: vec![(
+                SearchConfig {
+                    time_limit: Duration::from_secs(2),
+                    ..SearchConfig::default()
+                },
+                Duration::from_secs(1),
+            )],
+        };
+        schedule.rescale_to_budget(Duration::from_secs(3));
+        assert_eq!(schedule.strategies[0].0.time_limit, Duration::from_secs(3));
+        assert_eq!(schedule.strategies[0].1, Duration::from_secs(3));
+    }
+
+    #[test]
+    fn schedule_rescaling_handles_zero_and_empty_allocations() {
+        let schedule = StrategySchedule {
+            strategies: vec![(
+                SearchConfig {
+                    time_limit: Duration::ZERO,
+                    ..SearchConfig::default()
+                },
+                Duration::ZERO,
+            )],
+        };
+        let mut schedule = schedule;
+        schedule.rescale_to_budget(Duration::from_secs(5));
+        assert!(schedule.strategies[0].0.time_limit.is_zero());
+        assert!(schedule.strategies[0].1.is_zero());
+
+        let mut empty = StrategySchedule { strategies: vec![] };
+        empty.rescale_to_budget(Duration::from_secs(5));
+        assert!(empty.strategies.is_empty());
+    }
+
+    #[test]
+    fn schedule_rescaling_uses_declared_slices() {
+        let mut schedule = StrategySchedule {
+            strategies: vec![
+                (
+                    SearchConfig {
+                        time_limit: Duration::from_secs(8),
+                        ..SearchConfig::default()
+                    },
+                    Duration::from_secs(2),
+                ),
+                (
+                    SearchConfig {
+                        time_limit: Duration::from_secs(2),
+                        ..SearchConfig::default()
+                    },
+                    Duration::from_secs(3),
+                ),
+            ],
+        };
+        schedule.rescale_to_budget(Duration::from_secs(10));
+        assert_eq!(schedule.strategies[0].0.time_limit, Duration::from_secs(4));
+        assert_eq!(schedule.strategies[1].0.time_limit, Duration::from_secs(6));
+    }
+
+    #[test]
+    fn total_schedule_budget_is_clamped_to_entry_deadline_remainder() {
+        let caller_budget = Duration::from_secs(10);
+        let entry_elapsed = Duration::from_secs(3);
+        let schedule_deadline = Instant::now() + caller_budget - entry_elapsed;
+        let total_budget = schedule_deadline.saturating_duration_since(Instant::now());
+        assert!(total_budget <= Duration::from_secs(7));
+        assert!(total_budget > Duration::from_secs(6));
+    }
+
+    #[test]
+    fn prepass_budget_uses_only_the_remaining_schedule_deadline() {
+        let caller_budget = Duration::from_secs(10);
+        let pass_elapsed = Duration::from_secs(4);
+        let remaining = remaining_schedule_budget(caller_budget, pass_elapsed).unwrap();
+        assert_eq!(remaining, Duration::from_secs(6));
+
+        let budget = crate::epr_budget(None, caller_budget);
+        let mut observed = None;
+        let output = run_epr_prepass(budget, Some(remaining), |bounded| {
+            observed = Some(bounded.timeout);
+            7
+        });
+        assert_eq!(output, Some(7));
+        assert_eq!(observed, Some(Duration::from_secs(6)));
+    }
+
+    #[test]
+    fn exhausted_shared_deadline_prevents_prepass_launch() {
+        let budget = crate::epr_budget(None, Duration::from_secs(10));
+        let mut launched = false;
+        assert_eq!(
+            run_epr_prepass(
+                budget,
+                remaining_schedule_budget(Duration::from_secs(10), Duration::from_secs(10)),
+                |_| {
+                    launched = true;
+                }
+            ),
+            None
+        );
+        assert!(!launched);
+    }
+
+    #[test]
+    fn rejected_epr_candidate_is_not_a_success_unless_portfolio_proves() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+        let clauses = [
+            input_clause(
+                &mut id_gen,
+                vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+                "positive",
+            ),
+            input_clause(
+                &mut id_gen,
+                vec![Literal::neg(Atom::pred(p, vec![Term::constant(a)]))],
+                "negative",
+            ),
+        ];
+        let configs = [1, 2].map(|strategy_id| SearchConfig {
+            time_limit: Duration::from_secs(1),
+            strategy_id,
+            use_avatar: false,
+            ..SearchConfig::default()
+        });
+        let schedule = StrategySchedule {
+            strategies: configs
+                .into_iter()
+                .map(|config| (config.clone(), config.time_limit))
+                .collect(),
+        };
+        let (result, report) = run_schedule_with_candidate_receiver(
+            &clauses,
+            &[],
+            id_gen,
+            &schedule,
+            &syms,
+            MlOptions::default(),
+            Some(2),
+            Some(Arc::new(RejectingCandidateReceiver)),
+        );
+        assert!(matches!(result, SearchResult::GaveUp));
+        assert!(matches!(
+            report.epr.as_ref().map(|telemetry| telemetry.result),
+            Some("refutation")
+        ));
+        assert!(
+            report
+                .strategies
+                .iter()
+                .any(|strategy| matches!(strategy.result, SearchResult::Refutation(..)))
+        );
+        assert!(report.instgen.is_some());
+    }
+
+    struct RejectingCandidateReceiver;
+
+    impl CandidateReceiver for RejectingCandidateReceiver {
+        fn submit_candidate(&self, _candidate: CandidateRefutation) -> bool {
+            false
+        }
+
+        fn register_stop_flag(&self, _stop_flag: Arc<AtomicBool>) {}
+
+        fn certified_result(&self) -> Option<SearchResult> {
+            None
+        }
+    }
+
+    #[test]
+    fn exhausted_deadline_does_not_start_another_search_phase() {
+        let budget = crate::epr_budget(None, Duration::from_secs(10));
+        let mut started = false;
+        assert_eq!(
+            run_epr_prepass(budget, None, |_| {
+                started = true;
+            }),
+            None
+        );
+        assert!(!started);
+        assert_eq!(
+            remaining_schedule_budget(Duration::from_secs(10), Duration::from_secs(10)),
+            None
+        );
+        assert_eq!(
+            remaining_schedule_budget(Duration::from_secs(10), Duration::from_secs(12)),
+            None
+        );
+    }
+
+    #[test]
+    fn non_success_prepass_outcomes_do_not_become_certified_results() {
+        let incomplete = crate::CompletenessWitness::sat_backed_grounding().with_model(None);
+        let incomplete_result = SearchResult::Saturated(incomplete);
+        let has_verified_model = |result: &SearchResult| {
+            matches!(
+                result,
+                SearchResult::Saturated(witness) if witness.model().is_some()
+            )
+        };
+        assert!(!has_verified_model(&incomplete_result));
+        assert!(!has_verified_model(&SearchResult::GaveUp));
+        assert!(!has_verified_model(&SearchResult::Timeout));
+        assert!(!has_verified_model(&SearchResult::ResourceOut(
+            crate::ResourceReason::Unknown
+        )));
+        let certified_model = SearchResult::Saturated(
+            crate::CompletenessWitness::sat_backed_grounding().with_model(Some(
+                mrs_core::model::ModelCertificate {
+                    domain_size: 1,
+                    constants: Default::default(),
+                    functions: Default::default(),
+                    predicates: Default::default(),
+                    equality: mrs_core::model::EqualitySemantics::StrictIdentity,
+                    digest: String::new(),
+                },
+            )),
+        );
+        assert!(has_verified_model(&certified_model));
+    }
+
+    #[test]
+    fn epr_model_arm_keeps_its_cap_while_refutation_uses_grounding_budget() {
+        let caller_budget = Duration::from_secs(40);
+        let remaining = Duration::from_secs(7);
+        let refutation = crate::epr_budget(None, caller_budget);
+        assert_eq!(
+            epr_budget_with_remaining_time(refutation, remaining)
+                .unwrap()
+                .timeout,
+            remaining
+        );
+
+        let model_budget = crate::epr_budget(Some(128), caller_budget);
+        let model_budget = crate::EprBudget {
+            timeout: model_budget.timeout.min(Duration::from_millis(500)),
+            max_instances: model_budget.max_instances.min(1_000),
+            ..model_budget
+        };
+        let bounded = epr_budget_with_remaining_time(model_budget, remaining).unwrap();
+        assert_eq!(bounded.timeout, Duration::from_millis(500));
+        assert_eq!(bounded.max_instances, 1_000);
     }
 
     #[test]
@@ -2052,7 +2524,7 @@ mod tests {
         );
 
         let schedule = StrategySchedule::default_schedule(Duration::from_secs(5), 1);
-        let (result, _) = run_schedule(
+        let (result, report) = run_schedule(
             &[c1, c2],
             &[],
             id_gen,
@@ -2062,6 +2534,14 @@ mod tests {
             None,
         );
         assert!(matches!(result, SearchResult::Refutation(..)));
+        assert!(
+            report.strategies.is_empty(),
+            "EPR should return before portfolio"
+        );
+        assert_eq!(
+            report.epr.as_ref().map(|telemetry| telemetry.result),
+            Some("refutation")
+        );
     }
 
     #[test]

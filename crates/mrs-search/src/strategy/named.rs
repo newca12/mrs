@@ -817,6 +817,8 @@ mod tests {
         let s = by_name("casc", t, 1).expect("casc must exist");
         let d = StrategySchedule::default_schedule(t, 1);
         assert_eq!(s.strategies.len(), d.strategies.len());
+        let allocated: Duration = d.strategies.iter().map(|(_, slice)| *slice).sum();
+        assert_eq!(allocated, t);
     }
 
     #[test]

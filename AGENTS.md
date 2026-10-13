@@ -26,6 +26,13 @@ Because your native agent `bash` or terminal execution tool starts in a raw shel
   direnv exec . cargo check
   ```
 
+### Non-NixOS systems
+When working on a non-NixOS host that has the project's Rust toolchain and
+dependencies installed directly, use Cargo commands without the Nix wrapper
+(for example, `cargo check` and `cargo test --workspace`). The Nix wrappers
+above are required for this NixOS WSL environment; they are not a requirement
+for ordinary Linux/macOS development hosts.
+
 ---
 
 ## 2. Commit and Verification Policy (Strictly Enforced)
