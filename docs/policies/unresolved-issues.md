@@ -33,10 +33,10 @@ what is blocked on hardware rather than on knowledge.
 
 | | |
 |---|---|
-| Status | **Root cause found and fixed** — superposition was deriving *specialisations* of its resolvents |
+| Status | **Root cause found and fixed; coverage recovery remains open** — superposition was deriving *specialisations* of its resolvents |
 | Severity | Was `Unknown` on 3 archived proofs; the inferences it accepted were **not entailed by the cited parents**, so any refutation passing through one was not a valid refutation |
 | Soundness | The leading suspicion (`clause_store` / `LiteralIndex` divergence) is **ruled out**. The real cause was in the calculus: `mrs_unify::robinson::unify_ac_id` bound the *target* clause's variables |
-| Blocks | Nothing. A fresh campaign is needed to re-measure coverage, not to close the defect |
+| Blocks | Sound UEQ coverage recovery; fresh clean-campaign measurement is recorded in [the October UEQ report](../reports/benchmarks/ueq-soundness-regression-2026-10.md) |
 
 ### Root cause
 
@@ -113,9 +113,12 @@ before, 37/48 after. The five regressions are all AC equational rewriting:
 | `lattice_absorb.p` | Theorem | GaveUp |
 | `ring_idem.p` | Theorem | GaveUp |
 
-Those five pre-fix proofs all come back `VerifiedGood` from the strict kernel, so
-the lost inferences were sound ones: this is a real capability loss, not the
-removal of bogus solves.
+Those five pre-fix proofs were reported `VerifiedGood` by the then-current
+strict kernel. That result does not establish their soundness: as documented
+below, the kernel's ordinary-superposition replay at the time did not enforce
+target rigidity, so it could accept the same invalid specialization as the
+prover. The five rows are evidence of a historical coverage change, not five
+independently established sound solves.
 
 **Why the loss happens (bounded diagnostic, 10 s on `group.p`).** The lost
 matches are the ones where the equation side is a *nested* AC tree and the target
@@ -247,6 +250,42 @@ repository, so their exact historical derivations cannot be independently
 audited here. Keep UI-1 open for problem-level recovery and sound archived proof
 evidence; unit-test positives establish only the matcher shape.
 
+#### Full-division consequence: CASC-J13 UEQ (2026-10-10 vs 2026-10-13)
+
+The two archived 400-problem CASC-J13 UEQ campaigns record the coverage gap
+between the older behavior and the current sound, target-rigid behavior. They
+are not a controlled code-only A/B:
+
+| campaign | date / commit | UEQ result | strict proof audit |
+|---|---|---:|---|
+| `campaign-cascj13-clean-unsound` | Oct 10 / `176a9f9` | 114/400 Unsatisfiable | no audit archived; run is explicitly marked `clean-unsound` |
+| `campaign-cascj13-clean` | Oct 13 / `313b923` | 5/400 Unsatisfiable | all 5 `VerifiedGood` |
+
+Both runs used the same 400 problem names, the same Xeon Silver 4108 host,
+`jobs=1`, eight workers, the same eight-strategy UEQ order
+`[4,8,12,11,2,14,15,1]`, and the official 180 s limit. The later run explicitly
+sets `MRS_HARDWARE=casc`; its per-row telemetry confirms the same worker count
+and strategy order. It solved three problems the earlier run did not, while 112
+of the earlier 114 solves disappeared. The result is therefore a large
+**observed coverage gap**, not a valid 109-problem regression against a sound
+baseline: the earlier campaign is marked unsound and cannot serve as a target
+score. The older 114 answers were not independently audited in that archive.
+
+This full-division result confirms the tradeoff anticipated by the local
+diagnostic: rejecting target-variable specialisations removes many UEQ
+refutations, and the bounded AC/ordered-associative additions have not restored
+that problem-level coverage. It does **not** show that the lost 112 answers were
+all false; without the older proofs, their individual validity is unknown. The
+five local pre-fix proofs that were reported `VerifiedGood` likewise are not
+independent evidence of soundness, because the kernel replay had the same
+target-rigidity gap. This also shows that passing matcher-level positive tests
+and repairing soundness are not enough to claim coverage recovery. Next work
+should preserve the target-rigidity invariant, reproduce candidate lost
+problems on a clean build, and certify every recovered proof before counting it
+as recovered coverage. The campaign-level breakdown, provenance, and row-wise
+comparison are recorded in
+[`ueq-soundness-regression-2026-10.md`](../reports/benchmarks/ueq-soundness-regression-2026-10.md).
+
 #### Independent proof replay
 
 The strict kernel now independently replays the bounded subset shape in
@@ -258,6 +297,32 @@ that drops unmatched operands. The prover's `force_subset2.p` regression and
 the kernel regression together pin production and proof replay.
 
 Budget exhaustion remains inconclusive rather than being accepted as a proof.
+
+#### GEO111+1 audit rejection was a kernel comparison bug
+
+The archived CASC-J13 clean audit marked `GEO111+1` `VerifiedBad` at node
+`c10744`, with the message that subsumption resolution did not produce the
+target with one justified literal removed. Replaying the archived proof with
+the current strict kernel and the TPTP 9.3.0 include tree now returns
+`VerifiedGood`. The archived `audit.csv` is a historical result from the old
+kernel and has not been rewritten.
+
+The offending clause at `c10744` has two negative literals and repeated copies
+of `part_of(X2,X2)`. The active parent `c10670` supplies the complementary
+negative literal and its other literals match the target's remaining literals;
+subsumption resolution removes one copy of the repeated positive literal. The
+kernel was condensing the **target** before computing the expected result. That
+discarded the duplicate first, then removed another literal, so its expected
+intermediate no longer matched the prover's valid recorded conclusion. The
+target may contain duplicates during this rule; keep its multiplicity through
+the single-literal deletion, then compare modulo harmless duplicate removal.
+The active clause can still be condensed before matching.
+
+The kernel now preserves the original target through deletion and condenses
+only the expected conclusion for comparison. A focused regression test pins
+the repeated-target-literal shape. This is a verifier false rejection, not an
+invalid inference or a false theorem answer; this case should no longer count
+as an uncertified proof when re-audited with the updated kernel.
 
 #### Two inefficiencies the implementation measurement exposed
 

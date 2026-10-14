@@ -8157,18 +8157,13 @@ fn verify_subsumption_resolution(
         if active.is_empty() {
             continue;
         }
-        // Condense both clauses before searching for the justified literal.
-        // Duplicate literals are logically inert, and a target that still
-        // carries them cannot be pruned in one step: `GEO111+1`'s `c15029`
-        // simplifies `D | D | I | I` to `D` with one `subsumption_resolution`
-        // step whose active parent is `D | ~I`, and the removal is only
-        // visible after the duplicates go. Condensing first is sound -- it
-        // rewrites a clause to a logically equivalent one -- and it keeps the
-        // conclusion "the target with a justified literal removed" rather than
-        // widening that rule to something else. The conclusion comparison below
-        // condenses too, so this cannot accept a conclusion that differs by
-        // more than the removal itself.
-        let target = condense_clause(target);
+        // Condense the active clause before looking for its witness. The target
+        // must retain its original literal multiplicity: if its two copies of
+        // `D` become one before removing a justified literal, the computed
+        // intermediate is `D | I` while search's proof records `D | D | I`.
+        // The target with duplicates is still a valid clause, and the matching
+        // rule below permits one target literal to witness repeated active
+        // literals after substitution.
         let active = condense_clause(active);
 
         let mut matching_steps = 0;
@@ -8190,16 +8185,11 @@ fn verify_subsumption_resolution(
                 Ok(true) => {}
             }
 
-            let expected: Vec<Literal> = target
-                .iter()
-                .enumerate()
-                .filter(|(idx, _)| *idx != removed_idx)
-                .map(|(_, literal)| literal.clone())
-                .collect();
-            // The prover does not always condense intermediate clauses, so
-            // the target may contain duplicate literals while the conclusion
-            // is condensed (`C | L | L` vs `C | L`). Condense both sides
-            // before comparing; duplicate literals are logically inert.
+            let mut expected = target.clone();
+            expected.remove(removed_idx);
+            // Duplicate literals are logically inert, so allow the prover's
+            // explicit condensation to remove any duplicates left by this
+            // single subsumption-resolution deletion.
             if clause_alpha_equiv(&condense_clause(&expected), &condense_clause(&goal)) {
                 return KernelVerdict::Certified;
             }
@@ -16136,6 +16126,30 @@ mod tests {
                      cnf(cut, plain, d(X5), inference(subsumption_resolution, [status(thm)], [target,active])).\n\
                      cnf(nd, axiom, ~d(X5), file('problem.p', nd)).\n\
                      cnf(bot, plain, $false, inference(resolution, [status(thm)], [cut,nd])).";
+        assert_eq!(check(input, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_subsumption_resolution_preserving_duplicate_target_literals() {
+        // GEO111+1 c10744 shape: target and active are alpha-equivalent, each
+        // with three copies of P. Subsumption-resolution flips one target P;
+        // the active clause's P literals can reuse the two remaining P copies,
+        // so search removes exactly one duplicate in the recorded conclusion.
+        let input = "cnf(target, axiom, ~d(X2,X0) | ~e(X4,X2) | p(X2,X2) | p(X2,X2) | p(X2,X2)).\n\
+                     cnf(active, axiom, ~e(X4,X3) | ~d(X3,X0) | p(X3,X3) | p(X3,X3) | p(X3,X3)).\n\
+                     cnf(d_unit, axiom, d(a,b)).\n\
+                     cnf(e_unit, axiom, e(c,a)).\n\
+                     cnf(np, axiom, ~p(a,a)).";
+        let proof = "cnf(target, axiom, ~d(X2,X0) | ~e(X4,X2) | p(X2,X2) | p(X2,X2) | p(X2,X2), file('problem.p', target)).\n\
+                      cnf(active, axiom, ~e(X4,X3) | ~d(X3,X0) | p(X3,X3) | p(X3,X3) | p(X3,X3), file('problem.p', active)).\n\
+                      cnf(cut, plain, ~d(X2,X0) | ~e(X4,X2) | p(X2,X2) | p(X2,X2), inference(subsumption_resolution, [status(thm)], [target,active])).\n\
+                      cnf(d_unit, axiom, d(a,b), file('problem.p', d_unit)).\n\
+                      cnf(e_cut, plain, ~e(X4,a) | p(a,a) | p(a,a), inference(resolution, [status(thm)], [cut,d_unit])).\n\
+                      cnf(e_unit, axiom, e(c,a), file('problem.p', e_unit)).\n\
+                      cnf(p_pair, plain, p(a,a) | p(a,a), inference(resolution, [status(thm)], [e_cut,e_unit])).\n\
+                      cnf(np, axiom, ~p(a,a), file('problem.p', np)).\n\
+                      cnf(p, plain, p(a,a), inference(resolution, [status(thm)], [p_pair,np])).\n\
+                      cnf(bot, plain, $false, inference(resolution, [status(thm)], [p,np])).";
         assert_eq!(check(input, proof), KernelVerdict::Certified);
     }
 

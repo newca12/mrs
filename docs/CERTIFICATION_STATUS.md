@@ -112,6 +112,13 @@ SWX217+1 — equality resolution, condensation, subsumption resolution and
 superposition shapes) are all fixed at HEAD; SWX217+1 had also been reported
 `VerifiedBad` by the ATP ladder, and now passes both.
 
+`GEO111+1` is specifically a false rejection in the historical
+subsumption-resolution check: current strict replay of its archived proof
+returns `VerifiedGood`. The old table above remains the audit output from
+2026-09-23; do not treat its `VerifiedBad` count as a current re-audit. The
+duplicate-target-literal issue and regression are recorded in UI-1 of
+[`policies/unresolved-issues.md`](policies/unresolved-issues.md#ui-1--ac_superposition-conclusions-that-are-not-a-superposition-of-their-cited-parents).
+
 An earlier revision of this table claimed 192 at HEAD. That figure predates the
 bounded-NNF work, which moved 3 problems from `Certified` to `Unknown` by design
 — the trade is named below, and the honest total is 189, not 192.
