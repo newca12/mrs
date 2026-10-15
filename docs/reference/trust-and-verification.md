@@ -206,10 +206,16 @@ The first strict kernel implementation certifies only:
 - bounded `superposition` into a cited target clause, with background
   associative/commutative replay when the problem (or its negated
   conjecture, which is a premise of every refutation of that conjecture)
-  supplies the AC law the rewrite used. Parents are standardized apart; target
-  variables are rigid and only equation/source variables may be instantiated.
-  This side condition is checked by the kernel's replay, not inferred from the
-  producer's search behavior.
+  supplies the AC law the rewrite used. Parents are standardized apart; a
+  candidate substitution must genuinely unify the selected terms, is applied
+  to both parents, and must reconstruct the exact resolvent. Target-variable
+  binding alone is not grounds for rejection. AC matching remains bounded and
+  unsupported or exhausted cases fail closed.
+
+As of the ordinary-superposition recovery, syntactic replay admits whole-parent
+instances; the theory-specific AC and associative fallback paths retain their
+conservative target-rigidity restriction. This is an implementation limitation,
+not a claim that target bindings violate standard first-order semantics.
 
 Unannotated multi-parent E-style `skolemize` forms and general directional
 multi-parent CNF transformations remain inconclusive until their kernel rules
@@ -264,8 +270,8 @@ by default:
 - no adversarial mutation reaches `Certified`;
 - no strict kernel dependency reaches `mrs-search`;
 - every accepted conclusion is derived from actual parent content;
-- superposition replay keeps target variables rigid in ordinary, AC, associative,
-  and background-theory paths;
+- superposition replay validates the actual unifier and complete parent instance
+  in ordinary, AC, associative, and background-theory paths;
 - AVATAR/CWA proofs carry complete case-split certificates;
 - clean-checkout benchmark results are reproducible from committed inputs,
   checksums, binary hashes, and commands.

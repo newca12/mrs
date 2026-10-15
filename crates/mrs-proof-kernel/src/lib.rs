@@ -9956,10 +9956,6 @@ fn verify_superposition(
 
     let target_shift = max_var_clause(&equation_clause).saturating_add(1);
     shift_clause(&mut target_clause, target_shift);
-    let rigid_target_vars: HashSet<VarId> = target_clause
-        .iter()
-        .flat_map(|literal| literal.atom.free_vars())
-        .collect();
     for (equation_idx, equation_literal) in equation_clause.iter().enumerate() {
         if !equation_literal.positive {
             continue;
@@ -9989,12 +9985,7 @@ fn verify_superposition(
                         continue;
                     };
                     let mut substitution = HashMap::new();
-                    if !unify_superposition_terms(
-                        from,
-                        subterm,
-                        &mut substitution,
-                        &rigid_target_vars,
-                    ) {
+                    if !unify_terms(from, subterm, &mut substitution) {
                         continue;
                     }
                     let replacement = apply_substitution_term(to, &substitution);
@@ -14234,7 +14225,7 @@ mod tests {
     }
 
     #[test]
-    fn ac_superposition_replay_refuses_target_specialization() {
+    fn certifies_syntactic_superposition_with_target_instance_and_ac_parents() {
         let mut symbols = SymbolTable::new();
         let positive = symbols.intern("positive_part");
         let lub = symbols.intern("least_upper_bound");
@@ -14279,7 +14270,9 @@ mod tests {
             app(glb, vec![x.clone(), app(glb, vec![y.clone(), z.clone()])]),
         );
 
-        assert!(matches!(
+        // Instantiate target y=identity and source x=z. Replacing
+        // lub(z,identity) by positive(z) gives the recorded conclusion.
+        assert_eq!(
             verify_ac_superposition(
                 &[source, target, lub_assoc, lub_comm, glb_comm, glb_assoc],
                 &conclusion,
@@ -14287,19 +14280,16 @@ mod tests {
                 &std::collections::HashSet::new(),
                 &std::collections::HashSet::new(),
             ),
-            KernelVerdict::Rejected(_) | KernelVerdict::Inconclusive(_)
-        ));
+            KernelVerdict::Certified
+        );
     }
 
     #[test]
-    fn rejects_swv406_c502_archived_target_specialization() {
-        // Archived casc-j13 FEQ proof node SWV406+1 c502. Before target
-        // variables were made rigid, the search unified the right side of
-        // c27's equality with a subterm of c39 and specialized c39's X2 to
-        // c27's X2. This is not an instance of superposition: the two parents
-        // do not entail the resulting specialization. Keep the exact archived
-        // parent/conclusion triple here so a future relaxation of the kernel's
-        // side condition cannot silently recertify the old proof.
+    fn certifies_swv406_c502_whole_parent_instance() {
+        // Source RHS insert(remove(A,K),pair(B,V)) unifies syntactically
+        // with insert(T,pair(I,W)) in the target. Instantiate T=remove(A,K),
+        // B=I, V=W, replace with the source LHS, and retain both source side
+        // literals. This yields c502 exactly; no AC reasoning is needed.
         fn lower(input: &str, symbols: &mut SymbolTable) -> Formula {
             let parsed = parse_tptp(input).expect("archived clause parses");
             lower_annotated(symbols, &parsed.formulas[0], VerificationLimits::default())
@@ -14332,8 +14322,8 @@ mod tests {
                 &HashSet::new(),
                 &HashSet::new(),
             ),
-            KernelVerdict::Rejected("superposition conclusion is not a valid rewrite".into()),
-            "the strict kernel must reject archived node c502, not certify or defer it"
+            KernelVerdict::Certified,
+            "c502 is a syntactic superposition instance of both complete parents"
         );
     }
 
@@ -14523,7 +14513,7 @@ mod tests {
     }
 
     #[test]
-    fn refuses_ordered_associative_target_variable_specialization() {
+    fn certifies_syntactic_target_instance_with_associativity_parent() {
         let mut symbols = SymbolTable::new();
         let f = symbols.intern("rigid_assoc_f");
         let p = symbols.intern("rigid_assoc_p");
@@ -14555,13 +14545,8 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
         );
-        assert!(
-            matches!(
-                verdict,
-                KernelVerdict::Inconclusive(_) | KernelVerdict::Rejected(_)
-            ),
-            "unexpected verdict: {verdict:?}"
-        );
+        // target x=a makes f(x,b) exactly the source side f(a,b).
+        assert_eq!(verdict, KernelVerdict::Certified);
     }
 
     #[test]
@@ -14694,7 +14679,7 @@ mod tests {
     }
 
     #[test]
-    fn refuses_grp167_ac_superposition_target_specialization() {
+    fn certifies_grp167_syntactic_superposition_target_instance() {
         fn lower(input: &str, symbols: &mut SymbolTable) -> Formula {
             let problem = parse_tptp(input).expect("formula parses");
             lower_annotated(symbols, &problem.formulas[0], VerificationLimits::default())
@@ -14731,7 +14716,7 @@ mod tests {
             &mut symbols,
         );
 
-        assert!(matches!(
+        assert_eq!(
             verify_ac_superposition(
                 &[source, target, lub_assoc, lub_comm, glb_comm, glb_assoc],
                 &conclusion,
@@ -14739,8 +14724,8 @@ mod tests {
                 &std::collections::HashSet::new(),
                 &std::collections::HashSet::new(),
             ),
-            KernelVerdict::Rejected(_) | KernelVerdict::Inconclusive(_)
-        ));
+            KernelVerdict::Certified
+        );
     }
 
     #[test]
@@ -18786,6 +18771,29 @@ mod tests {
     }
 
     #[test]
+    fn superposition_instantiates_every_target_literal() {
+        let problem = "cnf(eq, axiom, f(a) = b).\n\
+                       cnf(target, axiom, q(X) | p(f(X))).\n\
+                       cnf(np, axiom, ~p(b)).\n\
+                       cnf(nq, axiom, ~q(a)).";
+        let proof = "cnf(eq, axiom, f(a) = b, file('problem.p', eq)).\n\
+                     cnf(target, axiom, q(X) | p(f(X)), file('problem.p', target)).\n\
+                     cnf(np, axiom, ~p(b), file('problem.p', np)).\n\
+                     cnf(nq, axiom, ~q(a), file('problem.p', nq)).\n\
+                     cnf(s, plain, q(a) | p(b), inference(superposition, [status(thm)], [eq,target])).\n\
+                     cnf(m, plain, q(a), inference(resolution, [status(thm)], [s,np])).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [m,nq])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+        // Instantiating only the rewritten literal would assert q(X)|p(b),
+        // which is stronger and is not the resolvent of the cited parents.
+        let forged = proof.replace("q(a) | p(b)", "q(X) | p(b)");
+        assert!(matches!(
+            check(problem, &forged),
+            KernelVerdict::Rejected(_)
+        ));
+    }
+
+    #[test]
     fn certifies_superposition_with_condensed_conclusion() {
         // GEO127+1 c11104 shape: both parents share an AVATAR assumption,
         // so the raw rewrite has a duplicate literal the prover condenses.
@@ -18863,11 +18871,11 @@ mod tests {
     }
 
     #[test]
-    fn refuses_folded_superposition_that_specializes_target() {
+    fn certifies_folded_superposition_of_whole_target_instance() {
         // SET637+1 c21169 shape: the single rewrite leaves a redex
         // (`inter(es,es)`) that the prover demodulates with the cited
-        // equation itself before emitting the conclusion. It would bind the
-        // target variable X8 to `es`, which superposition must refuse.
+        // equation itself before emitting the conclusion. X8=es is applied
+        // to the complete target, including d(X8) and sk(X8).
         let problem = "fof(eq, axiom, inter(X,es) = es).\n\
                        fof(target, axiom, d(X8) | m(sk(X8), inter(X8,inter(X8,X8)))).\n\
                        fof(nd, axiom, ~d(es)).\n\
@@ -18879,10 +18887,8 @@ mod tests {
                      cnf(s, plain, d(es) | m(sk(es),es), inference(superposition, [status(thm)], [eq,target])).\n\
                      cnf(m1, plain, m(sk(es),es), inference(resolution, [status(thm)], [s,nd])).\n\
                      cnf(bot, plain, $false, inference(resolution, [status(thm)], [m1,nm])).";
-        assert!(matches!(
-            check(problem, proof),
-            KernelVerdict::Rejected(_) | KernelVerdict::Inconclusive(_)
-        ));
+        // Instantiate X8=es everywhere, then rewrite inter(es,es) twice.
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
     }
 
     #[test]

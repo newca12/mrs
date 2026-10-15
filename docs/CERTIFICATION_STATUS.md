@@ -183,32 +183,42 @@ Reasons for the residual 22 (one row per proof):
 | 5 | `demodulation` replay could not reach the conclusion within the implemented search | **fixed, awaiting re-measurement** |
 | 3 | `demodulation` intermediate clause exceeds the strict size bound | **fixed, awaiting re-measurement** |
 | 3 | a `fof_nnf` step whose parent's NNF exceeds the 100 000-node budget (`BIO006+1`, `CSR115+8`, `CSR116+19`) | open, deliberate |
-| 1 | `ac_superposition` replay incomplete | **root-caused and fixed — and it was a prover soundness defect, not a kernel gap** |
+| 1 | `ac_superposition` replay incomplete | **AC matcher defect identified; producer/replay correction and coverage recovery open** |
 
-The `ac_superposition` row is the one `Unknown` in that table, and it was the
-wrong kind of problem. Superposition was deriving *specialisations* of its
-resolvents: `mrs_unify::robinson::unify_ac_id` bound the **target** clause's
-variables, so a derived clause could be strictly stronger than its two cited
-parents entail. Replaying the archived parents of all three affected nodes
-through the prover's own superposition reproduces their conclusions character for
-character — the prover computed what the proof says, it just was not a
-superposition. `unify_ac_rigid_id` now refuses to bind the variables a caller
-declares rigid and superposition passes the target's variables as rigid.
+**Update, 2026-10-15:** restoring ordinary syntactic superposition replay while
+retaining restricted AC replay certifies 91 of the old campaign's 114 UEQ
+proofs, rejects zero, and leaves 23 inconclusive. The previous 1/82/31 audit
+below describes the over-restrictive target-rigid checker, not the repaired
+checker. The c26/c502 and small lattice-shaped refusal tests encoded valid
+ordinary instances and have been corrected. See the
+[recovery report](reports/benchmarks/ueq-soundness-regression-2026-10.md).
+The historical fallback diagnosis below is not established solely by observing
+target bindings or unequal pre-substitution flattened arities.
+
+The `ac_superposition` row is the one `Unknown` in that table. The archived
+replay finding was incomplete: reproducing a conclusion does not validate the
+substitution, and target-variable binding alone is not a superposition
+soundness violation. Superposition standardizes parents apart, applies a genuine
+unifier to both parents, and emits the corresponding resolvent. The old
+assoc/comm fallback could instead return a positional substitution after
+flattened arities differed without establishing that it unified the terms.
+`unify_ac_rigid_id` prevents those matches but also excludes valid standardized-
+apart MGUs, so target rigidity is a current completeness restriction, not the
+formal soundness criterion. The strict checker must validate the actual unifier
+and full resolvent independently.
 
 Two consequences for this file's numbers, stated plainly:
 
-- **The kernel was right and the prover was wrong.** `VerifiedBad` was never
-  recorded for these because `verify_superposition` happens to reject most of
-  them, not because it accepted them. A kernel that accepted such a step would
-  have certified an unsound refutation.
-- **The archived figures above do not move, and cannot.** Those proofs are
-  artifacts of the old binary; the kernel reads their text as written. Only a
-  fresh campaign re-measures anything, and it will measure *less* coverage: the
-  fix also removes sound inferences the prover could only find by way of the
-  unsound one, which costs 5 of the 48 local `problems/*.p` regression rows
-  (the AC equational ones). Full analysis, the measured loss, and the bounded
-  next step — AC superposition has to match the equation's side into a *subset*
-  of the target's AC arguments — are in
+- **The archived old proofs fail current replay.** `VerifiedBad` means the
+  archived derivation does not check; it does not classify each failure's
+  specific matcher defect. A kernel must not accept a candidate merely because
+  the producer emitted it.
+- **The archived figures do not change; their interpretation does.** A current
+  strict re-audit of the 114 archived CASC-J13 UEQ proofs gives 1
+  `VerifiedGood`, 82 `VerifiedBad`, and 31 `Unknown`. This is not a sound 114
+  solve baseline, nor does it show that all rejected proofs fail for the same
+  reason. Only fresh inference generation measures recovered coverage. Full
+  details and the corrected unifier/replay requirements are in
   [`policies/unresolved-issues.md`](policies/unresolved-issues.md) UI-1.
 
 Re-auditing the *archived* proofs cannot close the 18 demodulation rows, and

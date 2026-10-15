@@ -29,22 +29,59 @@ what is blocked on hardware rather than on knowledge.
 
 ---
 
-## UI-1 — `ac_superposition` conclusions that are not a superposition of their cited parents
+## UI-1 — Ordinary superposition recovery and incomplete AC replay
+
+### Current finding (2026-10-15; supersedes the historical diagnosis below)
+
+Target-variable binding is not inherently unsound. The blanket rigidity guard
+had disabled valid ordinary superposition. The producer now first tries
+syntactic Robinson unification, retaining its ordering check and applying the
+substitution to all residual literals of both standardized-apart parents.
+The independent kernel now replays that ordinary rule with its own two-sided,
+occurs-checked unifier. Theory-specific AC/associative paths remain restricted.
+
+All five fresh local group/lattice/ring regression problems were recovered at
+one worker and five seconds, and all five proofs passed strict verification.
+Re-auditing the same 114 historical UEQ proofs with ordinary replay restored
+gives **91 VerifiedGood, 0 VerifiedBad, 23 Unknown**, versus 1/82/31 under the
+old target-rigid kernel. These are proof audits, not a new competition score.
+
+The old `group.s` c26 and SWV406+1 c502 refusal tests were wrong: they are
+valid whole-parent syntactic instances. The small lattice-shaped replay test
+formerly described as a known invalid specialization is valid too. Those tests
+now assert certification; a new negative test rejects applying the substitution
+to only one target literal. Archived AC refusal and unmatched-operand tests
+remain passing.
+
+The historical claim that unequal flattened arities or target bindings prove
+an invalid AC unifier is withdrawn. A substitution can change flattened arity.
+The old fallback has not been restored; exact AC candidate validation and the
+remaining 23 inconclusive proofs require separate investigation. The older
+diagnosis and experiments below are retained as history, **not current rule
+semantics or established proofs of unsoundness**. In particular, statements
+below calling c26, c502, or the small lattice test invalid are superseded.
+
+The current implementation, measurements, audit pitfalls, and requested
+eight-core/128-GB campaign are described in
+[`the recovery report`](../reports/benchmarks/ueq-soundness-regression-2026-10.md).
+
+### Historical investigation (superseded where contradicted above)
 
 | | |
 |---|---|
-| Status | **Root cause found and fixed; coverage recovery remains open** — superposition was deriving *specialisations* of its resolvents |
-| Severity | Was `Unknown` on 3 archived proofs; the inferences it accepted were **not entailed by the cited parents**, so any refutation passing through one was not a valid refutation |
-| Soundness | The leading suspicion (`clause_store` / `LiteralIndex` divergence) is **ruled out**. The real cause was in the calculus: `mrs_unify::robinson::unify_ac_id` bound the *target* clause's variables |
-| Blocks | Sound UEQ coverage recovery; fresh clean-campaign measurement is recorded in [the October UEQ report](../reports/benchmarks/ueq-soundness-regression-2026-10.md) |
+| Status | **AC matcher defect identified; sound UEQ coverage recovery open** — the old assoc/comm fallback could report a substitution without unifying the selected terms |
+| Severity | Historical `ac_superposition` conclusions could be **not entailed by the cited parents**; a blanket target-rigidity guard prevents malformed matches but also rejects valid standardized-apart MGUs |
+| Soundness | The leading suspicion (`clause_store` / `LiteralIndex` divergence) is **ruled out**. The defect is in AC unification and its replay, not in target-variable bindings as a category |
+| Blocks | Sound UEQ coverage recovery; proof-audit and campaign measurements are recorded in [the October UEQ report](../reports/benchmarks/ueq-soundness-regression-2026-10.md) |
 
 ### Root cause
 
 **Observation (verified).** For each of the three archived nodes below, feeding
 the two clauses the node cites — taken verbatim from the archived proof — into
-`mrs_calculus::superposition::superpose_selected_id_until` reproduces the
-archived conclusion **character for character**, including the variable names.
-For casc-30 `KLE145-10`:
+the historical `mrs_calculus::superposition::superpose_selected_id_until`
+reproduces the archived conclusion **character for character**, including the
+variable names. This reproduced output establishes producer behavior, not
+inference validity. For casc-30 `KLE145-10`:
 
 ```
 eq     : true() = leq(X8, addition(X7, X8))                       # c425221
@@ -57,50 +94,51 @@ target : true() = ifeq(leq(addition(one(), X3),
                    multiplication(strong_iteration(X14), one())), true()) # c431338
 ```
 
-So the conclusion *is* what the prover computed from its cited parents. What it
-is **not** is a superposition of them.
+The conclusion is what the old prover computed from its cited parents.
+Reproducing it is not enough to show that its substitution is a valid unifier;
+the old AC fallback could compute and propagate an invalid one.
 
 **Cause.** `superpose_with_id` (`crates/mrs-calculus/src/superposition.rs`)
-unifies the equation clause's side with a subterm *of the target* and then
-applies the resulting substitution to the whole target. That is a superposition
-only while the unifier binds **the equation clause's variables alone**. The AC
-unifier did not: `unify_ac_rec_id`'s `(_, TermNode::Var(v)) => bind_var_id(v, s)`
-arm binds `v` unconditionally, and the assoc/comm argument-alignment fallback
-(`flat1.len() != flat2.len()` → positional unification of the original
-arguments) reaches that arm whenever the equation side has fewer AC arguments
-than the target subterm. In the `KLE145-10` pair, matching
+standardizes the parents apart, unifies the equation side with a target subterm,
+and applies the substitution to both parents when constructing the resolvent.
+Under standard first-order superposition, variables from either standardized
+parent may be bound by a genuine MGU. The soundness requirement is that the
+substitution really unifies the selected source and target terms and that the
+whole resolvent is its instance. The old AC unifier did not always satisfy the
+first requirement: when flattened operand counts differed, its positional
+fallback unified original binary children as though they were the flattened
+sequences. That fallback could produce target-variable bindings without making
+the selected terms equal. In the `KLE145-10` pair, matching
 `leq(V8, addition(V7,V8))` against
 `leq(addition(one,X3), addition(X5, addition(X6, multiplication(X5,X3))))`
-binds `X3` and `X6` — target variables. Directly measured:
+produced bindings `X3 ↦ X5` and `X6 ↦ one`. The presence of those bindings
+alone does not establish unsoundness; the old fallback's flattened-arity
+mismatch means this candidate is not justified by a valid AC unifier. Directly
+measured by the historical matcher:
 
 ```
 unifier succeeded; target-variable bindings: [(3, "X5"), (6, "one()")]
 ```
 
-`X6 ↦ one` is the `multiplication(strong_iteration(X5), one)` in the conclusion;
-the `X3`/`X5` identification is why the conclusion has one variable where the
-target has three. The same signature explains the two earlier observations this
-register recorded without an explanation — `LAT044-1`'s "merely duplicates a
-`meet` subtree the parents do not contain" (`X0 ↦ goal_d4`) and `LAT241-10`'s
-extra inner `meet`. A specialisation of an entailed clause is *stronger* than
-the premises support, so these nodes were unsound inferences, not merely
-under-cited ones. That also explains the register's unresolved puzzle of a
-`demodulation` node appearing immediately downstream in every case: the
-`demodulation` step was legitimately derived from the specialisation, so it
-replayed cleanly and made the bad step look even more credible.
+The archived `LAT044-1` and `LAT241-10` nodes show related malformed AC
+matches. Reproducing an output is not a soundness check: replay must establish
+that the substitution unifies the selected terms and that the conclusion is the
+resulting resolvent. A following valid demodulation cannot repair an invalid
+parent inference.
 
-**Fix.** `mrs_unify::robinson::unify_ac_rigid_id` takes the set of variables the
-caller declares rigid and refuses to bind them
-(`UnifyError::RigidVariable`), and superposition calls it with the target's
-variables. Demodulation is unaffected because it uses one-way
-`match_term_id`, which only ever binds the pattern's variables; resolution and
-factoring are unaffected because an mgu over both clauses' variables is what
-those rules are defined with.
+**Current guard.** `mrs_unify::robinson::unify_ac_rigid_id` refuses bindings to
+a caller-supplied rigid set, and superposition currently passes the target's
+variables. This blocks malformed fallback matches but is **stricter than the
+standard superposition rule**: it also excludes genuine MGUs that bind
+standardized-apart target variables. Resolution and factoring already use MGUs
+over both parents' variables.
 
-**What the fix does not do.** It drops the offending inference; it does not find
-the *legitimate* AC match that a complete AC unifier with backtracking would
-have found in its place, so **this change costs coverage on AC-heavy
-equational problems**. Measured on the local regression corpus
+**What the guard does not do.** It avoids the offending class by dropping every
+match that binds a target variable; it does not distinguish malformed fallback
+results from legitimate standardized-apart MGUs. This rejects valid inferences
+and costs coverage on AC-heavy equational problems. Separately, where the old
+substitution was malformed, recovery requires a correct AC/associative unifier
+rather than relaxing rigidity. Measured on the local regression corpus
 (`problems/*.p`, `--workers 2`, `--time 5`, re-checked at `--time 10` and
 `--time 30` on both `--schedule casc_feq` and the default schedule): 42/48 proved
 before, 37/48 after. The five regressions are all AC equational rewriting:
@@ -114,17 +152,14 @@ before, 37/48 after. The five regressions are all AC equational rewriting:
 | `ring_idem.p` | Theorem | GaveUp |
 
 Those five pre-fix proofs were reported `VerifiedGood` by the then-current
-strict kernel. That result does not establish their soundness: as documented
-below, the kernel's ordinary-superposition replay at the time did not enforce
-target rigidity, so it could accept the same invalid specialization as the
-prover. The five rows are evidence of a historical coverage change, not five
-independently established sound solves.
+strict kernel. That result does not establish their soundness: the then-current
+kernel's ordinary-superposition replay did not validate the old AC matcher's
+substitutions. The historical proof status is not an independent soundness
+result.
 
-**Why the loss happens (bounded diagnostic, 10 s on `group.p`).** The lost
-matches are the ones where the equation side is a *nested* AC tree and the target
-subterm is flatter. Running both the rigid and the unrestricted unifier on every
-rejected match gives, verbatim (`*` is the problem's AC symbol, `e` its
-identity; the equation side is the associativity axiom):
+**Why the old fallback is invalid (bounded diagnostic, 10 s on `group.p`).**
+The lost-match probe reports (`*` is the associative symbol, `e` the identity;
+the equation side is the associativity axiom):
 
 ```
 [rigid-probe] RigidVariable { var: 3 } lost-from=*(X0,*(X1,X2)) lost-subterm=*(e,X3) binds=[3]
@@ -133,18 +168,13 @@ identity; the equation side is the associativity axiom):
 [rigid-probe] RigidVariable { var: 5 } lost-from=*(X0,*(X1,X2)) lost-subterm=*(X4,X5) binds=[5]
 ```
 
-`unify_ac_rec_id` flattens both sides — flat1 = `[X0, X1, X2]` against flat2 =
-`[e, X3]` — sees an arity mismatch, and falls back to aligning the *original*
-nested arguments positionally, which lands `*(X1,X2)` on the target variable
-`X3`. That is the binding the guard now refuses, and the alternative it should
-have tried — matching the subset `{X1,X2}` of the equation's arguments onto the
-target's `{e, X3}`, binding only `X1` and `X2` — is never attempted, because the
-current architecture expresses AC superposition as *unifying `from` with a whole
-target subterm*, and that cannot consume only part of the target's arguments.
-Before the fix the unsound binding papered over the gap.
+`unify_ac_rec_id` flattens `[X0,X1,X2]` against `[e,X3]`, observes unequal
+lengths, then falls back to unifying the original binary children. That fallback
+does not establish a unifier of the flattened terms. A replacement matcher
+must enumerate legal associative segmentations and AC pairings, validate each
+candidate substitution, and fail closed on budget exhaustion.
 
-**The next bounded diagnostic has been run, and it does not recover the five
-rows.** AC subset superposition is implemented
+**The bounded matcher diagnostic does not recover the five rows.** AC subset superposition is implemented
 (`mrs_unify::ac_subset`, `superposition::ac_subset_replacement`, budgeted by
 `AC_SUBSET_MATCH_BUDGET = 4096`, pinned by
 `crates/mrs-calculus/tests/ac_subset_superposition.rs`). What it actually
@@ -156,8 +186,9 @@ The rule: under a symbol the prover detects as both commutative and
 associative, the equation's side may equal a **non-empty subset** of a target
 subterm's AC arguments. If `σ(s) = S ⊆ flatten(u)` then `u ≈ f((A \ S) ∪ σ(t))`,
 so replacing `u` by that term and instantiating by `σ` is a consequence of the
-two cited parents. Target variables stay rigid at every depth, the pairing
-search is under a deterministic per-call budget, and exhaustion is
+two cited parents when the substitution is a genuine match and the complete
+parent instance is reconstructed. The current matcher keeps target variables
+rigid. Its pairing search is under a deterministic per-call budget, and exhaustion is
 `UnifyError::BudgetExhausted` — a non-success, never a partial match.
 
 **It does recover real inferences.** On a bounded sample (60 casc-30 UEQ
@@ -171,8 +202,9 @@ whole-subterm rigid unifier cannot produce it, because the two terms have equal
 *direct* arity (so its alignment fallback fires) and unequal flattened arity (so
 the fallback cannot align them).
 
-**It does not recover the five rows, and cannot.** Two independent reasons,
-both measured rather than argued:
+**It does not recover the five rows.** The existing subset and
+ordered-associative matchers are bounded and preserve the current rigidity
+condition. Two measured limitations apply to those matcher paths:
 
 1. **`mult` in `group.p`, `group_right_inv.p`, `group_unique_inv.p` and
    `plus`/`times` in `ring_idem.p` is declared associative but not commutative.**
@@ -184,16 +216,18 @@ both measured rather than argued:
    rejected as not-AC; `ring_idem.p` 2455, all not-AC. `lattice_absorb.p` is the
    fifth, and its `join`/`meet` *are* both AC, so it is not covered by this
    reason — it is covered by the next one.
-2. **The inference these five actually lost needs a *target-variable binding*.**
+2. **The inference these five lost is not represented by the implemented
+   matcher.**
    `group.s`'s `cnf(c26, …, mult(e,X3) = mult(inv(X2), mult(X2,X3)))` is
    `mult(inv(V), V) = e` superposed into the subterm `mult(A, B)` of the
    associativity axiom; it needs `A := inv(V)`. Same shape in
    `lattice_absorb.s`'s `cnf(c33, …, X2 = join(X2, X2), inference(ac_superposition,
    …, [c32, c30, …]))`: the `meet(X0, X1)` inside the target has to be paired with
-   the equation's `meet(U0, join(U0, U1))`, which binds target variables. A
-   subset match cannot supply such a binding — both of the pattern's arguments
-   would still have to land on target variables, and the rule is what refuses
-   that. Pinning it is `archived_group_c26_target_specialization_is_still_refused`.
+    the equation's `meet(U0, join(U0, U1))`. The current rigid matcher refuses
+    the required target-variable binding. The exact historical `group.s` step
+    is covered by `archived_group_c26_target_specialization_is_still_refused`;
+    a separate positive test must cover valid standardized-apart MGUs, and a
+    negative test must reject the malformed unequal-flattened-arity fallback.
 
    The four unarchived problems (`group_right_inv.p`, `group_unique_inv.p`,
    `ring_idem.p`, and `lattice_absorb.p` beyond the node above) are inferred
@@ -202,18 +236,20 @@ both measured rather than argued:
    saturate in 0.01–0.02 s having derived nothing that closes the goal.
 
 So the "recover the five rows above" claim in the previous revision of this
-entry was wrong. Subset matching is a real capability, and it is not the
-missing half of *that* fix.
+entry was wrong. Subset matching is a real capability, but those five problems
+also expose the overbreadth of target rigidity; positive matcher tests alone do
+not establish a valid parent-instance inference.
 
-**Why a previous inference that solved them is not enough.** `c26` is an
-ordinary superposition step with MGU `{X1 ↦ inv(V), V ↦ X2}` *only if its target
-variables are treated as unifiable*. Here the target is the associativity
-clause, and `A := inv(V)` specializes that clause. The strict kernel's current
-acceptance of the archived `group.s` is not a certificate of that inference:
-the proof was checked before the target-rigidity issue was applied to all
-ordinary superposition replay paths. The same restriction applies to the
-archived AC conclusions: a former-build `Theorem` status is not evidence that
-every inference in that proof was sound.
+**Why the blanket guard is not the soundness criterion.** `group.s` c26 is
+ordinary superposition between `mult(inv(X0),X0)=e` and the associativity
+equality. Standardizing the parents apart and applying the MGU to both parents
+yields `mult(e,X3)=mult(inv(X2),mult(X2,X3))`, exactly the recorded conclusion.
+This is a valid superposition instance; the previous claim that c26 is
+inherently an invalid target specialization was wrong. In contrast, the archived
+KLE145-10 and LAT044-1 cases involve substitutions returned by the broken AC
+fallback, and must not be accepted merely because such bindings are permitted
+in principle. The kernel must establish that the substitution actually unifies
+the selected terms and reconstructs the exact resolvent.
 
 The positional fallback is not an MGU. For example, on associative `f`, the
 flattened equations `f(X,Y,Z) = f(a,b)` cannot be solved by pairing original
@@ -225,40 +261,32 @@ More simply, matching a pattern variable `X` to target compound `g(Y)` yields
 bind `Y`. Binding target `Y` to a constant or compound would specialize the
 target, e.g. the resolvent `p(Y)` would incorrectly become `p(a)`.
 
-The justified recovery rule is **ordered associative superposition**, not AC
-subset matching and not a commutative permutation. Under a registered
-associativity law, a non-empty contiguous sequence of target operands may match
-the ordered source sequence; source variables may bind to non-empty ordered
-segments, while target variables remain rigid. The matched segment is replaced
-by the equality's right side and every unmatched operand is retained. This
-follows by repeated associativity of the cited law and ordinary equality
-replacement. A deterministic per-call search budget bounds segmentations; an
-exhausted budget declines the inference. Permutations remain exclusive to
-symbols for which commutativity is registered. Identities are not elided by
-this rule; the identity axioms in group/ring problems remain separate ordinary
-rewrite equalities.
+For associative-only symbols, ordered segment matching is one justified
+recovery rule: a non-empty contiguous target sequence may match the ordered
+source sequence, and unmatched operands are retained. This follows by repeated
+associativity and ordinary equality replacement. For AC symbols, bounded
+permutation/subset search may additionally use commutativity. These matcher
+shapes still need to validate the substitution against the selected terms and
+reconstruct the complete parent instance. Target-variable rigidity is not a
+substitute for those checks. Identity axioms remain separate ordinary rewrite
+equalities; associativity alone does not elide identities.
 
 The former build with `rigid=None` solved the five at 0.01–8.6 s, while the
-rigid build returned `GaveUp` at 0.01–0.02 s. This demonstrates that the
-unguarded path affected coverage, not that all its accepted inferences were
-valid. A bounded ordered-associative matcher is now present, but the first local
-post-change run on the five inputs still returns `GaveUp` for all five; this
-does not yet recover the documented problem-level coverage. In particular, the
-retained `group.s` proof depends on target specialization at c26 and is refused
-under the rigid rule. The remaining four problem proofs are not retained in this
-repository, so their exact historical derivations cannot be independently
-audited here. Keep UI-1 open for problem-level recovery and sound archived proof
-evidence; unit-test positives establish only the matcher shape.
+rigid build returned `GaveUp` at 0.01–0.02 s. This demonstrates that the guard
+removed productive inferences, not that every removed inference was sound. A
+bounded ordered-associative matcher is present, but the first local post-change
+run on the five inputs still returned `GaveUp` for all five. Keep UI-1 open for
+a correct AC/associative unifier, complete parent-instance replay, and sound
+problem-level coverage evidence.
 
-#### Full-division consequence: CASC-J13 UEQ (2026-10-10 vs 2026-10-13)
+#### Full-division consequence and proof re-audit: CASC-J13 UEQ
 
-The two archived 400-problem CASC-J13 UEQ campaigns record the coverage gap
-between the older behavior and the current sound, target-rigid behavior. They
-are not a controlled code-only A/B:
+The two archived 400-problem CASC-J13 UEQ campaigns record a coverage gap
+between two different binaries. They are not a controlled code-only A/B:
 
 | campaign | date / commit | UEQ result | strict proof audit |
 |---|---|---:|---|
-| `campaign-cascj13-clean-unsound` | Oct 10 / `176a9f9` | 114/400 Unsatisfiable | no audit archived; run is explicitly marked `clean-unsound` |
+| `campaign-cascj13-clean-unsound` | Oct 10 / `176a9f9` | 114/400 Unsatisfiable | re-audited: 1 `VerifiedGood`, 82 `VerifiedBad`, 31 `Unknown` |
 | `campaign-cascj13-clean` | Oct 13 / `313b923` | 5/400 Unsatisfiable | all 5 `VerifiedGood` |
 
 Both runs used the same 400 problem names, the same Xeon Silver 4108 host,
@@ -269,32 +297,40 @@ and strategy order. It solved three problems the earlier run did not, while 112
 of the earlier 114 solves disappeared. The result is therefore a large
 **observed coverage gap**, not a valid 109-problem regression against a sound
 baseline: the earlier campaign is marked unsound and cannot serve as a target
-score. The older 114 answers were not independently audited in that archive.
+score.
 
-This full-division result confirms the tradeoff anticipated by the local
-diagnostic: rejecting target-variable specialisations removes many UEQ
-refutations, and the bounded AC/ordered-associative additions have not restored
-that problem-level coverage. It does **not** show that the lost 112 answers were
-all false; without the older proofs, their individual validity is unknown. The
-five local pre-fix proofs that were reported `VerifiedGood` likewise are not
-independent evidence of soundness, because the kernel replay had the same
-target-rigidity gap. This also shows that passing matcher-level positive tests
-and repairing soundness are not enough to claim coverage recovery. Next work
-should preserve the target-rigidity invariant, reproduce candidate lost
-problems on a clean build, and certify every recovered proof before counting it
-as recovered coverage. The campaign-level breakdown, provenance, and row-wise
-comparison are recorded in
+The re-audit establishes that only one of the old 114 archived refutations
+currently certifies; 82 are rejected and 31 are inconclusive. `VerifiedBad`
+means the archived proof does not check, not that this audit has classified the
+specific bad inference. The inconclusive rows must not be counted as sound.
+Thus the valid conclusion is a large historical capability gap, not a proven
+loss of 109 valid refutations.
+
+A checker-only experiment temporarily removed target-variable rejection from
+ordinary and AC replay, then force-ran the same audit. It changed the UEQ
+distribution to 15 `VerifiedGood`, 82 `VerifiedBad`, and 17 `Unknown`; it did not
+make the 82 rejected proofs check. The experiment was reverted. It is diagnostic
+evidence that rigidity rejects some otherwise replayable old derivations, not
+evidence that relaxing the producer or checker is sound. In particular, the
+known lattice negative test certifies under that relaxation, so target bindings
+must be admitted only when they are part of a valid standardized-apart unifier
+and the exact resolvent is checked.
+
+The campaign-level breakdown, provenance, and row-wise comparison are recorded in
 [`ueq-soundness-regression-2026-10.md`](../reports/benchmarks/ueq-soundness-regression-2026-10.md).
 
 #### Independent proof replay
 
-The strict kernel now independently replays the bounded subset shape in
+The strict kernel independently replays the bounded subset shape in
 `ac_subset_superposition_replay` (`crates/mrs-proof-kernel/src/lib.rs`). It
 requires a non-empty match of at least two operands, keeps all unmatched target
-operands, refuses target-variable bindings, and uses the kernel's own AC search
-budget. Focused kernel tests certify a valid subset step and reject a conclusion
-that drops unmatched operands. The prover's `force_subset2.p` regression and
-the kernel regression together pin production and proof replay.
+operands, currently keeps target variables rigid, and uses the kernel's own AC
+search budget. Focused kernel tests certify a valid subset step and reject a
+conclusion that drops unmatched operands. The prover's `force_subset2.p`
+regression and the kernel regression together pin production and proof replay.
+The rigidity condition remains an open completeness restriction; it must not be
+confused with the actual soundness requirement that the substitution is a valid
+unifier and the complete parent instance is replayed.
 
 Budget exhaustion remains inconclusive rather than being accepted as a proof.
 

@@ -176,12 +176,14 @@ For a new inference rule, specify:
 The producer and strict kernel must each enforce the rule's side conditions.
 Sharing the rule name or replaying the producer's derivation is not independent
 verification: two implementations can share the same mistaken interpretation.
-For superposition, standardize the parents apart, keep target-clause variables
-rigid, and instantiate only source/equation variables. Pin this as both a
-producer-side refusal test and a strict-kernel rejection test using an archived
-counterexample when one exists. A producer-only test cannot establish that the
-checker rejects the inference, and a checker-only positive test cannot establish
-that the producer recorded the right derivation.
+For superposition, standardize the parents apart, find a genuine unifier of the
+source side and target subterm, apply it to both parents, and reconstruct the
+exact resolvent. Variables from either parent may be bound by that unifier;
+target-variable binding alone is not a soundness violation. Pin malformed
+unifier fallbacks with producer-side refusal tests and strict-kernel rejection
+tests, including archived counterexamples where available. A producer-only test
+cannot establish that the checker rejects the inference, and a checker-only
+positive test cannot establish that the producer recorded the right derivation.
 
 ## 6. Test Design
 

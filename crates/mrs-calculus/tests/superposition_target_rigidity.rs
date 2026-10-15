@@ -1,13 +1,12 @@
-//! Superposition may not instantiate the clause it rewrites.
+//! Historical AC regressions and ordinary whole-parent instantiation.
 //!
 //! # The defect this pins
 //!
 //! `superpose_with_id` unifies the equation clause's side with a subterm *of
 //! the target* and then applies the resulting substitution to the whole target.
-//! That is only a superposition while the unifier binds **only the equation
-//! clause's variables**; if it also binds a variable of the target, the derived
-//! clause is a *specialisation* of the intended resolvent, which the two cited
-//! parents do not entail.
+//! Ordinary superposition may instantiate either standardized-apart parent,
+//! provided the unifier is genuine and applied to every residual literal.
+//! The archived AC cases still exercise a different, unsupported theory match.
 //!
 //! `mrs_unify::robinson::unify_ac_id` did bind target variables: its
 //! `(_, TermNode::Var(v))` arm binds `v` unconditionally, and the AC/assoc
@@ -502,9 +501,10 @@ fn valid_ac_superposition_still_goes_through() {
     );
 }
 
-/// The unifier itself: with the target's variables declared rigid the offending
-/// match fails closed, and without it the same pair still binds them (which is
-/// what the rule must never accept).
+/// The old AC matcher returns target-variable bindings for a pair where its
+/// positional unequal-arity fallback is not a valid AC unifier. The current
+/// guard refuses the candidate; the replacement must validate substitutions,
+/// not treat the presence of target-variable bindings as the defect by itself.
 #[test]
 fn rigid_unifier_refuses_target_bindings() {
     use mrs_unify::robinson::{unify_ac_id, unify_ac_rigid_id};
@@ -556,25 +556,24 @@ fn rigid_unifier_refuses_target_bindings() {
     }
     assert!(
         !bound.is_empty(),
-        "expected the unrestricted AC unifier to bind target variables; \
+        "expected the historical AC fallback to bind target variables; \
          if it no longer does this test is measuring nothing"
     );
 
     assert!(
         unify_ac_rigid_id(src, tgt, &bank, &comm, &assoc, Some(&rigid)).is_err(),
-        "the rigid AC unifier accepted a match that binds a target variable"
+        "the guarded AC unifier accepted a candidate with the malformed legacy binding"
     );
 }
 
 /// CASC-J13 FEQ `SWV406+1`, archived node `c502`.
 ///
-/// This ordinary `superposition` cites `c27` as the source/equation clause and
-/// `c39` as the target. Its archived conclusion specializes a variable in the
-/// target clause while matching the right side of c27's equality. That was
-/// accepted by the old unrestricted unifier; the current calculus must not
-/// regenerate it.
+/// The source RHS is insert(remove(A,K),pair(B,V)). Unify it with
+/// insert(T,pair(I,W)) in the target, so T=remove(A,K), B=I, V=W.
+/// Replacing that subterm with the source LHS and applying the substitution
+/// to both complete parents gives exactly c502, including both side literals.
 #[test]
-fn swv406_c502_archived_target_specialization_is_refused() {
+fn swv406_c502_is_a_whole_parent_superposition_instance() {
     let mut symbols = SymbolTable::new();
     for name in ["contains_slb", "remove_slb", "insert_slb", "pair"] {
         symbols.intern(name);
@@ -666,7 +665,7 @@ fn swv406_c502_archived_target_specialization_is_refused() {
         rendered.len()
     );
     assert!(
-        !reproduced,
-        "HEAD regenerated the archived target-specializing conclusion c502:\n{rendered:#?}"
+        reproduced,
+        "the exact whole-parent instance c502 was lost:\n{rendered:#?}"
     );
 }

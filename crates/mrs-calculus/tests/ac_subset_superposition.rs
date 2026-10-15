@@ -371,17 +371,11 @@ fn positive_partial_target_match_on_ring_idem_symbols() {
 // The guards.
 // ---------------------------------------------------------------------------
 
-/// The inference the archived pre-fix `group.s` proof used.
-///
-/// `cnf(c26, …, inference(superposition, …, [c7, c11]))` superposes
-/// `mult(inv(V), V) = e` into the subterm `mult(A, B)` of the associativity
-/// axiom, producing `mult(e, C) = mult(inv(B), mult(B, C))`. It is refused here
-/// and must stay refused: the match it needs sets `A := inv(V)`, instantiating a
-/// variable of the clause being rewritten. Subset matching cannot rescue it
-/// either — both of the pattern's arguments would still have to land on target
-/// variables.
+/// Instantiate associativity at A=inv(B), then replace mult(inv(B),B)
+/// using the source equality. Both parents universally entail the result.
+/// This uses ordinary syntactic unification, independently of AC matching.
 #[test]
-fn archived_group_c26_target_specialization_is_still_refused() {
+fn archived_group_c26_is_an_ordinary_superposition_instance() {
     let mut fx = Fixture::new(&["mult", "e", "inv"]);
     let v = fx.var(0);
     let a = fx.var(3);
@@ -402,14 +396,11 @@ fn archived_group_c26_target_specialization_is_still_refused() {
     let ac = AcSets::new(&fx, &[("mult", true)]);
 
     let run = fx.superpose_both(&eq, &target, &ac);
-    for clause in &run.rendered {
-        assert!(
-            !clause.contains("X4"),
-            "a superposition bound a variable of the clause it rewrote: {clause}\n\
-             all derived: {:#?}",
-            run.rendered
-        );
-    }
+    assert!(
+        run.contains("mult(e(), X6) = mult(inv(X5), mult(X5, X6))"),
+        "missing the exact universally entailed c26 instance: {:#?}",
+        run.rendered
+    );
 }
 
 /// The inference that recovers a whole problem.

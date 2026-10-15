@@ -272,30 +272,16 @@ fn no_mutation_of_an_mrs_proof_ever_certifies() {
     );
 
     // Every sound canary must certify unmutated, or the sweep proves nothing.
-    // The retained `group.s` is the historical pre-rigidity proof: c26 binds
-    // the target associativity clause's variable and must now fail closed.
+    // The group/ring/lattice proofs use valid ordinary whole-parent instances;
+    // target-variable bindings are not a reason to exempt these positive cases.
     for canary in &canaries {
         let verdict = check(canary, &canary.proof);
-        if matches!(
-            canary.name.as_str(),
-            "group" | "lattice_absorb" | "ring_idem"
-        ) {
-            assert!(
-                matches!(
-                    verdict,
-                    KernelVerdict::Rejected(_) | KernelVerdict::Inconclusive(_)
-                ),
-                "historical target-specializing superposition in {name} must be refused: {verdict:?}",
-                name = canary.name
-            );
-        } else {
-            assert_eq!(
-                verdict,
-                KernelVerdict::Certified,
-                "canary {} no longer certifies; regenerate it or fix the kernel",
-                canary.name
-            );
-        }
+        assert_eq!(
+            verdict,
+            KernelVerdict::Certified,
+            "canary {} no longer certifies; regenerate it or fix the kernel",
+            canary.name
+        );
     }
 
     let next = AtomicUsize::new(0);

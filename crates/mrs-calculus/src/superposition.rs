@@ -257,13 +257,9 @@ fn superpose_with_id(
     results: &mut Vec<IdClause>,
     deadline: Option<std::time::Instant>,
 ) {
-    // The target's variables are rigid: superposition rewrites a subterm *of*
-    // the target and may only instantiate the equation clause's variables. An
-    // unifier that bound a target variable would make the conclusion a
-    // specialisation of the intended resolvent, which the two cited parents do
-    // not entail — the archived `ac_superposition` steps this produced are what
-    // the strict kernel refused (UI-1). `target` has already been renamed apart
-    // from `eq_clause`, so its variables are exactly the ones to protect.
+    // Retain rigidity for the incomplete theory-specific matching paths.
+    // Ordinary syntactic unification below can bind either parent: `target`
+    // is standardized apart and sigma is applied to the complete resolvent.
     let mut target_vars = HashSet::default();
     for literal in &target.literals {
         literal.collect_vars(bank, &mut target_vars);
@@ -296,10 +292,8 @@ fn superpose_with_id(
 
                 // Two shapes, tried in this order.
                 //
-                // 1. The ordinary one: unify the equation side with the *whole*
-                //    subterm. This is the behaviour the rigid guard was added
-                //    to keep, and it is tried first so that nothing that used
-                //    to go through changes.
+                // 1. Whole-subterm unification (syntactic first, then the
+                //    restricted theory-aware implementation).
                 // 2. The AC subset shape: under a commutative-associative
                 //    symbol the equation side may instead fit into a *non-empty
                 //    subset* of the subterm's AC arguments. The rigid whole-
@@ -313,18 +307,38 @@ fn superpose_with_id(
                     matches!(bank.get(subterm), TermNode::App(target_symbol, _) if *target_symbol == symbol)
                         && !comm.contains(&symbol)
                 });
-                let (sigma, replacement) = if assoc_only_root {
-                    match assoc_replacement(
-                        from,
-                        to,
-                        subterm,
-                        bank,
-                        assoc,
-                        &target_vars,
-                        ac_subset_budget,
-                    ) {
-                        Ok(replacement) => replacement,
-                        Err(_) => match mrs_unify::robinson::unify_ac_rigid_id(
+                // Syntactic unification is sound even in the presence of AC
+                // axioms. Unlike matching used for demodulation, superposition
+                // may instantiate either standardized-apart parent. Apply the
+                // resulting substitution to every remaining literal below.
+                let (sigma, replacement) =
+                    if let Ok(sigma) = mrs_unify::robinson::unify_id(from, subterm, bank) {
+                        (sigma, to)
+                    } else if assoc_only_root {
+                        match assoc_replacement(
+                            from,
+                            to,
+                            subterm,
+                            bank,
+                            assoc,
+                            &target_vars,
+                            ac_subset_budget,
+                        ) {
+                            Ok(replacement) => replacement,
+                            Err(_) => match mrs_unify::robinson::unify_ac_rigid_id(
+                                from,
+                                subterm,
+                                bank,
+                                comm,
+                                assoc,
+                                Some(&target_vars),
+                            ) {
+                                Ok(sigma) => (sigma, to),
+                                Err(_) => continue,
+                            },
+                        }
+                    } else {
+                        match mrs_unify::robinson::unify_ac_rigid_id(
                             from,
                             subterm,
                             bank,
@@ -333,47 +347,34 @@ fn superpose_with_id(
                             Some(&target_vars),
                         ) {
                             Ok(sigma) => (sigma, to),
-                            Err(_) => continue,
-                        },
-                    }
-                } else {
-                    match mrs_unify::robinson::unify_ac_rigid_id(
-                        from,
-                        subterm,
-                        bank,
-                        comm,
-                        assoc,
-                        Some(&target_vars),
-                    ) {
-                        Ok(sigma) => (sigma, to),
-                        Err(_) => {
-                            if let Ok(replacement) = ac_subset_replacement(
-                                from,
-                                to,
-                                subterm,
-                                bank,
-                                comm,
-                                assoc,
-                                &target_vars,
-                                ac_subset_budget,
-                            ) {
-                                replacement
-                            } else if let Ok(replacement) = assoc_replacement(
-                                from,
-                                to,
-                                subterm,
-                                bank,
-                                assoc,
-                                &target_vars,
-                                ac_subset_budget,
-                            ) {
-                                replacement
-                            } else {
-                                continue;
+                            Err(_) => {
+                                if let Ok(replacement) = ac_subset_replacement(
+                                    from,
+                                    to,
+                                    subterm,
+                                    bank,
+                                    comm,
+                                    assoc,
+                                    &target_vars,
+                                    ac_subset_budget,
+                                ) {
+                                    replacement
+                                } else if let Ok(replacement) = assoc_replacement(
+                                    from,
+                                    to,
+                                    subterm,
+                                    bank,
+                                    assoc,
+                                    &target_vars,
+                                    ac_subset_budget,
+                                ) {
+                                    replacement
+                                } else {
+                                    continue;
+                                }
                             }
                         }
-                    }
-                };
+                    };
 
                 let from_s = sigma.apply_term(from, bank);
                 let to_s = sigma.apply_term(to, bank);
@@ -851,11 +852,12 @@ fn superpose_with(
                 };
 
                 // Try to unify `from` with this subterm
-                let sigma =
-                    match mrs_unify::robinson::unify_comm_rigid(from, subterm, comm, target_vars) {
-                        Ok(s) => s,
-                        Err(_) => continue,
-                    };
+                let sigma = match mrs_unify::unify(from, subterm).or_else(|_| {
+                    mrs_unify::robinson::unify_comm_rigid(from, subterm, comm, target_vars)
+                }) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
 
                 // Check ordering: from·σ ≻ to·σ (or incomparable)
                 let from_s = sigma.apply_term(from);
@@ -1156,7 +1158,7 @@ mod tests {
     }
 
     #[test]
-    fn superpose_does_not_instantiate_target_variable() {
+    fn superpose_instantiates_target_variable() {
         let mut syms = SymbolTable::new();
         let f = syms.intern("f");
         let a = syms.intern("a");
@@ -1182,8 +1184,10 @@ mod tests {
 
         let results = superpose(&equation, &target, &TermOrdering::KBO, &mut id_gen);
         assert!(
-            results.is_empty(),
-            "superposition must not specialize the target by binding its variable"
+            results.iter().any(|clause| clause.literals.iter().any(|lit| {
+                matches!(&lit.atom, Atom::Pred(sym, args) if *sym == p && args == &vec![Term::constant(b)])
+            })),
+            "ordinary superposition must admit the target instance at a"
         );
     }
 

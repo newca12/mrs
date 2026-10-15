@@ -133,9 +133,8 @@ pub fn unify_comm<S: BuildHasher>(s: &Term, t: &Term, comm: &HashSet<SymbolId, S
 /// Unifies a pattern against a target while refusing to bind target variables.
 ///
 /// Variables in `pattern` may be instantiated as usual; variables listed in
-/// `rigid` are treated as constants. This is the one-way side condition needed
-/// by rules such as superposition when variables in the rewritten clause must
-/// remain unchanged.
+/// `rigid` are treated as constants. This is a matching restriction, not a
+/// general soundness requirement for first-order superposition.
 pub fn unify_comm_rigid<S: BuildHasher, R: BuildHasher>(
     s: &Term,
     t: &Term,
@@ -292,14 +291,11 @@ pub fn unify_ac_id<S: BuildHasher>(
 
 /// AC unification in which the variables in `rigid` may not be bound.
 ///
-/// A rule that rewrites a subterm of a *target* clause may only instantiate the
-/// equation's own variables: if the unifier binds a variable of the clause being
-/// rewritten, the conclusion is a *specialisation* of the intended resolvent
-/// rather than the resolvent itself, which the premises do not entail. This is
-/// the standard side condition of superposition (see
-/// [`unify_ac_rigid_id`]'s use in `mrs_calculus::superposition`), and it fails
-/// closed: a match that would need such a binding is rejected rather than
-/// accepted with the binding applied.
+/// The restricted theory-aware superposition path uses this as a conservative
+/// matching restriction. Ordinary superposition instead permits variables from
+/// either standardized-apart parent to be bound and applies a genuine unifier
+/// to the whole resolvent. Rigidity does not establish completeness or replace
+/// validation of a theory unifier.
 ///
 /// `rigid = None` is exactly [`unify_ac_id`].
 pub fn unify_ac_rigid_id<S: BuildHasher>(

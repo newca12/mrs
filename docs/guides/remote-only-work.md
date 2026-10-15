@@ -419,8 +419,10 @@ crates/mrs-bench/certification_campaign.sh --audit-only \
 ```
 
 **Historical audit note: the proof-node limit fix admitted four long archived
-proofs, but the `SWV406+1` certification was later invalidated by the
-superposition target-rigidity fix.** One 100 000-formula ceiling used to do two
+proofs. The subsequent rejection of SWV406+1 c502 was due to the over-restrictive
+target-rigid checker; c502 is a valid ordinary whole-parent instance and its
+focused test now certifies.** This does not re-audit the entire 657,454-node
+proof; its current full-proof verdict still needs measurement. One 100 000-formula ceiling used to do two
 jobs — bounding the proof's DAG and bounding per-step CNF expansion — so a
 long-but-honest proof was refused outright. Splitting them (`max_proof_nodes`)
 admitted all four to that older kernel. Results from
@@ -437,9 +439,10 @@ admitted all four to that older kernel. Results from
 do not run it concurrently with anything else memory-hungry. The old kernel
 reported 193 certified (up from 189); that aggregate is historical and must not
 be quoted as current certification coverage. The archived `SWV406+1` proof has
-node `c502`, rejected by the target-rigid superposition replay now in `HEAD`.
-The campaign must be re-audited with the current kernel before reporting a
-current certified total. See `docs/CERTIFICATION_STATUS.md` §"The residual 22".
+node `c502`, whose focused replay is repaired as described above. The campaign
+must be re-audited with the
+current kernel before reporting a current certified total. See
+`docs/CERTIFICATION_STATUS.md` §"The residual 22".
 
 **Re-auditing cannot close the demodulation gap** (see R1) — that is the one
 place where re-audit and fresh search genuinely differ, and it is worth being
