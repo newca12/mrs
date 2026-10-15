@@ -1,6 +1,3 @@
-[build]
-rustflags = ["-C", "target-cpu=native"]
-
 [env]
 CXX = "g++"
 CC = "gcc"
