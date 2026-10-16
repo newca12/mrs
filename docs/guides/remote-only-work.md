@@ -28,7 +28,7 @@ resolved against the working directory, not the repo root.
 | CPU | Xeon Silver 4108 @ 1.80 GHz | Xeon Silver 4108 @ 1.80 GHz |
 | RAM | **15.9 GiB total, ~11.7 GiB usable** | 128 GiB |
 | `nix` | **absent in the measured campaign environment** — call `cargo` directly | absent (same, by design) |
-| rustc | 1.99.0 | 1.98.1 (as of the 2026-09-30 campaigns; current runner expects 1.99.0) |
+| rustc | 1.99.1 | 1.98.1 (as of the 2026-09-30 campaigns; current runner expects 1.99.1) |
 
 `--hardware casc-sim` pins the process to 8 physical cores and sets an
 `RLIMIT_AS` of 128 GB, because that is what CASC is. Neither is satisfiable
@@ -40,7 +40,7 @@ not a measurement of anything competitive.
 
 `nix develop` is unavailable on both hosts. `remote-cert-campaign.sh` states
 the remote convention explicitly — "plain cargo/rustup (no nix on remote)" —
-and requires pinning rustc to the same version on both sides (1.99.0 today),
+and requires pinning rustc to the same version on both sides (1.99.1 today),
 recording `rustc --version` plus the git revision in every phase output. A
 version mismatch warns but does not stop a campaign; note it in the report
 instead of ignoring it.
