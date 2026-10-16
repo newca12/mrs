@@ -8157,41 +8157,48 @@ fn verify_subsumption_resolution(
         if active.is_empty() {
             continue;
         }
-        // Condense the active clause before looking for its witness. The target
-        // must retain its original literal multiplicity: if its two copies of
-        // `D` become one before removing a justified literal, the computed
-        // intermediate is `D | I` while search's proof records `D | D | I`.
-        // The target with duplicates is still a valid clause, and the matching
-        // rule below permits one target literal to witness repeated active
-        // literals after substitution.
+        // Condense the active clause before looking for its witness. Try both
+        // the target as recorded and its syntactically contracted form. Search
+        // deduplicates clauses before simplification, while the append-only
+        // proof store can retain the original duplicate-bearing target under
+        // the same clause ID. Contraction is equivalence-preserving, so an SR
+        // step justified against the contracted target is also justified by
+        // the recorded one (e.g. GEO498+1 c96825).
         let active = condense_clause(active);
+        let contracted_target = condense_clause(target);
+        let mut target_forms = vec![target.as_slice()];
+        if contracted_target.as_slice() != target.as_slice() {
+            target_forms.push(contracted_target.as_slice());
+        }
 
         let mut matching_steps = 0;
-        for removed_idx in 0..target.len() {
-            let mut modified_target = target.clone();
-            modified_target[removed_idx].positive = !modified_target[removed_idx].positive;
-            match clause_subsumes_set(
-                &active,
-                &modified_target,
-                &mut matching_steps,
-                limits.max_subsumption_steps,
-            ) {
-                Ok(false) => continue,
-                Err(()) => {
-                    return KernelVerdict::Inconclusive(
-                        "subsumption_resolution exceeded strict matching-step limit".into(),
-                    );
+        for target_form in target_forms {
+            for removed_idx in 0..target_form.len() {
+                let mut modified_target = target_form.to_vec();
+                modified_target[removed_idx].positive = !modified_target[removed_idx].positive;
+                match clause_subsumes_set(
+                    &active,
+                    &modified_target,
+                    &mut matching_steps,
+                    limits.max_subsumption_steps,
+                ) {
+                    Ok(false) => continue,
+                    Err(()) => {
+                        return KernelVerdict::Inconclusive(
+                            "subsumption_resolution exceeded strict matching-step limit".into(),
+                        );
+                    }
+                    Ok(true) => {}
                 }
-                Ok(true) => {}
-            }
 
-            let mut expected = target.clone();
-            expected.remove(removed_idx);
-            // Duplicate literals are logically inert, so allow the prover's
-            // explicit condensation to remove any duplicates left by this
-            // single subsumption-resolution deletion.
-            if clause_alpha_equiv(&condense_clause(&expected), &condense_clause(&goal)) {
-                return KernelVerdict::Certified;
+                let mut expected = target_form.to_vec();
+                expected.remove(removed_idx);
+                // Duplicate literals are logically inert, so allow the prover's
+                // explicit condensation to remove any duplicates left by this
+                // single subsumption-resolution deletion.
+                if clause_alpha_equiv(&condense_clause(&expected), &condense_clause(&goal)) {
+                    return KernelVerdict::Certified;
+                }
             }
         }
     }
@@ -16135,6 +16142,22 @@ mod tests {
                       cnf(np, axiom, ~p(a,a), file('problem.p', np)).\n\
                       cnf(p, plain, p(a,a), inference(resolution, [status(thm)], [p_pair,np])).\n\
                       cnf(bot, plain, $false, inference(resolution, [status(thm)], [p,np])).";
+        assert_eq!(check(input, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_subsumption_resolution_after_search_target_contraction() {
+        // GEO498+1 c96825: the proof store retains both copies of ~s_e, but
+        // search deduplicates the target before SR. The active unit therefore
+        // removes the sole ~s_e in the contracted target, leaving s_e3.
+        let input = "cnf(target, axiom, ~s_e(X2,X2,X5,X5) | s_e3(X2,X2,X2,X5,X5,X5) | ~s_e(X2,X2,X5,X5)).\n\
+                     cnf(active, axiom, s_e(X0,X0,X1,X1)).\n\
+                     cnf(negative, axiom, ~s_e3(a,a,a,b,b,b)).";
+        let proof = "cnf(target, axiom, ~s_e(X2,X2,X5,X5) | s_e3(X2,X2,X2,X5,X5,X5) | ~s_e(X2,X2,X5,X5), file('problem.p', target)).\n\
+                      cnf(active, axiom, s_e(X0,X0,X1,X1), file('problem.p', active)).\n\
+                      cnf(cut, plain, s_e3(X2,X2,X2,X5,X5,X5), inference(subsumption_resolution, [status(thm)], [target,active])).\n\
+                      cnf(negative, axiom, ~s_e3(a,a,a,b,b,b), file('problem.p', negative)).\n\
+                      cnf(bot, plain, $false, inference(resolution, [status(thm)], [cut,negative])).";
         assert_eq!(check(input, proof), KernelVerdict::Certified);
     }
 
