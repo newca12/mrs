@@ -13,7 +13,7 @@ the item itself is explicitly marked `ABANDONED`.
 | Milestone | Status | Implemented evidence / remaining gate |
 |---|---|---|
 | M0 — Verus baseline and environment | **PARTIAL** | Verus/Rust versions and Linux x86_64 SHA-256 are pinned; `verify.sh` and regular CI run all formal files. Still needs a clean-checkout run and explicit audit for unchecked assumptions/ignored proof obligations. |
-| M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` has recursive terms, evaluation/clause predicates, a general term substitution/evaluation theorem, substitution-instance lemmas, and constrained target-binding examples. It lacks fully verified literal/clause substitution preservation and standardized-apart semantics. |
+| M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` has recursive terms, total interpretation/valuation well-formedness, a general term substitution/evaluation theorem, and verified atom/literal/clause substitution preservation plus universal-clause instance preservation. Still needs bidirectional alpha-renaming/standardization-apart semantics and the exact calculus contract for the general rule. |
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution application and duplicate-domain checking are verified in the first-order prototype. There is no general unifier/MGU checker, position/replacement replay, standardization-apart implementation, or resource-bounded term IR. |
 | M3 — Superposition checker | **PARTIAL** | `superposition_checker.rs` verifies a ground unit fragment; `variable_superposition.rs` checks and proves one fixed variable-bearing two-literal schema with whole-target substitution. General term-tree certificates, arbitrary positions, clauses, ordering, and c502 remain unsupported/unanalysed. |
 | M4 — Proof-DAG validation | **TODO** | No proof graph, parent closure, rule dispatcher, or empty-clause refutation checker. |
@@ -22,7 +22,7 @@ the item itself is explicitly marked `ABANDONED`.
 | M7 — Assurance/release gates | **TODO** | No supported-rule manifest, full assurance case, mutation campaign, or release/default-enable gate. |
 
 **What is DONE now:** the pinned local command `formal/superposition-checker/verify.sh`
-passes all four Verus files (`5`, `19`, `5`, and `5` verified functions respectively),
+passes all four Verus files (currently `5`, `28`, `5`, and `5` verified functions respectively),
 and the existing Rust regression `rejects_swv406_c502_archived_target_specialization`
 passes. These results establish only the current narrow verified artifacts; they
 do not complete M0–M3 or decide c502.
@@ -174,7 +174,8 @@ Avoid relying on a parser that silently drops unsupported constructs.
 **Current status**
 
 - **DONE:** first-order term/atom/clause data types, interpretation and valuation
-  declarations, semantic evaluation/holding definitions, and bounded instance
+  declarations, semantic evaluation/holding definitions, a non-empty carrier
+  and total interpretation well-formedness predicate, and bounded instance
   examples exist in `first_order_core.rs`.
 - **DONE:** a substitution/evaluation theorem is now proved for recursive term
   substitution, assuming the interpretation function and valuation have full
@@ -184,19 +185,18 @@ Avoid relying on a parser that silently drops unsupported constructs.
   target-side substitution must also be applied to the other target literal;
   its model-level soundness theorem verifies, and the partial-substitution
   mutation is rejected by the executable shape checker.
-- **TODO — DIFFICULT:** complete universally quantified clause semantics and its non-empty
-  domain assumptions, standardization-apart theorem, and formal derivation of
-  general superposition.
-- **TODO — DIFFICULT:** prove atom/literal/clause substitution preservation.
-  The current finite predicate-map model does not yet provide sufficient
-  definedness facts for arbitrary predicate applications; resolve the semantic
-  interpretation/domain interface before attempting the proof again.
-- **ABANDONED approach:** the direct atom/clause lifting proof was attempted
-  against the current partial finite predicate-map model. It failed its proof
-  obligations because predicate lookups could be undefined for substituted
-  argument tuples. That proof attempt was removed rather than weakening its
-  theorem or smuggling in stronger assumptions. The general preservation result
-  remains active as the difficult TODO above.
+- **DONE:** define universal clause validity over valuations into a non-empty
+  carrier and provide a total function/predicate interpretation interface.
+- **DONE:** prove atom, literal, and clause truth preservation under simultaneous
+  substitution, and prove that every substitution instance of a universally
+  valid clause is valid. This resolves the prior undefined-predicate-lookup
+  blocker by making totality explicit in the model contract.
+- **DONE:** prove clause validity invariant in both directions under
+  substitutions whose composition acts as the identity on every variable; this
+  covers bijective variable renamings. The theorem takes the inverse pair as a
+  premise, while executable freshness/injectivity checking remains M2 work.
+- **TODO — DIFFICULT:** specify the exact ordinary superposition rule whose
+  soundness follows from these semantics.
 
 **Deliverables**
 
@@ -205,9 +205,9 @@ Avoid relying on a parser that silently drops unsupported constructs.
   arbitrary arity after the structural recursion proof patterns are stable.
 - Atoms: predicates and equality; literals: polarity plus atom; clauses as
   finite disjunctions whose free variables are universally quantified.
-- A semantic domain consisting of a non-empty carrier, function
-  interpretations, predicate interpretations, equality as identity, and a
-  valuation from variables to domain elements.
+- A semantic domain consisting of a non-empty carrier, total function and
+  predicate interpretations, equality as identity, and a valuation from
+  variables to domain elements.
 - Recursive term evaluation and clause satisfaction.
 - Definitions/lemmas for free variables, substitution domains/ranges,
   renaming, positions/subterms, and equality of clauses modulo variable
@@ -222,20 +222,26 @@ Avoid relying on a parser that silently drops unsupported constructs.
 - Evaluation respects structural recursion and arity.
 - A clause’s universal-closure semantics agrees with the defined valuation
   semantics.
-- Variable renaming and standardization-apart preserve clause meaning.
+- **DONE:** a variable renaming with a two-sided substitution inverse preserves
+  clause validity in both directions. Checking the finite renaming certificate
+  and freshness policy remains an executable M2 obligation.
 - Substitution application/evaluation lemma: evaluating `t[σ]` under a
   valuation agrees with evaluating `t` under the valuation updated by `σ`,
   under stated freshness/domain assumptions.
-- A formal lemma that universal closure entails substitution instances, plus a
-  formal argument identifying when target-clause specialization is sound and
-  what whole-clause substitution/freshness conditions it requires. Decide
-  whether rigidity is a soundness condition, a completeness/performance
-  restriction, or a necessary condition of a narrower rule before encoding it.
-- First-order core now includes a universal-clause instance lemma and a small
+- **DONE:** a formal lemma that universal closure entails simultaneous
+  substitution instances, with the same substitution reflected across every
+  literal of the clause.
+- **DONE:** prove clause validity invariant under a substitution with a
+  two-sided variable-renaming inverse.
+- **TODO:** identify precisely which freshness conditions the inference rule
+  requires and specify the exact calculus. Decide whether rigidity is a
+  soundness condition, a completeness/performance restriction, or a necessary
+  condition of a narrower rule before encoding it.
+- First-order core now includes universal-clause instance and
+  atom/literal/clause substitution-preservation lemmas, plus a small
   ground-source, target-variable superposition-shaped entailment example. It
-  proves entailment for that explicitly constrained case; finish the general
-  substitution/valuation lemma and prove the full rule theorem before claiming
-  general superposition soundness.
+  proves entailment for that explicitly constrained case; specify and prove the
+  full rule theorem before claiming general superposition soundness.
 - A separate `superposition_checker.rs` now verifies executable acceptance and
   a semantic soundness theorem for positive ground unit equalities rewriting
   whole unary-predicate unit arguments. It is the first actual checker slice;
@@ -562,15 +568,17 @@ satisfiability/model claims, and unrestricted full TSTP.
   soundness lemma, and forged-field examples (M3 partial).
 - [x] Preserve the archived c502 clauses as a fixture, explicitly marked
   unsupported by the current checker (c502 audit remains TODO).
-- [ ] Complete and review universally quantified clause semantics and
-  standardization-apart proofs (M1).
+- [ ] Specify the exact ordinary superposition rule and required freshness
+  conditions (M1; universal semantics, substitution preservation, and
+  bidirectional variable-renaming validity are now verified).
 - [x] Add a proposed finite-unifier checker that requires a duplicate-free
   domain and equal terms after simultaneous substitution (M2 initial slice).
 - [ ] Exercise positive/negative unifier certificates; finish constructor-wide
   executable/model refinement, occurs-check, positions, replacement, and
   standardization-apart before widening the checker (M2).
-- [x] Specify and prove the recursive term substitution/evaluation lemma under
-  full interpretation/valuation domains (M1 initial term-level obligation).
+- [x] Specify and prove recursive term substitution/evaluation and lift it to
+  atom/literal/clause preservation under total interpretation/valuation domains
+  (M1 semantic foundation).
 - [ ] Use it with clause semantics to prove general ordinary superposition
   soundness and extend the checker beyond ground-unit clauses (M1–M3).
 - [ ] Encode the exact `SWV406+1:c502` parents/conclusion and relevant context;

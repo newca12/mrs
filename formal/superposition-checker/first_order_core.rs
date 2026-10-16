@@ -44,6 +44,22 @@ pub struct Model {
     valuation: Valuation,
 }
 
+/// The semantic carrier is non-empty and all signature interpretations are
+/// total and return carrier elements. Predicate interpretations are total as
+/// well, so substituted argument tuples are always defined.
+spec fn interpretation_well_formed(interp: Interpretation) -> bool {
+    exists|x: u64| interp.domain.contains(x)
+        && interp.functions.is_full()
+        && interp.predicates.is_full()
+        && forall|f: u64, args: Seq<u64>|
+            interp.domain.contains(interp.functions[(f, args)])
+}
+
+spec fn valuation_well_formed(interp: Interpretation, valuation: Valuation) -> bool {
+    valuation.values.is_full()
+        && forall|x: u64| interp.domain.contains(valuation.values[x])
+}
+
 /// Truth of a universally closed formula with one free variable.
 pub struct UniversalFormula {
     body: IMap<u64, bool>,
@@ -114,6 +130,36 @@ spec fn eval(term: Term, interp: Interpretation, valuation: Valuation) -> u64
     }
 }
 
+proof fn eval_in_domain(term: Term, interp: Interpretation, valuation: Valuation)
+    requires
+        interpretation_well_formed(interp),
+        valuation_well_formed(interp, valuation),
+    ensures interp.domain.contains(eval(term, interp, valuation))
+    decreases term
+{
+    match term {
+        Term::Var(v) => {
+            assert(interp.domain.contains(valuation.values[v]));
+        },
+        Term::Const(c) => {
+            assert(interp.domain.contains(interp.functions[(c, seq![])]));
+        },
+        Term::App1(f, child) => {
+            eval_in_domain(*child, interp, valuation);
+            assert(interp.domain.contains(interp.functions[
+                (f, seq![eval(*child, interp, valuation)])]));
+        },
+        Term::App2(f, left, right) => {
+            eval_in_domain(*left, interp, valuation);
+            eval_in_domain(*right, interp, valuation);
+            assert(interp.domain.contains(interp.functions[(
+                f,
+                seq![eval(*left, interp, valuation), eval(*right, interp, valuation)],
+            )]));
+        },
+    }
+}
+
 /// Update variables simultaneously: each replacement is interpreted using
 /// the original valuation and unmapped variables retain their original value.
 spec fn valuation_after(
@@ -140,6 +186,29 @@ spec fn update_valuation(interp: Interpretation, valuation: Valuation, sigma: Su
             Some(replacement) => eval(replacement, interp, valuation),
             None => valuation.values[x],
         }),
+    }
+}
+
+proof fn updated_valuation_well_formed(
+    interp: Interpretation,
+    valuation: Valuation,
+    sigma: Substitution,
+)
+    requires
+        interpretation_well_formed(interp),
+        valuation_well_formed(interp, valuation),
+    ensures valuation_well_formed(interp, update_valuation(interp, valuation, sigma))
+{
+    assert forall|x: u64| interp.domain.contains(
+        update_valuation(interp, valuation, sigma).values[x]) by {
+        match lookup(sigma, x) {
+            Some(replacement) => {
+                eval_in_domain(replacement, interp, valuation);
+            },
+            None => {
+                assert(interp.domain.contains(valuation.values[x]));
+            },
+        }
     }
 }
 
@@ -199,6 +268,39 @@ spec fn atom_holds(atom: Atom, interp: Interpretation, valuation: Valuation) -> 
     }
 }
 
+/// Substitution preserves atom truth when the valuation is updated
+/// simultaneously. Total predicate interpretations are essential here: they
+/// guarantee meaning for every substituted argument tuple.
+proof fn atom_holds_after_substitution(
+    atom: Atom,
+    sigma: Substitution,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    requires
+        interp.functions.is_full(),
+        interp.predicates.is_full(),
+        valuation.values.is_full(),
+    ensures atom_holds(substitute_atom(atom, sigma), interp, valuation)
+        == atom_holds(atom, interp, update_valuation(interp, valuation, sigma))
+    decreases atom
+{
+    match atom {
+        Atom::Pred0(_) => {},
+        Atom::Pred1(_, arg) => {
+            eval_after_substitution(*arg, sigma, interp, valuation);
+        },
+        Atom::Pred2(_, left, right) => {
+            eval_after_substitution(*left, sigma, interp, valuation);
+            eval_after_substitution(*right, sigma, interp, valuation);
+        },
+        Atom::Eq(left, right) => {
+            eval_after_substitution(left, sigma, interp, valuation);
+            eval_after_substitution(right, sigma, interp, valuation);
+        },
+    }
+}
+
 spec fn substitute_atom(atom: Atom, sigma: Substitution) -> Atom
     decreases atom
 {
@@ -229,6 +331,186 @@ spec fn literal_holds(literal: Literal, interp: Interpretation, valuation: Valua
 spec fn clause_holds(clause: Clause, interp: Interpretation, valuation: Valuation) -> bool {
     exists|i: int| 0 <= i < clause.literals.len()
         && literal_holds(clause.literals[i], interp, valuation)
+}
+
+/// Universal closure semantics: a clause is true in an interpretation when
+/// it holds for every valuation of its universally quantified variables into
+/// the non-empty carrier.
+spec fn clause_valid(clause: Clause, interp: Interpretation) -> bool {
+    forall|valuation: Valuation|
+        valuation_well_formed(interp, valuation)
+            ==> clause_holds(clause, interp, valuation)
+}
+
+proof fn literal_holds_after_substitution(
+    literal: Literal,
+    sigma: Substitution,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    requires
+        interp.functions.is_full(),
+        interp.predicates.is_full(),
+        valuation.values.is_full(),
+    ensures literal_holds(substitute_literal(literal, sigma), interp, valuation)
+        == literal_holds(literal, interp, update_valuation(interp, valuation, sigma))
+{
+    atom_holds_after_substitution(literal.atom, sigma, interp, valuation);
+}
+
+proof fn clause_holds_after_substitution(
+    clause: Clause,
+    sigma: Substitution,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    requires
+        interp.functions.is_full(),
+        interp.predicates.is_full(),
+        valuation.values.is_full(),
+    ensures clause_holds(substitute_clause(clause, sigma), interp, valuation)
+        == clause_holds(clause, interp, update_valuation(interp, valuation, sigma))
+{
+    assert forall|i: int| 0 <= i < clause.literals.len()
+        implies literal_holds(substitute_clause(clause, sigma).literals[i], interp, valuation)
+            == literal_holds(clause.literals[i], interp,
+                update_valuation(interp, valuation, sigma)) by {
+        assert(substitute_clause(clause, sigma).literals[i]
+            == substitute_literal(clause.literals[i], sigma));
+        literal_holds_after_substitution(clause.literals[i], sigma, interp, valuation);
+    }
+}
+
+/// Every simultaneous substitution instance of a universally closed clause
+/// is entailed by that clause. This is the semantic fact that permits a
+/// unifier to instantiate variables from either standardized-apart parent.
+proof fn universal_clause_substitution_instance(
+    clause: Clause,
+    sigma: Substitution,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(clause, interp),
+        valuation_well_formed(interp, valuation),
+    ensures clause_holds(substitute_clause(clause, sigma), interp, valuation)
+{
+    updated_valuation_well_formed(interp, valuation, sigma);
+    assert(clause_holds(clause, interp, update_valuation(interp, valuation, sigma)));
+    clause_holds_after_substitution(clause, sigma, interp, valuation);
+}
+
+/// Universal validity is preserved by simultaneous substitution. This covers
+/// the forward semantic direction of standardization apart: renaming a
+/// universally quantified clause to fresh variable IDs cannot invalidate it.
+/// (A converse requires an inverse renaming and is not needed for inference
+/// soundness.)
+proof fn clause_valid_after_substitution(
+    clause: Clause,
+    renaming: Substitution,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(clause, interp),
+    ensures clause_valid(substitute_clause(clause, renaming), interp)
+{
+    assert forall|valuation: Valuation|
+        valuation_well_formed(interp, valuation)
+            implies clause_holds(substitute_clause(clause, renaming), interp, valuation) by {
+        universal_clause_substitution_instance(clause, renaming, interp, valuation);
+    }
+}
+
+spec fn inverse_renamings(sigma: Substitution, inverse: Substitution) -> bool {
+    forall|x: u64|
+        apply(apply(Term::Var(x), sigma), inverse) == Term::Var(x)
+        && apply(apply(Term::Var(x), inverse), sigma) == Term::Var(x)
+}
+
+proof fn updated_valuation_composition_identity(
+    interp: Interpretation,
+    valuation: Valuation,
+    first: Substitution,
+    second: Substitution,
+)
+    requires
+        interp.functions.is_full(),
+        valuation.values.is_full(),
+        forall|x: u64| #[trigger] apply(apply(Term::Var(x), second), first) == Term::Var(x),
+    ensures update_valuation(
+        interp,
+        update_valuation(interp, valuation, first),
+        second,
+    ).values == valuation.values
+{
+    assert forall|x: u64| update_valuation(
+        interp,
+        update_valuation(interp, valuation, first),
+        second,
+    ).values[x] == valuation.values[x] by {
+        eval_after_substitution(
+            apply(Term::Var(x), second),
+            first,
+            interp,
+            valuation,
+        );
+        assert(eval(apply(Term::Var(x), second), interp,
+            update_valuation(interp, valuation, first))
+            == eval(apply(apply(Term::Var(x), second), first), interp, valuation));
+    }
+}
+
+/// A bijective variable renaming preserves universal clause meaning in both
+/// directions. This is the semantic standardization-apart theorem; freshness
+/// of the chosen IDs is an executable syntactic side condition for the caller.
+proof fn standardization_apart_preserves_clause_validity(
+    clause: Clause,
+    renaming: Substitution,
+    inverse: Substitution,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        inverse_renamings(renaming, inverse),
+    ensures clause_valid(substitute_clause(clause, renaming), interp)
+        == clause_valid(clause, interp)
+{
+    if clause_valid(clause, interp) {
+        clause_valid_after_substitution(clause, renaming, interp);
+    } else {
+        assert(!clause_valid(clause, interp));
+    }
+
+    assert(clause_valid(substitute_clause(clause, renaming), interp)
+        ==> clause_valid(clause, interp)) by {
+        if clause_valid(substitute_clause(clause, renaming), interp) {
+            assert forall|valuation: Valuation|
+                valuation_well_formed(interp, valuation)
+                    implies clause_holds(clause, interp, valuation) by {
+                updated_valuation_well_formed(interp, valuation, inverse);
+                assert(clause_holds(
+                    substitute_clause(clause, renaming),
+                    interp,
+                    update_valuation(interp, valuation, inverse),
+                ));
+                clause_holds_after_substitution(
+                    clause,
+                    renaming,
+                    interp,
+                    update_valuation(interp, valuation, inverse),
+                );
+                updated_valuation_composition_identity(
+                    interp,
+                    valuation,
+                    inverse,
+                    renaming,
+                );
+                assert(clause_holds(clause, interp, valuation));
+            }
+        }
+    }
 }
 
 proof fn universal_clause_instance(p: IMap<u64, bool>, instance: u64)
