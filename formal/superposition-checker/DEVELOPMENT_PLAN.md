@@ -388,8 +388,12 @@ Avoid relying on a parser that silently drops unsupported constructs.
   executable replay in the mathematical literal view. The specification
   `expected_superposition_conclusion` describes the selected source equality
   removal and rewritten target literal in order, but replay-to-specification is
-  not yet proved. Cumulative resource accounting and a direct local-soundness
-  theorem connection remain; it is not a certifying API yet.
+  not yet proved. The certificate checker rejects before path comparison when
+  the aggregate sizes of its parent literal vectors, freshening maps, unifier,
+  and raw/fresh paths exceed the work limit, and successful acceptance exposes
+  that bound as a postcondition. Repeated traversal and derived-replay work are
+  not cumulatively accounted; a direct local-soundness theorem connection also
+  remains, so this is not a certifying API yet.
 - **PARTIAL, proof connection:** the replay refuses target paths that differ
   before/after standardization, and a verified lemma states the selected term
   transforms by the same variable-only renaming. The full accepted-result to

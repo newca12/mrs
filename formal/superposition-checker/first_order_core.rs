@@ -4076,6 +4076,13 @@ spec fn expected_superposition_conclusion(
 fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_limit: usize)
     -> (accepted: bool)
     ensures accepted ==> certificate.target_path@ == certificate.fresh_target_path@
+        && accepted ==> certificate.source.literals.len()
+            + certificate.target.literals.len()
+            + certificate.source_freshening.len()
+            + certificate.target_freshening.len()
+            + certificate.unifier.len()
+            + certificate.target_path.len()
+            + certificate.fresh_target_path.len() <= work_limit
         && accepted ==> certificate.source_equality_index < certificate.source.literals.len()
         && accepted ==> certificate.target_literal_index < certificate.target.literals.len()
         && accepted ==> certificate.source.literals@[certificate.source_equality_index as int].positive
@@ -4127,14 +4134,26 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
             None => false,
         }
 {
-    if !same_u64_sequence(&certificate.target_path, &certificate.fresh_target_path) {
-        return false;
-    }
     if certificate.source.literals.len() > work_limit
         || certificate.target.literals.len() > work_limit - certificate.source.literals.len()
     {
         return false;
     }
+    let mut remaining_work = work_limit - certificate.source.literals.len()
+        - certificate.target.literals.len();
+    if certificate.source_freshening.len() > remaining_work { return false; }
+    remaining_work -= certificate.source_freshening.len();
+    if certificate.target_freshening.len() > remaining_work { return false; }
+    remaining_work -= certificate.target_freshening.len();
+    if certificate.unifier.len() > remaining_work { return false; }
+    remaining_work -= certificate.unifier.len();
+    if certificate.target_path.len() > remaining_work { return false; }
+    remaining_work -= certificate.target_path.len();
+    if certificate.fresh_target_path.len() > remaining_work { return false; }
+    if !same_u64_sequence(&certificate.target_path, &certificate.fresh_target_path) {
+        return false;
+    }
+
     if certificate.source_equality_index >= certificate.source.literals.len()
         || certificate.target_literal_index >= certificate.target.literals.len()
     {
