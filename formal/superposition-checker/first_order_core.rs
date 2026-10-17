@@ -867,6 +867,27 @@ spec fn substitute_clause(clause: Clause, sigma: Substitution) -> Clause {
     }
 }
 
+spec fn replace_clause_literal(
+    clause: Clause,
+    literal_index: int,
+    slot: nat,
+    position: TermPosition,
+    replacement: Term,
+) -> Option<Clause> {
+    if 0 <= literal_index < clause.literals.len() {
+        match replace_literal_at_position(
+            clause.literals[literal_index], slot, position, replacement,
+        ) {
+            Some(literal) => Some(Clause {
+                literals: clause.literals.update(literal_index, literal),
+            }),
+            None => None,
+        }
+    } else {
+        None
+    }
+}
+
 spec fn literal_holds(literal: Literal, interp: Interpretation, valuation: Valuation) -> bool {
     literal.positive == atom_holds(literal.atom, interp, valuation)
 }
@@ -1322,6 +1343,11 @@ pub struct ExecLiteral {
     atom: ExecAtom,
 }
 
+#[derive(PartialEq, Eq)]
+pub struct ExecClause {
+    literals: Vec<ExecLiteral>,
+}
+
 spec fn view(term: ExecTerm) -> Term
     decreases term
 {
@@ -1351,6 +1377,12 @@ spec fn view_atom(atom: ExecAtom) -> Atom
 
 spec fn view_literal(literal: ExecLiteral) -> Literal {
     Literal { positive: literal.positive, atom: view_atom(literal.atom) }
+}
+
+spec fn view_clause(clause: ExecClause) -> Clause {
+    Clause {
+        literals: clause.literals@.map(|_i: int, literal: ExecLiteral| view_literal(literal)),
+    }
 }
 
 spec fn view_exec_position(slot: u64, path: Seq<u64>) -> (nat, TermPosition) {
@@ -1488,6 +1520,166 @@ fn substitute_literal_exec(literal: &ExecLiteral, bindings: &Vec<ExecBinding>)
     ExecLiteral {
         positive: literal.positive,
         atom: substitute_atom_exec(&literal.atom, bindings),
+    }
+}
+
+fn substitute_clause_exec(clause: &ExecClause, bindings: &Vec<ExecBinding>)
+    -> (result: ExecClause)
+    ensures view_clause(result)
+        == substitute_clause(view_clause(*clause), view_subst(bindings@))
+{
+    let mut literals: Vec<ExecLiteral> = Vec::new();
+    let mut i: usize = 0;
+    while i < clause.literals.len()
+        invariant
+            i <= clause.literals.len(),
+            literals@.len() == i,
+            forall|j: int| 0 <= j < i as int
+                ==> view_literal(literals@[j])
+                    == substitute_literal(view_clause(*clause).literals[j], view_subst(bindings@)),
+        decreases clause.literals.len() - i
+    {
+        let literal = substitute_literal_exec(&clause.literals[i], bindings);
+        assert(view_literal(literal)
+            == substitute_literal(view_literal(clause.literals@[i as int]), view_subst(bindings@)));
+        literals.push(literal);
+        i += 1;
+    }
+    let result = ExecClause { literals };
+    assert(result.literals@.len() == clause.literals@.len());
+    assert forall|j: int| 0 <= j < result.literals@.len()
+        implies view_literal(result.literals@[j])
+            == substitute_literal(view_clause(*clause).literals[j], view_subst(bindings@)) by {
+        assert(result.literals@[j] == literals@[j]);
+    }
+    assert(view_clause(result).literals
+        == substitute_clause(view_clause(*clause), view_subst(bindings@)).literals);
+    result
+}
+
+fn replace_clause_literal_exec(
+    clause: &ExecClause,
+    literal_index: usize,
+    slot: u64,
+    path: &Vec<u64>,
+    replacement: &ExecTerm,
+) -> (result: Option<ExecClause>)
+    ensures match result {
+        Some(replaced) => replace_clause_literal(
+            view_clause(*clause), literal_index as int, slot as nat,
+            view_position(path@), view(*replacement),
+        ) == Some(view_clause(replaced)),
+        None => replace_clause_literal(
+            view_clause(*clause), literal_index as int, slot as nat,
+            view_position(path@), view(*replacement),
+        ) == None,
+    }
+{
+    if literal_index >= clause.literals.len() {
+        return None;
+    }
+    match replace_literal_position_exec(
+        &clause.literals[literal_index], slot, path, replacement,
+    ) {
+        None => None,
+        Some(rewritten) => {
+            let mut literals: Vec<ExecLiteral> = Vec::new();
+            let mut i: usize = 0;
+            while i < clause.literals.len()
+                invariant
+                    i <= clause.literals.len(),
+                    literals@.len() == i,
+                    literal_index < clause.literals.len(),
+                    forall|j: int| 0 <= j < i as int ==> if j == literal_index as int {
+                        view_literal(literals@[j]) == view_literal(rewritten)
+                    } else {
+                        view_literal(literals@[j]) == view_literal(clause.literals@[j])
+                    },
+                decreases clause.literals.len() - i
+            {
+                if i == literal_index {
+                    let copied = copy_literal(&rewritten);
+                    assert(view_literal(copied) == view_literal(rewritten));
+                    literals.push(copied);
+                } else {
+                    let copied = copy_literal(&clause.literals[i]);
+                    assert(view_literal(copied) == view_literal(clause.literals@[i as int]));
+                    literals.push(copied);
+                }
+                assert forall|j: int| 0 <= j < (i + 1) as int
+                    implies if j == literal_index as int {
+                        view_literal(literals@[j]) == view_literal(rewritten)
+                    } else {
+                        view_literal(literals@[j]) == view_literal(clause.literals@[j])
+                    } by {
+                    if j < i as int {
+                    } else if i == literal_index {
+                        assert(j == literal_index as int);
+                    } else {
+                        assert(j == i as int);
+                    }
+                }
+                i += 1;
+            }
+            let result = ExecClause { literals };
+            assert(result.literals@.len() == clause.literals@.len());
+            assert(view_clause(result).literals
+                == view_clause(*clause).literals.update(
+                    literal_index as int, view_literal(rewritten)));
+            Some(result)
+        },
+    }
+}
+
+fn executable_clause_replay_example()
+{
+    let clause = ExecClause {
+        literals: vec![
+            ExecLiteral {
+                positive: true,
+                atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Var(17))),
+            },
+            ExecLiteral {
+                positive: false,
+                atom: ExecAtom::Pred2(
+                    3,
+                    Box::new(ExecTerm::Const(5)),
+                    Box::new(ExecTerm::Var(17)),
+                ),
+            },
+        ],
+    };
+    let bindings = vec![ExecBinding { variable: 17, replacement: ExecTerm::Const(8) }];
+    let instance = substitute_clause_exec(&clause, &bindings);
+    assert(view_clause(instance)
+        == substitute_clause(view_clause(clause), view_subst(bindings@)));
+
+    let path = Vec::<u64>::new();
+    let replacement = ExecTerm::Const(11);
+    let rewritten = replace_clause_literal_exec(&instance, 1, 0, &path, &replacement);
+    assert(rewritten.is_some());
+
+    let invalid_index = replace_clause_literal_exec(&instance, 2, 0, &path, &replacement);
+    assert(invalid_index.is_none());
+}
+
+fn copy_literal(literal: &ExecLiteral) -> (copy: ExecLiteral)
+    ensures view_literal(copy) == view_literal(*literal)
+{
+    ExecLiteral { positive: literal.positive, atom: copy_atom(&literal.atom) }
+}
+
+fn copy_atom(atom: &ExecAtom) -> (copy: ExecAtom)
+    ensures view_atom(copy) == view_atom(*atom)
+    decreases atom
+{
+    match atom {
+        ExecAtom::Pred0(p) => ExecAtom::Pred0(*p),
+        ExecAtom::Pred1(p, arg) => ExecAtom::Pred1(*p, Box::new(copy_term(arg))),
+        ExecAtom::Pred2(p, left, right) => ExecAtom::Pred2(
+            *p, Box::new(copy_term(left)), Box::new(copy_term(right)),
+        ),
+        ExecAtom::Eq(left, right) => ExecAtom::Eq(copy_term(left), copy_term(right)),
     }
 }
 
@@ -1783,6 +1975,7 @@ proof fn variable_substitution_is_an_instance()
 fn main() {
     proof { variable_substitution_is_an_instance(); }
     executable_literal_replay_examples();
+    executable_clause_replay_example();
 
     // Supplied unifier certificate binding target-side variable 42 to
     // constant 9. Domain validity and simultaneous application are checked.
