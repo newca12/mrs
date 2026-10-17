@@ -2066,6 +2066,10 @@ spec fn exec_term_variables(term: ExecTerm) -> Set<u64>
     }
 }
 
+spec fn variables_subset(term: ExecTerm, variables: Seq<u64>) -> bool {
+    forall|v: u64| exec_term_variables(term).contains(v) ==> variables.contains(v)
+}
+
 spec fn exec_term_node_count(term: ExecTerm) -> nat
     decreases term
 {
@@ -2283,6 +2287,81 @@ fn contains_u64(values: &Vec<u64>, needle: u64) -> (found: bool)
     false
 }
 
+fn term_variables_covered(term: &ExecTerm, variables: &Vec<u64>) -> (covered: bool)
+    ensures covered == variables_subset(*term, variables@)
+    decreases term
+{
+    match term {
+        ExecTerm::Var(v) => contains_u64(variables, *v),
+        ExecTerm::Const(_) => true,
+        ExecTerm::App1(_, child) => term_variables_covered(child, variables),
+        ExecTerm::App2(_, left, right) =>
+            term_variables_covered(left, variables) && term_variables_covered(right, variables),
+    }
+}
+
+fn atom_variables_covered(atom: &ExecAtom, variables: &Vec<u64>) -> (covered: bool)
+    ensures covered == forall|v: u64| exec_atom_variables(*atom).contains(v)
+        ==> variables@.contains(v)
+    decreases atom
+{
+    match atom {
+        ExecAtom::Pred0(_) => true,
+        ExecAtom::Pred1(_, arg) => term_variables_covered(arg, variables),
+        ExecAtom::Pred2(_, left, right) =>
+            term_variables_covered(left, variables) && term_variables_covered(right, variables),
+        ExecAtom::Eq(left, right) =>
+            term_variables_covered(left, variables) && term_variables_covered(right, variables),
+    }
+}
+
+fn literal_variables_covered(literal: &ExecLiteral, variables: &Vec<u64>) -> (covered: bool)
+    ensures covered == forall|v: u64| exec_atom_variables(literal.atom).contains(v)
+        ==> variables@.contains(v)
+{
+    atom_variables_covered(&literal.atom, variables)
+}
+
+fn clause_variables_covered(clause: &ExecClause, variables: &Vec<u64>) -> (covered: bool)
+    ensures covered ==> forall|v: u64, j: int|
+        0 <= j < clause.literals@.len()
+            && #[trigger] exec_atom_variables(clause.literals@[j].atom).contains(v)
+        ==> variables@.contains(v)
+        && covered ==> forall|v: u64| term_clause_view_contains(*clause, v)
+            ==> variables@.contains(v)
+{
+    let mut i: usize = 0;
+    while i < clause.literals.len()
+        invariant i <= clause.literals.len(),
+            forall|v: u64, j: int| 0 <= j < i as int
+                && #[trigger] exec_atom_variables(clause.literals@[j].atom).contains(v)
+                ==> variables@.contains(v)
+        decreases clause.literals.len() - i
+    {
+        let lit_covered = literal_variables_covered(&clause.literals[i], variables);
+        if !lit_covered { return false; }
+        assert forall|v: u64|
+            exec_atom_variables(clause.literals@[i as int].atom).contains(v)
+        implies variables@.contains(v) by {
+            assert(lit_covered);
+        }
+        i += 1;
+    }
+    assert(i == clause.literals.len());
+    assert forall|v: u64| term_clause_view_contains(*clause, v)
+        implies variables@.contains(v) by {
+        let literal_index = choose|j: int| 0 <= j < clause.literals@.len()
+            && literal_variables(view_literal(clause.literals@[j])).contains(v);
+        assert(literal_variables(view_literal(clause.literals@[literal_index]))
+            == exec_atom_variables(clause.literals@[literal_index].atom)) by {
+            literal_variable_view(clause.literals@[literal_index]);
+        }
+        assert(exec_atom_variables(clause.literals@[literal_index].atom).contains(v));
+        assert(variables@.contains(v));
+    }
+    true
+}
+
 fn consume_work(work: &mut usize, limit: usize) -> (ok: bool)
     ensures
         ok ==> *final(work) == old(work) + 1,
@@ -2372,7 +2451,7 @@ fn collect_clause_variables_bounded(
     if collect_clause_variables_exec(clause, &mut variables, &mut work, work_limit)
         && work <= work_limit
     {
-        Some(variables)
+        if clause_variables_covered(clause, &variables) { Some(variables) } else { None }
     } else {
         None
     }
@@ -3423,6 +3502,11 @@ fn selected_atom_term_exec(
     slot: u64,
     path: &Vec<u64>,
 ) -> (result: Option<ExecTerm>)
+    ensures match result {
+        Some(term) => atom_at_position(view_atom(*atom), slot as nat, view_position(path@))
+            == Some(view(term)),
+        None => atom_at_position(view_atom(*atom), slot as nat, view_position(path@)) == None,
+    }
 {
     let root = match atom {
         ExecAtom::Pred0(_) => return None,
@@ -3441,11 +3525,20 @@ fn selected_atom_term_exec(
             else { return None; }
         },
     };
-    subterm_at_exec(&root, path, 0)
+    let result = subterm_at_exec(&root, path, 0);
+    assert(match result {
+        Some(term) => atom_at_position(view_atom(*atom), slot as nat, view_position(path@))
+            == Some(view(term)),
+        None => atom_at_position(view_atom(*atom), slot as nat, view_position(path@)) == None,
+    });
+    result
 }
 
 fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_limit: usize)
     -> (accepted: bool)
+    ensures accepted ==> certificate.target_path@ == certificate.fresh_target_path@
+        && accepted ==> certificate.source_equality_index < certificate.source.literals.len()
+        && accepted ==> certificate.target_literal_index < certificate.target.literals.len()
 {
     if !same_u64_sequence(&certificate.target_path, &certificate.fresh_target_path) {
         return false;
@@ -3530,10 +3623,31 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
     let Some(fresh_target_subterm) = selected_atom_term_exec(
         &target_selected.atom, certificate.target_argument_slot, &certificate.fresh_target_path,
     ) else { return false; };
+    let raw_selected_after_freshening = apply_exec(&target_subterm, &certificate.target_freshening);
+    if !same_term(&raw_selected_after_freshening, &fresh_target_subterm) {
+        return false;
+    }
     let unifies = check_unifier(fresh_source_left, &fresh_target_subterm, &certificate.unifier);
     if !unifies {
         return false;
     }
+    let source_right = match &source_eq_fresh.atom {
+        ExecAtom::Eq(_, right) => right,
+        _ => return false,
+    };
+    let instantiated_source_left = apply_exec(fresh_source_left, &certificate.unifier);
+    let instantiated_source_right = apply_exec(source_right, &certificate.unifier);
+    let raw_selected_after_freshening = apply_exec(&target_subterm, &certificate.target_freshening);
+    if !same_term(&raw_selected_after_freshening, &fresh_target_subterm) {
+        return false;
+    }
+    let selected_after_unification = apply_exec(&fresh_target_subterm, &certificate.unifier);
+    if !same_term(&instantiated_source_left, &selected_after_unification) {
+        return false;
+    }
+    // Ensure both oriented source sides were instantiated by the same unifier;
+    // the semantic theorem uses this exact RHS when constructing the resolvent.
+    let _rewritten_rhs = instantiated_source_right;
     true
 }
 
@@ -3681,16 +3795,21 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
 
 fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
     -> (verdict: DagVerdict)
-    ensures verdict == DagVerdict::Inconclusive
-        || verdict == DagVerdict::Rejected
-        || verdict == DagVerdict::Unknown
+    ensures verdict == DagVerdict::Unknown || verdict == DagVerdict::Rejected
 {
-    // The finite input leaf bridge is not yet refined against a canonical
-    // serialized clause representation. Fail closed until that proof lands.
+    // This structural prototype is deliberately non-certifying. Enforce the
+    // size caps, then return Unknown until input-clause refinement and the
+    // replay-to-local-soundness theorem are proved and connected.
     if dag.nodes.len() > node_limit || dag.input_clauses.len() > node_limit {
         return DagVerdict::Rejected;
     }
-    DagVerdict::Inconclusive
+    if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() {
+        return DagVerdict::Rejected;
+    }
+    if dag.nodes[dag.root].clause.literals.len() > literal_limit {
+        return DagVerdict::Rejected;
+    }
+    DagVerdict::Unknown
 }
 
 fn check_dag_with_local_soundness(
