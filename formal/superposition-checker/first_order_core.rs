@@ -3049,6 +3049,53 @@ fn executable_clause_replay_example()
     assert(invalid_index.is_none());
 }
 
+/// Positive and negative examples for the supplied finite-unifier checker.
+/// Substitutions have simultaneous, one-step RHS semantics; cyclic RHS terms
+/// are permitted as substitutions, but are accepted only when that one-step
+/// application makes the selected terms equal. The checker does not compute
+/// MGUs and does not impose a separate occurs-check completeness policy.
+fn executable_unifier_certificate_examples()
+{
+    let left = ExecTerm::Var(11);
+    let right = ExecTerm::Const(7);
+    let valid = vec![ExecBinding { variable: 11, replacement: ExecTerm::Const(7) }];
+    let valid_result = check_unifier(&left, &right, &valid);
+    assert(domain_unique(view_subst(valid@)));
+    assert(lookup(view_subst(valid@), 11) == Some(Term::Const(7)));
+    assert(valid_result);
+
+    let wrong_instance = vec![ExecBinding {
+        variable: 11, replacement: ExecTerm::Const(8),
+    }];
+    let wrong_instance_result = check_unifier(&left, &right, &wrong_instance);
+    assert(domain_unique(view_subst(wrong_instance@)));
+    assert(lookup(view_subst(wrong_instance@), 11) == Some(Term::Const(8)));
+    assert(!wrong_instance_result);
+
+    let wrong_shape = ExecTerm::App1(4, Box::new(ExecTerm::Const(7)));
+    let wrong_shape_result = check_unifier(&left, &wrong_shape, &valid);
+    assert(!wrong_shape_result);
+
+    let duplicate_domain = vec![
+        ExecBinding { variable: 11, replacement: ExecTerm::Const(7) },
+        ExecBinding { variable: 11, replacement: ExecTerm::Const(8) },
+    ];
+    let duplicate_domain_result = check_unifier(&left, &right, &duplicate_domain);
+    assert(duplicate_domain[0].variable == duplicate_domain[1].variable);
+    assert(!duplicate_domain_result);
+
+    let cyclic = vec![ExecBinding {
+        variable: 11,
+        replacement: ExecTerm::App1(5, Box::new(ExecTerm::Var(11))),
+    }];
+    let cycle_left = ExecTerm::Var(11);
+    let cycle_right = ExecTerm::Var(11);
+    assert(apply(view(cycle_left), view_subst(cyclic@))
+        == apply(view(cycle_right), view_subst(cyclic@)));
+    let cyclic_result = check_unifier(&cycle_left, &cycle_right, &cyclic);
+    assert(cyclic_result);
+}
+
 fn executable_standardization_apart_example()
 {
     let left = ExecClause {

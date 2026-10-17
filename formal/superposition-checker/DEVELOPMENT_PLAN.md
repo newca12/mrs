@@ -349,9 +349,11 @@ Avoid relying on a parser that silently drops unsupported constructs.
   clause permutation and alpha-equivalence normalization are unsupported rather
   than silently assumed.
 - **PARTIAL:** the proposed unifier checker and executable term/literal/clause path operations
-  are refined; still exercise positive/negative unifier certificates with
-  verified evidence, characterize the checker's negative result, specify
-  occurs-check/one-step substitution policy, lift path replay to
+  are refined. Verified examples now cover a successful substitution, a wrong
+  instance, a symbol-shape mismatch, a duplicate domain, and a cyclic RHS under
+  the documented simultaneous one-step semantics. The checker validates a
+  supplied substitution rather than computing an MGU; characterize the negative
+  result further, lift path replay to
   the entire inference certificate, and implement standardization-apart.
 
 **Deliverables**
@@ -690,8 +692,12 @@ satisfiability/model claims, and unrestricted full TSTP.
   bidirectional variable-renaming validity are now verified).
 - [x] Add a proposed finite-unifier checker that requires a duplicate-free
   domain and equal terms after simultaneous substitution (M2 initial slice).
-- [ ] Exercise positive/negative unifier certificates; finish constructor-wide
-  executable/model refinement, occurs-check, positions, replacement, and
+- [x] Exercise positive/negative unifier certificates, including duplicate
+  domains, wrong instances, and cyclic RHS terms under the explicit one-step
+  policy. This is evidence for the supplied-substitution checker, not MGU
+  computation or an occurs-check theorem.
+- [ ] Finish constructor-wide executable/model refinement, occurs-check policy,
+  positions, replacement, and
   standardization-apart before widening the checker (M2).
 - [x] Specify and prove recursive term substitution/evaluation and lift it to
   atom/literal/clause preservation under total interpretation/valuation domains
