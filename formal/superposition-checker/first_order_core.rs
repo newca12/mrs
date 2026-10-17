@@ -1351,6 +1351,8 @@ pub struct ExecClause {
 pub struct SuperpositionCertificate {
     source: ExecClause,
     target: ExecClause,
+    source_freshening: Vec<ExecBinding>,
+    target_freshening: Vec<ExecBinding>,
     source_equality_index: usize,
     target_literal_index: usize,
     target_argument_slot: u64,
@@ -2144,6 +2146,14 @@ fn executable_superposition_certificate_example()
     let certificate = SuperpositionCertificate {
         source,
         target,
+        source_freshening: vec![ExecBinding {
+            variable: 0,
+            replacement: ExecTerm::Var(0),
+        }],
+        target_freshening: vec![ExecBinding {
+            variable: 0,
+            replacement: ExecTerm::Var(0),
+        }],
         source_equality_index: 0,
         target_literal_index: 0,
         target_argument_slot: 0,
@@ -2496,15 +2506,84 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
     let ExecAtom::Eq(source_left, source_right) = &source_literal.atom else { return false; };
     if let ExecTerm::Var(_) = source_left { return false; }
 
+    let left_variables = match collect_clause_variables_bounded(&certificate.source, work_limit) {
+        Some(vars) => vars,
+        None => return false,
+    };
+    let right_variables = match collect_clause_variables_bounded(&certificate.target, work_limit) {
+        Some(vars) => vars,
+        None => return false,
+    };
+    if !check_freshening(
+        &left_variables, &right_variables, &certificate.source_freshening, work_limit,
+    ) {
+        return false;
+    }
+    let fresh_source = match freshen_clause_apart(
+        &certificate.source, &right_variables, &certificate.source_freshening, work_limit,
+    ) {
+        Some(clause) => clause,
+        None => return false,
+    };
+    let fresh_source_variables = match collect_clause_variables_bounded(&fresh_source, work_limit) {
+        Some(vars) => vars,
+        None => return false,
+    };
+    let mut avoid_target: Vec<u64> = Vec::new();
+    if !extend_unique(&mut avoid_target, &right_variables, work_limit)
+        || !extend_unique(&mut avoid_target, &fresh_source_variables, work_limit)
+    {
+        return false;
+    }
+    if !check_freshening(
+        &right_variables, &avoid_target, &certificate.target_freshening, work_limit,
+    ) {
+        return false;
+    }
+    let fresh_target = match freshen_clause_apart(
+        &certificate.target, &avoid_target, &certificate.target_freshening, work_limit,
+    ) {
+        Some(clause) => clause,
+        None => return false,
+    };
+    if certificate.source_equality_index >= fresh_source.literals.len()
+        || certificate.target_literal_index >= fresh_target.literals.len()
+    {
+        return false;
+    }
+
     let target_subterm_result = selected_atom_term_exec(
         &certificate.target.literals[certificate.target_literal_index].atom,
         certificate.target_argument_slot,
         &certificate.target_path,
     );
     let Some(target_subterm) = target_subterm_result else { return false; };
-    let unifies = check_unifier(source_left, &target_subterm, &certificate.unifier);
+    let source_eq_fresh = &fresh_source.literals[certificate.source_equality_index];
+    let ExecAtom::Eq(fresh_source_left, _) = &source_eq_fresh.atom else { return false; };
+    let target_selected = &fresh_target.literals[certificate.target_literal_index];
+    let Some(fresh_target_subterm) = selected_atom_term_exec(
+        &target_selected.atom, certificate.target_argument_slot, &certificate.target_path,
+    ) else { return false; };
+    let unifies = check_unifier(fresh_source_left, &fresh_target_subterm, &certificate.unifier);
     if !unifies {
         return false;
+    }
+    true
+}
+
+fn extend_unique(destination: &mut Vec<u64>, source: &Vec<u64>, work_limit: usize) -> (ok: bool)
+{
+    let mut i: usize = 0;
+    while i < source.len()
+        invariant i <= source.len()
+        decreases source.len() - i
+    {
+        if destination.len() >= work_limit { return false; }
+        let value = source[i];
+        if !contains_u64(destination, value) {
+            destination.push(value);
+        }
+        i += 1;
     }
     true
 }
@@ -2520,12 +2599,26 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
     {
         return false;
     }
-    let instantiated_source = substitute_clause_exec(
-        &certificate.source, &certificate.unifier,
-    );
-    let instantiated_target = substitute_clause_exec(
-        &certificate.target, &certificate.unifier,
-    );
+    let Some(target_variables) = collect_clause_variables_bounded(&certificate.target, work_limit) else {
+        return false;
+    };
+    let Some(fresh_source) = freshen_clause_apart(
+        &certificate.source, &target_variables, &certificate.source_freshening, work_limit,
+    ) else { return false; };
+    let Some(fresh_source_variables) = collect_clause_variables_bounded(&fresh_source, work_limit) else {
+        return false;
+    };
+    let mut target_avoid = Vec::new();
+    if !extend_unique(&mut target_avoid, &target_variables, work_limit)
+        || !extend_unique(&mut target_avoid, &fresh_source_variables, work_limit)
+    {
+        return false;
+    }
+    let Some(fresh_target) = freshen_clause_apart(
+        &certificate.target, &target_avoid, &certificate.target_freshening, work_limit,
+    ) else { return false; };
+    let instantiated_source = substitute_clause_exec(&fresh_source, &certificate.unifier);
+    let instantiated_target = substitute_clause_exec(&fresh_target, &certificate.unifier);
     if certificate.source_equality_index >= instantiated_source.literals.len()
         || certificate.target_literal_index >= instantiated_target.literals.len()
     {
@@ -2534,7 +2627,7 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
 
     let source_literal = &instantiated_source.literals[certificate.source_equality_index];
     let ExecAtom::Eq(_, source_right) = &source_literal.atom else { return false; };
-    let Some(rewritten) = replace_clause_literal_exec(
+    let Some(rewritten_target) = replace_clause_literal_exec(
         &instantiated_target,
         certificate.target_literal_index,
         certificate.target_argument_slot,
@@ -2542,18 +2635,38 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
         source_right,
     ) else { return false; };
 
+    let mut conclusion_literals = Vec::new();
+    let mut source_index: usize = 0;
+    while source_index < instantiated_source.literals.len()
+        invariant source_index <= instantiated_source.literals.len()
+        decreases instantiated_source.literals.len() - source_index
+    {
+        if source_index != certificate.source_equality_index {
+            conclusion_literals.push(copy_literal(&instantiated_source.literals[source_index]));
+        }
+        source_index += 1;
+    }
+    let mut target_index: usize = 0;
+    while target_index < rewritten_target.literals.len()
+        invariant target_index <= rewritten_target.literals.len()
+        decreases rewritten_target.literals.len() - target_index
+    {
+        conclusion_literals.push(copy_literal(&rewritten_target.literals[target_index]));
+        target_index += 1;
+    }
+    let replayed_conclusion = ExecClause { literals: conclusion_literals };
     let conclusion = &certificate.conclusion;
-    if rewritten.literals.len() != conclusion.literals.len() {
+    if replayed_conclusion.literals.len() != conclusion.literals.len() {
         return false;
     }
     let mut i: usize = 0;
-    while i < rewritten.literals.len()
+    while i < replayed_conclusion.literals.len()
         invariant
-            i <= rewritten.literals.len(),
-            rewritten.literals.len() == conclusion.literals.len(),
-        decreases rewritten.literals.len() - i
+            i <= replayed_conclusion.literals.len(),
+            replayed_conclusion.literals.len() == conclusion.literals.len(),
+        decreases replayed_conclusion.literals.len() - i
     {
-        if rewritten.literals[i] != conclusion.literals[i] {
+        if replayed_conclusion.literals[i] != conclusion.literals[i] {
             return false;
         }
         i += 1;

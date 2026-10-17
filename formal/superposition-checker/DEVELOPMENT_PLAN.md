@@ -15,7 +15,7 @@ the item itself is explicitly marked `ABANDONED`.
 | M0 — Verus baseline and environment | **PARTIAL** | Verus/Rust versions and Linux x86_64 SHA-256 are pinned; `verify.sh` and regular CI run all formal files. Still needs a clean-checkout run and explicit audit for unchecked assumptions/ignored proof obligations. |
 | M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` has recursive terms, total interpretation/valuation well-formedness, substitution preservation, bidirectional variable-renaming validity, and a universally quantified clause-level entailment lemma for position-specific superposition. The executable checker is not yet connected to the theorem's standardized-parent/unifier premises or selected calculus contract. |
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. Bounded variable collection and executable freshening/disjointness checks exist. A complete proof-producing freshening guarantee, principled cumulative resource accounting, and adversarial unifier diagnostics remain open. |
-| M3 — Superposition checker | **PARTIAL** | Ground and fixed-schema checkers remain verified; a general certificate IR/checker now checks positive source equality, non-variable source side, target path, supplied unifier, simultaneous parent substitution, replayed replacement and exact ordered conclusion equality. Its soundness theorem is not yet connected to all checker premises, and alpha/permutation equivalence and c502 remain. |
+| M3 — Superposition checker | **PARTIAL** | Ground and fixed-schema checkers remain verified; the general replay API now takes explicit freshening maps for both parents, checks variable-image injectivity/disjointness, validates a supplied unifier at the freshened selected terms, applies it to both full clauses, removes the selected equality, rewrites the target occurrence, and compares the exact binary resolvent. It remains a specification prototype: freshening correctness/resource accounting is not yet fully refined, its acceptance is not tied to the universal soundness theorem, and clause-equivalence support and c502 analysis remain. |
 | M4 — Proof-DAG validation | **TODO** | No proof graph, parent closure, rule dispatcher, or empty-clause refutation checker. |
 | M5 — MRS integration | **TODO** | The Verus executable is not called by `mrs-proof-kernel`; no interchange format or production adapter exists. |
 | M6 — Broader rules | **TODO** | Resolution, AC, demodulation, transformations, and AVATAR/LRAT are not implemented in the Verus checker. |
@@ -311,6 +311,13 @@ Avoid relying on a parser that silently drops unsupported constructs.
   exist. They reject absent/non-variable mappings, mapped IDs in the avoid set,
   non-injective images, and explicit work exhaustion. Complete their refinement
   and semantic-preservation proofs and broaden adversarial certificate cases.
+- **DONE, executable slice:** the step-certificate IR requires independent
+  source/target variable maps. The checker validates maps against variable sets,
+  prevents image collisions, checks a supplied unifier after freshening, applies
+  that unifier to both parents, replays the selected target slot/path, forms the
+  binary resolvent (source context plus rewritten target clause), and compares
+  its ordered literal sequence to the certificate conclusion. Exact rule
+  side-conditions and theorem connection are still part of M3.
 - **PARTIAL:** the proposed unifier checker and executable term/literal/clause path operations
   are refined; still exercise positive/negative unifier certificates with
   verified evidence, characterize the checker's negative result, specify
