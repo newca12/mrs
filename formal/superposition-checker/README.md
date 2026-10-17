@@ -29,6 +29,12 @@ required Rust toolchain, and stores Verus under
 `RUSTUP_HOME` and `CARGO_HOME` under the user cache; override them if needed.
 Set `VERUS=/path/to/verus` to verify with an already installed binary.
 
+The verification script also runs `audit-verus-source.py`; it fails closed if
+formal Rust sources contain `assume`, `admit`, `external_body`, or verifier
+allow attributes. See [`ASSURANCE.md`](ASSURANCE.md) and
+[`supported-rules.json`](supported-rules.json) for the current trust boundary
+and machine-readable supported-slice declaration.
+
 The checks were verified against the Verus `0.2026.10.04.426d8b0` Linux x86_64
 release with Rust toolchain `1.98.1`; Verus uses its bundled Z3. Results:
 `5 verified, 0 errors` for the original pilot, `19 verified, 0 errors` for

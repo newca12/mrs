@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "checker_status": "prototype_non_certifying",
+  "rules": [
+    {
+      "id": "ground-unit-positive-equality-unary-predicate-whole-argument",
+      "module": "superposition_checker.rs",
+      "status": "verified_executable_slice",
+      "description": "Positive ground unit equality rewrites the whole argument of a positive unary-predicate unit clause.",
+      "production_certification": false
+    },
+    {
+      "id": "fixed-variable-two-literal-schema",
+      "module": "variable_superposition.rs",
+      "status": "verified_fixed_schema",
+      "description": "The fixed f(a)=b, q(X) | p(f(X)) schema, with whole-target substitution.",
+      "production_certification": false
+    },
+    {
+      "id": "general-standardized-apart-superposition-semantics",
+      "module": "first_order_core.rs",
+      "status": "verified_semantic_theorem_prototype",
+      "description": "Universally closed clause soundness for independent parent freshening, common unifier substitution, and explicit target position; executable acceptance is not yet proved to discharge all theorem premises.",
+      "production_certification": false
+    },
+    {
+      "id": "proof-dag-refutation",
+      "module": "first_order_core.rs",
+      "status": "inconclusive_structural_prototype",
+      "description": "A conditional semantic DAG theorem exists. The structural entry point returns Inconclusive for in-budget inputs and cannot certify.",
+      "production_certification": false
+    }
+  ],
+  "limits": {
+    "term_constructors": ["variable", "constant", "unary_function", "binary_function"],
+    "atom_constructors": ["predicate_arity_0", "predicate_arity_1", "predicate_arity_2", "equality"],
+    "variable_arity_functions": false,
+    "general_clause_replay": false,
+    "ordered_calculus_conditions": false,
+    "ac_reasoning": false,
+    "tstp_parser": false,
+    "proof_dag_certification": false,
+    "mrs_integration": false,
+    "c502_verdict": "not_yet_analyzed_by_verified_checker"
+  }
+}
