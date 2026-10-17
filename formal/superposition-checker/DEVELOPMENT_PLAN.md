@@ -313,12 +313,13 @@ Avoid relying on a parser that silently drops unsupported constructs.
 - **DONE:** implement executable term path lookup/replacement and verify their
   results refine the mathematical path operations; malformed child indices and
   paths continuing below leaves fail with `None`.
-- **PARTIAL, semantic bridge:** a specification lemma states that
-  variable-only substitution preserves selected argument-slot/path traversal.
-  The checker requires the raw and freshened path sequences to be identical.
-  The universal lemma and its executable freshening preconditions still need a
-  reviewed end-to-end proof; do not count the fixed-schema demonstration as the
-  general checker theorem.
+- **PARTIAL, semantic bridge:** the general selected-position renaming lemma
+  now accepts a variable-only-on-the-clause-variables premise and proves that
+  the selected argument-slot/path traversal commutes with substitution. An
+  explicit wrapper packages this as the executable freshening position lemma.
+  The checker requires raw and freshened path sequences to be identical, but
+  the executable certificate has not yet been proved to supply all lemma
+  premises end to end; this is not the general checker theorem.
 - **DONE:** add executable atom/literal views, refine whole-literal simultaneous
   substitution, and refine selected argument-slot/path replacement. A regression
   exercises a literal with a non-selected argument and rejects an invalid slot.

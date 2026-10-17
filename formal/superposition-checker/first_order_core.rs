@@ -748,6 +748,26 @@ proof fn renaming_preserves_selected_position(
     }
 }
 
+proof fn executable_freshening_preserves_selected_position(
+    literal: Literal,
+    sigma: Substitution,
+    variables: Set<u64>,
+    slot: nat,
+    position: TermPosition,
+)
+    requires
+        renaming_substitution(sigma),
+        renames_variables_on(sigma, variables),
+        forall|v: u64| literal_variables(literal).contains(v) ==> variables.contains(v),
+    ensures match literal_at_position(literal, slot, position) {
+        Some(term) => literal_at_position(substitute_literal(literal, sigma), slot, position)
+            == Some(apply(term, sigma)),
+        None => literal_at_position(substitute_literal(literal, sigma), slot, position) == None,
+    }
+{
+    renaming_preserves_selected_position(literal, sigma, slot, position, variables);
+}
+
 proof fn term_position_substitution(
     term: Term,
     sigma: Substitution,
@@ -2599,6 +2619,7 @@ fn check_freshening(
     work_limit: usize,
 ) -> (valid: bool)
     ensures valid ==> freshening_sequence_valid(original@, avoid@, view_subst(bindings@))
+        && valid ==> freshening_images_are_variable(bindings@, original@)
 {
     if !check_domain_unique(bindings) {
         return false;
