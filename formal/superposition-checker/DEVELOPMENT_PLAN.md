@@ -314,7 +314,9 @@ Avoid relying on a parser that silently drops unsupported constructs.
   target selected terms are equal after the supplied unifier, that the selected
   target position exists, that the target freshening is applied to that raw
   selected term, and that the selected source literal is a positive equality
-  with a non-variable left side. Connecting these replay facts into the
+  with a non-variable left side. The accepted selected-term equation is exposed
+  under explicit semantic aliases for the freshened source equality side and
+  the target term at the raw selected path. Connecting those facts into the
   semantic superposition theorem call remains open.
 - **DONE:** define path-based term lookup/replacement, argument-slot literal
   lookup/replacement, and prove evaluation/truth preservation at a selected

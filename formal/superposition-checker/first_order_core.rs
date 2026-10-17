@@ -3845,6 +3845,45 @@ spec fn selected_source_left_after_freshening(certificate: SuperpositionCertific
     apply(selected_source_left(certificate), view_subst(certificate.unifier@))
 }
 
+spec fn certificate_selected_source_left(certificate: SuperpositionCertificate) -> Term {
+    match certificate.source.literals@[certificate.source_equality_index as int].atom {
+        ExecAtom::Eq(left, _) => apply(
+            apply(view(left), view_subst(certificate.source_freshening@)),
+            view_subst(certificate.unifier@),
+        ),
+        _ => Term::Var(0),
+    }
+}
+
+spec fn certificate_selected_source_right(certificate: SuperpositionCertificate) -> Term {
+    match certificate.source.literals@[certificate.source_equality_index as int].atom {
+        ExecAtom::Eq(_, right) => apply(
+            apply(view(right), view_subst(certificate.source_freshening@)),
+            view_subst(certificate.unifier@),
+        ),
+        _ => Term::Var(0),
+    }
+}
+
+spec fn certificate_selected_target_raw_term(certificate: SuperpositionCertificate) -> Option<Term> {
+    atom_at_position(
+        view_atom(certificate.target.literals@[certificate.target_literal_index as int].atom),
+        certificate.target_argument_slot as nat,
+        view_position(certificate.target_path@),
+    )
+}
+
+spec fn certificate_selected_target_fresh_term(certificate: SuperpositionCertificate) -> Option<Term> {
+    match atom_at_position(
+        view_atom(certificate.target.literals@[certificate.target_literal_index as int].atom),
+        certificate.target_argument_slot as nat,
+        view_position(certificate.target_path@),
+    ) {
+        Some(term) => Some(apply(term, view_subst(certificate.target_freshening@))),
+        None => None,
+    }
+}
+
 spec fn selected_source_right(certificate: SuperpositionCertificate) -> Term {
     match certificate.source.literals@[certificate.source_equality_index as int].atom {
         ExecAtom::Eq(_, right) => view(right),
@@ -3919,6 +3958,11 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
         && accepted ==> forall|v: u64| term_clause_view_contains(certificate.target, v)
             ==> exists|fresh: u64| lookup(view_subst(certificate.target_freshening@), v)
                 == Some(Term::Var(fresh))
+        && accepted ==> certificate_selected_source_left(*certificate)
+            == certificate_selected_target_fresh_term(*certificate).unwrap()
+        && accepted ==> selected_rewrite_rhs(*certificate)
+            == apply(apply(certificate_selected_source_right(*certificate),
+                view_subst(certificate.source_freshening@)), view_subst(certificate.unifier@))
         && accepted ==> selected_source_left_after_freshening(*certificate)
             == selected_target_subterm_after_freshening(*certificate)
         && accepted ==> selected_rewrite_rhs(*certificate)
