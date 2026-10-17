@@ -10,6 +10,12 @@ pub enum Term {
     App2(u64, Box<Term>, Box<Term>),
 }
 
+/// A term-tree position is a sequence of child indices. Unary applications
+/// have child 0; binary applications have children 0 (left) and 1 (right).
+pub struct TermPosition {
+    path: Seq<nat>,
+}
+
 pub enum Atom {
     Pred0(u64),
     Pred1(u64, Box<Term>),
@@ -152,6 +158,137 @@ spec fn replace_term(term: Term, needle: Term, replacement: Term) -> (Term, bool
                     let (right2, changed_right) = replace_term(*right, needle, replacement);
                     (Term::App2(f, left, Box::new(right2)), changed_right)
                 }
+            },
+        }
+    }
+}
+
+spec fn term_at_position(term: Term, position: TermPosition, depth: nat) -> Option<Term>
+    recommends depth <= position.path.len()
+    decreases term
+{
+    if depth == position.path.len() {
+        Some(term)
+    } else {
+        match term {
+            Term::Var(_) | Term::Const(_) => None,
+            Term::App1(_, child) => {
+                if position.path[depth as int] == 0 {
+                    term_at_position(*child, position, depth + 1)
+                } else {
+                    None
+                }
+            },
+            Term::App2(_, left, right) => {
+                if position.path[depth as int] == 0 {
+                    term_at_position(*left, position, depth + 1)
+                } else if position.path[depth as int] == 1 {
+                    term_at_position(*right, position, depth + 1)
+                } else {
+                    None
+                }
+            },
+        }
+    }
+}
+
+spec fn replace_at_position(
+    term: Term,
+    position: TermPosition,
+    replacement: Term,
+    depth: nat,
+) -> Option<Term>
+    recommends depth <= position.path.len()
+    decreases term
+{
+    if depth == position.path.len() {
+        Some(replacement)
+    } else {
+        match term {
+            Term::Var(_) | Term::Const(_) => None,
+            Term::App1(f, child) => {
+                if position.path[depth as int] == 0 {
+                    match replace_at_position(*child, position, replacement, depth + 1) {
+                        Some(child2) => Some(Term::App1(f, Box::new(child2))),
+                        None => None,
+                    }
+                } else {
+                    None
+                }
+            },
+            Term::App2(f, left, right) => {
+                if position.path[depth as int] == 0 {
+                    match replace_at_position(*left, position, replacement, depth + 1) {
+                        Some(left2) => Some(Term::App2(f, Box::new(left2), right)),
+                        None => None,
+                    }
+                } else if position.path[depth as int] == 1 {
+                    match replace_at_position(*right, position, replacement, depth + 1) {
+                        Some(right2) => Some(Term::App2(f, left, Box::new(right2))),
+                        None => None,
+                    }
+                } else {
+                    None
+                }
+            },
+        }
+    }
+}
+
+proof fn position_replacement_preserves_evaluation(
+    term: Term,
+    position: TermPosition,
+    replacement: Term,
+    interp: Interpretation,
+    valuation: Valuation,
+    depth: nat,
+)
+    requires
+        interp.functions.is_full(),
+        depth <= position.path.len(),
+        term_at_position(term, position, depth).is_some(),
+        match term_at_position(term, position, depth) {
+            Some(found) => eval(found, interp, valuation) == eval(replacement, interp, valuation),
+            None => false,
+        },
+    ensures
+        replace_at_position(term, position, replacement, depth).is_some(),
+        match replace_at_position(term, position, replacement, depth) {
+            Some(replaced) => eval(replaced, interp, valuation) == eval(term, interp, valuation),
+            None => false,
+        }
+    decreases term
+{
+    if depth == position.path.len() {
+        assert(term_at_position(term, position, depth) == Some(term));
+        assert(replace_at_position(term, position, replacement, depth) == Some(replacement));
+    } else {
+        match term {
+            Term::Var(_) | Term::Const(_) => {
+                assert(term_at_position(term, position, depth) == None);
+            },
+            Term::App1(f, child) => {
+                assert(position.path[depth as int] == 0);
+                position_replacement_preserves_evaluation(
+                    *child, position, replacement, interp, valuation, depth + 1,
+                );
+                assert(replace_at_position(term, position, replacement, depth).is_some());
+                assert(interp.functions.is_full());
+            },
+            Term::App2(f, left, right) => {
+                if position.path[depth as int] == 0 {
+                    position_replacement_preserves_evaluation(
+                        *left, position, replacement, interp, valuation, depth + 1,
+                    );
+                    assert(replace_at_position(term, position, replacement, depth).is_some());
+                } else {
+                    assert(position.path[depth as int] == 1);
+                    position_replacement_preserves_evaluation(
+                        *right, position, replacement, interp, valuation, depth + 1,
+                    );
+                    assert(replace_at_position(term, position, replacement, depth).is_some());
+                }
+                assert(interp.functions.is_full());
             },
         }
     }
@@ -419,6 +556,181 @@ proof fn atom_holds_after_equal_subterm_replacement(
 spec fn replace_literal(literal: Literal, needle: Term, replacement: Term) -> (Literal, bool) {
     let (atom2, changed) = replace_atom(literal.atom, needle, replacement);
     (Literal { positive: literal.positive, atom: atom2 }, changed)
+}
+
+spec fn atom_at_position(atom: Atom, slot: nat, position: TermPosition) -> Option<Term> {
+    match atom {
+        Atom::Pred0(_) => None,
+        Atom::Pred1(_, arg) => {
+            if slot == 0 { term_at_position(*arg, position, 0) } else { None }
+        },
+        Atom::Pred2(_, left, right) => {
+            if slot == 0 {
+                term_at_position(*left, position, 0)
+            } else if slot == 1 {
+                term_at_position(*right, position, 0)
+            } else {
+                None
+            }
+        },
+        Atom::Eq(left, right) => {
+            if slot == 0 {
+                term_at_position(left, position, 0)
+            } else if slot == 1 {
+                term_at_position(right, position, 0)
+            } else {
+                None
+            }
+        },
+    }
+}
+
+spec fn replace_atom_at_position(
+    atom: Atom,
+    slot: nat,
+    position: TermPosition,
+    replacement: Term,
+) -> Option<Atom> {
+    match atom {
+        Atom::Pred0(_) => None,
+        Atom::Pred1(p, arg) => {
+            if slot == 0 {
+                match replace_at_position(*arg, position, replacement, 0) {
+                    Some(arg2) => Some(Atom::Pred1(p, Box::new(arg2))),
+                    None => None,
+                }
+            } else { None }
+        },
+        Atom::Pred2(p, left, right) => {
+            if slot == 0 {
+                match replace_at_position(*left, position, replacement, 0) {
+                    Some(left2) => Some(Atom::Pred2(p, Box::new(left2), right)),
+                    None => None,
+                }
+            } else if slot == 1 {
+                match replace_at_position(*right, position, replacement, 0) {
+                    Some(right2) => Some(Atom::Pred2(p, left, Box::new(right2))),
+                    None => None,
+                }
+            } else { None }
+        },
+        Atom::Eq(left, right) => {
+            if slot == 0 {
+                match replace_at_position(left, position, replacement, 0) {
+                    Some(left2) => Some(Atom::Eq(left2, right)),
+                    None => None,
+                }
+            } else if slot == 1 {
+                match replace_at_position(right, position, replacement, 0) {
+                    Some(right2) => Some(Atom::Eq(left, right2)),
+                    None => None,
+                }
+            } else { None }
+        },
+    }
+}
+
+spec fn literal_at_position(
+    literal: Literal,
+    slot: nat,
+    position: TermPosition,
+) -> Option<Term> {
+    atom_at_position(literal.atom, slot, position)
+}
+
+spec fn replace_literal_at_position(
+    literal: Literal,
+    slot: nat,
+    position: TermPosition,
+    replacement: Term,
+) -> Option<Literal> {
+    match replace_atom_at_position(literal.atom, slot, position, replacement) {
+        Some(atom2) => Some(Literal { positive: literal.positive, atom: atom2 }),
+        None => None,
+    }
+}
+
+proof fn atom_holds_after_position_replacement(
+    atom: Atom,
+    slot: nat,
+    position: TermPosition,
+    replacement: Term,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    requires
+        interp.functions.is_full(),
+        interp.predicates.is_full(),
+        atom_at_position(atom, slot, position).is_some(),
+        replace_atom_at_position(atom, slot, position, replacement).is_some(),
+        match atom_at_position(atom, slot, position) {
+            Some(found) => eval(found, interp, valuation) == eval(replacement, interp, valuation),
+            None => false,
+        },
+    ensures match replace_atom_at_position(atom, slot, position, replacement) {
+        Some(replaced) => atom_holds(replaced, interp, valuation)
+            == atom_holds(atom, interp, valuation),
+        None => false,
+    }
+{
+    match atom {
+        Atom::Pred0(_) => {},
+        Atom::Pred1(_, arg) => {
+            position_replacement_preserves_evaluation(
+                *arg, position, replacement, interp, valuation, 0,
+            );
+        },
+        Atom::Pred2(_, left, right) => {
+            if slot == 0 {
+                position_replacement_preserves_evaluation(
+                    *left, position, replacement, interp, valuation, 0,
+                );
+            } else {
+                position_replacement_preserves_evaluation(
+                    *right, position, replacement, interp, valuation, 0,
+                );
+            }
+        },
+        Atom::Eq(left, right) => {
+            if slot == 0 {
+                position_replacement_preserves_evaluation(
+                    left, position, replacement, interp, valuation, 0,
+                );
+            } else {
+                position_replacement_preserves_evaluation(
+                    right, position, replacement, interp, valuation, 0,
+                );
+            }
+        },
+    }
+}
+
+proof fn literal_holds_after_position_replacement(
+    literal: Literal,
+    slot: nat,
+    position: TermPosition,
+    replacement: Term,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    requires
+        interp.functions.is_full(),
+        interp.predicates.is_full(),
+        literal_at_position(literal, slot, position).is_some(),
+        replace_literal_at_position(literal, slot, position, replacement).is_some(),
+        match literal_at_position(literal, slot, position) {
+            Some(found) => eval(found, interp, valuation) == eval(replacement, interp, valuation),
+            None => false,
+        },
+    ensures match replace_literal_at_position(literal, slot, position, replacement) {
+        Some(replaced) => literal_holds(replaced, interp, valuation)
+            == literal_holds(literal, interp, valuation),
+        None => false,
+    }
+{
+    atom_holds_after_position_replacement(
+        literal.atom, slot, position, replacement, interp, valuation,
+    );
 }
 
 proof fn literal_holds_after_equal_subterm_replacement(
@@ -702,6 +1014,8 @@ proof fn universally_closed_superposition_sound(
     source_left: Term,
     source_right: Term,
     target_subterm: Term,
+    target_slot: nat,
+    target_position: TermPosition,
     sigma: Substitution,
     interp: Interpretation,
     valuation: Valuation,
@@ -714,19 +1028,27 @@ proof fn universally_closed_superposition_sound(
         source_equality.positive,
         source_equality.atom == Atom::Eq(source_left, source_right),
         apply(source_left, sigma) == apply(target_subterm, sigma),
-        replace_literal(
+        literal_at_position(
+            substitute_literal(target_literal, sigma), target_slot, target_position,
+        ) == Some(apply(target_subterm, sigma)),
+        replace_literal_at_position(
             substitute_literal(target_literal, sigma),
-            apply(target_subterm, sigma),
+            target_slot,
+            target_position,
             apply(source_right, sigma),
-        ).1,
+        ).is_some(),
     ensures superposition_resolvent_holds(
         substitute_clause(source_context, sigma),
         substitute_clause(target_context, sigma),
-        replace_literal(
+        match replace_literal_at_position(
             substitute_literal(target_literal, sigma),
-            apply(target_subterm, sigma),
+            target_slot,
+            target_position,
             apply(source_right, sigma),
-        ).0,
+        ) {
+            Some(rewritten) => rewritten,
+            None => target_literal,
+        },
         interp,
         valuation,
     )
@@ -768,17 +1090,43 @@ proof fn universally_closed_superposition_sound(
         == Atom::Eq(apply(source_left, sigma), apply(source_right, sigma)));
     assert(eval(apply(source_left, sigma), interp, valuation)
         == eval(apply(target_subterm, sigma), interp, valuation));
-    superposition_context_sound(
-        substitute_clause(source_context, sigma),
-        substitute_literal(source_equality, sigma),
-        substitute_clause(target_context, sigma),
-        substitute_literal(target_literal, sigma),
-        apply(target_subterm, sigma),
-        apply(source_left, sigma),
-        apply(source_right, sigma),
-        interp,
-        valuation,
-    );
+    if clause_holds(substitute_clause(source_context, sigma), interp, valuation) {
+    } else if clause_holds(substitute_clause(target_context, sigma), interp, valuation) {
+    } else {
+        assert(literal_holds(substitute_literal(source_equality, sigma), interp, valuation));
+        assert(literal_holds(substitute_literal(target_literal, sigma), interp, valuation));
+        assert(substitute_literal(source_equality, sigma).atom
+            == Atom::Eq(apply(source_left, sigma), apply(source_right, sigma)));
+        assert(eval(apply(source_left, sigma), interp, valuation)
+            == eval(apply(source_right, sigma), interp, valuation));
+        assert(literal_at_position(
+            substitute_literal(target_literal, sigma), target_slot, target_position,
+        ) == Some(apply(target_subterm, sigma)));
+        assert(match literal_at_position(
+            substitute_literal(target_literal, sigma), target_slot, target_position,
+        ) {
+            Some(found) => eval(found, interp, valuation)
+                == eval(apply(source_right, sigma), interp, valuation),
+            None => false,
+        });
+        literal_holds_after_position_replacement(
+            substitute_literal(target_literal, sigma),
+            target_slot,
+            target_position,
+            apply(source_right, sigma),
+            interp,
+            valuation,
+        );
+        assert(match replace_literal_at_position(
+            substitute_literal(target_literal, sigma),
+            target_slot,
+            target_position,
+            apply(source_right, sigma),
+        ) {
+            Some(rewritten) => literal_holds(rewritten, interp, valuation),
+            None => false,
+        });
+    }
 }
 
 /// Universal validity is preserved by simultaneous substitution. This covers
