@@ -2371,8 +2371,17 @@ fn consume_work(work: &mut usize, limit: usize) -> (ok: bool)
 }
 
 fn add_variable(values: &mut Vec<u64>, variable: u64)
+    ensures final(values)@.contains(variable),
+        forall|v: u64| old(values)@.contains(v) ==> final(values)@.contains(v),
 {
     values.push(variable);
+    assert(values@ == old(values)@.push(variable));
+    assert(old(values)@.len() < values@.len());
+    assert(values@[old(values)@.len() as int] == variable);
+    assert(values@.contains(variable));
+    assert forall|v: u64| old(values)@.contains(v) implies values@.contains(v) by {
+        append_keeps_set_member(old(values)@, variable, v);
+    }
 }
 
 fn collect_term_variables_exec(
@@ -2381,6 +2390,9 @@ fn collect_term_variables_exec(
     work: &mut usize,
     limit: usize,
 ) -> (ok: bool)
+    ensures ok ==> forall|v: u64| exec_term_variables(*term).contains(v)
+            ==> final(variables)@.contains(v),
+        ok ==> forall|v: u64| old(variables)@.contains(v) ==> final(variables)@.contains(v),
     decreases term
 {
     match term {
@@ -2407,34 +2419,61 @@ fn collect_term_variables_exec(
     }
 }
 
+fn collect_atom_variables_exec(
+    atom: &ExecAtom,
+    variables: &mut Vec<u64>,
+    work: &mut usize,
+    limit: usize,
+) -> (ok: bool)
+    ensures ok ==> forall|v: u64| exec_atom_variables(*atom).contains(v)
+            ==> final(variables)@.contains(v),
+        ok ==> forall|v: u64| old(variables)@.contains(v)
+            ==> final(variables)@.contains(v),
+    decreases atom
+{
+    match atom {
+        ExecAtom::Pred0(_) => true,
+        ExecAtom::Pred1(_, arg) =>
+            collect_term_variables_exec(arg, variables, work, limit),
+        ExecAtom::Pred2(_, left, right) =>
+            collect_term_variables_exec(left, variables, work, limit)
+                && collect_term_variables_exec(right, variables, work, limit),
+        ExecAtom::Eq(left, right) =>
+            collect_term_variables_exec(left, variables, work, limit)
+                && collect_term_variables_exec(right, variables, work, limit),
+    }
+}
+
 fn collect_clause_variables_exec(
     clause: &ExecClause,
     variables: &mut Vec<u64>,
     work: &mut usize,
     limit: usize,
 ) -> (ok: bool)
+    ensures ok ==> forall|v: u64, j: int|
+            0 <= j < clause.literals@.len()
+                && #[trigger] exec_atom_variables(clause.literals@[j].atom).contains(v)
+            ==> final(variables)@.contains(v),
+        ok ==> forall|v: u64| old(variables)@.contains(v)
+            ==> final(variables)@.contains(v),
 {
     if *work >= limit { return false; }
     *work += 1;
     let mut literal_index: usize = 0;
     while literal_index < clause.literals.len()
-        invariant literal_index <= clause.literals.len()
+        invariant literal_index <= clause.literals.len(),
+            forall|v: u64, j: int| 0 <= j < literal_index as int
+                && #[trigger] exec_atom_variables(clause.literals@[j].atom).contains(v)
+                ==> variables@.contains(v),
+            forall|v: u64| old(variables)@.contains(v) ==> variables@.contains(v),
         decreases clause.literals.len() - literal_index
     {
-        match &clause.literals[literal_index].atom {
-            ExecAtom::Pred0(_) => {},
-            ExecAtom::Pred1(_, arg) => {
-                if !collect_term_variables_exec(arg, variables, work, limit) { return false; }
-            },
-            ExecAtom::Pred2(_, left, right) => {
-                if !collect_term_variables_exec(left, variables, work, limit) { return false; }
-                if !collect_term_variables_exec(right, variables, work, limit) { return false; }
-            },
-            ExecAtom::Eq(left, right) => {
-                if !collect_term_variables_exec(left, variables, work, limit) { return false; }
-                if !collect_term_variables_exec(right, variables, work, limit) { return false; }
-            },
-        }
+        if !collect_atom_variables_exec(
+            &clause.literals[literal_index].atom, variables, work, limit,
+        ) { return false; }
+        assert forall|v: u64|
+            exec_atom_variables(clause.literals@[literal_index as int].atom).contains(v)
+            implies variables@.contains(v) by {}
         literal_index += 1;
     }
     true
@@ -2444,6 +2483,11 @@ fn collect_clause_variables_bounded(
     clause: &ExecClause,
     work_limit: usize,
 ) -> (result: Option<Vec<u64>>)
+    ensures match result {
+        Some(variables) => forall|v: u64| term_clause_view_contains(*clause, v)
+            ==> variables@.contains(v),
+        None => true,
+    }
 {
     if work_limit < 8 || clause.literals.len() > 64 { return None; }
     let mut variables: Vec<u64> = Vec::new();
@@ -2451,7 +2495,21 @@ fn collect_clause_variables_bounded(
     if collect_clause_variables_exec(clause, &mut variables, &mut work, work_limit)
         && work <= work_limit
     {
-        if clause_variables_covered(clause, &variables) { Some(variables) } else { None }
+        let covered = clause_variables_covered(clause, &variables);
+        if covered {
+            assert forall|v: u64| term_clause_view_contains(*clause, v)
+                implies variables@.contains(v) by {
+                let literal_index = choose|j: int| 0 <= j < clause.literals@.len()
+                    && literal_variables(view_literal(clause.literals@[j])).contains(v);
+                assert(exec_atom_variables(clause.literals@[literal_index].atom).contains(v)) by {
+                    literal_variable_view(clause.literals@[literal_index]);
+                }
+                assert(variables@.contains(v));
+            }
+            Some(variables)
+        } else {
+            None
+        }
     } else {
         None
     }
