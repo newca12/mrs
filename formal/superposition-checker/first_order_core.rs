@@ -638,6 +638,163 @@ spec fn literal_at_position(
     atom_at_position(literal.atom, slot, position)
 }
 
+spec fn term_variables(term: Term) -> Set<u64>
+    decreases term
+{
+    match term {
+        Term::Var(v) => Set::empty().insert(v),
+        Term::Const(_) => Set::empty(),
+        Term::App1(_, child) => term_variables(*child),
+        Term::App2(_, left, right) => term_variables(*left).union(term_variables(*right)),
+    }
+}
+
+spec fn atom_variables(atom: Atom) -> Set<u64>
+    decreases atom
+{
+    match atom {
+        Atom::Pred0(_) => Set::empty(),
+        Atom::Pred1(_, arg) => term_variables(*arg),
+        Atom::Pred2(_, left, right) => term_variables(*left).union(term_variables(*right)),
+        Atom::Eq(left, right) => term_variables(left).union(term_variables(right)),
+    }
+}
+
+spec fn literal_variables(literal: Literal) -> Set<u64> {
+    atom_variables(literal.atom)
+}
+
+spec fn renaming_substitution(sigma: Substitution) -> bool {
+    forall|v: u64| lookup(sigma, v).is_some()
+        ==> exists|fresh: u64| lookup(sigma, v) == Some(Term::Var(fresh))
+}
+
+proof fn apply_view_exec_term(term: ExecTerm, bindings: Seq<ExecBinding>)
+    ensures apply(view(term), view_subst(bindings)) == view(apply_exec_model(term, bindings))
+    decreases term
+{
+    match term {
+        ExecTerm::Var(v) => {
+            match lookup(view_subst(bindings), v) {
+                Some(t) => {
+                    assert(apply(Term::Var(v), view_subst(bindings)) == t);
+                    assert(apply_exec_model(term, bindings) == view_to_exec(t));
+                    view_to_exec_roundtrip(t);
+                },
+                None => assert(view(apply_exec_model(term, bindings)) == Term::Var(v)),
+            }
+        },
+        ExecTerm::Const(_) => {},
+        ExecTerm::App1(f, child) => apply_view_exec_term(*child, bindings),
+        ExecTerm::App2(f, left, right) => {
+            apply_view_exec_term(*left, bindings);
+            apply_view_exec_term(*right, bindings);
+        },
+    }
+}
+
+proof fn renaming_preserves_selected_position(
+    literal: Literal,
+    sigma: Substitution,
+    slot: nat,
+    position: TermPosition,
+    variables: Set<u64>,
+)
+    requires
+        renaming_substitution(sigma),
+        forall|v: u64| variables.contains(v)
+            ==> exists|fresh: u64| lookup(sigma, v) == Some(Term::Var(fresh)),
+        forall|v: u64| literal_variables(literal).contains(v) ==> variables.contains(v),
+    ensures match literal_at_position(literal, slot, position) {
+        Some(term) => literal_at_position(substitute_literal(literal, sigma), slot, position)
+            == Some(apply(term, sigma)),
+        None => literal_at_position(substitute_literal(literal, sigma), slot, position) == None,
+    }
+{
+    assert forall|v: u64| literal_variables(literal).contains(v)
+        implies exists|fresh: u64| lookup(sigma, v) == Some(Term::Var(fresh)) by {
+        assert(variables.contains(v));
+    }
+    match literal.atom {
+        Atom::Pred0(_) => {},
+        Atom::Pred1(_, arg) => {
+            if slot == 0 {
+                term_position_substitution(*arg, sigma, position, 0);
+            }
+        },
+        Atom::Pred2(_, left, right) => {
+            if slot == 0 {
+                term_position_substitution(*left, sigma, position, 0);
+            } else if slot == 1 {
+                term_position_substitution(*right, sigma, position, 0);
+            }
+        },
+        Atom::Eq(left, right) => {
+            if slot == 0 {
+                term_position_substitution(left, sigma, position, 0);
+            } else if slot == 1 {
+                term_position_substitution(right, sigma, position, 0);
+            }
+        },
+    }
+}
+
+proof fn term_position_substitution(
+    term: Term,
+    sigma: Substitution,
+    position: TermPosition,
+    depth: nat,
+)
+    requires depth <= position.path.len(), renaming_substitution(sigma)
+    ensures match term_at_position(term, position, depth) {
+        Some(found) => term_at_position(apply(term, sigma), position, depth)
+            == Some(apply(found, sigma)),
+        None => term_at_position(apply(term, sigma), position, depth) == None,
+    }
+    decreases position.path.len() - depth
+{
+    if depth == position.path.len() {
+        assert(term_at_position(term, position, depth) == Some(term));
+        assert(term_at_position(apply(term, sigma), position, depth)
+            == Some(apply(term, sigma)));
+    } else {
+        match term {
+            Term::Var(_) | Term::Const(_) => {
+                assert(term_at_position(term, position, depth) == None);
+                match term {
+                    Term::Var(v) => match lookup(sigma, v) {
+                        Some(Term::Var(fresh)) => {
+                            assert(apply(term, sigma) == Term::Var(fresh));
+                            assert(term_at_position(Term::Var(fresh), position, depth) == None);
+                        },
+                        _ => {},
+                    },
+                    Term::Const(_) => {},
+                    _ => {},
+                }
+            },
+            Term::App1(f, child) => {
+                if position.path[depth as int] == 0 {
+                    term_position_substitution(*child, sigma, position, depth + 1);
+                } else {
+                    assert(term_at_position(term, position, depth) == None);
+                    assert(term_at_position(apply(term, sigma), position, depth) == None);
+                }
+            },
+            Term::App2(f, left, right) => {
+                if position.path[depth as int] == 0 {
+                    term_position_substitution(*left, sigma, position, depth + 1);
+                } else if position.path[depth as int] == 1 {
+                    term_position_substitution(*right, sigma, position, depth + 1);
+                } else {
+                    assert(term_at_position(term, position, depth) == None);
+                    assert(term_at_position(apply(term, sigma), position, depth) == None);
+                }
+            },
+        }
+    }
+}
+
 spec fn replace_literal_at_position(
     literal: Literal,
     slot: nat,
@@ -1678,6 +1835,7 @@ pub struct SuperpositionCertificate {
     target_literal_index: usize,
     target_argument_slot: u64,
     target_path: Vec<u64>,
+    fresh_target_path: Vec<u64>,
     unifier: Vec<ExecBinding>,
     conclusion: ExecClause,
 }
@@ -1777,6 +1935,11 @@ spec fn finite_renaming_injective(sigma: Substitution) -> bool {
         ==> renamed_variable(sigma, x) != renamed_variable(sigma, y)
 }
 
+spec fn renames_variables_only_on(sigma: Substitution, variables: Set<u64>) -> bool {
+    forall|v: u64| variables.contains(v)
+        ==> exists|fresh: u64| lookup(sigma, v) == Some(Term::Var(fresh))
+}
+
 spec fn sets_disjoint(left: Set<u64>, right: Set<u64>) -> bool {
     forall|v: u64| left.contains(v) ==> !right.contains(v)
 }
@@ -1788,6 +1951,7 @@ spec fn freshening_valid(
 ) -> bool {
     domain_unique(sigma)
         && finite_renaming_injective(sigma)
+        && renames_variables_only_on(sigma, variables)
         && forall|v: u64| variables.contains(v)
             ==> renamed_variable(sigma, v).is_some()
         && forall|v: u64| variables.contains(v)
@@ -2129,6 +2293,57 @@ spec fn view_subst(bindings: Seq<ExecBinding>) -> Substitution {
     }
 }
 
+spec fn apply_exec_model(term: ExecTerm, bindings: Seq<ExecBinding>) -> ExecTerm
+    decreases term
+{
+    match term {
+        ExecTerm::Var(v) => match lookup(view_subst(bindings), v) {
+            Some(Term::Var(fresh)) => ExecTerm::Var(fresh),
+            Some(Term::Const(c)) => ExecTerm::Const(c),
+            Some(Term::App1(f, child)) => ExecTerm::App1(f, Box::new(view_to_exec(*child))),
+            Some(Term::App2(f, left, right)) => ExecTerm::App2(
+                f, Box::new(view_to_exec(*left)), Box::new(view_to_exec(*right)),
+            ),
+            None => ExecTerm::Var(v),
+        },
+        ExecTerm::Const(c) => ExecTerm::Const(c),
+        ExecTerm::App1(f, child) => ExecTerm::App1(f,
+            Box::new(apply_exec_model(*child, bindings))),
+        ExecTerm::App2(f, left, right) => ExecTerm::App2(
+            f,
+            Box::new(apply_exec_model(*left, bindings)),
+            Box::new(apply_exec_model(*right, bindings)),
+        ),
+    }
+}
+
+proof fn view_to_exec_roundtrip(term: Term)
+    ensures view(view_to_exec(term)) == term
+    decreases term
+{
+    match term {
+        Term::Var(_) | Term::Const(_) => {},
+        Term::App1(_, child) => view_to_exec_roundtrip(*child),
+        Term::App2(_, left, right) => {
+            view_to_exec_roundtrip(*left);
+            view_to_exec_roundtrip(*right);
+        },
+    }
+}
+
+spec fn view_to_exec(term: Term) -> ExecTerm
+    decreases term
+{
+    match term {
+        Term::Var(v) => ExecTerm::Var(v),
+        Term::Const(c) => ExecTerm::Const(c),
+        Term::App1(f, child) => ExecTerm::App1(f, Box::new(view_to_exec(*child))),
+        Term::App2(f, left, right) => ExecTerm::App2(
+            f, Box::new(view_to_exec(*left)), Box::new(view_to_exec(*right)),
+        ),
+    }
+}
+
 spec fn view_position(path: Seq<u64>) -> TermPosition {
     TermPosition { path: path.map(|_i: int, child: u64| child as nat) }
 }
@@ -2467,18 +2682,13 @@ fn executable_superposition_certificate_example()
     let certificate = SuperpositionCertificate {
         source,
         target,
-        source_freshening: vec![ExecBinding {
-            variable: 0,
-            replacement: ExecTerm::Var(0),
-        }],
-        target_freshening: vec![ExecBinding {
-            variable: 0,
-            replacement: ExecTerm::Var(0),
-        }],
+        source_freshening: Vec::new(),
+        target_freshening: Vec::new(),
         source_equality_index: 0,
         target_literal_index: 0,
         target_argument_slot: 0,
         target_path: Vec::new(),
+        fresh_target_path: Vec::new(),
         unifier: Vec::new(),
         conclusion: ExecClause { literals: vec![ExecLiteral {
             positive: true,
@@ -2486,6 +2696,62 @@ fn executable_superposition_certificate_example()
         }] },
     };
     let _accepted = check_superposition_and_replay(&certificate, 1000);
+    let bad_path = SuperpositionCertificate {
+        source: ExecClause { literals: vec![ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Eq(
+                ExecTerm::App1(4, Box::new(ExecTerm::Const(1))),
+                ExecTerm::Const(2),
+            ),
+        }] },
+        target: ExecClause { literals: vec![ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Pred1(8, Box::new(ExecTerm::App1(
+                4, Box::new(ExecTerm::Const(1)),
+            ))),
+        }] },
+        source_freshening: Vec::new(),
+        target_freshening: Vec::new(),
+        source_equality_index: 0,
+        target_literal_index: 0,
+        target_argument_slot: 0,
+        target_path: Vec::new(),
+        fresh_target_path: vec![1u64],
+        unifier: Vec::new(),
+        conclusion: ExecClause { literals: vec![ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Pred1(8, Box::new(ExecTerm::Const(2))),
+        }] },
+    };
+    let _bad_path_rejected = !check_superposition_certificate(&bad_path, 1000);
+    let bad_conclusion = SuperpositionCertificate {
+        source: ExecClause { literals: vec![ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Eq(
+                ExecTerm::App1(4, Box::new(ExecTerm::Const(1))),
+                ExecTerm::Const(2),
+            ),
+        }] },
+        target: ExecClause { literals: vec![ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Pred1(8, Box::new(ExecTerm::App1(
+                4, Box::new(ExecTerm::Const(1)),
+            ))),
+        }] },
+        source_freshening: Vec::new(),
+        target_freshening: Vec::new(),
+        source_equality_index: 0,
+        target_literal_index: 0,
+        target_argument_slot: 0,
+        target_path: Vec::new(),
+        fresh_target_path: Vec::new(),
+        unifier: Vec::new(),
+        conclusion: ExecClause { literals: vec![ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Pred1(8, Box::new(ExecTerm::Const(3))),
+        }] },
+    };
+    let _bad_conclusion_rejected = !check_superposition_and_replay(&bad_conclusion, 1000);
 }
 
 fn copy_literal(literal: &ExecLiteral) -> (copy: ExecLiteral)
@@ -2811,6 +3077,9 @@ fn selected_atom_term_exec(
 fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_limit: usize)
     -> (accepted: bool)
 {
+    if !same_u64_sequence(&certificate.target_path, &certificate.fresh_target_path) {
+        return false;
+    }
     if certificate.source.literals.len() > work_limit
         || certificate.target.literals.len() > work_limit - certificate.source.literals.len()
     {
@@ -2840,6 +3109,9 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
     ) {
         return false;
     }
+    if !is_variable_renaming(&left_variables, &certificate.source_freshening) {
+        return false;
+    }
     let fresh_source = match freshen_clause_apart(
         &certificate.source, &right_variables, &certificate.source_freshening, work_limit,
     ) {
@@ -2859,6 +3131,9 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
     if !check_freshening(
         &right_variables, &avoid_target, &certificate.target_freshening, work_limit,
     ) {
+        return false;
+    }
+    if !is_variable_renaming(&right_variables, &certificate.target_freshening) {
         return false;
     }
     let fresh_target = match freshen_clause_apart(
@@ -2883,11 +3158,27 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
     let ExecAtom::Eq(fresh_source_left, _) = &source_eq_fresh.atom else { return false; };
     let target_selected = &fresh_target.literals[certificate.target_literal_index];
     let Some(fresh_target_subterm) = selected_atom_term_exec(
-        &target_selected.atom, certificate.target_argument_slot, &certificate.target_path,
+        &target_selected.atom, certificate.target_argument_slot, &certificate.fresh_target_path,
     ) else { return false; };
     let unifies = check_unifier(fresh_source_left, &fresh_target_subterm, &certificate.unifier);
     if !unifies {
         return false;
+    }
+    true
+}
+
+fn is_variable_renaming(variables: &Vec<u64>, bindings: &Vec<ExecBinding>) -> (valid: bool)
+{
+    let mut i: usize = 0;
+    while i < variables.len()
+        invariant i <= variables.len()
+        decreases variables.len() - i
+    {
+        match lookup_exec(bindings, variables[i]) {
+            Some(ExecTerm::Var(_)) => {},
+            _ => return false,
+        }
+        i += 1;
     }
     true
 }
@@ -2906,6 +3197,29 @@ fn extend_unique(destination: &mut Vec<u64>, source: &Vec<u64>, work_limit: usiz
         }
         i += 1;
     }
+    true
+}
+
+fn same_u64_sequence(left: &Vec<u64>, right: &Vec<u64>) -> (same: bool)
+    ensures same == (left@ == right@)
+{
+    if left.len() != right.len() { return false; }
+    let mut i: usize = 0;
+    while i < left.len()
+        invariant
+            i <= left.len(),
+            left.len() == right.len(),
+            forall|j: int| 0 <= j < i as int ==> left@[j] == right@[j],
+        decreases left.len() - i
+    {
+        if left[i] != right[i] { return false; }
+        assert(left@[i as int] == right@[i as int]);
+        i += 1;
+    }
+    assert forall|j: int| 0 <= j < left@.len() implies left@[j] == right@[j] by {
+        assert(j < i as int);
+    }
+    assert(left@ == right@);
     true
 }
 
@@ -2952,7 +3266,7 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
         &instantiated_target,
         certificate.target_literal_index,
         certificate.target_argument_slot,
-        &certificate.target_path,
+        &certificate.fresh_target_path,
         source_right,
     ) else { return false; };
 

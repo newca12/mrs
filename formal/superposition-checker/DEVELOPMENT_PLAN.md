@@ -15,7 +15,7 @@ the item itself is explicitly marked `ABANDONED`.
 | M0 — Verus baseline and environment | **PARTIAL** | Verus/Rust versions and Linux x86_64 SHA-256 are pinned; `verify.sh` and regular CI run all formal files. Still needs a clean-checkout run and explicit audit for unchecked assumptions/ignored proof obligations. |
 | M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` proves parent validity survives independent standardization substitutions, a standardized-parent superposition step is semantically sound, and its resolvent clause (source context + target context + rewritten literal) is valid. Remaining: align theorem premises with executable path/unifier replay and settle calculus ordering/side conditions. |
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. Bounded variable collection and executable freshening/disjointness checks exist. A complete proof-producing freshening guarantee, principled cumulative resource accounting, and adversarial unifier diagnostics remain open. |
-| M3 — Superposition checker | **PARTIAL** | Ground and fixed-schema checkers remain verified; the general replay API now takes explicit freshening maps for both parents, checks variable-image injectivity/disjointness, validates a supplied unifier at the freshened selected terms, applies it to both full clauses, removes the selected equality, rewrites the target occurrence, and compares the exact binary resolvent. It remains a specification prototype: freshening correctness/resource accounting is not yet fully refined, its acceptance is not tied to the universal soundness theorem, and clause-equivalence support and c502 analysis remain. |
+| M3 — Superposition checker | **PARTIAL** | Ground and fixed-schema checkers remain verified; general replay requires matching raw/freshened target paths, variable-only parent renamings, injective disjoint images, a supplied unifier, whole-parent substitution, source-equality deletion, target replacement, and exact ordered binary-resolvent comparison. A separate theorem proves resolvent validity from standardized parent validity. Remaining: prove executable guards discharge theorem premises, complete resource accounting, clause-equivalence support and c502 analysis. |
 | M4 — Proof-DAG validation | **TODO** | No proof graph, parent closure, rule dispatcher, or empty-clause refutation checker. |
 | M5 — MRS integration | **TODO** | The Verus executable is not called by `mrs-proof-kernel`; no interchange format or production adapter exists. |
 | M6 — Broader rules | **TODO** | Resolution, AC, demodulation, transformations, and AVATAR/LRAT are not implemented in the Verus checker. |
@@ -321,8 +321,9 @@ Avoid relying on a parser that silently drops unsupported constructs.
   replacement. Out-of-range literal indexes and invalid atom slots fail closed.
 - **PARTIAL:** bounded variable collection and finite freshening checks now
   exist. They reject absent/non-variable mappings, mapped IDs in the avoid set,
-  non-injective images, and explicit work exhaustion. Complete their refinement
-  and semantic-preservation proofs and broaden adversarial certificate cases.
+  non-injective images, mismatched raw/freshened target paths, and explicit work
+  exhaustion. Refinement of the collection list to its model set, cumulative
+  work accounting, and proof-producing freshening remain.
 - **DONE, executable slice:** the step-certificate IR requires independent
   source/target variable maps. The checker validates maps against variable sets,
   prevents image collisions, checks a supplied unifier after freshening, applies
@@ -330,6 +331,11 @@ Avoid relying on a parser that silently drops unsupported constructs.
   binary resolvent (source context plus rewritten target clause), and compares
   its ordered literal sequence to the certificate conclusion. Exact rule
   side-conditions and theorem connection are still part of M3.
+- **PARTIAL, proof connection:** the replay refuses target paths that differ
+  before/after standardization, and a verified lemma states the selected term
+  transforms by the same variable-only renaming. The full accepted-result to
+  theorem-premise refinement remains, especially for unifier application,
+  resolvent construction, and clause equivalence.
 - **PARTIAL:** the proposed unifier checker and executable term/literal/clause path operations
   are refined; still exercise positive/negative unifier certificates with
   verified evidence, characterize the checker's negative result, specify
