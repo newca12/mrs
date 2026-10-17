@@ -14,7 +14,7 @@ nix develop .#verus -c formal/superposition-checker/install-verus.sh  # once per
 nix develop .#verus -c formal/superposition-checker/verify.sh
 ```
 
-On ordinary Linux x86_64 hosts with `rustup`, `curl`, `unzip`, `jq`, and
+On ordinary Linux x86_64 hosts with `rustup`, `curl`, `unzip`, `python3`, and
 `sha256sum`, run the scripts directly (CI uses this path):
 
 ```sh

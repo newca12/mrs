@@ -4,13 +4,15 @@ set -euo pipefail
 if [[ -n "${VERUS:-}" ]]; then
   VERUS_BIN="$VERUS"
 else
-  VERUS_VERSION="$(jq -r '.verus' "$(dirname "$0")/verus-toolchain.json")"
+  VERUS_VERSION="$(python3 -c 'import json, pathlib, sys; print(json.loads(pathlib.Path(sys.argv[1]).read_text())["verus"])' \
+    "$(dirname "$0")/verus-toolchain.json")"
   VERUS_BIN="${VERUS_INSTALL_DIR:-$HOME/.local/opt/mrs-verus}/$VERUS_VERSION/verus"
 fi
 
 TOOLCHAIN_HOME="${RUSTUP_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/mrs-verus/rustup}"
 export RUSTUP_HOME="$TOOLCHAIN_HOME"
-export RUSTUP_TOOLCHAIN="$(jq -r '.rust_toolchain' "$(dirname "$0")/verus-toolchain.json")"
+export RUSTUP_TOOLCHAIN="$(python3 -c 'import json, pathlib, sys; print(json.loads(pathlib.Path(sys.argv[1]).read_text())["rust_toolchain"])' \
+  "$(dirname "$0")/verus-toolchain.json")"
 
 run_check() {
   if [[ -n "${VERUS_LOG:-}" ]]; then
