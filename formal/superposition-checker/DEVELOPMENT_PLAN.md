@@ -12,7 +12,7 @@ the item itself is explicitly marked `ABANDONED`.
 
 | Milestone | Status | Implemented evidence / remaining gate |
 |---|---|---|
-| M0 — Verus baseline and environment | **PARTIAL** | Verus/Rust versions and Linux x86_64 SHA-256 are pinned; the installer and verifier scripts read the JSON pin with Python rather than requiring `jq`. A fresh install from the pinned checksum and subsequent full `verify.sh` run now pass in the host environment. Still needs a clean-checkout run and explicit audit for unchecked assumptions/ignored proof obligations. |
+| M0 — Verus baseline and environment | **PARTIAL** | Verus/Rust versions and Linux x86_64 SHA-256 are pinned; the installer and verifier scripts read the JSON pin with Python rather than requiring `jq`. A fresh install from the pinned checksum and full `verify.sh` run pass both in the host worktree and a detached clean worktree. The escape-hatch audit is part of the script. Remaining: audit ignored proof obligations and strengthen mutation coverage so changes to verified executable/specification relationships are demonstrably caught. |
 | M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` proves parent validity survives independent standardization substitutions, a standardized-parent superposition step is semantically sound, and its resolvent clause (source context + target context + rewritten literal) is valid. `RULE_CONTRACT.md` specifies the prototype's unordered rule, freshness, simultaneous-substitution convention, and exact resolvent order. Remaining: bind accepted executable certificates to theorem premises and independently review whether the chosen unordered contract is appropriate for the eventual MRS interchange boundary. |
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. The bounded clause collector now returns only when its variable vector is exact with respect to the mathematical clause variable set (coverage plus a verified no-extraneous-variable pass); term and atom collectors prove coverage and preserve prior variables. The selected-position renaming lemma now takes only a domain-restricted variable-renaming premise for variables occurring in the literal, rather than requiring a globally variable-only substitution. Executable freshening, collector-to-set correspondence, and cumulative resource accounting remain open. |
 | M3 — Superposition checker | **PARTIAL** | Ground/fixed-schema checkers remain; the general replay API requires identical raw/freshened target paths, injective variable-only freshening maps with disjoint images, supplied-unifier equality, whole-parent substitution, source-equality deletion and exact ordered binary-resolvent comparison. A semantic theorem proves that binary resolvent valid from valid parents under explicit unifier/position equations. The executable-acceptance-to-theorem-premise proof, equivalence modulo literal order/renaming, calculus restrictions, and c502 remain. |
@@ -750,8 +750,9 @@ satisfiability/model claims, and unrestricted full TSTP.
 ## Immediate next tasks
 
 - [x] Pin Verus/toolchain and add the verification script plus CI workflow (M0
-  partial; installation and all-module verification now reproduce on this host;
-  clean-checkout and assumptions audit remain TODO).
+  partial; fresh installation and all-module verification reproduce in a
+  detached clean worktree; ignored-proof-obligation and mutation audits remain
+  TODO).
 - [x] Implement and verify the restricted ground unit-superposition checker,
   soundness lemma, and forged-field examples (M3 partial).
 - [x] Preserve the archived c502 clauses as a fixture, explicitly marked
