@@ -16,13 +16,13 @@ the item itself is explicitly marked `ABANDONED`.
 | M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` proves parent validity survives independent standardization substitutions, a standardized-parent superposition step is semantically sound, and its resolvent clause (source context + target context + rewritten literal) is valid. Remaining: align theorem premises with executable path/unifier replay and settle calculus ordering/side conditions. |
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. Variable-only substitution preserves a selected slot/path, and executable freshening checks injective, disjoint images with bounded traversal. Complete model correspondence for collection/freshening and cumulative resource accounting remain open. |
 | M3 — Superposition checker | **PARTIAL** | Ground/fixed-schema checkers remain; the general replay API requires identical raw/freshened target paths, injective variable-only freshening maps with disjoint images, supplied-unifier equality, whole-parent substitution, source-equality deletion and exact ordered binary-resolvent comparison. A semantic theorem proves that binary resolvent valid from valid parents under explicit unifier/position equations. The executable-acceptance-to-theorem-premise proof, equivalence modulo literal order/renaming, calculus restrictions, and c502 remain. |
-| M4 — Proof-DAG validation | **PARTIAL** | Added finite proof graph types, a conditional induction theorem from locally entailing steps to input entailment, and an empty-root unsatisfiability theorem. `check_dag_structure` is explicitly an incomplete prototype and returns `Inconclusive`; it does not certify a graph. Exact input membership, checked local node soundness, resource accounting, and a verified DAG acceptance postcondition remain. |
+| M4 — Proof-DAG validation | **PARTIAL** | Added finite proof graph types and a conditional induction theorem from locally entailing steps to input entailment. The structural traversal is incomplete: its input-leaf membership loop is not correct, so it is not safe to use as a validation result and returns only `Inconclusive` on its nominal success path. Exact leaf membership, local node soundness, resource accounting, and a verified DAG acceptance postcondition remain. |
 | M5 — MRS integration | **TODO** | The Verus executable is not called by `mrs-proof-kernel`; no interchange format or production adapter exists. |
 | M6 — Broader rules | **TODO** | Resolution, AC, demodulation, transformations, and AVATAR/LRAT are not implemented in the Verus checker. |
 | M7 — Assurance/release gates | **TODO** | No supported-rule manifest, full assurance case, mutation campaign, or release/default-enable gate. |
 
 **What is DONE now:** the pinned local command `formal/superposition-checker/verify.sh`
-passes all four Verus files (currently `5`, `90`, `5`, and `5` verified functions respectively),
+passes all four Verus files (currently `5`, `122`, `5`, and `5` verified functions respectively),
 and the existing Rust regression `rejects_swv406_c502_archived_target_specialization`
 passes. These results establish only the current narrow verified artifacts; they
 do not complete M0–M3 or decide c502.
@@ -484,8 +484,11 @@ freshness conditions must also be justified by the calculus contract.
   indices, unsupported-step handling, root-empty checking, root-ancestry
   closure, and partial step-certificate parent/conclusion checks are present in
   `check_dag_structure`. It returns `Inconclusive` even after structural checks;
-  exact input leaf comparison and a verified acceptance postcondition are not
-  implemented, so this cannot certify a DAG.
+  exact input clause comparison is not yet implemented as a proved executable
+  relation, and it is not a DAG certificate gate.
+- A direct verification attempt found the input-leaf matching loop incomplete;
+  the function is expressly non-certifying until exact input comparison and its
+  executable postcondition are completed.
 - **DONE, conditional semantic theorem:** induction over topologically ordered
   nodes proves validity from valid inputs given `local_node_entails_from_parents`
   for every inference node; an empty root then implies unsatisfiability.

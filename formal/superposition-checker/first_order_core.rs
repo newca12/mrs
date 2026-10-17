@@ -1849,6 +1849,7 @@ pub struct SuperpositionCertificate {
     conclusion: ExecClause,
 }
 
+#[derive(PartialEq, Eq)]
 pub enum ProofNodeKind {
     Input,
     Superposition,
@@ -3255,6 +3256,76 @@ fn same_term(left: &ExecTerm, right: &ExecTerm) -> (same: bool)
     }
 }
 
+fn same_atom(left: &ExecAtom, right: &ExecAtom) -> (same: bool)
+    ensures same == (view_atom(*left) == view_atom(*right))
+    decreases left
+{
+    match (left, right) {
+        (ExecAtom::Pred0(p), ExecAtom::Pred0(q)) => p == q,
+        (ExecAtom::Pred1(p, a), ExecAtom::Pred1(q, b)) => *p == *q && same_term(a, b),
+        (ExecAtom::Pred2(p, a1, a2), ExecAtom::Pred2(q, b1, b2)) =>
+            *p == *q && same_term(a1, b1) && same_term(a2, b2),
+        (ExecAtom::Eq(a1, a2), ExecAtom::Eq(b1, b2)) =>
+            same_term(a1, b1) && same_term(a2, b2),
+        _ => false,
+    }
+}
+
+fn same_literal(left: &ExecLiteral, right: &ExecLiteral) -> (same: bool)
+    ensures same == (view_literal(*left) == view_literal(*right))
+{
+    left.positive == right.positive && same_atom(&left.atom, &right.atom)
+}
+
+fn same_clause(left: &ExecClause, right: &ExecClause) -> (same: bool)
+    ensures same ==> clause_equal(view_clause(*left), view_clause(*right))
+{
+    if left.literals.len() != right.literals.len() { return false; }
+    let mut i: usize = 0;
+    while i < left.literals.len()
+        invariant
+            i <= left.literals.len(),
+            left.literals.len() == right.literals.len(),
+            forall|j: int| 0 <= j < i as int
+                ==> view_literal(left.literals@[j]) == view_literal(right.literals@[j]),
+        decreases left.literals.len() - i
+    {
+        if !same_literal(&left.literals[i], &right.literals[i]) {
+            return false;
+        }
+        i += 1;
+    }
+    assert forall|j: int| 0 <= j < left.literals@.len()
+        implies view_literal(left.literals@[j]) == view_literal(right.literals@[j]) by {
+        assert(j < i as int);
+    }
+    true
+}
+
+fn same_clause_exact(left: &ExecClause, right: &ExecClause) -> (same: bool)
+    ensures same ==> clause_equal(view_clause(*left), view_clause(*right))
+{
+    if left.literals.len() != right.literals.len() { return false; }
+    let mut i: usize = 0;
+    while i < left.literals.len()
+        invariant
+            i <= left.literals.len(),
+            left.literals.len() == right.literals.len(),
+            forall|j: int| 0 <= j < i as int
+                ==> view_literal(left.literals@[j]) == view_literal(right.literals@[j]),
+        decreases left.literals.len() - i
+    {
+        let same = same_literal(&left.literals[i], &right.literals[i]);
+        if !same { return false; }
+        i += 1;
+    }
+    assert forall|j: int| 0 <= j < left.literals@.len()
+        implies view_literal(left.literals@[j]) == view_literal(right.literals@[j]) by {
+        assert(j < i as int);
+    }
+    true
+}
+
 /// Validate a supplied finite simultaneous-unifier certificate. This does not
 /// compute an MGU; it verifies domain uniqueness and that applying the same
 /// substitution to both selected terms makes them equal.
@@ -3537,6 +3608,9 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
 
 fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
     -> (verdict: DagVerdict)
+    ensures verdict == DagVerdict::Inconclusive
+        || verdict == DagVerdict::Rejected
+        || verdict == DagVerdict::Unknown
 {
     if dag.nodes.len() == 0 || dag.nodes.len() > node_limit || dag.root >= dag.nodes.len() {
         return DagVerdict::Rejected;
@@ -3574,12 +3648,12 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
                     invariant input_index <= dag.input_clauses.len()
                     decreases dag.input_clauses.len() - input_index
                 {
-                    if node.clause.literals.len() == dag.input_clauses[input_index].literals.len() {
+                    if same_clause_exact(&node.clause, &dag.input_clauses[input_index]) {
                         found = true;
                     }
                     input_index += 1;
                 }
-                if !found { return DagVerdict::Rejected; }
+    if !found { return DagVerdict::Rejected; }
             },
             ProofNodeKind::Superposition => {
                 if node.parents.len() != 2 || node.step.is_none() {
@@ -3591,8 +3665,8 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
                 if source_parent >= dag.nodes.len() || target_parent >= dag.nodes.len() {
                     return DagVerdict::Rejected;
                 }
-                if step.source.literals.len() != dag.nodes[source_parent].clause.literals.len()
-                    || step.target.literals.len() != dag.nodes[target_parent].clause.literals.len()
+                if !same_clause_exact(&step.source, &dag.nodes[source_parent].clause)
+                    || !same_clause_exact(&step.target, &dag.nodes[target_parent].clause)
                 {
                     return DagVerdict::Rejected;
                 }
@@ -3607,9 +3681,10 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
                         , node.clause.literals.len() == step.conclusion.literals.len()
                     decreases node.clause.literals.len() - literal_index
                 {
-                    if step.conclusion.literals[literal_index]
-                        != node.clause.literals[literal_index]
-                    {
+                    if !same_literal(
+                        &step.conclusion.literals[literal_index],
+                        &node.clause.literals[literal_index],
+                    ) {
                         return DagVerdict::Rejected;
                     }
                     literal_index += 1;
@@ -3656,6 +3731,112 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
     DagVerdict::Inconclusive
 }
 
+fn check_dag_with_local_soundness(
+    dag: &ProofDag,
+    node_limit: usize,
+    literal_limit: usize,
+    local_soundness: &Vec<bool>,
+) -> (verdict: DagVerdict)
+{
+    match check_dag_structure(dag, node_limit, literal_limit) {
+        DagVerdict::Rejected => DagVerdict::Rejected,
+        DagVerdict::Unknown => DagVerdict::Unknown,
+        DagVerdict::Inconclusive => {
+            if local_soundness.len() != dag.nodes.len() {
+                return DagVerdict::Unknown;
+            }
+            let mut i: usize = 0;
+            while i < dag.nodes.len()
+                invariant i <= dag.nodes.len(), local_soundness.len() == dag.nodes.len()
+                decreases dag.nodes.len() - i
+            {
+                if dag.nodes[i].kind == ProofNodeKind::Superposition && !local_soundness[i] {
+                    return DagVerdict::Unknown;
+                }
+                i += 1;
+            }
+            DagVerdict::Inconclusive
+        },
+    }
+}
+
+spec fn dag_all_local_steps_sound(dag: ProofDag, local_soundness: Seq<bool>) -> bool {
+    local_soundness.len() == dag.nodes.len()
+        && forall|i: int| 0 <= i < dag.nodes.len()
+            && dag.nodes[i].kind == ProofNodeKind::Superposition
+            ==> local_soundness[i]
+}
+
+proof fn dag_local_soundness_postcondition(
+    dag: ProofDag,
+    local_soundness: Seq<bool>,
+)
+    requires
+        local_soundness.len() == dag.nodes.len(),
+        forall|i: int| 0 <= i < dag.nodes.len()
+            && dag.nodes[i].kind == ProofNodeKind::Superposition
+            ==> local_soundness[i],
+    ensures dag_all_local_steps_sound(dag, local_soundness)
+{}
+
+spec fn dag_root_valid(dag: ProofDag, interp: Interpretation) -> bool {
+    dag.root < dag.nodes.len()
+        && clause_valid(view_clause(dag.nodes@[dag.root as int].clause), interp)
+}
+
+proof fn dag_semantic_result_from_local_postcondition(
+    dag: ProofDag,
+    inputs: Seq<ExecClause>,
+    interp: Interpretation,
+    local_soundness: Seq<bool>,
+)
+    requires
+        interpretation_well_formed(interp),
+        dag.nodes.len() > 0,
+        dag.root < dag.nodes.len(),
+        dag.nodes@[dag.root as int].clause.literals.len() == 0,
+        local_soundness.len() == dag.nodes.len(),
+        forall|i: int| 0 <= i < dag.nodes.len()
+            && dag.nodes[i].kind == ProofNodeKind::Superposition
+            ==> local_soundness[i],
+        forall|i: int| 0 <= i < dag.nodes.len()
+            && dag.nodes[i].kind == ProofNodeKind::Superposition
+            ==> local_node_entails_from_parents(dag.nodes@[i], dag.nodes@, interp),
+        forall|i: int| 0 <= i < dag.nodes.len()
+            ==> (dag.nodes[i].kind == ProofNodeKind::Input
+                ==> input_leaf_is_validated(dag.nodes[i], inputs)),
+        forall|i: int| 0 <= i < dag.nodes.len()
+            ==> dag.nodes[i].kind == ProofNodeKind::Input
+                || dag.nodes[i].kind == ProofNodeKind::Superposition,
+        forall|i: int| 0 <= i < inputs.len()
+            ==> clause_valid(view_clause(inputs[i]), interp),
+        forall|i: int, j: int| 0 <= i < dag.nodes.len()
+            && 0 <= j < dag.nodes[i].parents@.len()
+            ==> dag.nodes[i].parents@[j] < i as usize,
+    ensures dag_root_valid(dag, interp)
+        && !exists|valuation: Valuation| valuation_well_formed(interp, valuation)
+            && forall|i: int| 0 <= i < inputs.len()
+                ==> clause_holds(view_clause(inputs[i]), interp, valuation)
+{
+    assert forall|i: int| 0 <= i < dag.nodes.len()
+        implies (dag.nodes[i].kind == ProofNodeKind::Input
+                && input_leaf_is_validated(dag.nodes[i], inputs)
+            || dag.nodes[i].kind == ProofNodeKind::Superposition
+                && local_node_entails_from_parents(dag.nodes@[i], dag.nodes@, interp)) by {
+        if dag.nodes[i].kind == ProofNodeKind::Input {
+            assert(input_leaf_is_validated(dag.nodes[i], inputs));
+        } else {
+            assert(dag.nodes[i].kind == ProofNodeKind::Superposition);
+            assert(local_node_entails_from_parents(dag.nodes@[i], dag.nodes@, interp));
+        }
+    }
+    proof_dag_nodes_follow_from_local_rule_soundness(
+        dag.nodes@, inputs, interp, dag.nodes.len() as nat,
+    );
+    assert(clause_valid(view_clause(dag.nodes@[dag.root as int].clause), interp));
+    certified_empty_dag_implies_unsatisfiable(dag.nodes@, inputs, interp, dag.root as nat);
+}
+
 /// The semantic fact behind instance substitution for a universally closed
 /// clause: any term substitution maps a term variable to its chosen instance.
 spec fn variable_instance() -> bool {
@@ -3677,7 +3858,6 @@ fn main() {
     executable_clause_replay_example();
     executable_standardization_apart_example();
     executable_superposition_certificate_example();
-    // DAG regression construction is exercised by the verifier's proof body below.
 
     // Supplied unifier certificate binding target-side variable 42 to
     // constant 9. Domain validity and simultaneous application are checked.
