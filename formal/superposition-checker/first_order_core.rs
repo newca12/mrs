@@ -3548,6 +3548,8 @@ fn executable_superposition_certificate_example()
         }] },
     };
     let _bad_conclusion_rejected = !check_superposition_and_replay(&bad_conclusion, 1000);
+    let conclusion_budget_rejected = !check_superposition_and_replay(&certificate, 2);
+    assert(conclusion_budget_rejected);
 }
 
 fn copy_literal(literal: &ExecLiteral) -> (copy: ExecLiteral)
@@ -4105,7 +4107,8 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
             + certificate.target_freshening.len()
             + certificate.unifier.len()
             + certificate.target_path.len()
-            + certificate.fresh_target_path.len() <= work_limit
+            + certificate.fresh_target_path.len()
+            + certificate.conclusion.literals.len() <= work_limit
         && accepted ==> certificate.source_equality_index < certificate.source.literals.len()
         && accepted ==> certificate.target_literal_index < certificate.target.literals.len()
         && accepted ==> certificate.source.literals@[certificate.source_equality_index as int].positive
@@ -4173,6 +4176,8 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
     if certificate.target_path.len() > remaining_work { return false; }
     remaining_work -= certificate.target_path.len();
     if certificate.fresh_target_path.len() > remaining_work { return false; }
+    remaining_work -= certificate.fresh_target_path.len();
+    if certificate.conclusion.literals.len() > remaining_work { return false; }
     if !same_u64_sequence(&certificate.target_path, &certificate.fresh_target_path) {
         return false;
     }
@@ -4388,7 +4393,19 @@ fn same_u64_sequence(left: &Vec<u64>, right: &Vec<u64>) -> (same: bool)
 
 fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_limit: usize)
     -> (accepted: bool)
+    ensures accepted ==> certificate.source.literals.len()
+            + certificate.target.literals.len()
+            + certificate.conclusion.literals.len() <= work_limit
 {
+    if certificate.source.literals.len() > work_limit
+        || certificate.target.literals.len() > work_limit - certificate.source.literals.len()
+    {
+        return false;
+    }
+    let replay_work = certificate.source.literals.len() + certificate.target.literals.len();
+    if certificate.conclusion.literals.len() > work_limit - replay_work {
+        return false;
+    }
     if !check_superposition_certificate(certificate, work_limit) {
         return false;
     }

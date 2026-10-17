@@ -393,9 +393,11 @@ Avoid relying on a parser that silently drops unsupported constructs.
   and raw/fresh paths exceed the work limit, and successful acceptance exposes
   that bound as a postcondition. Duplicate-domain validation rejects before
   its quadratic pair scan when `n²` exceeds the supplied work limit, and
-  unifier acceptance exposes that guard. Work across separate checks and
-  derived replay is not cumulatively accounted; a direct local-soundness theorem
-  connection also remains, so this is not a certifying API yet.
+  unifier acceptance exposes that guard. Replay also caps the combined parent
+  and conclusion literal counts before materializing standardized clauses and
+  its output. Work across separate checks and derived replay is not cumulatively
+  accounted; a direct local-soundness theorem connection also remains, so this
+  is not a certifying API yet.
 - **PARTIAL, proof connection:** the replay refuses target paths that differ
   before/after standardization, and a verified lemma states the selected term
   transforms by the same variable-only renaming. The full accepted-result to
