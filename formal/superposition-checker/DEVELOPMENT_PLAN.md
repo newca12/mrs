@@ -13,7 +13,7 @@ the item itself is explicitly marked `ABANDONED`.
 | Milestone | Status | Implemented evidence / remaining gate |
 |---|---|---|
 | M0 — Verus baseline and environment | **PARTIAL** | Verus/Rust versions and Linux x86_64 SHA-256 are pinned; `verify.sh` and regular CI run all formal files. Still needs a clean-checkout run and explicit audit for unchecked assumptions/ignored proof obligations. |
-| M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` has recursive terms, total interpretation/valuation well-formedness, a general term substitution/evaluation theorem, and verified atom/literal/clause substitution preservation plus universal-clause instance preservation. Still needs bidirectional alpha-renaming/standardization-apart semantics and the exact calculus contract for the general rule. |
+| M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` has recursive terms, total interpretation/valuation well-formedness, substitution preservation, bidirectional variable-renaming validity, and verified semantic congruence for replacing an equal-valued subterm in a literal. Still needs the exact calculus contract, standardized-parent/unifier bridge, and complete general rule entailment theorem. |
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution application and duplicate-domain checking are verified in the first-order prototype. There is no general unifier/MGU checker, position/replacement replay, standardization-apart implementation, or resource-bounded term IR. |
 | M3 — Superposition checker | **PARTIAL** | `superposition_checker.rs` verifies a ground unit fragment; `variable_superposition.rs` checks and proves one fixed variable-bearing two-literal schema with whole-target substitution. General term-tree certificates, arbitrary positions, clauses, ordering, and c502 remain unsupported/unanalysed. |
 | M4 — Proof-DAG validation | **TODO** | No proof graph, parent closure, rule dispatcher, or empty-clause refutation checker. |
@@ -22,7 +22,7 @@ the item itself is explicitly marked `ABANDONED`.
 | M7 — Assurance/release gates | **TODO** | No supported-rule manifest, full assurance case, mutation campaign, or release/default-enable gate. |
 
 **What is DONE now:** the pinned local command `formal/superposition-checker/verify.sh`
-passes all four Verus files (currently `5`, `28`, `5`, and `5` verified functions respectively),
+passes all four Verus files (currently `5`, `33`, `5`, and `5` verified functions respectively),
 and the existing Rust regression `rejects_swv406_c502_archived_target_specialization`
 passes. These results establish only the current narrow verified artifacts; they
 do not complete M0–M3 or decide c502.
@@ -195,8 +195,17 @@ Avoid relying on a parser that silently drops unsupported constructs.
   substitutions whose composition acts as the identity on every variable; this
   covers bijective variable renamings. The theorem takes the inverse pair as a
   premise, while executable freshness/injectivity checking remains M2 work.
-- **TODO — DIFFICULT:** specify the exact ordinary superposition rule whose
-  soundness follows from these semantics.
+- **DONE:** define recursive first-occurrence replacement and prove equality
+  congruence through arbitrary unary/binary term contexts and predicate/equality
+  atoms; a replaced literal preserves truth when the replaced and replacement
+  terms have equal denotation.
+- **PARTIAL:** `superposition_context_sound` combines a positive source equality,
+  equal-valued selected source/target terms, and source/target clause contexts
+  to prove the context-preserving conclusion is entailed. The missing bridge is
+  a checked standardized-parent substitution/unifier certificate and the exact
+  rule contract (including ordering/selection if required).
+- **TODO — DIFFICULT:** finish the exact ordinary superposition rule contract
+  and prove its universally quantified, clause-level entailment theorem.
 
 **Deliverables**
 
@@ -233,15 +242,21 @@ Avoid relying on a parser that silently drops unsupported constructs.
   literal of the clause.
 - **DONE:** prove clause validity invariant under a substitution with a
   two-sided variable-renaming inverse.
+- **DONE:** prove first-order congruence for replacing an equal-valued subterm
+  in a literal; the local context-soundness lemma applies that result to the
+  superposition shape.
 - **TODO:** identify precisely which freshness conditions the inference rule
-  requires and specify the exact calculus. Decide whether rigidity is a
-  soundness condition, a completeness/performance restriction, or a necessary
-  condition of a narrower rule before encoding it.
+  requires and specify the exact calculus, including ordered-calculus
+  conditions. Decide whether rigidity is a soundness condition, a
+  completeness/performance restriction, or a necessary condition of a narrower
+  rule before encoding it.
 - First-order core now includes universal-clause instance and
   atom/literal/clause substitution-preservation lemmas, plus a small
   ground-source, target-variable superposition-shaped entailment example. It
-  proves entailment for that explicitly constrained case; specify and prove the
-  full rule theorem before claiming general superposition soundness.
+  proves entailment for that explicitly constrained case; the new local context
+  theorem handles arbitrary term contexts semantically, but prove the full rule
+  theorem and certificate bridge before claiming general superposition
+  soundness.
 - A separate `superposition_checker.rs` now verifies executable acceptance and
   a semantic soundness theorem for positive ground unit equalities rewriting
   whole unary-predicate unit arguments. It is the first actual checker slice;

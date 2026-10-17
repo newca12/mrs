@@ -130,6 +130,86 @@ spec fn eval(term: Term, interp: Interpretation, valuation: Valuation) -> u64
     }
 }
 
+/// Replace the first occurrence of `needle` in a term, searching left to
+/// right. The Boolean records whether a replacement was performed.
+spec fn replace_term(term: Term, needle: Term, replacement: Term) -> (Term, bool)
+    decreases term
+{
+    if term == needle {
+        (replacement, true)
+    } else {
+        match term {
+            Term::Var(_) | Term::Const(_) => (term, false),
+            Term::App1(f, child) => {
+                let (child2, changed) = replace_term(*child, needle, replacement);
+                (Term::App1(f, Box::new(child2)), changed)
+            },
+            Term::App2(f, left, right) => {
+                let (left2, changed_left) = replace_term(*left, needle, replacement);
+                if changed_left {
+                    (Term::App2(f, Box::new(left2), right), true)
+                } else {
+                    let (right2, changed_right) = replace_term(*right, needle, replacement);
+                    (Term::App2(f, left, Box::new(right2)), changed_right)
+                }
+            },
+        }
+    }
+}
+
+/// First-order function interpretations are congruent: replacing an
+/// occurrence by a term with the same denotation preserves the whole term.
+proof fn eval_after_replacing_equal_subterm(
+    term: Term,
+    needle: Term,
+    replacement: Term,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    requires
+        interp.functions.is_full(),
+        eval(needle, interp, valuation) == eval(replacement, interp, valuation),
+    ensures
+        replace_term(term, needle, replacement).1
+            ==> eval(replace_term(term, needle, replacement).0, interp, valuation)
+                == eval(term, interp, valuation)
+    decreases term
+{
+    if term == needle {
+        assert(replace_term(term, needle, replacement) == (replacement, true));
+    } else {
+        match term {
+            Term::Var(_) | Term::Const(_) => {},
+            Term::App1(f, child) => {
+                eval_after_replacing_equal_subterm(
+                    *child, needle, replacement, interp, valuation,
+                );
+                if replace_term(*child, needle, replacement).1 {
+                    assert(eval(replace_term(*child, needle, replacement).0, interp, valuation)
+                        == eval(*child, interp, valuation));
+                }
+            },
+            Term::App2(f, left, right) => {
+                eval_after_replacing_equal_subterm(
+                    *left, needle, replacement, interp, valuation,
+                );
+                if replace_term(*left, needle, replacement).1 {
+                    assert(eval(replace_term(*left, needle, replacement).0, interp, valuation)
+                        == eval(*left, interp, valuation));
+                } else {
+                    eval_after_replacing_equal_subterm(
+                        *right, needle, replacement, interp, valuation,
+                    );
+                    if replace_term(*right, needle, replacement).1 {
+                        assert(eval(replace_term(*right, needle, replacement).0, interp, valuation)
+                            == eval(*right, interp, valuation));
+                    }
+                }
+            },
+        }
+    }
+}
+
 proof fn eval_in_domain(term: Term, interp: Interpretation, valuation: Valuation)
     requires
         interpretation_well_formed(interp),
@@ -265,6 +345,157 @@ spec fn atom_holds(atom: Atom, interp: Interpretation, valuation: Valuation) -> 
             seq![eval(*left, interp, valuation), eval(*right, interp, valuation)],
         )],
         Atom::Eq(left, right) => eval(left, interp, valuation) == eval(right, interp, valuation),
+    }
+}
+
+/// Replace one occurrence in an atom's term arguments, searching in argument
+/// order. Predicate symbols and literal polarity are unchanged.
+spec fn replace_atom(atom: Atom, needle: Term, replacement: Term) -> (Atom, bool)
+    decreases atom
+{
+    match atom {
+        Atom::Pred0(p) => (Atom::Pred0(p), false),
+        Atom::Pred1(p, arg) => {
+            let (arg2, changed) = replace_term(*arg, needle, replacement);
+            (Atom::Pred1(p, Box::new(arg2)), changed)
+        },
+        Atom::Pred2(p, left, right) => {
+            let (left2, changed_left) = replace_term(*left, needle, replacement);
+            if changed_left {
+                (Atom::Pred2(p, Box::new(left2), right), true)
+            } else {
+                let (right2, changed_right) = replace_term(*right, needle, replacement);
+                (Atom::Pred2(p, left, Box::new(right2)), changed_right)
+            }
+        },
+        Atom::Eq(left, right) => {
+            let (left2, changed_left) = replace_term(left, needle, replacement);
+            if changed_left {
+                (Atom::Eq(left2, right), true)
+            } else {
+                let (right2, changed_right) = replace_term(right, needle, replacement);
+                (Atom::Eq(left, right2), changed_right)
+            }
+        },
+    }
+}
+
+proof fn atom_holds_after_equal_subterm_replacement(
+    atom: Atom,
+    needle: Term,
+    replacement: Term,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    requires
+        interp.functions.is_full(),
+        interp.predicates.is_full(),
+        eval(needle, interp, valuation) == eval(replacement, interp, valuation),
+    ensures replace_atom(atom, needle, replacement).1
+        ==> atom_holds(replace_atom(atom, needle, replacement).0, interp, valuation)
+            == atom_holds(atom, interp, valuation)
+    decreases atom
+{
+    match atom {
+        Atom::Pred0(_) => {},
+        Atom::Pred1(_, arg) => {
+            eval_after_replacing_equal_subterm(*arg, needle, replacement, interp, valuation);
+        },
+        Atom::Pred2(_, left, right) => {
+            eval_after_replacing_equal_subterm(*left, needle, replacement, interp, valuation);
+            if !replace_term(*left, needle, replacement).1 {
+                eval_after_replacing_equal_subterm(*right, needle, replacement, interp, valuation);
+            }
+        },
+        Atom::Eq(left, right) => {
+            eval_after_replacing_equal_subterm(left, needle, replacement, interp, valuation);
+            if !replace_term(left, needle, replacement).1 {
+                eval_after_replacing_equal_subterm(right, needle, replacement, interp, valuation);
+            }
+        },
+    }
+}
+
+spec fn replace_literal(literal: Literal, needle: Term, replacement: Term) -> (Literal, bool) {
+    let (atom2, changed) = replace_atom(literal.atom, needle, replacement);
+    (Literal { positive: literal.positive, atom: atom2 }, changed)
+}
+
+proof fn literal_holds_after_equal_subterm_replacement(
+    literal: Literal,
+    needle: Term,
+    replacement: Term,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    requires
+        interp.functions.is_full(),
+        interp.predicates.is_full(),
+        eval(needle, interp, valuation) == eval(replacement, interp, valuation),
+    ensures replace_literal(literal, needle, replacement).1
+        ==> literal_holds(replace_literal(literal, needle, replacement).0, interp, valuation)
+            == literal_holds(literal, interp, valuation)
+{
+    atom_holds_after_equal_subterm_replacement(
+        literal.atom, needle, replacement, interp, valuation,
+    );
+}
+
+/// Semantic core of ordinary superposition. The parents have already been
+/// standardized apart and instantiated by the same proposed unifier. Their
+/// non-selected literals are represented by `source_context` and
+/// `target_context`; `target_literal` is the selected target literal. If the
+/// positive source equality's left side and the selected target subterm have
+/// equal denotation, and the equality holds, replacing that occurrence by the
+/// right side preserves the target literal. Therefore the conclusion context
+/// is entailed by the two instantiated parents.
+proof fn superposition_context_sound(
+    source_context: Clause,
+    source_equality: Literal,
+    target_context: Clause,
+    target_literal: Literal,
+    target_subterm: Term,
+    source_left: Term,
+    source_right: Term,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    requires
+        interp.functions.is_full(),
+        interp.predicates.is_full(),
+        valuation.values.is_full(),
+        source_equality.positive,
+        source_equality.atom == Atom::Eq(source_left, source_right),
+        clause_holds(source_context, interp, valuation)
+            || literal_holds(source_equality, interp, valuation),
+        clause_holds(target_context, interp, valuation)
+            || literal_holds(target_literal, interp, valuation),
+        eval(source_left, interp, valuation) == eval(target_subterm, interp, valuation),
+        replace_literal(target_literal, target_subterm, source_right).1,
+    ensures
+        clause_holds(source_context, interp, valuation)
+            || clause_holds(target_context, interp, valuation)
+            || literal_holds(
+                replace_literal(target_literal, target_subterm, source_right).0,
+                interp,
+                valuation,
+            )
+{
+    if clause_holds(source_context, interp, valuation) {
+    } else if clause_holds(target_context, interp, valuation) {
+    } else {
+        assert(literal_holds(source_equality, interp, valuation));
+        assert(literal_holds(target_literal, interp, valuation));
+        assert(atom_holds(source_equality.atom, interp, valuation));
+        assert(eval(source_left, interp, valuation) == eval(source_right, interp, valuation));
+        assert(eval(target_subterm, interp, valuation) == eval(source_right, interp, valuation));
+        literal_holds_after_equal_subterm_replacement(
+            target_literal,
+            target_subterm,
+            source_right,
+            interp,
+            valuation,
+        );
     }
 }
 
