@@ -2066,6 +2066,21 @@ spec fn exec_term_variables(term: ExecTerm) -> Set<u64>
     }
 }
 
+spec fn exec_term_node_count(term: ExecTerm) -> nat
+    decreases term
+{
+    match term {
+        ExecTerm::Var(_) | ExecTerm::Const(_) => 1,
+        ExecTerm::App1(_, child) => 1 + exec_term_node_count(*child),
+        ExecTerm::App2(_, left, right) => 1 + exec_term_node_count(*left)
+            + exec_term_node_count(*right),
+    }
+}
+
+spec fn exec_clause_node_count(clause: ExecClause) -> nat {
+    clause.literals@.len() as nat
+}
+
 spec fn exec_atom_variables(atom: ExecAtom) -> Set<u64>
     decreases atom
 {
@@ -2293,7 +2308,7 @@ fn collect_clause_variables_exec(
 fn collect_clause_variables_bounded(
     clause: &ExecClause,
     work_limit: usize,
-) -> (result: Option<Vec<u64>>)
+ ) -> (result: Option<Vec<u64>>)
 {
     if work_limit < 8 || clause.literals.len() > 64 { return None; }
     let mut variables: Vec<u64> = Vec::new();
