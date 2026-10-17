@@ -3846,6 +3846,37 @@ fn charge_binding_structure(bindings: &Vec<ExecBinding>, work: &mut usize, limit
     true
 }
 
+fn charge_u64_sequence(path: &Vec<u64>, work: &mut usize, limit: usize) -> (ok: bool)
+    requires *work <= limit
+    ensures *final(work) <= limit
+{
+    if path.len() > limit - *work { return false; }
+    *work += path.len();
+    true
+}
+
+fn charge_certificate_structure(
+    certificate: &SuperpositionCertificate,
+    work: &mut usize,
+    limit: usize,
+) -> (ok: bool)
+    requires *work <= limit
+    ensures *final(work) <= limit
+{
+    if !charge_clause_structure(&certificate.source, work, limit)
+        || !charge_clause_structure(&certificate.target, work, limit)
+        || !charge_clause_structure(&certificate.conclusion, work, limit)
+        || !charge_binding_structure(&certificate.source_freshening, work, limit)
+        || !charge_binding_structure(&certificate.target_freshening, work, limit)
+        || !charge_binding_structure(&certificate.unifier, work, limit)
+        || !charge_u64_sequence(&certificate.target_path, work, limit)
+        || !charge_u64_sequence(&certificate.fresh_target_path, work, limit)
+    {
+        return false;
+    }
+    true
+}
+
 fn lookup_exec(bindings: &Vec<ExecBinding>, variable: u64) -> (result: Option<ExecTerm>)
     ensures
         match result {
@@ -4623,6 +4654,7 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
     while i < dag.nodes.len()
         invariant
             i <= dag.nodes.len(),
+            dag.nodes.len() <= node_limit,
             total_literals <= literal_limit,
             total_parents <= node_limit,
             structural_work <= literal_limit,
@@ -4633,12 +4665,35 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
             || node.kind == ProofNodeKind::Superposition && node.step.is_none()
             || node.kind == ProofNodeKind::Unsupported
             || node.clause.literals.len() > literal_limit - total_literals
-            || node.parents.len() > node_limit - total_parents
         {
             return DagVerdict::Rejected;
         }
+        if node.kind == ProofNodeKind::Superposition {
+            let Some(step) = &node.step else { return DagVerdict::Rejected; };
+            if !charge_certificate_structure(step, &mut structural_work, literal_limit) {
+                return DagVerdict::Rejected;
+            }
+            let mut step_parents: usize = 0;
+            while step_parents < node.parents.len()
+                invariant
+                    step_parents <= node.parents.len(),
+                    total_parents <= node_limit,
+                decreases node.parents.len() - step_parents
+            {
+                if step_parents >= 2 || step_parents >= node_limit - total_parents {
+                    return DagVerdict::Rejected;
+                }
+                total_parents += 1;
+                step_parents += 1;
+            }
+        }
         total_literals += node.clause.literals.len();
-        total_parents += node.parents.len();
+        if node.kind != ProofNodeKind::Superposition {
+            if node.parents.len() > node_limit - total_parents {
+                return DagVerdict::Rejected;
+            }
+            total_parents += node.parents.len();
+        }
         if !charge_clause_structure(&node.clause, &mut structural_work, literal_limit) {
             return DagVerdict::Rejected;
         }
