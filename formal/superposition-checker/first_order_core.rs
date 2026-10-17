@@ -1348,6 +1348,31 @@ pub struct ExecClause {
     literals: Vec<ExecLiteral>,
 }
 
+pub struct SuperpositionCertificate {
+    source: ExecClause,
+    target: ExecClause,
+    source_equality_index: usize,
+    target_literal_index: usize,
+    target_argument_slot: u64,
+    target_path: Vec<u64>,
+    unifier: Vec<ExecBinding>,
+    conclusion: ExecClause,
+}
+
+pub struct Freshening {
+    bindings: Vec<ExecBinding>,
+}
+
+pub struct VariableBudget {
+    visited: usize,
+    limit: usize,
+}
+
+pub struct FreshenResult {
+    freshened: ExecClause,
+    mapping: Vec<ExecBinding>,
+}
+
 spec fn view(term: ExecTerm) -> Term
     decreases term
 {
@@ -1382,6 +1407,392 @@ spec fn view_literal(literal: ExecLiteral) -> Literal {
 spec fn view_clause(clause: ExecClause) -> Clause {
     Clause {
         literals: clause.literals@.map(|_i: int, literal: ExecLiteral| view_literal(literal)),
+    }
+}
+
+spec fn exec_term_variables(term: ExecTerm) -> Set<u64>
+    decreases term
+{
+    match term {
+        ExecTerm::Var(v) => Set::empty().insert(v),
+        ExecTerm::Const(_) => Set::empty(),
+        ExecTerm::App1(_, child) => exec_term_variables(*child),
+        ExecTerm::App2(_, left, right) =>
+            exec_term_variables(*left).union(exec_term_variables(*right)),
+    }
+}
+
+spec fn exec_atom_variables(atom: ExecAtom) -> Set<u64>
+    decreases atom
+{
+    match atom {
+        ExecAtom::Pred0(_) => Set::empty(),
+        ExecAtom::Pred1(_, arg) => exec_term_variables(*arg),
+        ExecAtom::Pred2(_, left, right) =>
+            exec_term_variables(*left).union(exec_term_variables(*right)),
+        ExecAtom::Eq(left, right) =>
+            exec_term_variables(left).union(exec_term_variables(right)),
+    }
+}
+
+spec fn exec_clause_variables(clause: ExecClause) -> Set<u64> {
+    Set::new(|v: u64| exists|i: int| 0 <= i < clause.literals@.len()
+        && exec_atom_variables(clause.literals@[i].atom).contains(v)).unwrap()
+}
+
+spec fn renamed_variable(sigma: Substitution, variable: u64) -> Option<u64> {
+    match lookup(sigma, variable) {
+        Some(Term::Var(v)) => Some(v),
+        _ => None,
+    }
+}
+
+spec fn finite_renaming_injective(sigma: Substitution) -> bool {
+    forall|x: u64, y: u64| x != y
+        && lookup(sigma, x).is_some()
+        && lookup(sigma, y).is_some()
+        ==> renamed_variable(sigma, x) != renamed_variable(sigma, y)
+}
+
+spec fn sets_disjoint(left: Set<u64>, right: Set<u64>) -> bool {
+    forall|v: u64| left.contains(v) ==> !right.contains(v)
+}
+
+spec fn freshening_valid(
+    variables: Set<u64>,
+    sigma: Substitution,
+    avoid: Set<u64>,
+) -> bool {
+    domain_unique(sigma)
+        && finite_renaming_injective(sigma)
+        && forall|v: u64| variables.contains(v)
+            ==> renamed_variable(sigma, v).is_some()
+        && forall|v: u64| variables.contains(v)
+            ==> !avoid.contains(renamed_variable(sigma, v).unwrap())
+}
+
+spec fn freshening_sequence_valid(
+    variables: Seq<u64>,
+    avoid: Seq<u64>,
+    sigma: Substitution,
+) -> bool {
+    domain_unique(sigma)
+        && forall|i: int| 0 <= i < variables.len()
+            ==> renamed_variable(sigma, variables[i]).is_some()
+                && !avoid.contains(renamed_variable(sigma, variables[i]).unwrap())
+        && forall|i: int, j: int| 0 <= i < j < variables.len()
+            && variables[i] != variables[j]
+            ==> renamed_variable(sigma, variables[i]).is_some()
+                && renamed_variable(sigma, variables[j]).is_some()
+                && renamed_variable(sigma, variables[i])
+                    != renamed_variable(sigma, variables[j])
+}
+
+spec fn mapped_variable_set(variables: Set<u64>, sigma: Substitution) -> Set<u64> {
+    Set::new(|fresh: u64| exists|source: u64|
+        variables.contains(source) && renamed_variable(sigma, source) == Some(fresh)).unwrap()
+}
+
+spec fn standardized_apart_valid(left: ExecClause, right: ExecClause, sigma_left: Substitution,
+    sigma_right: Substitution) -> bool
+{
+    freshening_valid(exec_clause_variables(left), sigma_left, exec_clause_variables(right))
+        && freshening_valid(exec_clause_variables(right), sigma_right,
+            mapped_variable_set(exec_clause_variables(left), sigma_left))
+        && sets_disjoint(
+            mapped_variable_set(exec_clause_variables(left), sigma_left),
+            mapped_variable_set(exec_clause_variables(right), sigma_right),
+        )
+}
+
+spec fn collection_complete(variables: Seq<u64>, expected: Set<u64>) -> bool {
+    forall|v: u64| expected.contains(v) ==> variables.contains(v)
+}
+
+spec fn collection_exact(variables: Seq<u64>, expected: Set<u64>) -> bool {
+    collection_complete(variables, expected)
+        && forall|v: u64| variables.contains(v) ==> expected.contains(v)
+}
+
+proof fn append_keeps_set_member(values: Seq<u64>, value: u64, member: u64)
+    requires values.contains(member)
+    ensures values.push(value).contains(member)
+{
+    assert(exists|i: int| 0 <= i < values.len() && values[i] == member);
+    let i = choose|i: int| 0 <= i < values.len() && values[i] == member;
+    assert(i < values.push(value).len());
+    assert(values.push(value)[i] == member);
+}
+
+proof fn add_variable_keeps_old_members(values: Seq<u64>, variable: u64, member: u64)
+    requires values.contains(member)
+    ensures values.contains(variable)
+        || values.push(variable).contains(member)
+{
+    if values.contains(variable) {
+        assert(values.contains(variable));
+    } else {
+        append_keeps_set_member(values, variable, member);
+    }
+}
+
+fn contains_u64(values: &Vec<u64>, needle: u64) -> (found: bool)
+    ensures found == values@.contains(needle)
+{
+    let mut i: usize = 0;
+    while i < values.len()
+        invariant
+            i <= values.len(),
+            forall|k: int| 0 <= k < i as int ==> values@[k] != needle,
+        decreases values.len() - i
+    {
+        if values[i] == needle {
+            assert(values@.contains(needle));
+            return true;
+        }
+        assert(values@[i as int] != needle);
+        i += 1;
+    }
+    assert forall|k: int| 0 <= k < values@.len() implies values@[k] != needle by {
+        assert(k < i as int);
+    }
+    assert(!values@.contains(needle));
+    false
+}
+
+fn consume_work(work: &mut usize, limit: usize) -> (ok: bool)
+    ensures
+        ok ==> *final(work) == old(work) + 1,
+        !ok ==> *final(work) == *old(work),
+{
+    if *work >= limit { false } else { *work += 1; true }
+}
+
+fn add_variable(values: &mut Vec<u64>, variable: u64) {
+    let found = contains_u64(values, variable);
+    if !found {
+        values.push(variable);
+    }
+}
+
+fn collect_term_variables_exec(
+    term: &ExecTerm,
+    variables: &mut Vec<u64>,
+    work: &mut usize,
+    limit: usize,
+) -> (ok: bool)
+    decreases term
+{
+    match term {
+        ExecTerm::Var(v) => {
+            if *work >= limit { return false; }
+            *work += 1;
+            add_variable(variables, *v);
+            true
+        },
+        ExecTerm::Const(_) => {
+            if *work >= limit { false } else { *work += 1; true }
+        },
+        ExecTerm::App1(_, child) => {
+            if *work >= limit { return false; }
+            *work += 1;
+            collect_term_variables_exec(child, variables, work, limit)
+        },
+        ExecTerm::App2(_, left, right) => {
+            if *work >= limit { return false; }
+            *work += 1;
+            collect_term_variables_exec(left, variables, work, limit)
+                && collect_term_variables_exec(right, variables, work, limit)
+        },
+    }
+}
+
+fn collect_clause_variables_exec(
+    clause: &ExecClause,
+    variables: &mut Vec<u64>,
+    work: &mut usize,
+    limit: usize,
+) -> (ok: bool)
+{
+    if *work >= limit { return false; }
+    *work += 1;
+    let mut literal_index: usize = 0;
+    while literal_index < clause.literals.len()
+        invariant literal_index <= clause.literals.len()
+        decreases clause.literals.len() - literal_index
+    {
+        match &clause.literals[literal_index].atom {
+            ExecAtom::Pred0(_) => {},
+            ExecAtom::Pred1(_, arg) => {
+                if !collect_term_variables_exec(arg, variables, work, limit) { return false; }
+            },
+            ExecAtom::Pred2(_, left, right) => {
+                if !collect_term_variables_exec(left, variables, work, limit) { return false; }
+                if !collect_term_variables_exec(right, variables, work, limit) { return false; }
+            },
+            ExecAtom::Eq(left, right) => {
+                if !collect_term_variables_exec(left, variables, work, limit) { return false; }
+                if !collect_term_variables_exec(right, variables, work, limit) { return false; }
+            },
+        }
+        literal_index += 1;
+    }
+    true
+}
+
+fn collect_clause_variables_bounded(
+    clause: &ExecClause,
+    work_limit: usize,
+) -> (result: Option<Vec<u64>>)
+{
+    if work_limit < 8 || clause.literals.len() > 64 { return None; }
+    let mut variables: Vec<u64> = Vec::new();
+    let mut work: usize = 0;
+    if collect_clause_variables_exec(clause, &mut variables, &mut work, work_limit) {
+        Some(variables)
+    } else {
+        None
+    }
+}
+
+fn check_freshening(
+    original: &Vec<u64>,
+    avoid: &Vec<u64>,
+    bindings: &Vec<ExecBinding>,
+    work_limit: usize,
+) -> (valid: bool)
+{
+    if !check_domain_unique(bindings) {
+        return false;
+    }
+    let mut i: usize = 0;
+    let mut work: usize = 0;
+    while i < original.len()
+        invariant
+            i <= original.len(),
+        decreases original.len() - i
+    {
+        if work >= work_limit { return false; }
+        work += 1;
+        let Some(mapped) = lookup_exec(bindings, original[i]) else { return false; };
+        let ExecTerm::Var(fresh) = mapped else { return false; };
+        if contains_u64(avoid, fresh) { return false; }
+        assert(renamed_variable(view_subst(bindings@), original@[i as int]) == Some(fresh));
+        assert(!avoid@.contains(fresh));
+        let mut j: usize = 0;
+        while j < i
+            invariant j <= i, i < original.len(), work <= work_limit,
+            decreases i - j
+        {
+            assert(j < original.len());
+            assert(i < original.len());
+            let same_source = original[j] == original[i];
+            let mut different_fresh = false;
+            if !same_source {
+                let Some(previous) = lookup_exec(bindings, original[j]) else { return false; };
+                let ExecTerm::Var(previous_fresh) = previous else { return false; };
+                if fresh == previous_fresh { return false; }
+                different_fresh = true;
+                assert(renamed_variable(view_subst(bindings@), original@[j as int])
+                    == Some(previous_fresh));
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    true
+}
+
+fn freshen_clause_apart(
+    clause: &ExecClause,
+    avoid: &Vec<u64>,
+    bindings: &Vec<ExecBinding>,
+    work_limit: usize,
+) -> (result: Option<ExecClause>)
+{
+    let Some(variables) = collect_clause_variables_bounded(clause, work_limit) else {
+        return None;
+    };
+    if !check_freshening(&variables, avoid, bindings, work_limit) {
+        return None;
+    }
+    Some(substitute_clause_exec(clause, bindings))
+}
+
+fn check_standardized_apart_pair(
+    left: &ExecClause,
+    right: &ExecClause,
+    left_mapping: &Vec<ExecBinding>,
+    right_mapping: &Vec<ExecBinding>,
+    work_limit: usize,
+) -> (valid: bool)
+{
+    if work_limit == 0 { return false; }
+    let pair_budget = work_limit / 4;
+    let Some(left_variables) = collect_clause_variables_bounded(left, work_limit) else {
+        return false;
+    };
+    let Some(right_variables) = collect_clause_variables_bounded(right, work_limit) else {
+        return false;
+    };
+    if !check_freshening(&left_variables, &right_variables, left_mapping, pair_budget) {
+        return false;
+    }
+    let Some(fresh_left) = freshen_clause_apart(left, &right_variables, left_mapping, pair_budget) else {
+        return false;
+    };
+    let mut avoid: Vec<u64> = Vec::new();
+    let mut i: usize = 0;
+    while i < right_variables.len()
+        invariant i <= right_variables.len()
+        decreases right_variables.len() - i
+    {
+        let value = right_variables[i];
+        if !contains_u64(&avoid, value) { avoid.push(value); }
+        i += 1;
+    }
+    let Some(fresh_left_variables) = collect_clause_variables_bounded(&fresh_left, pair_budget) else {
+        return false;
+    };
+    let mut k: usize = 0;
+    while k < fresh_left_variables.len()
+        invariant k <= fresh_left_variables.len()
+        decreases fresh_left_variables.len() - k
+    {
+        let value = fresh_left_variables[k];
+        if !contains_u64(&avoid, value) { avoid.push(value); }
+        k += 1;
+    }
+    if !check_freshening(&right_variables, &avoid, right_mapping, pair_budget) {
+        return false;
+    }
+    let Some(fresh_right) = freshen_clause_apart(right, &avoid, right_mapping, pair_budget) else {
+        return false;
+    };
+    let Some(fresh_right_variables) = collect_clause_variables_bounded(&fresh_right, pair_budget) else {
+        return false;
+    };
+    let mut j: usize = 0;
+    while j < fresh_right_variables.len()
+        invariant j <= fresh_right_variables.len()
+        decreases fresh_right_variables.len() - j
+    {
+        if contains_u64(&fresh_left_variables, fresh_right_variables[j]) {
+            return false;
+        }
+        j += 1;
+    }
+    true
+}
+
+spec fn exec_terms_bound(term: ExecTerm, bound: nat) -> bool
+    decreases term
+{
+    match term {
+        ExecTerm::Var(_) | ExecTerm::Const(_) => true,
+        ExecTerm::App1(_, child) => exec_terms_bound(*child, bound),
+        ExecTerm::App2(_, left, right) =>
+            exec_terms_bound(*left, bound) && exec_terms_bound(*right, bound),
     }
 }
 
@@ -1661,6 +2072,89 @@ fn executable_clause_replay_example()
 
     let invalid_index = replace_clause_literal_exec(&instance, 2, 0, &path, &replacement);
     assert(invalid_index.is_none());
+}
+
+fn executable_standardization_apart_example()
+{
+    let left = ExecClause {
+        literals: vec![ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Var(7))),
+        }],
+    };
+    let right = ExecClause {
+        literals: vec![ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Pred1(2, Box::new(ExecTerm::App1(
+                3, Box::new(ExecTerm::Var(7)),
+            ))),
+        }],
+    };
+    let left_variables = collect_clause_variables_bounded(&left, 10000);
+    let right_variables = collect_clause_variables_bounded(&right, 10000);
+    let left_variables = match left_variables {
+        Some(vars) => vars,
+        None => Vec::new(),
+    };
+    let right_variables = match right_variables {
+        Some(vars) => vars,
+        None => Vec::new(),
+    };
+
+    let left_mapping = vec![ExecBinding { variable: 7, replacement: ExecTerm::Var(100) }];
+    let right_mapping = vec![ExecBinding { variable: 7, replacement: ExecTerm::Var(200) }];
+    let valid = check_standardized_apart_pair(
+        &left, &right, &left_mapping, &right_mapping, 100000,
+    );
+    let _valid_step = valid;
+    let colliding_mapping = vec![ExecBinding {
+        variable: 7,
+        replacement: ExecTerm::Var(100),
+    }];
+    let collision = check_standardized_apart_pair(
+        &left, &right, &left_mapping, &colliding_mapping, 100000,
+    );
+    let _collision_result = collision;
+
+    let duplicate_sources = vec![
+        ExecBinding { variable: 7, replacement: ExecTerm::Var(300) },
+        ExecBinding { variable: 8, replacement: ExecTerm::Var(300) },
+    ];
+}
+
+fn executable_superposition_certificate_example()
+{
+    let source = ExecClause {
+        literals: vec![ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Eq(
+                ExecTerm::App1(4, Box::new(ExecTerm::Const(1))),
+                ExecTerm::Const(2),
+            ),
+        }],
+    };
+    let target = ExecClause {
+        literals: vec![ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Pred1(8, Box::new(ExecTerm::App1(
+                4, Box::new(ExecTerm::Const(1)),
+            ))),
+        }],
+    };
+    let certificate = SuperpositionCertificate {
+        source,
+        target,
+        source_equality_index: 0,
+        target_literal_index: 0,
+        target_argument_slot: 0,
+        target_path: Vec::new(),
+        unifier: Vec::new(),
+        conclusion: ExecClause { literals: vec![ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Pred1(8, Box::new(ExecTerm::Const(2))),
+        }] },
+    };
+    let _accepted = check_superposition_and_replay(&certificate, 1000);
 }
 
 fn copy_literal(literal: &ExecLiteral) -> (copy: ExecLiteral)
@@ -1957,6 +2451,116 @@ fn check_unifier(left: &ExecTerm, right: &ExecTerm, bindings: &Vec<ExecBinding>)
     same
 }
 
+fn selected_atom_term_exec(
+    atom: &ExecAtom,
+    slot: u64,
+    path: &Vec<u64>,
+) -> (result: Option<ExecTerm>)
+{
+    let root = match atom {
+        ExecAtom::Pred0(_) => return None,
+        ExecAtom::Pred1(_, arg) => {
+            if slot != 0 { return None; }
+            copy_term(arg)
+        },
+        ExecAtom::Pred2(_, left, right) => {
+            if slot == 0 { copy_term(left) }
+            else if slot == 1 { copy_term(right) }
+            else { return None; }
+        },
+        ExecAtom::Eq(left, right) => {
+            if slot == 0 { copy_term(left) }
+            else if slot == 1 { copy_term(right) }
+            else { return None; }
+        },
+    };
+    subterm_at_exec(&root, path, 0)
+}
+
+fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_limit: usize)
+    -> (accepted: bool)
+{
+    if certificate.source.literals.len() > work_limit
+        || certificate.target.literals.len() > work_limit - certificate.source.literals.len()
+    {
+        return false;
+    }
+    if certificate.source_equality_index >= certificate.source.literals.len()
+        || certificate.target_literal_index >= certificate.target.literals.len()
+    {
+        return false;
+    }
+
+    let source_literal = &certificate.source.literals[certificate.source_equality_index];
+    if !source_literal.positive { return false; }
+    let ExecAtom::Eq(source_left, source_right) = &source_literal.atom else { return false; };
+    if let ExecTerm::Var(_) = source_left { return false; }
+
+    let target_subterm_result = selected_atom_term_exec(
+        &certificate.target.literals[certificate.target_literal_index].atom,
+        certificate.target_argument_slot,
+        &certificate.target_path,
+    );
+    let Some(target_subterm) = target_subterm_result else { return false; };
+    let unifies = check_unifier(source_left, &target_subterm, &certificate.unifier);
+    if !unifies {
+        return false;
+    }
+    true
+}
+
+fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_limit: usize)
+    -> (accepted: bool)
+{
+    if !check_superposition_certificate(certificate, work_limit) {
+        return false;
+    }
+    if certificate.source_equality_index >= certificate.source.literals.len()
+        || certificate.target_literal_index >= certificate.target.literals.len()
+    {
+        return false;
+    }
+    let instantiated_source = substitute_clause_exec(
+        &certificate.source, &certificate.unifier,
+    );
+    let instantiated_target = substitute_clause_exec(
+        &certificate.target, &certificate.unifier,
+    );
+    if certificate.source_equality_index >= instantiated_source.literals.len()
+        || certificate.target_literal_index >= instantiated_target.literals.len()
+    {
+        return false;
+    }
+
+    let source_literal = &instantiated_source.literals[certificate.source_equality_index];
+    let ExecAtom::Eq(_, source_right) = &source_literal.atom else { return false; };
+    let Some(rewritten) = replace_clause_literal_exec(
+        &instantiated_target,
+        certificate.target_literal_index,
+        certificate.target_argument_slot,
+        &certificate.target_path,
+        source_right,
+    ) else { return false; };
+
+    let conclusion = &certificate.conclusion;
+    if rewritten.literals.len() != conclusion.literals.len() {
+        return false;
+    }
+    let mut i: usize = 0;
+    while i < rewritten.literals.len()
+        invariant
+            i <= rewritten.literals.len(),
+            rewritten.literals.len() == conclusion.literals.len(),
+        decreases rewritten.literals.len() - i
+    {
+        if rewritten.literals[i] != conclusion.literals[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 /// The semantic fact behind instance substitution for a universally closed
 /// clause: any term substitution maps a term variable to its chosen instance.
 spec fn variable_instance() -> bool {
@@ -1976,6 +2580,8 @@ fn main() {
     proof { variable_substitution_is_an_instance(); }
     executable_literal_replay_examples();
     executable_clause_replay_example();
+    executable_standardization_apart_example();
+    executable_superposition_certificate_example();
 
     // Supplied unifier certificate binding target-side variable 42 to
     // constant 9. Domain validity and simultaneous application are checked.
