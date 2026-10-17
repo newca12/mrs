@@ -2157,6 +2157,14 @@ fn check_freshening(
     while i < original.len()
         invariant
             i <= original.len(),
+            forall|k: int| 0 <= k < i as int
+                ==> renamed_variable(view_subst(bindings@), original@[k]).is_some()
+                    && !avoid@.contains(
+                        renamed_variable(view_subst(bindings@), original@[k]).unwrap()),
+            forall|k: int, l: int| 0 <= k < l < i as int
+                && original@[k] != original@[l]
+                ==> renamed_variable(view_subst(bindings@), original@[k])
+                    != renamed_variable(view_subst(bindings@), original@[l]),
         decreases original.len() - i
     {
         if work >= work_limit { return false; }
@@ -2168,22 +2176,43 @@ fn check_freshening(
         assert(!avoid@.contains(fresh));
         let mut j: usize = 0;
         while j < i
-            invariant j <= i, i < original.len(), work <= work_limit,
+            invariant
+                j <= i, i < original.len(), work <= work_limit,
+                forall|k: int| 0 <= k < j as int && original@[k] != original@[i as int]
+                    ==> renamed_variable(view_subst(bindings@), original@[k])
+                        != Some(fresh),
             decreases i - j
         {
             assert(j < original.len());
             assert(i < original.len());
             let same_source = original[j] == original[i];
-            let mut different_fresh = false;
+            let mut diff_image = false;
             if !same_source {
                 let Some(previous) = lookup_exec(bindings, original[j]) else { return false; };
                 let ExecTerm::Var(previous_fresh) = previous else { return false; };
                 if fresh == previous_fresh { return false; }
-                different_fresh = true;
+                diff_image = true;
                 assert(renamed_variable(view_subst(bindings@), original@[j as int])
                     == Some(previous_fresh));
             }
+            assert forall|k: int| 0 <= k < (j + 1) as int
+                && original@[k] != original@[i as int]
+                implies renamed_variable(view_subst(bindings@), original@[k])
+                    != Some(fresh) by {
+                if k < j as int {
+                } else {
+                    assert(k == j as int);
+                    assert(!same_source);
+                    assert(diff_image);
+                }
+            }
             j += 1;
+        }
+        assert forall|k: int| 0 <= k < i as int
+            && original@[k] != original@[i as int]
+            implies renamed_variable(view_subst(bindings@), original@[k])
+                != renamed_variable(view_subst(bindings@), original@[i as int]) by {
+            assert(renamed_variable(view_subst(bindings@), original@[i as int]) == Some(fresh));
         }
         i += 1;
     }
@@ -2204,6 +2233,28 @@ fn freshen_clause_apart(
         return None;
     }
     Some(substitute_clause_exec(clause, bindings))
+}
+
+fn freshen_clause_refines_renaming(
+    clause: &ExecClause,
+    avoid: &Vec<u64>,
+    bindings: &Vec<ExecBinding>,
+    work_limit: usize,
+) -> (result: Option<ExecClause>)
+    ensures match result {
+        Some(fresh) => view_clause(fresh)
+            == substitute_clause(view_clause(*clause), view_subst(bindings@)),
+        None => true,
+    }
+{
+    let Some(variables) = collect_clause_variables_bounded(clause, work_limit) else {
+        return None;
+    };
+    if !check_freshening(&variables, avoid, bindings, work_limit) {
+        return None;
+    }
+    let fresh = substitute_clause_exec(clause, bindings);
+    Some(fresh)
 }
 
 fn check_standardized_apart_pair(
