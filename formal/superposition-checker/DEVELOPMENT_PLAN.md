@@ -335,6 +335,11 @@ Avoid relying on a parser that silently drops unsupported constructs.
 - **DONE:** add an executable clause vector/view, refine simultaneous
   substitution over every literal, and add clause-level selected literal/path
   replacement. Out-of-range literal indexes and invalid atom slots fail closed.
+- **DONE, pointwise replacement contract:** `replace_clause_literal_exec` now
+  postconditions that the resulting clause has the same literal count, the
+  selected literal is exactly the position-rewritten literal, and every other
+  literal is preserved in order. The separate relational lemma records the same
+  pointwise shape at the mathematical clause layer.
 - **PARTIAL:** bounded variable collection and finite freshening checks now
   exist. They reject absent/non-variable mappings, mapped IDs in the avoid set,
   non-injective images, mismatched raw/freshened target paths, and explicit work

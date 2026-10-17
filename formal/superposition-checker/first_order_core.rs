@@ -2443,6 +2443,17 @@ fn clause_variables_covered(clause: &ExecClause, variables: &Vec<u64>) -> (cover
     true
 }
 
+proof fn selected_literal_variables_are_clause_variables(
+    clause: ExecClause,
+    literal_index: int,
+    variable: u64,
+)
+    requires
+        0 <= literal_index < clause.literals@.len(),
+        literal_variables(view_literal(clause.literals@[literal_index])).contains(variable),
+    ensures term_clause_view_contains(clause, variable)
+{}
+
 fn consume_work(work: &mut usize, limit: usize) -> (ok: bool)
     ensures
         ok ==> *final(work) == old(work) + 1,
@@ -2722,8 +2733,7 @@ fn freshen_clause_apart(
     let Some(variables) = collect_clause_variables_bounded(clause, work_limit) else {
         return None;
     };
-    let freshening_valid = check_freshening(&variables, avoid, bindings, work_limit);
-    if !freshening_valid {
+    if !check_freshening(&variables, avoid, bindings, work_limit) {
         return None;
     }
     assert(clause_collection_exact(*clause, variables@));
