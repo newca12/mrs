@@ -3773,6 +3773,79 @@ fn copy_term(term: &ExecTerm) -> (copy: ExecTerm)
     }
 }
 
+fn charge_term_structure(term: &ExecTerm, work: &mut usize, limit: usize) -> (ok: bool)
+    requires *work <= limit
+    ensures *final(work) <= limit
+    decreases term
+{
+    if *work >= limit { return false; }
+    *work += 1;
+    match term {
+        ExecTerm::Var(_) | ExecTerm::Const(_) => true,
+        ExecTerm::App1(_, child) => charge_term_structure(child, work, limit),
+        ExecTerm::App2(_, left, right) => {
+            if !charge_term_structure(left, work, limit) { return false; }
+            charge_term_structure(right, work, limit)
+        },
+    }
+}
+
+fn charge_atom_structure(atom: &ExecAtom, work: &mut usize, limit: usize) -> (ok: bool)
+    requires *work <= limit
+    ensures *final(work) <= limit
+    decreases atom
+{
+    if *work >= limit { return false; }
+    *work += 1;
+    match atom {
+        ExecAtom::Pred0(_) => true,
+        ExecAtom::Pred1(_, arg) => charge_term_structure(arg, work, limit),
+        ExecAtom::Pred2(_, left, right) => {
+            if !charge_term_structure(left, work, limit) { return false; }
+            charge_term_structure(right, work, limit)
+        },
+        ExecAtom::Eq(left, right) => {
+            if !charge_term_structure(left, work, limit) { return false; }
+            charge_term_structure(right, work, limit)
+        },
+    }
+}
+
+fn charge_clause_structure(clause: &ExecClause, work: &mut usize, limit: usize) -> (ok: bool)
+    requires *work <= limit
+    ensures *final(work) <= limit
+{
+    let mut i: usize = 0;
+    while i < clause.literals.len()
+        invariant i <= clause.literals.len(), *work <= limit
+        decreases clause.literals.len() - i
+    {
+        if *work >= limit { return false; }
+        *work += 1;
+        if !charge_atom_structure(&clause.literals[i].atom, work, limit) { return false; }
+        i += 1;
+    }
+    true
+}
+
+fn charge_binding_structure(bindings: &Vec<ExecBinding>, work: &mut usize, limit: usize)
+    -> (ok: bool)
+    requires *work <= limit
+    ensures *final(work) <= limit
+{
+    let mut i: usize = 0;
+    while i < bindings.len()
+        invariant i <= bindings.len(), *work <= limit
+        decreases bindings.len() - i
+    {
+        if *work >= limit { return false; }
+        *work += 1;
+        if !charge_term_structure(&bindings[i].replacement, work, limit) { return false; }
+        i += 1;
+    }
+    true
+}
+
 fn lookup_exec(bindings: &Vec<ExecBinding>, variable: u64) -> (result: Option<ExecTerm>)
     ensures
         match result {
@@ -4397,6 +4470,17 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
             + certificate.target.literals.len()
             + certificate.conclusion.literals.len() <= work_limit
 {
+    let mut structural_work: usize = 0;
+    if !charge_clause_structure(&certificate.source, &mut structural_work, work_limit)
+        || !charge_clause_structure(&certificate.target, &mut structural_work, work_limit)
+        || !charge_clause_structure(&certificate.conclusion, &mut structural_work, work_limit)
+        || !charge_binding_structure(&certificate.source_freshening, &mut structural_work, work_limit)
+        || !charge_binding_structure(&certificate.target_freshening, &mut structural_work, work_limit)
+        || !charge_binding_structure(&certificate.unifier, &mut structural_work, work_limit)
+    {
+        return false;
+    }
+    assert(structural_work <= work_limit);
     if certificate.source.literals.len() > work_limit
         || certificate.target.literals.len() > work_limit - certificate.source.literals.len()
     {

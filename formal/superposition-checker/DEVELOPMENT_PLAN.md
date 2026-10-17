@@ -395,9 +395,11 @@ Avoid relying on a parser that silently drops unsupported constructs.
   its quadratic pair scan when `n²` exceeds the supplied work limit, and
   unifier acceptance exposes that guard. Replay also caps the combined parent
   and conclusion literal counts before materializing standardized clauses and
-  its output. Work across separate checks and derived replay is not cumulatively
-  accounted; a direct local-soundness theorem connection also remains, so this
-  is not a certifying API yet.
+  its output. A structural traversal additionally caps the aggregate nodes in
+  parent/conclusion terms and substitution replacements before replay. Work
+  across separate checks and derived replay is not cumulatively accounted; a
+  direct local-soundness theorem connection also remains, so this is not a
+  certifying API yet.
 - **PARTIAL, proof connection:** the replay refuses target paths that differ
   before/after standardization, and a verified lemma states the selected term
   transforms by the same variable-only renaming. The full accepted-result to
