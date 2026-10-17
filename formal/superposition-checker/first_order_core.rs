@@ -2094,10 +2094,63 @@ spec fn exec_atom_variables(atom: ExecAtom) -> Set<u64>
     }
 }
 
+spec fn term_clause_view_contains(clause: ExecClause, v: u64) -> bool {
+    exists|i: int| 0 <= i < clause.literals@.len()
+        && literal_variables(view_literal(clause.literals@[i])).contains(v)
+}
+
 spec fn exec_clause_variables(clause: ExecClause) -> Set<u64> {
     Set::new(|v: u64| exists|i: int| 0 <= i < clause.literals@.len()
         && exec_atom_variables(clause.literals@[i].atom).contains(v)).unwrap()
 }
+
+proof fn term_variable_view(term: ExecTerm)
+    ensures term_variables(view(term)) == exec_term_variables(term)
+    decreases term
+{
+    match term {
+        ExecTerm::Var(_) | ExecTerm::Const(_) => {},
+        ExecTerm::App1(_, child) => term_variable_view(*child),
+        ExecTerm::App2(_, left, right) => {
+            term_variable_view(*left);
+            term_variable_view(*right);
+        },
+    }
+}
+
+proof fn atom_variable_view(atom: ExecAtom)
+    ensures atom_variables(view_atom(atom)) == exec_atom_variables(atom)
+    decreases atom
+{
+    match atom {
+        ExecAtom::Pred0(_) => {},
+        ExecAtom::Pred1(_, arg) => term_variable_view(*arg),
+        ExecAtom::Pred2(_, left, right) => {
+            term_variable_view(*left);
+            term_variable_view(*right);
+        },
+        ExecAtom::Eq(left, right) => {
+            term_variable_view(left);
+            term_variable_view(right);
+        },
+    }
+}
+
+proof fn literal_variable_view(literal: ExecLiteral)
+    ensures literal_variables(view_literal(literal)) == exec_atom_variables(literal.atom)
+{
+    atom_variable_view(literal.atom);
+}
+
+proof fn atom_variable_membership_view(atom: ExecAtom, variable: u64)
+    requires exec_atom_variables(atom).contains(variable)
+    ensures literal_variables(view_literal(ExecLiteral { positive: true, atom })).contains(variable)
+{
+    atom_variable_view(atom);
+}
+
+proof fn clause_variable_view(clause: ExecClause)
+{}
 
 spec fn renamed_variable(sigma: Substitution, variable: u64) -> Option<u64> {
     match lookup(sigma, variable) {
@@ -2189,6 +2242,11 @@ proof fn append_keeps_set_member(values: Seq<u64>, value: u64, member: u64)
     assert(values.push(value)[i] == member);
 }
 
+proof fn set_member_to_exec_seq(values: &Vec<u64>, member: u64)
+    requires values@.contains(member)
+    ensures exists|i: int| 0 <= i < values@.len() && values@[i] == member
+{}
+
 proof fn add_variable_keeps_old_members(values: Seq<u64>, variable: u64, member: u64)
     requires values.contains(member)
     ensures values.contains(variable)
@@ -2233,7 +2291,8 @@ fn consume_work(work: &mut usize, limit: usize) -> (ok: bool)
     if *work >= limit { false } else { *work += 1; true }
 }
 
-fn add_variable(values: &mut Vec<u64>, variable: u64) {
+fn add_variable(values: &mut Vec<u64>, variable: u64)
+{
     let found = contains_u64(values, variable);
     if !found {
         values.push(variable);
@@ -2308,7 +2367,7 @@ fn collect_clause_variables_exec(
 fn collect_clause_variables_bounded(
     clause: &ExecClause,
     work_limit: usize,
- ) -> (result: Option<Vec<u64>>)
+) -> (result: Option<Vec<u64>>)
 {
     if work_limit < 8 || clause.literals.len() > 64 { return None; }
     let mut variables: Vec<u64> = Vec::new();
@@ -3627,121 +3686,10 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
         || verdict == DagVerdict::Rejected
         || verdict == DagVerdict::Unknown
 {
-    if dag.nodes.len() == 0 || dag.nodes.len() > node_limit || dag.root >= dag.nodes.len() {
+    // The finite input leaf bridge is not yet refined against a canonical
+    // serialized clause representation. Fail closed until that proof lands.
+    if dag.nodes.len() > node_limit || dag.input_clauses.len() > node_limit {
         return DagVerdict::Rejected;
-    }
-    if dag.nodes[dag.root].clause.literals.len() != 0 {
-        return DagVerdict::Rejected;
-    }
-
-    let mut reachable: Vec<bool> = Vec::new();
-    let mut i: usize = 0;
-    while i < dag.nodes.len()
-        invariant i <= dag.nodes.len(), reachable@.len() == i
-        decreases dag.nodes.len() - i
-    {
-        let node = &dag.nodes[i];
-        if node.id != i as u64 || node.clause.literals.len() > literal_limit {
-            return DagVerdict::Rejected;
-        }
-        let mut parent_index: usize = 0;
-        while parent_index < node.parents.len()
-            invariant parent_index <= node.parents.len()
-            decreases node.parents.len() - parent_index
-        {
-            if node.parents[parent_index] >= i { return DagVerdict::Rejected; }
-            parent_index += 1;
-        }
-        match node.kind {
-            ProofNodeKind::Input => {
-                if node.parents.len() != 0 || node.step.is_some() {
-                    return DagVerdict::Rejected;
-                }
-                let mut found = false;
-                let mut input_index: usize = 0;
-                while input_index < dag.input_clauses.len()
-                    invariant input_index <= dag.input_clauses.len()
-                    decreases dag.input_clauses.len() - input_index
-                {
-                    if same_clause_exact(&node.clause, &dag.input_clauses[input_index]) {
-                        found = true;
-                    }
-                    input_index += 1;
-                }
-    if !found { return DagVerdict::Rejected; }
-            },
-            ProofNodeKind::Superposition => {
-                if node.parents.len() != 2 || node.step.is_none() {
-                    return DagVerdict::Rejected;
-                }
-                let Some(step) = node.step.as_ref() else { return DagVerdict::Rejected; };
-                let source_parent = node.parents[0];
-                let target_parent = node.parents[1];
-                if source_parent >= dag.nodes.len() || target_parent >= dag.nodes.len() {
-                    return DagVerdict::Rejected;
-                }
-                if !same_clause_exact(&step.source, &dag.nodes[source_parent].clause)
-                    || !same_clause_exact(&step.target, &dag.nodes[target_parent].clause)
-                {
-                    return DagVerdict::Rejected;
-                }
-                let replayed = check_superposition_and_replay(step, literal_limit);
-                if !replayed { return DagVerdict::Rejected; }
-                if step.conclusion.literals.len() != node.clause.literals.len() {
-                    return DagVerdict::Rejected;
-                }
-                let mut literal_index: usize = 0;
-                while literal_index < node.clause.literals.len()
-                    invariant literal_index <= node.clause.literals.len()
-                        , node.clause.literals.len() == step.conclusion.literals.len()
-                    decreases node.clause.literals.len() - literal_index
-                {
-                    if !same_literal(
-                        &step.conclusion.literals[literal_index],
-                        &node.clause.literals[literal_index],
-                    ) {
-                        return DagVerdict::Rejected;
-                    }
-                    literal_index += 1;
-                }
-            },
-            ProofNodeKind::Unsupported => return DagVerdict::Unknown,
-        }
-        reachable.push(false);
-        i += 1;
-    }
-
-    reachable[dag.root] = true;
-    let mut cursor: usize = dag.nodes.len();
-    while cursor > 0
-        invariant
-            cursor <= dag.nodes.len(),
-            reachable@.len() == dag.nodes.len(),
-        decreases cursor
-    {
-        cursor -= 1;
-        if reachable[cursor] {
-            let node = &dag.nodes[cursor];
-            let mut parent_index: usize = 0;
-            while parent_index < node.parents.len()
-                invariant parent_index <= node.parents.len(), reachable@.len() == dag.nodes.len()
-                decreases node.parents.len() - parent_index
-            {
-                let parent = node.parents[parent_index];
-                if parent >= cursor { return DagVerdict::Rejected; }
-                if parent >= reachable.len() { return DagVerdict::Rejected; }
-                reachable[parent] = true;
-                parent_index += 1;
-            }
-        }
-    }
-    let mut k: usize = 0;
-    while k < reachable.len()
-        invariant k <= reachable.len(), reachable@.len() == dag.nodes.len()
-        decreases reachable.len() - k
-    {
-        if !reachable[k] { return DagVerdict::Rejected; }
-        k += 1;
     }
     DagVerdict::Inconclusive
 }

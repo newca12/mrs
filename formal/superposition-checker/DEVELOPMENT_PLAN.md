@@ -14,9 +14,9 @@ the item itself is explicitly marked `ABANDONED`.
 |---|---|---|
 | M0 — Verus baseline and environment | **PARTIAL** | Verus/Rust versions and Linux x86_64 SHA-256 are pinned; `verify.sh` and regular CI run all formal files. Still needs a clean-checkout run and explicit audit for unchecked assumptions/ignored proof obligations. |
 | M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` proves parent validity survives independent standardization substitutions, a standardized-parent superposition step is semantically sound, and its resolvent clause (source context + target context + rewritten literal) is valid. Remaining: align theorem premises with executable path/unifier replay and settle calculus ordering/side conditions. |
-| M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. Variable-only substitution preserves a selected slot/path, and freshening checks now characterize successful mappings as variable-only, avoid-disjoint, and injective over the supplied variable list. Variable-collector exactness and cumulative resource accounting remain open. |
+| M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. Freshening checks characterize successful mappings as variable-only, avoid-disjoint, and injective over the supplied variable list. Variable-collector model exactness, variable-only substitution postconditions, and cumulative resource accounting remain open. |
 | M3 — Superposition checker | **PARTIAL** | Ground/fixed-schema checkers remain; the general replay API requires identical raw/freshened target paths, injective variable-only freshening maps with disjoint images, supplied-unifier equality, whole-parent substitution, source-equality deletion and exact ordered binary-resolvent comparison. A semantic theorem proves that binary resolvent valid from valid parents under explicit unifier/position equations. The executable-acceptance-to-theorem-premise proof, equivalence modulo literal order/renaming, calculus restrictions, and c502 remain. |
-| M4 — Proof-DAG validation | **PARTIAL** | Added finite proof graph types and a conditional induction theorem from locally entailing steps to input entailment. The structural traversal is incomplete: its input-leaf membership loop is not correct, so it is not safe to use as a validation result and returns only `Inconclusive` on its nominal success path. Exact leaf membership, local node soundness, resource accounting, and a verified DAG acceptance postcondition remain. |
+| M4 — Proof-DAG validation | **PARTIAL** | Added finite proof graph types and a conditional induction theorem from locally entailing steps to input entailment. The public structural entry point rejects graphs over its node limit and returns `Inconclusive` for all in-budget graphs; it cannot validate or certify a graph. Exact leaf membership, local node soundness, resource accounting, and a verified DAG acceptance postcondition remain. |
 | M5 — MRS integration | **TODO** | The Verus executable is not called by `mrs-proof-kernel`; no interchange format or production adapter exists. |
 | M6 — Broader rules | **TODO** | Resolution, AC, demodulation, transformations, and AVATAR/LRAT are not implemented in the Verus checker. |
 | M7 — Assurance/release gates | **TODO** | No supported-rule manifest, full assurance case, mutation campaign, or release/default-enable gate. |
@@ -313,10 +313,12 @@ Avoid relying on a parser that silently drops unsupported constructs.
 - **DONE:** implement executable term path lookup/replacement and verify their
   results refine the mathematical path operations; malformed child indices and
   paths continuing below leaves fail with `None`.
-- **DONE, semantic bridge:** prove a variable-only substitution leaves the
-  selected argument slot/path defined and maps its selected subterm to the
-  substituted selected subterm. The executable checker requires the raw and
-  freshened path sequences to be identical.
+- **PARTIAL, semantic bridge:** a specification lemma states that
+  variable-only substitution preserves selected argument-slot/path traversal.
+  The checker requires the raw and freshened path sequences to be identical.
+  The universal lemma and its executable freshening preconditions still need a
+  reviewed end-to-end proof; do not count the fixed-schema demonstration as the
+  general checker theorem.
 - **DONE:** add executable atom/literal views, refine whole-literal simultaneous
   substitution, and refine selected argument-slot/path replacement. A regression
   exercises a literal with a non-selected argument and rejects an invalid slot.
@@ -328,7 +330,8 @@ Avoid relying on a parser that silently drops unsupported constructs.
   non-injective images, mismatched raw/freshened target paths, and explicit work
   exhaustion. The successful freshening check has a postcondition characterizing
   mappings over the supplied variable list. Refinement of the collector to the
-  true model variable set and cumulative work accounting remain.
+  true model variable set, successful variable-only binding postconditions, and
+  cumulative work accounting remain.
 - **PARTIAL, executable slice:** the step-certificate IR requires independent
   source/target variable maps. It checks bounded freshening and unifier
   conditions, replays the selected target slot/path, forms a binary resolvent,
@@ -480,15 +483,11 @@ freshness conditions must also be justified by the calculus contract.
 
 **Current status**
 
-- **PARTIAL, traversal prototype:** finite proof nodes, topological parent
-  indices, unsupported-step handling, root-empty checking, root-ancestry
-  closure, and partial step-certificate parent/conclusion checks are present in
-  `check_dag_structure`. It returns `Inconclusive` even after structural checks;
-  exact input clause comparison is not yet implemented as a proved executable
-  relation, and it is not a DAG certificate gate.
-- A direct verification attempt found the input-leaf matching loop incomplete;
-  the function is expressly non-certifying until exact input comparison and its
-  executable postcondition are completed.
+- **DONE, fail-closed placeholder:** `check_dag_structure` rejects graphs over
+  the node limit and returns `Inconclusive` for all in-budget graphs. This
+  prevents unproved structural traversal from being interpreted as validation.
+  Reintroduce traversal only with exact clause-comparison refinement and a
+  postcondition justifying its verdict.
 - **DONE, conditional semantic theorem:** induction over topologically ordered
   nodes proves validity from valid inputs given `local_node_entails_from_parents`
   for every inference node; an empty root then implies unsatisfiability.
