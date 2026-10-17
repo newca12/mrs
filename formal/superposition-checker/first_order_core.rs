@@ -1428,7 +1428,7 @@ fn replace_at_exec(
 }
 
 fn check_domain_unique(bindings: &Vec<ExecBinding>) -> (unique: bool)
-    ensures unique ==> domain_unique(view_subst(bindings@))
+    ensures unique == domain_unique(view_subst(bindings@))
 {
     let mut i: usize = 0;
     while i < bindings.len()
@@ -1461,6 +1461,16 @@ fn check_domain_unique(bindings: &Vec<ExecBinding>) -> (unique: bool)
                 assert(bindings@[i as int].variable != bindings@[k].variable);
             }
             if bindings[i].variable == bindings[j].variable {
+                proof {
+                    let p = i as int;
+                    let q = j as int;
+                    assert(0 <= p && p < q && q < bindings@.len());
+                    assert(bindings@[p].variable == bindings@[q].variable);
+                    assert(!domain_unique(view_subst(bindings@))) by {
+                        assert(!(view_subst(bindings@).bindings[p].0
+                            != view_subst(bindings@).bindings[q].0));
+                    }
+                }
                 return false;
             }
             j += 1;
@@ -1552,17 +1562,19 @@ fn same_term(left: &ExecTerm, right: &ExecTerm) -> (same: bool)
 /// compute an MGU; it verifies domain uniqueness and that applying the same
 /// substitution to both selected terms makes them equal.
 fn check_unifier(left: &ExecTerm, right: &ExecTerm, bindings: &Vec<ExecBinding>) -> (unifies: bool)
-    ensures
-        unifies ==> domain_unique(view_subst(bindings@)),
-        unifies ==> apply(view(*left), view_subst(bindings@))
-            == apply(view(*right), view_subst(bindings@)),
+    ensures unifies == (domain_unique(view_subst(bindings@))
+        && apply(view(*left), view_subst(bindings@))
+            == apply(view(*right), view_subst(bindings@)))
 {
     if !check_domain_unique(bindings) {
         return false;
     }
     let left_instance = apply_exec(left, bindings);
     let right_instance = apply_exec(right, bindings);
-    same_term(&left_instance, &right_instance)
+    let same = same_term(&left_instance, &right_instance);
+    assert(same == (apply(view(*left), view_subst(bindings@))
+        == apply(view(*right), view_subst(bindings@))));
+    same
 }
 
 /// The semantic fact behind instance substitution for a universally closed
