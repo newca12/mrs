@@ -4240,7 +4240,7 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
                 .contains(v)
             ==> term_clause_view_contains(certificate.target, v)
         && accepted ==> certificate_selected_source_left(*certificate)
-            == certificate_selected_target_fresh_term(*certificate).unwrap()
+            == selected_target_subterm_after_freshening(*certificate)
         && accepted ==> selected_rewrite_rhs(*certificate)
             == apply(apply(certificate_selected_source_right(*certificate),
                 view_subst(certificate.source_freshening@)), view_subst(certificate.unifier@))

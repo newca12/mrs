@@ -37,11 +37,18 @@ and machine-readable supported-slice declaration.
 
 The checks were verified against the Verus `0.2026.10.04.426d8b0` Linux x86_64
 release with Rust toolchain `1.98.1`; Verus uses its bundled Z3. Results:
-`5 verified, 0 errors` for the original pilot, `19 verified, 0 errors` for
+`5 verified, 0 errors` for the original pilot, `159 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
 
 ## Scope and limitations
+
+The current general replay prototype's intended rule is stated explicitly in
+[`RULE_CONTRACT.md`](RULE_CONTRACT.md). It uses unordered superposition with
+independent standardization-apart maps, a supplied simultaneous one-step
+unifier, whole-parent substitution, and exact ordered conclusion comparison.
+The executable checker and semantic theorem are not yet connected by a proved
+end-to-end refinement theorem.
 
 `first_order_core.rs` adds recursive first-order terms and formal,
 simultaneous-substitution semantics. It includes executable term copying,

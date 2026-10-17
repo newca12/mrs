@@ -15,6 +15,9 @@ in-budget graph and is not a proof checker.
 The machine-readable support declaration is
 [`supported-rules.json`](supported-rules.json). Unsupported rules and
 unimplemented paths must not be treated as certified.
+The intended rule premises and substitution convention are documented in
+[`RULE_CONTRACT.md`](RULE_CONTRACT.md); specifying the contract does not close
+the executable-replay refinement gap.
 
 ## Trusted computing base
 

@@ -13,7 +13,7 @@ the item itself is explicitly marked `ABANDONED`.
 | Milestone | Status | Implemented evidence / remaining gate |
 |---|---|---|
 | M0 — Verus baseline and environment | **PARTIAL** | Verus/Rust versions and Linux x86_64 SHA-256 are pinned; `verify.sh` and regular CI run all formal files. Still needs a clean-checkout run and explicit audit for unchecked assumptions/ignored proof obligations. |
-| M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` proves parent validity survives independent standardization substitutions, a standardized-parent superposition step is semantically sound, and its resolvent clause (source context + target context + rewritten literal) is valid. Remaining: align theorem premises with executable path/unifier replay and settle calculus ordering/side conditions. |
+| M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` proves parent validity survives independent standardization substitutions, a standardized-parent superposition step is semantically sound, and its resolvent clause (source context + target context + rewritten literal) is valid. `RULE_CONTRACT.md` specifies the prototype's unordered rule, freshness, simultaneous-substitution convention, and exact resolvent order. Remaining: bind accepted executable certificates to theorem premises and independently review whether the chosen unordered contract is appropriate for the eventual MRS interchange boundary. |
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. The bounded clause collector now returns only when its variable vector is exact with respect to the mathematical clause variable set (coverage plus a verified no-extraneous-variable pass); term and atom collectors prove coverage and preserve prior variables. The selected-position renaming lemma now takes only a domain-restricted variable-renaming premise for variables occurring in the literal, rather than requiring a globally variable-only substitution. Executable freshening, collector-to-set correspondence, and cumulative resource accounting remain open. |
 | M3 — Superposition checker | **PARTIAL** | Ground/fixed-schema checkers remain; the general replay API requires identical raw/freshened target paths, injective variable-only freshening maps with disjoint images, supplied-unifier equality, whole-parent substitution, source-equality deletion and exact ordered binary-resolvent comparison. A semantic theorem proves that binary resolvent valid from valid parents under explicit unifier/position equations. The executable-acceptance-to-theorem-premise proof, equivalence modulo literal order/renaming, calculus restrictions, and c502 remain. |
 | M4 — Proof-DAG validation | **PARTIAL** | Added finite proof graph types and a conditional induction theorem from locally entailing steps to input entailment. The public structural entry point returns `Unknown` for all structurally in-budget graphs; it cannot validate or certify a graph. Its fail-closed scan bounds aggregate nodes, input clauses, parent edges, literal counts, and clause-term structure, including all superposition certificate inputs; it requires exactly two parent edges for superposition, checks references are in-range and topologically earlier, and rejects unsupported node kinds, input nodes with parents, and superposition nodes without step certificates. Successful structural checks expose these shape and parent-order facts as a postcondition. Exact leaf membership, local node soundness, and a verified DAG acceptance postcondition remain. |
@@ -316,8 +316,11 @@ Avoid relying on a parser that silently drops unsupported constructs.
   selected term, and that the selected source literal is a positive equality
   with a non-variable left side. The accepted selected-term equation is exposed
   under explicit semantic aliases for the freshened source equality side and
-  the target term at the raw selected path. Connecting those facts into the
-  semantic superposition theorem call remains open.
+  the target term at the raw selected path. The relation now includes the
+  unifier on both sides: accepted certificates prove equality of the source
+  left side and selected target term after freshening and unification. This
+  discharges the selected-term equation alone; connecting all accepted replay
+  facts into the semantic theorem call remains open.
 - **DONE:** define path-based term lookup/replacement, argument-slot literal
   lookup/replacement, and prove evaluation/truth preservation at a selected
   position.
@@ -752,9 +755,9 @@ satisfiability/model claims, and unrestricted full TSTP.
   soundness lemma, and forged-field examples (M3 partial).
 - [x] Preserve the archived c502 clauses as a fixture, explicitly marked
   unsupported by the current checker (c502 audit remains TODO).
-- [ ] Specify the exact ordinary superposition rule and required freshness
-  conditions (M1; universal semantics, substitution preservation, and
-  bidirectional variable-renaming validity are now verified).
+- [x] Specify the prototype's unordered superposition rule and required
+  freshness conditions in `RULE_CONTRACT.md` (M1; the production calculus
+  boundary still needs independent review).
 - [x] Add a proposed finite-unifier checker that requires a duplicate-free
   domain and equal terms after simultaneous substitution (M2 initial slice).
 - [x] Exercise positive/negative unifier certificates, including duplicate
@@ -767,8 +770,10 @@ satisfiability/model claims, and unrestricted full TSTP.
 - [x] Specify and prove recursive term substitution/evaluation and lift it to
   atom/literal/clause preservation under total interpretation/valuation domains
   (M1 semantic foundation).
-- [ ] Use it with clause semantics to prove general ordinary superposition
-  soundness and extend the checker beyond ground-unit clauses (M1–M3).
+- [ ] Connect accepted replay end-to-end to the existing general ordinary
+  superposition soundness theorem and extend the checker beyond ground-unit
+  clauses (M1–M3; the semantic theorem exists, while executable refinement is
+  still incomplete).
 - [ ] Encode the exact `SWV406+1:c502` parents/conclusion and relevant context;
   establish whether the substitution was applied consistently and whether the
   conclusion is entailed before changing producer/kernel behavior (M3).

@@ -20,7 +20,7 @@
       "id": "general-standardized-apart-superposition-semantics",
       "module": "first_order_core.rs",
       "status": "verified_semantic_theorem_prototype",
-      "description": "Universally closed clause soundness for independent parent freshening, common unifier substitution, and explicit target position; executable acceptance is not yet proved to discharge all theorem premises.",
+      "description": "Universally closed clause soundness for unordered superposition with independent parent freshening, common simultaneous one-step unifier, whole-parent substitution, and explicit target position; executable acceptance is not yet proved to discharge all theorem premises. See RULE_CONTRACT.md.",
       "production_certification": false
     },
     {
