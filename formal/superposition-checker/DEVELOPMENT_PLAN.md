@@ -364,15 +364,13 @@ Avoid relying on a parser that silently drops unsupported constructs.
   a lookup to a variable term. The attempted lift from this sequence-level fact
   through the clause collector to all model clause variables remains blocked on
   the collector/set representation bridge.
-- **PARTIAL, freshening bridge:** an attempt to compose collector exactness with
-  freshening to obtain a direct “every clause variable maps to a variable term”
-  postcondition has not yet verified; retain the narrower collector and
-  freshening contracts until that composition proof is discharged. The first
-  attempted strengthening of `freshen_clause_apart` was reverted because the
-  checker can succeed through clause validation whose contract does not expose
-  the exact freshening-vector correspondence needed by the desired conclusion.
-  This pinpoints the next proof interface to refine; it does not alter accepted
-  or rejected certificates.
+- **PARTIAL, freshening bridge:** the exact collector/set bridge is now isolated
+  as `renaming_images_cover_clause_variables`, taking the collector's
+  `clause_collection_exact` postcondition and the finite renaming-image
+  predicate and proving that every model-level clause variable has a variable
+  image. `freshen_clause_apart` uses this lemma to expose that property on
+  successful executable freshening. Its complete checker-path derivation and
+  executable renaming conditions still need refinement.
 - **PARTIAL:** bounded variable collection and finite freshening checks now
   exist. They reject absent/non-variable mappings, mapped IDs in the avoid set,
   non-injective images, mismatched raw/freshened target paths, and explicit work
@@ -773,7 +771,9 @@ satisfiability/model claims, and unrestricted full TSTP.
   computation or an occurs-check theorem.
 - [ ] Finish constructor-wide executable/model refinement, occurs-check policy,
   positions, replacement, and
-  standardization-apart before widening the checker (M2).
+  standardization-apart before widening the checker (M2). The collector-exactness
+  to model-variable freshening lemma now verifies as an isolated bridge; proving
+  the executable success condition supplies its finite-map premises remains.
 - [x] Specify and prove recursive term substitution/evaluation and lift it to
   atom/literal/clause preservation under total interpretation/valuation domains
   (M1 semantic foundation).

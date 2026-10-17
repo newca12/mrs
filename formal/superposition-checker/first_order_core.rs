@@ -2326,6 +2326,27 @@ spec fn freshening_images_are_variable(bindings: Seq<ExecBinding>, variables: Se
         ==> renamed_variable(view_subst(bindings), variables[i]).is_some()
 }
 
+proof fn renaming_images_cover_clause_variables(
+    clause: ExecClause,
+    variables: Seq<u64>,
+    bindings: Seq<ExecBinding>,
+    variable: u64,
+)
+    requires
+        clause_collection_exact(clause, variables),
+        term_clause_view_contains(clause, variable),
+        freshening_images_are_variable(bindings, variables),
+    ensures exists|fresh: u64|
+        lookup(view_subst(bindings), variable) == Some(Term::Var(fresh))
+{
+    assert(variables.contains(variable)) by { reveal(clause_collection_exact); }
+    let index = choose|i: int| 0 <= i < variables.len() && variables[i] == variable;
+    assert(renamed_variable(view_subst(bindings), variables[index]).is_some());
+    let fresh = renamed_variable(view_subst(bindings), variable).unwrap();
+    reveal(renamed_variable);
+    assert(lookup(view_subst(bindings), variable) == Some(Term::Var(fresh)));
+}
+
 proof fn freshening_maps_variables_in_selected_literal(
     clause: ExecClause,
     literal_index: int,
@@ -2858,7 +2879,10 @@ fn freshen_clause_apart(
 ) -> (result: Option<ExecClause>)
     ensures match result {
         Some(fresh) => view_clause(fresh)
-            == substitute_clause(view_clause(*clause), view_subst(bindings@)),
+            == substitute_clause(view_clause(*clause), view_subst(bindings@))
+            && forall|v: u64| term_clause_view_contains(*clause, v)
+                ==> exists|fresh_id: u64|
+                    lookup(view_subst(bindings@), v) == Some(Term::Var(fresh_id)),
         None => true,
     }
 {
@@ -2870,9 +2894,19 @@ fn freshen_clause_apart(
         return None;
     }
     assert(clause_collection_exact(*clause, variables@));
+    let renaming_ok = is_variable_renaming(&variables, bindings);
+    assert(renaming_ok == freshening_images_are_variable(bindings@, variables@));
+    if !renaming_ok {
+        return None;
+    }
     let fresh = substitute_clause_exec(clause, bindings);
     assert(view_clause(fresh)
         == substitute_clause(view_clause(*clause), view_subst(bindings@)));
+    assert forall|v: u64| term_clause_view_contains(*clause, v)
+        implies exists|fresh_id: u64|
+            lookup(view_subst(bindings@), v) == Some(Term::Var(fresh_id)) by {
+        renaming_images_cover_clause_variables(*clause, variables@, bindings@, v);
+    }
     Some(fresh)
 }
 
