@@ -328,6 +328,9 @@ Avoid relying on a parser that silently drops unsupported constructs.
   now accepts a variable-only-on-the-clause-variables premise and proves that
   the selected argument-slot/path traversal commutes with substitution. An
   explicit wrapper packages this as the executable freshening position lemma.
+  Certificate replay now separately checks that the target freshening mapping
+  is variable-valued on the selected target literal's variables and exposes
+  that as an accepted-checker postcondition.
   The checker requires raw and freshened path sequences to be identical, but
   the executable certificate has not yet been proved to supply all lemma
   premises end to end; this is not the general checker theorem.

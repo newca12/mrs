@@ -2181,6 +2181,61 @@ proof fn atom_variable_membership_view(atom: ExecAtom, variable: u64)
 proof fn clause_variable_view(clause: ExecClause)
 {}
 
+proof fn freshening_maps_clause_variables(
+    clause: ExecClause,
+    variables: Seq<u64>,
+    sigma: Substitution,
+    avoid: Seq<u64>,
+)
+    requires
+        clause_collection_exact(clause, variables),
+        freshening_sequence_valid(variables, avoid, sigma),
+    ensures forall|v: u64| term_clause_view_contains(clause, v)
+        && #[trigger] variables.contains(v)
+        ==> exists|fresh: u64| lookup(sigma, v) == Some(Term::Var(fresh))
+{
+    assert forall|v: u64| term_clause_view_contains(clause, v)
+        && #[trigger] variables.contains(v)
+        && #[trigger] freshening_sequence_valid(variables, avoid, sigma)
+        implies exists|fresh: u64| lookup(sigma, v) == Some(Term::Var(fresh)) by {
+        assert(variables.contains(v)) by { reveal(clause_collection_exact); }
+        let i = choose|i: int| 0 <= i < variables.len() && variables[i] == v;
+        let fresh = renamed_variable(sigma, variables[i]).unwrap();
+        reveal(renamed_variable);
+        assert(lookup(sigma, v) == Some(Term::Var(fresh)));
+    }
+}
+
+proof fn freshening_maps_selected_literal(
+    clause: ExecClause,
+    literal_index: int,
+    variables: Seq<u64>,
+    bindings: Seq<ExecBinding>,
+)
+    requires
+        0 <= literal_index < clause.literals@.len(),
+        clause_collection_exact(clause, variables),
+        freshening_images_are_variable(bindings, variables),
+        forall|v: u64| term_clause_view_contains(clause, v)
+            && #[trigger] variables.contains(v)
+            ==> exists|fresh: u64| lookup(view_subst(bindings), v) == Some(Term::Var(fresh)),
+    ensures forall|v: u64|
+        literal_variables(view_literal(clause.literals@[literal_index])).contains(v)
+        ==> exists|fresh: u64| lookup(view_subst(bindings), v) == Some(Term::Var(fresh))
+{
+    assert forall|v: u64|
+        literal_variables(view_literal(clause.literals@[literal_index])).contains(v)
+        implies exists|fresh: u64|
+            lookup(view_subst(bindings), v) == Some(Term::Var(fresh)) by {
+        selected_literal_variables_are_clause_variables(clause, literal_index, v);
+        assert(variables.contains(v)) by { reveal(clause_collection_exact); }
+        assert(term_clause_view_contains(clause, v));
+        assert(variables.contains(v));
+        assert(exists|fresh: u64|
+            lookup(view_subst(bindings), v) == Some(Term::Var(fresh)));
+    }
+}
+
 spec fn renamed_variable(sigma: Substitution, variable: u64) -> Option<u64> {
     match lookup(sigma, variable) {
         Some(Term::Var(v)) => Some(v),
@@ -2225,21 +2280,52 @@ spec fn freshening_sequence_valid(
 ) -> bool {
     domain_unique(sigma)
         && forall|i: int| 0 <= i < variables.len()
-            && #[trigger] renamed_variable(sigma, variables[i]).is_some()
-                ==> exists|fresh: u64| lookup(sigma, variables[i]) == Some(Term::Var(fresh))
+            ==> #[trigger] renamed_variable(sigma, variables[i]).is_some()
+                && exists|fresh: u64|
+                    lookup(sigma, variables[i]) == Some(Term::Var(fresh))
                 && !avoid.contains(renamed_variable(sigma, variables[i]).unwrap())
         && forall|i: int, j: int| 0 <= i < j < variables.len()
             && variables[i] != variables[j]
             ==> exists|fresh_i: u64, fresh_j: u64|
                 lookup(sigma, variables[i]) == Some(Term::Var(fresh_i))
                 && lookup(sigma, variables[j]) == Some(Term::Var(fresh_j))
-                && renamed_variable(sigma, variables[i])
-                    != renamed_variable(sigma, variables[j])
+                && fresh_i != fresh_j
 }
 
 spec fn freshening_images_are_variable(bindings: Seq<ExecBinding>, variables: Seq<u64>) -> bool {
     forall|i: int| 0 <= i < variables.len()
         ==> renamed_variable(view_subst(bindings), variables[i]).is_some()
+}
+
+proof fn freshening_maps_variables_in_selected_literal(
+    clause: ExecClause,
+    literal_index: int,
+    variables: Seq<u64>,
+    bindings: Seq<ExecBinding>,
+)
+    requires
+        0 <= literal_index < clause.literals@.len(),
+        clause_collection_exact(clause, variables),
+        freshening_images_are_variable(bindings, variables),
+    ensures forall|v: u64|
+        literal_variables(view_literal(clause.literals@[literal_index])).contains(v)
+            ==> exists|fresh: u64|
+                lookup(view_subst(bindings), v) == Some(Term::Var(fresh))
+{
+    assert forall|v: u64|
+        literal_variables(view_literal(clause.literals@[literal_index])).contains(v)
+        implies exists|fresh: u64|
+            lookup(view_subst(bindings), v) == Some(Term::Var(fresh)) by {
+        assert(term_clause_view_contains(clause, v)) by {
+            clause_variable_view(clause);
+            reveal(term_clause_view_contains);
+        }
+        assert(variables.contains(v));
+        assert(renamed_variable(view_subst(bindings), v).is_some());
+        let fresh = renamed_variable(view_subst(bindings), v).unwrap();
+        reveal(renamed_variable);
+        assert(lookup(view_subst(bindings), v) == Some(Term::Var(fresh)));
+    }
 }
 
 spec fn mapped_variable_set(variables: Set<u64>, sigma: Substitution) -> Set<u64> {
@@ -3958,6 +4044,13 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
         && accepted ==> forall|v: u64| term_clause_view_contains(certificate.target, v)
             ==> exists|fresh: u64| lookup(view_subst(certificate.target_freshening@), v)
                 == Some(Term::Var(fresh))
+        && accepted ==> forall|v: u64|
+            literal_variables(view_literal(
+                certificate.target.literals@[certificate.target_literal_index as int]))
+                .contains(v)
+            ==> exists|fresh: u64|
+                lookup(view_subst(certificate.target_freshening@), v)
+                    == Some(Term::Var(fresh))
         && accepted ==> certificate_selected_source_left(*certificate)
             == certificate_selected_target_fresh_term(*certificate).unwrap()
         && accepted ==> selected_rewrite_rhs(*certificate)
@@ -4040,6 +4133,18 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
         return false;
     }
     if !is_variable_renaming(&right_variables, &certificate.target_freshening) {
+        return false;
+    }
+    let target_literal_freshening_vars = match collect_clause_variables_bounded(
+        &ExecClause { literals: vec![copy_literal(
+            &certificate.target.literals[certificate.target_literal_index],
+        )] },
+        work_limit,
+    ) {
+        Some(vars) => vars,
+        None => return false,
+    };
+    if !is_variable_renaming(&target_literal_freshening_vars, &certificate.target_freshening) {
         return false;
     }
     let fresh_target = match freshen_clause_apart(
