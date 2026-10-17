@@ -2215,6 +2215,13 @@ spec fn freshening_sequence_valid(
                     != renamed_variable(sigma, variables[j])
 }
 
+spec fn maps_sequence_to_variables(bindings: Seq<ExecBinding>, variables: Seq<u64>) -> bool {
+    forall|i: int| 0 <= i < variables.len()
+        && #[trigger] lookup(view_subst(bindings), variables[i]).is_some()
+        ==> exists|fresh: u64|
+            lookup(view_subst(bindings), variables[i]) == Some(Term::Var(fresh))
+}
+
 spec fn mapped_variable_set(variables: Set<u64>, sigma: Substitution) -> Set<u64> {
     Set::new(|fresh: u64| exists|source: u64|
         variables.contains(source) && renamed_variable(sigma, source) == Some(fresh)).unwrap()
@@ -2592,6 +2599,7 @@ fn check_freshening(
     work_limit: usize,
 ) -> (valid: bool)
     ensures valid ==> freshening_sequence_valid(original@, avoid@, view_subst(bindings@))
+        && valid ==> maps_sequence_to_variables(bindings@, original@)
 {
     if !check_domain_unique(bindings) {
         return false;
@@ -2663,6 +2671,15 @@ fn check_freshening(
             assert(renamed_variable(view_subst(bindings@), original@[i as int]) == Some(fresh));
         }
         i += 1;
+    }
+    assert forall|k: int| 0 <= k < original@.len()
+        && #[trigger] lookup(view_subst(bindings@), original@[k]).is_some()
+        implies exists|fresh: u64|
+            lookup(view_subst(bindings@), original@[k]) == Some(Term::Var(fresh)) by {
+        assert(renamed_variable(view_subst(bindings@), original@[k]).is_some());
+        let fresh = renamed_variable(view_subst(bindings@), original@[k]).unwrap();
+        reveal(renamed_variable);
+        assert(lookup(view_subst(bindings@), original@[k]) == Some(Term::Var(fresh)));
     }
     true
 }
