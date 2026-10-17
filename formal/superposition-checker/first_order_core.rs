@@ -2750,7 +2750,7 @@ fn check_freshening(
             ==> exists|fresh: u64|
                 lookup(view_subst(bindings@), v) == Some(Term::Var(fresh))
 {
-    if !check_domain_unique(bindings) {
+    if !check_domain_unique(bindings, work_limit) {
         return false;
     }
     let mut i: usize = 0;
@@ -3362,7 +3362,9 @@ fn executable_unifier_certificate_examples()
     let left = ExecTerm::Var(11);
     let right = ExecTerm::Const(7);
     let valid = vec![ExecBinding { variable: 11, replacement: ExecTerm::Const(7) }];
-    let valid_result = check_unifier(&left, &right, &valid);
+    let valid_domain_unique = check_domain_unique(&valid, 1);
+    assert(valid_domain_unique);
+    let valid_result = check_unifier(&left, &right, &valid, 1);
     assert(domain_unique(view_subst(valid@)));
     assert(lookup(view_subst(valid@), 11) == Some(Term::Const(7)));
     assert(valid_result);
@@ -3370,20 +3372,20 @@ fn executable_unifier_certificate_examples()
     let wrong_instance = vec![ExecBinding {
         variable: 11, replacement: ExecTerm::Const(8),
     }];
-    let wrong_instance_result = check_unifier(&left, &right, &wrong_instance);
+    let wrong_instance_result = check_unifier(&left, &right, &wrong_instance, 1);
     assert(domain_unique(view_subst(wrong_instance@)));
     assert(lookup(view_subst(wrong_instance@), 11) == Some(Term::Const(8)));
     assert(!wrong_instance_result);
 
     let wrong_shape = ExecTerm::App1(4, Box::new(ExecTerm::Const(7)));
-    let wrong_shape_result = check_unifier(&left, &wrong_shape, &valid);
+    let wrong_shape_result = check_unifier(&left, &wrong_shape, &valid, 1);
     assert(!wrong_shape_result);
 
     let duplicate_domain = vec![
         ExecBinding { variable: 11, replacement: ExecTerm::Const(7) },
         ExecBinding { variable: 11, replacement: ExecTerm::Const(8) },
     ];
-    let duplicate_domain_result = check_unifier(&left, &right, &duplicate_domain);
+    let duplicate_domain_result = check_unifier(&left, &right, &duplicate_domain, 4);
     assert(duplicate_domain[0].variable == duplicate_domain[1].variable);
     assert(!duplicate_domain_result);
 
@@ -3395,7 +3397,7 @@ fn executable_unifier_certificate_examples()
     let cycle_right = ExecTerm::Var(11);
     assert(apply(view(cycle_left), view_subst(cyclic@))
         == apply(view(cycle_right), view_subst(cyclic@)));
-    let cyclic_result = check_unifier(&cycle_left, &cycle_right, &cyclic);
+    let cyclic_result = check_unifier(&cycle_left, &cycle_right, &cyclic, 1);
     assert(cyclic_result);
 }
 
@@ -3685,9 +3687,16 @@ fn executable_literal_replay_examples()
     assert(bad_slot.is_none());
 }
 
-fn check_domain_unique(bindings: &Vec<ExecBinding>) -> (unique: bool)
-    ensures unique == domain_unique(view_subst(bindings@))
+fn check_domain_unique(bindings: &Vec<ExecBinding>, work_limit: usize) -> (unique: bool)
+    ensures unique == ((bindings.len() == 0
+        || bindings.len() <= work_limit / bindings.len())
+        && domain_unique(view_subst(bindings@)))
 {
+    // This nested scan performs at most n*n comparisons. Refuse before
+    // starting if that work cannot fit in the supplied budget.
+    if bindings.len() > 0 && bindings.len() > work_limit / bindings.len() {
+        return false;
+    }
     let mut i: usize = 0;
     while i < bindings.len()
         invariant
@@ -3889,12 +3898,19 @@ fn same_clause_exact(left: &ExecClause, right: &ExecClause) -> (same: bool)
 /// Validate a supplied finite simultaneous-unifier certificate. This does not
 /// compute an MGU; it verifies domain uniqueness and that applying the same
 /// substitution to both selected terms makes them equal.
-fn check_unifier(left: &ExecTerm, right: &ExecTerm, bindings: &Vec<ExecBinding>) -> (unifies: bool)
-    ensures unifies == (domain_unique(view_subst(bindings@))
+fn check_unifier(
+    left: &ExecTerm,
+    right: &ExecTerm,
+    bindings: &Vec<ExecBinding>,
+    work_limit: usize,
+) -> (unifies: bool)
+    ensures unifies == ((bindings.len() == 0
+        || bindings.len() <= work_limit / bindings.len())
+        && domain_unique(view_subst(bindings@))
         && apply(view(*left), view_subst(bindings@))
             == apply(view(*right), view_subst(bindings@)))
 {
-    if !check_domain_unique(bindings) {
+    if !check_domain_unique(bindings, work_limit) {
         return false;
     }
     let left_instance = apply_exec(left, bindings);
@@ -4245,7 +4261,9 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
     if !same_term(&raw_selected_after_freshening, &fresh_target_subterm) {
         return false;
     }
-    let unifies = check_unifier(fresh_source_left, &fresh_target_subterm, &certificate.unifier);
+    let unifies = check_unifier(
+        fresh_source_left, &fresh_target_subterm, &certificate.unifier, work_limit,
+    );
     if !unifies {
         return false;
     }
