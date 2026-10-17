@@ -2108,6 +2108,11 @@ spec fn exec_clause_variables(clause: ExecClause) -> Set<u64> {
         && exec_atom_variables(clause.literals@[i].atom).contains(v)).unwrap()
 }
 
+spec fn clause_collection_exact(clause: ExecClause, variables: Seq<u64>) -> bool {
+    (forall|v: u64| term_clause_view_contains(clause, v) ==> variables.contains(v))
+        && (forall|v: u64| variables.contains(v) ==> term_clause_view_contains(clause, v))
+}
+
 proof fn term_variable_view(term: ExecTerm)
     ensures term_variables(view(term)) == exec_term_variables(term)
     decreases term
@@ -2287,6 +2292,59 @@ fn contains_u64(values: &Vec<u64>, needle: u64) -> (found: bool)
     false
 }
 
+fn term_contains_variable(term: &ExecTerm, variable: u64) -> (found: bool)
+    ensures found == exec_term_variables(*term).contains(variable)
+    decreases term
+{
+    match term {
+        ExecTerm::Var(v) => *v == variable,
+        ExecTerm::Const(_) => false,
+        ExecTerm::App1(_, child) => term_contains_variable(child, variable),
+        ExecTerm::App2(_, left, right) =>
+            term_contains_variable(left, variable) || term_contains_variable(right, variable),
+    }
+}
+
+fn atom_contains_variable(atom: &ExecAtom, variable: u64) -> (found: bool)
+    ensures found == exec_atom_variables(*atom).contains(variable)
+    decreases atom
+{
+    match atom {
+        ExecAtom::Pred0(_) => false,
+        ExecAtom::Pred1(_, arg) => term_contains_variable(arg, variable),
+        ExecAtom::Pred2(_, left, right) =>
+            term_contains_variable(left, variable) || term_contains_variable(right, variable),
+        ExecAtom::Eq(left, right) =>
+            term_contains_variable(left, variable) || term_contains_variable(right, variable),
+    }
+}
+
+fn clause_view_contains_variable(clause: &ExecClause, variable: u64) -> (found: bool)
+    ensures found == term_clause_view_contains(*clause, variable)
+{
+    let mut i: usize = 0;
+    while i < clause.literals.len()
+        invariant i <= clause.literals.len(),
+            forall|j: int| 0 <= j < i as int
+                ==> !literal_variables(view_literal(clause.literals@[j])).contains(variable)
+        decreases clause.literals.len() - i
+    {
+        let current = &clause.literals[i];
+        if atom_contains_variable(&current.atom, variable) {
+            assert(literal_variables(view_literal(*current)).contains(variable)) by {
+                literal_variable_view(*current);
+            }
+            assert(term_clause_view_contains(*clause, variable));
+            return true;
+        }
+        assert(!literal_variables(view_literal(*current)).contains(variable)) by {
+            literal_variable_view(*current);
+        }
+        i += 1;
+    }
+    false
+}
+
 fn term_variables_covered(term: &ExecTerm, variables: &Vec<u64>) -> (covered: bool)
     ensures covered == variables_subset(*term, variables@)
     decreases term
@@ -2323,12 +2381,8 @@ fn literal_variables_covered(literal: &ExecLiteral, variables: &Vec<u64>) -> (co
 }
 
 fn clause_variables_covered(clause: &ExecClause, variables: &Vec<u64>) -> (covered: bool)
-    ensures covered ==> forall|v: u64, j: int|
-        0 <= j < clause.literals@.len()
-            && #[trigger] exec_atom_variables(clause.literals@[j].atom).contains(v)
+    ensures covered ==> forall|v: u64| term_clause_view_contains(*clause, v)
         ==> variables@.contains(v)
-        && covered ==> forall|v: u64| term_clause_view_contains(*clause, v)
-            ==> variables@.contains(v)
 {
     let mut i: usize = 0;
     while i < clause.literals.len()
@@ -2413,8 +2467,9 @@ fn collect_term_variables_exec(
         ExecTerm::App2(_, left, right) => {
             if *work >= limit { return false; }
             *work += 1;
-            collect_term_variables_exec(left, variables, work, limit)
-                && collect_term_variables_exec(right, variables, work, limit)
+            if !collect_term_variables_exec(left, variables, work, limit) { return false; }
+            if !collect_term_variables_exec(right, variables, work, limit) { return false; }
+            true
         },
     }
 }
@@ -2484,8 +2539,7 @@ fn collect_clause_variables_bounded(
     work_limit: usize,
 ) -> (result: Option<Vec<u64>>)
     ensures match result {
-        Some(variables) => forall|v: u64| term_clause_view_contains(*clause, v)
-            ==> variables@.contains(v),
+        Some(variables) => clause_collection_exact(*clause, variables@),
         None => true,
     }
 {
@@ -2497,6 +2551,22 @@ fn collect_clause_variables_bounded(
     {
         let covered = clause_variables_covered(clause, &variables);
         if covered {
+            let mut i: usize = 0;
+            while i < variables.len()
+                invariant i <= variables.len(),
+                    forall|j: int| 0 <= j < i as int
+                        ==> term_clause_view_contains(*clause, variables@[j]),
+                decreases variables.len() - i
+            {
+                if !clause_view_contains_variable(clause, variables[i]) { return None; }
+                assert(term_clause_view_contains(*clause, variables@[i as int]));
+                i += 1;
+            }
+            assert forall|v: u64| variables@.contains(v)
+                implies term_clause_view_contains(*clause, v) by {
+                let index = choose|j: int| 0 <= j < variables@.len() && variables@[j] == v;
+                assert(index < i as int);
+            }
             assert forall|v: u64| term_clause_view_contains(*clause, v)
                 implies variables@.contains(v) by {
                 let literal_index = choose|j: int| 0 <= j < clause.literals@.len()
