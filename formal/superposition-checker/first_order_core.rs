@@ -632,6 +632,155 @@ proof fn universal_clause_substitution_instance(
     clause_holds_after_substitution(clause, sigma, interp, valuation);
 }
 
+spec fn append_literal(clause: Clause, literal: Literal) -> Clause {
+    Clause { literals: clause.literals.push(literal) }
+}
+
+proof fn clause_holds_after_appending_literal(
+    clause: Clause,
+    literal: Literal,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    ensures clause_holds(append_literal(clause, literal), interp, valuation)
+        == (clause_holds(clause, interp, valuation)
+            || literal_holds(literal, interp, valuation))
+{
+    let extended = append_literal(clause, literal);
+    if clause_holds(extended, interp, valuation) {
+        let index = choose|i: int| 0 <= i < extended.literals.len()
+            && literal_holds(extended.literals[i], interp, valuation);
+        assert(extended.literals.len() == clause.literals.len() + 1);
+        if index < clause.literals.len() {
+            assert(clause.literals[index] == extended.literals[index]);
+            assert(clause_holds(clause, interp, valuation));
+        } else {
+            assert(index == clause.literals.len());
+            assert(extended.literals[index] == literal);
+            assert(literal_holds(literal, interp, valuation));
+        }
+    } else {
+        if clause_holds(clause, interp, valuation) {
+            let index = choose|i: int| 0 <= i < clause.literals.len()
+                && literal_holds(clause.literals[i], interp, valuation);
+            assert(index < extended.literals.len());
+            assert(extended.literals[index] == clause.literals[index]);
+            assert(clause_holds(extended, interp, valuation));
+        } else if literal_holds(literal, interp, valuation) {
+            assert(extended.literals[clause.literals.len() as int] == literal);
+            assert(0 <= clause.literals.len() < extended.literals.len());
+            assert(clause_holds(extended, interp, valuation));
+        }
+    }
+}
+
+spec fn superposition_resolvent_holds(
+    source_context: Clause,
+    target_context: Clause,
+    rewritten_target: Literal,
+    interp: Interpretation,
+    valuation: Valuation,
+) -> bool {
+    clause_holds(source_context, interp, valuation)
+        || clause_holds(target_context, interp, valuation)
+        || literal_holds(rewritten_target, interp, valuation)
+}
+
+/// Clause-level semantic superposition theorem for an explicitly supplied
+/// simultaneous unifier. The source and target clauses consist of arbitrary
+/// context clauses plus the selected source equality / target literal. Both
+/// whole parents are instantiated with the same substitution. The syntactic
+/// unifier equation ensures the oriented source side and selected target
+/// subterm have the same denotation under every valuation. The result is the
+/// standard resolvent shape: both parent contexts plus the rewritten target
+/// literal.
+proof fn universally_closed_superposition_sound(
+    source_context: Clause,
+    source_equality: Literal,
+    target_context: Clause,
+    target_literal: Literal,
+    source_left: Term,
+    source_right: Term,
+    target_subterm: Term,
+    sigma: Substitution,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    requires
+        interpretation_well_formed(interp),
+        valuation_well_formed(interp, valuation),
+        clause_valid(append_literal(source_context, source_equality), interp),
+        clause_valid(append_literal(target_context, target_literal), interp),
+        source_equality.positive,
+        source_equality.atom == Atom::Eq(source_left, source_right),
+        apply(source_left, sigma) == apply(target_subterm, sigma),
+        replace_literal(
+            substitute_literal(target_literal, sigma),
+            apply(target_subterm, sigma),
+            apply(source_right, sigma),
+        ).1,
+    ensures superposition_resolvent_holds(
+        substitute_clause(source_context, sigma),
+        substitute_clause(target_context, sigma),
+        replace_literal(
+            substitute_literal(target_literal, sigma),
+            apply(target_subterm, sigma),
+            apply(source_right, sigma),
+        ).0,
+        interp,
+        valuation,
+    )
+{
+    let source_parent = append_literal(source_context, source_equality);
+    let target_parent = append_literal(target_context, target_literal);
+    universal_clause_substitution_instance(source_parent, sigma, interp, valuation);
+    universal_clause_substitution_instance(target_parent, sigma, interp, valuation);
+
+    let source_instance = substitute_clause(source_parent, sigma);
+    let target_instance = substitute_clause(target_parent, sigma);
+    assert(source_instance.literals
+        == substitute_clause(source_context, sigma).literals.push(
+            substitute_literal(source_equality, sigma)));
+    assert(target_instance.literals
+        == substitute_clause(target_context, sigma).literals.push(
+            substitute_literal(target_literal, sigma)));
+    clause_holds_after_appending_literal(
+        substitute_clause(source_context, sigma),
+        substitute_literal(source_equality, sigma),
+        interp,
+        valuation,
+    );
+    clause_holds_after_appending_literal(
+        substitute_clause(target_context, sigma),
+        substitute_literal(target_literal, sigma),
+        interp,
+        valuation,
+    );
+    assert(clause_holds(source_instance, interp, valuation));
+    assert(clause_holds(target_instance, interp, valuation));
+    assert(clause_holds(substitute_clause(source_context, sigma), interp, valuation)
+        || literal_holds(substitute_literal(source_equality, sigma), interp, valuation));
+    assert(clause_holds(substitute_clause(target_context, sigma), interp, valuation)
+        || literal_holds(substitute_literal(target_literal, sigma), interp, valuation));
+
+    assert(substitute_literal(source_equality, sigma).positive);
+    assert(substitute_literal(source_equality, sigma).atom
+        == Atom::Eq(apply(source_left, sigma), apply(source_right, sigma)));
+    assert(eval(apply(source_left, sigma), interp, valuation)
+        == eval(apply(target_subterm, sigma), interp, valuation));
+    superposition_context_sound(
+        substitute_clause(source_context, sigma),
+        substitute_literal(source_equality, sigma),
+        substitute_clause(target_context, sigma),
+        substitute_literal(target_literal, sigma),
+        apply(target_subterm, sigma),
+        apply(source_left, sigma),
+        apply(source_right, sigma),
+        interp,
+        valuation,
+    );
+}
+
 /// Universal validity is preserved by simultaneous substitution. This covers
 /// the forward semantic direction of standardization apart: renaming a
 /// universally quantified clause to fresh variable IDs cannot invalidate it.
