@@ -3812,6 +3812,12 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
     ensures accepted ==> certificate.target_path@ == certificate.fresh_target_path@
         && accepted ==> certificate.source_equality_index < certificate.source.literals.len()
         && accepted ==> certificate.target_literal_index < certificate.target.literals.len()
+        && accepted ==> certificate.source.literals@[certificate.source_equality_index as int].positive
+        && accepted ==> match certificate.source.literals@[certificate.source_equality_index as int].atom {
+            ExecAtom::Eq(ExecTerm::Var(_), _) => false,
+            ExecAtom::Eq(_, _) => true,
+            _ => false,
+        }
         && accepted ==> forall|v: u64| term_clause_view_contains(certificate.source, v)
             ==> exists|fresh: u64| lookup(view_subst(certificate.source_freshening@), v)
                 == Some(Term::Var(fresh))

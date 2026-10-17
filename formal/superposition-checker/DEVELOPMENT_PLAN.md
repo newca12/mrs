@@ -312,9 +312,10 @@ Avoid relying on a parser that silently drops unsupported constructs.
   finite simultaneous substitution and equality of the two instantiated terms.
   The general certificate checker now also postconditions that the source and
   target selected terms are equal after the supplied unifier, that the selected
-  target position exists, and that the target freshening is applied to that raw
-  selected term. Connecting this replay contract into the semantic superposition
-  theorem call remains open.
+  target position exists, that the target freshening is applied to that raw
+  selected term, and that the selected source literal is a positive equality
+  with a non-variable left side. Connecting these replay facts into the
+  semantic superposition theorem call remains open.
 - **DONE:** define path-based term lookup/replacement, argument-slot literal
   lookup/replacement, and prove evaluation/truth preservation at a selected
   position.
