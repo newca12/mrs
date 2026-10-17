@@ -330,7 +330,9 @@ Avoid relying on a parser that silently drops unsupported constructs.
   explicit wrapper packages this as the executable freshening position lemma.
   Certificate replay now separately checks that the target freshening mapping
   is variable-valued on the selected target literal's variables and exposes
-  that as an accepted-checker postcondition.
+  that as an accepted-checker postcondition. Replay also exposes that the
+  selected literal's variables are a subset of its whole target clause's
+  variables, matching the collector's whole-clause freshness domain.
   The checker requires raw and freshened path sequences to be identical, but
   the executable certificate has not yet been proved to supply all lemma
   premises end to end; this is not the general checker theorem.

@@ -2236,6 +2236,17 @@ proof fn freshening_maps_selected_literal(
     }
 }
 
+proof fn selected_literal_variables_are_subset_of_clause_variables(
+    clause: ExecClause,
+    literal_index: int,
+    variable: u64,
+)
+    requires
+        0 <= literal_index < clause.literals@.len(),
+        literal_variables(view_literal(clause.literals@[literal_index])).contains(variable),
+    ensures term_clause_view_contains(clause, variable)
+{}
+
 spec fn renamed_variable(sigma: Substitution, variable: u64) -> Option<u64> {
     match lookup(sigma, variable) {
         Some(Term::Var(v)) => Some(v),
@@ -4051,6 +4062,11 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
             ==> exists|fresh: u64|
                 lookup(view_subst(certificate.target_freshening@), v)
                     == Some(Term::Var(fresh))
+        && accepted ==> forall|v: u64|
+            literal_variables(view_literal(
+                certificate.target.literals@[certificate.target_literal_index as int]))
+                .contains(v)
+            ==> term_clause_view_contains(certificate.target, v)
         && accepted ==> certificate_selected_source_left(*certificate)
             == certificate_selected_target_fresh_term(*certificate).unwrap()
         && accepted ==> selected_rewrite_rhs(*certificate)
