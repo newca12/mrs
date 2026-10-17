@@ -3389,6 +3389,13 @@ fn executable_unifier_certificate_examples()
     assert(duplicate_domain[0].variable == duplicate_domain[1].variable);
     assert(!duplicate_domain_result);
 
+    let distinct_domain = vec![
+        ExecBinding { variable: 11, replacement: ExecTerm::Const(7) },
+        ExecBinding { variable: 12, replacement: ExecTerm::Const(8) },
+    ];
+    let insufficient_domain_budget = check_domain_unique(&distinct_domain, 0);
+    assert(!insufficient_domain_budget);
+
     let cyclic = vec![ExecBinding {
         variable: 11,
         replacement: ExecTerm::App1(5, Box::new(ExecTerm::Var(11))),
