@@ -4616,8 +4616,63 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
     if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() {
         return DagVerdict::Rejected;
     }
-    if dag.nodes[dag.root].clause.literals.len() > literal_limit {
-        return DagVerdict::Rejected;
+    let mut total_literals: usize = 0;
+    let mut total_parents: usize = 0;
+    let mut structural_work: usize = 0;
+    let mut i: usize = 0;
+    while i < dag.nodes.len()
+        invariant
+            i <= dag.nodes.len(),
+            total_literals <= literal_limit,
+            total_parents <= node_limit,
+            structural_work <= literal_limit,
+        decreases dag.nodes.len() - i
+    {
+        let node = &dag.nodes[i];
+        if node.kind == ProofNodeKind::Input && node.parents.len() != 0
+            || node.kind == ProofNodeKind::Superposition && node.step.is_none()
+            || node.kind == ProofNodeKind::Unsupported
+            || node.clause.literals.len() > literal_limit - total_literals
+            || node.parents.len() > node_limit - total_parents
+        {
+            return DagVerdict::Rejected;
+        }
+        total_literals += node.clause.literals.len();
+        total_parents += node.parents.len();
+        if !charge_clause_structure(&node.clause, &mut structural_work, literal_limit) {
+            return DagVerdict::Rejected;
+        }
+        let mut parent_index: usize = 0;
+        while parent_index < node.parents.len()
+            invariant parent_index <= node.parents.len(), total_parents <= node_limit
+            decreases node.parents.len() - parent_index
+        {
+            if node.parents[parent_index] >= dag.nodes.len()
+                || node.parents[parent_index] >= i
+            {
+                return DagVerdict::Rejected;
+            }
+            parent_index += 1;
+        }
+        i += 1;
+    }
+    let mut input_index: usize = 0;
+    while input_index < dag.input_clauses.len()
+        invariant
+            input_index <= dag.input_clauses.len(),
+            total_literals <= literal_limit,
+            structural_work <= literal_limit,
+        decreases dag.input_clauses.len() - input_index
+    {
+        let input_clause = &dag.input_clauses[input_index];
+        if input_clause.literals.len() > literal_limit - total_literals {
+            return DagVerdict::Rejected;
+        }
+        total_literals += input_clause.literals.len();
+        if !charge_clause_structure(input_clause, &mut structural_work, literal_limit) {
+            return DagVerdict::Rejected;
+        }
+        input_index += 1;
     }
     DagVerdict::Unknown
 }

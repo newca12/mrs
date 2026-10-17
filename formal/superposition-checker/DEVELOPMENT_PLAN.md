@@ -16,7 +16,7 @@ the item itself is explicitly marked `ABANDONED`.
 | M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` proves parent validity survives independent standardization substitutions, a standardized-parent superposition step is semantically sound, and its resolvent clause (source context + target context + rewritten literal) is valid. Remaining: align theorem premises with executable path/unifier replay and settle calculus ordering/side conditions. |
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. The bounded clause collector now returns only when its variable vector is exact with respect to the mathematical clause variable set (coverage plus a verified no-extraneous-variable pass); term and atom collectors prove coverage and preserve prior variables. The selected-position renaming lemma now takes only a domain-restricted variable-renaming premise for variables occurring in the literal, rather than requiring a globally variable-only substitution. Executable freshening, collector-to-set correspondence, and cumulative resource accounting remain open. |
 | M3 — Superposition checker | **PARTIAL** | Ground/fixed-schema checkers remain; the general replay API requires identical raw/freshened target paths, injective variable-only freshening maps with disjoint images, supplied-unifier equality, whole-parent substitution, source-equality deletion and exact ordered binary-resolvent comparison. A semantic theorem proves that binary resolvent valid from valid parents under explicit unifier/position equations. The executable-acceptance-to-theorem-premise proof, equivalence modulo literal order/renaming, calculus restrictions, and c502 remain. |
-| M4 — Proof-DAG validation | **PARTIAL** | Added finite proof graph types and a conditional induction theorem from locally entailing steps to input entailment. The public structural entry point rejects graphs over its node limit and returns `Unknown` for all in-budget graphs; it cannot validate or certify a graph. Exact leaf membership, local node soundness, resource accounting, and a verified DAG acceptance postcondition remain. |
+| M4 — Proof-DAG validation | **PARTIAL** | Added finite proof graph types and a conditional induction theorem from locally entailing steps to input entailment. The public structural entry point returns `Unknown` for all in-budget graphs; it cannot validate or certify a graph. Its fail-closed scan bounds aggregate nodes, input clauses, parent edges, literal counts, and clause term nodes; it rejects forward/out-of-range parent references, unsupported node kinds, input nodes with parents, and superposition nodes without step certificates. Exact leaf membership, local node soundness, and a verified DAG acceptance postcondition remain. |
 | M5 — MRS integration | **TODO** | The Verus executable is not called by `mrs-proof-kernel`; no interchange format or production adapter exists. |
 | M6 — Broader rules | **TODO** | Resolution, AC, demodulation, transformations, and AVATAR/LRAT are not implemented in the Verus checker. |
 | M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB/re-audit note, and a CI audit for `assume`, `admit`, and external-body/allow escape hatches. CI now uploads a Verus evidence log with source commit, binary hash, toolchain, and proof output. Mutation corpus, supported proof corpus, reproducible production artifact, and release gates remain. |
@@ -548,10 +548,11 @@ freshness conditions must also be justified by the calculus contract.
 **Current status**
 
 - **DONE, fail-closed placeholder:** `check_dag_structure` rejects graphs over
-  the node limit and returns `Inconclusive` for all in-budget graphs. This
-  prevents unproved structural traversal from being interpreted as validation.
-  Reintroduce traversal only with exact clause-comparison refinement and a
-  postcondition justifying its verdict.
+  the node/input limit, aggregate parent-edge and literal limits, and aggregate
+  clause-term structure limit. It checks parent references are in-range and
+  topologically earlier, and rejects unsupported node shapes. It returns
+  `Unknown` for every in-budget graph; these checks do not validate or certify
+  any proof node.
 - **DONE, conditional semantic theorem:** induction over topologically ordered
   nodes proves validity from valid inputs given `local_node_entails_from_parents`
   for every inference node; an empty root then implies unsatisfiability.
