@@ -349,6 +349,10 @@ Avoid relying on a parser that silently drops unsupported constructs.
   exact postcondition relating success to the model predicate that every
   variable in the supplied sequence receives a variable-valued substitution
   image; absent bindings and non-variable images both map to failure.
+- **PARTIAL, freshening bridge:** an attempt to compose collector exactness with
+  freshening to obtain a direct “every clause variable maps to a variable term”
+  postcondition has not yet verified; retain the narrower collector and
+  freshening contracts until that composition proof is discharged.
 - **PARTIAL:** bounded variable collection and finite freshening checks now
   exist. They reject absent/non-variable mappings, mapped IDs in the avoid set,
   non-injective images, mismatched raw/freshened target paths, and explicit work

@@ -2733,7 +2733,8 @@ fn freshen_clause_apart(
     let Some(variables) = collect_clause_variables_bounded(clause, work_limit) else {
         return None;
     };
-    if !check_freshening(&variables, avoid, bindings, work_limit) {
+    let freshening_ok = check_freshening(&variables, avoid, bindings, work_limit);
+    if !freshening_ok {
         return None;
     }
     assert(clause_collection_exact(*clause, variables@));
