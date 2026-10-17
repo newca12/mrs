@@ -356,6 +356,11 @@ Avoid relying on a parser that silently drops unsupported constructs.
   exact postcondition relating success to the model predicate that every
   variable in the supplied sequence receives a variable-valued substitution
   image; absent bindings and non-variable images both map to failure.
+- **DONE, freshening scan postcondition:** successful `check_freshening` now
+  directly states that every variable present in its finite input sequence has
+  a lookup to a variable term. The attempted lift from this sequence-level fact
+  through the clause collector to all model clause variables remains blocked on
+  the collector/set representation bridge.
 - **PARTIAL, freshening bridge:** an attempt to compose collector exactness with
   freshening to obtain a direct “every clause variable maps to a variable term”
   postcondition has not yet verified; retain the narrower collector and

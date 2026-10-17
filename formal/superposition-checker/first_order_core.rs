@@ -683,6 +683,12 @@ spec fn renames_variables_on(sigma: Substitution, variables: Set<u64>) -> bool {
         ==> exists|fresh: u64| lookup(sigma, v) == Some(Term::Var(fresh))
 }
 
+proof fn renaming_restricts_to_subset(sigma: Substitution, subset: Set<u64>, superset: Set<u64>)
+    requires renames_variables_on(sigma, superset),
+        forall|v: u64| subset.contains(v) ==> superset.contains(v),
+    ensures renames_variables_on(sigma, subset)
+{}
+
 proof fn apply_view_exec_term(term: ExecTerm, bindings: Seq<ExecBinding>)
     ensures apply(view(term), view_subst(bindings)) == view(apply_exec_model(term, bindings))
     decreases term
@@ -2124,13 +2130,20 @@ spec fn term_clause_view_contains(clause: ExecClause, v: u64) -> bool {
 }
 
 spec fn exec_clause_variables(clause: ExecClause) -> Set<u64> {
-    Set::new(|v: u64| exists|i: int| 0 <= i < clause.literals@.len()
-        && exec_atom_variables(clause.literals@[i].atom).contains(v)).unwrap()
+    exec_clause_variables_from_view(clause)
 }
 
 spec fn clause_collection_exact(clause: ExecClause, variables: Seq<u64>) -> bool {
     (forall|v: u64| term_clause_view_contains(clause, v) ==> variables.contains(v))
         && (forall|v: u64| variables.contains(v) ==> term_clause_view_contains(clause, v))
+}
+
+spec fn exec_clause_variables_from_view(clause: ExecClause) -> Set<u64> {
+    Set::new(|v: u64| term_clause_view_contains(clause, v)).unwrap()
+}
+
+spec fn clause_variable_sequence_view(clause: ExecClause) -> Seq<u64> {
+    Set::new(|v: u64| term_clause_view_contains(clause, v)).unwrap().to_seq()
 }
 
 proof fn term_variable_view(term: ExecTerm)
@@ -2245,6 +2258,11 @@ proof fn selected_literal_variables_are_subset_of_clause_variables(
         0 <= literal_index < clause.literals@.len(),
         literal_variables(view_literal(clause.literals@[literal_index])).contains(variable),
     ensures term_clause_view_contains(clause, variable)
+{}
+
+proof fn clause_variables_cover_exec_variables(clause: ExecClause, variables: Seq<u64>)
+    requires clause_collection_exact(clause, variables)
+    ensures exec_clause_variables(clause) == exec_clause_variables_from_view(clause)
 {}
 
 spec fn renamed_variable(sigma: Substitution, variable: u64) -> Option<u64> {
@@ -2728,6 +2746,9 @@ fn check_freshening(
 ) -> (valid: bool)
     ensures valid ==> freshening_sequence_valid(original@, avoid@, view_subst(bindings@))
         && valid ==> freshening_images_are_variable(bindings@, original@)
+        && valid ==> forall|v: u64| original@.contains(v)
+            ==> exists|fresh: u64|
+                lookup(view_subst(bindings@), v) == Some(Term::Var(fresh))
 {
     if !check_domain_unique(bindings) {
         return false;
@@ -2738,6 +2759,10 @@ fn check_freshening(
         invariant
             i <= original.len(),
             work <= work_limit,
+            forall|k: int| 0 <= k < i as int
+                && #[trigger] renamed_variable(view_subst(bindings@), original@[k]).is_some()
+                ==> exists|fresh: u64|
+                    lookup(view_subst(bindings@), original@[k]) == Some(Term::Var(fresh)),
             forall|k: int| 0 <= k < i as int
                 && #[trigger] renamed_variable(view_subst(bindings@), original@[k]).is_some()
                 ==> exists|fresh: u64|
@@ -2762,6 +2787,8 @@ fn check_freshening(
         assert(lookup(view_subst(bindings@), original@[i as int]) == Some(Term::Var(fresh))) by {
             reveal(renamed_variable);
         }
+        assert(exists|fresh_id: u64|
+            lookup(view_subst(bindings@), original@[i as int]) == Some(Term::Var(fresh_id)));
         assert(!avoid@.contains(fresh));
         let mut j: usize = 0;
         while j < i
@@ -2811,6 +2838,14 @@ fn check_freshening(
     assert forall|k: int| 0 <= k < original@.len()
         implies renamed_variable(view_subst(bindings@), original@[k]).is_some() by {
         assert(k < i as int);
+    }
+    assert forall|v: u64| original@.contains(v)
+        implies exists|fresh: u64|
+            lookup(view_subst(bindings@), v) == Some(Term::Var(fresh)) by {
+        let position = choose|k: int| 0 <= k < original@.len() && original@[k] == v;
+        assert(exists|fresh: u64|
+            lookup(view_subst(bindings@), original@[position]) == Some(Term::Var(fresh)));
+        assert(original@[position] == v);
     }
     true
 }
@@ -4256,6 +4291,16 @@ fn is_variable_renaming(variables: &Vec<u64>, bindings: &Vec<ExecBinding>) -> (v
     }
     true
 }
+
+spec fn renames_all_variables(sigma: Substitution) -> bool {
+    forall|v: u64| #[trigger] lookup(sigma, v).is_some()
+        ==> exists|fresh: u64| lookup(sigma, v) == Some(Term::Var(fresh))
+}
+
+proof fn renaming_on_all_implies_finite_renaming(sigma: Substitution)
+    requires renames_all_variables(sigma)
+    ensures renaming_substitution(sigma)
+{}
 
 fn extend_unique(destination: &mut Vec<u64>, source: &Vec<u64>, work_limit: usize) -> (ok: bool)
 {
