@@ -1308,6 +1308,20 @@ pub struct ExecBinding {
     replacement: ExecTerm,
 }
 
+#[derive(PartialEq, Eq)]
+pub enum ExecAtom {
+    Pred0(u64),
+    Pred1(u64, Box<ExecTerm>),
+    Pred2(u64, Box<ExecTerm>, Box<ExecTerm>),
+    Eq(ExecTerm, ExecTerm),
+}
+
+#[derive(PartialEq, Eq)]
+pub struct ExecLiteral {
+    positive: bool,
+    atom: ExecAtom,
+}
+
 spec fn view(term: ExecTerm) -> Term
     decreases term
 {
@@ -1321,6 +1335,26 @@ spec fn view(term: ExecTerm) -> Term
             Box::new(view(*right)),
         ),
     }
+}
+
+spec fn view_atom(atom: ExecAtom) -> Atom
+    decreases atom
+{
+    match atom {
+        ExecAtom::Pred0(p) => Atom::Pred0(p),
+        ExecAtom::Pred1(p, arg) => Atom::Pred1(p, Box::new(view(*arg))),
+        ExecAtom::Pred2(p, left, right) =>
+            Atom::Pred2(p, Box::new(view(*left)), Box::new(view(*right))),
+        ExecAtom::Eq(left, right) => Atom::Eq(view(left), view(right)),
+    }
+}
+
+spec fn view_literal(literal: ExecLiteral) -> Literal {
+    Literal { positive: literal.positive, atom: view_atom(literal.atom) }
+}
+
+spec fn view_exec_position(slot: u64, path: Seq<u64>) -> (nat, TermPosition) {
+    (slot as nat, view_position(path))
 }
 
 spec fn view_subst(bindings: Seq<ExecBinding>) -> Substitution {
@@ -1425,6 +1459,160 @@ fn replace_at_exec(
             }
         },
     }
+}
+
+fn substitute_atom_exec(atom: &ExecAtom, bindings: &Vec<ExecBinding>) -> (result: ExecAtom)
+    ensures view_atom(result) == substitute_atom(view_atom(*atom), view_subst(bindings@))
+    decreases atom
+{
+    match atom {
+        ExecAtom::Pred0(p) => ExecAtom::Pred0(*p),
+        ExecAtom::Pred1(p, arg) => ExecAtom::Pred1(
+            *p, Box::new(apply_exec(arg, bindings)),
+        ),
+        ExecAtom::Pred2(p, left, right) => ExecAtom::Pred2(
+            *p,
+            Box::new(apply_exec(left, bindings)),
+            Box::new(apply_exec(right, bindings)),
+        ),
+        ExecAtom::Eq(left, right) => ExecAtom::Eq(
+            apply_exec(left, bindings), apply_exec(right, bindings),
+        ),
+    }
+}
+
+fn substitute_literal_exec(literal: &ExecLiteral, bindings: &Vec<ExecBinding>)
+    -> (result: ExecLiteral)
+    ensures view_literal(result) == substitute_literal(view_literal(*literal), view_subst(bindings@))
+{
+    ExecLiteral {
+        positive: literal.positive,
+        atom: substitute_atom_exec(&literal.atom, bindings),
+    }
+}
+
+fn replace_atom_position_exec(
+    atom: &ExecAtom,
+    slot: u64,
+    path: &Vec<u64>,
+    replacement: &ExecTerm,
+) -> (result: Option<ExecAtom>)
+    ensures match result {
+        Some(replaced) => replace_atom_at_position(
+            view_atom(*atom), slot as nat, view_position(path@), view(*replacement),
+        ) == Some(view_atom(replaced)),
+        None => replace_atom_at_position(
+            view_atom(*atom), slot as nat, view_position(path@), view(*replacement),
+        ) == None,
+    }
+    decreases atom
+{
+    match atom {
+        ExecAtom::Pred0(_) => None,
+        ExecAtom::Pred1(p, arg) => {
+            if slot == 0 {
+                match replace_at_exec(arg, path, replacement, 0) {
+                    Some(arg2) => Some(ExecAtom::Pred1(*p, Box::new(arg2))),
+                    None => None,
+                }
+            } else {
+                None
+            }
+        },
+        ExecAtom::Pred2(p, left, right) => {
+            if slot == 0 {
+                match replace_at_exec(left, path, replacement, 0) {
+                    Some(left2) => Some(ExecAtom::Pred2(
+                        *p, Box::new(left2), Box::new(copy_term(right)),
+                    )),
+                    None => None,
+                }
+            } else if slot == 1 {
+                match replace_at_exec(right, path, replacement, 0) {
+                    Some(right2) => Some(ExecAtom::Pred2(
+                        *p, Box::new(copy_term(left)), Box::new(right2),
+                    )),
+                    None => None,
+                }
+            } else {
+                None
+            }
+        },
+        ExecAtom::Eq(left, right) => {
+            if slot == 0 {
+                match replace_at_exec(left, path, replacement, 0) {
+                    Some(left2) => Some(ExecAtom::Eq(left2, copy_term(right))),
+                    None => None,
+                }
+            } else if slot == 1 {
+                match replace_at_exec(right, path, replacement, 0) {
+                    Some(right2) => Some(ExecAtom::Eq(copy_term(left), right2)),
+                    None => None,
+                }
+            } else {
+                None
+            }
+        },
+    }
+}
+
+fn replace_literal_position_exec(
+    literal: &ExecLiteral,
+    slot: u64,
+    path: &Vec<u64>,
+    replacement: &ExecTerm,
+) -> (result: Option<ExecLiteral>)
+    ensures match result {
+        Some(replaced) => replace_literal_at_position(
+            view_literal(*literal), slot as nat, view_position(path@), view(*replacement),
+        ) == Some(view_literal(replaced)),
+        None => replace_literal_at_position(
+            view_literal(*literal), slot as nat, view_position(path@), view(*replacement),
+        ) == None,
+    }
+{
+    match replace_atom_position_exec(&literal.atom, slot, path, replacement) {
+        Some(atom2) => Some(ExecLiteral { positive: literal.positive, atom: atom2 }),
+        None => None,
+    }
+}
+
+fn executable_literal_replay_examples()
+{
+    let literal = ExecLiteral {
+        positive: true,
+        atom: ExecAtom::Pred2(
+            12,
+            Box::new(ExecTerm::Const(1)),
+            Box::new(ExecTerm::App2(
+                3,
+                Box::new(ExecTerm::Var(4)),
+                Box::new(ExecTerm::Const(5)),
+            )),
+        ),
+    };
+    let bindings = vec![ExecBinding {
+        variable: 4,
+        replacement: ExecTerm::Const(9),
+    }];
+    let instance = substitute_literal_exec(&literal, &bindings);
+    assert(view_literal(instance) == substitute_literal(view_literal(literal), view_subst(bindings@)));
+
+    let path = Vec::<u64>::new();
+    let replacement = ExecTerm::Const(7);
+    let rewritten = replace_literal_position_exec(&literal, 1u64, &path, &replacement);
+    assert(rewritten.is_some());
+    assert(view_literal(rewritten.unwrap()) == Literal {
+        positive: true,
+        atom: Atom::Pred2(
+            12,
+            Box::new(Term::Const(1)),
+            Box::new(Term::Const(7)),
+        ),
+    });
+
+    let bad_slot = replace_literal_position_exec(&literal, 2u64, &path, &replacement);
+    assert(bad_slot.is_none());
 }
 
 fn check_domain_unique(bindings: &Vec<ExecBinding>) -> (unique: bool)
@@ -1594,6 +1782,7 @@ proof fn variable_substitution_is_an_instance()
 
 fn main() {
     proof { variable_substitution_is_an_instance(); }
+    executable_literal_replay_examples();
 
     // Supplied unifier certificate binding target-side variable 42 to
     // constant 9. Domain validity and simultaneous application are checked.

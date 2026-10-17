@@ -14,7 +14,7 @@ the item itself is explicitly marked `ABANDONED`.
 |---|---|---|
 | M0 — Verus baseline and environment | **PARTIAL** | Verus/Rust versions and Linux x86_64 SHA-256 are pinned; `verify.sh` and regular CI run all formal files. Still needs a clean-checkout run and explicit audit for unchecked assumptions/ignored proof obligations. |
 | M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` has recursive terms, total interpretation/valuation well-formedness, substitution preservation, bidirectional variable-renaming validity, and a verified universally quantified clause-level entailment lemma using an explicit target argument slot and term path. Still needs the standardized-parent/unifier bridge and selected calculus contract. |
-| M2 — Replay primitives | **PARTIAL** | Recursive substitution application, duplicate-domain checking, executable term path lookup/replacement refined against the mathematical path specification, and path-replacement semantic preservation are verified. The proposed-unifier checker has success soundness postconditions; its negative-result characterization, executable literal/clause replay, standardization apart, and resource bounds remain open. |
+| M2 — Replay primitives | **PARTIAL** | Recursive substitution application, duplicate-domain checking, executable term path lookup/replacement, whole-literal simultaneous substitution, and explicit literal-position replacement are refined against their mathematical specifications. The proposed-unifier checker has soundness postconditions; executable clause replay, standardization apart, negative-result diagnostics, and resource bounds remain open. |
 | M3 — Superposition checker | **PARTIAL** | `superposition_checker.rs` verifies a ground unit fragment; `variable_superposition.rs` checks and proves one fixed variable-bearing two-literal schema with whole-target substitution. General term-tree certificates, arbitrary positions, clauses, ordering, and c502 remain unsupported/unanalysed. |
 | M4 — Proof-DAG validation | **TODO** | No proof graph, parent closure, rule dispatcher, or empty-clause refutation checker. |
 | M5 — MRS integration | **TODO** | The Verus executable is not called by `mrs-proof-kernel`; no interchange format or production adapter exists. |
@@ -301,11 +301,14 @@ Avoid relying on a parser that silently drops unsupported constructs.
 - **DONE:** implement executable term path lookup/replacement and verify their
   results refine the mathematical path operations; malformed child indices and
   paths continuing below leaves fail with `None`.
-- **PARTIAL:** the proposed unifier checker and executable term path operations
+- **DONE:** add executable atom/literal views, refine whole-literal simultaneous
+  substitution, and refine selected argument-slot/path replacement. A regression
+  exercises a literal with a non-selected argument and rejects an invalid slot.
+- **PARTIAL:** the proposed unifier checker and executable term/literal path operations
   are refined; still exercise positive/negative unifier certificates with
   verified evidence, characterize the checker's negative result, specify
   occurs-check/one-step substitution policy, lift path replay to
-  literals/clauses, and implement standardization-apart.
+  clauses, and implement standardization-apart.
 
 **Deliverables**
 
