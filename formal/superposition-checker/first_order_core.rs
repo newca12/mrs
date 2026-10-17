@@ -969,6 +969,178 @@ spec fn append_literal(clause: Clause, literal: Literal) -> Clause {
     Clause { literals: clause.literals.push(literal) }
 }
 
+spec fn clause_concat(left: Clause, right: Clause) -> Clause {
+    Clause { literals: left.literals + right.literals }
+}
+
+spec fn singleton_clause(literal: Literal) -> Clause {
+    Clause { literals: seq![literal] }
+}
+
+proof fn clause_holds_concat(left: Clause, right: Clause, interp: Interpretation,
+    valuation: Valuation)
+    ensures clause_holds(clause_concat(left, right), interp, valuation)
+        == (clause_holds(left, interp, valuation) || clause_holds(right, interp, valuation))
+{
+    let combined = clause_concat(left, right);
+    if clause_holds(combined, interp, valuation) {
+        let i = choose|i: int| 0 <= i < combined.literals.len()
+            && literal_holds(combined.literals[i], interp, valuation);
+        if i < left.literals.len() {
+            assert(combined.literals[i] == left.literals[i]);
+            assert(clause_holds(left, interp, valuation));
+        } else {
+            let j = i - left.literals.len();
+            assert(0 <= j < right.literals.len());
+            assert(combined.literals[i] == right.literals[j]);
+            assert(clause_holds(right, interp, valuation));
+        }
+    } else {
+        if clause_holds(left, interp, valuation) {
+            let i = choose|i: int| 0 <= i < left.literals.len()
+                && literal_holds(left.literals[i], interp, valuation);
+            assert(combined.literals[i] == left.literals[i]);
+            assert(clause_holds(combined, interp, valuation));
+        } else if clause_holds(right, interp, valuation) {
+            let j = choose|j: int| 0 <= j < right.literals.len()
+                && literal_holds(right.literals[j], interp, valuation);
+            let i = left.literals.len() + j;
+            assert(combined.literals[i] == right.literals[j]);
+            assert(clause_holds(combined, interp, valuation));
+        }
+    }
+}
+
+proof fn clause_holds_singleton(literal: Literal, interp: Interpretation, valuation: Valuation)
+    ensures clause_holds(singleton_clause(literal), interp, valuation)
+        == literal_holds(literal, interp, valuation)
+{
+    if clause_holds(singleton_clause(literal), interp, valuation) {
+        let i = choose|i: int| 0 <= i < 1 && literal_holds(
+            singleton_clause(literal).literals[i], interp, valuation);
+        assert(i == 0);
+        assert(singleton_clause(literal).literals[0] == literal);
+    } else if literal_holds(literal, interp, valuation) {
+        assert(singleton_clause(literal).literals[0] == literal);
+        assert(clause_holds(singleton_clause(literal), interp, valuation));
+    }
+}
+
+/// If the selected source equality and target literal are the final entries
+/// of their standardized, unifier-instantiated parents, the checker resolvent
+/// is the concatenation of the non-equality source context and the rewritten
+/// target parent. This converts the semantic disjunction theorem into ordinary
+/// clause validity for the emitted binary resolvent.
+proof fn standardized_superposition_resolvent_valid(
+    source_context: Clause,
+    source_equality: Literal,
+    target_context: Clause,
+    target_literal: Literal,
+    source_left: Term,
+    source_right: Term,
+    target_subterm: Term,
+    target_slot: nat,
+    target_position: TermPosition,
+    source_freshening: Substitution,
+    target_freshening: Substitution,
+    unifier: Substitution,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(append_literal(source_context, source_equality), interp),
+        clause_valid(append_literal(target_context, target_literal), interp),
+        source_equality.positive,
+        source_equality.atom == Atom::Eq(source_left, source_right),
+        apply(apply(source_left, source_freshening), unifier)
+            == apply(apply(target_subterm, target_freshening), unifier),
+        literal_at_position(
+            substitute_literal(substitute_literal(target_literal, target_freshening), unifier),
+            target_slot,
+            target_position,
+        ) == Some(apply(apply(target_subterm, target_freshening), unifier)),
+        replace_literal_at_position(
+            substitute_literal(substitute_literal(target_literal, target_freshening), unifier),
+            target_slot,
+            target_position,
+            apply(apply(source_right, source_freshening), unifier),
+        ).is_some(),
+    ensures clause_valid(clause_concat(
+        clause_concat(
+            substitute_clause(substitute_clause(source_context, source_freshening), unifier),
+            substitute_clause(substitute_clause(target_context, target_freshening), unifier),
+        ),
+        singleton_clause(match replace_literal_at_position(
+            substitute_literal(substitute_literal(target_literal, target_freshening), unifier),
+            target_slot,
+            target_position,
+            apply(apply(source_right, source_freshening), unifier),
+        ) {
+            Some(rewritten) => rewritten,
+            None => target_literal,
+        }),
+    ), interp)
+{
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        implies clause_holds(clause_concat(
+            clause_concat(
+                substitute_clause(substitute_clause(source_context, source_freshening), unifier),
+                substitute_clause(substitute_clause(target_context, target_freshening), unifier),
+            ),
+            singleton_clause(match replace_literal_at_position(
+                substitute_literal(substitute_literal(target_literal, target_freshening), unifier),
+                target_slot,
+                target_position,
+                apply(apply(source_right, source_freshening), unifier),
+            ) {
+                Some(rewritten) => rewritten,
+                None => target_literal,
+            }),
+        ), interp, valuation) by {
+        standardized_superposition_sound(
+            source_context,
+            source_equality,
+            target_context,
+            target_literal,
+            source_left,
+            source_right,
+            target_subterm,
+            target_slot,
+            target_position,
+            source_freshening,
+            target_freshening,
+            unifier,
+            interp,
+            valuation,
+        );
+        let rewritten_literal = match replace_literal_at_position(
+            substitute_literal(substitute_literal(target_literal, target_freshening), unifier),
+            target_slot,
+            target_position,
+            apply(apply(source_right, source_freshening), unifier),
+        ) {
+            Some(rewritten) => rewritten,
+            None => target_literal,
+        };
+        clause_holds_singleton(rewritten_literal, interp, valuation);
+        clause_holds_concat(
+            substitute_clause(substitute_clause(source_context, source_freshening), unifier),
+            substitute_clause(substitute_clause(target_context, target_freshening), unifier),
+            interp,
+            valuation,
+        );
+        clause_holds_concat(
+            clause_concat(
+                substitute_clause(substitute_clause(source_context, source_freshening), unifier),
+                substitute_clause(substitute_clause(target_context, target_freshening), unifier),
+            ),
+            singleton_clause(rewritten_literal),
+            interp,
+            valuation,
+        );
+    }
+}
+
 proof fn clause_holds_after_appending_literal(
     clause: Clause,
     literal: Literal,

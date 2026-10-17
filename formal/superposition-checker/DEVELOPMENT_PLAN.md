@@ -13,7 +13,7 @@ the item itself is explicitly marked `ABANDONED`.
 | Milestone | Status | Implemented evidence / remaining gate |
 |---|---|---|
 | M0 — Verus baseline and environment | **PARTIAL** | Verus/Rust versions and Linux x86_64 SHA-256 are pinned; `verify.sh` and regular CI run all formal files. Still needs a clean-checkout run and explicit audit for unchecked assumptions/ignored proof obligations. |
-| M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` now proves parent validity survives independent standardization substitutions and has a standardized-parent superposition theorem that applies one unifier to both parents before position-specific rewriting. Remaining: align the theorem's exact selected-term/position premises with executable path replay, settle calculus ordering/side conditions, and formally connect checker acceptance. |
+| M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` proves parent validity survives independent standardization substitutions, a standardized-parent superposition step is semantically sound, and its resolvent clause (source context + target context + rewritten literal) is valid. Remaining: align theorem premises with executable path/unifier replay and settle calculus ordering/side conditions. |
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. Bounded variable collection and executable freshening/disjointness checks exist. A complete proof-producing freshening guarantee, principled cumulative resource accounting, and adversarial unifier diagnostics remain open. |
 | M3 — Superposition checker | **PARTIAL** | Ground and fixed-schema checkers remain verified; the general replay API now takes explicit freshening maps for both parents, checks variable-image injectivity/disjointness, validates a supplied unifier at the freshened selected terms, applies it to both full clauses, removes the selected equality, rewrites the target occurrence, and compares the exact binary resolvent. It remains a specification prototype: freshening correctness/resource accounting is not yet fully refined, its acceptance is not tied to the universal soundness theorem, and clause-equivalence support and c502 analysis remain. |
 | M4 — Proof-DAG validation | **TODO** | No proof graph, parent closure, rule dispatcher, or empty-clause refutation checker. |
@@ -22,7 +22,7 @@ the item itself is explicitly marked `ABANDONED`.
 | M7 — Assurance/release gates | **TODO** | No supported-rule manifest, full assurance case, mutation campaign, or release/default-enable gate. |
 
 **What is DONE now:** the pinned local command `formal/superposition-checker/verify.sh`
-passes all four Verus files (currently `5`, `80`, `5`, and `5` verified functions respectively),
+passes all four Verus files (currently `5`, `90`, `5`, and `5` verified functions respectively),
 and the existing Rust regression `rejects_swv406_c502_archived_target_specialization`
 passes. These results establish only the current narrow verified artifacts; they
 do not complete M0–M3 or decide c502.
@@ -213,6 +213,9 @@ Avoid relying on a parser that silently drops unsupported constructs.
   literal replacement semantically. Its premises state the exact substitution
   and position equations; the executable checker’s finite renaming maps and
   term paths still need refinement lemmas into those premises.
+- **DONE:** derive validity of the ordinary binary resolvent clause by
+  concatenating the source context, target context, and rewritten selected
+  literal from the standardized-parent semantic theorem.
 - **DONE, semantic theorem slice:** `universally_closed_superposition_sound`
   assumes both universally valid parent clauses and one simultaneous
   substitution applied to each whole parent. It accepts the explicit syntactic
