@@ -2899,6 +2899,24 @@ fn freshen_clause_apart(
     if !renaming_ok {
         return None;
     }
+    let fresh = freshen_clause_with_variable_map(clause, &variables, bindings);
+    Some(fresh)
+}
+
+fn freshen_clause_with_variable_map(
+    clause: &ExecClause,
+    variables: &Vec<u64>,
+    bindings: &Vec<ExecBinding>,
+) -> (fresh: ExecClause)
+    requires
+        clause_collection_exact(*clause, variables@),
+        freshening_images_are_variable(bindings@, variables@),
+    ensures view_clause(fresh)
+            == substitute_clause(view_clause(*clause), view_subst(bindings@))
+        && forall|v: u64| term_clause_view_contains(*clause, v)
+            ==> exists|fresh_id: u64|
+                lookup(view_subst(bindings@), v) == Some(Term::Var(fresh_id))
+{
     let fresh = substitute_clause_exec(clause, bindings);
     assert(view_clause(fresh)
         == substitute_clause(view_clause(*clause), view_subst(bindings@)));
@@ -2907,7 +2925,7 @@ fn freshen_clause_apart(
             lookup(view_subst(bindings@), v) == Some(Term::Var(fresh_id)) by {
         renaming_images_cover_clause_variables(*clause, variables@, bindings@, v);
     }
-    Some(fresh)
+    fresh
 }
 
 fn freshen_clause_refines_renaming(

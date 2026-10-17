@@ -364,13 +364,14 @@ Avoid relying on a parser that silently drops unsupported constructs.
   a lookup to a variable term. The attempted lift from this sequence-level fact
   through the clause collector to all model clause variables remains blocked on
   the collector/set representation bridge.
-- **PARTIAL, freshening bridge:** the exact collector/set bridge is now isolated
-  as `renaming_images_cover_clause_variables`, taking the collector's
-  `clause_collection_exact` postcondition and the finite renaming-image
-  predicate and proving that every model-level clause variable has a variable
-  image. `freshen_clause_apart` uses this lemma to expose that property on
-  successful executable freshening. Its complete checker-path derivation and
-  executable renaming conditions still need refinement.
+- **DONE, freshening representation bridge:**
+  `renaming_images_cover_clause_variables` composes the collector's
+  `clause_collection_exact` postcondition with the finite renaming-image
+  predicate to prove that every model-level clause variable has a variable
+  image. `freshen_clause_with_variable_map` then lifts that bridge to the
+  executable clause view and states the successful-freshening map property.
+  Connecting the accepted certificate checker's successful renaming scan to
+  this helper's premises remains open.
 - **PARTIAL:** bounded variable collection and finite freshening checks now
   exist. They reject absent/non-variable mappings, mapped IDs in the avoid set,
   non-injective images, mismatched raw/freshened target paths, and explicit work
@@ -772,8 +773,9 @@ satisfiability/model claims, and unrestricted full TSTP.
 - [ ] Finish constructor-wide executable/model refinement, occurs-check policy,
   positions, replacement, and
   standardization-apart before widening the checker (M2). The collector-exactness
-  to model-variable freshening lemma now verifies as an isolated bridge; proving
-  the executable success condition supplies its finite-map premises remains.
+  to model-variable freshening lemma and its clause-view lifting now verify;
+  proving the certificate checker's success condition supplies their finite-map
+  premises remains.
 - [x] Specify and prove recursive term substitution/evaluation and lift it to
   atom/literal/clause preservation under total interpretation/valuation domains
   (M1 semantic foundation).

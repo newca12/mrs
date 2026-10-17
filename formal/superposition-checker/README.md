@@ -37,7 +37,7 @@ and machine-readable supported-slice declaration.
 
 The checks were verified against the Verus `0.2026.10.04.426d8b0` Linux x86_64
 release with Rust toolchain `1.98.1`; Verus uses its bundled Z3. Results:
-`5 verified, 0 errors` for the original pilot, `160 verified, 0 errors` for
+`5 verified, 0 errors` for the original pilot, `161 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
 
