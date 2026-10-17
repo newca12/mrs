@@ -3784,6 +3784,10 @@ spec fn selected_source_left(certificate: SuperpositionCertificate) -> Term {
     }
 }
 
+spec fn selected_source_left_after_freshening(certificate: SuperpositionCertificate) -> Term {
+    apply(selected_source_left(certificate), view_subst(certificate.unifier@))
+}
+
 spec fn selected_source_right(certificate: SuperpositionCertificate) -> Term {
     match certificate.source.literals@[certificate.source_equality_index as int].atom {
         ExecAtom::Eq(_, right) => view(right),
@@ -3802,9 +3806,43 @@ spec fn selected_target_subterm(certificate: SuperpositionCertificate) -> Term {
     }
 }
 
+spec fn selected_target_subterm_after_freshening(certificate: SuperpositionCertificate) -> Term {
+    apply(selected_target_subterm(certificate), view_subst(certificate.unifier@))
+}
+
 spec fn selected_rewrite_rhs(certificate: SuperpositionCertificate) -> Term {
     apply(apply(selected_source_right(certificate),
         view_subst(certificate.source_freshening@)), view_subst(certificate.unifier@))
+}
+
+spec fn expected_superposition_conclusion(
+    certificate: SuperpositionCertificate,
+    work_limit: nat,
+) -> Seq<Literal> {
+    let source_fresh = substitute_clause(view_clause(certificate.source),
+        view_subst(certificate.source_freshening@));
+    let target_fresh = substitute_clause(view_clause(certificate.target),
+        view_subst(certificate.target_freshening@));
+    let source_instance = substitute_clause(source_fresh, view_subst(certificate.unifier@));
+    let target_instance = substitute_clause(target_fresh, view_subst(certificate.unifier@));
+    let right = match certificate.source.literals@[certificate.source_equality_index as int].atom {
+        ExecAtom::Eq(_, rhs) => apply(apply(view(rhs), view_subst(certificate.source_freshening@)),
+            view_subst(certificate.unifier@)),
+        _ => Term::Var(0),
+    };
+    let target_rewritten = match replace_literal_at_position(
+        target_instance.literals[certificate.target_literal_index as int],
+        certificate.target_argument_slot as nat,
+        view_position(certificate.fresh_target_path@),
+        right,
+    ) {
+        Some(literal) => literal,
+        None => target_instance.literals[certificate.target_literal_index as int],
+    };
+    source_instance.literals.subrange(0, certificate.source_equality_index as int)
+        + source_instance.literals.subrange(
+            certificate.source_equality_index as int + 1, source_instance.literals.len() as int)
+        + target_instance.literals.update(certificate.target_literal_index as int, target_rewritten)
 }
 
 fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_limit: usize)
@@ -3824,9 +3862,8 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
         && accepted ==> forall|v: u64| term_clause_view_contains(certificate.target, v)
             ==> exists|fresh: u64| lookup(view_subst(certificate.target_freshening@), v)
                 == Some(Term::Var(fresh))
-        && accepted ==> apply(selected_source_left(*certificate),
-            view_subst(certificate.unifier@))
-            == apply(selected_target_subterm(*certificate), view_subst(certificate.unifier@))
+        && accepted ==> selected_source_left_after_freshening(*certificate)
+            == selected_target_subterm_after_freshening(*certificate)
         && accepted ==> selected_rewrite_rhs(*certificate)
             == apply(apply(selected_source_right(*certificate),
                 view_subst(certificate.source_freshening@)), view_subst(certificate.unifier@))
@@ -4109,12 +4146,23 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
         invariant
             i <= replayed_conclusion.literals.len(),
             replayed_conclusion.literals.len() == conclusion.literals.len(),
+            forall|j: int| 0 <= j < i as int
+                ==> view_literal(replayed_conclusion.literals@[j])
+                    == view_literal(conclusion.literals@[j]),
         decreases replayed_conclusion.literals.len() - i
     {
-        if replayed_conclusion.literals[i] != conclusion.literals[i] {
+        let same = same_literal(&replayed_conclusion.literals[i], &conclusion.literals[i]);
+        if !same {
             return false;
         }
+        assert(view_literal(replayed_conclusion.literals@[i as int])
+            == view_literal(conclusion.literals@[i as int]));
         i += 1;
+    }
+    assert forall|j: int| 0 <= j < replayed_conclusion.literals@.len()
+        implies view_literal(replayed_conclusion.literals@[j])
+            == view_literal(conclusion.literals@[j]) by {
+        assert(j < i as int);
     }
     true
 }

@@ -350,9 +350,11 @@ Avoid relying on a parser that silently drops unsupported constructs.
   conditions, replays the selected target slot/path, forms a binary resolvent,
   and compares ordered literals. The certificate checker now postconditions that
   every variable occurring in either parent is mapped to a variable term by its
-  corresponding freshening. Its implementation still needs a proved
-  postcondition, cumulative resource accounting, and a direct local-soundness
-  theorem connection; it is not a certifying API yet.
+  corresponding freshening. The replay-and-conclusion comparison wrapper also
+  postconditions that an accepted conclusion's literal sequence agrees with
+  executable replay in the mathematical literal view. Cumulative resource
+  accounting and a direct local-soundness theorem connection remain; it is not
+  a certifying API yet.
 - **PARTIAL, proof connection:** the replay refuses target paths that differ
   before/after standardization, and a verified lemma states the selected term
   transforms by the same variable-only renaming. The full accepted-result to
