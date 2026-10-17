@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parent
 ESCAPE_HATCHES = re.compile(
     r"#\[(?:verifier::(?:external_body|allow)|verus::external_body)|\b(?:assume|admit)\s*\("
 )
+MANIFEST = ROOT / "supported-rules.json"
 
 failures = []
 for source in sorted(ROOT.glob("*.rs")):
@@ -19,4 +20,8 @@ for source in sorted(ROOT.glob("*.rs")):
 
 if failures:
     print("\n".join(failures), file=sys.stderr)
+    sys.exit(1)
+
+if not MANIFEST.is_file():
+    print("supported-rules.json is missing", file=sys.stderr)
     sys.exit(1)

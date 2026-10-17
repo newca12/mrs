@@ -2293,10 +2293,7 @@ fn consume_work(work: &mut usize, limit: usize) -> (ok: bool)
 
 fn add_variable(values: &mut Vec<u64>, variable: u64)
 {
-    let found = contains_u64(values, variable);
-    if !found {
-        values.push(variable);
-    }
+    values.push(variable);
 }
 
 fn collect_term_variables_exec(
@@ -2372,7 +2369,9 @@ fn collect_clause_variables_bounded(
     if work_limit < 8 || clause.literals.len() > 64 { return None; }
     let mut variables: Vec<u64> = Vec::new();
     let mut work: usize = 0;
-    if collect_clause_variables_exec(clause, &mut variables, &mut work, work_limit) {
+    if collect_clause_variables_exec(clause, &mut variables, &mut work, work_limit)
+        && work <= work_limit
+    {
         Some(variables)
     } else {
         None

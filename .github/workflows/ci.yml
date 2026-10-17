@@ -43,4 +43,12 @@ jobs:
         env:
           VERUS: ${{ runner.temp }}/mrs-verus/0.2026.10.04.426d8b0/verus
           RUSTUP_HOME: ${{ runner.temp }}/mrs-verus-rustup
+          VERUS_LOG: ${{ runner.temp }}/superposition-verus.log
         run: formal/superposition-checker/verify.sh
+      - name: Upload pinned Verus evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: superposition-verus-evidence
+          path: ${{ runner.temp }}/superposition-verus.log
+          if-no-files-found: ignore

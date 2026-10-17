@@ -31,6 +31,14 @@ verified or losslessly checked by the verified side, it remains trusted. A
 successful verifier run is evidence about the checked source under this TCB; it
 does not by itself certify arbitrary TSTP proofs or the MRS strict-kernel code.
 
+## Verification evidence
+
+`verify.sh` can write a CI artifact with `VERUS_LOG=/path/to/log`. The log
+records the source commit, Verus binary SHA-256, pinned Rust toolchain, verifier
+version/output, source-audit result, and per-module verification counts. CI
+uploads that log even when a later gate fails. Local verification does not
+retain a build artifact unless `VERUS_LOG` is set.
+
 ## Re-audit triggers
 
 Changes to semantic definitions, the superposition theorem, verified replay,

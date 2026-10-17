@@ -19,7 +19,7 @@ the item itself is explicitly marked `ABANDONED`.
 | M4 — Proof-DAG validation | **PARTIAL** | Added finite proof graph types and a conditional induction theorem from locally entailing steps to input entailment. The public structural entry point rejects graphs over its node limit and returns `Inconclusive` for all in-budget graphs; it cannot validate or certify a graph. Exact leaf membership, local node soundness, resource accounting, and a verified DAG acceptance postcondition remain. |
 | M5 — MRS integration | **TODO** | The Verus executable is not called by `mrs-proof-kernel`; no interchange format or production adapter exists. |
 | M6 — Broader rules | **TODO** | Resolution, AC, demodulation, transformations, and AVATAR/LRAT are not implemented in the Verus checker. |
-| M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB and re-audit assurance note, and a CI source audit for `assume`, `admit`, and external-body escape hatches. Mutation corpus, recorded verifier/build artifacts, reproducible binary provenance, and release gates remain. |
+| M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB/re-audit note, and a CI audit for `assume`, `admit`, and external-body/allow escape hatches. CI now uploads a Verus evidence log with source commit, binary hash, toolchain, and proof output. Mutation corpus, supported proof corpus, reproducible production artifact, and release gates remain. |
 
 **What is DONE now:** the pinned local command `formal/superposition-checker/verify.sh`
 passes all four Verus files (currently `5`, `122`, `5`, and `5` verified functions respectively),
@@ -595,6 +595,9 @@ archived cases, and a versioned support declaration.
   triggers. `supported-rules.json` declares current verified slices and limits.
 - **DONE, CI audit slice:** `verify.sh` runs `audit-verus-source.py`, which fails
   on unreviewed `assume`, `admit`, `external_body`, and verifier-allow escapes.
+- **DONE, evidence slice:** CI stores the verification log, including source
+  commit, Verus binary SHA-256, Rust toolchain, verifier version, and per-module
+  proof output.
 - **TODO — DIFFICULT:** add mutation-negative CI, supported proof corpus,
   deterministic build/hash artifacts, and independent theorem review. The
   manifest is not yet emitted per run because no production checker adapter is
