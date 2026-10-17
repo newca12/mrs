@@ -1329,6 +1329,104 @@ spec fn view_subst(bindings: Seq<ExecBinding>) -> Substitution {
     }
 }
 
+spec fn view_position(path: Seq<u64>) -> TermPosition {
+    TermPosition { path: path.map(|_i: int, child: u64| child as nat) }
+}
+
+/// Bounded-by-input executable traversal for an explicit term-tree path. An
+/// invalid child index, a path continuing below a variable/constant, or a
+/// depth beyond the path returns `None` rather than accepting a partial walk.
+fn subterm_at_exec(term: &ExecTerm, path: &Vec<u64>, depth: usize) -> (result: Option<ExecTerm>)
+    requires depth <= path.len()
+    ensures match result {
+        Some(found) => term_at_position(view(*term), view_position(path@), depth as nat)
+            == Some(view(found)),
+        None => term_at_position(view(*term), view_position(path@), depth as nat) == None,
+    },
+        result.is_some() == term_at_position(view(*term), view_position(path@), depth as nat).is_some()
+    decreases term
+{
+    if depth == path.len() {
+        return Some(copy_term(term));
+    }
+    match term {
+        ExecTerm::Var(_) | ExecTerm::Const(_) => None,
+        ExecTerm::App1(_, child) => {
+            if path[depth] == 0 {
+                subterm_at_exec(child, path, depth + 1)
+            } else {
+                None
+            }
+        },
+        ExecTerm::App2(_, left, right) => {
+            if path[depth] == 0 {
+                subterm_at_exec(left, path, depth + 1)
+            } else if path[depth] == 1 {
+                subterm_at_exec(right, path, depth + 1)
+            } else {
+                None
+            }
+        },
+    }
+}
+
+/// Executable replacement at an explicit position. The returned term refines
+/// the mathematical replay operation; all malformed paths fail closed.
+fn replace_at_exec(
+    term: &ExecTerm,
+    path: &Vec<u64>,
+    replacement: &ExecTerm,
+    depth: usize,
+) -> (result: Option<ExecTerm>)
+    requires depth <= path.len()
+    ensures match result {
+        Some(replaced) => replace_at_position(
+            view(*term), view_position(path@), view(*replacement), depth as nat,
+        ) == Some(view(replaced)),
+        None => replace_at_position(
+            view(*term), view_position(path@), view(*replacement), depth as nat,
+        ) == None,
+    },
+        result.is_some() == replace_at_position(
+            view(*term), view_position(path@), view(*replacement), depth as nat,
+        ).is_some()
+    decreases term
+{
+    if depth == path.len() {
+        return Some(copy_term(replacement));
+    }
+    match term {
+        ExecTerm::Var(_) | ExecTerm::Const(_) => None,
+        ExecTerm::App1(f, child) => {
+            if path[depth] == 0 {
+                match replace_at_exec(child, path, replacement, depth + 1) {
+                    Some(child2) => Some(ExecTerm::App1(*f, Box::new(child2))),
+                    None => None,
+                }
+            } else {
+                None
+            }
+        },
+        ExecTerm::App2(f, left, right) => {
+            if path[depth] == 0 {
+                match replace_at_exec(left, path, replacement, depth + 1) {
+                    Some(left2) => Some(ExecTerm::App2(*f, Box::new(left2),
+                        Box::new(copy_term(right)))),
+                    None => None,
+                }
+            } else if path[depth] == 1 {
+                match replace_at_exec(right, path, replacement, depth + 1) {
+                    Some(right2) => Some(ExecTerm::App2(*f, Box::new(copy_term(left)),
+                        Box::new(right2))),
+                    None => None,
+                }
+            } else {
+                None
+            }
+        },
+    }
+}
+
 fn check_domain_unique(bindings: &Vec<ExecBinding>) -> (unique: bool)
     ensures unique ==> domain_unique(view_subst(bindings@))
 {
