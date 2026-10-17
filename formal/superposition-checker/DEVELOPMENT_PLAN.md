@@ -13,7 +13,7 @@ the item itself is explicitly marked `ABANDONED`.
 | Milestone | Status | Implemented evidence / remaining gate |
 |---|---|---|
 | M0 — Verus baseline and environment | **PARTIAL** | Verus/Rust versions and Linux x86_64 SHA-256 are pinned; `verify.sh` and regular CI run all formal files. Still needs a clean-checkout run and explicit audit for unchecked assumptions/ignored proof obligations. |
-| M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` has recursive terms, total interpretation/valuation well-formedness, substitution preservation, bidirectional variable-renaming validity, and a universally quantified clause-level entailment lemma for position-specific superposition. The executable checker is not yet connected to the theorem's standardized-parent/unifier premises or selected calculus contract. |
+| M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` now proves parent validity survives independent standardization substitutions and has a standardized-parent superposition theorem that applies one unifier to both parents before position-specific rewriting. Remaining: align the theorem's exact selected-term/position premises with executable path replay, settle calculus ordering/side conditions, and formally connect checker acceptance. |
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. Bounded variable collection and executable freshening/disjointness checks exist. A complete proof-producing freshening guarantee, principled cumulative resource accounting, and adversarial unifier diagnostics remain open. |
 | M3 — Superposition checker | **PARTIAL** | Ground and fixed-schema checkers remain verified; the general replay API now takes explicit freshening maps for both parents, checks variable-image injectivity/disjointness, validates a supplied unifier at the freshened selected terms, applies it to both full clauses, removes the selected equality, rewrites the target occurrence, and compares the exact binary resolvent. It remains a specification prototype: freshening correctness/resource accounting is not yet fully refined, its acceptance is not tied to the universal soundness theorem, and clause-equivalence support and c502 analysis remain. |
 | M4 — Proof-DAG validation | **TODO** | No proof graph, parent closure, rule dispatcher, or empty-clause refutation checker. |
@@ -195,6 +195,10 @@ Avoid relying on a parser that silently drops unsupported constructs.
   substitutions whose composition acts as the identity on every variable; this
   covers bijective variable renamings. The theorem takes the inverse pair as a
   premise, while executable freshness/injectivity checking remains M2 work.
+- **DONE:** prove independent standardization substitutions preserve each
+  universally closed parent, and lift the position-specific superposition
+  soundness theorem to parent clauses standardized separately before a shared
+  unifier is applied to both.
 - **DONE:** define recursive first-occurrence replacement and prove equality
   congruence through arbitrary unary/binary term contexts and predicate/equality
   atoms; a replaced literal preserves truth when the replaced and replacement
@@ -204,6 +208,11 @@ Avoid relying on a parser that silently drops unsupported constructs.
   to prove the context-preserving conclusion is entailed. The missing bridge is
   a checked standardized-parent substitution/unifier certificate and the exact
   rule contract (including ordering/selection if required).
+- **DONE:** `standardized_superposition_sound` composes parent validity,
+  independent freshening instances, common-unifier substitution, and selected
+  literal replacement semantically. Its premises state the exact substitution
+  and position equations; the executable checker’s finite renaming maps and
+  term paths still need refinement lemmas into those premises.
 - **DONE, semantic theorem slice:** `universally_closed_superposition_sound`
   assumes both universally valid parent clauses and one simultaneous
   substitution applied to each whole parent. It accepts the explicit syntactic

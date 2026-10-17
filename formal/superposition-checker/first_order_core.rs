@@ -1150,6 +1150,114 @@ proof fn universally_closed_superposition_sound(
     }
 }
 
+/// End-to-end semantic rule theorem for parent clauses that are first
+/// standardized independently and then instantiated by one supplied unifier.
+/// Freshening is proved as an instance of each universally closed parent;
+/// the unifier is then applied to both entire standardized clauses before the
+/// selected target occurrence is replaced.
+proof fn standardized_superposition_sound(
+    source_context: Clause,
+    source_equality: Literal,
+    target_context: Clause,
+    target_literal: Literal,
+    source_left: Term,
+    source_right: Term,
+    target_subterm: Term,
+    target_slot: nat,
+    target_position: TermPosition,
+    source_freshening: Substitution,
+    target_freshening: Substitution,
+    unifier: Substitution,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    requires
+        interpretation_well_formed(interp),
+        valuation_well_formed(interp, valuation),
+        clause_valid(append_literal(source_context, source_equality), interp),
+        clause_valid(append_literal(target_context, target_literal), interp),
+        source_equality.positive,
+        source_equality.atom == Atom::Eq(source_left, source_right),
+        apply(apply(source_left, source_freshening), unifier)
+            == apply(apply(target_subterm, target_freshening), unifier),
+        literal_at_position(
+            substitute_literal(
+                substitute_literal(target_literal, target_freshening),
+                unifier,
+            ),
+            target_slot,
+            target_position,
+        ) == Some(apply(apply(target_subterm, target_freshening), unifier)),
+        replace_literal_at_position(
+            substitute_literal(
+                substitute_literal(target_literal, target_freshening),
+                unifier,
+            ),
+            target_slot,
+            target_position,
+            apply(apply(source_right, source_freshening), unifier),
+        ).is_some(),
+    ensures superposition_resolvent_holds(
+        substitute_clause(
+            substitute_clause(source_context, source_freshening),
+            unifier,
+        ),
+        substitute_clause(
+            substitute_clause(target_context, target_freshening),
+            unifier,
+        ),
+        match replace_literal_at_position(
+            substitute_literal(
+                substitute_literal(target_literal, target_freshening),
+                unifier,
+            ),
+            target_slot,
+            target_position,
+            apply(apply(source_right, source_freshening), unifier),
+        ) {
+            Some(rewritten) => rewritten,
+            None => target_literal,
+        },
+        interp,
+        valuation,
+    )
+{
+    let source_parent = append_literal(source_context, source_equality);
+    let target_parent = append_literal(target_context, target_literal);
+    standardized_parent_valid(source_parent, source_freshening, interp);
+    standardized_parent_valid(target_parent, target_freshening, interp);
+
+    let fresh_source_context = substitute_clause(source_context, source_freshening);
+    let fresh_source_equality = substitute_literal(source_equality, source_freshening);
+    let fresh_target_context = substitute_clause(target_context, target_freshening);
+    let fresh_target_literal = substitute_literal(target_literal, target_freshening);
+    assert(substitute_clause(source_parent, source_freshening).literals
+        == fresh_source_context.literals.push(fresh_source_equality));
+    assert(substitute_clause(target_parent, target_freshening).literals
+        == fresh_target_context.literals.push(fresh_target_literal));
+    assert(clause_valid(
+        append_literal(fresh_source_context, fresh_source_equality), interp,
+    ));
+    assert(clause_valid(
+        append_literal(fresh_target_context, fresh_target_literal), interp,
+    ));
+
+    universally_closed_superposition_sound(
+        fresh_source_context,
+        fresh_source_equality,
+        fresh_target_context,
+        fresh_target_literal,
+        apply(source_left, source_freshening),
+        apply(source_right, source_freshening),
+        apply(target_subterm, target_freshening),
+        target_slot,
+        target_position,
+        unifier,
+        interp,
+        valuation,
+    );
+}
+
 /// Universal validity is preserved by simultaneous substitution. This covers
 /// the forward semantic direction of standardization apart: renaming a
 /// universally quantified clause to fresh variable IDs cannot invalidate it.
@@ -1170,6 +1278,47 @@ proof fn clause_valid_after_substitution(
             implies clause_holds(substitute_clause(clause, renaming), interp, valuation) by {
         universal_clause_substitution_instance(clause, renaming, interp, valuation);
     }
+}
+
+/// Standardization-apart is a simultaneous substitution instance of a
+/// universally closed parent, so validity survives even when the two parents
+/// are renamed independently. Injectivity and disjointness are certificate
+/// hygiene properties checked separately; they do not need to be assumed as
+/// semantic axioms for this direction of the proof.
+proof fn standardized_parent_valid(
+    parent: Clause,
+    freshening: Substitution,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(parent, interp),
+    ensures clause_valid(substitute_clause(parent, freshening), interp)
+{
+    clause_valid_after_substitution(parent, freshening, interp);
+}
+
+/// Parent validity plus independent standardization maps and a common
+/// unifier yield valid standardized parents for the central step theorem. This
+/// is the semantic bridge for the front end of a checker; subsequent
+/// certificate refinement must connect its executable maps to these
+/// substitutions.
+proof fn standardized_superposition_parents_are_valid(
+    source_parent: Clause,
+    target_parent: Clause,
+    source_freshening: Substitution,
+    target_freshening: Substitution,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(source_parent, interp),
+        clause_valid(target_parent, interp),
+    ensures clause_valid(substitute_clause(source_parent, source_freshening), interp)
+        && clause_valid(substitute_clause(target_parent, target_freshening), interp)
+{
+    standardized_parent_valid(source_parent, source_freshening, interp);
+    standardized_parent_valid(target_parent, target_freshening, interp);
 }
 
 spec fn inverse_renamings(sigma: Substitution, inverse: Substitution) -> bool {
