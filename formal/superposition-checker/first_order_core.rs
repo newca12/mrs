@@ -4083,6 +4083,11 @@ fn is_variable_renaming(variables: &Vec<u64>, bindings: &Vec<ExecBinding>) -> (v
         implies renamed_variable(view_subst(bindings@), variables@[k]).is_some() by {
         assert(k < i as int);
     }
+    assert(i == variables.len());
+    assert forall|k: int| 0 <= k < variables@.len()
+        implies renamed_variable(view_subst(bindings@), variables@[k]).is_some() by {
+        assert(k < i as int);
+    }
     true
 }
 

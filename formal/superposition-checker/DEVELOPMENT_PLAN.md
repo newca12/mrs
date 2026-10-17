@@ -340,6 +340,10 @@ Avoid relying on a parser that silently drops unsupported constructs.
   selected literal is exactly the position-rewritten literal, and every other
   literal is preserved in order. The separate relational lemma records the same
   pointwise shape at the mathematical clause layer.
+- **DONE, variable-map acceptance contract:** `is_variable_renaming` now has an
+  exact postcondition relating success to the model predicate that every
+  variable in the supplied sequence receives a variable-valued substitution
+  image; absent bindings and non-variable images both map to failure.
 - **PARTIAL:** bounded variable collection and finite freshening checks now
   exist. They reject absent/non-variable mappings, mapped IDs in the avoid set,
   non-injective images, mismatched raw/freshened target paths, and explicit work
