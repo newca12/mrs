@@ -3072,7 +3072,17 @@ fn replace_clause_literal_exec(
         Some(replaced) => replace_clause_literal(
             view_clause(*clause), literal_index as int, slot as nat,
             view_position(path@), view(*replacement),
-        ) == Some(view_clause(replaced)),
+        ) == Some(view_clause(replaced))
+            && replaced.literals@.len() == clause.literals@.len()
+            && forall|j: int| 0 <= j < replaced.literals@.len()
+                ==> view_literal(replaced.literals@[j])
+                    == match replace_clause_literal(
+                        view_clause(*clause), literal_index as int, slot as nat,
+                        view_position(path@), view(*replacement),
+                    ) {
+                        Some(result) => result.literals[j],
+                        None => view_clause(*clause).literals[j],
+                    },
         None => replace_clause_literal(
             view_clause(*clause), literal_index as int, slot as nat,
             view_position(path@), view(*replacement),

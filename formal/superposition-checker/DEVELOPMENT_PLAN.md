@@ -350,7 +350,8 @@ Avoid relying on a parser that silently drops unsupported constructs.
   conditions, replays the selected target slot/path, forms a binary resolvent,
   and compares ordered literals. Whole-clause substitution now also postconditions
   literal-count preservation and a pointwise correspondence for every literal;
-  selected-clause replacement exposes its pointwise literal update. The certificate checker now postconditions that
+  selected-clause replacement directly postconditions that it changes exactly
+  the selected literal and preserves all other literals. The certificate checker now postconditions that
   every variable occurring in either parent is mapped to a variable term by its
   corresponding freshening. The replay-and-conclusion comparison wrapper also
   postconditions that an accepted conclusion's literal sequence agrees with
