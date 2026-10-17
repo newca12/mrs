@@ -678,6 +678,11 @@ spec fn renaming_substitution(sigma: Substitution) -> bool {
         ==> exists|fresh: u64| lookup(sigma, v) == Some(Term::Var(fresh))
 }
 
+spec fn renames_variables_on(sigma: Substitution, variables: Set<u64>) -> bool {
+    forall|v: u64| variables.contains(v)
+        ==> exists|fresh: u64| lookup(sigma, v) == Some(Term::Var(fresh))
+}
+
 proof fn apply_view_exec_term(term: ExecTerm, bindings: Seq<ExecBinding>)
     ensures apply(view(term), view_subst(bindings)) == view(apply_exec_model(term, bindings))
     decreases term
@@ -711,8 +716,7 @@ proof fn renaming_preserves_selected_position(
 )
     requires
         renaming_substitution(sigma),
-        forall|v: u64| variables.contains(v)
-            ==> exists|fresh: u64| lookup(sigma, v) == Some(Term::Var(fresh)),
+        renames_variables_on(sigma, variables),
         forall|v: u64| literal_variables(literal).contains(v) ==> variables.contains(v),
     ensures match literal_at_position(literal, slot, position) {
         Some(term) => literal_at_position(substitute_literal(literal, sigma), slot, position)
@@ -720,10 +724,6 @@ proof fn renaming_preserves_selected_position(
         None => literal_at_position(substitute_literal(literal, sigma), slot, position) == None,
     }
 {
-    assert forall|v: u64| literal_variables(literal).contains(v)
-        implies exists|fresh: u64| lookup(sigma, v) == Some(Term::Var(fresh)) by {
-        assert(variables.contains(v));
-    }
     match literal.atom {
         Atom::Pred0(_) => {},
         Atom::Pred1(_, arg) => {
@@ -2205,21 +2205,21 @@ spec fn freshening_sequence_valid(
 ) -> bool {
     domain_unique(sigma)
         && forall|i: int| 0 <= i < variables.len()
-            ==> renamed_variable(sigma, variables[i]).is_some()
+            && #[trigger] renamed_variable(sigma, variables[i]).is_some()
+                ==> exists|fresh: u64| lookup(sigma, variables[i]) == Some(Term::Var(fresh))
                 && !avoid.contains(renamed_variable(sigma, variables[i]).unwrap())
         && forall|i: int, j: int| 0 <= i < j < variables.len()
             && variables[i] != variables[j]
-            ==> renamed_variable(sigma, variables[i]).is_some()
-                && renamed_variable(sigma, variables[j]).is_some()
+            ==> exists|fresh_i: u64, fresh_j: u64|
+                lookup(sigma, variables[i]) == Some(Term::Var(fresh_i))
+                && lookup(sigma, variables[j]) == Some(Term::Var(fresh_j))
                 && renamed_variable(sigma, variables[i])
                     != renamed_variable(sigma, variables[j])
 }
 
-spec fn maps_sequence_to_variables(bindings: Seq<ExecBinding>, variables: Seq<u64>) -> bool {
+spec fn freshening_images_are_variable(bindings: Seq<ExecBinding>, variables: Seq<u64>) -> bool {
     forall|i: int| 0 <= i < variables.len()
-        && #[trigger] lookup(view_subst(bindings), variables[i]).is_some()
-        ==> exists|fresh: u64|
-            lookup(view_subst(bindings), variables[i]) == Some(Term::Var(fresh))
+        ==> renamed_variable(view_subst(bindings), variables[i]).is_some()
 }
 
 spec fn mapped_variable_set(variables: Set<u64>, sigma: Substitution) -> Set<u64> {
@@ -2599,7 +2599,6 @@ fn check_freshening(
     work_limit: usize,
 ) -> (valid: bool)
     ensures valid ==> freshening_sequence_valid(original@, avoid@, view_subst(bindings@))
-        && valid ==> maps_sequence_to_variables(bindings@, original@)
 {
     if !check_domain_unique(bindings) {
         return false;
@@ -2610,6 +2609,10 @@ fn check_freshening(
         invariant
             i <= original.len(),
             work <= work_limit,
+            forall|k: int| 0 <= k < i as int
+                && #[trigger] renamed_variable(view_subst(bindings@), original@[k]).is_some()
+                ==> exists|fresh: u64|
+                    lookup(view_subst(bindings@), original@[k]) == Some(Term::Var(fresh)),
             forall|k: int| 0 <= k < i as int
                 ==> renamed_variable(view_subst(bindings@), original@[k]).is_some()
                     && !avoid@.contains(
@@ -2627,6 +2630,9 @@ fn check_freshening(
         let ExecTerm::Var(fresh) = mapped else { return false; };
         if contains_u64(avoid, fresh) { return false; }
         assert(renamed_variable(view_subst(bindings@), original@[i as int]) == Some(fresh));
+        assert(lookup(view_subst(bindings@), original@[i as int]) == Some(Term::Var(fresh))) by {
+            reveal(renamed_variable);
+        }
         assert(!avoid@.contains(fresh));
         let mut j: usize = 0;
         while j < i
@@ -2672,14 +2678,10 @@ fn check_freshening(
         }
         i += 1;
     }
+    assert(i == original.len());
     assert forall|k: int| 0 <= k < original@.len()
-        && #[trigger] lookup(view_subst(bindings@), original@[k]).is_some()
-        implies exists|fresh: u64|
-            lookup(view_subst(bindings@), original@[k]) == Some(Term::Var(fresh)) by {
-        assert(renamed_variable(view_subst(bindings@), original@[k]).is_some());
-        let fresh = renamed_variable(view_subst(bindings@), original@[k]).unwrap();
-        reveal(renamed_variable);
-        assert(lookup(view_subst(bindings@), original@[k]) == Some(Term::Var(fresh)));
+        implies renamed_variable(view_subst(bindings@), original@[k]).is_some() by {
+        assert(k < i as int);
     }
     true
 }
@@ -2699,9 +2701,11 @@ fn freshen_clause_apart(
     let Some(variables) = collect_clause_variables_bounded(clause, work_limit) else {
         return None;
     };
-    if !check_freshening(&variables, avoid, bindings, work_limit) {
+    let freshening_valid = check_freshening(&variables, avoid, bindings, work_limit);
+    if !freshening_valid {
         return None;
     }
+    assert(clause_collection_exact(*clause, variables@));
     let fresh = substitute_clause_exec(clause, bindings);
     assert(view_clause(fresh)
         == substitute_clause(view_clause(*clause), view_subst(bindings@)));
@@ -2723,9 +2727,11 @@ fn freshen_clause_refines_renaming(
     let Some(variables) = collect_clause_variables_bounded(clause, work_limit) else {
         return None;
     };
-    if !check_freshening(&variables, avoid, bindings, work_limit) {
+    let valid = check_freshening(&variables, avoid, bindings, work_limit);
+    if !valid {
         return None;
     }
+    assert(clause_collection_exact(*clause, variables@));
     let fresh = substitute_clause_exec(clause, bindings);
     Some(fresh)
 }
