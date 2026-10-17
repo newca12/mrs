@@ -35,6 +35,12 @@ allow attributes. See [`ASSURANCE.md`](ASSURANCE.md) and
 [`supported-rules.json`](supported-rules.json) for the current trust boundary
 and machine-readable supported-slice declaration.
 
+It also runs `mutation-check.py`: temporary copies of the first-order core omit
+literal substitution, ignore literal polarity, or replace selected-position
+lookup with root lookup. The verification gate requires Verus to reject all
+three broken refinements. The source tree is not modified by these negative
+checks.
+
 The checks were verified against the Verus `0.2026.10.04.426d8b0` Linux x86_64
 release with Rust toolchain `1.98.1`; Verus uses its bundled Z3. Results:
 `5 verified, 0 errors` for the original pilot, `162 verified, 0 errors` for

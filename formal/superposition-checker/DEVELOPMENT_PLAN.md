@@ -1,6 +1,6 @@
 # Verus superposition checker: development plan
 
-## Implementation status (2026-10-13)
+## Implementation status (2026-10-17)
 
 **Status key:** `DONE` = deliverable and its stated acceptance gate are complete;
 `PARTIAL` = an explicitly narrower slice exists and verifies, but the milestone
@@ -12,7 +12,7 @@ the item itself is explicitly marked `ABANDONED`.
 
 | Milestone | Status | Implemented evidence / remaining gate |
 |---|---|---|
-| M0 — Verus baseline and environment | **PARTIAL** | Verus/Rust versions and Linux x86_64 SHA-256 are pinned; the installer and verifier scripts read the JSON pin with Python rather than requiring `jq`. A fresh install from the pinned checksum and full `verify.sh` run pass both in the host worktree and a detached clean worktree. The escape-hatch audit is part of the script. Remaining: audit ignored proof obligations and strengthen mutation coverage so changes to verified executable/specification relationships are demonstrably caught. |
+| M0 — Verus baseline and environment | **PARTIAL** | Verus/Rust versions and Linux x86_64 SHA-256 are pinned; the installer and verifier scripts read the JSON pin with Python rather than requiring `jq`. A fresh install from the pinned checksum and full `verify.sh` run pass both in the host worktree and a detached clean worktree. The escape-hatch audit is part of the script. `mutation-check.py` now requires Verus to reject mutations omitting literal substitution, ignoring literal polarity, and replacing selected-position lookup with the root term. Remaining: broader mutation coverage and audit ignored proof obligations. |
 | M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` proves parent validity survives independent standardization substitutions, a standardized-parent superposition step is semantically sound, and its resolvent clause (source context + target context + rewritten literal) is valid. `RULE_CONTRACT.md` specifies the prototype's unordered rule, freshness, simultaneous-substitution convention, and exact resolvent order. Remaining: bind accepted executable certificates to theorem premises and independently review whether the chosen unordered contract is appropriate for the eventual MRS interchange boundary. |
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. Collector exactness now composes with independent freshening-scan postconditions to prove variable-valued images throughout each parent, and accepted certificates expose `renames_variables_on` for every parent literal. The freshening caller blocker is resolved. Collector-to-exec-set correspondence, full hygiene/position refinement, and cumulative resource accounting remain open. |
 | M3 — Superposition checker | **PARTIAL** | Ground/fixed-schema checkers remain; the general replay API requires identical raw/freshened target paths, injective variable-only freshening maps with disjoint images, supplied-unifier equality, whole-parent substitution, source-equality deletion and exact ordered binary-resolvent comparison. A semantic theorem proves that binary resolvent valid from valid parents under explicit unifier/position equations. The executable-acceptance-to-theorem-premise proof, equivalence modulo literal order/renaming, calculus restrictions, and c502 remain. |
@@ -794,3 +794,8 @@ satisfiability/model claims, and unrestricted full TSTP.
 - [ ] Decide the interchange boundary and integrate this verified step checker
   into the Rust strict-kernel path before adding proof-DAG or broader-rule
   coverage (M5 architecture gate).
+
+- [x] Add verifier-negative mutation gates that omit substitution from
+  executable literal replay, ignore literal polarity, and replace selected
+  position lookup with the root term. Verus rejects all three mutations
+  (M0/M7 audit evidence). Broader resolvent and DAG mutations remain TODO.

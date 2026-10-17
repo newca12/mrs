@@ -42,6 +42,12 @@ version/output, source-audit result, and per-module verification counts. CI
 uploads that log even when a later gate fails. Local verification does not
 retain a build artifact unless `VERUS_LOG` is set.
 
+The verification gate also runs three mutation-negative checks: omitting
+substitution from executable literal replay, ignoring literal polarity, and
+replacing selected-position lookup with root lookup. Each mutated temporary
+source must fail Verus verification. This samples key executable/model
+refinement contracts; it is not comprehensive threat-model coverage.
+
 ## Re-audit triggers
 
 Changes to semantic definitions, the superposition theorem, verified replay,
