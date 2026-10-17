@@ -367,7 +367,12 @@ Avoid relying on a parser that silently drops unsupported constructs.
 - **PARTIAL, freshening bridge:** an attempt to compose collector exactness with
   freshening to obtain a direct “every clause variable maps to a variable term”
   postcondition has not yet verified; retain the narrower collector and
-  freshening contracts until that composition proof is discharged.
+  freshening contracts until that composition proof is discharged. The first
+  attempted strengthening of `freshen_clause_apart` was reverted because the
+  checker can succeed through clause validation whose contract does not expose
+  the exact freshening-vector correspondence needed by the desired conclusion.
+  This pinpoints the next proof interface to refine; it does not alter accepted
+  or rejected certificates.
 - **PARTIAL:** bounded variable collection and finite freshening checks now
   exist. They reject absent/non-variable mappings, mapped IDs in the avoid set,
   non-injective images, mismatched raw/freshened target paths, and explicit work
