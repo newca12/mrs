@@ -4233,6 +4233,16 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
             None => false,
         }
 {
+    let mut structural_work: usize = 0;
+    if !charge_clause_structure(&certificate.source, &mut structural_work, work_limit)
+        || !charge_clause_structure(&certificate.target, &mut structural_work, work_limit)
+        || !charge_clause_structure(&certificate.conclusion, &mut structural_work, work_limit)
+        || !charge_binding_structure(&certificate.source_freshening, &mut structural_work, work_limit)
+        || !charge_binding_structure(&certificate.target_freshening, &mut structural_work, work_limit)
+        || !charge_binding_structure(&certificate.unifier, &mut structural_work, work_limit)
+    {
+        return false;
+    }
     if certificate.source.literals.len() > work_limit
         || certificate.target.literals.len() > work_limit - certificate.source.literals.len()
     {
