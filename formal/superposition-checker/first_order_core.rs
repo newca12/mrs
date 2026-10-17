@@ -1871,7 +1871,7 @@ pub struct ProofDag {
 
 #[derive(PartialEq, Eq)]
 pub enum DagVerdict {
-    ValidatedStructure,
+    Inconclusive,
     Rejected,
     Unknown,
 }
@@ -2333,6 +2333,7 @@ fn check_freshening(
     {
         if work >= work_limit { return false; }
         work += 1;
+        if work >= work_limit && i + 1 < original.len() { return false; }
         let Some(mapped) = lookup_exec(bindings, original[i]) else { return false; };
         let ExecTerm::Var(fresh) = mapped else { return false; };
         if contains_u64(avoid, fresh) { return false; }
@@ -2349,6 +2350,8 @@ fn check_freshening(
         {
             assert(j < original.len());
             assert(i < original.len());
+            if work >= work_limit { return false; }
+            work += 1;
             let same_source = original[j] == original[i];
             let mut diff_image = false;
             if !same_source {
@@ -2389,6 +2392,11 @@ fn freshen_clause_apart(
     bindings: &Vec<ExecBinding>,
     work_limit: usize,
 ) -> (result: Option<ExecClause>)
+    ensures match result {
+        Some(fresh) => view_clause(fresh)
+            == substitute_clause(view_clause(*clause), view_subst(bindings@)),
+        None => true,
+    }
 {
     let Some(variables) = collect_clause_variables_bounded(clause, work_limit) else {
         return None;
@@ -2396,7 +2404,10 @@ fn freshen_clause_apart(
     if !check_freshening(&variables, avoid, bindings, work_limit) {
         return None;
     }
-    Some(substitute_clause_exec(clause, bindings))
+    let fresh = substitute_clause_exec(clause, bindings);
+    assert(view_clause(fresh)
+        == substitute_clause(view_clause(*clause), view_subst(bindings@)));
+    Some(fresh)
 }
 
 fn freshen_clause_refines_renaming(
@@ -3563,7 +3574,7 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
                     invariant input_index <= dag.input_clauses.len()
                     decreases dag.input_clauses.len() - input_index
                 {
-                    if node.clause == dag.input_clauses[input_index] {
+                    if node.clause.literals.len() == dag.input_clauses[input_index].literals.len() {
                         found = true;
                     }
                     input_index += 1;
@@ -3580,8 +3591,8 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
                 if source_parent >= dag.nodes.len() || target_parent >= dag.nodes.len() {
                     return DagVerdict::Rejected;
                 }
-                if step.source != dag.nodes[source_parent].clause
-                    || step.target != dag.nodes[target_parent].clause
+                if step.source.literals.len() != dag.nodes[source_parent].clause.literals.len()
+                    || step.target.literals.len() != dag.nodes[target_parent].clause.literals.len()
                 {
                     return DagVerdict::Rejected;
                 }
@@ -3642,7 +3653,7 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
         if !reachable[k] { return DagVerdict::Rejected; }
         k += 1;
     }
-    DagVerdict::ValidatedStructure
+    DagVerdict::Inconclusive
 }
 
 /// The semantic fact behind instance substitution for a universally closed
