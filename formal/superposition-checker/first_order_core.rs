@@ -4636,7 +4636,21 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
 
 fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
     -> (verdict: DagVerdict)
-    ensures verdict == DagVerdict::Unknown || verdict == DagVerdict::Rejected
+    ensures (verdict == DagVerdict::Unknown || verdict == DagVerdict::Rejected)
+        && (dag.nodes.len() == 0 || dag.nodes.len() > node_limit
+            || dag.input_clauses.len() > node_limit || dag.root >= dag.nodes.len())
+            ==> verdict == DagVerdict::Rejected
+        && verdict == DagVerdict::Unknown ==> dag.nodes.len() > 0
+            && dag.nodes.len() <= node_limit
+            && dag.input_clauses.len() <= node_limit
+            && dag.root < dag.nodes.len()
+        && verdict == DagVerdict::Unknown ==> forall|i: int| 0 <= i < dag.nodes.len()
+            ==> dag.nodes[i].kind == ProofNodeKind::Input && dag.nodes[i].parents@.len() == 0
+                || dag.nodes[i].kind == ProofNodeKind::Superposition
+                    && dag.nodes[i].parents@.len() == 2 && dag.nodes[i].step.is_some()
+        && verdict == DagVerdict::Unknown ==> forall|i: int, j: int|
+            0 <= i < dag.nodes.len() && 0 <= j < dag.nodes[i].parents@.len()
+            ==> dag.nodes[i].parents@[j] < i as usize
 {
     // This structural prototype is deliberately non-certifying. Enforce the
     // size caps, then return Unknown until input-clause refinement and the
