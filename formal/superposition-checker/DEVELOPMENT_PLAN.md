@@ -307,6 +307,11 @@ Avoid relying on a parser that silently drops unsupported constructs.
   correspondence, and a finite proposed-unifier checker (domain uniqueness plus
   post-substitution equality) have Verus postconditions/proofs in
   `first_order_core.rs`.
+- **DONE, theorem interface:** `proposed_unifier_certificate_sound` packages the
+  exact mathematical premise established by `check_unifier`: duplicate-free
+  finite simultaneous substitution and equality of the two instantiated terms.
+  Connecting its call site inside full certificate replay to the semantic
+  superposition theorem remains open.
 - **DONE:** define path-based term lookup/replacement, argument-slot literal
   lookup/replacement, and prove evaluation/truth preservation at a selected
   position.

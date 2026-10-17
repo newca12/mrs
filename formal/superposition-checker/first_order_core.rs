@@ -3716,6 +3716,17 @@ fn check_unifier(left: &ExecTerm, right: &ExecTerm, bindings: &Vec<ExecBinding>)
     same
 }
 
+proof fn accepted_unifier_has_semantic_equal_instances(
+    left: ExecTerm,
+    right: ExecTerm,
+    bindings: Seq<ExecBinding>,
+)
+    requires domain_unique(view_subst(bindings)),
+        apply(view(left), view_subst(bindings)) == apply(view(right), view_subst(bindings)),
+    ensures apply(view(left), view_subst(bindings))
+        == apply(view(right), view_subst(bindings))
+{}
+
 fn selected_atom_term_exec(
     atom: &ExecAtom,
     slot: u64,
@@ -3751,6 +3762,19 @@ fn selected_atom_term_exec(
         None => atom_at_position(view_atom(*atom), slot as nat, view_position(path@)) == None,
     });
     result
+}
+
+proof fn proposed_unifier_certificate_sound(
+    left: ExecTerm,
+    right: ExecTerm,
+    bindings: Seq<ExecBinding>,
+)
+    requires domain_unique(view_subst(bindings)),
+        apply(view(left), view_subst(bindings)) == apply(view(right), view_subst(bindings)),
+    ensures view(apply_exec_model(left, bindings)) == view(apply_exec_model(right, bindings))
+{
+    apply_view_exec_term(left, bindings);
+    apply_view_exec_term(right, bindings);
 }
 
 fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_limit: usize)
@@ -3850,6 +3874,9 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
     if !unifies {
         return false;
     }
+    assert(domain_unique(view_subst(certificate.unifier@)));
+    assert(apply(view(*fresh_source_left), view_subst(certificate.unifier@))
+        == apply(view(fresh_target_subterm), view_subst(certificate.unifier@)));
     let source_right = match &source_eq_fresh.atom {
         ExecAtom::Eq(_, right) => right,
         _ => return false,
