@@ -3027,6 +3027,10 @@ fn substitute_clause_exec(clause: &ExecClause, bindings: &Vec<ExecBinding>)
     -> (result: ExecClause)
     ensures view_clause(result)
         == substitute_clause(view_clause(*clause), view_subst(bindings@))
+        && result.literals@.len() == clause.literals@.len()
+        && forall|j: int| 0 <= j < result.literals@.len()
+            ==> view_literal(result.literals@[j])
+                == substitute_literal(view_clause(*clause).literals[j], view_subst(bindings@))
 {
     let mut literals: Vec<ExecLiteral> = Vec::new();
     let mut i: usize = 0;
@@ -3123,6 +3127,14 @@ fn replace_clause_literal_exec(
             }
             let result = ExecClause { literals };
             assert(result.literals@.len() == clause.literals@.len());
+            assert forall|j: int| 0 <= j < result.literals@.len()
+                implies if j == literal_index as int {
+                    view_literal(result.literals@[j]) == view_literal(rewritten)
+                } else {
+                    view_literal(result.literals@[j]) == view_literal(clause.literals@[j])
+                } by {
+                assert(j < i as int);
+            }
             assert(view_clause(result).literals
                 == view_clause(*clause).literals.update(
                     literal_index as int, view_literal(rewritten)));
@@ -3130,6 +3142,30 @@ fn replace_clause_literal_exec(
         },
     }
 }
+
+proof fn clause_literal_replacement_is_pointwise(
+    clause: ExecClause,
+    literal_index: int,
+    slot: nat,
+    position: TermPosition,
+    replacement: Term,
+    replaced: Clause,
+)
+    requires
+        0 <= literal_index < clause.literals@.len(),
+        replace_clause_literal(view_clause(clause), literal_index, slot, position, replacement)
+            == Some(replaced),
+    ensures replaced.literals.len() == clause.literals@.len()
+        && forall|j: int| 0 <= j < replaced.literals.len()
+            ==> replaced.literals[j] == if j == literal_index {
+                match replace_literal_at_position(
+                    view_literal(clause.literals@[literal_index]), slot, position, replacement,
+                ) {
+                    Some(literal) => literal,
+                    None => view_literal(clause.literals@[j]),
+                }
+            } else { view_literal(clause.literals@[j]) }
+{}
 
 fn executable_clause_replay_example()
 {
@@ -4119,14 +4155,23 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
 
     let mut conclusion_literals = Vec::new();
     let mut source_index: usize = 0;
-    while source_index < instantiated_source.literals.len()
-        invariant source_index <= instantiated_source.literals.len()
-        decreases instantiated_source.literals.len() - source_index
+    while source_index < certificate.source_equality_index
+        invariant source_index <= certificate.source_equality_index,
+            certificate.source_equality_index < instantiated_source.literals.len()
+        decreases certificate.source_equality_index - source_index
     {
-        if source_index != certificate.source_equality_index {
-            conclusion_literals.push(copy_literal(&instantiated_source.literals[source_index]));
-        }
+        conclusion_literals.push(copy_literal(&instantiated_source.literals[source_index]));
         source_index += 1;
+    }
+    let mut source_suffix: usize = certificate.source_equality_index + 1;
+    while source_suffix < instantiated_source.literals.len()
+        invariant certificate.source_equality_index < instantiated_source.literals.len(),
+            source_suffix <= instantiated_source.literals.len(),
+        decreases instantiated_source.literals.len() - source_suffix
+    {
+        assert(source_suffix < instantiated_source.literals.len());
+        conclusion_literals.push(copy_literal(&instantiated_source.literals[source_suffix]));
+        source_suffix += 1;
     }
     let mut target_index: usize = 0;
     while target_index < rewritten_target.literals.len()
