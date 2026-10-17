@@ -310,8 +310,11 @@ Avoid relying on a parser that silently drops unsupported constructs.
 - **DONE, theorem interface:** `proposed_unifier_certificate_sound` packages the
   exact mathematical premise established by `check_unifier`: duplicate-free
   finite simultaneous substitution and equality of the two instantiated terms.
-  Connecting its call site inside full certificate replay to the semantic
-  superposition theorem remains open.
+  The general certificate checker now also postconditions that the source and
+  target selected terms are equal after the supplied unifier, that the selected
+  target position exists, and that the target freshening is applied to that raw
+  selected term. Connecting this replay contract into the semantic superposition
+  theorem call remains open.
 - **DONE:** define path-based term lookup/replacement, argument-slot literal
   lookup/replacement, and prove evaluation/truth preservation at a selected
   position.
@@ -344,7 +347,9 @@ Avoid relying on a parser that silently drops unsupported constructs.
 - **PARTIAL, executable slice:** the step-certificate IR requires independent
   source/target variable maps. It checks bounded freshening and unifier
   conditions, replays the selected target slot/path, forms a binary resolvent,
-  and compares ordered literals. Its implementation still needs a proved
+  and compares ordered literals. The certificate checker now postconditions that
+  every variable occurring in either parent is mapped to a variable term by its
+  corresponding freshening. Its implementation still needs a proved
   postcondition, cumulative resource accounting, and a direct local-soundness
   theorem connection; it is not a certifying API yet.
 - **PARTIAL, proof connection:** the replay refuses target paths that differ

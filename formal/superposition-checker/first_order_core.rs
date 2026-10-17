@@ -3777,11 +3777,67 @@ proof fn proposed_unifier_certificate_sound(
     apply_view_exec_term(right, bindings);
 }
 
+spec fn selected_source_left(certificate: SuperpositionCertificate) -> Term {
+    match certificate.source.literals@[certificate.source_equality_index as int].atom {
+        ExecAtom::Eq(left, _) => apply(view(left), view_subst(certificate.source_freshening@)),
+        _ => Term::Var(0),
+    }
+}
+
+spec fn selected_source_right(certificate: SuperpositionCertificate) -> Term {
+    match certificate.source.literals@[certificate.source_equality_index as int].atom {
+        ExecAtom::Eq(_, right) => view(right),
+        _ => Term::Var(0),
+    }
+}
+
+spec fn selected_target_subterm(certificate: SuperpositionCertificate) -> Term {
+    match atom_at_position(
+        view_atom(certificate.target.literals@[certificate.target_literal_index as int].atom),
+        certificate.target_argument_slot as nat,
+        view_position(certificate.target_path@),
+    ) {
+        Some(term) => apply(term, view_subst(certificate.target_freshening@)),
+        None => Term::Var(0),
+    }
+}
+
+spec fn selected_rewrite_rhs(certificate: SuperpositionCertificate) -> Term {
+    apply(apply(selected_source_right(certificate),
+        view_subst(certificate.source_freshening@)), view_subst(certificate.unifier@))
+}
+
 fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_limit: usize)
     -> (accepted: bool)
     ensures accepted ==> certificate.target_path@ == certificate.fresh_target_path@
         && accepted ==> certificate.source_equality_index < certificate.source.literals.len()
         && accepted ==> certificate.target_literal_index < certificate.target.literals.len()
+        && accepted ==> forall|v: u64| term_clause_view_contains(certificate.source, v)
+            ==> exists|fresh: u64| lookup(view_subst(certificate.source_freshening@), v)
+                == Some(Term::Var(fresh))
+        && accepted ==> forall|v: u64| term_clause_view_contains(certificate.target, v)
+            ==> exists|fresh: u64| lookup(view_subst(certificate.target_freshening@), v)
+                == Some(Term::Var(fresh))
+        && accepted ==> apply(selected_source_left(*certificate),
+            view_subst(certificate.unifier@))
+            == apply(selected_target_subterm(*certificate), view_subst(certificate.unifier@))
+        && accepted ==> selected_rewrite_rhs(*certificate)
+            == apply(apply(selected_source_right(*certificate),
+                view_subst(certificate.source_freshening@)), view_subst(certificate.unifier@))
+        && accepted ==> atom_at_position(
+            view_atom(certificate.target.literals@[certificate.target_literal_index as int].atom),
+            certificate.target_argument_slot as nat,
+            view_position(certificate.target_path@),
+        ).is_some()
+        && accepted ==> match atom_at_position(
+            view_atom(certificate.target.literals@[certificate.target_literal_index as int].atom),
+            certificate.target_argument_slot as nat,
+            view_position(certificate.target_path@),
+        ) {
+            Some(raw) => selected_target_subterm(*certificate)
+                == apply(raw, view_subst(certificate.target_freshening@)),
+            None => false,
+        }
 {
     if !same_u64_sequence(&certificate.target_path, &certificate.fresh_target_path) {
         return false;
@@ -3898,17 +3954,35 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
 }
 
 fn is_variable_renaming(variables: &Vec<u64>, bindings: &Vec<ExecBinding>) -> (valid: bool)
+    ensures valid == freshening_images_are_variable(bindings@, variables@)
 {
     let mut i: usize = 0;
     while i < variables.len()
-        invariant i <= variables.len()
+        invariant i <= variables.len(),
+            forall|k: int| 0 <= k < i as int
+                ==> renamed_variable(view_subst(bindings@), variables@[k]).is_some()
         decreases variables.len() - i
     {
         match lookup_exec(bindings, variables[i]) {
-            Some(ExecTerm::Var(_)) => {},
-            _ => return false,
+            Some(ExecTerm::Var(fresh)) => {
+                assert(renamed_variable(view_subst(bindings@), variables@[i as int])
+                    == Some(fresh));
+            },
+            Some(_) => {
+                assert(renamed_variable(view_subst(bindings@), variables@[i as int]).is_none());
+                return false;
+            },
+            None => {
+                assert(renamed_variable(view_subst(bindings@), variables@[i as int]).is_none());
+                return false;
+            },
         }
         i += 1;
+    }
+    assert(i == variables.len());
+    assert forall|k: int| 0 <= k < variables@.len()
+        implies renamed_variable(view_subst(bindings@), variables@[k]).is_some() by {
+        assert(k < i as int);
     }
     true
 }
