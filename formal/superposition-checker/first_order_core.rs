@@ -2457,6 +2457,7 @@ proof fn selected_literal_variables_are_clause_variables(
 fn consume_work(work: &mut usize, limit: usize) -> (ok: bool)
     ensures
         ok ==> *final(work) == old(work) + 1,
+        ok ==> old(work) < limit && *final(work) <= limit,
         !ok ==> *final(work) == *old(work),
 {
     if *work >= limit { false } else { *work += 1; true }
@@ -2485,26 +2486,22 @@ fn collect_term_variables_exec(
     ensures ok ==> forall|v: u64| exec_term_variables(*term).contains(v)
             ==> final(variables)@.contains(v),
         ok ==> forall|v: u64| old(variables)@.contains(v) ==> final(variables)@.contains(v),
+        ok ==> *old(work) <= limit && *final(work) <= limit,
     decreases term
 {
     match term {
         ExecTerm::Var(v) => {
-            if *work >= limit { return false; }
-            *work += 1;
+            if !consume_work(work, limit) { return false; }
             add_variable(variables, *v);
             true
         },
-        ExecTerm::Const(_) => {
-            if *work >= limit { false } else { *work += 1; true }
-        },
+        ExecTerm::Const(_) => consume_work(work, limit),
         ExecTerm::App1(_, child) => {
-            if *work >= limit { return false; }
-            *work += 1;
+            if !consume_work(work, limit) { return false; }
             collect_term_variables_exec(child, variables, work, limit)
         },
         ExecTerm::App2(_, left, right) => {
-            if *work >= limit { return false; }
-            *work += 1;
+            if !consume_work(work, limit) { return false; }
             if !collect_term_variables_exec(left, variables, work, limit) { return false; }
             if !collect_term_variables_exec(right, variables, work, limit) { return false; }
             true
@@ -2518,10 +2515,12 @@ fn collect_atom_variables_exec(
     work: &mut usize,
     limit: usize,
 ) -> (ok: bool)
+    requires *old(work) <= limit
     ensures ok ==> forall|v: u64| exec_atom_variables(*atom).contains(v)
             ==> final(variables)@.contains(v),
         ok ==> forall|v: u64| old(variables)@.contains(v)
             ==> final(variables)@.contains(v),
+        ok ==> *old(work) <= limit && *final(work) <= limit,
     decreases atom
 {
     match atom {
@@ -2543,18 +2542,20 @@ fn collect_clause_variables_exec(
     work: &mut usize,
     limit: usize,
 ) -> (ok: bool)
+    requires *old(work) <= limit
     ensures ok ==> forall|v: u64, j: int|
             0 <= j < clause.literals@.len()
                 && #[trigger] exec_atom_variables(clause.literals@[j].atom).contains(v)
             ==> final(variables)@.contains(v),
         ok ==> forall|v: u64| old(variables)@.contains(v)
             ==> final(variables)@.contains(v),
+        ok ==> *old(work) <= limit && *final(work) <= limit,
 {
-    if *work >= limit { return false; }
-    *work += 1;
+    if !consume_work(work, limit) { return false; }
     let mut literal_index: usize = 0;
     while literal_index < clause.literals.len()
         invariant literal_index <= clause.literals.len(),
+            *work <= limit,
             forall|v: u64, j: int| 0 <= j < literal_index as int
                 && #[trigger] exec_atom_variables(clause.literals@[j].atom).contains(v)
                 ==> variables@.contains(v),
@@ -2569,6 +2570,7 @@ fn collect_clause_variables_exec(
             implies variables@.contains(v) by {}
         literal_index += 1;
     }
+    assert(*work <= limit);
     true
 }
 
@@ -2584,9 +2586,7 @@ fn collect_clause_variables_bounded(
     if work_limit < 8 || clause.literals.len() > 64 { return None; }
     let mut variables: Vec<u64> = Vec::new();
     let mut work: usize = 0;
-    if collect_clause_variables_exec(clause, &mut variables, &mut work, work_limit)
-        && work <= work_limit
-    {
+    if collect_clause_variables_exec(clause, &mut variables, &mut work, work_limit) {
         let covered = clause_variables_covered(clause, &variables);
         if covered {
             let mut i: usize = 0;

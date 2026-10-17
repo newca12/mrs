@@ -340,6 +340,11 @@ Avoid relying on a parser that silently drops unsupported constructs.
   selected literal is exactly the position-rewritten literal, and every other
   literal is preserved in order. The separate relational lemma records the same
   pointwise shape at the mathematical clause layer.
+- **DONE, local work bound:** successful recursive term/atom/clause variable
+  collection requires the incoming shared work counter to be at most its limit
+  and returns with it still at most the limit. Each visited term and the clause
+  traversal charge through the shared counter; cumulative budgets across
+  separate collector invocations and other certificate loops remain open.
 - **DONE, variable-map acceptance contract:** `is_variable_renaming` now has an
   exact postcondition relating success to the model predicate that every
   variable in the supplied sequence receives a variable-valued substitution
