@@ -14,7 +14,7 @@ the item itself is explicitly marked `ABANDONED`.
 |---|---|---|
 | M0 — Verus baseline and environment | **PARTIAL** | Verus/Rust versions and Linux x86_64 SHA-256 are pinned; the installer and verifier scripts read the JSON pin with Python rather than requiring `jq`. A fresh install from the pinned checksum and full `verify.sh` run pass both in the host worktree and a detached clean worktree. The escape-hatch audit is part of the script. Remaining: audit ignored proof obligations and strengthen mutation coverage so changes to verified executable/specification relationships are demonstrably caught. |
 | M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` proves parent validity survives independent standardization substitutions, a standardized-parent superposition step is semantically sound, and its resolvent clause (source context + target context + rewritten literal) is valid. `RULE_CONTRACT.md` specifies the prototype's unordered rule, freshness, simultaneous-substitution convention, and exact resolvent order. Remaining: bind accepted executable certificates to theorem premises and independently review whether the chosen unordered contract is appropriate for the eventual MRS interchange boundary. |
-| M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. The bounded clause collector now returns only when its variable vector is exact with respect to the mathematical clause variable set (coverage plus a verified no-extraneous-variable pass); term and atom collectors prove coverage and preserve prior variables. The selected-position renaming lemma now takes only a domain-restricted variable-renaming premise for variables occurring in the literal, rather than requiring a globally variable-only substitution. Executable freshening refinement, input-list/set bridge at its caller, collector-to-exec-set correspondence, and cumulative resource accounting remain open. |
+| M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. Collector exactness now composes with independent freshening-scan postconditions to prove variable-valued images throughout each parent, and accepted certificates expose `renames_variables_on` for every parent literal. The freshening caller blocker is resolved. Collector-to-exec-set correspondence, full hygiene/position refinement, and cumulative resource accounting remain open. |
 | M3 — Superposition checker | **PARTIAL** | Ground/fixed-schema checkers remain; the general replay API requires identical raw/freshened target paths, injective variable-only freshening maps with disjoint images, supplied-unifier equality, whole-parent substitution, source-equality deletion and exact ordered binary-resolvent comparison. A semantic theorem proves that binary resolvent valid from valid parents under explicit unifier/position equations. The executable-acceptance-to-theorem-premise proof, equivalence modulo literal order/renaming, calculus restrictions, and c502 remain. |
 | M4 — Proof-DAG validation | **PARTIAL** | Added finite proof graph types and a conditional induction theorem from locally entailing steps to input entailment. The public structural entry point returns `Unknown` for all structurally in-budget graphs; it cannot validate or certify a graph. Its fail-closed scan bounds aggregate nodes, input clauses, parent edges, literal counts, and clause-term structure, including all superposition certificate inputs; it requires exactly two parent edges for superposition, checks references are in-range and topologically earlier, and rejects unsupported node kinds, input nodes with parents, and superposition nodes without step certificates. Successful structural checks expose these shape and parent-order facts as a postcondition. Exact leaf membership, local node soundness, and a verified DAG acceptance postcondition remain. |
 | M5 — MRS integration | **TODO** | The Verus executable is not called by `mrs-proof-kernel`; no interchange format or production adapter exists. |
@@ -22,7 +22,7 @@ the item itself is explicitly marked `ABANDONED`.
 | M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB/re-audit note, and a CI audit for `assume`, `admit`, and external-body/allow escape hatches. CI now uploads a Verus evidence log with source commit, binary hash, toolchain, and proof output. Mutation corpus, supported proof corpus, reproducible production artifact, and release gates remain. |
 
 **What is DONE now:** the pinned local command `formal/superposition-checker/verify.sh`
-passes all four Verus files (currently `5`, `161`, `5`, and `5` verified functions respectively),
+passes all four Verus files (currently `5`, `162`, `5`, and `5` verified functions respectively),
 and the existing Rust regression `rejects_swv406_c502_archived_target_specialization`
 passes. These results establish only the current narrow verified artifacts; they
 do not complete M0–M3 or decide c502.
@@ -361,18 +361,22 @@ Avoid relying on a parser that silently drops unsupported constructs.
   image; absent bindings and non-variable images both map to failure.
 - **DONE, freshening scan postcondition:** successful `check_freshening` now
   directly states that every variable present in its finite input sequence has
-  a lookup to a variable term. The attempted lift from this sequence-level fact
-  through the clause collector to all model clause variables remains blocked on
-  the collector/set representation bridge.
+  a lookup to a variable term. Its sequence-validity, variable-image, and
+  membership guarantees are independent comma-separated `ensures` clauses.
+  Chaining implications with `&&` previously nested these guarantees under
+  earlier implications, preventing callers from obtaining the intended facts.
 - **DONE, freshening representation bridge:**
   `renaming_images_cover_clause_variables` composes the collector's
   `clause_collection_exact` postcondition with the finite renaming-image
   predicate to prove that every model-level clause variable has a variable
-  image. This lemma is standalone; successful `freshen_clause_apart` has not
-  yet been proved to expose all its premises, because the executable renaming
-  scan's postcondition and input-list/set equality do not currently compose at
-  its call site. Keep the bridge separate from checker acceptance until that
-  proof is discharged.
+  image. `freshen_clause_apart` now obtains the lemma's premises directly from
+  the bounded collector and successful freshening scan, without repeating the
+  variable-renaming scan. `collected_renaming_covers_selected_literal` lifts
+  this to `renames_variables_on` for every literal. The certificate checker
+  exposes that property for both parents as independent acceptance
+  postconditions. The compatibility wrapper delegates to this same verified
+  freshening path. This resolves the finite-map/collector caller blocker;
+  position replay and the full local-soundness theorem connection remain open.
 - **PARTIAL:** bounded variable collection and finite freshening checks now
   exist. They reject absent/non-variable mappings, mapped IDs in the avoid set,
   non-injective images, mismatched raw/freshened target paths, and explicit work
@@ -774,9 +778,9 @@ satisfiability/model claims, and unrestricted full TSTP.
 - [ ] Finish constructor-wide executable/model refinement, occurs-check policy,
   positions, replacement, and
   standardization-apart before widening the checker (M2). The collector-exactness
-  to model-variable freshening lemma now verifies in isolation; proving the
-  certificate checker's success condition supplies its finite-map premises
-  remains.
+  to model-variable freshening bridge now composes with the executable scan,
+  and accepted certificates expose the domain-restricted renaming premise for
+  every parent literal. The complete position/resolvent soundness bridge remains.
 - [x] Specify and prove recursive term substitution/evaluation and lift it to
   atom/literal/clause preservation under total interpretation/valuation domains
   (M1 semantic foundation).

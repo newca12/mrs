@@ -2347,6 +2347,28 @@ proof fn renaming_images_cover_clause_variables(
     assert(lookup(view_subst(bindings), variable) == Some(Term::Var(fresh)));
 }
 
+proof fn collected_renaming_covers_selected_literal(
+    clause: ExecClause,
+    variables: Seq<u64>,
+    bindings: Seq<ExecBinding>,
+    literal_index: int,
+)
+    requires
+        clause_collection_exact(clause, variables),
+        freshening_images_are_variable(bindings, variables),
+        0 <= literal_index < clause.literals@.len(),
+    ensures renames_variables_on(
+        view_subst(bindings), literal_variables(view_literal(clause.literals@[literal_index])),
+    )
+{
+    assert forall|v: u64|
+        literal_variables(view_literal(clause.literals@[literal_index])).contains(v)
+        implies exists|fresh: u64| lookup(view_subst(bindings), v) == Some(Term::Var(fresh)) by {
+        assert(term_clause_view_contains(clause, v));
+        renaming_images_cover_clause_variables(clause, variables, bindings, v);
+    }
+}
+
 proof fn freshening_maps_variables_in_selected_literal(
     clause: ExecClause,
     literal_index: int,
@@ -2765,9 +2787,10 @@ fn check_freshening(
     bindings: &Vec<ExecBinding>,
     work_limit: usize,
 ) -> (valid: bool)
-    ensures valid ==> freshening_sequence_valid(original@, avoid@, view_subst(bindings@))
-        && valid ==> freshening_images_are_variable(bindings@, original@)
-        && valid ==> forall|v: u64| original@.contains(v)
+    ensures
+        valid ==> freshening_sequence_valid(original@, avoid@, view_subst(bindings@)),
+        valid ==> freshening_images_are_variable(bindings@, original@),
+        valid ==> forall|v: u64| original@.contains(v)
             ==> exists|fresh: u64|
                 lookup(view_subst(bindings@), v) == Some(Term::Var(fresh))
 {
@@ -2880,11 +2903,14 @@ fn freshen_clause_apart(
     ensures match result {
         Some(fresh) => view_clause(fresh)
             == substitute_clause(view_clause(*clause), view_subst(bindings@))
-            && forall|v: u64| term_clause_view_contains(*clause, v)
+            && (forall|v: u64| term_clause_view_contains(*clause, v)
                 ==> exists|fresh_id: u64|
-                    lookup(view_subst(bindings@), v) == Some(Term::Var(fresh_id)),
+                    lookup(view_subst(bindings@), v) == Some(Term::Var(fresh_id))),
         None => true,
-    }
+    },
+        result.is_some() ==> forall|i: int| 0 <= i < clause.literals@.len()
+            ==> renames_variables_on(view_subst(bindings@),
+                literal_variables(view_literal(clause.literals@[i])))
 {
     let Some(variables) = collect_clause_variables_bounded(clause, work_limit) else {
         return None;
@@ -2894,10 +2920,13 @@ fn freshen_clause_apart(
         return None;
     }
     assert(clause_collection_exact(*clause, variables@));
-    let renaming_ok = is_variable_renaming(&variables, bindings);
-    assert(renaming_ok == freshening_images_are_variable(bindings@, variables@));
-    if !renaming_ok {
-        return None;
+    assert(freshening_images_are_variable(bindings@, variables@));
+    proof {
+        assert forall|i: int| 0 <= i < clause.literals@.len()
+            implies renames_variables_on(view_subst(bindings@),
+                literal_variables(view_literal(clause.literals@[i]))) by {
+            collected_renaming_covers_selected_literal(*clause, variables@, bindings@, i);
+        }
     }
     let fresh = freshen_clause_with_variable_map(clause, &variables, bindings);
     Some(fresh)
@@ -2912,8 +2941,8 @@ fn freshen_clause_with_variable_map(
         clause_collection_exact(*clause, variables@),
         freshening_images_are_variable(bindings@, variables@),
     ensures view_clause(fresh)
-            == substitute_clause(view_clause(*clause), view_subst(bindings@))
-        && forall|v: u64| term_clause_view_contains(*clause, v)
+            == substitute_clause(view_clause(*clause), view_subst(bindings@)),
+        forall|v: u64| term_clause_view_contains(*clause, v)
             ==> exists|fresh_id: u64|
                 lookup(view_subst(bindings@), v) == Some(Term::Var(fresh_id))
 {
@@ -2936,20 +2965,14 @@ fn freshen_clause_refines_renaming(
 ) -> (result: Option<ExecClause>)
     ensures match result {
         Some(fresh) => view_clause(fresh)
-            == substitute_clause(view_clause(*clause), view_subst(bindings@)),
+            == substitute_clause(view_clause(*clause), view_subst(bindings@))
+            && (forall|v: u64| term_clause_view_contains(*clause, v)
+                ==> exists|fresh_id: u64|
+                    lookup(view_subst(bindings@), v) == Some(Term::Var(fresh_id))),
         None => true,
     }
 {
-    let Some(variables) = collect_clause_variables_bounded(clause, work_limit) else {
-        return None;
-    };
-    let valid = check_freshening(&variables, avoid, bindings, work_limit);
-    if !valid {
-        return None;
-    }
-    assert(clause_collection_exact(*clause, variables@));
-    let fresh = substitute_clause_exec(clause, bindings);
-    Some(fresh)
+    freshen_clause_apart(clause, avoid, bindings, work_limit)
 }
 
 fn check_standardized_apart_pair(
@@ -4314,7 +4337,13 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
             Some(raw) => selected_target_subterm(*certificate)
                 == apply(raw, view_subst(certificate.target_freshening@)),
             None => false,
-        }
+        },
+        accepted ==> forall|i: int| 0 <= i < certificate.source.literals@.len()
+            ==> renames_variables_on(view_subst(certificate.source_freshening@),
+                literal_variables(view_literal(certificate.source.literals@[i]))),
+        accepted ==> forall|i: int| 0 <= i < certificate.target.literals@.len()
+            ==> renames_variables_on(view_subst(certificate.target_freshening@),
+                literal_variables(view_literal(certificate.target.literals@[i])))
 {
     let mut structural_work: usize = 0;
     if !charge_clause_structure(&certificate.source, &mut structural_work, work_limit)
