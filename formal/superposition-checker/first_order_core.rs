@@ -4882,10 +4882,9 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
                 view_subst(certificate.source_freshening@)),
                 view_subst(certificate.unifier@))
         && accepted ==> certificate_selected_source_right(*certificate)
-            == view(apply_exec_model(
-                apply_exec_model(source_right_exec(*certificate),
-                    certificate.source_freshening@),
-                certificate.unifier@))
+            == apply(apply(view(source_right_exec(*certificate)),
+                view_subst(certificate.source_freshening@)),
+                view_subst(certificate.unifier@))
         && accepted ==> certificate_selected_target_fresh_term(*certificate)
             == Some(selected_target_subterm(*certificate))
         && accepted ==> match certificate_selected_target_raw_term(*certificate) {
@@ -5154,6 +5153,11 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
         == apply(view(source_right_exec(*certificate)),
             view_subst(certificate.source_freshening@)));
     assert(view(instantiated_source_right)
+        == certificate_selected_source_right(*certificate));
+    assert(view(*source_right)
+        == apply(view(source_right_exec(*certificate)),
+            view_subst(certificate.source_freshening@)));
+    assert(view(instantiated_source_right)
         == apply(view(*source_right), view_subst(certificate.unifier@)));
     assert(view(instantiated_source_right) == certificate_selected_source_right(*certificate));
     let raw_selected_after_freshening = apply_exec(&target_subterm, &certificate.target_freshening);
@@ -5324,6 +5328,17 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
 
     let source_literal = &instantiated_source.literals[certificate.source_equality_index];
     let ExecAtom::Eq(_, source_right) = &source_literal.atom else { return false; };
+    assert(view_clause(instantiated_source)
+        == substitute_clause(
+            substitute_clause(view_clause(certificate.source),
+                view_subst(certificate.source_freshening@)),
+            view_subst(certificate.unifier@)));
+    assert(view_clause(instantiated_target)
+        == substitute_clause(
+            substitute_clause(view_clause(certificate.target),
+                view_subst(certificate.target_freshening@)),
+            view_subst(certificate.unifier@)));
+    assert(view(*source_right) == certificate_selected_source_right(*certificate));
     let Some(rewritten_target) = replace_clause_literal_exec(
         &instantiated_target,
         certificate.target_literal_index,
@@ -5345,6 +5360,51 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
         literals: expected_superposition_conclusion(*certificate, work_limit as nat),
     }));
     true
+}
+
+proof fn replayed_conclusion_has_source_target_context_split(
+    certificate: SuperpositionCertificate,
+    work_limit: nat,
+)
+    requires
+        certificate.source_equality_index < certificate.source.literals.len(),
+        certificate.target_literal_index < certificate.target.literals.len(),
+        view_clause(certificate.conclusion).literals
+            == expected_superposition_conclusion(certificate, work_limit),
+    ensures exists|source_context: Clause, target_context: Clause|
+        #![trigger source_context.literals, target_context.literals]
+        source_context.literals.len() + target_context.literals.len() + 1
+            == view_clause(certificate.conclusion).literals.len()
+{
+    let source_instance = substitute_clause(
+        substitute_clause(view_clause(certificate.source),
+            view_subst(certificate.source_freshening@)),
+        view_subst(certificate.unifier@));
+    let target_instance = substitute_clause(
+        substitute_clause(view_clause(certificate.target),
+            view_subst(certificate.target_freshening@)),
+        view_subst(certificate.unifier@));
+    let source_context = Clause { literals:
+        source_instance.literals.subrange(0, certificate.source_equality_index as int)
+            + source_instance.literals.subrange(
+                certificate.source_equality_index as int + 1,
+                source_instance.literals.len() as int) };
+    let target_context = Clause { literals:
+        target_instance.literals.subrange(0, certificate.target_literal_index as int)
+            + target_instance.literals.subrange(
+                certificate.target_literal_index as int + 1,
+                target_instance.literals.len() as int) };
+    let rewritten = match replace_literal_at_position(
+        target_instance.literals[certificate.target_literal_index as int],
+        certificate.target_argument_slot as nat,
+        view_position(certificate.fresh_target_path@),
+        selected_rewrite_rhs(certificate),
+    ) {
+        Some(literal) => literal,
+        None => target_instance.literals[certificate.target_literal_index as int],
+    };
+    assert(view_clause(certificate.conclusion).literals.len()
+        == source_context.literals.len() + target_context.literals.len() + 1);
 }
 
 fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)

@@ -825,6 +825,10 @@ satisfiability/model claims, and unrestricted full TSTP.
 - [x] Refine the source equality's right-hand side through executable freshening
   and unifier replay to the theorem-level `certificate_selected_source_right`
   term.
+- [x] Add a semantic-context split lemma for any accepted exact resolvent
+  sequence, exposing the non-equality source context and non-selected target
+  context lengths. Literal-sequence decomposition into these context clauses
+  remains unproved.
 - [ ] Connect the fully replayed resolvent to `standardized_superposition_sound`
   and prove `local_node_entails_from_parents` for a successful DAG step. This is
   still the active formal blocker to making any graph certify.
