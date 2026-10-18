@@ -83,6 +83,21 @@ def main() -> int:
             "if right_predicate != predicate { return false; }",
             "if false { return false; }",
         ),
+        (
+            "resolution checker ignores oriented polarity",
+            "if !left.literals[left_pivot].positive || right_literal.positive {",
+            "if false {",
+        ),
+        (
+            "DAG resolution skips rule replay",
+            "let checked = check_nullary_resolution(&nodes[node.parents[0]].clause,",
+            "let checked = true || check_nullary_resolution(&nodes[node.parents[0]].clause,",
+        ),
+        (
+            "DAG resolution checks a parent instead of the conclusion",
+            "&nodes[node.parents[1]].clause, lp, rp, &node.clause, work_limit);",
+            "&nodes[node.parents[1]].clause, lp, rp, &nodes[node.parents[0]].clause, work_limit);",
+        ),
     ]
 
     with tempfile.TemporaryDirectory(prefix="mrs-verus-mutation-") as temp_dir:

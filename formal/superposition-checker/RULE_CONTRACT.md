@@ -85,12 +85,15 @@ The DAG contract consumes universally valid parents, not their truth at one
 valuation, because substitutions can select different parent instances.
 Whole-DAG IR acceptance is now proved by `certify_dag`: acceptance implies no
 well-formed model of the supplied universally closed input clauses. Exact input
-membership is checked; no runtime semantic-validity test is required. The only
-the only DAG-dispatched inference remains superposition. The standalone
-`check_nullary_resolution` checker and its semantic theorem cover complementary
-nullary predicates in positive-left/negative-right orientation, with exact
-left-context/right-context order; DAG integration
-remains open. Complete hygiene/resource refinement, conclusion comparison
+membership is checked; no runtime semantic-validity test is required.
+DAG-dispatched inference rules include superposition and nullary-predicate
+resolution. `check_nullary_resolution` postconditions validity preservation,
+and `check_dag_resolution_step` composes that with the cited node parents and
+conclusion. Pivots are positive-left/negative-right occurrences of the same
+nullary predicate, with exactly one occurrence deleted from each parent and
+exact left-context/right-context order, including duplicate literals. No
+substitution, standardization or normalization is applied by this resolution
+slice. Complete hygiene/resource refinement, conclusion comparison
 modulo proved clause equivalences, an MRS interchange format, and c502 analysis
 remain open. See `ASSURANCE.md` and
 `supported-rules.json` for the current claim boundary.

@@ -18,11 +18,12 @@ or semantic-validity arguments. The legacy structural entry point still returns
 `Unknown` for valid graphs.
 
 This certifies the supplied IR input clauses, not a parsed TPTP problem.
-Superposition alone cannot produce an empty clause, so currently a certifying
-DAG needs an empty input; nontrivial coverage requires additional verified rules.
-A verified standalone nullary-predicate resolution theorem and bounded exact
-resolvent checker now exist. Resolution is not yet dispatched from the DAG
-validator and cannot affect certification.
+Nullary-predicate resolution is DAG-dispatched in addition to superposition.
+Accepted exact resolution replay proves universal validity preservation;
+`check_dag_resolution_step` consumes that postcondition for the actual cited
+parents and node conclusion. The generic induction consumes local entailment
+for either rule. Compiled unit and multi-step refutations certify from nonempty
+inputs. General first-order resolution and other inference rules remain open.
 
 The machine-readable support declaration is
 [`supported-rules.json`](supported-rules.json). Unsupported rules and
@@ -63,7 +64,7 @@ toolchains, verifier version/output, source-audit result, and per-module verific
 uploads that log even when a later gate fails. Local verification does not
 retain a build artifact unless `VERUS_LOG` is set.
 
-The verification gate also runs twelve mutation-negative checks: omitting
+The verification gate also runs sixteen mutation-negative checks: omitting
 substitution from executable literal replay, ignoring literal polarity,
 replacing selected-position lookup with root lookup, and omitting the rewritten
 target clause from resolvent construction, skipping DAG-step replay, ignoring
@@ -76,6 +77,10 @@ positive/negative DAG examples via `runtime-check.py`; the ordinary Rust `main`
 assertion is a test oracle outside the verified certification API.
 Resolution-step fixtures additionally cover complementary pivots, wrong symbols,
 forged conclusions, out-of-range pivots and work-limit exhaustion.
+Resolution DAG fixtures cover unit and context-bearing refutations, omitted
+contexts, duplicate pivot occurrences, wrong parents/orientation and self-parent
+references. New mutations reject omitted oriented polarity, skipped DAG rule
+replay and checking a parent instead of the claimed conclusion.
 
 ## Re-audit triggers
 

@@ -39,7 +39,7 @@ It also runs `mutation-check.py`: temporary copies of the first-order core omit
 literal substitution, ignore literal polarity, replace selected-position
 lookup with root lookup, omit appending the rewritten target clause, skip DAG-step
 replay, ignore its cited source parent, or skip replay during DAG preflight. The
-verification gate requires Verus to reject all twelve broken refinements,
+verification gate requires Verus to reject all sixteen broken refinements,
 including skipped node validation, forged input membership, forward parents,
 and nonempty-root acceptance. The
 source tree is not modified by these negative checks.
@@ -52,7 +52,7 @@ Verus `main` currently declares Rust `1.99.1`, matching
 but this release binary reports its effective toolchain as Rust `1.98.1` and
 overrides the request. The verification log records both. Verus uses its
 bundled Z3. Results:
-`5 verified, 0 errors` for the original pilot, `199 verified, 0 errors` for
+`5 verified, 0 errors` for the original pilot, `204 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
 
@@ -81,10 +81,15 @@ a total valuation into the nonempty carrier. No interpretation or assumed input
 validity is supplied to the executable API.
 
 This certifies the supplied IR input clauses, not a parsed TPTP problem.
-Superposition alone cannot produce the empty clause, so successful empty-root
-examples currently need an empty input. Nontrivial refutations require additional
-verified rules such as resolution or equality resolution. Production adapters
-and cumulative replay-work accounting remain open.
+Nullary-predicate resolution is now DAG-dispatched: `Resolution(lp, rp)` selects
+one positive pivot in the left parent and one negative pivot in the right parent.
+The checker removes exactly those occurrences, preserves all remaining literals
+in left-context/right-context order, and compares the node conclusion exactly.
+`check_dag_resolution_step` proves local entailment using the accepted replay's
+universal validity-preservation postcondition. The generic induction supports
+both inference rules. Compiled unit and multi-step refutations certify without
+empty input clauses. General first-order resolution, production adapters and
+cumulative replay-work accounting remain open.
 
 `first_order_core.rs` adds recursive first-order terms and formal,
 simultaneous-substitution semantics. It includes executable term copying,
@@ -96,8 +101,8 @@ superposition-shaped entailment where unification instantiates a target
 variable while consistently substituting the other target literal.
 It also proves nullary-predicate resolution soundness and verifies the bounded
 `check_nullary_resolution` exact-resolvent checker with positive/negative runtime
-examples. This is a standalone step checker; resolution is not yet accepted as
-a DAG node, and DAG certification still dispatches only superposition.
+examples. Its semantic postcondition is composed into DAG certification through
+`check_dag_resolution_step`.
 `superposition_checker.rs` defines an
 executable certificate checker and soundness theorem for a much narrower ground
 fragment: positive unit equality rewrites the whole argument of a

@@ -16,13 +16,13 @@ the item itself is explicitly marked `ABANDONED`.
 | M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` proves parent validity survives independent standardization substitutions and connects accepted general replay to `standardized_superposition_sound` through `accepted_replay_preserves_validity`. Arbitrary selected indices and duplicate-preserving contexts are covered. `RULE_CONTRACT.md` specifies the prototype's unordered rule. Remaining: independent review of the calculus/interchange boundary. |
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. Collector exactness now composes with independent freshening-scan postconditions to prove variable-valued images throughout each parent, and accepted certificates expose `renames_variables_on` for every parent literal. The replay conclusion builder has a verified pointwise sequence contract; term replacement is proved to commute with substitution at valid positions and is lifted through atom/literal slots. Collector-to-exec-set correspondence, complete hygiene/position refinement, and cumulative resource accounting remain open. |
 | M3 — Superposition checker | **PARTIAL** | `check_superposition_and_replay` now postconditions both exact ordered conclusion equality and universal validity preservation for accepted general certificates. `replay_semantic_premises` connects checked source equality, selected target occurrence, unifier equation and replacement to `standardized_superposition_sound`. Context deletion/substitution and exact conclusion-order composition are proved. Equivalence modulo literal order/renaming, complete hygiene/resource refinement, calculus restrictions, and c502 remain. |
-| M4 — Proof-DAG validation | **PARTIAL** | `certify_dag` returns `Certified` with `dag_inputs_unsatisfiable`, proving no well-formed interpretation satisfies the supplied universally closed IR inputs. DAG dispatch supports input and superposition nodes; `validate_dag_node` checks exact input membership, earlier parents and local replay, and `validated_dag_node` carries these facts through induction. A standalone bounded nullary-predicate resolution checker and semantic theorem are verified with positive/negative runtime regressions, but resolution is not yet accepted as a DAG node. Remaining: resolution DAG integration, production input adapter, ancestor-only closure policy, cumulative replay budgets and broader fixtures. |
+| M4 — Proof-DAG validation | **PARTIAL** | `certify_dag` returns `Certified` with `dag_inputs_unsatisfiable`, proving no well-formed interpretation satisfies the supplied universally closed IR inputs. DAG dispatch supports input, superposition and positive-left/negative-right nullary-predicate resolution nodes. Accepted resolution replay postconditions universal validity preservation; `check_dag_resolution_step` binds it to cited parents and the node conclusion, and the generic induction consumes local entailment for both rules. Compiled unit and multi-step resolution refutations certify without empty inputs. Remaining: production input adapter, ancestor-only closure policy, cumulative replay budgets and broader rules/fixtures. |
 | M5 — MRS integration | **TODO** | The Verus executable is not called by `mrs-proof-kernel`; no interchange format or production adapter exists. |
-| M6 — Broader rules | **TODO** | Resolution, AC, demodulation, transformations, and AVATAR/LRAT are not implemented in the Verus checker. |
+| M6 — Broader rules | **PARTIAL** | Nullary-predicate resolution is verified and DAG-dispatched. General first-order resolution, AC, demodulation, transformations, and AVATAR/LRAT remain unimplemented. |
 | M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB/re-audit note, and a CI audit for `assume`, `admit`, and external-body/allow escape hatches. CI now uploads a Verus evidence log with source commit, binary hash, toolchain, and proof output. Mutation corpus, supported proof corpus, reproducible production artifact, and release gates remain. |
 
 **What is DONE now:** the pinned local command `formal/superposition-checker/verify.sh`
-passes all four Verus files (currently `5`, `193`, `5`, and `5` verified functions respectively),
+passes all four Verus files (currently `5`, `204`, `5`, and `5` verified functions respectively),
 and the existing Rust regression `rejects_swv406_c502_archived_target_specialization`
 passes. These results establish only the current narrow verified artifacts; they
 do not complete M0–M3 or decide c502.
@@ -589,21 +589,22 @@ freshness conditions must also be justified by the calculus contract.
   empty root. `Certified` implies no model of the supplied IR input clauses,
   without semantic preconditions or interpretation arguments at the API.
   Four new verifier-negative mutations and compiled DAG regressions pass.
-- **DONE, standalone nullary resolution slice:** the semantic rule theorem and
-  executable exact ordered resolvent checker for complementary 0-ary predicates
-  verify; runtime regressions cover valid, wrong-pivot, forged-conclusion and
-  out-of-range certificates. DAG dispatch integration remains TODO.
-- **DONE, standalone nullary resolution slice:** complementary 0-ary predicate
+- **DONE, nullary resolution DAG integration:** complementary 0-ary predicate
   pivots (left positive, right negative) are proved sound;
   `check_nullary_resolution` validates bounded inputs, this oriented polarity,
   pivot symbol and exact ordered resolvent construction. Runtime
   regressions cover valid, wrong-pivot, forged-conclusion, out-of-range and
-  exhausted-budget certificates. This rule is not yet dispatched by
-  `certify_dag`. **Remaining:** integrate the checked resolution certificate
-  into node validation, semantic induction, and DAG mutations.
-- **Remaining:** superposition alone cannot derive an empty clause, so until
-  resolution DAG integration the current graph fragment needs an empty input.
-  Production
+  exhausted-budget certificates. `Resolution(lp, rp)` stores the two pivot
+  indices directly in the node kind. `check_dag_resolution_step` proves local
+  entailment from accepted replay; `supported_inference` generalizes the DAG
+  induction without reconstructing rule-specific premises inside it.
+  Compiled `p, ~p -> empty` and `p | q, ~p, ~q -> q -> empty` graphs certify
+  without empty input clauses. Forged context deletion, duplicate-pivot deletion,
+  wrong symbols, wrong orientation, self-parent and invalid pivot regressions
+  fail closed. Mutations reject skipped replay, wrong checked conclusion and
+  omitted oriented polarity.
+- **Remaining:** general first-order resolution and other refutation rules,
+  production
   TPTP-to-IR validation, cumulative replay accounting and ancestor-closure policy
   remain separate gates. M4 is still partial.
 
@@ -893,8 +894,10 @@ satisfiability/model claims, and unrestricted full TSTP.
   makes Verus reject the mutation.
 - [x] Define universally closed nullary-predicate resolution soundness and a
   bounded executable checker that reconstructs the exact ordered resolvent.
-  Standalone regression cases exercise positive and forged steps; DAG dispatch
-  still supports superposition only.
+  Standalone and DAG regression cases exercise positive and forged steps.
+- [x] Compose accepted resolution replay with local DAG entailment and the
+  generic induction, certifying nontrivial empty-root IR refutations with
+  nullary-predicate resolution. Production TPTP integration remains open.
 - [ ] Encode the exact `SWV406+1:c502` parents/conclusion and relevant context;
   establish whether the substitution was applied consistently and whether the
   conclusion is entailed before changing producer/kernel behavior (M3).
@@ -905,4 +908,5 @@ satisfiability/model claims, and unrestricted full TSTP.
 - [x] Add verifier-negative mutation gates that omit substitution from
   executable literal replay, ignore literal polarity, and replace selected
   position lookup with the root term. Verus rejects all three mutations
-  (M0/M7 audit evidence). Broader resolvent and DAG mutations remain TODO.
+  (M0/M7 audit evidence). Resolution, resolvent and DAG mutations now run too;
+  broader corpus and threat-model coverage remain TODO.

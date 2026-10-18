@@ -2594,7 +2594,13 @@ pub struct SuperpositionCertificate {
 pub enum ProofNodeKind {
     Input,
     Superposition,
+    /// Positive-left/negative-right nullary-predicate resolution pivot indices.
+    Resolution(usize, usize),
     Unsupported,
+}
+
+spec fn supported_inference(kind: ProofNodeKind) -> bool {
+    kind == ProofNodeKind::Superposition || kind is Resolution
 }
 
 pub struct ProofNode {
@@ -2628,7 +2634,7 @@ spec fn validated_dag_node(dag: ProofDag, i: int) -> bool {
         && (dag.nodes@[i].kind == ProofNodeKind::Input
                 && dag.nodes@[i].parents@.len() == 0
                 && input_leaf_is_validated(dag.nodes@[i], dag.input_clauses@)
-            || dag.nodes@[i].kind == ProofNodeKind::Superposition
+            || supported_inference(dag.nodes@[i].kind)
                 && (forall|interp: Interpretation| interpretation_well_formed(interp)
                     ==> local_node_entails_from_parents(dag.nodes@[i], dag.nodes@, interp)))
 }
@@ -2686,7 +2692,7 @@ proof fn proof_dag_nodes_follow_from_local_rule_soundness(
         forall|i: int| 0 <= i < count as int
             ==> (nodes[i].kind == ProofNodeKind::Input
                     && input_leaf_is_validated(nodes[i], inputs)
-                || nodes[i].kind == ProofNodeKind::Superposition
+                || supported_inference(nodes[i].kind)
                     && local_node_entails_from_parents(nodes[i], nodes, interp)),
         forall|i: int, j: int| 0 <= i < count as int
             && 0 <= j < nodes[i].parents@.len()
@@ -2711,7 +2717,7 @@ proof fn proof_dag_nodes_follow_from_local_rule_soundness(
                 assert(clause_holds(view_clause(inputs[input_index]), interp, valuation));
             }
         } else {
-            assert(node.kind == ProofNodeKind::Superposition);
+            assert(supported_inference(node.kind));
             assert forall|j: int| 0 <= j < node.parents@.len()
                 implies clause_valid(view_clause(nodes[node.parents@[j] as int].clause),
                     interp) by {
@@ -2748,7 +2754,7 @@ proof fn certified_empty_dag_implies_unsatisfiable(
         forall|i: int| 0 <= i <= root as int
             ==> (nodes[i].kind == ProofNodeKind::Input
                     && input_leaf_is_validated(nodes[i], inputs)
-                || nodes[i].kind == ProofNodeKind::Superposition
+                || supported_inference(nodes[i].kind)
                     && local_node_entails_from_parents(nodes[i], nodes, interp)),
         forall|i: int, j: int| 0 <= i <= root as int
             && 0 <= j < nodes[i].parents@.len()
@@ -5026,6 +5032,11 @@ fn check_nullary_resolution(left: &ExecClause, right: &ExecClause,
         },
         accepted ==> left.literals@[left_pivot as int].positive
             && !right.literals@[right_pivot as int].positive,
+        accepted ==> left_pivot < left.literals.len() && right_pivot < right.literals.len(),
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(*left), interp)
+            && clause_valid(view_clause(*right), interp)
+            ==> clause_valid(view_clause(*conclusion), interp),
 {
     let mut work: usize = 0;
     if !charge_clause_structure(left, &mut work, work_limit)
@@ -5048,7 +5059,51 @@ fn check_nullary_resolution(left: &ExecClause, right: &ExecClause,
     assert(right_literal.atom == ExecAtom::Pred0(predicate));
     assert(left.literals@[left_pivot as int].atom == ExecAtom::Pred0(predicate));
     let expected = build_nullary_resolution_conclusion(left, right, left_pivot, right_pivot);
-    same_clause_exact(&expected, conclusion)
+    let same = same_clause_exact(&expected, conclusion);
+    if !same { return false; }
+    proof {
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(*left), interp)
+            && clause_valid(view_clause(*right), interp)
+            implies clause_valid(view_clause(*conclusion), interp) by {
+            assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+                implies clause_holds(view_clause(*conclusion), interp, valuation) by {
+                assert(clause_holds(view_clause(*left), interp, valuation));
+                assert(clause_holds(view_clause(*right), interp, valuation));
+                nullary_predicate_resolution_sound(view_clause(*left), view_clause(*right),
+                    left_pivot as int, right_pivot as int, interp, valuation);
+                assert(view_clause(*conclusion).literals =~=
+                    resolution_conclusion(view_clause(*left), view_clause(*right),
+                        left_pivot as int, right_pivot as int).literals);
+            }
+        }
+    }
+    true
+}
+
+fn check_dag_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>, work_limit: usize)
+    -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    let ProofNodeKind::Resolution(lp, rp) = node.kind else { return false; };
+    if node.parents.len() != 2 { return false; }
+    if node.parents[0] >= nodes.len() || node.parents[1] >= nodes.len() { return false; }
+    let checked = check_nullary_resolution(&nodes[node.parents[0]].clause,
+        &nodes[node.parents[1]].clause, lp, rp, &node.clause, work_limit);
+    if !checked { return false; }
+    proof {
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            implies local_node_entails_from_parents(*node, nodes@, interp) by {
+            if forall|j: int| 0 <= j < node.parents@.len()
+                ==> clause_valid(view_clause(nodes@[node.parents@[j] as int].clause), interp) {
+                assert(clause_valid(view_clause(nodes@[node.parents@[0] as int].clause), interp));
+                assert(clause_valid(view_clause(nodes@[node.parents@[1] as int].clause), interp));
+                assert(clause_valid(view_clause(node.clause), interp));
+            }
+        }
+    }
+    true
 }
 
 fn replace_literal_position_exec_refines_substitution(
@@ -6089,6 +6144,7 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
             ==> dag.nodes[i].kind == ProofNodeKind::Input && dag.nodes[i].parents@.len() == 0
                 || dag.nodes[i].kind == ProofNodeKind::Superposition
                     && dag.nodes[i].parents@.len() == 2 && dag.nodes[i].step.is_some()
+                || dag.nodes[i].kind is Resolution && dag.nodes[i].parents@.len() == 2
         && verdict == DagVerdict::Unknown ==> forall|i: int, j: int|
             0 <= i < j < dag.nodes.len() ==> dag.nodes[i].id != dag.nodes[j].id
         && verdict == DagVerdict::Unknown ==> forall|i: int|
@@ -6242,6 +6298,11 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
             }
             if !local_step_ok { return DagVerdict::Rejected; }
         }
+        if let ProofNodeKind::Resolution(_, _) = node.kind {
+            if !check_dag_resolution_step(node, &dag.nodes, literal_limit) {
+                return DagVerdict::Rejected;
+            }
+        }
         i += 1;
     }
     let mut input_index: usize = 0;
@@ -6344,6 +6405,7 @@ fn validate_dag_node(dag: &ProofDag, index: usize, work_limit: usize) -> (ok: bo
         let checked = check_dag_superposition_step(node, &dag.nodes, work_limit);
         checked
         },
+        ProofNodeKind::Resolution(_, _) => check_dag_resolution_step(node, &dag.nodes, work_limit),
         ProofNodeKind::Unsupported => false,
     }
 }
@@ -6360,7 +6422,7 @@ proof fn validated_dag_has_no_model(dag: ProofDag)
         assert forall|i: int| 0 <= i < dag.nodes@.len()
             implies (dag.nodes@[i].kind == ProofNodeKind::Input
                     && input_leaf_is_validated(dag.nodes@[i], dag.input_clauses@)
-                || dag.nodes@[i].kind == ProofNodeKind::Superposition
+                || supported_inference(dag.nodes@[i].kind)
                     && local_node_entails_from_parents(dag.nodes@[i], dag.nodes@, interp)) by {
             assert(validated_dag_node(dag, i));
         }
@@ -6479,6 +6541,76 @@ fn executable_nullary_resolution_examples() -> bool {
         return false;
     }
     true
+}
+
+fn resolution_unit(predicate: u64, positive: bool) -> ExecClause {
+    ExecClause { literals: vec![ExecLiteral { positive, atom: ExecAtom::Pred0(predicate) }] }
+}
+
+fn resolution_pair(p: u64, positive: bool, q: u64) -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive, atom: ExecAtom::Pred0(p) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred0(q) },
+    ] }
+}
+
+fn executable_resolution_chain_examples() -> bool {
+    // p | q, ~p, ~q -> q -> empty. The first pivot is not a unit parent.
+    let mut dag = ProofDag {
+        nodes: vec![
+            ProofNode { id: 1, clause: resolution_pair(9, true, 10),
+                kind: ProofNodeKind::Input, parents: Vec::new(), step: None },
+            ProofNode { id: 2, clause: resolution_unit(9, false),
+                kind: ProofNodeKind::Input, parents: Vec::new(), step: None },
+            ProofNode { id: 3, clause: resolution_unit(10, false),
+                kind: ProofNodeKind::Input, parents: Vec::new(), step: None },
+            ProofNode { id: 4, clause: resolution_unit(10, true),
+                kind: ProofNodeKind::Resolution(0, 0), parents: vec![0usize, 1usize], step: None },
+            ProofNode { id: 5, clause: ExecClause { literals: Vec::new() },
+                kind: ProofNodeKind::Resolution(0, 0), parents: vec![3usize, 2usize], step: None },
+        ],
+        input_clauses: vec![resolution_pair(9, true, 10), resolution_unit(9, false),
+            resolution_unit(10, false)], root: 4,
+    };
+    if certify_dag(&dag, 10, 1000) != DagVerdict::Certified { return false; }
+    // Omitting the surviving context must not certify, even with an empty root.
+    dag.nodes[3].clause = ExecClause { literals: Vec::new() };
+    if certify_dag(&dag, 10, 1000) == DagVerdict::Certified { return false; }
+    let left = resolution_pair(9, true, 9);
+    let right = resolution_unit(9, false);
+    let empty = ExecClause { literals: Vec::new() };
+    if check_nullary_resolution(&left, &right, 0, 0, &empty, 1000) { return false; }
+    check_nullary_resolution(&left, &right, 1, 0, &resolution_unit(9, true), 1000)
+}
+
+fn executable_resolution_dag_examples() -> bool {
+    let mut dag = ProofDag {
+        nodes: vec![
+            ProofNode { id: 1, clause: resolution_unit(9, true), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None },
+            ProofNode { id: 2, clause: resolution_unit(9, false), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None },
+            ProofNode { id: 3, clause: ExecClause { literals: Vec::new() },
+                kind: ProofNodeKind::Resolution(0, 0), parents: vec![0usize, 1usize], step: None },
+        ],
+        input_clauses: vec![resolution_unit(9, true), resolution_unit(9, false)], root: 2,
+    };
+    if certify_dag(&dag, 10, 1000) != DagVerdict::Certified { return false; }
+    dag.nodes[2].kind = ProofNodeKind::Resolution(1, 0);
+    if certify_dag(&dag, 10, 1000) == DagVerdict::Certified { return false; }
+    dag.nodes[2].kind = ProofNodeKind::Resolution(0, 0);
+    dag.nodes[1].clause = resolution_unit(10, false);
+    dag.input_clauses[1] = resolution_unit(10, false);
+    if certify_dag(&dag, 10, 1000) == DagVerdict::Certified { return false; }
+    dag.nodes[1].clause = resolution_unit(9, false);
+    dag.input_clauses[1] = resolution_unit(9, false);
+    dag.nodes[2].parents = vec![1usize, 0usize];
+    if certify_dag(&dag, 10, 1000) == DagVerdict::Certified { return false; }
+    dag.nodes[2].parents = vec![0usize, 2usize];
+    if certify_dag(&dag, 10, 1000) == DagVerdict::Certified { return false; }
+    dag.nodes[2].parents = vec![0usize, 1usize];
+    if certify_dag(&dag, 10, 0) == DagVerdict::Certified { return false; }
+    certify_dag(&dag, 10, 1000) == DagVerdict::Certified
 }
 
 fn check_dag_with_local_soundness(
@@ -6614,6 +6746,8 @@ fn run_examples() -> bool {
     // constant 9. Domain validity and simultaneous application are checked.
     executable_dag_certification_examples()
         && executable_nullary_resolution_examples()
+        && executable_resolution_dag_examples()
+        && executable_resolution_chain_examples()
 }
 
 } // verus!
