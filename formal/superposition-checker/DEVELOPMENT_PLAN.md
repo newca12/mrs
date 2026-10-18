@@ -18,7 +18,7 @@ the item itself is explicitly marked `ABANDONED`.
 | M3 — Superposition checker | **PARTIAL** | `check_superposition_and_replay` now postconditions both exact ordered conclusion equality and universal validity preservation for accepted general certificates. `replay_semantic_premises` connects checked source equality, selected target occurrence, unifier equation and replacement to `standardized_superposition_sound`. Context deletion/substitution and exact conclusion-order composition are proved. A bounded executable certificate accepts archived `SWV406+1:c502` and rejects a forged conclusion. Full TSTP translation/proof-DAG replay, equivalence modulo literal order/renaming, complete hygiene/resource refinement, and independent calculus review remain. |
 | M4 — Proof-DAG validation | **PARTIAL** | `certify_dag` returns `Certified` with `dag_inputs_unsatisfiable`, proving no well-formed interpretation satisfies the supplied universally closed IR inputs. DAG dispatch supports input, superposition and positive-left/negative-right nullary-predicate resolution nodes. Accepted resolution replay postconditions universal validity preservation; `check_dag_resolution_step` binds it to cited parents and the node conclusion, and the generic induction consumes local entailment for both rules. Compiled unit and multi-step resolution refutations certify without empty inputs. `check_root_ancestor_closure` rejects every disconnected node and returns `Unknown` on bounded traversal exhaustion. The certifier now partitions its work ceiling into global structure, root-closure and per-node validation budgets. Remaining: exact accounting for every internal replay traversal, production input adapter and broader rules/fixtures. |
 | M5 — MRS integration | **TODO** | The Verus executable is not called by `mrs-proof-kernel`; no interchange format or production adapter exists. |
-| M6 — Broader rules | **PARTIAL** | Nullary-predicate resolution is verified and DAG-dispatched. General first-order resolution, AC, demodulation, transformations, and AVATAR/LRAT remain unimplemented. |
+| M6 — Broader rules | **PARTIAL** | Nullary-predicate resolution is verified and DAG-dispatched; c502 is now additionally replayed as a local general superposition example. General first-order resolution, AC, demodulation, transformations, and AVATAR/LRAT remain unimplemented. |
 | M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB/re-audit note, and a CI audit for `assume`, `admit`, and external-body/allow escape hatches. CI now uploads a Verus evidence log with source commit, binary hash, toolchain, and proof output. Mutation corpus, supported proof corpus, reproducible production artifact, and release gates remain. |
 
 **What is DONE now:** the pinned local command `formal/superposition-checker/verify.sh`
@@ -792,9 +792,10 @@ Keep bounded testing distinct from unbounded universal proof obligations.
 
 ## Initial supported-core target
 
-**Status: TODO.** The list below is the intended first release target; it is
-broader than the currently implemented ground-unit slice described in the
-status ledger above.
+**Status: PARTIAL.** The list below is the intended first release target. The
+general local superposition checker now accepts arbitrary supported executable
+certificates, including c502, but equivalence normalization, complete resource
+refinement and the production interchange boundary remain.
 
 The first meaningful release target is a **verified superposition step checker**.
 It does not need to verify an entire prover proof DAG to demonstrate the core
@@ -809,10 +810,13 @@ claim. Its intended supported input is:
   literal-order equivalences; and
 - bounded syntax/certificate sizes with fail-closed `Unknown` behavior.
 
-**Implemented slices, not the release target:** the ground unit checker and the
-single `f(a)=b`, `q(X) | p(f(X))` two-literal schema are implemented and
-verified. Arbitrary terms, substitutions, clause width, positions and general
-superposition soundness are still outstanding.
+**Implemented slices:** the ground unit checker and fixed variable schema remain
+separate smoke-test modules. The general executable replay now supports bounded
+recursive terms, supplied substitutions, multi-literal clauses and arbitrary
+selected positions, with exact ordered conclusion comparison and a universal
+validity-preservation theorem. It does not yet accept literal permutation or
+alpha-renamed conclusions, and its support still has documented resource and
+hygiene gaps.
 
 The first end-to-end proof-DAG/refutation checker is a follow-on milestone that
 uses this verified step checker and adds validated input leaves, parent closure,
@@ -829,8 +833,8 @@ satisfiability/model claims, and unrestricted full TSTP.
   TODO).
 - [x] Implement and verify the restricted ground unit-superposition checker,
   soundness lemma, and forged-field examples (M3 partial).
-- [x] Preserve the archived c502 clauses as a fixture, explicitly marked
-  unsupported by the current checker (c502 audit remains TODO).
+- [x] Preserve the archived c502 clauses as a fixture and verify a local
+  whole-parent superposition certificate; full proof translation remains open.
 - [x] Specify the prototype's unordered superposition rule and required
   freshness conditions in `RULE_CONTRACT.md` (M1; the production calculus
   boundary still needs independent review).

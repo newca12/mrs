@@ -140,8 +140,9 @@ Verus `0.2026.10.18.7d82994` is pinned in
 the corresponding Linux binary. CI runs this as a regular required project
 check. See [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md)
 for the staged scope. Remaining obligations include complete hygiene/resource
-refinement, general first-order refutation rules, and production integration. The supplied
-substitution checker establishes equality of instances, not MGU computation.
+refinement, general first-order refutation rules, and production integration.
+The supplied substitution checker establishes equality of instances, not MGU
+computation.
 In standard first-order semantics, target variables may be
 instantiated as part of a general unifier if the substitution is consistently
 applied to all relevant parent literals. Any stricter policy must be justified
