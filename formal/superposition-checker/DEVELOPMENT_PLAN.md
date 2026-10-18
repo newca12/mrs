@@ -819,6 +819,9 @@ satisfiability/model claims, and unrestricted full TSTP.
   slots and literal polarity. General certificate acceptance now exposes the
   semantic selected occurrence and successfully constructed rewrite as explicit
   postconditions. Parent-context/resolvent theorem composition remains.
+- [x] Expose the accepted rewritten literal itself in the semantic views of the
+  certificate source equality and target clause, so the right-side instantiation
+  used by executable replay is tied to the theorem-facing selected literal.
 - [x] Add a verifier-negative mutation that omits the rewritten target clause
   from the executable resolvent builder; the central constructor postcondition
   makes Verus reject the mutation.

@@ -1895,6 +1895,8 @@ proof fn universally_closed_superposition_sound(
             == Atom::Eq(apply(source_left, sigma), apply(source_right, sigma)));
         assert(eval(apply(source_left, sigma), interp, valuation)
             == eval(apply(source_right, sigma), interp, valuation));
+        assert(eval(apply(target_subterm, sigma), interp, valuation)
+            == eval(apply(source_right, sigma), interp, valuation));
         assert(literal_at_position(
             substitute_literal(target_literal, sigma), target_slot, target_position,
         ) == Some(apply(target_subterm, sigma)));
@@ -1913,6 +1915,10 @@ proof fn universally_closed_superposition_sound(
             interp,
             valuation,
         );
+        assert(replace_literal_at_position(
+            substitute_literal(target_literal, sigma), target_slot, target_position,
+            apply(source_right, sigma),
+        ).is_some());
         assert(match replace_literal_at_position(
             substitute_literal(target_literal, sigma),
             target_slot,
@@ -4901,6 +4907,33 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
             view_position(certificate.target_path@),
             selected_rewrite_rhs(*certificate),
         ).is_some()
+        && accepted ==> match replace_literal_at_position(
+            substitute_literal(
+                substitute_literal(
+                    view_literal(certificate.target.literals@[
+                        certificate.target_literal_index as int]),
+                    view_subst(certificate.target_freshening@)),
+                view_subst(certificate.unifier@)),
+            certificate.target_argument_slot as nat,
+            view_position(certificate.target_path@),
+            selected_rewrite_rhs(*certificate),
+        ) {
+            Some(rewritten) => rewritten == match replace_literal_at_position(
+                substitute_literal(
+                    substitute_literal(
+                        view_literal(certificate.target.literals@[
+                            certificate.target_literal_index as int]),
+                        view_subst(certificate.target_freshening@)),
+                    view_subst(certificate.unifier@)),
+                certificate.target_argument_slot as nat,
+                view_position(certificate.target_path@),
+                certificate_selected_source_right(*certificate),
+            ) {
+                Some(expected) => expected,
+                None => rewritten,
+            },
+            None => false,
+        }
         && accepted ==> atom_at_position(
             view_atom(certificate.target.literals@[certificate.target_literal_index as int].atom),
             certificate.target_argument_slot as nat,
