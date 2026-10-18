@@ -615,6 +615,9 @@ freshness conditions must also be justified by the calculus contract.
   and per-node replay. This prevents adding unbounded graph-wide repetitions of
   a locally bounded check. Some local replay helpers still account work with
   separate counters, so this is not yet an exact cumulative operation budget.
+- **DONE, bounded closure regression:** the runtime suite asserts the exact
+  closure work threshold for a one-node root graph: budgets below the complete
+  traversal return `None`, and the exact complete budget returns `Some(true)`.
 - **Remaining:** general first-order resolution and other refutation rules,
   production TPTP-to-IR validation, exact cumulative replay accounting within
   local checks and broader rules/fixtures remain separate gates. M4 is still

@@ -90,7 +90,7 @@ contexts, duplicate pivot occurrences, wrong parents/orientation and self-parent
 references. New mutations reject omitted oriented polarity, skipped DAG rule
 replay and checking a parent instead of the claimed conclusion.
 An additional runtime regression rejects a disconnected but valid input node
-and exercises zero-budget closure exhaustion.
+and exercises both zero-budget and exact-threshold closure exhaustion/success.
 
 ## Re-audit triggers
 

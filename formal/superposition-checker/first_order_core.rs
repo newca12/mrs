@@ -6556,6 +6556,10 @@ fn executable_dag_certification_examples() -> bool {
     if certify_dag(&dag, 10, 1000) != DagVerdict::Certified {
         return false;
     }
+    if check_root_ancestor_closure(&dag, 2) != None
+        || check_root_ancestor_closure(&dag, 3) != Some(true) {
+        return false;
+    }
     // A disconnected input leaf is not part of the claimed refutation's
     // dependency closure, even though it is a legitimate input clause.
     dag.nodes.push(ProofNode { id: 2, clause: resolution_unit(17, true),
