@@ -79,9 +79,9 @@ def main() -> int:
             "true",
         ),
         (
-            "resolution checker accepts noncomplementary pivots",
-            "let complementary = !left.literals[left_pivot].positive && right_literal.positive\n        || left.literals[left_pivot].positive && !right_literal.positive;",
-            "let complementary = true;",
+            "resolution checker ignores predicate identity",
+            "if right_predicate != predicate { return false; }",
+            "if false { return false; }",
         ),
     ]
 

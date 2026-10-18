@@ -5019,6 +5019,11 @@ fn check_nullary_resolution(left: &ExecClause, right: &ExecClause,
     -> (accepted: bool)
     ensures accepted ==> clause_equal(view_clause(*conclusion), resolution_conclusion(
         view_clause(*left), view_clause(*right), left_pivot as int, right_pivot as int)),
+        accepted ==> match left.literals@[left_pivot as int].atom {
+            ExecAtom::Pred0(p) => right.literals@[right_pivot as int].atom
+                == ExecAtom::Pred0(p),
+            _ => false,
+        },
         accepted ==> left.literals@[left_pivot as int].positive
             && !right.literals@[right_pivot as int].positive,
 {
@@ -5034,14 +5039,14 @@ fn check_nullary_resolution(left: &ExecClause, right: &ExecClause,
     let right_literal = &right.literals[right_pivot];
     let complementary = !left.literals[left_pivot].positive && right_literal.positive
         || left.literals[left_pivot].positive && !right_literal.positive;
-    if !complementary
-        || right_literal.atom != ExecAtom::Pred0(predicate)
-    {
-        return false;
-    }
+    if !complementary { return false; }
+    let ExecAtom::Pred0(right_predicate) = right_literal.atom else { return false; };
+    if right_predicate != predicate { return false; }
     if !left.literals[left_pivot].positive || right_literal.positive {
         return false;
     }
+    assert(right_literal.atom == ExecAtom::Pred0(predicate));
+    assert(left.literals@[left_pivot as int].atom == ExecAtom::Pred0(predicate));
     let expected = build_nullary_resolution_conclusion(left, right, left_pivot, right_pivot);
     same_clause_exact(&expected, conclusion)
 }
