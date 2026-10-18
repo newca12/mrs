@@ -1744,6 +1744,83 @@ proof fn standardized_superposition_resolvent_valid(
     }
 }
 
+proof fn clause_valid_from_context_concatenation(
+    left: Clause,
+    right: Clause,
+    interp: Interpretation,
+)
+    requires interpretation_well_formed(interp),
+        clause_valid(clause_concat(left, right), interp),
+    ensures forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        ==> clause_holds(left, interp, valuation) || clause_holds(right, interp, valuation)
+{
+    assert forall|valuation: Valuation|
+        valuation_well_formed(interp, valuation)
+        implies clause_holds(left, interp, valuation)
+            || clause_holds(right, interp, valuation) by {
+        assert(clause_holds(clause_concat(left, right), interp, valuation)) by {
+            assert(clause_valid(clause_concat(left, right), interp));
+        }
+        clause_holds_concat(left, right, interp, valuation);
+    }
+}
+
+proof fn superposition_rewrite_is_locally_entailed(
+    source_equality: Literal,
+    target_literal: Literal,
+    source_left: Term,
+    source_right: Term,
+    target_subterm: Term,
+    slot: nat,
+    position: TermPosition,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(singleton_clause(source_equality), interp),
+        clause_valid(singleton_clause(target_literal), interp),
+        source_equality.positive,
+        source_equality.atom == Atom::Eq(source_left, source_right),
+        source_left == target_subterm,
+        literal_at_position(target_literal, slot, position) == Some(target_subterm),
+        replace_literal_at_position(target_literal, slot, position, source_right).is_some(),
+    ensures clause_valid(singleton_clause(match replace_literal_at_position(
+        target_literal, slot, position, source_right,
+    ) {
+        Some(rewritten) => rewritten,
+        None => target_literal,
+    }), interp)
+{
+    let rewritten = match replace_literal_at_position(target_literal, slot, position, source_right) {
+        Some(rewritten) => rewritten,
+        None => target_literal,
+    };
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        implies literal_holds(rewritten, interp, valuation) by {
+        assert(clause_holds(singleton_clause(source_equality), interp, valuation));
+        assert(clause_holds(singleton_clause(target_literal), interp, valuation));
+        assert(literal_holds(source_equality, interp, valuation));
+        assert(literal_holds(target_literal, interp, valuation));
+        assert(atom_holds(source_equality.atom, interp, valuation));
+        assert(eval(source_left, interp, valuation) == eval(source_right, interp, valuation));
+        assert(eval(target_subterm, interp, valuation) == eval(source_left, interp, valuation));
+        literal_holds_after_position_replacement(
+            target_literal, slot, position, source_right, interp, valuation,
+        );
+        assert(replace_literal_at_position(target_literal, slot, position, source_right)
+            == Some(rewritten));
+        assert(literal_holds(rewritten, interp, valuation)
+            == literal_holds(target_literal, interp, valuation));
+    }
+    assert(clause_valid(singleton_clause(rewritten), interp)) by {
+        assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+            implies clause_holds(singleton_clause(rewritten), interp, valuation) by {
+            clause_holds_singleton(rewritten, interp, valuation);
+            assert(literal_holds(rewritten, interp, valuation));
+        }
+    }
+}
+
 proof fn clause_holds_after_appending_literal(
     clause: Clause,
     literal: Literal,
