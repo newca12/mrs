@@ -4945,6 +4945,8 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
             },
             None => false,
         }
+        && accepted ==> view_clause(certificate.conclusion).literals.len()
+            == certificate.source.literals.len() - 1 + certificate.target.literals.len()
         && accepted ==> atom_at_position(
             view_atom(certificate.target.literals@[certificate.target_literal_index as int].atom),
             certificate.target_argument_slot as nat,
