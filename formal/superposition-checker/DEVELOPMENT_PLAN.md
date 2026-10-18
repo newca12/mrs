@@ -837,6 +837,11 @@ satisfiability/model claims, and unrestricted full TSTP.
   unit clauses for the ground identity-unifier case. This confirms the local
   semantic basis, but does not yet handle non-empty contexts or checked
   substitutions.
+- [x] Prove clause validity invariant under a bijective literal-position
+  permutation, and provide an exact equality between selected-literal-update
+  and prefix/rewritten-literal/suffix resolvent encodings. This discharges the
+  calculus's sequence-order conversion without assuming clause order is
+  semantically significant.
 - [x] Postcondition the exact binary resolvent literal count from successful
   replay (`source width - selected equality + target width`) to make the
   constructor's structural relation explicit.

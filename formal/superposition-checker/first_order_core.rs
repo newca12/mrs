@@ -1765,6 +1765,78 @@ proof fn clause_valid_from_context_concatenation(
     }
 }
 
+proof fn clause_validity_is_stable_under_literal_permutation(
+    original: Clause,
+    reordered: Clause,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        original.literals.len() == reordered.literals.len(),
+        forall|i: int| 0 <= i < original.literals.len()
+            && #[trigger] original.literals[i] == original.literals[i]
+            ==> exists|j: int| 0 <= j < reordered.literals.len()
+                && original.literals[i] == reordered.literals[j],
+        forall|j: int| 0 <= j < reordered.literals.len()
+            && #[trigger] reordered.literals[j] == reordered.literals[j]
+            ==> exists|i: int| 0 <= i < original.literals.len()
+                && reordered.literals[j] == original.literals[i],
+        forall|i: int, j: int| 0 <= i < original.literals.len()
+            && 0 <= j < reordered.literals.len()
+            && original.literals[i] == reordered.literals[j]
+            ==> i == j,
+        forall|j: int, i: int| 0 <= j < reordered.literals.len()
+            && 0 <= i < original.literals.len()
+            && reordered.literals[j] == original.literals[i]
+            ==> j == i,
+    ensures clause_valid(original, interp) == clause_valid(reordered, interp)
+{
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        implies clause_holds(original, interp, valuation)
+            == clause_holds(reordered, interp, valuation) by {
+        if clause_holds(original, interp, valuation) {
+            let index = choose|i: int| 0 <= i < original.literals.len()
+                && literal_holds(original.literals[i], interp, valuation);
+            let corresponding = choose|j: int| 0 <= j < reordered.literals.len()
+                && original.literals[index] == reordered.literals[j];
+            assert(literal_holds(reordered.literals[corresponding], interp, valuation));
+        } else if clause_holds(reordered, interp, valuation) {
+            let index = choose|j: int| 0 <= j < reordered.literals.len()
+                && literal_holds(reordered.literals[j], interp, valuation);
+            let corresponding = choose|i: int| 0 <= i < original.literals.len()
+                && reordered.literals[index] == original.literals[i];
+            assert(literal_holds(original.literals[corresponding], interp, valuation));
+        }
+    }
+}
+
+proof fn permutation_reindexed_sequence(
+    source: Clause,
+    source_equality_index: int,
+    target: Clause,
+    target_literal_index: int,
+    rewritten: Literal,
+)
+    requires
+        0 <= source_equality_index < source.literals.len(),
+        0 <= target_literal_index < target.literals.len(),
+    ensures clause_equal(
+        Clause { literals:
+            source.literals.subrange(0, source_equality_index)
+                + source.literals.subrange(source_equality_index + 1,
+                    source.literals.len() as int)
+                + target.literals.update(target_literal_index, rewritten) },
+        Clause { literals:
+            source.literals.subrange(0, source_equality_index)
+                + source.literals.subrange(source_equality_index + 1,
+                    source.literals.len() as int)
+                + target.literals.subrange(0, target_literal_index)
+                + seq![rewritten]
+                + target.literals.subrange(target_literal_index + 1,
+                    target.literals.len() as int) },
+    )
+{}
+
 proof fn superposition_rewrite_is_locally_entailed(
     source_equality: Literal,
     target_literal: Literal,
