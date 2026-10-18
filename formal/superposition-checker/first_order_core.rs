@@ -1835,7 +1835,21 @@ proof fn permutation_reindexed_sequence(
                 + target.literals.subrange(target_literal_index + 1,
                     target.literals.len() as int) },
     )
-{}
+{
+    assert(clause_equal(
+        Clause { literals: source.literals.subrange(0, source_equality_index)
+            + source.literals.subrange(source_equality_index + 1,
+                source.literals.len() as int)
+            + target.literals.update(target_literal_index, rewritten) },
+        Clause { literals: source.literals.subrange(0, source_equality_index)
+            + source.literals.subrange(source_equality_index + 1,
+                source.literals.len() as int)
+            + target.literals.subrange(0, target_literal_index)
+            + seq![rewritten]
+            + target.literals.subrange(target_literal_index + 1,
+                target.literals.len() as int) },
+    ));
+}
 
 proof fn superposition_rewrite_is_locally_entailed(
     source_equality: Literal,
