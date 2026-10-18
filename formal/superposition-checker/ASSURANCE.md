@@ -39,6 +39,8 @@ variables from the target parent, substitutes across the complete parents,
 rewrites the nested selected occurrence and checks c502's exact ordered
 conclusion; a forged conclusion is rejected. This local IR result does not
 parse the archived TPTP fixture or certify the complete archived TSTP proof.
+The runtime suite also accepts an independently constructed step in which the
+unifier binds a freshened source variable to a ground target subterm.
 
 The machine-readable support declaration is
 [`supported-rules.json`](supported-rules.json). Unsupported rules and

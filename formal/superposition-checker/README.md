@@ -52,7 +52,7 @@ This release declares Rust `1.99.1` in
 [`verus/rust-toolchain.toml`](https://github.com/verus-lang/verus/blob/release/0.2026.10.18.7d82994/rust-toolchain.toml),
 matching the requested toolchain. The verification log records both requested
 and effective toolchains. Verus uses its bundled Z3. Results:
-`5 verified, 0 errors` for the original pilot, `218 verified, 0 errors` for
+`5 verified, 0 errors` for the original pilot, `219 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
 
@@ -136,6 +136,8 @@ whole-parent unifier, the nested target path, and exact ordered conclusion.
 conclusion. This is a local step verdict from the verified IR, not a full TSTP
 translation or proof-DAG certification of `SWV406+1`; the regression manually
 encodes the IR certificate rather than parsing the archived TPTP fixture.
+The compiled runtime suite also accepts a distinct certificate that binds a
+freshened source variable to a ground target subterm.
 
 Verus `0.2026.10.18.7d82994` is pinned in
 [`verus-toolchain.json`](verus-toolchain.json); CI downloads and checksum-checks

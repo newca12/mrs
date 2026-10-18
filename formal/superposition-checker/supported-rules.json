@@ -55,6 +55,7 @@
     "standalone_resolution_nullary": true,
     "archived_c502_step_replay": true,
     "archived_c502_full_proof_translation": false,
+    "source_variable_unification_regression": true,
     "mrs_integration": false,
     "c502_verdict": "accepted_as_sound_local_superposition_step"
   }

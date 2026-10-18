@@ -560,15 +560,20 @@ freshness conditions must also be justified by the calculus contract.
   complete parent clauses before the selected rewrite. In particular, c27's
   surviving `X2 = X1` and predicate context become `X2 = X5` and
   `~contains_slb(X0,X2)` exactly as in c502.
+- **DONE, source-variable binding:** a separate positive certificate binds a
+  freshened source equality variable to a ground target subterm and replays the
+  resulting exact conclusion. The central accepted-replay postcondition applies
+  to this case as well.
 - **TODO:** translate the complete relevant TSTP proof context losslessly into
   the verified IR and certify c502 through the production-style adapter. Do not
   infer full proof certification from the local step result. Also verify
   a small independently derived example where unification instantiates a
   target variable and the substitution is consistently applied to the entire
   target clause.
-- Valid steps with source-variable substitutions into target terms are
-  accepted; equivalent variable renamings and literal permutations preserve
-  the verdict.
+- **DONE, source-variable substitution fixture:** the compiled runtime regression
+  accepts a step whose unifier binds a standardized source variable to a target
+  ground term. Equivalent conclusion literal permutations and alpha-equivalence
+  remain unsupported.
 - Mutate the checker to apply a unifier to only the selected term/literal while
   leaving other parent literals untouched; show that the refinement or
   semantic soundness theorem fails. Separately confirm that merely removing an

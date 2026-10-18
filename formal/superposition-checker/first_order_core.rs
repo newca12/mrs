@@ -4474,6 +4474,42 @@ fn executable_c502_certificate_example() -> bool {
     !check_superposition_and_replay(&forged, 10000)
 }
 
+fn executable_source_variable_superposition_example() -> bool {
+    let source = ExecClause { literals: vec![ExecLiteral {
+        positive: true,
+        atom: ExecAtom::Eq(
+            ExecTerm::App1(40, Box::new(ExecTerm::Var(0))),
+            ExecTerm::Const(7),
+        ),
+    }] };
+    let target = ExecClause { literals: vec![ExecLiteral {
+        positive: true,
+        atom: ExecAtom::Pred1(41,
+            Box::new(ExecTerm::App1(40, Box::new(ExecTerm::Const(8))))),
+    }] };
+    let certificate = SuperpositionCertificate {
+        source,
+        target,
+        source_freshening: vec![ExecBinding {
+            variable: 0, replacement: ExecTerm::Var(100),
+        }],
+        target_freshening: Vec::new(),
+        source_equality_index: 0,
+        target_literal_index: 0,
+        target_argument_slot: 0,
+        target_path: Vec::new(),
+        fresh_target_path: Vec::new(),
+        unifier: vec![ExecBinding {
+            variable: 100, replacement: ExecTerm::Const(8),
+        }],
+        conclusion: ExecClause { literals: vec![ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Pred1(41, Box::new(ExecTerm::Const(7))),
+        }] },
+    };
+    check_superposition_and_replay(&certificate, 1000)
+}
+
 fn copy_literal(literal: &ExecLiteral) -> (copy: ExecLiteral)
     ensures view_literal(copy) == view_literal(*literal)
 {
@@ -6962,5 +6998,7 @@ fn run_examples() -> bool {
 
 fn main() {
     assert!(executable_c502_certificate_example(), "c502 replay regression failed");
+    assert!(executable_source_variable_superposition_example(),
+        "source-variable unification regression failed");
     assert!(run_examples(), "DAG certification regression failed");
 }
