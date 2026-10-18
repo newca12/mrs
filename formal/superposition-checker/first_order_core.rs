@@ -1664,6 +1664,57 @@ spec fn singleton_clause(literal: Literal) -> Clause {
     Clause { literals: seq![literal] }
 }
 
+spec fn delete_literal(clause: Clause, pivot: int) -> Clause {
+    Clause { literals: clause.literals.subrange(0, pivot)
+        + clause.literals.subrange(pivot + 1, clause.literals.len() as int) }
+}
+
+spec fn resolution_conclusion(left: Clause, right: Clause,
+    left_pivot: int, right_pivot: int) -> Clause {
+    clause_concat(delete_literal(left, left_pivot), delete_literal(right, right_pivot))
+}
+
+proof fn nullary_predicate_resolution_sound(
+    left: Clause, right: Clause, left_pivot: int, right_pivot: int,
+    interp: Interpretation, valuation: Valuation,
+)
+    requires
+        interpretation_well_formed(interp),
+        valuation_well_formed(interp, valuation),
+        clause_holds(left, interp, valuation),
+        clause_holds(right, interp, valuation),
+        0 <= left_pivot < left.literals.len(),
+        0 <= right_pivot < right.literals.len(),
+        match left.literals[left_pivot].atom {
+            Atom::Pred0(p) => left.literals[left_pivot].positive
+                && right.literals[right_pivot] == Literal {
+                    positive: false, atom: Atom::Pred0(p),
+                },
+            _ => false,
+        },
+    ensures clause_holds(resolution_conclusion(left, right,
+        left_pivot, right_pivot), interp, valuation)
+{
+    let left_true = choose|i: int| 0 <= i < left.literals.len()
+        && literal_holds(left.literals[i], interp, valuation);
+    let right_true = choose|i: int| 0 <= i < right.literals.len()
+        && literal_holds(right.literals[i], interp, valuation);
+    if left_true != left_pivot {
+        let mapped = if left_true < left_pivot { left_true } else { left_true - 1 };
+        assert(0 <= mapped < delete_literal(left, left_pivot).literals.len());
+        assert(delete_literal(left, left_pivot).literals[mapped] == left.literals[left_true]);
+        assert(clause_holds(delete_literal(left, left_pivot), interp, valuation));
+    } else {
+        assert(right_true != right_pivot);
+        let mapped = if right_true < right_pivot { right_true } else { right_true - 1 };
+        assert(0 <= mapped < delete_literal(right, right_pivot).literals.len());
+        assert(delete_literal(right, right_pivot).literals[mapped] == right.literals[right_true]);
+        assert(clause_holds(delete_literal(right, right_pivot), interp, valuation));
+    }
+    clause_holds_concat(delete_literal(left, left_pivot),
+        delete_literal(right, right_pivot), interp, valuation);
+}
+
 proof fn clause_holds_concat(left: Clause, right: Clause, interp: Interpretation,
     valuation: Valuation)
     ensures clause_holds(clause_concat(left, right), interp, valuation)
@@ -4923,6 +4974,73 @@ fn same_clause_exact(left: &ExecClause, right: &ExecClause) -> (same: bool)
     true
 }
 
+fn build_nullary_resolution_conclusion(left: &ExecClause, right: &ExecClause,
+    left_pivot: usize, right_pivot: usize) -> (conclusion: ExecClause)
+    requires left_pivot < left.literals.len(), right_pivot < right.literals.len(),
+    ensures clause_equal(view_clause(conclusion), resolution_conclusion(view_clause(*left),
+        view_clause(*right), left_pivot as int, right_pivot as int)),
+{
+    let mut literals = Vec::new();
+    let mut i: usize = 0;
+    while i < left.literals.len()
+        invariant i <= left.literals.len(),
+            literals@.len() == if i <= left_pivot { i as int } else { i as int - 1 },
+            forall|j: int| 0 <= j < literals@.len()
+                ==> view_literal(literals@[j]) == view_literal(left.literals@[
+                    if j < left_pivot as int { j } else { j + 1 }]),
+        decreases left.literals.len() - i
+    {
+        if i != left_pivot { append_literal_copy(&mut literals, &left.literals[i]); }
+        i += 1;
+    }
+    let mut j: usize = 0;
+    while j < right.literals.len()
+        invariant j <= right.literals.len(),
+            literals@.len() == left.literals.len() - 1
+                + if j <= right_pivot { j as int } else { j as int - 1 },
+            forall|k: int| 0 <= k < literals@.len()
+                ==> view_literal(literals@[k]) == if k < left.literals.len() as int - 1 {
+                    view_literal(left.literals@[if k < left_pivot as int { k } else { k + 1 }])
+                } else {
+                    let r = k - (left.literals.len() as int - 1);
+                    view_literal(right.literals@[if r < right_pivot as int { r } else { r + 1 }])
+                },
+        decreases right.literals.len() - j
+    {
+        if j != right_pivot { append_literal_copy(&mut literals, &right.literals[j]); }
+        j += 1;
+    }
+    let conclusion = ExecClause { literals };
+    conclusion
+}
+
+fn check_nullary_resolution(left: &ExecClause, right: &ExecClause,
+    left_pivot: usize, right_pivot: usize, conclusion: &ExecClause, work_limit: usize)
+    -> (accepted: bool)
+    ensures accepted ==> clause_equal(view_clause(*conclusion), resolution_conclusion(
+        view_clause(*left), view_clause(*right), left_pivot as int, right_pivot as int))
+{
+    let mut work: usize = 0;
+    if !charge_clause_structure(left, &mut work, work_limit)
+        || !charge_clause_structure(right, &mut work, work_limit)
+        || !charge_clause_structure(conclusion, &mut work, work_limit)
+    { return false; }
+    if left_pivot >= left.literals.len() || right_pivot >= right.literals.len() {
+        return false;
+    }
+    let ExecAtom::Pred0(predicate) = left.literals[left_pivot].atom else { return false; };
+    let right_literal = &right.literals[right_pivot];
+    let complementary = !left.literals[left_pivot].positive && right_literal.positive
+        || left.literals[left_pivot].positive && !right_literal.positive;
+    if !complementary
+        || right_literal.atom != ExecAtom::Pred0(predicate)
+    {
+        return false;
+    }
+    let expected = build_nullary_resolution_conclusion(left, right, left_pivot, right_pivot);
+    same_clause_exact(&expected, conclusion)
+}
+
 fn replace_literal_position_exec_refines_substitution(
     literal: &ExecLiteral,
     bindings: &Vec<ExecBinding>,
@@ -6323,6 +6441,36 @@ fn executable_dag_certification_examples() -> bool {
     true
 }
 
+fn executable_nullary_resolution_examples() -> bool {
+    let positive = ExecClause { literals: vec![ExecLiteral {
+        positive: true, atom: ExecAtom::Pred0(9),
+    }] };
+    let negative = ExecClause { literals: vec![ExecLiteral {
+        positive: false, atom: ExecAtom::Pred0(9),
+    }] };
+    let empty = ExecClause { literals: Vec::new() };
+    if !check_nullary_resolution(&positive, &negative, 0, 0, &empty, 100) {
+        return false;
+    }
+    let wrong_pivot = ExecClause { literals: vec![ExecLiteral {
+        positive: false, atom: ExecAtom::Pred0(10),
+    }] };
+    if check_nullary_resolution(&positive, &wrong_pivot, 0, 0, &empty, 100) {
+        return false;
+    }
+    let wrong_conclusion = ExecClause { literals: vec![ExecLiteral {
+        positive: true, atom: ExecAtom::Pred0(9),
+    }] };
+    if check_nullary_resolution(&positive, &negative, 0, 0, &wrong_conclusion, 100) {
+        return false;
+    }
+    let out_of_range = ExecClause { literals: Vec::new() };
+    if check_nullary_resolution(&positive, &negative, 1, 0, &out_of_range, 100) {
+        return false;
+    }
+    true
+}
+
 fn check_dag_with_local_soundness(
     dag: &ProofDag,
     node_limit: usize,
@@ -6455,6 +6603,7 @@ fn run_examples() -> bool {
     // Supplied unifier certificate binding target-side variable 42 to
     // constant 9. Domain validity and simultaneous application are checked.
     executable_dag_certification_examples()
+        && executable_nullary_resolution_examples()
 }
 
 } // verus!

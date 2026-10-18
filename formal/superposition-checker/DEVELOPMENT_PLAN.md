@@ -16,7 +16,7 @@ the item itself is explicitly marked `ABANDONED`.
 | M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` proves parent validity survives independent standardization substitutions and connects accepted general replay to `standardized_superposition_sound` through `accepted_replay_preserves_validity`. Arbitrary selected indices and duplicate-preserving contexts are covered. `RULE_CONTRACT.md` specifies the prototype's unordered rule. Remaining: independent review of the calculus/interchange boundary. |
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. Collector exactness now composes with independent freshening-scan postconditions to prove variable-valued images throughout each parent, and accepted certificates expose `renames_variables_on` for every parent literal. The replay conclusion builder has a verified pointwise sequence contract; term replacement is proved to commute with substitution at valid positions and is lifted through atom/literal slots. Collector-to-exec-set correspondence, complete hygiene/position refinement, and cumulative resource accounting remain open. |
 | M3 — Superposition checker | **PARTIAL** | `check_superposition_and_replay` now postconditions both exact ordered conclusion equality and universal validity preservation for accepted general certificates. `replay_semantic_premises` connects checked source equality, selected target occurrence, unifier equation and replacement to `standardized_superposition_sound`. Context deletion/substitution and exact conclusion-order composition are proved. Equivalence modulo literal order/renaming, complete hygiene/resource refinement, calculus restrictions, and c502 remain. |
-| M4 — Proof-DAG validation | **PARTIAL** | `certify_dag` returns `Certified` with `dag_inputs_unsatisfiable`, proving no well-formed interpretation satisfies the supplied universally closed IR inputs. `validate_dag_node` checks exact input membership, earlier parents and local replay; `validated_dag_node` carries these facts through the certifying loop into topological induction. Compiled regressions and four new certification mutations pass. Remaining: nontrivial refutation rules, production input adapter, ancestor-only closure policy, cumulative replay budgets and broader fixtures. |
+| M4 — Proof-DAG validation | **PARTIAL** | `certify_dag` returns `Certified` with `dag_inputs_unsatisfiable`, proving no well-formed interpretation satisfies the supplied universally closed IR inputs. DAG dispatch supports input and superposition nodes; `validate_dag_node` checks exact input membership, earlier parents and local replay, and `validated_dag_node` carries these facts through induction. A standalone bounded nullary-predicate resolution checker and semantic theorem are verified with positive/negative runtime regressions, but resolution is not yet accepted as a DAG node. Remaining: resolution DAG integration, production input adapter, ancestor-only closure policy, cumulative replay budgets and broader fixtures. |
 | M5 — MRS integration | **TODO** | The Verus executable is not called by `mrs-proof-kernel`; no interchange format or production adapter exists. |
 | M6 — Broader rules | **TODO** | Resolution, AC, demodulation, transformations, and AVATAR/LRAT are not implemented in the Verus checker. |
 | M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB/re-audit note, and a CI audit for `assume`, `admit`, and external-body/allow escape hatches. CI now uploads a Verus evidence log with source commit, binary hash, toolchain, and proof output. Mutation corpus, supported proof corpus, reproducible production artifact, and release gates remain. |
@@ -589,9 +589,20 @@ freshness conditions must also be justified by the calculus contract.
   empty root. `Certified` implies no model of the supplied IR input clauses,
   without semantic preconditions or interpretation arguments at the API.
   Four new verifier-negative mutations and compiled DAG regressions pass.
-- **Remaining:** superposition cannot derive an empty clause, so the current
-  rule-only graph fragment needs an empty input for certification. Resolution
-  or equality resolution is needed for nontrivial refutations. Production
+- **DONE, standalone nullary resolution slice:** the semantic rule theorem and
+  executable exact ordered resolvent checker for complementary 0-ary predicates
+  verify; runtime regressions cover valid, wrong-pivot, forged-conclusion and
+  out-of-range certificates. DAG dispatch integration remains TODO.
+- **DONE, standalone nullary resolution slice:** complementary 0-ary predicate
+  pivots are proved sound; `check_nullary_resolution` validates bounded inputs,
+  pivot polarity/symbol and exact ordered resolvent construction. Runtime
+  regressions cover valid, wrong-pivot, forged-conclusion, out-of-range and
+  exhausted-budget certificates. This rule is not yet dispatched by
+  `certify_dag`. **Remaining:** integrate the checked resolution certificate
+  into node validation, semantic induction, and DAG mutations.
+- **Remaining:** superposition alone cannot derive an empty clause, so until
+  resolution DAG integration the current graph fragment needs an empty input.
+  Production
   TPTP-to-IR validation, cumulative replay accounting and ancestor-closure policy
   remain separate gates. M4 is still partial.
 
@@ -879,6 +890,10 @@ satisfiability/model claims, and unrestricted full TSTP.
 - [x] Add a verifier-negative mutation that omits the rewritten target clause
   from the executable resolvent builder; the central constructor postcondition
   makes Verus reject the mutation.
+- [x] Define universally closed nullary-predicate resolution soundness and a
+  bounded executable checker that reconstructs the exact ordered resolvent.
+  Standalone regression cases exercise positive and forged steps; DAG dispatch
+  still supports superposition only.
 - [ ] Encode the exact `SWV406+1:c502` parents/conclusion and relevant context;
   establish whether the substitution was applied consistently and whether the
   conclusion is entailed before changing producer/kernel behavior (M3).

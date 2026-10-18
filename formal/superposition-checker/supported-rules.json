@@ -24,10 +24,17 @@
       "production_certification": false
     },
     {
+      "id": "nullary-predicate-resolution",
+      "module": "first_order_core.rs",
+      "status": "verified_standalone_step",
+      "description": "Bounded exact ordered resolution on complementary 0-ary predicate literals, with universal-closure soundness. Runtime cases cover valid, wrong-pivot, forged-conclusion, out-of-range and work-limit certificates. Not dispatched from certify_dag yet.",
+      "production_certification": false
+    },
+    {
       "id": "proof-dag-refutation",
       "module": "first_order_core.rs",
       "status": "verified_ir_dag_certification",
-      "description": "certify_dag proves no well-formed interpretation satisfies the supplied universally closed IR inputs. Per-node checks establish exact input membership, earlier parents and local superposition soundness. Superposition-only DAGs need an empty input to have an empty root; nontrivial refutations require additional rules. No TPTP adapter or production integration.",
+      "description": "certify_dag proves no well-formed interpretation satisfies the supplied universally closed IR inputs. Per-node DAG support currently includes exact input membership and local superposition. Standalone nullary-predicate resolution is verified but not yet DAG-dispatched. No TPTP adapter or production integration.",
       "production_certification": false
     }
   ],
@@ -40,6 +47,8 @@
     "ac_reasoning": false,
     "tstp_parser": false,
     "proof_dag_certification": true,
+    "dag_resolution_nullary": false,
+    "standalone_resolution_nullary": true,
     "mrs_integration": false,
     "c502_verdict": "not_yet_analyzed_by_verified_checker"
   }

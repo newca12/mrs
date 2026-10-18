@@ -73,6 +73,16 @@ def main() -> int:
             "if dag.nodes[dag.root].clause.literals.len() != 0 { return DagVerdict::Rejected; }",
             "if false { return DagVerdict::Rejected; }",
         ),
+        (
+            "resolution checker accepts a forged conclusion",
+            "same_clause_exact(&expected, conclusion)",
+            "true",
+        ),
+        (
+            "resolution checker accepts noncomplementary pivots",
+            "let complementary = !left.literals[left_pivot].positive && right_literal.positive\n        || left.literals[left_pivot].positive && !right_literal.positive;",
+            "let complementary = true;",
+        ),
     ]
 
     with tempfile.TemporaryDirectory(prefix="mrs-verus-mutation-") as temp_dir:

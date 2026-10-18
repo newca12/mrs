@@ -86,8 +86,10 @@ valuation, because substitutions can select different parent instances.
 Whole-DAG IR acceptance is now proved by `certify_dag`: acceptance implies no
 well-formed model of the supplied universally closed input clauses. Exact input
 membership is checked; no runtime semantic-validity test is required. The only
-inference rule remains superposition, so nontrivial empty-root refutations await
-additional rules. Complete hygiene/resource refinement, conclusion comparison
+the only DAG-dispatched inference remains superposition. The standalone
+`check_nullary_resolution` checker and its semantic theorem cover complementary
+nullary predicates, with exact left-context/right-context order; DAG integration
+remains open. Complete hygiene/resource refinement, conclusion comparison
 modulo proved clause equivalences, an MRS interchange format, and c502 analysis
 remain open. See `ASSURANCE.md` and
 `supported-rules.json` for the current claim boundary.

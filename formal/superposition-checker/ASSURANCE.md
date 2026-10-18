@@ -20,6 +20,9 @@ or semantic-validity arguments. The legacy structural entry point still returns
 This certifies the supplied IR input clauses, not a parsed TPTP problem.
 Superposition alone cannot produce an empty clause, so currently a certifying
 DAG needs an empty input; nontrivial coverage requires additional verified rules.
+A verified standalone nullary-predicate resolution theorem and bounded exact
+resolvent checker now exist. Resolution is not yet dispatched from the DAG
+validator and cannot affect certification.
 
 The machine-readable support declaration is
 [`supported-rules.json`](supported-rules.json). Unsupported rules and
@@ -60,7 +63,7 @@ toolchains, verifier version/output, source-audit result, and per-module verific
 uploads that log even when a later gate fails. Local verification does not
 retain a build artifact unless `VERUS_LOG` is set.
 
-The verification gate also runs eleven mutation-negative checks: omitting
+The verification gate also runs twelve mutation-negative checks: omitting
 substitution from executable literal replay, ignoring literal polarity,
 replacing selected-position lookup with root lookup, and omitting the rewritten
 target clause from resolvent construction, skipping DAG-step replay, ignoring
@@ -71,6 +74,8 @@ The four certification mutations skip node validation, forge input membership,
 allow forward parents, and accept a nonempty root. The gate compiles and runs
 positive/negative DAG examples via `runtime-check.py`; the ordinary Rust `main`
 assertion is a test oracle outside the verified certification API.
+Resolution-step fixtures additionally cover complementary pivots, wrong symbols,
+forged conclusions, out-of-range pivots and work-limit exhaustion.
 
 ## Re-audit triggers
 
