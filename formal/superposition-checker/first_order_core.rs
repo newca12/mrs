@@ -5355,6 +5355,16 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
         && verdict == DagVerdict::Unknown ==> forall|i: int, j: int|
             0 <= i < dag.nodes.len() && 0 <= j < dag.nodes[i].parents@.len()
             ==> dag.nodes[i].parents@[j] < i as usize
+        && verdict == DagVerdict::Unknown ==> forall|i: int|
+            0 <= i < dag.nodes.len() && dag.nodes[i].kind == ProofNodeKind::Superposition
+            ==> match dag.nodes[i].step {
+                Some(step) => clause_equal(view_clause(step.source),
+                        view_clause(dag.nodes[dag.nodes[i].parents@[0] as int].clause))
+                    && clause_equal(view_clause(step.target),
+                        view_clause(dag.nodes[dag.nodes[i].parents@[1] as int].clause))
+                    && clause_equal(view_clause(step.conclusion), view_clause(dag.nodes[i].clause)),
+                None => false,
+            }
 {
     // This structural prototype is deliberately non-certifying. Enforce the
     // size caps, then return Unknown until input-clause refinement and the
@@ -5379,6 +5389,9 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
             decreases dag.nodes.len() - i
     {
         let node = &dag.nodes[i];
+        if node.kind == ProofNodeKind::Superposition && node.parents.len() != 2 {
+            return DagVerdict::Rejected;
+        }
         let mut prior: usize = 0;
         while prior < i
             invariant
@@ -5443,7 +5456,11 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
         }
         let mut parent_index: usize = 0;
         while parent_index < node.parents.len()
-            invariant parent_index <= node.parents.len(), total_parents <= node_limit
+            invariant
+                parent_index <= node.parents.len(),
+                total_parents <= node_limit,
+                forall|j: int| 0 <= j < parent_index as int
+                    ==> node.parents@[j] < dag.nodes.len() && node.parents@[j] < i,
             decreases node.parents.len() - parent_index
         {
             if node.parents[parent_index] >= dag.nodes.len()
@@ -5452,6 +5469,22 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
                 return DagVerdict::Rejected;
             }
             parent_index += 1;
+        }
+        assert forall|j: int| 0 <= j < node.parents@.len()
+            implies node.parents@[j] < dag.nodes.len() by {
+            assert(j < parent_index as int);
+        }
+        if node.kind == ProofNodeKind::Superposition {
+            let Some(step) = &node.step else { return DagVerdict::Rejected; };
+            if node.parents.len() != 2 { return DagVerdict::Rejected; }
+            assert(node.parents[0] < dag.nodes.len());
+            assert(node.parents[1] < dag.nodes.len());
+            if !same_clause_exact(&step.source, &dag.nodes[node.parents[0]].clause)
+                || !same_clause_exact(&step.target, &dag.nodes[node.parents[1]].clause)
+                || !same_clause_exact(&step.conclusion, &node.clause)
+            {
+                return DagVerdict::Rejected;
+            }
         }
         i += 1;
     }
