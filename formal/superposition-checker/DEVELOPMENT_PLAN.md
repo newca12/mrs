@@ -618,6 +618,10 @@ freshness conditions must also be justified by the calculus contract.
 - **DONE, bounded closure regression:** the runtime suite asserts the exact
   closure work threshold for a one-node root graph: budgets below the complete
   traversal return `None`, and the exact complete budget returns `Some(true)`.
+- **DONE, strict connected-graph regression:** a complete `p, ~p -> empty`
+  proof certifies; appending an otherwise-valid unrelated input node is rejected;
+  removing it restores certification. This directly exercises the runtime
+  regression used by the root-closure mutation gate.
 - **Remaining:** general first-order resolution and other refutation rules,
   production TPTP-to-IR validation, exact cumulative replay accounting within
   local checks and broader rules/fixtures remain separate gates. M4 is still

@@ -6560,14 +6560,33 @@ fn executable_dag_certification_examples() -> bool {
         || check_root_ancestor_closure(&dag, 3) != Some(true) {
         return false;
     }
-    // A disconnected input leaf is not part of the claimed refutation's
-    // dependency closure, even though it is a legitimate input clause.
+    // Use a nontrivial refutation: an unrelated input must not be accepted as
+    // part of the certified proof graph even though the root still refutes the
+    // actual input set.
+    let positive = resolution_unit(17, true);
+    let negative = resolution_unit(17, false);
+    dag.nodes = vec![
+        ProofNode { id: 10, clause: resolution_unit(17, true), kind: ProofNodeKind::Input,
+            parents: Vec::new(), step: None },
+        ProofNode { id: 11, clause: resolution_unit(17, false), kind: ProofNodeKind::Input,
+            parents: Vec::new(), step: None },
+        ProofNode { id: 12, clause: ExecClause { literals: Vec::new() },
+            kind: ProofNodeKind::Resolution(0, 0), parents: vec![0usize, 1usize], step: None },
+    ];
+    dag.input_clauses = vec![positive, negative];
+    dag.root = 2;
+    if certify_dag(&dag, 10, 1000) != DagVerdict::Certified { return false; }
     dag.nodes.push(ProofNode { id: 2, clause: resolution_unit(17, true),
         kind: ProofNodeKind::Input, parents: Vec::new(), step: None });
     dag.input_clauses.push(resolution_unit(17, true));
     if certify_dag(&dag, 10, 1000) != DagVerdict::Rejected { return false; }
     dag.nodes.pop();
     dag.input_clauses.pop();
+    if certify_dag(&dag, 10, 1000) != DagVerdict::Certified { return false; }
+    dag.nodes = vec![ProofNode { id: 1, clause: ExecClause { literals: Vec::new() },
+        kind: ProofNodeKind::Input, parents: Vec::new(), step: None }];
+    dag.input_clauses = vec![ExecClause { literals: Vec::new() }];
+    dag.root = 0;
     if check_root_ancestor_closure(&dag, 0) != None { return false; }
     if certify_dag(&dag, 0, 1000) == DagVerdict::Certified
         || certify_dag(&dag, 10, 0) == DagVerdict::Certified {
