@@ -318,9 +318,11 @@ Avoid relying on a parser that silently drops unsupported constructs.
   under explicit semantic aliases for the freshened source equality side and
   the target term at the raw selected path. The relation now includes the
   unifier on both sides: accepted certificates prove equality of the source
-  left side and selected target term after freshening and unification. This
-  discharges the selected-term equation alone; connecting all accepted replay
-  facts into the semantic theorem call remains open.
+  left side and selected target term after freshening and unification. Accepted
+  certificates also state the exact source-left term after freshening and
+  unification and equate the raw/fresh target terms with their executable-view
+  aliases, making these refinements directly composable. Connecting all
+  accepted replay facts into the semantic theorem call remains open.
 - **DONE:** define path-based term lookup/replacement, argument-slot literal
   lookup/replacement, and prove evaluation/truth preservation at a selected
   position.

@@ -4591,6 +4591,17 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
         && accepted ==> selected_rewrite_rhs(*certificate)
             == apply(apply(selected_source_right(*certificate),
                 view_subst(certificate.source_freshening@)), view_subst(certificate.unifier@))
+        && accepted ==> certificate_selected_source_left(*certificate)
+            == apply(apply(selected_source_left(*certificate),
+                view_subst(certificate.source_freshening@)),
+                view_subst(certificate.unifier@))
+        && accepted ==> certificate_selected_target_fresh_term(*certificate)
+            == Some(selected_target_subterm(*certificate))
+        && accepted ==> match certificate_selected_target_raw_term(*certificate) {
+            Some(raw) => selected_target_subterm(*certificate)
+                == apply(raw, view_subst(certificate.target_freshening@)),
+            None => false,
+        }
         && accepted ==> atom_at_position(
             view_atom(certificate.target.literals@[certificate.target_literal_index as int].atom),
             certificate.target_argument_slot as nat,
