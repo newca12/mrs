@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "checker_status": "prototype_non_certifying",
+  "ir_schema_status": "in_memory_verus_types_only_no_serialized_interchange",
   "rules": [
     {
       "id": "ground-unit-positive-equality-unary-predicate-whole-argument",

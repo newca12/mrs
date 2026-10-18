@@ -30,6 +30,9 @@ Budget division that would leave a node with a zero share returns inconclusive
 before any node can be certified.
 
 This certifies the supplied IR input clauses, not a parsed TPTP problem.
+The current IR is constructed directly as Verus data types; it has no byte-level
+serialization or verified TPTP/MRS lowering. Consequently, the local c502 and
+DAG runtime fixtures do not exercise an interchange boundary.
 Nullary-predicate resolution is DAG-dispatched in addition to superposition.
 Accepted exact resolution replay proves universal validity preservation;
 `check_dag_resolution_step` consumes that postcondition for the actual cited

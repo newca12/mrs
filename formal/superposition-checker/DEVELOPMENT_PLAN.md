@@ -694,6 +694,10 @@ front-end or a separately justified premise transformation.
 - A canonical, versioned interchange format for supported proof steps, with
   bounds on bytes, nodes, term depth, arguments, literals, variables, parents,
   and traversal work.
+- **PARTIAL, design contract:** the root Verus IR currently uses only numeric
+  symbol/variable IDs and the bounded constructors declared in
+  `supported-rules.json`; its checker validates the semantic data after
+  decoding. No byte-level protocol/schema or production lowering exists yet.
 - Parsing and decoding that preserve every construct relevant to the checking
   theorem. Preferred: parse the original TSTP/proof IR inside the verified
   checker for its initial supported subset. Otherwise provide a separately
