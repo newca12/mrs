@@ -33,6 +33,13 @@ parents and node conclusion. The generic induction consumes local entailment
 for either rule. Compiled unit and multi-step refutations certify from nonempty
 inputs. General first-order resolution and other inference rules remain open.
 
+The compiled runtime regression also exercises an exact `SWV406+1:c502` local
+superposition certificate. It standardizes the c27 and c39 parents apart, binds
+variables from the target parent, substitutes across the complete parents,
+rewrites the nested selected occurrence and checks c502's exact ordered
+conclusion; a forged conclusion is rejected. This local IR result does not
+certify or translate the complete archived TSTP proof.
+
 The machine-readable support declaration is
 [`supported-rules.json`](supported-rules.json). Unsupported rules and
 unimplemented paths must not be treated as certified.

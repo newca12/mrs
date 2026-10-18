@@ -128,8 +128,12 @@ a parser/replay implementation for arbitrary clauses.
 
 The archived c502 clauses are kept in
 [`fixtures/SWV406+1-c502-clauses.p`](fixtures/SWV406+1-c502-clauses.p). The
-current checker gives no verdict for c502 because it is outside the supported
-ground-unit fragment.
+general executable checker now reconstructs the archived `c27`, `c39`, and
+`c502` clauses with independent standardization-apart maps, the supplied
+whole-parent unifier, the nested target path, and exact ordered conclusion.
+`executable_c502_certificate_example` accepts that step and rejects a forged
+conclusion. This is a local step verdict from the verified IR, not a full TSTP
+translation or proof-DAG certification of `SWV406+1`.
 
 Verus `0.2026.10.18.7d82994` is pinned in
 [`verus-toolchain.json`](verus-toolchain.json); CI downloads and checksum-checks

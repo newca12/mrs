@@ -53,6 +53,8 @@
     "dag_exact_cumulative_replay_work": false,
     "dag_resolution_nullary": true,
     "standalone_resolution_nullary": true,
+    "archived_c502_step_replay": true,
+    "archived_c502_full_proof_translation": false,
     "mrs_integration": false,
     "c502_verdict": "not_yet_analyzed_by_verified_checker"
   }

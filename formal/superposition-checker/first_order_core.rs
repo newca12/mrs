@@ -4372,6 +4372,108 @@ fn executable_superposition_certificate_example()
     let _bad_conclusion_rejected = !check_superposition_and_replay(&bad_conclusion, 1000);
 }
 
+fn c502_exec_certificate(forge_conclusion: bool) -> SuperpositionCertificate {
+    fn variable(id: u64) -> ExecTerm { ExecTerm::Var(id) }
+    fn app2(symbol: u64, left: ExecTerm, right: ExecTerm) -> ExecTerm {
+        ExecTerm::App2(symbol, Box::new(left), Box::new(right))
+    }
+    fn insert_term(a: ExecTerm, b: ExecTerm, value: ExecTerm) -> ExecTerm {
+        app2(3, a, app2(4, b, value))
+    }
+    fn remove_insert(a: ExecTerm, b: ExecTerm, value: ExecTerm, key: ExecTerm) -> ExecTerm {
+        app2(2, insert_term(a, b, value), key)
+    }
+    fn eq_literal(left: ExecTerm, right: ExecTerm) -> ExecLiteral {
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(left, right) }
+    }
+    fn neg_eq_literal(left: ExecTerm, right: ExecTerm) -> ExecLiteral {
+        ExecLiteral { positive: false, atom: ExecAtom::Eq(left, right) }
+    }
+    fn contains_literal(a: ExecTerm, key: ExecTerm) -> ExecLiteral {
+        ExecLiteral { positive: false,
+            atom: ExecAtom::Pred2(1, Box::new(a), Box::new(key)) }
+    }
+
+    // Archived c27, independently standardized to 100..103. Its positive
+    // equality is oriented right-to-left so that the selected source side is
+    // insert(remove(A,K), pair(B,V)).
+    let source = ExecClause { literals: vec![
+        contains_literal(variable(0), variable(2)),
+        eq_literal(variable(2), variable(1)),
+        eq_literal(
+            insert_term(
+                app2(2, variable(0), variable(2)),
+                variable(1), variable(3)),
+            remove_insert(variable(0), variable(1), variable(3), variable(2)),
+        ),
+    ] };
+
+    // Archived c39, standardized apart to 200..202. The selected occurrence
+    // is child 0 of the outer remove_slb in the left equality argument.
+    let target = ExecClause { literals: vec![eq_literal(
+        app2(2,
+            insert_term(variable(0), variable(1), variable(2)),
+            variable(1)),
+        variable(0),
+    )] };
+    let unifier = vec![
+        ExecBinding { variable: 200,
+            replacement: app2(2, variable(100), variable(102)) },
+        ExecBinding { variable: 201, replacement: variable(101) },
+        ExecBinding { variable: 202, replacement: variable(103) },
+    ];
+    let rewritten_target = eq_literal(
+        app2(2,
+            remove_insert(variable(100), variable(101), variable(103), variable(102)),
+            variable(101)),
+        app2(2, variable(100), variable(102)),
+    );
+    let conclusion = ExecClause { literals: vec![
+        contains_literal(variable(100), variable(102)),
+        eq_literal(variable(102), variable(101)),
+        if forge_conclusion {
+            ExecLiteral { positive: true,
+                atom: ExecAtom::Pred0(999) }
+        } else {
+            rewritten_target
+        },
+    ] };
+
+    SuperpositionCertificate {
+        source,
+        target,
+        source_freshening: vec![
+            ExecBinding { variable: 0, replacement: ExecTerm::Var(100) },
+            ExecBinding { variable: 2, replacement: ExecTerm::Var(102) },
+            ExecBinding { variable: 1, replacement: ExecTerm::Var(101) },
+            ExecBinding { variable: 3, replacement: ExecTerm::Var(103) },
+        ],
+        target_freshening: vec![
+            ExecBinding { variable: 0, replacement: ExecTerm::Var(200) },
+            ExecBinding { variable: 1, replacement: ExecTerm::Var(201) },
+            ExecBinding { variable: 2, replacement: ExecTerm::Var(202) },
+        ],
+        source_equality_index: 2,
+        target_literal_index: 0,
+        target_argument_slot: 0,
+        target_path: vec![0u64],
+        fresh_target_path: vec![0u64],
+        unifier,
+        conclusion,
+    }
+}
+
+fn executable_c502_certificate_example() -> bool {
+    let certificate = c502_exec_certificate(false);
+    let accepted = check_superposition_and_replay(&certificate, 10000);
+    if !accepted { return false; }
+
+    // A forged c502 equality is rejected even though all parent and unifier
+    // data is unchanged.
+    let forged = c502_exec_certificate(true);
+    !check_superposition_and_replay(&forged, 10000)
+}
+
 fn copy_literal(literal: &ExecLiteral) -> (copy: ExecLiteral)
     ensures view_literal(copy) == view_literal(*literal)
 {
@@ -6859,5 +6961,6 @@ fn run_examples() -> bool {
 } // verus!
 
 fn main() {
+    assert!(executable_c502_certificate_example(), "c502 replay regression failed");
     assert!(run_examples(), "DAG certification regression failed");
 }

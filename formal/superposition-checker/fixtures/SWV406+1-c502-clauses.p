@@ -1,7 +1,8 @@
 % Archived CASC-J13 FEQ proof-step data for SWV406+1 node c502.
-% Preserved for the future general-clause checker audit. The current Verus
-% checker accepts only ground unit clauses and therefore gives no verdict on
-% this variable-bearing, multi-literal step.
+% Parents and conclusion for the archived ordinary syntactic superposition
+% step. first_order_core.rs encodes a lossless bounded executable certificate
+% with independent standardization-apart maps, whole-parent unification,
+% selected target path, and exact ordered conclusion comparison.
 cnf(c27, axiom,
     ~contains_slb(X0, X2) | X2 = X1 |
     remove_slb(insert_slb(X0, pair(X1, X3)), X2) =

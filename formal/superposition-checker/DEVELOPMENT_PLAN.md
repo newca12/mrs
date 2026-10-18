@@ -15,7 +15,7 @@ the item itself is explicitly marked `ABANDONED`.
 | M0 — Verus baseline and environment | **PARTIAL** | Verus release and Linux x86_64 SHA-256 are pinned; the requested Rust toolchain follows the release's `rust-toolchain.toml` (`1.99.1`). The pinned release is `0.2026.10.18.7d82994`; `verify.sh` records both requested and effective toolchains. The installer and verifier scripts read the JSON pin with Python rather than requiring `jq`. The full `verify.sh` run passes. The escape-hatch audit is part of the script. `mutation-check.py` requires Verus to reject three executable/model mutations. Remaining: broader mutation coverage and audit ignored proof obligations. |
 | M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` proves parent validity survives independent standardization substitutions and connects accepted general replay to `standardized_superposition_sound` through `accepted_replay_preserves_validity`. Arbitrary selected indices and duplicate-preserving contexts are covered. `RULE_CONTRACT.md` specifies the prototype's unordered rule. Remaining: independent review of the calculus/interchange boundary. |
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. Collector exactness now composes with independent freshening-scan postconditions to prove variable-valued images throughout each parent, and accepted certificates expose `renames_variables_on` for every parent literal. The replay conclusion builder has a verified pointwise sequence contract; term replacement is proved to commute with substitution at valid positions and is lifted through atom/literal slots. Collector-to-exec-set correspondence, complete hygiene/position refinement, and cumulative resource accounting remain open. |
-| M3 — Superposition checker | **PARTIAL** | `check_superposition_and_replay` now postconditions both exact ordered conclusion equality and universal validity preservation for accepted general certificates. `replay_semantic_premises` connects checked source equality, selected target occurrence, unifier equation and replacement to `standardized_superposition_sound`. Context deletion/substitution and exact conclusion-order composition are proved. Equivalence modulo literal order/renaming, complete hygiene/resource refinement, calculus restrictions, and c502 remain. |
+| M3 — Superposition checker | **PARTIAL** | `check_superposition_and_replay` now postconditions both exact ordered conclusion equality and universal validity preservation for accepted general certificates. `replay_semantic_premises` connects checked source equality, selected target occurrence, unifier equation and replacement to `standardized_superposition_sound`. Context deletion/substitution and exact conclusion-order composition are proved. A bounded executable certificate accepts archived `SWV406+1:c502` and rejects a forged conclusion. Full TSTP translation/proof-DAG replay, equivalence modulo literal order/renaming, complete hygiene/resource refinement, and independent calculus review remain. |
 | M4 — Proof-DAG validation | **PARTIAL** | `certify_dag` returns `Certified` with `dag_inputs_unsatisfiable`, proving no well-formed interpretation satisfies the supplied universally closed IR inputs. DAG dispatch supports input, superposition and positive-left/negative-right nullary-predicate resolution nodes. Accepted resolution replay postconditions universal validity preservation; `check_dag_resolution_step` binds it to cited parents and the node conclusion, and the generic induction consumes local entailment for both rules. Compiled unit and multi-step resolution refutations certify without empty inputs. `check_root_ancestor_closure` rejects every disconnected node and returns `Unknown` on bounded traversal exhaustion. The certifier now partitions its work ceiling into global structure, root-closure and per-node validation budgets. Remaining: exact accounting for every internal replay traversal, production input adapter and broader rules/fixtures. |
 | M5 — MRS integration | **TODO** | The Verus executable is not called by `mrs-proof-kernel`; no interchange format or production adapter exists. |
 | M6 — Broader rules | **PARTIAL** | Nullary-predicate resolution is verified and DAG-dispatched. General first-order resolution, AC, demodulation, transformations, and AVATAR/LRAT remain unimplemented. |
@@ -494,7 +494,8 @@ Avoid relying on a parser that silently drops unsupported constructs.
   construction now exist, with an end-to-end validity-preservation postcondition
   proved via `standardized_superposition_sound`. Still needed: full hygiene and
   cumulative resource refinement, calculus boundary review, comparison modulo
-  permitted clause equivalences, broader certificate fixtures, and c502 replay.
+  permitted clause equivalences, broader certificate fixtures, and full
+  archived proof-context translation.
 
 **Deliverables**
 
@@ -540,15 +541,26 @@ freshness conditions must also be justified by the calculus contract.
 - **DONE for general semantic soundness:** accepted exact replay preserves
   universal validity, including whole-parent substitution and arbitrary positions.
 - **TODO:** broader variable-bearing/multi-literal positive/negative certificate
-  fixtures, complete hygiene/resource refinement, and c502 analysis.
+  fixtures, complete hygiene/resource refinement, and full c502 proof-context
+  analysis.
 - The superposition checker is the named primary artifact: the specification,
   proof obligations, executable API, and test suite are all organized around
   accepting/rejecting one superposition step.
-- `SWV406+1:c502` is translated losslessly into the verified IR and analyzed
-  against the formal semantics. Its result—rejected as unsound, accepted as
-  sound, or left inconclusive because required context is absent—is derived
-  from the proved rule, not chosen in advance. Preserve the exact archived
-  parents/conclusion and relevant context as a regression fixture. Also verify
+- **DONE, local step replay:** `c502_exec_certificate` constructs the exact
+  archived c27/c39/c502 clauses as executable IR, supplies disjoint parent
+  freshenings and a unifier that maps target variables to source-side terms,
+  rewrites the selected nested occurrence, and compares the full ordered
+  conclusion. `executable_c502_certificate_example` accepts the step and rejects
+  a forged conclusion; accepted replay's semantic postcondition proves validity
+  preservation. The exact source clauses remain archived in the fixture.
+- **DONE, target-variable binding:** this archived replay binds standardized
+  c39 variables from the target parent and applies the substitution to both
+  complete parent clauses before the selected rewrite. In particular, c27's
+  surviving `X2 = X1` and predicate context become `X2 = X5` and
+  `~contains_slb(X0,X2)` exactly as in c502.
+- **TODO:** translate the complete relevant TSTP proof context losslessly into
+  the verified IR and certify c502 through the production-style adapter. Do not
+  infer full proof certification from the local step result. Also verify
   a small independently derived example where unification instantiates a
   target variable and the substitution is consistently applied to the entire
   target clause.
@@ -921,9 +933,11 @@ satisfiability/model claims, and unrestricted full TSTP.
   nullary-predicate resolution. Production TPTP integration remains open.
 - [x] Require every proof-DAG node to be in the root's ancestor closure, with
   bounded traversal work and rejection/inconclusive runtime regressions (M4).
-- [ ] Encode the exact `SWV406+1:c502` parents/conclusion and relevant context;
-  establish whether the substitution was applied consistently and whether the
-  conclusion is entailed before changing producer/kernel behavior (M3).
+- [x] Encode the exact `SWV406+1:c502` parents/conclusion as a verified local
+  certificate; establish that the whole-parent substitution is consistent and
+  the conclusion is entailed by the proved superposition theorem (M3).
+- [ ] Translate the relevant archived TSTP proof context losslessly and certify
+  c502 through the future interchange adapter (M3/M5).
 - [ ] Decide the interchange boundary and integrate this verified step checker
   into the Rust strict-kernel path before adding proof-DAG or broader-rule
   coverage (M5 architecture gate).
