@@ -4179,6 +4179,27 @@ fn build_superposition_conclusion_exec(
     conclusion
 }
 
+proof fn exact_resolvent_width_decomposition(
+    source: Clause,
+    source_equality_index: int,
+    target: Clause,
+    target_literal_index: int,
+)
+    requires
+        0 <= source_equality_index < source.literals.len(),
+        0 <= target_literal_index < target.literals.len(),
+    ensures source.literals.subrange(0, source_equality_index)
+            + source.literals.subrange(source_equality_index + 1, source.literals.len() as int)
+            + target.literals
+        == source.literals.subrange(0, source_equality_index)
+            + source.literals.subrange(source_equality_index + 1, source.literals.len() as int)
+            + target.literals.update(target_literal_index,
+                target.literals[target_literal_index])
+{
+    assert(target.literals.update(target_literal_index,
+        target.literals[target_literal_index]) == target.literals);
+}
+
 fn copy_atom(atom: &ExecAtom) -> (copy: ExecAtom)
     ensures view_atom(copy) == view_atom(*atom)
     decreases atom

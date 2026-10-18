@@ -836,6 +836,9 @@ satisfiability/model claims, and unrestricted full TSTP.
 - [x] Postcondition the exact binary resolvent literal count from successful
   replay (`source width - selected equality + target width`) to make the
   constructor's structural relation explicit.
+- [x] Prove the sequence identity for deleting one indexed source literal and
+  reinserting the target clause with one selected literal rewritten (the
+  rewrite's contents are abstracted in this width/decomposition helper).
 - [ ] Connect the fully replayed resolvent to `standardized_superposition_sound`
   and prove `local_node_entails_from_parents` for a successful DAG step. This is
   still the active formal blocker to making any graph certify.
