@@ -4747,6 +4747,13 @@ spec fn certificate_selected_source_right(certificate: SuperpositionCertificate)
     }
 }
 
+spec fn source_right_exec(certificate: SuperpositionCertificate) -> ExecTerm {
+    match certificate.source.literals@[certificate.source_equality_index as int].atom {
+        ExecAtom::Eq(_, right) => right,
+        _ => ExecTerm::Var(0),
+    }
+}
+
 spec fn certificate_selected_target_raw_term(certificate: SuperpositionCertificate) -> Option<Term> {
     atom_at_position(
         view_atom(certificate.target.literals@[certificate.target_literal_index as int].atom),
@@ -4874,6 +4881,11 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
             == apply(apply(selected_source_left(*certificate),
                 view_subst(certificate.source_freshening@)),
                 view_subst(certificate.unifier@))
+        && accepted ==> certificate_selected_source_right(*certificate)
+            == view(apply_exec_model(
+                apply_exec_model(source_right_exec(*certificate),
+                    certificate.source_freshening@),
+                certificate.unifier@))
         && accepted ==> certificate_selected_target_fresh_term(*certificate)
             == Some(selected_target_subterm(*certificate))
         && accepted ==> match certificate_selected_target_raw_term(*certificate) {
@@ -5138,6 +5150,12 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
     };
     let instantiated_source_left = apply_exec(fresh_source_left, &certificate.unifier);
     let instantiated_source_right = apply_exec(source_right, &certificate.unifier);
+    assert(view(*source_right)
+        == apply(view(source_right_exec(*certificate)),
+            view_subst(certificate.source_freshening@)));
+    assert(view(instantiated_source_right)
+        == apply(view(*source_right), view_subst(certificate.unifier@)));
+    assert(view(instantiated_source_right) == certificate_selected_source_right(*certificate));
     let raw_selected_after_freshening = apply_exec(&target_subterm, &certificate.target_freshening);
     if !same_term(&raw_selected_after_freshening, &fresh_target_subterm) {
         return false;

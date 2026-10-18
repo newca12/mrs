@@ -822,6 +822,9 @@ satisfiability/model claims, and unrestricted full TSTP.
 - [x] Expose the accepted rewritten literal itself in the semantic views of the
   certificate source equality and target clause, so the right-side instantiation
   used by executable replay is tied to the theorem-facing selected literal.
+- [x] Refine the source equality's right-hand side through executable freshening
+  and unifier replay to the theorem-level `certificate_selected_source_right`
+  term.
 - [ ] Connect the fully replayed resolvent to `standardized_superposition_sound`
   and prove `local_node_entails_from_parents` for a successful DAG step. This is
   still the active formal blocker to making any graph certify.
