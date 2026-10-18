@@ -15,7 +15,10 @@ induction. Its `Certified` result proves `dag_inputs_unsatisfiable`: no
 well-formed interpretation satisfies every supplied input clause under universal
 closure. Exact leaf membership is checked, not assumed; the API takes no model
 or semantic-validity arguments. The legacy structural entry point still returns
-`Unknown` for valid graphs.
+`Unknown` for valid graphs. Before node validation, `certify_dag` also checks
+that every supplied node is in the root's ancestor closure. The reverse
+topological traversal shares a bounded work counter across initialization,
+parent processing and coverage validation; exhaustion cannot certify.
 
 This certifies the supplied IR input clauses, not a parsed TPTP problem.
 Nullary-predicate resolution is DAG-dispatched in addition to superposition.
@@ -80,6 +83,8 @@ Resolution DAG fixtures cover unit and context-bearing refutations, omitted
 contexts, duplicate pivot occurrences, wrong parents/orientation and self-parent
 references. New mutations reject omitted oriented polarity, skipped DAG rule
 replay and checking a parent instead of the claimed conclusion.
+An additional runtime regression rejects a disconnected but valid input node
+and exercises zero-budget closure exhaustion.
 
 ## Re-audit triggers
 

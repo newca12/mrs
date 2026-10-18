@@ -16,7 +16,7 @@ the item itself is explicitly marked `ABANDONED`.
 | M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` proves parent validity survives independent standardization substitutions and connects accepted general replay to `standardized_superposition_sound` through `accepted_replay_preserves_validity`. Arbitrary selected indices and duplicate-preserving contexts are covered. `RULE_CONTRACT.md` specifies the prototype's unordered rule. Remaining: independent review of the calculus/interchange boundary. |
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. Collector exactness now composes with independent freshening-scan postconditions to prove variable-valued images throughout each parent, and accepted certificates expose `renames_variables_on` for every parent literal. The replay conclusion builder has a verified pointwise sequence contract; term replacement is proved to commute with substitution at valid positions and is lifted through atom/literal slots. Collector-to-exec-set correspondence, complete hygiene/position refinement, and cumulative resource accounting remain open. |
 | M3 — Superposition checker | **PARTIAL** | `check_superposition_and_replay` now postconditions both exact ordered conclusion equality and universal validity preservation for accepted general certificates. `replay_semantic_premises` connects checked source equality, selected target occurrence, unifier equation and replacement to `standardized_superposition_sound`. Context deletion/substitution and exact conclusion-order composition are proved. Equivalence modulo literal order/renaming, complete hygiene/resource refinement, calculus restrictions, and c502 remain. |
-| M4 — Proof-DAG validation | **PARTIAL** | `certify_dag` returns `Certified` with `dag_inputs_unsatisfiable`, proving no well-formed interpretation satisfies the supplied universally closed IR inputs. DAG dispatch supports input, superposition and positive-left/negative-right nullary-predicate resolution nodes. Accepted resolution replay postconditions universal validity preservation; `check_dag_resolution_step` binds it to cited parents and the node conclusion, and the generic induction consumes local entailment for both rules. Compiled unit and multi-step resolution refutations certify without empty inputs. Remaining: production input adapter, ancestor-only closure policy, cumulative replay budgets and broader rules/fixtures. |
+| M4 — Proof-DAG validation | **PARTIAL** | `certify_dag` returns `Certified` with `dag_inputs_unsatisfiable`, proving no well-formed interpretation satisfies the supplied universally closed IR inputs. DAG dispatch supports input, superposition and positive-left/negative-right nullary-predicate resolution nodes. Accepted resolution replay postconditions universal validity preservation; `check_dag_resolution_step` binds it to cited parents and the node conclusion, and the generic induction consumes local entailment for both rules. Compiled unit and multi-step resolution refutations certify without empty inputs. `check_root_ancestor_closure` rejects every disconnected node and returns `Unknown` on bounded traversal exhaustion. Remaining: production input adapter, cumulative replay budgets and broader rules/fixtures. |
 | M5 — MRS integration | **TODO** | The Verus executable is not called by `mrs-proof-kernel`; no interchange format or production adapter exists. |
 | M6 — Broader rules | **PARTIAL** | Nullary-predicate resolution is verified and DAG-dispatched. General first-order resolution, AC, demodulation, transformations, and AVATAR/LRAT remain unimplemented. |
 | M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB/re-audit note, and a CI audit for `assume`, `admit`, and external-body/allow escape hatches. CI now uploads a Verus evidence log with source commit, binary hash, toolchain, and proof output. Mutation corpus, supported proof corpus, reproducible production artifact, and release gates remain. |
@@ -603,10 +603,17 @@ freshness conditions must also be justified by the calculus contract.
   wrong symbols, wrong orientation, self-parent and invalid pivot regressions
   fail closed. Mutations reject skipped replay, wrong checked conclusion and
   omitted oriented polarity.
+- **DONE, root ancestor closure:** certification now runs a bounded reverse
+  topological traversal from the root and rejects every supplied node outside
+  its dependency closure. Initialization, parent-edge traversal and final
+  coverage validation share the explicit work counter; exhaustion is
+  inconclusive at the closure API and cannot lead to certification. Runtime
+  regressions cover a disconnected but otherwise valid input leaf and
+  zero-budget exhaustion.
 - **Remaining:** general first-order resolution and other refutation rules,
-  production
-  TPTP-to-IR validation, cumulative replay accounting and ancestor-closure policy
-  remain separate gates. M4 is still partial.
+  production TPTP-to-IR validation, cumulative replay accounting across all
+  node checks and broader rules/fixtures remain separate gates. M4 is still
+  partial.
 
 **Deliverables**
 
@@ -615,6 +622,8 @@ freshness conditions must also be justified by the calculus contract.
 - A verified DAG/parent-closure traversal (or a decreasing topological-order
   certificate checker) that rejects missing parents, cycles, disconnected or
   forged leaves, duplicate/ambiguous IDs, and a non-empty claimed root.
+  **DONE:** root ancestor closure is explicitly checked; disconnected nodes are
+  rejected and work exhaustion cannot certify.
 - A verified dispatcher that invokes the superposition checker for every such
   node. Any other inference rule is unsupported and returns `Unknown` until
   separately specified and verified.
@@ -898,6 +907,8 @@ satisfiability/model claims, and unrestricted full TSTP.
 - [x] Compose accepted resolution replay with local DAG entailment and the
   generic induction, certifying nontrivial empty-root IR refutations with
   nullary-predicate resolution. Production TPTP integration remains open.
+- [x] Require every proof-DAG node to be in the root's ancestor closure, with
+  bounded traversal work and rejection/inconclusive runtime regressions (M4).
 - [ ] Encode the exact `SWV406+1:c502` parents/conclusion and relevant context;
   establish whether the substitution was applied consistently and whether the
   conclusion is entailed before changing producer/kernel behavior (M3).

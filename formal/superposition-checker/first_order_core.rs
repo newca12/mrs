@@ -6459,6 +6459,11 @@ fn certify_dag(dag: &ProofDag, node_limit: usize, work_limit: usize) -> (verdict
     }
     if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() { return DagVerdict::Rejected; }
     if dag.nodes[dag.root].clause.literals.len() != 0 { return DagVerdict::Rejected; }
+    match check_root_ancestor_closure(dag, work_limit) {
+        Some(true) => {},
+        Some(false) => return DagVerdict::Rejected,
+        None => return DagVerdict::Unknown,
+    }
     let mut i: usize = 0;
     while i < dag.nodes.len()
         invariant i <= dag.nodes.len(), dag_proves_empty(*dag),
@@ -6472,6 +6477,78 @@ fn certify_dag(dag: &ProofDag, node_limit: usize, work_limit: usize) -> (verdict
     DagVerdict::Certified
 }
 
+/// Require the proof to contain exactly the root's backward dependency closure.
+/// A false result is a malformed/disconnected graph; None means the explicit
+/// traversal budget was exhausted. Parent order was checked by the structural
+/// preflight, so a reverse topological walk visits every newly discovered parent
+/// only after its children have been processed.
+fn check_root_ancestor_closure(dag: &ProofDag, work_limit: usize) -> (closed: Option<bool>)
+    requires dag.nodes.len() > 0, dag.root < dag.nodes.len(),
+{
+    let mut reachable: Vec<bool> = Vec::new();
+    let mut work: usize = 0;
+    let mut initialized: usize = 0;
+    while initialized < dag.nodes.len()
+        invariant initialized <= dag.nodes.len(),
+            reachable@.len() == initialized as int,
+            work <= work_limit,
+            work == initialized,
+        decreases dag.nodes.len() - initialized
+    {
+        if work >= work_limit { return None; }
+        work += 1;
+        reachable.push(false);
+        initialized += 1;
+    }
+    reachable[dag.root] = true;
+
+    let mut cursor: usize = dag.root + 1;
+    while cursor > 0
+        invariant cursor <= dag.root + 1,
+            dag.root < dag.nodes.len(),
+            reachable@.len() == dag.nodes.len(),
+            work <= work_limit,
+        decreases cursor
+    {
+        cursor -= 1;
+        if work >= work_limit { return None; }
+        work += 1;
+        if reachable[cursor] {
+            let node = &dag.nodes[cursor];
+            let mut parent_index: usize = 0;
+            while parent_index < node.parents.len()
+                invariant parent_index <= node.parents.len(),
+                    cursor < dag.nodes.len(),
+                    reachable@.len() == dag.nodes.len(),
+                    work <= work_limit,
+                decreases node.parents.len() - parent_index
+            {
+                if work >= work_limit { return None; }
+                work += 1;
+                let parent = node.parents[parent_index];
+                if parent >= cursor { return Some(false); }
+                reachable[parent] = true;
+                parent_index += 1;
+            }
+        }
+    }
+
+    let mut i: usize = 0;
+    while i < dag.nodes.len()
+        invariant i <= dag.nodes.len(),
+            reachable@.len() == dag.nodes.len(),
+            work <= work_limit,
+            forall|j: int| 0 <= j < i as int ==> reachable@[j],
+        decreases dag.nodes.len() - i
+    {
+        if work >= work_limit { return None; }
+        work += 1;
+        if !reachable[i] { return Some(false); }
+        i += 1;
+    }
+    Some(true)
+}
+
 fn executable_dag_certification_examples() -> bool {
     let mut dag = ProofDag {
         nodes: vec![ProofNode { id: 1, clause: ExecClause { literals: Vec::new() },
@@ -6482,6 +6559,15 @@ fn executable_dag_certification_examples() -> bool {
     if certify_dag(&dag, 10, 1000) != DagVerdict::Certified {
         return false;
     }
+    // A disconnected input leaf is not part of the claimed refutation's
+    // dependency closure, even though it is a legitimate input clause.
+    dag.nodes.push(ProofNode { id: 2, clause: resolution_unit(17, true),
+        kind: ProofNodeKind::Input, parents: Vec::new(), step: None });
+    dag.input_clauses.push(resolution_unit(17, true));
+    if certify_dag(&dag, 10, 1000) != DagVerdict::Rejected { return false; }
+    dag.nodes.pop();
+    dag.input_clauses.pop();
+    if check_root_ancestor_closure(&dag, 0) != None { return false; }
     if certify_dag(&dag, 0, 1000) == DagVerdict::Certified
         || certify_dag(&dag, 10, 0) == DagVerdict::Certified {
         return false;
