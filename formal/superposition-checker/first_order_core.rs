@@ -6593,7 +6593,6 @@ fn certify_dag(dag: &ProofDag, node_limit: usize, work_limit: usize) -> (verdict
     ensures verdict == DagVerdict::Certified ==> dag_inputs_unsatisfiable(*dag),
 {
     if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() { return DagVerdict::Rejected; }
-    if node_limit == 0 { return DagVerdict::Rejected; }
     if dag.nodes.len() > node_limit || dag.input_clauses.len() > node_limit {
         return DagVerdict::Rejected;
     }
