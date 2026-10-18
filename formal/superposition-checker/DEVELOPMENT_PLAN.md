@@ -837,6 +837,9 @@ satisfiability/model claims, and unrestricted full TSTP.
   under universal valuations, and add an executable-refinement lemma that a
   successfully replayed literal replacement is defined in the mathematical
   target literal after whole-literal substitution.
+- [x] Derive exact rewrite-term agreement from the accepted source equality's
+  executable RHS mapping. (Replacement existence is covered by the checker
+  postcondition; extending this to semantic clause entailment remains open.)
 - [x] Prove the singleton rewrite consequence from positive source and target
   unit clauses for the ground identity-unifier case. This confirms the local
   semantic basis, but does not yet handle non-empty contexts or checked

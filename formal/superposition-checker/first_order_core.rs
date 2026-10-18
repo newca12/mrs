@@ -1381,6 +1381,45 @@ proof fn literal_position_replacement_commutes_with_substitution(
     );
 }
 
+proof fn target_literal_replacement_commutes_through_freshening_then_unifier(
+    literal: Literal,
+    target_freshening: Substitution,
+    unifier: Substitution,
+    slot: nat,
+    position: TermPosition,
+    replacement: Term,
+)
+    requires
+        literal_at_position(literal, slot, position).is_some(),
+        replace_literal_at_position(literal, slot, position, replacement).is_some(),
+        replace_literal_at_position(
+            substitute_literal(literal, target_freshening), slot, position,
+            apply(replacement, target_freshening),
+        ).is_some(),
+        literal_at_position(
+            substitute_literal(literal, target_freshening), slot, position,
+        ).is_some(),
+    ensures replace_literal_at_position(
+        substitute_literal(substitute_literal(literal, target_freshening), unifier),
+        slot, position, apply(apply(replacement, target_freshening), unifier),
+    ) == match replace_literal_at_position(
+        substitute_literal(literal, target_freshening), slot, position,
+        apply(replacement, target_freshening),
+    ) {
+        Some(rewritten) => Some(substitute_literal(rewritten, unifier)),
+        None => None,
+    }
+{
+    literal_position_replacement_commutes_with_substitution(
+        literal, target_freshening, slot, position, replacement,
+    );
+    let after_freshening = substitute_literal(literal, target_freshening);
+    literal_position_replacement_commutes_with_substitution(
+        after_freshening, unifier, slot, position,
+        apply(replacement, target_freshening),
+    );
+}
+
 proof fn literal_holds_after_equal_subterm_replacement(
     literal: Literal,
     needle: Term,
@@ -5221,8 +5260,8 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
             Some(raw) => selected_target_subterm(*certificate)
                 == apply(raw, view_subst(certificate.target_freshening@)),
             None => false,
-        },
-        accepted ==> forall|i: int| 0 <= i < certificate.source.literals@.len()
+        }
+        && accepted ==> forall|i: int| 0 <= i < certificate.source.literals@.len()
             ==> renames_variables_on(view_subst(certificate.source_freshening@),
                 literal_variables(view_literal(certificate.source.literals@[i]))),
         accepted ==> forall|i: int| 0 <= i < certificate.target.literals@.len()
@@ -5602,6 +5641,7 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
                 view_subst(certificate.target_freshening@)),
             view_subst(certificate.unifier@)));
     assert(view(*source_right) == certificate_selected_source_right(*certificate));
+    assert(view(*source_right) == selected_rewrite_rhs(*certificate));
     let Some(rewritten_target) = replace_clause_literal_exec(
         &instantiated_target,
         certificate.target_literal_index,
