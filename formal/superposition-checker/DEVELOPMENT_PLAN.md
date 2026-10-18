@@ -546,13 +546,15 @@ freshness conditions must also be justified by the calculus contract.
 - The superposition checker is the named primary artifact: the specification,
   proof obligations, executable API, and test suite are all organized around
   accepting/rejecting one superposition step.
-- **DONE, local step replay:** `c502_exec_certificate` constructs the exact
+- **DONE, local step replay:** `c502_exec_certificate` reconstructs the exact
   archived c27/c39/c502 clauses as executable IR, supplies disjoint parent
   freshenings and a unifier that maps target variables to source-side terms,
   rewrites the selected nested occurrence, and compares the full ordered
   conclusion. `executable_c502_certificate_example` accepts the step and rejects
   a forged conclusion; accepted replay's semantic postcondition proves validity
-  preservation. The exact source clauses remain archived in the fixture.
+  preservation. The exact source clauses remain archived in the fixture; the
+  verified regression uses a manually encoded executable certificate rather
+  than parsing that TPTP fixture.
 - **DONE, target-variable binding:** this archived replay binds standardized
   c39 variables from the target parent and applies the substitution to both
   complete parent clauses before the selected rewrite. In particular, c27's
@@ -833,8 +835,9 @@ satisfiability/model claims, and unrestricted full TSTP.
   TODO).
 - [x] Implement and verify the restricted ground unit-superposition checker,
   soundness lemma, and forged-field examples (M3 partial).
-- [x] Preserve the archived c502 clauses as a fixture and verify a local
-  whole-parent superposition certificate; full proof translation remains open.
+- [x] Preserve the archived c502 clauses as a fixture and verify a manually
+  encoded local whole-parent superposition certificate; fixture parsing and full
+  proof translation remain open.
 - [x] Specify the prototype's unordered superposition rule and required
   freshness conditions in `RULE_CONTRACT.md` (M1; the production calculus
   boundary still needs independent review).

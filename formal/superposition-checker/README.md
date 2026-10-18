@@ -133,7 +133,8 @@ general executable checker now reconstructs the archived `c27`, `c39`, and
 whole-parent unifier, the nested target path, and exact ordered conclusion.
 `executable_c502_certificate_example` accepts that step and rejects a forged
 conclusion. This is a local step verdict from the verified IR, not a full TSTP
-translation or proof-DAG certification of `SWV406+1`.
+translation or proof-DAG certification of `SWV406+1`; the regression manually
+encodes the IR certificate rather than parsing the archived TPTP fixture.
 
 Verus `0.2026.10.18.7d82994` is pinned in
 [`verus-toolchain.json`](verus-toolchain.json); CI downloads and checksum-checks

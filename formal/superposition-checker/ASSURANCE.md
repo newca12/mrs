@@ -38,7 +38,7 @@ superposition certificate. It standardizes the c27 and c39 parents apart, binds
 variables from the target parent, substitutes across the complete parents,
 rewrites the nested selected occurrence and checks c502's exact ordered
 conclusion; a forged conclusion is rejected. This local IR result does not
-certify or translate the complete archived TSTP proof.
+parse the archived TPTP fixture or certify the complete archived TSTP proof.
 
 The machine-readable support declaration is
 [`supported-rules.json`](supported-rules.json). Unsupported rules and
