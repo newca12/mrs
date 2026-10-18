@@ -10,18 +10,22 @@ premises and proves universal validity preservation for its exact conclusion.
 `check_dag_superposition_step` checks the certificate against its cited parent
 nodes and conclusion and proves local entailment from universally valid parents.
 The ground-unit checker and fixed two-literal schema are narrower verified
-artifacts. `check_dag_structure` now checks each superposition locally, but its
-successful structural result is `Inconclusive`, not a proof verdict. The
-preflight rejects invalid local steps and exposes their local-soundness facts;
-the conditional whole-DAG induction has not yet been connected to an
-executable certification result. An input-validation interface for an
-untrusted proof consumer also remains.
+artifacts. `certify_dag` connects executable per-node validation to topological
+induction. Its `Certified` result proves `dag_inputs_unsatisfiable`: no
+well-formed interpretation satisfies every supplied input clause under universal
+closure. Exact leaf membership is checked, not assumed; the API takes no model
+or semantic-validity arguments. The legacy structural entry point still returns
+`Unknown` for valid graphs.
+
+This certifies the supplied IR input clauses, not a parsed TPTP problem.
+Superposition alone cannot produce an empty clause, so currently a certifying
+DAG needs an empty input; nontrivial coverage requires additional verified rules.
 
 The machine-readable support declaration is
 [`supported-rules.json`](supported-rules.json). Unsupported rules and
 unimplemented paths must not be treated as certified.
 The intended rule premises and substitution convention are documented in
-[`RULE_CONTRACT.md`](RULE_CONTRACT.md). Whole-DAG acceptance, complete
+[`RULE_CONTRACT.md`](RULE_CONTRACT.md). Complete
 hygiene/resource refinement, and production integration remain open; no
 production-certification claim is made.
 
@@ -56,13 +60,17 @@ toolchains, verifier version/output, source-audit result, and per-module verific
 uploads that log even when a later gate fails. Local verification does not
 retain a build artifact unless `VERUS_LOG` is set.
 
-The verification gate also runs seven mutation-negative checks: omitting
+The verification gate also runs eleven mutation-negative checks: omitting
 substitution from executable literal replay, ignoring literal polarity,
 replacing selected-position lookup with root lookup, and omitting the rewritten
 target clause from resolvent construction, skipping DAG-step replay, ignoring
 the cited source parent, and skipping local replay in the DAG preflight. Each mutated temporary source must
 fail Verus verification. This samples key executable/model refinement
 contracts; it is not comprehensive threat-model coverage.
+The four certification mutations skip node validation, forge input membership,
+allow forward parents, and accept a nonempty root. The gate compiles and runs
+positive/negative DAG examples via `runtime-check.py`; the ordinary Rust `main`
+assertion is a test oracle outside the verified certification API.
 
 ## Re-audit triggers
 

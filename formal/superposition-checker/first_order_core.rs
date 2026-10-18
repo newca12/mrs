@@ -63,7 +63,7 @@ pub struct Model {
 /// total and return carrier elements. Predicate interpretations are total as
 /// well, so substituted argument tuples are always defined.
 spec fn interpretation_well_formed(interp: Interpretation) -> bool {
-    exists|x: u64| interp.domain.contains(x)
+    (exists|x: u64| interp.domain.contains(x))
         && interp.functions.is_full()
         && interp.predicates.is_full()
         && forall|f: u64, args: Seq<u64>|
@@ -2562,9 +2562,30 @@ pub struct ProofDag {
 
 #[derive(PartialEq, Eq)]
 pub enum DagVerdict {
+    Certified,
     Inconclusive,
     Rejected,
     Unknown,
+}
+
+/// A checked node has earlier parents and either an exact input witness or a
+/// semantic local-step contract. No Boolean supplied by the proof is trusted.
+spec fn validated_dag_node(dag: ProofDag, i: int) -> bool {
+    0 <= i < dag.nodes@.len()
+        && (forall|j: int| 0 <= j < dag.nodes@[i].parents@.len()
+            ==> dag.nodes@[i].parents@[j] < i)
+        && (dag.nodes@[i].kind == ProofNodeKind::Input
+                && dag.nodes@[i].parents@.len() == 0
+                && input_leaf_is_validated(dag.nodes@[i], dag.input_clauses@)
+            || dag.nodes@[i].kind == ProofNodeKind::Superposition
+                && (forall|interp: Interpretation| interpretation_well_formed(interp)
+                    ==> local_node_entails_from_parents(dag.nodes@[i], dag.nodes@, interp)))
+}
+
+spec fn dag_inputs_unsatisfiable(dag: ProofDag) -> bool {
+    !exists|interp: Interpretation| interpretation_well_formed(interp)
+        && (forall|i: int| 0 <= i < dag.input_clauses@.len()
+            ==> clause_valid(view_clause(dag.input_clauses@[i]), interp))
 }
 
 spec fn node_parent_clauses_hold(
@@ -6149,6 +6170,159 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
     DagVerdict::Unknown
 }
 
+/// Check one node with a postcondition that survives loop boundaries.
+fn validate_dag_node(dag: &ProofDag, index: usize, work_limit: usize) -> (ok: bool)
+    requires index < dag.nodes.len(),
+    ensures ok ==> validated_dag_node(*dag, index as int),
+{
+    let node = &dag.nodes[index];
+    let mut parent: usize = 0;
+    while parent < node.parents.len()
+        invariant parent <= node.parents.len(),
+            index < dag.nodes.len(),
+            forall|j: int| 0 <= j < parent as int ==> node.parents@[j] < index,
+        decreases node.parents.len() - parent
+    {
+        if node.parents[parent] >= index { return false; }
+        parent += 1;
+    }
+    assert(forall|j: int| 0 <= j < node.parents@.len() ==> node.parents@[j] < index);
+    match node.kind {
+        ProofNodeKind::Input => {
+        if node.parents.len() != 0 { return false; }
+        let mut work: usize = 0;
+        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
+        let mut k: usize = 0;
+        while k < dag.input_clauses.len()
+            invariant k <= dag.input_clauses.len(), work <= work_limit,
+                index < dag.nodes.len(), node == &dag.nodes@[index as int],
+                node.kind == ProofNodeKind::Input, node.parents@.len() == 0,
+            decreases dag.input_clauses.len() - k
+        {
+            if work >= work_limit { return false; }
+            work += 1;
+            if !charge_clause_structure(&dag.input_clauses[k], &mut work, work_limit) {
+                return false;
+            }
+            if same_clause_exact(&node.clause, &dag.input_clauses[k]) {
+                assert(input_leaf_is_validated(*node, dag.input_clauses@));
+                return true;
+            }
+            k += 1;
+        }
+        false
+        },
+        ProofNodeKind::Superposition => {
+        let checked = check_dag_superposition_step(node, &dag.nodes, work_limit);
+        checked
+        },
+        ProofNodeKind::Unsupported => false,
+    }
+}
+
+proof fn validated_dag_has_no_model(dag: ProofDag)
+    requires dag_proves_empty(dag),
+        forall|i: int| 0 <= i < dag.nodes@.len() ==> validated_dag_node(dag, i),
+    ensures dag_inputs_unsatisfiable(dag),
+{
+    assert forall|interp: Interpretation| interpretation_well_formed(interp)
+        && (forall|i: int| 0 <= i < dag.input_clauses@.len()
+            ==> clause_valid(view_clause(dag.input_clauses@[i]), interp))
+        implies false by {
+        assert forall|i: int| 0 <= i < dag.nodes@.len()
+            implies (dag.nodes@[i].kind == ProofNodeKind::Input
+                    && input_leaf_is_validated(dag.nodes@[i], dag.input_clauses@)
+                || dag.nodes@[i].kind == ProofNodeKind::Superposition
+                    && local_node_entails_from_parents(dag.nodes@[i], dag.nodes@, interp)) by {
+            assert(validated_dag_node(dag, i));
+        }
+        assert forall|i: int, j: int| 0 <= i < dag.nodes@.len()
+            && 0 <= j < dag.nodes@[i].parents@.len()
+            implies dag.nodes@[i].parents@[j] < i as usize by {
+            assert(validated_dag_node(dag, i));
+        }
+        proof_dag_nodes_follow_from_local_rule_soundness(
+            dag.nodes@, dag.input_clauses@, interp, dag.nodes@.len(),
+        );
+        let element = choose|element: u64| interp.domain.contains(element);
+        let valuation = Valuation { values: IMap::total(|v: u64| element) };
+        assert(valuation.values.is_full());
+        assert forall|v: u64| interp.domain.contains(valuation.values[v]) by {
+            assert(valuation.values[v] == element);
+        }
+        assert(valuation_well_formed(interp, valuation));
+        assert(clause_valid(view_clause(dag.nodes@[dag.root as int].clause), interp));
+        assert(clause_holds(view_clause(dag.nodes@[dag.root as int].clause), interp, valuation));
+    }
+}
+
+/// Certification is relative to the supplied finite input clause set. No
+/// interpretation or semantic validity decision is an executable argument.
+fn certify_dag(dag: &ProofDag, node_limit: usize, work_limit: usize) -> (verdict: DagVerdict)
+    ensures verdict == DagVerdict::Certified ==> dag_inputs_unsatisfiable(*dag),
+{
+    if dag.nodes.len() > node_limit || dag.input_clauses.len() > node_limit {
+        return DagVerdict::Rejected;
+    }
+    if check_dag_structure(dag, node_limit, work_limit) == DagVerdict::Rejected {
+        return DagVerdict::Rejected;
+    }
+    if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() { return DagVerdict::Rejected; }
+    if dag.nodes[dag.root].clause.literals.len() != 0 { return DagVerdict::Rejected; }
+    let mut i: usize = 0;
+    while i < dag.nodes.len()
+        invariant i <= dag.nodes.len(), dag_proves_empty(*dag),
+            forall|j: int| 0 <= j < i as int ==> validated_dag_node(*dag, j),
+        decreases dag.nodes.len() - i
+    {
+        if !validate_dag_node(dag, i, work_limit) { return DagVerdict::Unknown; }
+        i += 1;
+    }
+    proof { validated_dag_has_no_model(*dag); }
+    DagVerdict::Certified
+}
+
+fn executable_dag_certification_examples() -> bool {
+    let mut dag = ProofDag {
+        nodes: vec![ProofNode { id: 1, clause: ExecClause { literals: Vec::new() },
+            kind: ProofNodeKind::Input, parents: Vec::new(), step: None }],
+        input_clauses: vec![ExecClause { literals: Vec::new() }],
+        root: 0,
+    };
+    if certify_dag(&dag, 10, 1000) != DagVerdict::Certified {
+        return false;
+    }
+    if certify_dag(&dag, 0, 1000) == DagVerdict::Certified
+        || certify_dag(&dag, 10, 0) == DagVerdict::Certified {
+        return false;
+    }
+    dag.input_clauses = Vec::new();
+    if certify_dag(&dag, 10, 1000) == DagVerdict::Certified {
+        return false;
+    }
+    dag.input_clauses = vec![ExecClause { literals: Vec::new() }];
+    dag.nodes[0].parents = vec![0usize];
+    if certify_dag(&dag, 10, 1000) == DagVerdict::Certified {
+        return false;
+    }
+    dag.nodes[0].parents = Vec::new();
+    dag.nodes[0].kind = ProofNodeKind::Unsupported;
+    if certify_dag(&dag, 10, 1000) == DagVerdict::Certified {
+        return false;
+    }
+    dag.nodes[0].kind = ProofNodeKind::Input;
+    dag.nodes[0].clause.literals = vec![ExecLiteral {
+        positive: true, atom: ExecAtom::Pred0(1),
+    }];
+    if certify_dag(&dag, 10, 1000) == DagVerdict::Certified { return false; }
+    dag.nodes[0].clause.literals = Vec::new();
+    dag.root = 1;
+    if certify_dag(&dag, 10, 1000) == DagVerdict::Certified {
+        return false;
+    }
+    true
+}
+
 fn check_dag_with_local_soundness(
     dag: &ProofDag,
     node_limit: usize,
@@ -6157,6 +6331,7 @@ fn check_dag_with_local_soundness(
 ) -> (verdict: DagVerdict)
 {
     match check_dag_structure(dag, node_limit, literal_limit) {
+        DagVerdict::Certified => DagVerdict::Unknown,
         DagVerdict::Rejected => DagVerdict::Rejected,
         DagVerdict::Unknown => DagVerdict::Unknown,
         DagVerdict::Inconclusive => {
@@ -6270,7 +6445,7 @@ proof fn variable_substitution_is_an_instance()
     assert(apply(Term::Var(7), sigma) == Term::Const(19));
 }
 
-fn main() {
+fn run_examples() -> bool {
     proof { variable_substitution_is_an_instance(); }
     executable_literal_replay_examples();
     executable_clause_replay_example();
@@ -6279,6 +6454,11 @@ fn main() {
 
     // Supplied unifier certificate binding target-side variable 42 to
     // constant 9. Domain validity and simultaneous application are checked.
+    executable_dag_certification_examples()
 }
 
 } // verus!
+
+fn main() {
+    assert!(run_examples(), "DAG certification regression failed");
+}

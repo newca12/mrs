@@ -53,5 +53,7 @@ run_check "$VERUS_BIN" --triggers-mode silent "$(dirname "$0")/target_rigidity.r
 run_check "$VERUS_BIN" --triggers-mode silent "$(dirname "$0")/first_order_core.rs"
 run_check "$VERUS_BIN" --triggers-mode silent "$(dirname "$0")/superposition_checker.rs"
 run_check "$VERUS_BIN" --triggers-mode silent "$(dirname "$0")/variable_superposition.rs"
+run_check python3 "$(dirname "$0")/runtime-check.py" "$VERUS_BIN" \
+  "$(dirname "$0")/first_order_core.rs"
 run_check python3 "$(dirname "$0")/mutation-check.py" "$VERUS_BIN" \
   "$(dirname "$0")/first_order_core.rs"

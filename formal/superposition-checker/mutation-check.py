@@ -53,6 +53,26 @@ def main() -> int:
             "let local_step_ok = check_dag_superposition_step(node, &dag.nodes, literal_limit);\n            proof {",
             "let local_step_ok = true;\n            proof {",
         ),
+        (
+            "certifier skips node validation",
+            "if !validate_dag_node(dag, i, work_limit) { return DagVerdict::Unknown; }",
+            "if false { return DagVerdict::Unknown; }",
+        ),
+        (
+            "input validator forges membership",
+            "if same_clause_exact(&node.clause, &dag.input_clauses[k]) {",
+            "if true {",
+        ),
+        (
+            "node validator admits forward parents",
+            "if node.parents[parent] >= index { return false; }",
+            "if false { return false; }",
+        ),
+        (
+            "certifier accepts a nonempty root",
+            "if dag.nodes[dag.root].clause.literals.len() != 0 { return DagVerdict::Rejected; }",
+            "if false { return DagVerdict::Rejected; }",
+        ),
     ]
 
     with tempfile.TemporaryDirectory(prefix="mrs-verus-mutation-") as temp_dir:

@@ -39,8 +39,12 @@ It also runs `mutation-check.py`: temporary copies of the first-order core omit
 literal substitution, ignore literal polarity, replace selected-position
 lookup with root lookup, omit appending the rewritten target clause, skip DAG-step
 replay, ignore its cited source parent, or skip replay during DAG preflight. The
-verification gate requires Verus to reject all seven broken refinements. The
+verification gate requires Verus to reject all eleven broken refinements,
+including skipped node validation, forged input membership, forward parents,
+and nonempty-root acceptance. The
 source tree is not modified by these negative checks.
+`runtime-check.py` compiles the verified core and runs DAG regressions in a
+temporary directory.
 
 The checks use Verus `0.2026.10.04.426d8b0` (the latest published release).
 Verus `main` currently declares Rust `1.99.1`, matching
@@ -48,7 +52,7 @@ Verus `main` currently declares Rust `1.99.1`, matching
 but this release binary reports its effective toolchain as Rust `1.98.1` and
 overrides the request. The verification log records both. Verus uses its
 bundled Z3. Results:
-`5 verified, 0 errors` for the original pilot, `186 verified, 0 errors` for
+`5 verified, 0 errors` for the original pilot, `193 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
 
@@ -68,12 +72,19 @@ parents and conclusion and proves `local_node_entails_from_parents`.
 
 The local DAG contract consumes universally valid parents: truth at a single
 valuation is insufficient for an inference that instantiates variables.
-The bounded structural pass invokes the local checker for every inference,
-rejects invalid inference nodes, and exposes universal local entailment facts
-on its successful `Inconclusive` result. The existing topological semantic
-induction remains a separate conditional theorem; connecting it to an
-executable whole-DAG certification verdict and input-validation interface is
-the next blocker.
+`certify_dag` returns `Certified` with the proved postcondition
+`dag_inputs_unsatisfiable`: no well-formed interpretation satisfies all supplied
+input clauses under universal closure. `validate_dag_node` checks exact input
+membership, earlier parents and local replay, exposing `validated_dag_node`.
+`validated_dag_has_no_model` composes these facts with topological induction and
+a total valuation into the nonempty carrier. No interpretation or assumed input
+validity is supplied to the executable API.
+
+This certifies the supplied IR input clauses, not a parsed TPTP problem.
+Superposition alone cannot produce the empty clause, so successful empty-root
+examples currently need an empty input. Nontrivial refutations require additional
+verified rules such as resolution or equality resolution. Production adapters
+and cumulative replay-work accounting remain open.
 
 `first_order_core.rs` adds recursive first-order terms and formal,
 simultaneous-substitution semantics. It includes executable term copying,
@@ -112,7 +123,7 @@ Verus `0.2026.10.04.426d8b0` is pinned in
 the corresponding Linux binary. CI runs this as a regular required project
 check. See [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md)
 for the staged scope. Remaining obligations include complete hygiene/resource
-refinement, whole-DAG acceptance, and production integration. The supplied
+refinement, nontrivial refutation rules, and production integration. The supplied
 substitution checker establishes equality of instances, not MGU computation.
 In standard first-order semantics, target variables may be
 instantiated as part of a general unifier if the substitution is consistently

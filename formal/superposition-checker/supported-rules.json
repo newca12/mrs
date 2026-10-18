@@ -26,8 +26,8 @@
     {
       "id": "proof-dag-refutation",
       "module": "first_order_core.rs",
-      "status": "inconclusive_structural_prototype",
-      "description": "Bounded structural preflight invokes the verified local superposition-step checker for every inference and exposes local entailment facts. The preflight returns Inconclusive; conditional whole-DAG induction is not yet connected to an executable certification verdict.",
+      "status": "verified_ir_dag_certification",
+      "description": "certify_dag proves no well-formed interpretation satisfies the supplied universally closed IR inputs. Per-node checks establish exact input membership, earlier parents and local superposition soundness. Superposition-only DAGs need an empty input to have an empty root; nontrivial refutations require additional rules. No TPTP adapter or production integration.",
       "production_certification": false
     }
   ],
@@ -39,7 +39,7 @@
     "ordered_calculus_conditions": false,
     "ac_reasoning": false,
     "tstp_parser": false,
-    "proof_dag_certification": false,
+    "proof_dag_certification": true,
     "mrs_integration": false,
     "c502_verdict": "not_yet_analyzed_by_verified_checker"
   }

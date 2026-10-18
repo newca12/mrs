@@ -16,13 +16,13 @@ the item itself is explicitly marked `ABANDONED`.
 | M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` proves parent validity survives independent standardization substitutions and connects accepted general replay to `standardized_superposition_sound` through `accepted_replay_preserves_validity`. Arbitrary selected indices and duplicate-preserving contexts are covered. `RULE_CONTRACT.md` specifies the prototype's unordered rule. Remaining: independent review of the calculus/interchange boundary. |
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. Collector exactness now composes with independent freshening-scan postconditions to prove variable-valued images throughout each parent, and accepted certificates expose `renames_variables_on` for every parent literal. The replay conclusion builder has a verified pointwise sequence contract; term replacement is proved to commute with substitution at valid positions and is lifted through atom/literal slots. Collector-to-exec-set correspondence, complete hygiene/position refinement, and cumulative resource accounting remain open. |
 | M3 — Superposition checker | **PARTIAL** | `check_superposition_and_replay` now postconditions both exact ordered conclusion equality and universal validity preservation for accepted general certificates. `replay_semantic_premises` connects checked source equality, selected target occurrence, unifier equation and replacement to `standardized_superposition_sound`. Context deletion/substitution and exact conclusion-order composition are proved. Equivalence modulo literal order/renaming, complete hygiene/resource refinement, calculus restrictions, and c502 remain. |
-| M4 — Proof-DAG validation | **PARTIAL** | Finite proof graph types, bounded structural validation and conditional semantic induction exist. The structural pass invokes `check_dag_superposition_step` for every superposition after binding cited parents/conclusion; successful preflight exposes local entailment in every well-formed interpretation. Invalid steps are rejected. The structural result remains `Inconclusive`; the semantic DAG induction is still a separate theorem and is not yet connected to a whole-DAG executable certification verdict. |
+| M4 — Proof-DAG validation | **PARTIAL** | `certify_dag` returns `Certified` with `dag_inputs_unsatisfiable`, proving no well-formed interpretation satisfies the supplied universally closed IR inputs. `validate_dag_node` checks exact input membership, earlier parents and local replay; `validated_dag_node` carries these facts through the certifying loop into topological induction. Compiled regressions and four new certification mutations pass. Remaining: nontrivial refutation rules, production input adapter, ancestor-only closure policy, cumulative replay budgets and broader fixtures. |
 | M5 — MRS integration | **TODO** | The Verus executable is not called by `mrs-proof-kernel`; no interchange format or production adapter exists. |
 | M6 — Broader rules | **TODO** | Resolution, AC, demodulation, transformations, and AVATAR/LRAT are not implemented in the Verus checker. |
 | M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB/re-audit note, and a CI audit for `assume`, `admit`, and external-body/allow escape hatches. CI now uploads a Verus evidence log with source commit, binary hash, toolchain, and proof output. Mutation corpus, supported proof corpus, reproducible production artifact, and release gates remain. |
 
 **What is DONE now:** the pinned local command `formal/superposition-checker/verify.sh`
-passes all four Verus files (currently `5`, `186`, `5`, and `5` verified functions respectively),
+passes all four Verus files (currently `5`, `193`, `5`, and `5` verified functions respectively),
 and the existing Rust regression `rejects_swv406_c502_archived_target_specialization`
 passes. These results establish only the current narrow verified artifacts; they
 do not complete M0–M3 or decide c502.
@@ -415,7 +415,8 @@ Avoid relying on a parser that silently drops unsupported constructs.
   its output. A structural traversal additionally caps the aggregate nodes in
   parent/conclusion terms and substitution replacements before replay. Work
   across separate checks and derived replay is not cumulatively accounted.
-  Local semantic soundness is now proved; whole-DAG certification remains open.
+  Local semantic soundness and whole-DAG IR certification are now proved;
+  cumulative accounting remains open.
 - **DONE, semantic proof connection:** the replay refuses target paths that differ
   before/after standardization. `replay_semantic_premises` connects checked
   unifier application and replacement to the theorem. Arbitrary-index parent
@@ -571,8 +572,8 @@ freshness conditions must also be justified by the calculus contract.
   clauses, substitutions, and paths. It requires exactly two parent edges for
   superposition, checks parent references are in-range and topologically
   earlier, rejects unsupported node shapes, and runs the verified local checker
-  for each superposition. Its `Inconclusive` result includes universal local
-  entailment facts but is not itself a complete certification verdict.
+  for each superposition. The legacy preflight returns `Unknown`; certification
+  is provided separately by `certify_dag`.
 - **DONE, conditional semantic theorem:** induction over topologically ordered
   nodes proves validity from valid inputs given `local_node_entails_from_parents`
   for every inference node; an empty root then implies unsatisfiability.
@@ -580,10 +581,19 @@ freshness conditions must also be justified by the calculus contract.
   nodes, runs verified replay, and proves `local_node_entails_from_parents`.
   The local contract uses universal validity, matching the induction hypothesis.
   Mutation gates reject skipping replay and ignoring the cited source parent.
-- **TODO — DIFFICULT:** connect the preflight local-soundness postcondition to
-  `dag_semantic_result_from_local_postcondition`, then expose a whole-DAG result
-  whose certification condition is justified by an input-validation interface.
-  The existing semantic theorem is conditional and is not an executable verdict.
+- **DONE, whole-DAG semantic acceptance:** `certify_dag` validates every node via
+  `validate_dag_node`, whose independent postcondition exposes exact input
+  membership, topological references and universal local entailment. The loop
+  preserves `validated_dag_node`; `validated_dag_has_no_model` invokes induction
+  and constructs a total valuation in the nonempty carrier to contradict the
+  empty root. `Certified` implies no model of the supplied IR input clauses,
+  without semantic preconditions or interpretation arguments at the API.
+  Four new verifier-negative mutations and compiled DAG regressions pass.
+- **Remaining:** superposition cannot derive an empty clause, so the current
+  rule-only graph fragment needs an empty input for certification. Resolution
+  or equality resolution is needed for nontrivial refutations. Production
+  TPTP-to-IR validation, cumulative replay accounting and ancestor-closure policy
+  remain separate gates. M4 is still partial.
 
 **Deliverables**
 
@@ -865,7 +875,7 @@ satisfiability/model claims, and unrestricted full TSTP.
   discharged by `accepted_replay_preserves_validity` and the executable
   `check_dag_superposition_step`. The local contract now correctly consumes
   universally valid parent clauses, rather than parent truth at one valuation.
-  Whole-DAG acceptance-loop integration remains a separate gate.
+  Whole-DAG acceptance-loop integration is now proved by `certify_dag`.
 - [x] Add a verifier-negative mutation that omits the rewritten target clause
   from the executable resolvent builder; the central constructor postcondition
   makes Verus reject the mutation.
