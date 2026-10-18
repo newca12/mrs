@@ -814,6 +814,11 @@ satisfiability/model claims, and unrestricted full TSTP.
   identically instantiated source right side is structurally defined for every
   accepted valid position, by lifting path stability and replacement existence
   through atom slots.
+- [x] Prove pointwise term replacement commutes with simultaneous substitution
+  along a valid path, then lift this equality through predicate/equality atom
+  slots and literal polarity. General certificate acceptance now exposes the
+  semantic selected occurrence and successfully constructed rewrite as explicit
+  postconditions. Parent-context/resolvent theorem composition remains.
 - [x] Add a verifier-negative mutation that omits the rewritten target clause
   from the executable resolvent builder; the central constructor postcondition
   makes Verus reject the mutation.
