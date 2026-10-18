@@ -5276,6 +5276,11 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
                     && dag.nodes[i].parents@.len() == 2 && dag.nodes[i].step.is_some()
         && verdict == DagVerdict::Unknown ==> forall|i: int, j: int|
             0 <= i < j < dag.nodes.len() ==> dag.nodes[i].id != dag.nodes[j].id
+        && verdict == DagVerdict::Unknown ==> forall|i: int|
+            0 <= i < dag.nodes.len() && dag.nodes[i].kind == ProofNodeKind::Input
+            ==> exists|input_index: int| 0 <= input_index < dag.input_clauses.len()
+                && clause_equal(view_clause(dag.nodes[i].clause),
+                    view_clause(dag.input_clauses[input_index]))
         && verdict == DagVerdict::Unknown ==> forall|i: int, j: int|
             0 <= i < dag.nodes.len() && 0 <= j < dag.nodes[i].parents@.len()
             ==> dag.nodes[i].parents@[j] < i as usize
@@ -5393,6 +5398,37 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
             return DagVerdict::Rejected;
         }
         input_index += 1;
+    }
+    let mut node_index: usize = 0;
+    while node_index < dag.nodes.len()
+        invariant
+            node_index <= dag.nodes.len(),
+            dag.nodes.len() <= node_limit,
+            input_index == dag.input_clauses.len(),
+            structural_work <= literal_limit,
+        decreases dag.nodes.len() - node_index
+    {
+        let node = &dag.nodes[node_index];
+        if node.kind == ProofNodeKind::Input {
+            let mut found: bool = false;
+            let mut candidate: usize = 0;
+            while candidate < dag.input_clauses.len()
+                invariant
+                    candidate <= dag.input_clauses.len(),
+                    structural_work <= literal_limit,
+                decreases dag.input_clauses.len() - candidate
+            {
+                if structural_work >= literal_limit { return DagVerdict::Rejected; }
+                structural_work += 1;
+                if same_clause_exact(&node.clause, &dag.input_clauses[candidate]) {
+                    found = true;
+                    break;
+                }
+                candidate += 1;
+            }
+            if !found { return DagVerdict::Rejected; }
+        }
+        node_index += 1;
     }
     DagVerdict::Unknown
 }
