@@ -892,6 +892,11 @@ validity-preservation theorem. It does not yet accept literal permutation or
 alpha-renamed conclusions, parse archived fixtures, or share an exact cumulative
 operation meter across all helper traversals.
 
+The source implementation is broader than the Verus track: the MRS strict Rust
+kernel parses TPTP and checks many rules, but it is independently implemented
+and not covered by these Verus proofs. Keep the two coverage claims separate
+until the M5 adapter is implemented and its trust boundary is addressed.
+
 The first end-to-end proof-DAG/refutation checker is a follow-on milestone that
 uses this verified step checker and adds validated input leaves, parent closure,
 and empty-clause root checking. Explicitly defer AC superposition,
