@@ -795,8 +795,9 @@ satisfiability/model claims, and unrestricted full TSTP.
 - [x] Prove that a successful explicit term position remains valid after an
   arbitrary simultaneous substitution and that the selected term is transformed
   by that substitution. This removes the false assumption that position
-  preservation requires variable-only renaming; literal/atom lifting and
-  certificate-to-theorem composition remain open.
+  preservation requires variable-only renaming; the lemma is now lifted through
+  atoms and polarity-preserving literal substitution. Certificate-to-theorem
+  composition remains open.
 - [x] Add a verifier-negative mutation that omits the rewritten target clause
   from the executable resolvent builder; the central constructor postcondition
   makes Verus reject the mutation.

@@ -774,6 +774,96 @@ proof fn executable_freshening_preserves_selected_position(
     renaming_preserves_selected_position(literal, sigma, slot, position, variables);
 }
 
+/// Lift successful path stability through atoms and literal polarity. This is
+/// the certificate-facing position fact for a general unifier, which may map
+/// the selected subterm itself to a non-variable term.
+proof fn literal_position_substitution_success(
+    literal: Literal,
+    sigma: Substitution,
+    slot: nat,
+    position: TermPosition,
+)
+    requires literal_at_position(literal, slot, position).is_some(),
+    ensures match literal_at_position(literal, slot, position) {
+        Some(found) => literal_at_position(
+            substitute_literal(literal, sigma), slot, position,
+        ) == Some(apply(found, sigma)),
+        None => false,
+    }
+{
+    match literal.atom {
+        Atom::Pred0(_) => {},
+        Atom::Pred1(_, arg) => {
+            assert(slot == 0);
+            assert(term_at_position(*arg, position, 0).is_some());
+            term_position_substitution_success(*arg, sigma, position, 0);
+        },
+        Atom::Pred2(_, left, right) => {
+            if slot == 0 {
+                assert(term_at_position(*left, position, 0).is_some());
+                term_position_substitution_success(*left, sigma, position, 0);
+            } else {
+                assert(slot == 1);
+                assert(term_at_position(*right, position, 0).is_some());
+                term_position_substitution_success(*right, sigma, position, 0);
+            }
+        },
+        Atom::Eq(left, right) => {
+            if slot == 0 {
+                assert(term_at_position(left, position, 0).is_some());
+                term_position_substitution_success(left, sigma, position, 0);
+            } else {
+                assert(slot == 1);
+                assert(term_at_position(right, position, 0).is_some());
+                term_position_substitution_success(right, sigma, position, 0);
+            }
+        },
+    }
+}
+
+proof fn atom_position_substitution_success(
+    atom: Atom,
+    sigma: Substitution,
+    slot: nat,
+    position: TermPosition,
+)
+    requires atom_at_position(atom, slot, position).is_some(),
+    ensures match atom_at_position(atom, slot, position) {
+        Some(found) => atom_at_position(substitute_atom(atom, sigma), slot, position)
+            == Some(apply(found, sigma)),
+        None => false,
+    }
+{
+    match atom {
+        Atom::Pred0(_) => {},
+        Atom::Pred1(_, arg) => {
+            assert(slot == 0);
+            assert(term_at_position(*arg, position, 0).is_some());
+            term_position_substitution_success(*arg, sigma, position, 0);
+        },
+        Atom::Pred2(_, left, right) => {
+            if slot == 0 {
+                assert(term_at_position(*left, position, 0).is_some());
+                term_position_substitution_success(*left, sigma, position, 0);
+            } else {
+                assert(slot == 1);
+                assert(term_at_position(*right, position, 0).is_some());
+                term_position_substitution_success(*right, sigma, position, 0);
+            }
+        },
+        Atom::Eq(left, right) => {
+            if slot == 0 {
+                assert(term_at_position(left, position, 0).is_some());
+                term_position_substitution_success(left, sigma, position, 0);
+            } else {
+                assert(slot == 1);
+                assert(term_at_position(right, position, 0).is_some());
+                term_position_substitution_success(right, sigma, position, 0);
+            }
+        },
+    }
+}
+
 proof fn term_position_substitution(
     term: Term,
     sigma: Substitution,
