@@ -80,9 +80,10 @@ Before node validation, certification rejects nodes outside the empty root's
 ancestor closure; the bounded closure walk returns `Unknown` on work exhaustion.
 The caller's work ceiling is split across structural preflight, closure checking
 and per-node replay; within a node, the validated parent edges and clause
-structure are charged before the local inference receives the remainder.
-Nested replay helpers still use distinct counters, so exact cumulative
-operation accounting remains an explicit limitation. If integer division would
+structure, plus the cited parents and conclusion, are charged before local
+replay receives the remainder. Nested replay helpers still use distinct
+counters, so exact cumulative operation accounting (including literal
+comparisons) remains an explicit limitation. If integer division would
 leave any node with a zero validation share, certification returns `Unknown`.
 `validated_dag_has_no_model` composes these facts with topological induction and
 a total valuation into the nonempty carrier. No interpretation or assumed input

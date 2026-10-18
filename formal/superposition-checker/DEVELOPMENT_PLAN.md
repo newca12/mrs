@@ -639,6 +639,11 @@ freshness conditions must also be justified by the calculus contract.
   superposition/resolution checker. Deep helper calls still use local bounded
   counters rather than one shared mutable meter; the exact sum of all primitive
   visits remains unproved.
+- **DONE, parent and comparison charges:** superposition DAG replay charges the
+  node and cited parent structures before replay, then passes the remainder to
+  `check_superposition_and_replay`. Resolution replay similarly charges the
+  node and both parent structures before exact replay. The count of literal
+  comparisons themselves is still not reflected in the primitive-visit meter.
 - **DONE, zero-share fail-closed guard:** if integer budget partitioning would
   assign no work to a node, `certify_dag` returns `Unknown` before validation.
   Runtime cases verify that low limits for one- and three-node DAGs do not

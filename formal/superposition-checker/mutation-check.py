@@ -40,7 +40,7 @@ def main() -> int:
         ),
         (
             "DAG step skips verified replay",
-            "|| !check_superposition_and_replay(step, work_limit)",
+            "|| !check_superposition_and_replay(step, remaining_work)",
             "|| false",
         ),
         (
@@ -95,7 +95,7 @@ def main() -> int:
         ),
         (
             "DAG resolution checks a parent instead of the conclusion",
-            "&nodes[node.parents[1]].clause, lp, rp, &node.clause, work_limit);",
+            "&nodes[node.parents[1]].clause, lp, rp, &node.clause, work_limit - work);",
             "&nodes[node.parents[1]].clause, lp, rp, &nodes[node.parents[0]].clause, work_limit);",
         ),
     ]

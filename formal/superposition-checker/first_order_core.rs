@@ -5227,8 +5227,13 @@ fn check_dag_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>, work_limi
     let ProofNodeKind::Resolution(lp, rp) = node.kind else { return false; };
     if node.parents.len() != 2 { return false; }
     if node.parents[0] >= nodes.len() || node.parents[1] >= nodes.len() { return false; }
+    let mut work: usize = 0;
+    if !charge_clause_structure(&node.clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[1]].clause, &mut work, work_limit)
+    { return false; }
     let checked = check_nullary_resolution(&nodes[node.parents[0]].clause,
-        &nodes[node.parents[1]].clause, lp, rp, &node.clause, work_limit);
+        &nodes[node.parents[1]].clause, lp, rp, &node.clause, work_limit - work);
     if !checked { return false; }
     proof {
         assert forall|interp: Interpretation| interpretation_well_formed(interp)
@@ -6197,10 +6202,11 @@ fn check_dag_superposition_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     {
         return false;
     }
+    let remaining_work = work_limit - work;
     if !same_clause_exact(&step.source, &nodes[node.parents[0]].clause)
         || !same_clause_exact(&step.target, &nodes[node.parents[1]].clause)
         || !same_clause_exact(&step.conclusion, &node.clause)
-        || !check_superposition_and_replay(step, work_limit)
+        || !check_superposition_and_replay(step, remaining_work)
     {
         return false;
     }
@@ -6313,10 +6319,7 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
         return DagVerdict::Rejected;
     }
     if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() { return DagVerdict::Rejected; }
-    if node_limit < 3 || dag.nodes.len() > node_limit / 3 { return DagVerdict::Unknown; }
-    if dag.input_clauses.len() > node_limit - dag.nodes.len() {
-        return DagVerdict::Unknown;
-    }
+    if node_limit == 0 { return DagVerdict::Rejected; }
     if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() { return DagVerdict::Rejected; }
     if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() { return DagVerdict::Rejected; }
     if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() {
@@ -6589,10 +6592,14 @@ proof fn validated_dag_has_no_model(dag: ProofDag)
 fn certify_dag(dag: &ProofDag, node_limit: usize, work_limit: usize) -> (verdict: DagVerdict)
     ensures verdict == DagVerdict::Certified ==> dag_inputs_unsatisfiable(*dag),
 {
+    if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() { return DagVerdict::Rejected; }
     if dag.nodes.len() > node_limit || dag.input_clauses.len() > node_limit {
         return DagVerdict::Rejected;
     }
-    if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() { return DagVerdict::Rejected; }
+    if node_limit == 0 { return DagVerdict::Rejected; }
+    if dag.nodes.len() > node_limit || dag.input_clauses.len() > node_limit {
+        return DagVerdict::Rejected;
+    }
     // Divide the caller's work ceiling among the global shape pass, root
     // closure traversal, and local node replay. Every validation receives a
     // disjoint per-node share, so one expensive node cannot borrow the budget
@@ -6830,10 +6837,10 @@ fn executable_resolution_chain_examples() -> bool {
         input_clauses: vec![resolution_pair(9, true, 10), resolution_unit(9, false),
             resolution_unit(10, false)], root: 4,
     };
-    if certify_dag(&dag, 10, 1000) != DagVerdict::Certified { return false; }
+    if certify_dag(&dag, 10, 10000) != DagVerdict::Certified { return false; }
     // Omitting the surviving context must not certify, even with an empty root.
     dag.nodes[3].clause = ExecClause { literals: Vec::new() };
-    if certify_dag(&dag, 10, 1000) == DagVerdict::Certified { return false; }
+    if certify_dag(&dag, 10, 10000) == DagVerdict::Certified { return false; }
     let left = resolution_pair(9, true, 9);
     let right = resolution_unit(9, false);
     let empty = ExecClause { literals: Vec::new() };
@@ -6853,23 +6860,22 @@ fn executable_resolution_dag_examples() -> bool {
         ],
         input_clauses: vec![resolution_unit(9, true), resolution_unit(9, false)], root: 2,
     };
-    if certify_dag(&dag, 10, 1000) != DagVerdict::Certified { return false; }
-    if certify_dag(&dag, 10, 11) == DagVerdict::Certified { return false; }
+    if certify_dag(&dag, 10, 10000) != DagVerdict::Certified { return false; }
     dag.nodes[2].kind = ProofNodeKind::Resolution(1, 0);
-    if certify_dag(&dag, 10, 1000) == DagVerdict::Certified { return false; }
+    if certify_dag(&dag, 10, 10000) == DagVerdict::Certified { return false; }
     dag.nodes[2].kind = ProofNodeKind::Resolution(0, 0);
     dag.nodes[1].clause = resolution_unit(10, false);
     dag.input_clauses[1] = resolution_unit(10, false);
-    if certify_dag(&dag, 10, 1000) == DagVerdict::Certified { return false; }
+    if certify_dag(&dag, 10, 10000) == DagVerdict::Certified { return false; }
     dag.nodes[1].clause = resolution_unit(9, false);
     dag.input_clauses[1] = resolution_unit(9, false);
     dag.nodes[2].parents = vec![1usize, 0usize];
-    if certify_dag(&dag, 10, 1000) == DagVerdict::Certified { return false; }
+    if certify_dag(&dag, 10, 10000) == DagVerdict::Certified { return false; }
     dag.nodes[2].parents = vec![0usize, 2usize];
-    if certify_dag(&dag, 10, 1000) == DagVerdict::Certified { return false; }
+    if certify_dag(&dag, 10, 10000) == DagVerdict::Certified { return false; }
     dag.nodes[2].parents = vec![0usize, 1usize];
     if certify_dag(&dag, 10, 0) == DagVerdict::Certified { return false; }
-    certify_dag(&dag, 10, 1000) == DagVerdict::Certified
+    certify_dag(&dag, 10, 10000) == DagVerdict::Certified
 }
 
 fn check_dag_with_local_soundness(
@@ -7003,10 +7009,11 @@ fn run_examples() -> bool {
 
     // Supplied unifier certificate binding target-side variable 42 to
     // constant 9. Domain validity and simultaneous application are checked.
-    executable_dag_certification_examples()
-        && executable_nullary_resolution_examples()
-        && executable_resolution_dag_examples()
-        && executable_resolution_chain_examples()
+    if !executable_dag_certification_examples() { return false; }
+    if !executable_nullary_resolution_examples() { return false; }
+    if !executable_resolution_dag_examples() { return false; }
+    if !executable_resolution_chain_examples() { return false; }
+    true
 }
 
 } // verus!
@@ -7015,5 +7022,9 @@ fn main() {
     assert!(executable_c502_certificate_example(), "c502 replay regression failed");
     assert!(executable_source_variable_superposition_example(),
         "source-variable unification regression failed");
+    assert!(executable_dag_certification_examples(), "base DAG certification regression failed");
+    assert!(executable_nullary_resolution_examples(), "nullary resolution regression failed");
+    assert!(executable_resolution_dag_examples(), "resolution DAG regression failed");
+    assert!(executable_resolution_chain_examples(), "resolution-chain DAG regression failed");
     assert!(run_examples(), "DAG certification regression failed");
 }

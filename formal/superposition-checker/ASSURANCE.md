@@ -25,7 +25,10 @@ multiply one local replay allowance without bound. Some replay helpers still
 use distinct local counters; this is not yet exact cumulative instruction/work
 accounting. Within each node, parent-edge validation and clause structure are
 charged before the remaining node share is passed into the local rule checker.
-Nested helper traversals still have separate local budgets.
+Superposition and resolution DAG wrappers also charge each cited parent and the
+conclusion before passing the remainder to local replay. Nested helper
+traversals still have separate local budgets, and exact literal-comparison
+operation accounting is not established.
 Budget division that would leave a node with a zero share returns inconclusive
 before any node can be certified.
 
