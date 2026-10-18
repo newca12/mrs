@@ -282,6 +282,54 @@ proof fn replace_at_valid_position_exists(
     }
 }
 
+proof fn replacement_commutes_with_substitution_at_position(
+    term: Term,
+    sigma: Substitution,
+    position: TermPosition,
+    replacement: Term,
+    depth: nat,
+)
+    requires depth <= position.path.len(),
+        term_at_position(term, position, depth).is_some(),
+    ensures replace_at_position(apply(term, sigma), position,
+            apply(replacement, sigma), depth)
+        == match replace_at_position(term, position, replacement, depth) {
+            Some(rewritten) => Some(apply(rewritten, sigma)),
+            None => None,
+        }
+    decreases position.path.len() - depth
+{
+    if depth == position.path.len() {
+        assert(replace_at_position(term, position, replacement, depth) == Some(replacement));
+        assert(replace_at_position(apply(term, sigma), position,
+            apply(replacement, sigma), depth) == Some(apply(replacement, sigma)));
+    } else {
+        match term {
+            Term::Var(_) | Term::Const(_) => {
+                assert(term_at_position(term, position, depth) == None);
+            },
+            Term::App1(f, child) => {
+                assert(position.path[depth as int] == 0);
+                replacement_commutes_with_substitution_at_position(
+                    *child, sigma, position, replacement, depth + 1,
+                );
+            },
+            Term::App2(f, left, right) => {
+                if position.path[depth as int] == 0 {
+                    replacement_commutes_with_substitution_at_position(
+                        *left, sigma, position, replacement, depth + 1,
+                    );
+                } else {
+                    assert(position.path[depth as int] == 1);
+                    replacement_commutes_with_substitution_at_position(
+                        *right, sigma, position, replacement, depth + 1,
+                    );
+                }
+            },
+        }
+    }
+}
+
 proof fn position_replacement_preserves_evaluation(
     term: Term,
     position: TermPosition,
@@ -1113,17 +1161,26 @@ proof fn literal_position_replacement_after_substitution(
     ensures replace_literal_at_position(
         substitute_literal(literal, sigma), slot, position,
         apply(replacement, sigma),
-    ).is_some()
+    ).is_some(),
+        replace_literal_at_position(
+            substitute_literal(literal, sigma), slot, position,
+            apply(replacement, sigma),
+        ) == match replace_literal_at_position(literal, slot, position, replacement) {
+            Some(rewritten) => Some(substitute_literal(rewritten, sigma)),
+            None => None,
+        }
 {
     literal_position_substitution_success(literal, sigma, slot, position);
     match literal.atom {
         Atom::Pred0(_) => {},
         Atom::Pred1(p, arg) => {
             assert(slot == 0);
-            let selected = term_at_position(*arg, position, 0).unwrap();
             term_position_substitution_success(*arg, sigma, position, 0);
             replace_at_valid_position_exists(
                 apply(*arg, sigma), position, apply(replacement, sigma), 0,
+            );
+            replacement_commutes_with_substitution_at_position(
+                *arg, sigma, position, replacement, 0,
             );
         },
         Atom::Pred2(p, left, right) => {
@@ -1133,12 +1190,18 @@ proof fn literal_position_replacement_after_substitution(
                 replace_at_valid_position_exists(
                     apply(*left, sigma), position, apply(replacement, sigma), 0,
                 );
+                replacement_commutes_with_substitution_at_position(
+                    *left, sigma, position, replacement, 0,
+                );
             } else {
                 assert(slot == 1);
                 assert(term_at_position(*right, position, 0).is_some());
                 term_position_substitution_success(*right, sigma, position, 0);
                 replace_at_valid_position_exists(
                     apply(*right, sigma), position, apply(replacement, sigma), 0,
+                );
+                replacement_commutes_with_substitution_at_position(
+                    *right, sigma, position, replacement, 0,
                 );
             }
         },
@@ -1149,12 +1212,18 @@ proof fn literal_position_replacement_after_substitution(
                 replace_at_valid_position_exists(
                     apply(left, sigma), position, apply(replacement, sigma), 0,
                 );
+                replacement_commutes_with_substitution_at_position(
+                    left, sigma, position, replacement, 0,
+                );
             } else {
                 assert(slot == 1);
                 assert(term_at_position(right, position, 0).is_some());
                 term_position_substitution_success(right, sigma, position, 0);
                 replace_at_valid_position_exists(
                     apply(right, sigma), position, apply(replacement, sigma), 0,
+                );
+                replacement_commutes_with_substitution_at_position(
+                    right, sigma, position, replacement, 0,
                 );
             }
         },
