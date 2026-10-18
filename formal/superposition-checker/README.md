@@ -38,10 +38,11 @@ and machine-readable supported-slice declaration.
 It also runs `mutation-check.py`: temporary copies of the first-order core omit
 literal substitution, ignore literal polarity, replace selected-position
 lookup with root lookup, omit appending the rewritten target clause, skip DAG-step
-replay, ignore its cited source parent, or skip replay during DAG preflight. The
-verification gate requires Verus to reject all seventeen broken refinements,
+replay, ignore its cited source parent, or skip replay during DAG-node validation.
+The verification gate requires Verus to reject all sixteen broken refinements,
 including skipped node validation, forged input membership, forward parents,
-and nonempty-root acceptance. The
+and nonempty-root acceptance. A separate compiled-runtime mutation removes the
+root-ancestor closure guard and must fail the disconnected-node regression. The
 source tree is not modified by these negative checks.
 `runtime-check.py` compiles the verified core and runs DAG regressions in a
 temporary directory.
@@ -51,7 +52,7 @@ This release declares Rust `1.99.1` in
 [`verus/rust-toolchain.toml`](https://github.com/verus-lang/verus/blob/release/0.2026.10.18.7d82994/rust-toolchain.toml),
 matching the requested toolchain. The verification log records both requested
 and effective toolchains. Verus uses its bundled Z3. Results:
-`5 verified, 0 errors` for the original pilot, `204 verified, 0 errors` for
+`5 verified, 0 errors` for the original pilot, `218 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
 
