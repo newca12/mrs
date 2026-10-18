@@ -20,7 +20,7 @@
       "id": "general-standardized-apart-superposition-semantics",
       "module": "first_order_core.rs",
       "status": "verified_executable_replay_soundness",
-      "description": "Accepted exact ordered replay preserves universal clause validity via standardized_superposition_sound, with independent parent freshening, common simultaneous one-step unifier, whole-parent substitution, arbitrary selected indices and explicit target position. Complete hygiene/resource refinement remains open. See RULE_CONTRACT.md.",
+      "description": "Accepted exact ordered replay preserves universal clause validity via standardized_superposition_sound, with independent parent freshening, common simultaneous one-step unifier, whole-parent substitution, arbitrary selected indices and explicit target position. Includes exact archived SWV406+1:c502 local-step replay. Complete hygiene/resource refinement remains open. See RULE_CONTRACT.md.",
       "production_certification": false
     },
     {
@@ -56,6 +56,6 @@
     "archived_c502_step_replay": true,
     "archived_c502_full_proof_translation": false,
     "mrs_integration": false,
-    "c502_verdict": "not_yet_analyzed_by_verified_checker"
+    "c502_verdict": "accepted_as_sound_local_superposition_step"
   }
 }

@@ -122,9 +122,9 @@ two-literal superposition schema (`f(a)=b`, `q(X) | p(f(X))` deriving
 `q(a) | p(b)`). Its verifier rejects a forged partial target substitution that
 leaves `q(X)` unchanged, and a forged rewrite conclusion; the model-level
 soundness proof for the schema also verifies. This confirms whole-clause target
-instantiation is sound in that constrained case; it is not a general unifier,
-clause checker, or c502 verdict. The checks use a fixed schema certificate, not
-a parser/replay implementation for arbitrary clauses.
+instantiation is sound in that constrained case; it is not a general unifier
+or clause checker. The checks use a fixed schema certificate, not a parser/replay
+implementation for arbitrary clauses.
 
 The archived c502 clauses are kept in
 [`fixtures/SWV406+1-c502-clauses.p`](fixtures/SWV406+1-c502-clauses.p). The
@@ -140,7 +140,7 @@ Verus `0.2026.10.18.7d82994` is pinned in
 the corresponding Linux binary. CI runs this as a regular required project
 check. See [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md)
 for the staged scope. Remaining obligations include complete hygiene/resource
-refinement, nontrivial refutation rules, and production integration. The supplied
+refinement, general first-order refutation rules, and production integration. The supplied
 substitution checker establishes equality of instances, not MGU computation.
 In standard first-order semantics, target variables may be
 instantiated as part of a general unifier if the substitution is consistently
