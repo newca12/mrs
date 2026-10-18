@@ -38,8 +38,8 @@ and machine-readable supported-slice declaration.
 It also runs `mutation-check.py`: temporary copies of the first-order core omit
 literal substitution, ignore literal polarity, replace selected-position
 lookup with root lookup, omit appending the rewritten target clause, skip DAG-step
-replay, or ignore its cited source parent. The
-verification gate requires Verus to reject all six broken refinements. The
+replay, ignore its cited source parent, or skip replay during DAG preflight. The
+verification gate requires Verus to reject all seven broken refinements. The
 source tree is not modified by these negative checks.
 
 The checks use Verus `0.2026.10.04.426d8b0` (the latest published release).
@@ -68,8 +68,12 @@ parents and conclusion and proves `local_node_entails_from_parents`.
 
 The local DAG contract consumes universally valid parents: truth at a single
 valuation is insufficient for an inference that instantiates variables.
-Whole-DAG acceptance is still non-certifying (`Unknown`); connecting the step
-checker into a verified graph acceptance loop and the production adapter remains.
+The bounded structural pass invokes the local checker for every inference,
+rejects invalid inference nodes, and exposes universal local entailment facts
+on its successful `Inconclusive` result. The existing topological semantic
+induction remains a separate conditional theorem; connecting it to an
+executable whole-DAG certification verdict and input-validation interface is
+the next blocker.
 
 `first_order_core.rs` adds recursive first-order terms and formal,
 simultaneous-substitution semantics. It includes executable term copying,

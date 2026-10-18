@@ -5963,9 +5963,9 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
                 None => false,
             }
 {
-    // This structural prototype is deliberately non-certifying. Enforce the
-    // size caps, then return Unknown until the verified local step checker is
-    // connected to a whole-DAG acceptance loop and semantic postcondition.
+    // This bounded structural pass also verifies each inference locally.
+    // The result stays Unknown until the induction is reflected in an
+    // accepted-result postcondition.
     if dag.nodes.len() > node_limit || dag.input_clauses.len() > node_limit {
         return DagVerdict::Rejected;
     }
@@ -6082,6 +6082,16 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
             {
                 return DagVerdict::Rejected;
             }
+            let local_step_ok = check_dag_superposition_step(node, &dag.nodes, literal_limit);
+            proof {
+                if local_step_ok {
+                    assert forall|interp: Interpretation| interpretation_well_formed(interp)
+                        implies local_node_entails_from_parents(*node, dag.nodes@, interp) by {
+                        assert(local_step_ok);
+                    }
+                }
+            }
+            if !local_step_ok { return DagVerdict::Rejected; }
         }
         i += 1;
     }

@@ -48,6 +48,11 @@ def main() -> int:
             "if !same_clause_exact(&step.source, &nodes[node.parents[0]].clause)",
             "if false",
         ),
+        (
+            "DAG preflight skips local replay",
+            "let local_step_ok = check_dag_superposition_step(node, &dag.nodes, literal_limit);\n            proof {",
+            "let local_step_ok = true;\n            proof {",
+        ),
     ]
 
     with tempfile.TemporaryDirectory(prefix="mrs-verus-mutation-") as temp_dir:

@@ -27,7 +27,7 @@
       "id": "proof-dag-refutation",
       "module": "first_order_core.rs",
       "status": "inconclusive_structural_prototype",
-      "description": "A conditional semantic DAG theorem and a verified executable local superposition-step checker exist. The structural entry point returns Unknown for in-budget inputs and cannot certify; whole-DAG acceptance-loop integration remains open.",
+      "description": "Bounded structural preflight invokes the verified local superposition-step checker for every inference and exposes local entailment facts. The preflight returns Inconclusive; conditional whole-DAG induction is not yet connected to an executable certification verdict.",
       "production_certification": false
     }
   ],

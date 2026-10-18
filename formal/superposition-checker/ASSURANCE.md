@@ -10,8 +10,12 @@ premises and proves universal validity preservation for its exact conclusion.
 `check_dag_superposition_step` checks the certificate against its cited parent
 nodes and conclusion and proves local entailment from universally valid parents.
 The ground-unit checker and fixed two-literal schema are narrower verified
-artifacts. `check_dag_structure` returns `Unknown` for every
-in-budget graph and is not a proof checker.
+artifacts. `check_dag_structure` now checks each superposition locally, but its
+successful structural result is `Inconclusive`, not a proof verdict. The
+preflight rejects invalid local steps and exposes their local-soundness facts;
+the conditional whole-DAG induction has not yet been connected to an
+executable certification result. An input-validation interface for an
+untrusted proof consumer also remains.
 
 The machine-readable support declaration is
 [`supported-rules.json`](supported-rules.json). Unsupported rules and
@@ -52,11 +56,11 @@ toolchains, verifier version/output, source-audit result, and per-module verific
 uploads that log even when a later gate fails. Local verification does not
 retain a build artifact unless `VERUS_LOG` is set.
 
-The verification gate also runs six mutation-negative checks: omitting
+The verification gate also runs seven mutation-negative checks: omitting
 substitution from executable literal replay, ignoring literal polarity,
 replacing selected-position lookup with root lookup, and omitting the rewritten
-target clause from resolvent construction, skipping DAG-step replay, and ignoring
-the cited source parent. Each mutated temporary source must
+target clause from resolvent construction, skipping DAG-step replay, ignoring
+the cited source parent, and skipping local replay in the DAG preflight. Each mutated temporary source must
 fail Verus verification. This samples key executable/model refinement
 contracts; it is not comprehensive threat-model coverage.
 
