@@ -79,8 +79,10 @@ membership, earlier parents and local replay, exposing `validated_dag_node`.
 Before node validation, certification rejects nodes outside the empty root's
 ancestor closure; the bounded closure walk returns `Unknown` on work exhaustion.
 The caller's work ceiling is split across structural preflight, closure checking
-and per-node replay. Replay helpers still use distinct local counters, so exact
-cumulative operation accounting remains an explicit limitation.
+and per-node replay; within a node, the validated parent edges and clause
+structure are charged before the local inference receives the remainder.
+Nested replay helpers still use distinct counters, so exact cumulative
+operation accounting remains an explicit limitation.
 `validated_dag_has_no_model` composes these facts with topological induction and
 a total valuation into the nonempty carrier. No interpretation or assumed input
 validity is supplied to the executable API.

@@ -23,7 +23,9 @@ The caller's certification budget is partitioned between structural preflight,
 ancestor-closure validation and per-node replay, so the number of nodes cannot
 multiply one local replay allowance without bound. Some replay helpers still
 use distinct local counters; this is not yet exact cumulative instruction/work
-accounting.
+accounting. Within each node, parent-edge validation and clause structure are
+charged before the remaining node share is passed into the local rule checker.
+Nested helper traversals still have separate local budgets.
 
 This certifies the supplied IR input clauses, not a parsed TPTP problem.
 Nullary-predicate resolution is DAG-dispatched in addition to superposition.

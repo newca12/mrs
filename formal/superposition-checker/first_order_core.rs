@@ -6491,13 +6491,17 @@ fn validate_dag_node(dag: &ProofDag, index: usize, work_limit: usize) -> (ok: bo
     ensures ok ==> validated_dag_node(*dag, index as int),
 {
     let node = &dag.nodes[index];
+    let mut work: usize = 0;
     let mut parent: usize = 0;
     while parent < node.parents.len()
         invariant parent <= node.parents.len(),
             index < dag.nodes.len(),
+            work <= work_limit,
             forall|j: int| 0 <= j < parent as int ==> node.parents@[j] < index,
         decreases node.parents.len() - parent
     {
+        if work >= work_limit { return false; }
+        work += 1;
         if node.parents[parent] >= index { return false; }
         parent += 1;
     }
@@ -6505,7 +6509,6 @@ fn validate_dag_node(dag: &ProofDag, index: usize, work_limit: usize) -> (ok: bo
     match node.kind {
         ProofNodeKind::Input => {
         if node.parents.len() != 0 { return false; }
-        let mut work: usize = 0;
         if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
         let mut k: usize = 0;
         while k < dag.input_clauses.len()
@@ -6528,10 +6531,15 @@ fn validate_dag_node(dag: &ProofDag, index: usize, work_limit: usize) -> (ok: bo
         false
         },
         ProofNodeKind::Superposition => {
-        let checked = check_dag_superposition_step(node, &dag.nodes, work_limit);
+        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
+        let checked = check_dag_superposition_step(node, &dag.nodes,
+            work_limit - work);
         checked
         },
-        ProofNodeKind::Resolution(_, _) => check_dag_resolution_step(node, &dag.nodes, work_limit),
+        ProofNodeKind::Resolution(_, _) => {
+        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
+        check_dag_resolution_step(node, &dag.nodes, work_limit - work)
+        },
         ProofNodeKind::Unsupported => false,
     }
 }

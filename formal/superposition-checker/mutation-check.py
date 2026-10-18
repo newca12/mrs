@@ -50,8 +50,8 @@ def main() -> int:
         ),
         (
             "DAG node validation skips superposition replay",
-            "ProofNodeKind::Superposition => {\n        let checked = check_dag_superposition_step(node, &dag.nodes, work_limit);\n        checked\n        },",
-            "ProofNodeKind::Superposition => {\n        true\n        },",
+            "let checked = check_dag_superposition_step(node, &dag.nodes,\n            work_limit - work);\n        checked",
+            "let checked = true;\n        checked",
         ),
         (
             "certifier skips node validation",
