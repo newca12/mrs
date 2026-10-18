@@ -89,6 +89,9 @@ records the source commit, Verus binary SHA-256, requested and effective Rust
 toolchains, verifier version/output, source-audit result, and per-module verification counts. CI
 uploads that log even when a later gate fails. Local verification does not
 retain a build artifact unless `VERUS_LOG` is set.
+`runtime-check.py` also compiles the core twice and compares executable SHA-256
+values before running it; this currently checks byte reproducibility on one
+host and toolchain only.
 
 The verification gate also runs sixteen verifier-negative checks: omitting
 substitution from executable literal replay, ignoring literal polarity,

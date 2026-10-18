@@ -815,6 +815,10 @@ archived cases, and a versioned support declaration.
 - **DONE, mutation gates:** `verify.sh` requires sixteen verifier-negative
   mutations and one compiled-runtime mutation to fail; this is a targeted set,
   not a complete threat-model proof.
+- **PARTIAL, reproducibility gate:** `runtime-check.py` compiles the checked
+  Verus core twice and requires byte-identical executable hashes before
+  running the fixtures. This currently establishes same-host reproducibility,
+  not cross-host or release-artifact determinism.
 - **TODO — DIFFICULT:** add a broader supported proof corpus, deterministic
   production artifact/hash recording and independent theorem review. The
   manifest is not yet emitted per run because no production checker adapter is

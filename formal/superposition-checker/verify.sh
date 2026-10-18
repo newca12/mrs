@@ -49,6 +49,7 @@ fi
 
 run_check "$VERUS_BIN" --version
 run_check python3 "$(dirname "$0")/audit-verus-source.py"
+run_check python3 -m json.tool "$(dirname "$0")/supported-rules.json" >/dev/null
 run_check "$VERUS_BIN" --triggers-mode silent "$(dirname "$0")/target_rigidity.rs"
 run_check "$VERUS_BIN" --triggers-mode silent "$(dirname "$0")/first_order_core.rs"
 run_check "$VERUS_BIN" --triggers-mode silent "$(dirname "$0")/superposition_checker.rs"

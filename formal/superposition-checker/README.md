@@ -45,7 +45,9 @@ and nonempty-root acceptance. A separate compiled-runtime mutation removes the
 root-ancestor closure guard and must fail the disconnected-node regression. The
 source tree is not modified by these negative checks.
 `runtime-check.py` compiles the verified core and runs DAG regressions in a
-temporary directory.
+temporary directory. It performs the compile twice and requires byte-identical
+runtime artifacts before executing the regressions; this is a same-host
+determinism check, not a cross-host reproducible-build claim.
 
 The checks use Verus `0.2026.10.18.7d82994` (the latest published release).
 This release declares Rust `1.99.1` in
