@@ -764,7 +764,16 @@ front-end or a separately justified premise transformation.
   initial rollout. Disagreement blocks certification and is retained for
   diagnosis; agreement alone is not described as a formal proof.
 
-### M6 — Expand beyond the superposition checker (**TODO**)
+### M6 — Expand beyond the superposition checker (**PARTIAL**)
+
+**Current status**
+
+- **DONE, one additional inference family:** universally closed nullary-predicate
+  resolution is specified, has a bounded exact executable checker, is dispatched
+  in the DAG, and is covered by positive/negative unit and context-bearing
+  refutation regressions.
+- **TODO:** general first-order resolution and the other inference families
+  below. The nullary rule must not be described as general resolution.
 
 Only expand after M1–M5 are stable. Each family gets a written rule contract,
 semantic theorem, verified executable replay, positive/negative mutations,
@@ -791,7 +800,7 @@ archived cases, and a versioned support declaration.
    input representation are specified. Unsupported dialect/rule forms remain
    visibly inconclusive.
 
-### M7 — Release, audit, and maintain the assurance case (**TODO — DIFFICULT**)
+### M7 — Release, audit, and maintain the assurance case (**PARTIAL — DIFFICULT**)
 
 **Current status**
 
@@ -803,8 +812,11 @@ archived cases, and a versioned support declaration.
 - **DONE, evidence slice:** CI stores the verification log, including source
   commit, Verus binary SHA-256, Rust toolchain, verifier version, and per-module
   proof output.
-- **TODO — DIFFICULT:** add mutation-negative CI, supported proof corpus,
-  deterministic build/hash artifacts, and independent theorem review. The
+- **DONE, mutation gates:** `verify.sh` requires sixteen verifier-negative
+  mutations and one compiled-runtime mutation to fail; this is a targeted set,
+  not a complete threat-model proof.
+- **TODO — DIFFICULT:** add a broader supported proof corpus, deterministic
+  production artifact/hash recording and independent theorem review. The
   manifest is not yet emitted per run because no production checker adapter is
   integrated.
 
@@ -1000,7 +1012,7 @@ satisfiability/model claims, and unrestricted full TSTP.
 - [x] Compose accepted resolution replay with local DAG entailment and the
   generic induction, certifying nontrivial empty-root IR refutations with
   nullary-predicate resolution. Production TPTP integration remains open.
-  - [x] Require every proof-DAG node to be in the root's ancestor closure, with
+- [x] Require every proof-DAG node to be in the root's ancestor closure, with
   bounded traversal work and rejection/inconclusive runtime regressions (M4).
 - [x] Encode the exact `SWV406+1:c502` parents/conclusion as a verified local
   certificate; establish that the whole-parent substitution is consistent and
@@ -1011,8 +1023,8 @@ satisfiability/model claims, and unrestricted full TSTP.
   into the Rust strict-kernel path before adding proof-DAG or broader-rule
   coverage (M5 architecture gate).
 
-- [x] Add verifier-negative mutation gates that omit substitution from
-  executable literal replay, ignore literal polarity, and replace selected
-  position lookup with the root term. Verus rejects all three mutations
-  (M0/M7 audit evidence). Resolution, resolvent and DAG mutations now run too;
-  broader corpus and threat-model coverage remain TODO.
+- [x] Run verifier-negative mutations omitting substitution, ignoring polarity,
+  replacing selected-position lookup, dropping replayed context, skipping local
+  or DAG replay, bypassing cited parents/conclusions, and forging DAG structural
+  guards. The compiled-runtime root-closure mutation is also required to fail.
+  Broader corpus and threat-model coverage remain TODO.
