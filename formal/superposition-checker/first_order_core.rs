@@ -4607,6 +4607,16 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
                 == selected_target_subterm_after_freshening(*certificate),
             None => false,
         }
+        && accepted ==> literal_at_position(
+            substitute_literal(
+                substitute_literal(
+                    view_literal(certificate.target.literals@[
+                        certificate.target_literal_index as int]),
+                    view_subst(certificate.target_freshening@)),
+                view_subst(certificate.unifier@)),
+            certificate.target_argument_slot as nat,
+            view_position(certificate.target_path@),
+        ) == Some(selected_target_subterm_after_freshening(*certificate))
         && accepted ==> atom_at_position(
             view_atom(certificate.target.literals@[certificate.target_literal_index as int].atom),
             certificate.target_argument_slot as nat,
@@ -4779,6 +4789,30 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
         == Some(view(target_subterm)));
     assert(apply(view(fresh_target_subterm), view_subst(certificate.unifier@))
         == selected_target_subterm_after_freshening(*certificate));
+    proof {
+        let raw_target_literal = view_literal(
+            certificate.target.literals@[certificate.target_literal_index as int]);
+        assert(literal_at_position(raw_target_literal,
+            certificate.target_argument_slot as nat,
+            view_position(certificate.target_path@)).is_some());
+        literal_position_substitution_success(
+            raw_target_literal,
+            view_subst(certificate.target_freshening@),
+            certificate.target_argument_slot as nat,
+            view_position(certificate.target_path@),
+        );
+        let freshened_target_literal = substitute_literal(
+            raw_target_literal, view_subst(certificate.target_freshening@));
+        assert(literal_at_position(freshened_target_literal,
+            certificate.target_argument_slot as nat,
+            view_position(certificate.target_path@)).is_some());
+        literal_position_substitution_success(
+            freshened_target_literal,
+            view_subst(certificate.unifier@),
+            certificate.target_argument_slot as nat,
+            view_position(certificate.target_path@),
+        );
+    }
     let source_right = match &source_eq_fresh.atom {
         ExecAtom::Eq(_, right) => right,
         _ => return false,

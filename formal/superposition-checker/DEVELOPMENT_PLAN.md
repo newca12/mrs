@@ -321,8 +321,11 @@ Avoid relying on a parser that silently drops unsupported constructs.
   left side and selected target term after freshening and unification. Accepted
   certificates also state the exact source-left term after freshening and
   unification and equate the raw/fresh target terms with their executable-view
-  aliases, making these refinements directly composable. Connecting all
-  accepted replay facts into the semantic theorem call remains open.
+  aliases, making these refinements directly composable. A successful target
+  position is now proved to survive both the target freshening and common
+  unifier, with its final selected term equal to the certificate's semantic
+  alias. The remaining bridge is the replayed replacement/resolvent sequence
+  into the semantic theorem call.
 - **DONE:** define path-based term lookup/replacement, argument-slot literal
   lookup/replacement, and prove evaluation/truth preservation at a selected
   position.
@@ -804,6 +807,9 @@ satisfiability/model claims, and unrestricted full TSTP.
   acceptance, including the freshened source equality argument, the raw target
   occurrence, and its unifier instance. These postconditions connect executable
   selected-term and freshening facts to their mathematical expressions.
+- [x] Compose the successful-position substitution theorem with accepted
+  certificate premises, exposing the selected target occurrence after both
+  freshening and the supplied unifier.
 - [x] Add a verifier-negative mutation that omits the rewritten target clause
   from the executable resolvent builder; the central constructor postcondition
   makes Verus reject the mutation.
