@@ -6593,9 +6593,6 @@ fn certify_dag(dag: &ProofDag, node_limit: usize, work_limit: usize) -> (verdict
     ensures verdict == DagVerdict::Certified ==> dag_inputs_unsatisfiable(*dag),
 {
     if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() { return DagVerdict::Rejected; }
-    if dag.nodes.len() > node_limit || dag.input_clauses.len() > node_limit {
-        return DagVerdict::Rejected;
-    }
     if node_limit == 0 { return DagVerdict::Rejected; }
     if dag.nodes.len() > node_limit || dag.input_clauses.len() > node_limit {
         return DagVerdict::Rejected;
@@ -6609,8 +6606,9 @@ fn certify_dag(dag: &ProofDag, node_limit: usize, work_limit: usize) -> (verdict
     let node_validation_budget = work_limit - structural_budget - closure_budget;
     let per_node_budget = node_validation_budget / dag.nodes.len();
     if per_node_budget == 0 { return DagVerdict::Unknown; }
-    if check_dag_structure(dag, node_limit, structural_budget) == DagVerdict::Rejected {
-        return DagVerdict::Rejected;
+    match check_dag_structure(dag, node_limit, structural_budget) {
+        DagVerdict::Rejected => return DagVerdict::Rejected,
+        DagVerdict::Unknown | DagVerdict::Inconclusive | DagVerdict::Certified => {},
     }
     if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() { return DagVerdict::Rejected; }
     if dag.nodes[dag.root].clause.literals.len() != 0 { return DagVerdict::Rejected; }
