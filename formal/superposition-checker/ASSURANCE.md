@@ -66,15 +66,16 @@ toolchains, verifier version/output, source-audit result, and per-module verific
 uploads that log even when a later gate fails. Local verification does not
 retain a build artifact unless `VERUS_LOG` is set.
 
-The verification gate also runs sixteen mutation-negative checks: omitting
+The verification gate also runs seventeen mutation-negative checks: omitting
 substitution from executable literal replay, ignoring literal polarity,
 replacing selected-position lookup with root lookup, and omitting the rewritten
 target clause from resolvent construction, skipping DAG-step replay, ignoring
 the cited source parent, and skipping local replay in the DAG preflight. Each mutated temporary source must
 fail Verus verification. This samples key executable/model refinement
 contracts; it is not comprehensive threat-model coverage.
-The four certification mutations skip node validation, forge input membership,
-allow forward parents, and accept a nonempty root. The gate compiles and runs
+The five certification mutations skip node validation, forge input membership,
+allow forward parents, accept a nonempty root, and skip root-ancestor closure.
+The gate compiles and runs
 positive/negative DAG examples via `runtime-check.py`; the ordinary Rust `main`
 assertion is a test oracle outside the verified certification API.
 Resolution-step fixtures additionally cover complementary pivots, wrong symbols,

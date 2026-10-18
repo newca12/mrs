@@ -47,6 +47,8 @@
     "ac_reasoning": false,
     "tstp_parser": false,
     "proof_dag_certification": true,
+    "dag_requires_root_ancestor_closure": true,
+    "dag_closure_work_bounded": true,
     "dag_resolution_nullary": true,
     "standalone_resolution_nullary": true,
     "mrs_integration": false,

@@ -39,7 +39,7 @@ It also runs `mutation-check.py`: temporary copies of the first-order core omit
 literal substitution, ignore literal polarity, replace selected-position
 lookup with root lookup, omit appending the rewritten target clause, skip DAG-step
 replay, ignore its cited source parent, or skip replay during DAG preflight. The
-verification gate requires Verus to reject all sixteen broken refinements,
+verification gate requires Verus to reject all seventeen broken refinements,
 including skipped node validation, forged input membership, forward parents,
 and nonempty-root acceptance. The
 source tree is not modified by these negative checks.
@@ -75,6 +75,8 @@ valuation is insufficient for an inference that instantiates variables.
 `dag_inputs_unsatisfiable`: no well-formed interpretation satisfies all supplied
 input clauses under universal closure. `validate_dag_node` checks exact input
 membership, earlier parents and local replay, exposing `validated_dag_node`.
+Before node validation, certification rejects nodes outside the empty root's
+ancestor closure; the bounded closure walk returns `Unknown` on work exhaustion.
 `validated_dag_has_no_model` composes these facts with topological induction and
 a total valuation into the nonempty carrier. No interpretation or assumed input
 validity is supplied to the executable API.

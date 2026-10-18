@@ -120,6 +120,33 @@ def main() -> int:
                 return 1
             print(f"mutation rejected: {name}")
 
+        closure_guard = (
+            "match check_root_ancestor_closure(dag, work_limit) {\n"
+            "        Some(true) => {},\n"
+            "        Some(false) => return DagVerdict::Rejected,\n"
+            "        None => return DagVerdict::Unknown,\n"
+            "    }"
+        )
+        if source.count(closure_guard) != 1:
+            print("root-ancestor closure mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_without_root_closure.rs"
+        mutated_path.write_text(source.replace(closure_guard, "", 1))
+        binary = pathlib.Path(temp_dir) / "first-order-core-without-root-closure"
+        subprocess.run(
+            [str(verus), "--triggers-mode", "silent", "--compile", str(mutated_path),
+             "-o", str(binary)],
+            check=True,
+        )
+        runtime = subprocess.run(
+            [str(binary)], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: certifier skips root-ancestor closure", file=sys.stderr)
+            return 1
+        print("runtime mutation rejected: certifier skips root-ancestor closure")
+
     return 0
 
 
