@@ -38,6 +38,16 @@ def main() -> int:
             "append_literal_copy(&mut literals, &rewritten_target.literals[j]);",
             "if j == usize::MAX { append_literal_copy(&mut literals, &rewritten_target.literals[j]); }",
         ),
+        (
+            "DAG step skips verified replay",
+            "|| !check_superposition_and_replay(step, work_limit)",
+            "|| false",
+        ),
+        (
+            "DAG step ignores cited source parent",
+            "if !same_clause_exact(&step.source, &nodes[node.parents[0]].clause)",
+            "if false",
+        ),
     ]
 
     with tempfile.TemporaryDirectory(prefix="mrs-verus-mutation-") as temp_dir:

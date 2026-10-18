@@ -2577,15 +2577,14 @@ spec fn node_parent_clauses_hold(
         ==> clause_holds(view_clause(nodes[node.parents@[j] as int].clause), interp, valuation)
 }
 
-/// Semantic contract each supported inference implementation must establish.
-/// The DAG theorem below consumes this relation; it does not assume that a
-/// successful replay check establishes it.
+/// Inference consumes universally closed parents, not their truth at just one
+/// valuation: a supplied substitution can change the valuation at which a
+/// parent must hold.
 spec fn local_node_entails_from_parents(node: ProofNode, nodes: Seq<ProofNode>,
     interp: Interpretation) -> bool {
-    forall|valuation: Valuation|
-        valuation_well_formed(interp, valuation)
-            && node_parent_clauses_hold(node, nodes, interp, valuation)
-        ==> clause_holds(view_clause(node.clause), interp, valuation)
+    (forall|j: int| 0 <= j < node.parents@.len()
+        ==> clause_valid(view_clause(nodes[node.parents@[j] as int].clause), interp))
+        ==> clause_valid(view_clause(node.clause), interp)
 }
 
 spec fn input_leaf_is_validated(node: ProofNode, inputs: Seq<ExecClause>) -> bool {
@@ -2641,6 +2640,12 @@ proof fn proof_dag_nodes_follow_from_local_rule_soundness(
             }
         } else {
             assert(node.kind == ProofNodeKind::Superposition);
+            assert forall|j: int| 0 <= j < node.parents@.len()
+                implies clause_valid(view_clause(nodes[node.parents@[j] as int].clause),
+                    interp) by {
+                let parent = node.parents@[j] as int;
+                assert(parent < last as int);
+            }
             assert forall|valuation: Valuation|
                 valuation_well_formed(interp, valuation)
                     implies clause_holds(view_clause(node.clause), interp, valuation) by {
@@ -5132,7 +5137,8 @@ spec fn expected_superposition_conclusion(
 
 fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_limit: usize)
     -> (accepted: bool)
-    ensures accepted ==> certificate.target_path@ == certificate.fresh_target_path@
+    ensures accepted ==> replay_semantic_premises(*certificate),
+        accepted ==> certificate.target_path@ == certificate.fresh_target_path@
         && accepted ==> certificate.source.literals.len()
             + certificate.target.literals.len()
             + certificate.source_freshening.len()
@@ -5473,6 +5479,25 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
     // Ensure both oriented source sides were instantiated by the same unifier;
     // the semantic theorem uses this exact RHS when constructing the resolvent.
     let _rewritten_rhs = instantiated_source_right;
+    proof {
+        let target_literal = view_literal(certificate.target.literals@[
+            certificate.target_literal_index as int]);
+        let tf = view_subst(certificate.target_freshening@);
+        let u = view_subst(certificate.unifier@);
+        let slot = certificate.target_argument_slot as nat;
+        let path = view_position(certificate.target_path@);
+        let raw = view(target_subterm);
+        assert(literal_at_position(target_literal, slot, path) == Some(raw));
+        literal_position_substitution_success(target_literal, tf, slot, path);
+        literal_position_substitution_success(substitute_literal(target_literal, tf),
+            u, slot, path);
+        assert(literal_at_position(substitute_literal(substitute_literal(target_literal,
+            tf), u), slot, path) == Some(apply(apply(raw, tf), u)));
+        literal_position_replacement_exists(
+            substitute_literal(substitute_literal(target_literal, tf), u),
+            slot, path, selected_rewrite_rhs(*certificate));
+        assert(replay_semantic_premises(*certificate));
+    }
     true
 }
 
@@ -5565,6 +5590,134 @@ fn same_u64_sequence(left: &Vec<u64>, right: &Vec<u64>) -> (same: bool)
     true
 }
 
+/// Remove exactly one occurrence; duplicates in either context are preserved.
+spec fn parent_context(parent: Clause, selected: int) -> Clause {
+    Clause { literals: parent.literals.subrange(0, selected)
+        + parent.literals.subrange(selected + 1, parent.literals.len() as int) }
+}
+
+proof fn parent_context_facts(parent: Clause, selected: int, sigma: Substitution,
+    interp: Interpretation)
+    requires 0 <= selected < parent.literals.len(),
+    ensures
+        parent_context(substitute_clause(parent, sigma), selected)
+            == substitute_clause(parent_context(parent, selected), sigma),
+        clause_valid(parent, interp)
+            ==> clause_valid(append_literal(parent_context(parent, selected),
+                parent.literals[selected]), interp),
+{
+    let context = parent_context(parent, selected);
+    assert(parent_context(substitute_clause(parent, sigma), selected).literals
+        =~= substitute_clause(context, sigma).literals);
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        && clause_valid(parent, interp)
+        implies clause_holds(append_literal(context, parent.literals[selected]),
+            interp, valuation) by {
+        let i = choose|i: int| 0 <= i < parent.literals.len()
+            && literal_holds(parent.literals[i], interp, valuation);
+        if i == selected {
+            assert(append_literal(context, parent.literals[selected]).literals[
+                context.literals.len() as int] == parent.literals[i]);
+        } else {
+            let j = if i < selected { i } else { i - 1 };
+            assert(0 <= j < context.literals.len());
+            assert(context.literals[j] == parent.literals[i]);
+            assert(append_literal(context, parent.literals[selected]).literals[j]
+                == parent.literals[i]);
+        }
+    }
+}
+
+/// Exactly the semantic premises exported by successful certificate checking.
+spec fn replay_semantic_premises(c: SuperpositionCertificate) -> bool {
+    let source = view_clause(c.source);
+    let target = view_clause(c.target);
+    let si = c.source_equality_index as int;
+    let ti = c.target_literal_index as int;
+    let sf = view_subst(c.source_freshening@);
+    let tf = view_subst(c.target_freshening@);
+    let u = view_subst(c.unifier@);
+    0 <= si < source.literals.len() && 0 <= ti < target.literals.len()
+        && c.target_path@ == c.fresh_target_path@
+        && source.literals[si].positive
+        && match source.literals[si].atom {
+            Atom::Eq(left, right) => match certificate_selected_target_raw_term(c) {
+                Some(raw) => apply(apply(left, sf), u) == apply(apply(raw, tf), u)
+                    && literal_at_position(substitute_literal(
+                        substitute_literal(target.literals[ti], tf), u),
+                        c.target_argument_slot as nat, view_position(c.target_path@))
+                        == Some(apply(apply(raw, tf), u))
+                    && replace_literal_at_position(substitute_literal(
+                        substitute_literal(target.literals[ti], tf), u),
+                        c.target_argument_slot as nat, view_position(c.target_path@),
+                        apply(apply(right, sf), u)).is_some(),
+                None => false,
+            },
+            _ => false,
+        }
+}
+
+/// Bridge arbitrary selected indices and exact executable sequence order to
+/// the context-based standardized superposition theorem.
+proof fn accepted_replay_preserves_validity(c: SuperpositionCertificate,
+    work_limit: nat, interp: Interpretation)
+    requires interpretation_well_formed(interp), replay_semantic_premises(c),
+        view_clause(c.conclusion).literals == expected_superposition_conclusion(c, work_limit),
+        clause_valid(view_clause(c.source), interp),
+        clause_valid(view_clause(c.target), interp),
+    ensures clause_valid(view_clause(c.conclusion), interp)
+{
+    let source = view_clause(c.source);
+    let target = view_clause(c.target);
+    let si = c.source_equality_index as int;
+    let ti = c.target_literal_index as int;
+    let sf = view_subst(c.source_freshening@);
+    let tf = view_subst(c.target_freshening@);
+    let u = view_subst(c.unifier@);
+    let sc = parent_context(source, si);
+    let tc = parent_context(target, ti);
+    let source_instance = substitute_clause(substitute_clause(source, sf), u);
+    let target_instance = substitute_clause(substitute_clause(target, tf), u);
+    parent_context_facts(source, si, sf, interp);
+    parent_context_facts(target, ti, tf, interp);
+    parent_context_facts(substitute_clause(source, sf), si, u, interp);
+    parent_context_facts(substitute_clause(target, tf), ti, u, interp);
+    let (left, right) = match source.literals[si].atom {
+        Atom::Eq(left, right) => (left, right),
+        _ => { assert(false); return; },
+    };
+    let raw = certificate_selected_target_raw_term(c).unwrap();
+    let rewritten = replace_literal_at_position(target_instance.literals[ti],
+        c.target_argument_slot as nat, view_position(c.target_path@),
+        apply(apply(right, sf), u)).unwrap();
+    let sci = substitute_clause(substitute_clause(sc, sf), u);
+    let tci = substitute_clause(substitute_clause(tc, tf), u);
+    let conclusion = view_clause(c.conclusion);
+    assert(conclusion.literals == parent_context(source_instance, si).literals
+        + target_instance.literals.update(ti, rewritten));
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        implies clause_holds(conclusion, interp, valuation) by {
+        standardized_superposition_sound(sc, source.literals[si], tc,
+            target.literals[ti], left, right, raw, c.target_argument_slot as nat,
+            view_position(c.target_path@), sf, tf, u, interp, valuation);
+        if clause_holds(sci, interp, valuation) {
+            let i = choose|i: int| 0 <= i < sci.literals.len()
+                && literal_holds(sci.literals[i], interp, valuation);
+            assert(conclusion.literals[i] == sci.literals[i]);
+        } else if clause_holds(tci, interp, valuation) {
+            let i = choose|i: int| 0 <= i < tci.literals.len()
+                && literal_holds(tci.literals[i], interp, valuation);
+            let j = if i < ti { i } else { i + 1 };
+            assert(0 <= j < target_instance.literals.len() && j != ti);
+            assert(tci.literals[i] == target_instance.literals[j]);
+            assert(conclusion.literals[sci.literals.len() + j] == tci.literals[i]);
+        } else {
+            assert(literal_holds(rewritten, interp, valuation));
+            assert(conclusion.literals[sci.literals.len() + ti] == rewritten);
+        }
+    }
+}
+
 fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_limit: usize)
     -> (accepted: bool)
     ensures accepted ==> certificate.source.literals.len()
@@ -5572,7 +5725,12 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
             + certificate.conclusion.literals.len() <= work_limit
         && accepted ==> clause_equal(view_clause(certificate.conclusion),
             Clause { literals: expected_superposition_conclusion(
-                *certificate, work_limit as nat) })
+                *certificate, work_limit as nat) }),
+        accepted ==> replay_semantic_premises(*certificate),
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.source), interp)
+            && clause_valid(view_clause(certificate.target), interp)
+            ==> clause_valid(view_clause(certificate.conclusion), interp),
 {
     let mut structural_work: usize = 0;
     if !charge_clause_structure(&certificate.source, &mut structural_work, work_limit)
@@ -5662,6 +5820,64 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
     assert(clause_equal(view_clause(*conclusion), Clause {
         literals: expected_superposition_conclusion(*certificate, work_limit as nat),
     }));
+    assert(view_clause(certificate.conclusion).literals
+        =~= expected_superposition_conclusion(*certificate, work_limit as nat));
+    assert(replay_semantic_premises(*certificate));
+    assert forall|interp: Interpretation| interpretation_well_formed(interp)
+        && clause_valid(view_clause(certificate.source), interp)
+        && clause_valid(view_clause(certificate.target), interp)
+        implies clause_valid(view_clause(certificate.conclusion), interp) by {
+        accepted_replay_preserves_validity(*certificate, work_limit as nat, interp);
+    }
+    true
+}
+
+/// An executable DAG-step boundary: bind the certificate to the actual two
+/// parent nodes and conclusion, then consume the proved replay postcondition.
+fn check_dag_superposition_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    if node.kind != ProofNodeKind::Superposition || node.parents.len() != 2 {
+        return false;
+    }
+    let Some(step) = &node.step else { return false; };
+    if node.parents[0] >= nodes.len() || node.parents[1] >= nodes.len() {
+        return false;
+    }
+    // Bound recursive comparisons before traversing untrusted clause syntax.
+    let mut work: usize = 0;
+    if !charge_certificate_structure(step, &mut work, work_limit)
+        || !charge_clause_structure(&node.clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[1]].clause, &mut work, work_limit)
+    {
+        return false;
+    }
+    if !same_clause_exact(&step.source, &nodes[node.parents[0]].clause)
+        || !same_clause_exact(&step.target, &nodes[node.parents[1]].clause)
+        || !same_clause_exact(&step.conclusion, &node.clause)
+        || !check_superposition_and_replay(step, work_limit)
+    {
+        return false;
+    }
+    proof {
+        assert(view_clause(step.source).literals
+            =~= view_clause(nodes@[node.parents@[0] as int].clause).literals);
+        assert(view_clause(step.target).literals
+            =~= view_clause(nodes@[node.parents@[1] as int].clause).literals);
+        assert(view_clause(step.conclusion).literals =~= view_clause(node.clause).literals);
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            implies local_node_entails_from_parents(*node, nodes@, interp) by {
+            if forall|j: int| 0 <= j < node.parents@.len()
+                ==> clause_valid(view_clause(nodes@[node.parents@[j] as int].clause), interp) {
+                assert(clause_valid(view_clause(step.source), interp));
+                assert(clause_valid(view_clause(step.target), interp));
+                assert(clause_valid(view_clause(step.conclusion), interp));
+            }
+        }
+    }
     true
 }
 
@@ -5748,8 +5964,8 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
             }
 {
     // This structural prototype is deliberately non-certifying. Enforce the
-    // size caps, then return Unknown until input-clause refinement and the
-    // replay-to-local-soundness theorem are proved and connected.
+    // size caps, then return Unknown until the verified local step checker is
+    // connected to a whole-DAG acceptance loop and semantic postcondition.
     if dag.nodes.len() > node_limit || dag.input_clauses.len() > node_limit {
         return DagVerdict::Rejected;
     }

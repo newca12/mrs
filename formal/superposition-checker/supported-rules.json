@@ -19,15 +19,15 @@
     {
       "id": "general-standardized-apart-superposition-semantics",
       "module": "first_order_core.rs",
-      "status": "verified_semantic_theorem_prototype",
-      "description": "Universally closed clause soundness for unordered superposition with independent parent freshening, common simultaneous one-step unifier, whole-parent substitution, and explicit target position; executable acceptance is not yet proved to discharge all theorem premises. See RULE_CONTRACT.md.",
+      "status": "verified_executable_replay_soundness",
+      "description": "Accepted exact ordered replay preserves universal clause validity via standardized_superposition_sound, with independent parent freshening, common simultaneous one-step unifier, whole-parent substitution, arbitrary selected indices and explicit target position. Complete hygiene/resource refinement remains open. See RULE_CONTRACT.md.",
       "production_certification": false
     },
     {
       "id": "proof-dag-refutation",
       "module": "first_order_core.rs",
       "status": "inconclusive_structural_prototype",
-      "description": "A conditional semantic DAG theorem exists. The structural entry point returns Inconclusive for in-budget inputs and cannot certify.",
+      "description": "A conditional semantic DAG theorem and a verified executable local superposition-step checker exist. The structural entry point returns Unknown for in-budget inputs and cannot certify; whole-DAG acceptance-loop integration remains open.",
       "production_certification": false
     }
   ],
@@ -35,7 +35,7 @@
     "term_constructors": ["variable", "constant", "unary_function", "binary_function"],
     "atom_constructors": ["predicate_arity_0", "predicate_arity_1", "predicate_arity_2", "equality"],
     "variable_arity_functions": false,
-    "general_clause_replay": false,
+    "general_clause_replay": true,
     "ordered_calculus_conditions": false,
     "ac_reasoning": false,
     "tstp_parser": false,

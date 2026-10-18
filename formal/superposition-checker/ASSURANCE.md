@@ -5,19 +5,21 @@
 The pinned `verify.sh` run verifies the listed Verus specifications, proofs, and
 executable refinements. `first_order_core.rs` includes a universally closed
 semantic superposition theorem for standardized parents and a proposed common
-unifier, plus executable term/literal/clause replay prototypes. The executable
-certificate checker is **not yet proved to establish every premise of that
-theorem**, so this project currently makes no general production-certification
-claim. The ground-unit checker and fixed two-literal schema are narrower
-verified artifacts. `check_dag_structure` returns `Inconclusive` for every
+unifier. Successful `check_superposition_and_replay` now establishes the semantic
+premises and proves universal validity preservation for its exact conclusion.
+`check_dag_superposition_step` checks the certificate against its cited parent
+nodes and conclusion and proves local entailment from universally valid parents.
+The ground-unit checker and fixed two-literal schema are narrower verified
+artifacts. `check_dag_structure` returns `Unknown` for every
 in-budget graph and is not a proof checker.
 
 The machine-readable support declaration is
 [`supported-rules.json`](supported-rules.json). Unsupported rules and
 unimplemented paths must not be treated as certified.
 The intended rule premises and substitution convention are documented in
-[`RULE_CONTRACT.md`](RULE_CONTRACT.md); specifying the contract does not close
-the executable-replay refinement gap.
+[`RULE_CONTRACT.md`](RULE_CONTRACT.md). Whole-DAG acceptance, complete
+hygiene/resource refinement, and production integration remain open; no
+production-certification claim is made.
 
 ## Trusted computing base
 
@@ -50,10 +52,11 @@ toolchains, verifier version/output, source-audit result, and per-module verific
 uploads that log even when a later gate fails. Local verification does not
 retain a build artifact unless `VERUS_LOG` is set.
 
-The verification gate also runs four mutation-negative checks: omitting
+The verification gate also runs six mutation-negative checks: omitting
 substitution from executable literal replay, ignoring literal polarity,
 replacing selected-position lookup with root lookup, and omitting the rewritten
-target clause from resolvent construction. Each mutated temporary source must
+target clause from resolvent construction, skipping DAG-step replay, and ignoring
+the cited source parent. Each mutated temporary source must
 fail Verus verification. This samples key executable/model refinement
 contracts; it is not comprehensive threat-model coverage.
 

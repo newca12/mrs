@@ -74,10 +74,16 @@ ordered-calculus maximality is a soundness premise here.
 ## Prototype boundary
 
 The executable checker validates the finite syntax, hygiene conditions,
-supplied unifier equation, selected path, and exact replayed conclusion. It
-does **not yet prove** that every accepted executable certificate establishes
-all premises of the semantic theorem. This contract is therefore a
-specification target, not a general certification claim. The bridge, a
-conclusion comparison modulo proved clause equivalences, an MRS interchange
-format, and c502 analysis remain open. See `ASSURANCE.md` and
+supplied unifier equation, selected path, and exact replayed conclusion.
+`replay_semantic_premises` now exposes the semantic premises on successful
+checking, and `accepted_replay_preserves_validity` connects exact replay to
+`standardized_superposition_sound`. The executable replay API postconditions
+universal validity preservation. `check_dag_superposition_step` additionally
+binds the certificate to its cited nodes and proves local DAG entailment.
+
+The DAG contract consumes universally valid parents, not their truth at one
+valuation, because substitutions can select different parent instances.
+Whole-DAG acceptance, complete hygiene/resource refinement, conclusion comparison
+modulo proved clause equivalences, an MRS interchange format, and c502 analysis
+remain open. See `ASSURANCE.md` and
 `supported-rules.json` for the current claim boundary.

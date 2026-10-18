@@ -37,8 +37,9 @@ and machine-readable supported-slice declaration.
 
 It also runs `mutation-check.py`: temporary copies of the first-order core omit
 literal substitution, ignore literal polarity, replace selected-position
-lookup with root lookup, or omit appending the rewritten target clause. The
-verification gate requires Verus to reject all four broken refinements. The
+lookup with root lookup, omit appending the rewritten target clause, skip DAG-step
+replay, or ignore its cited source parent. The
+verification gate requires Verus to reject all six broken refinements. The
 source tree is not modified by these negative checks.
 
 The checks use Verus `0.2026.10.04.426d8b0` (the latest published release).
@@ -47,7 +48,7 @@ Verus `main` currently declares Rust `1.99.1`, matching
 but this release binary reports its effective toolchain as Rust `1.98.1` and
 overrides the request. The verification log records both. Verus uses its
 bundled Z3. Results:
-`5 verified, 0 errors` for the original pilot, `162 verified, 0 errors` for
+`5 verified, 0 errors` for the original pilot, `186 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
 
@@ -57,8 +58,18 @@ The current general replay prototype's intended rule is stated explicitly in
 [`RULE_CONTRACT.md`](RULE_CONTRACT.md). It uses unordered superposition with
 independent standardization-apart maps, a supplied simultaneous one-step
 unifier, whole-parent substitution, and exact ordered conclusion comparison.
-The executable checker and semantic theorem are not yet connected by a proved
-end-to-end refinement theorem.
+`check_superposition_and_replay` now proves that acceptance preserves universal
+clause validity, through `accepted_replay_preserves_validity` and
+`standardized_superposition_sound`. The bridge removes the selected literal at
+arbitrary parent indices, preserves both substituted contexts, and transfers
+their truth into the exact executable conclusion order, including duplicates.
+`check_dag_superposition_step` binds the certificate to its actual two cited
+parents and conclusion and proves `local_node_entails_from_parents`.
+
+The local DAG contract consumes universally valid parents: truth at a single
+valuation is insufficient for an inference that instantiates variables.
+Whole-DAG acceptance is still non-certifying (`Unknown`); connecting the step
+checker into a verified graph acceptance loop and the production adapter remains.
 
 `first_order_core.rs` adds recursive first-order terms and formal,
 simultaneous-substitution semantics. It includes executable term copying,
@@ -96,10 +107,10 @@ Verus `0.2026.10.04.426d8b0` is pinned in
 [`verus-toolchain.json`](verus-toolchain.json); CI downloads and checksum-checks
 the corresponding Linux binary. CI runs this as a regular required project
 check. See [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md)
-for the staged scope. Next proof obligations are the executable/model
-refinement, substitution semantics under valuations, standardization-apart, a
-complete MGU certificate checker, and a clause-level superposition entailment
-theorem. In standard first-order semantics, target variables may be
+for the staged scope. Remaining obligations include complete hygiene/resource
+refinement, whole-DAG acceptance, and production integration. The supplied
+substitution checker establishes equality of instances, not MGU computation.
+In standard first-order semantics, target variables may be
 instantiated as part of a general unifier if the substitution is consistently
 applied to all relevant parent literals. Any stricter policy must be justified
 as a rule restriction, not assumed to be necessary for soundness.
@@ -145,9 +156,9 @@ application—which is unsound—from target-variable instantiation itself.
 This semantic observation does not certify every AC or archived inference in
 MRS: the unifier must be valid for the declared theory, the substitution must
 be applied consistently, and all other rule conditions must hold. The current
-Verus example in `first_order_core.rs` proves one constrained instance, not the
-general theorem; the general substitution/valuation argument and the status of
-archived c502 still require formal analysis. The production implementation may
+general replay theorem in `first_order_core.rs` now proves the ordinary
+substitution/valuation argument; the status of archived c502 still requires
+formal analysis. The production implementation may
 retain rigidity as a conservative rule restriction, but its justification
 should be completeness/coverage or implementation scope—not necessity for
 soundness of ordinary superposition.

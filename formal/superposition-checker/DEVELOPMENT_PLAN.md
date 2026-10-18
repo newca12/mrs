@@ -1,6 +1,6 @@
 # Verus superposition checker: development plan
 
-## Implementation status (2026-10-17)
+## Implementation status (2026-10-18)
 
 **Status key:** `DONE` = deliverable and its stated acceptance gate are complete;
 `PARTIAL` = an explicitly narrower slice exists and verifies, but the milestone
@@ -13,16 +13,16 @@ the item itself is explicitly marked `ABANDONED`.
 | Milestone | Status | Implemented evidence / remaining gate |
 |---|---|---|
 | M0 — Verus baseline and environment | **PARTIAL** | Verus release and Linux x86_64 SHA-256 are pinned; the requested Rust toolchain follows `verus-lang/verus` `main`'s `rust-toolchain.toml` (currently `1.99.1`). The latest published Verus release (`0.2026.10.04.426d8b0`) still bundles/requires Rust `1.98.1`; `verify.sh` now records both requested and effective toolchains rather than hiding the override. The installer and verifier scripts read the JSON pin with Python rather than requiring `jq`. The full `verify.sh` run passes. The escape-hatch audit is part of the script. `mutation-check.py` requires Verus to reject three executable/model mutations. Remaining: build/test a current Verus `main` binary with the Rust `1.99.1` toolchain, broader mutation coverage, and audit ignored proof obligations. |
-| M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` proves parent validity survives independent standardization substitutions, a standardized-parent superposition step is semantically sound, and its resolvent clause (source context + target context + rewritten literal) is valid. `RULE_CONTRACT.md` specifies the prototype's unordered rule, freshness, simultaneous-substitution convention, and exact resolvent order. Remaining: bind accepted executable certificates to theorem premises and independently review whether the chosen unordered contract is appropriate for the eventual MRS interchange boundary. |
+| M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` proves parent validity survives independent standardization substitutions and connects accepted general replay to `standardized_superposition_sound` through `accepted_replay_preserves_validity`. Arbitrary selected indices and duplicate-preserving contexts are covered. `RULE_CONTRACT.md` specifies the prototype's unordered rule. Remaining: independent review of the calculus/interchange boundary. |
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. Collector exactness now composes with independent freshening-scan postconditions to prove variable-valued images throughout each parent, and accepted certificates expose `renames_variables_on` for every parent literal. The replay conclusion builder has a verified pointwise sequence contract; term replacement is proved to commute with substitution at valid positions and is lifted through atom/literal slots. Collector-to-exec-set correspondence, complete hygiene/position refinement, and cumulative resource accounting remain open. |
-| M3 — Superposition checker | **PARTIAL** | Ground/fixed-schema checkers remain; the general replay API requires identical raw/freshened target paths, injective variable-only freshening maps with disjoint images, supplied-unifier equality, whole-parent substitution, source-equality deletion and exact ordered binary-resolvent comparison. `check_superposition_and_replay` postconditions exact equality with `expected_superposition_conclusion`; accepted step checks postcondition the selected target position, instantiated source/target term equation, and successful rewritten-literal construction in the mathematical views. This provides the local step premises more directly, but parent-context validity/resolvent composition into `standardized_superposition_sound` remains incomplete. A mutation gate removes the target-resolvent append and must fail verification. Equivalence modulo literal order/renaming, calculus restrictions, and c502 remain. |
-| M4 — Proof-DAG validation | **PARTIAL** | Added finite proof graph types and a conditional induction theorem from locally entailing steps to input entailment. The public structural entry point returns `Unknown` for structurally in-budget graphs only when the claimed root is empty; it cannot certify a graph. Its fail-closed scan bounds aggregate nodes, input clauses, parent edges, literal counts, and clause-term structure, including all superposition certificate inputs; it requires exactly two parent edges for superposition, checks references are in-range and topologically earlier, and rejects unsupported node kinds, input nodes with parents, superposition nodes without step certificates, duplicate node IDs, non-member input leaves, and non-empty roots. It also compares every superposition certificate's source, target and conclusion against the cited DAG nodes exactly, with no literal-order normalization. ID uniqueness and exact input-leaf membership scans are charged against the cumulative structural-work budget; accepted preflight shape facts include these validations. Local node soundness and a verified DAG acceptance postcondition remain. |
+| M3 — Superposition checker | **PARTIAL** | `check_superposition_and_replay` now postconditions both exact ordered conclusion equality and universal validity preservation for accepted general certificates. `replay_semantic_premises` connects checked source equality, selected target occurrence, unifier equation and replacement to `standardized_superposition_sound`. Context deletion/substitution and exact conclusion-order composition are proved. Equivalence modulo literal order/renaming, complete hygiene/resource refinement, calculus restrictions, and c502 remain. |
+| M4 — Proof-DAG validation | **PARTIAL** | Finite proof graph types, bounded structural validation and a conditional semantic induction theorem exist. `check_dag_superposition_step` now binds certificates to cited parent/conclusion nodes and proves local entailment from universally valid parents. Mutation gates reject skipping replay and ignoring a cited parent. The structural entry point still returns `Unknown`; a verified whole-DAG acceptance loop/postcondition remains. |
 | M5 — MRS integration | **TODO** | The Verus executable is not called by `mrs-proof-kernel`; no interchange format or production adapter exists. |
 | M6 — Broader rules | **TODO** | Resolution, AC, demodulation, transformations, and AVATAR/LRAT are not implemented in the Verus checker. |
 | M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB/re-audit note, and a CI audit for `assume`, `admit`, and external-body/allow escape hatches. CI now uploads a Verus evidence log with source commit, binary hash, toolchain, and proof output. Mutation corpus, supported proof corpus, reproducible production artifact, and release gates remain. |
 
 **What is DONE now:** the pinned local command `formal/superposition-checker/verify.sh`
-passes all four Verus files (currently `5`, `162`, `5`, and `5` verified functions respectively),
+passes all four Verus files (currently `5`, `186`, `5`, and `5` verified functions respectively),
 and the existing Rust regression `rejects_swv406_c502_archived_target_specialization`
 passes. These results establish only the current narrow verified artifacts; they
 do not complete M0–M3 or decide c502.
@@ -381,7 +381,7 @@ Avoid relying on a parser that silently drops unsupported constructs.
   exposes that property for both parents as independent acceptance
   postconditions. The compatibility wrapper delegates to this same verified
   freshening path. This resolves the finite-map/collector caller blocker;
-  position replay and the full local-soundness theorem connection remain open.
+  the accepted position/unifier and local-soundness bridge is now proved below.
 - **PARTIAL:** bounded variable collection and finite freshening checks now
   exist. They reject absent/non-variable mappings, mapped IDs in the avoid set,
   non-injective images, mismatched raw/freshened target paths, and explicit work
@@ -404,8 +404,8 @@ Avoid relying on a parser that silently drops unsupported constructs.
   postconditions that an accepted conclusion's literal sequence agrees with
   executable replay in the mathematical literal view. The specification
   `expected_superposition_conclusion` describes the selected source equality
-  removal and rewritten target literal in order, but replay-to-specification is
-  not yet proved. The certificate checker rejects before path comparison when
+  removal and rewritten target literal in order, and replay-to-specification is
+  proved. The certificate checker rejects before path comparison when
   the aggregate sizes of its parent literal vectors, freshening maps, unifier,
   and raw/fresh paths exceed the work limit, and successful acceptance exposes
   that bound as a postcondition. Duplicate-domain validation rejects before
@@ -414,14 +414,13 @@ Avoid relying on a parser that silently drops unsupported constructs.
   and conclusion literal counts before materializing standardized clauses and
   its output. A structural traversal additionally caps the aggregate nodes in
   parent/conclusion terms and substitution replacements before replay. Work
-  across separate checks and derived replay is not cumulatively accounted; a
-  direct local-soundness theorem connection also remains, so this is not a
-  certifying API yet.
-- **PARTIAL, proof connection:** the replay refuses target paths that differ
-  before/after standardization, and a verified lemma states the selected term
-  transforms by the same variable-only renaming. The full accepted-result to
-  theorem-premise refinement remains, especially for unifier application,
-  resolvent construction, and clause equivalence.
+  across separate checks and derived replay is not cumulatively accounted.
+  Local semantic soundness is now proved; whole-DAG certification remains open.
+- **DONE, semantic proof connection:** the replay refuses target paths that differ
+  before/after standardization. `replay_semantic_premises` connects checked
+  unifier application and replacement to the theorem. Arbitrary-index parent
+  contexts and exact resolvent composition complete accepted-result soundness.
+  Comparison modulo additional clause equivalences remains unsupported.
 - **DONE, ordered binary-clause contract:** the semantic theorem proves validity
   of the exact concatenation `source-context ++ target-context ++ rewritten
   target-literal`. The current checker compares this literal sequence exactly;
@@ -479,7 +478,7 @@ Avoid relying on a parser that silently drops unsupported constructs.
   cycles/occurs-check failures, and variable-ID collisions before/after
   standardization apart.
 
-### M3 — Prove and implement the superposition checker (**PARTIAL: ground unit slice only**)
+### M3 — Prove and implement the superposition checker (**PARTIAL: general replay soundness proved**)
 
 **Current status**
 
@@ -491,10 +490,10 @@ Avoid relying on a parser that silently drops unsupported constructs.
   script/CI gate as distinct modules.
 - **PARTIAL:** executable term trees, supplied unifiers, non-unit clauses,
   arbitrary selected target paths, whole-clause substitution and conclusion
-  construction now exist. Still needed: standardized-apart variables wired into
-  the checker, source/path conditions, exact calculus ordering contract, an
-  end-to-end theorem that discharges the checker premises, comparison modulo
-  permitted clause equivalences, and c502 replay.
+  construction now exist, with an end-to-end validity-preservation postcondition
+  proved via `standardized_superposition_sound`. Still needed: full hygiene and
+  cumulative resource refinement, calculus boundary review, comparison modulo
+  permitted clause equivalences, broader certificate fixtures, and c502 replay.
 
 **Deliverables**
 
@@ -506,9 +505,8 @@ Avoid relying on a parser that silently drops unsupported constructs.
   form the resolvent/union of remaining literals. The base rule should use
   standardized-apart unification; a rigid-target variant, if retained, is a
   separately specified restricted rule.
-- A central soundness theorem for that exact rule: for every model and
-  valuation, if both standardized-apart parent clauses hold, then the checked
-  conclusion holds.
+- A central soundness theorem for that exact rule: in every interpretation,
+  universal validity of both parents implies validity of the checked conclusion.
 - Verified executable replay for superposition certificates, including checks for
   parent roles, selected literals, positions, polarity, orientation, variable
   hygiene, conclusion construction, and exact comparison modulo the explicitly
@@ -516,8 +514,10 @@ Avoid relying on a parser that silently drops unsupported constructs.
 
 **Central theorem**
 
-For every interpretation and valuation, if both standardized-apart parent
-clauses hold, then the clause produced by an accepted superposition step holds.
+For every interpretation, if both universally closed parent clauses are valid,
+then the clause produced by an accepted superposition step is valid. Parent
+truth at just one valuation is insufficient when the supplied unifier
+instantiates variables.
 Prove this from the semantic definitions; do not
 encode it as an assumption or restate an implementation guard as the theorem.
 The proof must explicitly settle whether target variables may be instantiated
@@ -536,9 +536,10 @@ freshness conditions must also be justified by the calculus contract.
 - **DONE for the ground unit fragment:** the checker accepts a correctly
   shaped step and rejects forged predicate/target fields; its executable
   postcondition and local model-soundness lemma verify.
-- **TODO for the planned general checker:** variable-bearing and multi-literal
-  positive/negative certificates, term-position replay, substitution across all
-  target literals, general semantic soundness, and c502 analysis.
+- **DONE for general semantic soundness:** accepted exact replay preserves
+  universal validity, including whole-parent substitution and arbitrary positions.
+- **TODO:** broader variable-bearing/multi-literal positive/negative certificate
+  fixtures, complete hygiene/resource refinement, and c502 analysis.
 - The superposition checker is the named primary artifact: the specification,
   proof obligations, executable API, and test suite are all organized around
   accepting/rejecting one superposition step.
@@ -575,9 +576,11 @@ freshness conditions must also be justified by the calculus contract.
 - **DONE, conditional semantic theorem:** induction over topologically ordered
   nodes proves validity from valid inputs given `local_node_entails_from_parents`
   for every inference node; an empty root then implies unsatisfiability.
-- **TODO — DIFFICULT:** establish a refinement theorem from successful local
-  replay to `local_node_entails_from_parents`; finish exact input-clause
-  comparison; define a machine-checked DAG validation postcondition and connect
+- **DONE:** `check_dag_superposition_step` binds source/target/conclusion to cited
+  nodes, runs verified replay, and proves `local_node_entails_from_parents`.
+  The local contract uses universal validity, matching the induction hypothesis.
+  Mutation gates reject skipping replay and ignoring the cited source parent.
+- **TODO — DIFFICULT:** define a machine-checked DAG validation postcondition and connect
   the structural traversal to the conditional semantic induction. Structural
   acceptance alone does not certify a proof.
 
@@ -785,24 +788,25 @@ satisfiability/model claims, and unrestricted full TSTP.
   standardization-apart before widening the checker (M2). The collector-exactness
   to model-variable freshening bridge now composes with the executable scan,
   and accepted certificates expose the domain-restricted renaming premise for
-  every parent literal. The complete position/resolvent soundness bridge remains.
+  every parent literal. The semantic position/resolvent soundness bridge is proved;
+  complete hygiene/resource refinement remains.
 - [x] Specify and prove recursive term substitution/evaluation and lift it to
   atom/literal/clause preservation under total interpretation/valuation domains
   (M1 semantic foundation).
-- [ ] Connect accepted replay end-to-end to the existing general ordinary
+- [x] Connect accepted replay end-to-end to the existing general ordinary
   superposition soundness theorem and extend the checker beyond ground-unit
-  clauses (M1–M3; the semantic theorem exists, while executable refinement is
-  still incomplete).
+  clauses (M1–M3). `accepted_replay_preserves_validity` composes the checked
+  premises and arbitrary-index contexts with the general semantic theorem.
 - [x] Prove the general replay constructor's exact ordered resolvent shape and
   expose equality with `expected_superposition_conclusion` on successful
   replay. This connects the executable construction and conclusion comparison;
-  the selected-path/unifier-to-semantic-premise connection remains open.
+  the selected-path/unifier-to-semantic-premise connection is now proved.
 - [x] Prove that a successful explicit term position remains valid after an
   arbitrary simultaneous substitution and that the selected term is transformed
   by that substitution. This removes the false assumption that position
   preservation requires variable-only renaming; the lemma is now lifted through
   atoms and polarity-preserving literal substitution. Certificate-to-theorem
-  composition remains open.
+  composition is now proved.
 - [x] Expose certificate source/target term aliases on successful checker
   acceptance, including the freshened source equality argument, the raw target
   occurrence, and its unifier instance. These postconditions connect executable
@@ -818,7 +822,7 @@ satisfiability/model claims, and unrestricted full TSTP.
   along a valid path, then lift this equality through predicate/equality atom
   slots and literal polarity. General certificate acceptance now exposes the
   semantic selected occurrence and successfully constructed rewrite as explicit
-  postconditions. Parent-context/resolvent theorem composition remains.
+  postconditions. Parent-context/resolvent theorem composition is now proved.
 - [x] Expose the accepted rewritten literal itself in the semantic views of the
   certificate source equality and target clause, so the right-side instantiation
   used by executable replay is tied to the theorem-facing selected literal.
@@ -827,19 +831,19 @@ satisfiability/model claims, and unrestricted full TSTP.
   term.
 - [x] Add a semantic-context split lemma for any accepted exact resolvent
   sequence, exposing the non-equality source context and non-selected target
-  context lengths. Literal-sequence decomposition into these context clauses
-  remains unproved.
-- [ ] Prove that each parent-context concatenation is a subsequence of the
+  context lengths. `parent_context_facts` and explicit index witnesses now
+  connect these contexts to the exact conclusion.
+- [x] Prove that each parent-context concatenation is a subsequence of the
   exact executable conclusion and compose that decomposition with clause
-  validity to invoke the general semantic superposition theorem. This remains
-  the local soundness theorem gap.
+  validity to invoke the general semantic superposition theorem. Explicit index
+  witnesses transfer both contexts and the rewritten literal to the conclusion.
 - [x] Prove the clause validity disjunction principle for context concatenation
   under universal valuations, and add an executable-refinement lemma that a
   successfully replayed literal replacement is defined in the mathematical
   target literal after whole-literal substitution.
 - [x] Derive exact rewrite-term agreement from the accepted source equality's
   executable RHS mapping. (Replacement existence is covered by the checker
-  postcondition; extending this to semantic clause entailment remains open.)
+  postcondition; semantic clause entailment is now proved.)
 - [x] Prove the singleton rewrite consequence from positive source and target
   unit clauses for the ground identity-unifier case. This confirms the local
   semantic basis, but does not yet handle non-empty contexts or checked
@@ -855,9 +859,12 @@ satisfiability/model claims, and unrestricted full TSTP.
 - [x] Prove the sequence identity for deleting one indexed source literal and
   reinserting the target clause with one selected literal rewritten (the
   rewrite's contents are abstracted in this width/decomposition helper).
-- [ ] Connect the fully replayed resolvent to `standardized_superposition_sound`
+- [x] Connect the fully replayed resolvent to `standardized_superposition_sound`
   and prove `local_node_entails_from_parents` for a successful DAG step. This is
-  still the active formal blocker to making any graph certify.
+  discharged by `accepted_replay_preserves_validity` and the executable
+  `check_dag_superposition_step`. The local contract now correctly consumes
+  universally valid parent clauses, rather than parent truth at one valuation.
+  Whole-DAG acceptance-loop integration remains a separate gate.
 - [x] Add a verifier-negative mutation that omits the rewritten target clause
   from the executable resolvent builder; the central constructor postcondition
   makes Verus reject the mutation.
