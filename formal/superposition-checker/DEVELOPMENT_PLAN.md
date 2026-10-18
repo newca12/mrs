@@ -12,20 +12,21 @@ the item itself is explicitly marked `ABANDONED`.
 
 | Milestone | Status | Implemented evidence / remaining gate |
 |---|---|---|
-| M0 — Verus baseline and environment | **PARTIAL** | Verus release and Linux x86_64 SHA-256 are pinned; the requested Rust toolchain follows the release's `rust-toolchain.toml` (`1.99.1`). The pinned release is `0.2026.10.18.7d82994`; `verify.sh` records both requested and effective toolchains. The installer and verifier scripts read the JSON pin with Python rather than requiring `jq`. The full `verify.sh` run passes. The escape-hatch audit is part of the script. `mutation-check.py` requires Verus to reject three executable/model mutations. Remaining: broader mutation coverage and audit ignored proof obligations. |
-| M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` proves parent validity survives independent standardization substitutions and connects accepted general replay to `standardized_superposition_sound` through `accepted_replay_preserves_validity`. Arbitrary selected indices and duplicate-preserving contexts are covered. `RULE_CONTRACT.md` specifies the prototype's unordered rule. Remaining: independent review of the calculus/interchange boundary. |
-| M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. Collector exactness now composes with independent freshening-scan postconditions to prove variable-valued images throughout each parent, and accepted certificates expose `renames_variables_on` for every parent literal. The replay conclusion builder has a verified pointwise sequence contract; term replacement is proved to commute with substitution at valid positions and is lifted through atom/literal slots. Collector-to-exec-set correspondence, complete hygiene/position refinement, and cumulative resource accounting remain open. |
-| M3 — Superposition checker | **PARTIAL** | `check_superposition_and_replay` now postconditions both exact ordered conclusion equality and universal validity preservation for accepted general certificates. `replay_semantic_premises` connects checked source equality, selected target occurrence, unifier equation and replacement to `standardized_superposition_sound`. Context deletion/substitution and exact conclusion-order composition are proved. A bounded executable certificate accepts archived `SWV406+1:c502` and rejects a forged conclusion. Full TSTP translation/proof-DAG replay, equivalence modulo literal order/renaming, complete hygiene/resource refinement, and independent calculus review remain. |
+| M0 — Verus baseline and environment | **PARTIAL** | Verus release and Linux x86_64 SHA-256 are pinned; the requested Rust toolchain follows the release's `rust-toolchain.toml` (`1.99.1`). The pinned release is `0.2026.10.18.7d82994`; `verify.sh` records both requested and effective toolchains. The installer and verifier scripts read the JSON pin with Python rather than requiring `jq`. The full `verify.sh` run passes. The escape-hatch audit is part of the script. The gate requires rejection of sixteen verifier-negative mutations and one compiled-runtime mutation. Remaining: broader mutation coverage and audit ignored proof obligations. |
+| M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` proves parent validity survives independent standardization substitutions and connects accepted general replay to `standardized_superposition_sound` through `accepted_replay_preserves_validity`. Arbitrary selected indices and duplicate-preserving contexts are covered. `RULE_CONTRACT.md` specifies the prototype's unordered rule, whole-parent simultaneous one-step substitution and selected position. Remaining: independent review of the calculus/interchange boundary. |
+| M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. Collector exactness now composes with independent freshening-scan postconditions to prove variable-valued images throughout each parent, and accepted certificates expose `renames_variables_on` for every parent literal. The replay conclusion builder has a verified pointwise sequence contract; term replacement is proved to commute with substitution at valid positions and is lifted through atom/literal slots. Remaining: broader adversarial hygiene/position refinement, exact cumulative resource accounting and larger-arity generalization. |
+| M3 — Superposition checker | **PARTIAL** | `check_superposition_and_replay` postconditions both exact ordered conclusion equality and universal validity preservation for accepted general certificates. `replay_semantic_premises` connects checked source equality, selected target occurrence, unifier equation and replacement to `standardized_superposition_sound`. Context deletion/substitution and exact conclusion-order composition are proved. Bounded executable certificates accept archived `SWV406+1:c502` and a source-variable binding case, rejecting forged conclusions. Full TSTP fixture translation/proof-DAG replay, equivalence modulo literal order/renaming, exact cumulative resource refinement, and independent calculus review remain. |
 | M4 — Proof-DAG validation | **PARTIAL** | `certify_dag` returns `Certified` with `dag_inputs_unsatisfiable`, proving no well-formed interpretation satisfies the supplied universally closed IR inputs. DAG dispatch supports input, superposition and positive-left/negative-right nullary-predicate resolution nodes. Accepted resolution replay postconditions universal validity preservation; `check_dag_resolution_step` binds it to cited parents and the node conclusion, and the generic induction consumes local entailment for both rules. Compiled unit and multi-step resolution refutations certify without empty inputs. `check_root_ancestor_closure` rejects every disconnected node and returns `Unknown` on bounded traversal exhaustion. The certifier partitions work across structural preflight, closure and per-node validation; within a node, parent-edge checks and local replay share the assigned node budget. Remaining: exact accounting inside recursive local replay helpers, production input adapter and broader rules/fixtures. |
 | M5 — MRS integration | **TODO** | The Verus executable is not called by `mrs-proof-kernel`; no interchange format or production adapter exists. |
 | M6 — Broader rules | **PARTIAL** | Nullary-predicate resolution is verified and DAG-dispatched; c502 is now additionally replayed as a local general superposition example. General first-order resolution, AC, demodulation, transformations, and AVATAR/LRAT remain unimplemented. |
 | M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB/re-audit note, and a CI audit for `assume`, `admit`, and external-body/allow escape hatches. CI now uploads a Verus evidence log with source commit, binary hash, toolchain, and proof output. Mutation corpus, supported proof corpus, reproducible production artifact, and release gates remain. |
 
 **What is DONE now:** the pinned local command `formal/superposition-checker/verify.sh`
-passes all four Verus files (currently `5`, `204`, `5`, and `5` verified functions respectively),
-and the existing Rust regression `rejects_swv406_c502_archived_target_specialization`
-passes. These results establish only the current narrow verified artifacts; they
-do not complete M0–M3 or decide c502.
+passes all four Verus files (currently `5`, `219`, `5`, and `5` verified functions
+respectively), the compiled runtime fixtures pass, and all mutation gates pass.
+The general replay accepts the manually encoded local c502 step with its semantic
+validity-preservation theorem. These results establish the implemented bounded
+artifacts, not a parsed TSTP proof or production-integrated certificate.
 
 The detailed milestone text below is the target specification. A milestone is
 not complete merely because a related prototype exists; update this ledger and
@@ -224,9 +225,22 @@ Avoid relying on a parser that silently drops unsupported constructs.
   and valuation. The selected occurrence is now identified by argument slot
   plus an explicit binary child-index path. This is specification-level; bounded
   executable parsing/refinement remains M2 work.
-- **TODO — DIFFICULT:** finish the exact ordinary superposition rule contract
-  and bind the semantic theorem to a checked certificate (including exact
-  position, variable hygiene, orientation, and any ordered-calculus conditions).
+- **DONE, mathematical rule/soundness slice:** `RULE_CONTRACT.md` defines the
+  prototype's unordered ordinary superposition rule; `standardized_superposition_sound`
+  and `universally_closed_superposition_sound` establish universal validity
+  preservation under separate parent freshenings, a common simultaneous
+  substitution and selected-position replacement. Executable certificate
+  connection exists; independent review of the calculus/interchange boundary,
+  complete hygiene/resource proof and broader conclusion equivalences remain.
+
+**Deliverables completed to the current prototype boundary:** recursive bounded
+terms/atoms/literals/clauses, universal-closure semantics, a non-empty model
+contract with total interpretations, simultaneous one-step substitutions,
+explicit selected positions, independent parent freshenings, whole-parent
+unification application, exact ordered resolvent replay, and a theorem proving
+accepted replay preserves universal validity. Literal permutation/alpha
+normalization, larger arities, a reviewed calculus boundary, and a byte-level
+input format remain outside the current support claim.
 
 **Deliverables**
 
@@ -255,7 +269,7 @@ Avoid relying on a parser that silently drops unsupported constructs.
 - **DONE:** a variable renaming with a two-sided substitution inverse preserves
   clause validity in both directions. Checking the finite renaming certificate
   and freshness policy remains an executable M2 obligation.
-- Substitution application/evaluation lemma: evaluating `t[σ]` under a
+- **DONE:** substitution application/evaluation lemma: evaluating `t[σ]` under a
   valuation agrees with evaluating `t` under the valuation updated by `σ`,
   under stated freshness/domain assumptions.
 - **DONE:** a formal lemma that universal closure entails simultaneous
@@ -270,11 +284,18 @@ Avoid relying on a parser that silently drops unsupported constructs.
   entailment theorem for a proposed simultaneous unifier and explicit target
   argument slot/path. Executable path validation, unifier checking, and
   variable standardization remain outstanding.
-- **TODO:** identify precisely which freshness conditions the inference rule
-  requires and specify the exact calculus, including ordered-calculus
-  conditions. Decide whether rigidity is a soundness condition, a
-  completeness/performance restriction, or a necessary condition of a narrower
-  rule before encoding it.
+- **DONE for prototype contract:** independent renamings are variable-valued on
+  all variables of their respective parents, injective on those domains, and
+  have disjoint image sets; the supplied common one-step substitution must
+  unify the selected terms and is applied to both whole parents. The selected
+  source equality is positive with a non-variable left side. Ordered-calculus
+  selection/maximality restrictions are deliberately excluded from this
+  unordered soundness rule. Independent calculus review and complete executable
+  refinement remain open.
+- The proposed-unifier checker uses the declared simultaneous one-step
+  substitution convention and therefore intentionally does not require an
+  occurs check or recursively closed MGU. Cycle rejection is not a soundness
+  premise for this prototype rule.
 - First-order core now includes universal-clause instance and
   atom/literal/clause substitution-preservation lemmas, plus a small
   ground-source, target-variable superposition-shaped entailment example. It
@@ -540,9 +561,11 @@ freshness conditions must also be justified by the calculus contract.
   postcondition and local model-soundness lemma verify.
 - **DONE for general semantic soundness:** accepted exact replay preserves
   universal validity, including whole-parent substitution and arbitrary positions.
-- **TODO:** broader variable-bearing/multi-literal positive/negative certificate
-  fixtures, complete hygiene/resource refinement, and full c502 proof-context
-  analysis.
+- **DONE for core fixtures:** c502 exercises variable-bearing multi-literal
+  replay and target-side bindings; a separate fixture exercises a source-side
+  variable binding; both exact accepted and forged-conclusion behavior run in
+  the compiled core. Broader adversarial term/renaming corpus, complete
+  hygiene/resource refinement, and full c502 proof-context analysis remain.
 - The superposition checker is the named primary artifact: the specification,
   proof obligations, executable API, and test suite are all organized around
   accepting/rejecting one superposition step.
@@ -566,10 +589,7 @@ freshness conditions must also be justified by the calculus contract.
   to this case as well.
 - **TODO:** translate the complete relevant TSTP proof context losslessly into
   the verified IR and certify c502 through the production-style adapter. Do not
-  infer full proof certification from the local step result. Also verify
-  a small independently derived example where unification instantiates a
-  target variable and the substitution is consistently applied to the entire
-  target clause.
+  infer full proof certification from the local step result.
 - **DONE, source-variable substitution fixture:** the compiled runtime regression
   accepts a step whose unifier binds a standardized source variable to a target
   ground term. Equivalent conclusion literal permutations and alpha-equivalence
@@ -646,8 +666,7 @@ freshness conditions must also be justified by the calculus contract.
   comparisons themselves is still not reflected in the primitive-visit meter.
 - **DONE, zero-share fail-closed guard:** if integer budget partitioning would
   assign no work to a node, `certify_dag` returns `Unknown` before validation.
-  Runtime cases verify that low limits for one- and three-node DAGs do not
-  certify.
+  Runtime cases exercise zero-work exhaustion and non-certification.
 - **DONE, bounded closure regression:** the runtime suite asserts the exact
   closure work threshold for a one-node root graph: budgets below the complete
   traversal return `None`, and the exact complete budget returns `Some(true)`.
@@ -693,6 +712,23 @@ front-end or a separately justified premise transformation.
 - Every unknown/rejected outcome suppresses certification in the caller.
 
 ### M5 — Integrate the verified superposition checker with MRS (**TODO — DIFFICULT**)
+
+**Current status**
+
+- No Rust code calls the Verus-verified executable. `mrs-proof-kernel` handles
+  full parsed FOF/CNF TSTP proofs and many transformations; the current Verus
+  IR handles bounded clauses, superposition and nullary-predicate resolution.
+  A direct replacement would either reject supported kernel cases or risk
+  claiming more coverage than the Verus checker establishes.
+- The Rust strict kernel already independently accepts the archived c502
+  inference as an ordinary whole-parent syntactic superposition instance. The
+  Verus core now also accepts its manually constructed local IR certificate.
+  Neither result means the archived TSTP proof passed through a production
+  adapter.
+- Implementing an adapter in Rust alone would remain a trusted bridge. The
+  initial safe integration target must be shadow/differential reporting only;
+  it cannot upgrade the kernel's theorem verdict until original proof data is
+  losslessly decoded and verified or the adapter is separately refined.
 
 **Deliverables**
 
@@ -818,9 +854,10 @@ Keep bounded testing distinct from unbounded universal proof obligations.
 ## Initial supported-core target
 
 **Status: PARTIAL.** The list below is the intended first release target. The
-general local superposition checker now accepts arbitrary supported executable
-certificates, including c502, but equivalence normalization, complete resource
-refinement and the production interchange boundary remain.
+general local superposition checker now accepts bounded supported executable
+certificates, including c502, but equivalence normalization, exact cumulative
+resource accounting, full fixture decoding and the production interchange
+boundary remain.
 
 The first meaningful release target is a **verified superposition step checker**.
 It does not need to verify an entire prover proof DAG to demonstrate the core
@@ -836,12 +873,12 @@ claim. Its intended supported input is:
 - bounded syntax/certificate sizes with fail-closed `Unknown` behavior.
 
 **Implemented slices:** the ground unit checker and fixed variable schema remain
-separate smoke-test modules. The general executable replay now supports bounded
+separate smoke-test modules. The general executable replay supports bounded
 recursive terms, supplied substitutions, multi-literal clauses and arbitrary
 selected positions, with exact ordered conclusion comparison and a universal
 validity-preservation theorem. It does not yet accept literal permutation or
-alpha-renamed conclusions, and its support still has documented resource and
-hygiene gaps.
+alpha-renamed conclusions, parse archived fixtures, or share an exact cumulative
+operation meter across all helper traversals.
 
 The first end-to-end proof-DAG/refutation checker is a follow-on milestone that
 uses this verified step checker and adds validated input leaves, parent closure,
@@ -870,13 +907,15 @@ satisfiability/model claims, and unrestricted full TSTP.
   domains, wrong instances, and cyclic RHS terms under the explicit one-step
   policy. This is evidence for the supplied-substitution checker, not MGU
   computation or an occurs-check theorem.
-- [ ] Finish constructor-wide executable/model refinement, occurs-check policy,
-  positions, replacement, and
-  standardization-apart before widening the checker (M2). The collector-exactness
-  to model-variable freshening bridge now composes with the executable scan,
-  and accepted certificates expose the domain-restricted renaming premise for
-  every parent literal. The semantic position/resolvent soundness bridge is proved;
-  complete hygiene/resource refinement remains.
+- [x] Finish constructor-wide executable/model refinement for the supported
+  recursive terms, positions, replacement, and standardization-apart (M2). The
+  collector-exactness to model-variable freshening bridge composes with the
+  executable scan, and accepted certificates expose the domain-restricted
+  renaming premise for every parent literal. The semantic position/resolvent
+  soundness bridge is proved.
+- [ ] Complete exact cumulative resource accounting and adversarial
+  hygiene/position refinement. Occurs-check is not needed for the declared
+  simultaneous one-step substitution semantics; it is not an M2 soundness gate.
 - [x] Specify and prove recursive term substitution/evaluation and lift it to
   atom/literal/clause preservation under total interpretation/valuation domains
   (M1 semantic foundation).
