@@ -1230,6 +1230,78 @@ proof fn literal_position_replacement_after_substitution(
     }
 }
 
+proof fn atom_position_replacement_commutes_with_substitution(
+    atom: Atom,
+    sigma: Substitution,
+    slot: nat,
+    position: TermPosition,
+    replacement: Term,
+)
+    requires atom_at_position(atom, slot, position).is_some(),
+        replace_atom_at_position(atom, slot, position, replacement).is_some(),
+    ensures replace_atom_at_position(
+        substitute_atom(atom, sigma), slot, position, apply(replacement, sigma),
+    ) == match replace_atom_at_position(atom, slot, position, replacement) {
+        Some(rewritten) => Some(substitute_atom(rewritten, sigma)),
+        None => None,
+    }
+{
+    match atom {
+        Atom::Pred0(_) => {},
+        Atom::Pred1(p, arg) => {
+            assert(slot == 0);
+            replacement_commutes_with_substitution_at_position(
+                *arg, sigma, position, replacement, 0,
+            );
+        },
+        Atom::Pred2(p, left, right) => {
+            if slot == 0 {
+                replacement_commutes_with_substitution_at_position(
+                    *left, sigma, position, replacement, 0,
+                );
+            } else {
+                assert(slot == 1);
+                replacement_commutes_with_substitution_at_position(
+                    *right, sigma, position, replacement, 0,
+                );
+            }
+        },
+        Atom::Eq(left, right) => {
+            if slot == 0 {
+                replacement_commutes_with_substitution_at_position(
+                    left, sigma, position, replacement, 0,
+                );
+            } else {
+                assert(slot == 1);
+                replacement_commutes_with_substitution_at_position(
+                    right, sigma, position, replacement, 0,
+                );
+            }
+        },
+    }
+}
+
+proof fn literal_position_replacement_commutes_with_substitution(
+    literal: Literal,
+    sigma: Substitution,
+    slot: nat,
+    position: TermPosition,
+    replacement: Term,
+)
+    requires literal_at_position(literal, slot, position).is_some(),
+        replace_literal_at_position(literal, slot, position, replacement).is_some(),
+    ensures replace_literal_at_position(
+        substitute_literal(literal, sigma), slot, position, apply(replacement, sigma),
+    ) == match replace_literal_at_position(literal, slot, position, replacement) {
+        Some(rewritten) => Some(substitute_literal(rewritten, sigma)),
+        None => None,
+    }
+{
+    atom_position_replacement_commutes_with_substitution(
+        literal.atom, sigma, slot, position, replacement,
+    );
+}
+
 proof fn literal_holds_after_equal_subterm_replacement(
     literal: Literal,
     needle: Term,
@@ -4784,6 +4856,17 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
             certificate.target_argument_slot as nat,
             view_position(certificate.target_path@),
         ) == Some(selected_target_subterm_after_freshening(*certificate))
+        && accepted ==> replace_literal_at_position(
+            substitute_literal(
+                substitute_literal(
+                    view_literal(certificate.target.literals@[
+                        certificate.target_literal_index as int]),
+                    view_subst(certificate.target_freshening@)),
+                view_subst(certificate.unifier@)),
+            certificate.target_argument_slot as nat,
+            view_position(certificate.target_path@),
+            selected_rewrite_rhs(*certificate),
+        ).is_some()
         && accepted ==> atom_at_position(
             view_atom(certificate.target.literals@[certificate.target_literal_index as int].atom),
             certificate.target_argument_slot as nat,
@@ -5192,6 +5275,8 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
                 || dag.nodes[i].kind == ProofNodeKind::Superposition
                     && dag.nodes[i].parents@.len() == 2 && dag.nodes[i].step.is_some()
         && verdict == DagVerdict::Unknown ==> forall|i: int, j: int|
+            0 <= i < j < dag.nodes.len() ==> dag.nodes[i].id != dag.nodes[j].id
+        && verdict == DagVerdict::Unknown ==> forall|i: int, j: int|
             0 <= i < dag.nodes.len() && 0 <= j < dag.nodes[i].parents@.len()
             ==> dag.nodes[i].parents@[j] < i as usize
 {
@@ -5218,6 +5303,29 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
         decreases dag.nodes.len() - i
     {
         let node = &dag.nodes[i];
+        let mut prior: usize = 0;
+        while prior < i
+            invariant
+                prior <= i,
+                i <= dag.nodes.len(),
+                structural_work <= literal_limit,
+                forall|j: int| 0 <= j < prior as int
+                    ==> dag.nodes[j].id != node.id,
+            decreases i - prior
+        {
+            if structural_work >= literal_limit {
+                return DagVerdict::Rejected;
+            }
+            structural_work += 1;
+            if dag.nodes[prior].id == node.id {
+                return DagVerdict::Rejected;
+            }
+            prior += 1;
+        }
+        assert forall|j: int| 0 <= j < i as int
+            implies dag.nodes[j].id != node.id by {
+            assert(j < prior as int);
+        }
         if node.kind == ProofNodeKind::Input && node.parents.len() != 0
             || node.kind == ProofNodeKind::Superposition && node.step.is_none()
             || node.kind == ProofNodeKind::Unsupported
