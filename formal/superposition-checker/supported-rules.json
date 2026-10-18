@@ -51,6 +51,7 @@
     "dag_closure_work_bounded": true,
     "dag_work_budget_partitioned_by_phase_and_node": true,
     "dag_parent_validation_charged_to_node_budget": true,
+    "dag_zero_per_node_budget_fails_closed": true,
     "dag_exact_cumulative_replay_work": false,
     "dag_resolution_nullary": true,
     "standalone_resolution_nullary": true,

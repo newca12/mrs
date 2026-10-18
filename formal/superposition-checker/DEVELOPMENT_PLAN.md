@@ -639,6 +639,10 @@ freshness conditions must also be justified by the calculus contract.
   superposition/resolution checker. Deep helper calls still use local bounded
   counters rather than one shared mutable meter; the exact sum of all primitive
   visits remains unproved.
+- **DONE, zero-share fail-closed guard:** if integer budget partitioning would
+  assign no work to a node, `certify_dag` returns `Unknown` before validation.
+  Runtime cases verify that low limits for one- and three-node DAGs do not
+  certify.
 - **DONE, bounded closure regression:** the runtime suite asserts the exact
   closure work threshold for a one-node root graph: budgets below the complete
   traversal return `None`, and the exact complete budget returns `Some(true)`.
@@ -948,7 +952,7 @@ satisfiability/model claims, and unrestricted full TSTP.
 - [x] Compose accepted resolution replay with local DAG entailment and the
   generic induction, certifying nontrivial empty-root IR refutations with
   nullary-predicate resolution. Production TPTP integration remains open.
-- [x] Require every proof-DAG node to be in the root's ancestor closure, with
+  - [x] Require every proof-DAG node to be in the root's ancestor closure, with
   bounded traversal work and rejection/inconclusive runtime regressions (M4).
 - [x] Encode the exact `SWV406+1:c502` parents/conclusion as a verified local
   certificate; establish that the whole-parent substitution is consistent and

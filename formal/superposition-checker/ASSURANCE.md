@@ -26,6 +26,8 @@ use distinct local counters; this is not yet exact cumulative instruction/work
 accounting. Within each node, parent-edge validation and clause structure are
 charged before the remaining node share is passed into the local rule checker.
 Nested helper traversals still have separate local budgets.
+Budget division that would leave a node with a zero share returns inconclusive
+before any node can be certified.
 
 This certifies the supplied IR input clauses, not a parsed TPTP problem.
 Nullary-predicate resolution is DAG-dispatched in addition to superposition.

@@ -6313,6 +6313,10 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
         return DagVerdict::Rejected;
     }
     if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() { return DagVerdict::Rejected; }
+    if node_limit < 3 || dag.nodes.len() > node_limit / 3 { return DagVerdict::Unknown; }
+    if dag.input_clauses.len() > node_limit - dag.nodes.len() {
+        return DagVerdict::Unknown;
+    }
     if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() { return DagVerdict::Rejected; }
     if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() { return DagVerdict::Rejected; }
     if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() {
@@ -6597,6 +6601,7 @@ fn certify_dag(dag: &ProofDag, node_limit: usize, work_limit: usize) -> (verdict
     let closure_budget = work_limit / 3;
     let node_validation_budget = work_limit - structural_budget - closure_budget;
     let per_node_budget = node_validation_budget / dag.nodes.len();
+    if per_node_budget == 0 { return DagVerdict::Unknown; }
     if check_dag_structure(dag, node_limit, structural_budget) == DagVerdict::Rejected {
         return DagVerdict::Rejected;
     }
@@ -6722,6 +6727,7 @@ fn executable_dag_certification_examples() -> bool {
     dag.input_clauses = vec![positive, negative];
     dag.root = 2;
     if certify_dag(&dag, 10, 1000) != DagVerdict::Certified { return false; }
+    if certify_dag(&dag, 10, 2) == DagVerdict::Certified { return false; }
     dag.nodes.push(ProofNode { id: 2, clause: resolution_unit(17, true),
         kind: ProofNodeKind::Input, parents: Vec::new(), step: None });
     dag.input_clauses.push(resolution_unit(17, true));
@@ -6848,6 +6854,7 @@ fn executable_resolution_dag_examples() -> bool {
         input_clauses: vec![resolution_unit(9, true), resolution_unit(9, false)], root: 2,
     };
     if certify_dag(&dag, 10, 1000) != DagVerdict::Certified { return false; }
+    if certify_dag(&dag, 10, 11) == DagVerdict::Certified { return false; }
     dag.nodes[2].kind = ProofNodeKind::Resolution(1, 0);
     if certify_dag(&dag, 10, 1000) == DagVerdict::Certified { return false; }
     dag.nodes[2].kind = ProofNodeKind::Resolution(0, 0);
