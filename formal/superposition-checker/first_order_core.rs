@@ -244,6 +244,51 @@ spec fn replace_at_position(
     }
 }
 
+spec fn replace_at_position_preserving_context(
+    term: Term,
+    position: TermPosition,
+    replacement: Term,
+    depth: nat,
+) -> Option<Term>
+    recommends depth <= position.path.len()
+    decreases term
+{
+    if depth == position.path.len() {
+        Some(replacement)
+    } else {
+        match term {
+            Term::Var(_) | Term::Const(_) => None,
+            Term::App1(f, child) => {
+                if position.path[depth as int] == 0 {
+                    match replace_at_position_preserving_context(
+                        *child, position, replacement, depth + 1,
+                    ) {
+                        Some(child2) => Some(Term::App1(f, Box::new(child2))),
+                        None => None,
+                    }
+                } else { None }
+            },
+            Term::App2(f, left, right) => {
+                if position.path[depth as int] == 0 {
+                    match replace_at_position_preserving_context(
+                        *left, position, replacement, depth + 1,
+                    ) {
+                        Some(left2) => Some(Term::App2(f, Box::new(left2), right)),
+                        None => None,
+                    }
+                } else if position.path[depth as int] == 1 {
+                    match replace_at_position_preserving_context(
+                        *right, position, replacement, depth + 1,
+                    ) {
+                        Some(right2) => Some(Term::App2(f, left, Box::new(right2))),
+                        None => None,
+                    }
+                } else { None }
+            },
+        }
+    }
+}
+
 proof fn replace_at_valid_position_exists(
     term: Term,
     position: TermPosition,
@@ -4811,6 +4856,38 @@ fn same_clause_exact(left: &ExecClause, right: &ExecClause) -> (same: bool)
         assert(j < i as int);
     }
     true
+}
+
+fn replace_literal_position_exec_refines_substitution(
+    literal: &ExecLiteral,
+    bindings: &Vec<ExecBinding>,
+    slot: u64,
+    path: &Vec<u64>,
+    replacement: &ExecTerm,
+) -> (result: Option<ExecLiteral>)
+    ensures result.is_some() ==> replace_literal_at_position(
+        substitute_literal(view_literal(*literal), view_subst(bindings@)),
+        slot as nat,
+        view_position(path@),
+        apply(view(*replacement), view_subst(bindings@)),
+    ).is_some()
+{
+    let substituted = substitute_literal_exec(literal, bindings);
+    let instantiated_replacement = apply_exec(replacement, bindings);
+    let replaced = replace_literal_position_exec(
+        &substituted, slot, path, &instantiated_replacement,
+    );
+    match replaced {
+        Some(value) => {
+            assert(replace_literal_at_position(
+                substitute_literal(view_literal(*literal), view_subst(bindings@)),
+                slot as nat, view_position(path@),
+                apply(view(*replacement), view_subst(bindings@)),
+            ) == Some(view_literal(value)));
+            Some(value)
+        },
+        None => None,
+    }
 }
 
 /// Validate a supplied finite simultaneous-unifier certificate. This does not

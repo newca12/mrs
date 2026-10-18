@@ -833,6 +833,10 @@ satisfiability/model claims, and unrestricted full TSTP.
   exact executable conclusion and compose that decomposition with clause
   validity to invoke the general semantic superposition theorem. This remains
   the local soundness theorem gap.
+- [x] Prove the clause validity disjunction principle for context concatenation
+  under universal valuations, and add an executable-refinement lemma that a
+  successfully replayed literal replacement is defined in the mathematical
+  target literal after whole-literal substitution.
 - [x] Prove the singleton rewrite consequence from positive source and target
   unit clauses for the ground identity-unifier case. This confirms the local
   semantic basis, but does not yet handle non-empty contexts or checked
