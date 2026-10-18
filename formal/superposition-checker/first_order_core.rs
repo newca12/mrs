@@ -5281,6 +5281,8 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
             ==> exists|input_index: int| 0 <= input_index < dag.input_clauses.len()
                 && clause_equal(view_clause(dag.nodes[i].clause),
                     view_clause(dag.input_clauses[input_index]))
+        && verdict == DagVerdict::Unknown ==> dag.nodes@[dag.root as int]
+            .clause.literals.len() == 0
         && verdict == DagVerdict::Unknown ==> forall|i: int, j: int|
             0 <= i < dag.nodes.len() && 0 <= j < dag.nodes[i].parents@.len()
             ==> dag.nodes[i].parents@[j] < i as usize
@@ -5426,10 +5428,12 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
                 }
                 candidate += 1;
             }
-            if !found { return DagVerdict::Rejected; }
+    if !found { return DagVerdict::Rejected; }
         }
         node_index += 1;
     }
+    let root = &dag.nodes[dag.root];
+    if root.clause.literals.len() != 0 { return DagVerdict::Rejected; }
     DagVerdict::Unknown
 }
 
