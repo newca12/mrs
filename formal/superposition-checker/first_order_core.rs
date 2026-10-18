@@ -830,6 +830,54 @@ proof fn term_position_substitution(
     }
 }
 
+/// A substitution preserves any already-valid function-tree position, even
+/// when it maps the variable at that position to a compound term. The
+/// renaming-only lemma above also characterizes invalid positions; this
+/// success-only version is the one needed after general unification.
+proof fn term_position_substitution_success(
+    term: Term,
+    sigma: Substitution,
+    position: TermPosition,
+    depth: nat,
+)
+    requires
+        depth <= position.path.len(),
+        term_at_position(term, position, depth).is_some(),
+    ensures match term_at_position(term, position, depth) {
+        Some(found) => term_at_position(apply(term, sigma), position, depth)
+            == Some(apply(found, sigma)),
+        None => false,
+    }
+    decreases position.path.len() - depth
+{
+    if depth == position.path.len() {
+        assert(term_at_position(term, position, depth) == Some(term));
+        assert(term_at_position(apply(term, sigma), position, depth)
+            == Some(apply(term, sigma)));
+    } else {
+        match term {
+            Term::Var(_) | Term::Const(_) => {
+                assert(term_at_position(term, position, depth) == None);
+            },
+            Term::App1(f, child) => {
+                assert(position.path[depth as int] == 0);
+                assert(term_at_position(*child, position, depth + 1).is_some());
+                term_position_substitution_success(*child, sigma, position, depth + 1);
+            },
+            Term::App2(f, left, right) => {
+                if position.path[depth as int] == 0 {
+                    assert(term_at_position(*left, position, depth + 1).is_some());
+                    term_position_substitution_success(*left, sigma, position, depth + 1);
+                } else {
+                    assert(position.path[depth as int] == 1);
+                    assert(term_at_position(*right, position, depth + 1).is_some());
+                    term_position_substitution_success(*right, sigma, position, depth + 1);
+                }
+            },
+        }
+    }
+}
+
 spec fn replace_literal_at_position(
     literal: Literal,
     slot: nat,

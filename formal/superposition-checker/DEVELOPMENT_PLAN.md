@@ -792,6 +792,11 @@ satisfiability/model claims, and unrestricted full TSTP.
   expose equality with `expected_superposition_conclusion` on successful
   replay. This connects the executable construction and conclusion comparison;
   the selected-path/unifier-to-semantic-premise connection remains open.
+- [x] Prove that a successful explicit term position remains valid after an
+  arbitrary simultaneous substitution and that the selected term is transformed
+  by that substitution. This removes the false assumption that position
+  preservation requires variable-only renaming; literal/atom lifting and
+  certificate-to-theorem composition remain open.
 - [x] Add a verifier-negative mutation that omits the rewritten target clause
   from the executable resolvent builder; the central constructor postcondition
   makes Verus reject the mutation.
