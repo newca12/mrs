@@ -822,6 +822,9 @@ satisfiability/model claims, and unrestricted full TSTP.
 - [x] Expose the accepted rewritten literal itself in the semantic views of the
   certificate source equality and target clause, so the right-side instantiation
   used by executable replay is tied to the theorem-facing selected literal.
+- [ ] Connect the fully replayed resolvent to `standardized_superposition_sound`
+  and prove `local_node_entails_from_parents` for a successful DAG step. This is
+  still the active formal blocker to making any graph certify.
 - [x] Add a verifier-negative mutation that omits the rewritten target clause
   from the executable resolvent builder; the central constructor postcondition
   makes Verus reject the mutation.
