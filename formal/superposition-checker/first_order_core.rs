@@ -5018,7 +5018,9 @@ fn check_nullary_resolution(left: &ExecClause, right: &ExecClause,
     left_pivot: usize, right_pivot: usize, conclusion: &ExecClause, work_limit: usize)
     -> (accepted: bool)
     ensures accepted ==> clause_equal(view_clause(*conclusion), resolution_conclusion(
-        view_clause(*left), view_clause(*right), left_pivot as int, right_pivot as int))
+        view_clause(*left), view_clause(*right), left_pivot as int, right_pivot as int)),
+        accepted ==> left.literals@[left_pivot as int].positive
+            && !right.literals@[right_pivot as int].positive,
 {
     let mut work: usize = 0;
     if !charge_clause_structure(left, &mut work, work_limit)
@@ -5035,6 +5037,9 @@ fn check_nullary_resolution(left: &ExecClause, right: &ExecClause,
     if !complementary
         || right_literal.atom != ExecAtom::Pred0(predicate)
     {
+        return false;
+    }
+    if !left.literals[left_pivot].positive || right_literal.positive {
         return false;
     }
     let expected = build_nullary_resolution_conclusion(left, right, left_pivot, right_pivot);

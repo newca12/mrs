@@ -594,8 +594,9 @@ freshness conditions must also be justified by the calculus contract.
   verify; runtime regressions cover valid, wrong-pivot, forged-conclusion and
   out-of-range certificates. DAG dispatch integration remains TODO.
 - **DONE, standalone nullary resolution slice:** complementary 0-ary predicate
-  pivots are proved sound; `check_nullary_resolution` validates bounded inputs,
-  pivot polarity/symbol and exact ordered resolvent construction. Runtime
+  pivots (left positive, right negative) are proved sound;
+  `check_nullary_resolution` validates bounded inputs, this oriented polarity,
+  pivot symbol and exact ordered resolvent construction. Runtime
   regressions cover valid, wrong-pivot, forged-conclusion, out-of-range and
   exhausted-budget certificates. This rule is not yet dispatched by
   `certify_dag`. **Remaining:** integrate the checked resolution certificate
