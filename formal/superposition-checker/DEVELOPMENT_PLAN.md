@@ -829,6 +829,10 @@ satisfiability/model claims, and unrestricted full TSTP.
   sequence, exposing the non-equality source context and non-selected target
   context lengths. Literal-sequence decomposition into these context clauses
   remains unproved.
+- [ ] Prove that each parent-context concatenation is a subsequence of the
+  exact executable conclusion and compose that decomposition with clause
+  validity to invoke the general semantic superposition theorem. This remains
+  the local soundness theorem gap.
 - [ ] Connect the fully replayed resolvent to `standardized_superposition_sound`
   and prove `local_node_entails_from_parents` for a successful DAG step. This is
   still the active formal blocker to making any graph certify.
