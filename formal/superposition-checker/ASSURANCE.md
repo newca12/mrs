@@ -19,6 +19,11 @@ or semantic-validity arguments. The legacy structural entry point still returns
 that every supplied node is in the root's ancestor closure. The reverse
 topological traversal shares a bounded work counter across initialization,
 parent processing and coverage validation; exhaustion cannot certify.
+The caller's certification budget is partitioned between structural preflight,
+ancestor-closure validation and per-node replay, so the number of nodes cannot
+multiply one local replay allowance without bound. Some replay helpers still
+use distinct local counters; this is not yet exact cumulative instruction/work
+accounting.
 
 This certifies the supplied IR input clauses, not a parsed TPTP problem.
 Nullary-predicate resolution is DAG-dispatched in addition to superposition.

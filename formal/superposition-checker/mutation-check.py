@@ -49,13 +49,13 @@ def main() -> int:
             "if false",
         ),
         (
-            "DAG preflight skips local replay",
-            "let local_step_ok = check_dag_superposition_step(node, &dag.nodes, literal_limit);\n            proof {",
-            "let local_step_ok = true;\n            proof {",
+            "DAG node validation skips superposition replay",
+            "ProofNodeKind::Superposition => {\n        let checked = check_dag_superposition_step(node, &dag.nodes, work_limit);\n        checked\n        },",
+            "ProofNodeKind::Superposition => {\n        true\n        },",
         ),
         (
             "certifier skips node validation",
-            "if !validate_dag_node(dag, i, work_limit) { return DagVerdict::Unknown; }",
+            "if !validate_dag_node(dag, i, per_node_budget) { return DagVerdict::Unknown; }",
             "if false { return DagVerdict::Unknown; }",
         ),
         (
@@ -121,7 +121,7 @@ def main() -> int:
             print(f"mutation rejected: {name}")
 
         closure_guard = (
-            "match check_root_ancestor_closure(dag, work_limit) {\n"
+            "match check_root_ancestor_closure(dag, closure_budget) {\n"
             "        Some(true) => {},\n"
             "        Some(false) => return DagVerdict::Rejected,\n"
             "        None => return DagVerdict::Unknown,\n"

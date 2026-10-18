@@ -6168,12 +6168,15 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
                 None => false,
             }
 {
-    // This bounded structural pass also verifies each inference locally.
-    // The result stays Unknown until the induction is reflected in an
-    // accepted-result postcondition.
+    // This bounded pass checks global shape and budgets only. Local inference
+    // replay belongs to validate_dag_node, where each node receives its share
+    // of the certifier's replay budget.
     if dag.nodes.len() > node_limit || dag.input_clauses.len() > node_limit {
         return DagVerdict::Rejected;
     }
+    if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() { return DagVerdict::Rejected; }
+    if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() { return DagVerdict::Rejected; }
+    if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() { return DagVerdict::Rejected; }
     if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() {
         return DagVerdict::Rejected;
     }
@@ -6285,21 +6288,6 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
                 || !same_clause_exact(&step.target, &dag.nodes[node.parents[1]].clause)
                 || !same_clause_exact(&step.conclusion, &node.clause)
             {
-                return DagVerdict::Rejected;
-            }
-            let local_step_ok = check_dag_superposition_step(node, &dag.nodes, literal_limit);
-            proof {
-                if local_step_ok {
-                    assert forall|interp: Interpretation| interpretation_well_formed(interp)
-                        implies local_node_entails_from_parents(*node, dag.nodes@, interp) by {
-                        assert(local_step_ok);
-                    }
-                }
-            }
-            if !local_step_ok { return DagVerdict::Rejected; }
-        }
-        if let ProofNodeKind::Resolution(_, _) = node.kind {
-            if !check_dag_resolution_step(node, &dag.nodes, literal_limit) {
                 return DagVerdict::Rejected;
             }
         }
@@ -6454,12 +6442,21 @@ fn certify_dag(dag: &ProofDag, node_limit: usize, work_limit: usize) -> (verdict
     if dag.nodes.len() > node_limit || dag.input_clauses.len() > node_limit {
         return DagVerdict::Rejected;
     }
-    if check_dag_structure(dag, node_limit, work_limit) == DagVerdict::Rejected {
+    if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() { return DagVerdict::Rejected; }
+    // Divide the caller's work ceiling among the global shape pass, root
+    // closure traversal, and local node replay. Every validation receives a
+    // disjoint per-node share, so one expensive node cannot borrow the budget
+    // reserved for the remaining proof nodes.
+    let structural_budget = work_limit / 3;
+    let closure_budget = work_limit / 3;
+    let node_validation_budget = work_limit - structural_budget - closure_budget;
+    let per_node_budget = node_validation_budget / dag.nodes.len();
+    if check_dag_structure(dag, node_limit, structural_budget) == DagVerdict::Rejected {
         return DagVerdict::Rejected;
     }
     if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() { return DagVerdict::Rejected; }
     if dag.nodes[dag.root].clause.literals.len() != 0 { return DagVerdict::Rejected; }
-    match check_root_ancestor_closure(dag, work_limit) {
+    match check_root_ancestor_closure(dag, closure_budget) {
         Some(true) => {},
         Some(false) => return DagVerdict::Rejected,
         None => return DagVerdict::Unknown,
@@ -6470,7 +6467,7 @@ fn certify_dag(dag: &ProofDag, node_limit: usize, work_limit: usize) -> (verdict
             forall|j: int| 0 <= j < i as int ==> validated_dag_node(*dag, j),
         decreases dag.nodes.len() - i
     {
-        if !validate_dag_node(dag, i, work_limit) { return DagVerdict::Unknown; }
+        if !validate_dag_node(dag, i, per_node_budget) { return DagVerdict::Unknown; }
         i += 1;
     }
     proof { validated_dag_has_no_model(*dag); }
