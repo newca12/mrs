@@ -810,6 +810,10 @@ satisfiability/model claims, and unrestricted full TSTP.
 - [x] Compose the successful-position substitution theorem with accepted
   certificate premises, exposing the selected target occurrence after both
   freshening and the supplied unifier.
+- [x] Prove that replacing the instantiated selected occurrence with the
+  identically instantiated source right side is structurally defined for every
+  accepted valid position, by lifting path stability and replacement existence
+  through atom slots.
 - [x] Add a verifier-negative mutation that omits the rewritten target clause
   from the executable resolvent builder; the central constructor postcondition
   makes Verus reject the mutation.
