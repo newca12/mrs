@@ -800,6 +800,10 @@ satisfiability/model claims, and unrestricted full TSTP.
   preservation requires variable-only renaming; the lemma is now lifted through
   atoms and polarity-preserving literal substitution. Certificate-to-theorem
   composition remains open.
+- [x] Expose certificate source/target term aliases on successful checker
+  acceptance, including the freshened source equality argument, the raw target
+  occurrence, and its unifier instance. These postconditions connect executable
+  selected-term and freshening facts to their mathematical expressions.
 - [x] Add a verifier-negative mutation that omits the rewritten target clause
   from the executable resolvent builder; the central constructor postcondition
   makes Verus reject the mutation.

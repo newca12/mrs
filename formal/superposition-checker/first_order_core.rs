@@ -4602,6 +4602,11 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
                 == apply(raw, view_subst(certificate.target_freshening@)),
             None => false,
         }
+        && accepted ==> match certificate_selected_target_fresh_term(*certificate) {
+            Some(fresh) => apply(fresh, view_subst(certificate.unifier@))
+                == selected_target_subterm_after_freshening(*certificate),
+            None => false,
+        }
         && accepted ==> atom_at_position(
             view_atom(certificate.target.literals@[certificate.target_literal_index as int].atom),
             certificate.target_argument_slot as nat,
@@ -4688,6 +4693,9 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
         Some(clause) => clause,
         None => return false,
     };
+    assert(view_clause(fresh_source)
+        == substitute_clause(view_clause(certificate.source),
+            view_subst(certificate.source_freshening@)));
     let fresh_source_variables = match collect_clause_variables_bounded(&fresh_source, work_limit) {
         Some(vars) => vars,
         None => return false,
@@ -4724,6 +4732,9 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
         Some(clause) => clause,
         None => return false,
     };
+    assert(view_clause(fresh_target)
+        == substitute_clause(view_clause(certificate.target),
+            view_subst(certificate.target_freshening@)));
     if certificate.source_equality_index >= fresh_source.literals.len()
         || certificate.target_literal_index >= fresh_target.literals.len()
     {
@@ -4738,6 +4749,9 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
     let Some(target_subterm) = target_subterm_result else { return false; };
     let source_eq_fresh = &fresh_source.literals[certificate.source_equality_index];
     let ExecAtom::Eq(fresh_source_left, _) = &source_eq_fresh.atom else { return false; };
+    assert(view_clause(fresh_source).literals[certificate.source_equality_index as int]
+        == substitute_literal(view_literal(*source_literal),
+            view_subst(certificate.source_freshening@)));
     let target_selected = &fresh_target.literals[certificate.target_literal_index];
     let Some(fresh_target_subterm) = selected_atom_term_exec(
         &target_selected.atom, certificate.target_argument_slot, &certificate.fresh_target_path,
@@ -4752,9 +4766,19 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
     if !unifies {
         return false;
     }
+    assert(view(*fresh_source_left)
+        == apply(view(*source_left), view_subst(certificate.source_freshening@)));
     assert(domain_unique(view_subst(certificate.unifier@)));
     assert(apply(view(*fresh_source_left), view_subst(certificate.unifier@))
         == apply(view(fresh_target_subterm), view_subst(certificate.unifier@)));
+    assert(certificate_selected_source_left(*certificate)
+        == apply(view(*fresh_source_left), view_subst(certificate.unifier@)));
+    assert(certificate_selected_target_fresh_term(*certificate)
+        == Some(view(fresh_target_subterm)));
+    assert(certificate_selected_target_raw_term(*certificate)
+        == Some(view(target_subterm)));
+    assert(apply(view(fresh_target_subterm), view_subst(certificate.unifier@))
+        == selected_target_subterm_after_freshening(*certificate));
     let source_right = match &source_eq_fresh.atom {
         ExecAtom::Eq(_, right) => right,
         _ => return false,
