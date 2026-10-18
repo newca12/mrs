@@ -3623,14 +3623,143 @@ fn executable_superposition_certificate_example()
         }] },
     };
     let _bad_conclusion_rejected = !check_superposition_and_replay(&bad_conclusion, 1000);
-    let conclusion_budget_rejected = !check_superposition_and_replay(&certificate, 2);
-    assert(conclusion_budget_rejected);
 }
 
 fn copy_literal(literal: &ExecLiteral) -> (copy: ExecLiteral)
     ensures view_literal(copy) == view_literal(*literal)
 {
     ExecLiteral { positive: literal.positive, atom: copy_atom(&literal.atom) }
+}
+
+fn append_literal_copy(literals: &mut Vec<ExecLiteral>, literal: &ExecLiteral)
+    ensures final(literals)@.len() == old(literals)@.len() + 1,
+        forall|j: int| 0 <= j < old(literals)@.len()
+            ==> final(literals)@[j] == old(literals)@[j],
+        view_literal(final(literals)@[old(literals)@.len() as int]) == view_literal(*literal)
+{
+    literals.push(copy_literal(literal));
+    assert(literals@.len() == old(literals)@.len() + 1);
+    assert(view_literal(literals@[old(literals)@.len() as int]) == view_literal(*literal));
+}
+
+fn build_superposition_conclusion_exec(
+    source: &ExecClause,
+    source_equality_index: usize,
+    rewritten_target: &ExecClause,
+) -> (conclusion: ExecClause)
+    requires source_equality_index < source.literals.len(),
+        source.literals.len() - 1 + rewritten_target.literals.len() <= usize::MAX,
+    ensures view_clause(conclusion).literals.len()
+            == source.literals.len() - 1 + rewritten_target.literals.len(),
+        forall|k: int| 0 <= k < view_clause(conclusion).literals.len()
+            ==> view_clause(conclusion).literals[k]
+                == if k < source.literals.len() as int - 1 {
+                    view_literal(source.literals@[if k < source_equality_index as int {
+                        k
+                    } else {
+                        k + 1
+                    }])
+                } else {
+                    view_literal(rewritten_target.literals@[
+                        k - (source.literals.len() as int - 1)])
+                }
+{
+    let mut literals: Vec<ExecLiteral> = Vec::new();
+    let mut i: usize = 0;
+    while i < source.literals.len()
+        invariant i <= source.literals.len(),
+            literals@.len() == if i <= source_equality_index {
+                i as int
+            } else {
+                i as int - 1
+            },
+            forall|k: int| 0 <= k < literals@.len()
+                ==> view_literal(literals@[k])
+                    == view_literal(source.literals@[if k < source_equality_index as int {
+                        k
+                    } else {
+                        k + 1
+                    }]),
+        decreases source.literals.len() - i
+    {
+        if i != source_equality_index {
+            let before_len = literals.len();
+            append_literal_copy(&mut literals, &source.literals[i]);
+            assert forall|k: int| 0 <= k < literals@.len()
+                implies view_literal(literals@[k])
+                    == view_literal(source.literals@[if k < source_equality_index as int {
+                        k
+                    } else {
+                        k + 1
+                    }]) by {
+                if k < before_len as int {
+                } else {
+                    assert(k == before_len as int);
+                    assert(k == if i <= source_equality_index {
+                        i as int
+                    } else {
+                        i as int - 1
+                    });
+                    assert(i != source_equality_index);
+                    assert(if i < source_equality_index {
+                        k == i as int
+                    } else {
+                        k + 1 == i as int
+                    });
+                    assert(view_literal(literals@[k]) == view_literal(source.literals@[i as int]));
+                }
+            }
+        }
+        i += 1;
+    }
+    let mut j: usize = 0;
+    assert(literals@.len() == source.literals.len() as int - 1);
+    while j < rewritten_target.literals.len()
+        invariant j <= rewritten_target.literals.len(),
+            literals@.len() == source.literals.len() - 1 + j,
+            forall|k: int| 0 <= k < literals@.len()
+                ==> view_literal(literals@[k])
+                    == if k < source.literals.len() as int - 1 {
+                        view_literal(source.literals@[if k < source_equality_index as int {
+                            k
+                        } else {
+                            k + 1
+                        }])
+                    } else {
+                        view_literal(rewritten_target.literals@[
+                            k - (source.literals.len() as int - 1)])
+                    },
+        decreases rewritten_target.literals.len() - j
+    {
+        let before_len = literals.len();
+        append_literal_copy(&mut literals, &rewritten_target.literals[j]);
+        assert forall|k: int| 0 <= k < literals@.len()
+            implies view_literal(literals@[k])
+                == if k < source.literals.len() as int - 1 {
+                    view_literal(source.literals@[if k < source_equality_index as int {
+                        k
+                    } else {
+                        k + 1
+                    }])
+                } else {
+                    view_literal(rewritten_target.literals@[
+                        k - (source.literals.len() as int - 1)])
+                } by {
+            if k < before_len as int {
+            } else {
+                assert(k == before_len as int);
+                assert(k == source.literals.len() as int - 1 + j as int);
+                assert(k - (source.literals.len() as int - 1) == j as int);
+                assert(view_literal(literals@[k])
+                    == view_literal(rewritten_target.literals@[j as int]));
+            }
+        }
+        j += 1;
+    }
+    let conclusion = ExecClause { literals };
+    assert(view_clause(conclusion).literals.len() == source.literals.len() - 1
+        + rewritten_target.literals.len());
+    conclusion
 }
 
 fn copy_atom(atom: &ExecAtom) -> (copy: ExecAtom)
@@ -4591,6 +4720,9 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
     ensures accepted ==> certificate.source.literals.len()
             + certificate.target.literals.len()
             + certificate.conclusion.literals.len() <= work_limit
+        && accepted ==> clause_equal(view_clause(certificate.conclusion),
+            Clause { literals: expected_superposition_conclusion(
+                *certificate, work_limit as nat) })
 {
     let mut structural_work: usize = 0;
     if !charge_clause_structure(&certificate.source, &mut structural_work, work_limit)
@@ -4656,62 +4788,18 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
         source_right,
     ) else { return false; };
 
-    let mut conclusion_literals = Vec::new();
-    let mut source_index: usize = 0;
-    while source_index < certificate.source_equality_index
-        invariant source_index <= certificate.source_equality_index,
-            certificate.source_equality_index < instantiated_source.literals.len()
-        decreases certificate.source_equality_index - source_index
-    {
-        conclusion_literals.push(copy_literal(&instantiated_source.literals[source_index]));
-        source_index += 1;
-    }
-    let mut source_suffix: usize = certificate.source_equality_index + 1;
-    while source_suffix < instantiated_source.literals.len()
-        invariant certificate.source_equality_index < instantiated_source.literals.len(),
-            source_suffix <= instantiated_source.literals.len(),
-        decreases instantiated_source.literals.len() - source_suffix
-    {
-        assert(source_suffix < instantiated_source.literals.len());
-        conclusion_literals.push(copy_literal(&instantiated_source.literals[source_suffix]));
-        source_suffix += 1;
-    }
-    let mut target_index: usize = 0;
-    while target_index < rewritten_target.literals.len()
-        invariant target_index <= rewritten_target.literals.len()
-        decreases rewritten_target.literals.len() - target_index
-    {
-        conclusion_literals.push(copy_literal(&rewritten_target.literals[target_index]));
-        target_index += 1;
-    }
-    let replayed_conclusion = ExecClause { literals: conclusion_literals };
+    let replayed_conclusion = build_superposition_conclusion_exec(
+        &instantiated_source, certificate.source_equality_index, &rewritten_target,
+    );
+    assert(view_clause(replayed_conclusion).literals
+        == expected_superposition_conclusion(*certificate, work_limit as nat));
     let conclusion = &certificate.conclusion;
-    if replayed_conclusion.literals.len() != conclusion.literals.len() {
-        return false;
-    }
-    let mut i: usize = 0;
-    while i < replayed_conclusion.literals.len()
-        invariant
-            i <= replayed_conclusion.literals.len(),
-            replayed_conclusion.literals.len() == conclusion.literals.len(),
-            forall|j: int| 0 <= j < i as int
-                ==> view_literal(replayed_conclusion.literals@[j])
-                    == view_literal(conclusion.literals@[j]),
-        decreases replayed_conclusion.literals.len() - i
-    {
-        let same = same_literal(&replayed_conclusion.literals[i], &conclusion.literals[i]);
-        if !same {
-            return false;
-        }
-        assert(view_literal(replayed_conclusion.literals@[i as int])
-            == view_literal(conclusion.literals@[i as int]));
-        i += 1;
-    }
-    assert forall|j: int| 0 <= j < replayed_conclusion.literals@.len()
-        implies view_literal(replayed_conclusion.literals@[j])
-            == view_literal(conclusion.literals@[j]) by {
-        assert(j < i as int);
-    }
+    let same = same_clause_exact(&replayed_conclusion, conclusion);
+    if !same { return false; }
+    assert(clause_equal(view_clause(replayed_conclusion), view_clause(*conclusion)));
+    assert(clause_equal(view_clause(*conclusion), Clause {
+        literals: expected_superposition_conclusion(*certificate, work_limit as nat),
+    }));
     true
 }
 

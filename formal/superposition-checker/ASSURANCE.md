@@ -25,6 +25,7 @@ The proof claim depends on:
 
 - the pinned Verus binary and its verification-condition generation;
 - the SMT solver bundled/used by Verus;
+- the Rust toolchain pinned by the Verus repository's `rust-toolchain.toml`;
 - Rust/LLVM compilation of the checked Verus source;
 - the shell/Nix/CI commands selecting source files, tools, and flags; and
 - any future decoder, serialization adapter, or MRS integration boundary.
@@ -34,19 +35,27 @@ verified or losslessly checked by the verified side, it remains trusted. A
 successful verifier run is evidence about the checked source under this TCB; it
 does not by itself certify arbitrary TSTP proofs or the MRS strict-kernel code.
 
+The Verus executable is pinned to the latest published release binary with a
+verified SHA-256. The requested Rust toolchain follows current Verus `main`'s
+`rust-toolchain.toml` (currently Rust `1.99.1`), while the latest release still
+overrides it with its bundled Rust `1.98.1`. `verify.sh` records both values.
+Updating either pin requires a fresh full verification run and recorded
+evidence.
+
 ## Verification evidence
 
 `verify.sh` can write a CI artifact with `VERUS_LOG=/path/to/log`. The log
-records the source commit, Verus binary SHA-256, pinned Rust toolchain, verifier
-version/output, source-audit result, and per-module verification counts. CI
+records the source commit, Verus binary SHA-256, requested and effective Rust
+toolchains, verifier version/output, source-audit result, and per-module verification counts. CI
 uploads that log even when a later gate fails. Local verification does not
 retain a build artifact unless `VERUS_LOG` is set.
 
-The verification gate also runs three mutation-negative checks: omitting
-substitution from executable literal replay, ignoring literal polarity, and
-replacing selected-position lookup with root lookup. Each mutated temporary
-source must fail Verus verification. This samples key executable/model
-refinement contracts; it is not comprehensive threat-model coverage.
+The verification gate also runs four mutation-negative checks: omitting
+substitution from executable literal replay, ignoring literal polarity,
+replacing selected-position lookup with root lookup, and omitting the rewritten
+target clause from resolvent construction. Each mutated temporary source must
+fail Verus verification. This samples key executable/model refinement
+contracts; it is not comprehensive threat-model coverage.
 
 ## Re-audit triggers
 

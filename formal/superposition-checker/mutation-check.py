@@ -33,6 +33,11 @@ def main() -> int:
             "let result = subterm_at_exec(&root, path, 0);",
             "let result = Some(copy_term(&root));",
         ),
+        (
+            "superposition resolvent drops the target clause",
+            "append_literal_copy(&mut literals, &rewritten_target.literals[j]);",
+            "if j == usize::MAX { append_literal_copy(&mut literals, &rewritten_target.literals[j]); }",
+        ),
     ]
 
     with tempfile.TemporaryDirectory(prefix="mrs-verus-mutation-") as temp_dir:

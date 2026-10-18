@@ -22,11 +22,29 @@ run_check() {
   fi
 }
 
+requested_rust_toolchain() {
+  printf '%s' "$RUSTUP_TOOLCHAIN"
+}
+
+effective_rust_toolchain() {
+  local output
+  output="$("$VERUS_BIN" --version 2>&1)"
+  printf '%s\n' "$output" | python3 -c '
+import re, sys
+text = sys.stdin.read()
+match = re.search(r"Toolchain:\s+([^\s]+)", text)
+if not match:
+    raise SystemExit("could not determine Verus effective toolchain")
+print(match.group(1))
+'
+}
+
 if [[ -n "${VERUS_LOG:-}" ]]; then
   : > "$VERUS_LOG"
   printf 'verification_source_commit=%s\n' "$(git -C "$(dirname "$0")/../.." rev-parse HEAD)" | tee -a "$VERUS_LOG"
   printf 'verus_binary_sha256=%s\n' "$(sha256sum "$VERUS_BIN" | cut -d' ' -f1)" | tee -a "$VERUS_LOG"
-  printf 'rust_toolchain=%s\n' "$RUSTUP_TOOLCHAIN" | tee -a "$VERUS_LOG"
+  printf 'rust_toolchain_requested=%s\n' "$(requested_rust_toolchain)" | tee -a "$VERUS_LOG"
+  printf 'rust_toolchain_effective=%s\n' "$(effective_rust_toolchain)" | tee -a "$VERUS_LOG"
 fi
 
 run_check "$VERUS_BIN" --version
