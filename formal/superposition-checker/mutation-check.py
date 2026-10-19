@@ -179,6 +179,32 @@ def main() -> int:
             return 1
         print("runtime mutation rejected: input leaf comparisons omit repeated node charge")
 
+        apart_guard = (
+            "if !check_freshening(&right_variables, &avoid, right_mapping, pair_budget) {\n"
+            "        return false;\n"
+            "    }"
+        )
+        if source.count(apart_guard) != 1:
+            print("standardization-apart mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_without_apart_guard.rs"
+        mutated_path.write_text(source.replace(apart_guard, "", 1))
+        binary = pathlib.Path(temp_dir) / "first-order-core-without-apart-guard"
+        subprocess.run(
+            [str(verus), "--triggers-mode", "silent", "--compile", str(mutated_path),
+             "-o", str(binary)],
+            check=True,
+        )
+        runtime = subprocess.run(
+            [str(binary)], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: target-parent freshening guard removed",
+                  file=sys.stderr)
+            return 1
+        print("runtime mutation rejected: standardization-apart freshening guard removed")
+
     return 0
 
 

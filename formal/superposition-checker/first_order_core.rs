@@ -4230,7 +4230,7 @@ fn executable_unifier_certificate_examples()
     assert(cyclic_result);
 }
 
-fn executable_standardization_apart_example()
+fn executable_standardization_apart_example() -> bool
 {
     let left = ExecClause {
         literals: vec![ExecLiteral {
@@ -4262,7 +4262,6 @@ fn executable_standardization_apart_example()
     let valid = check_standardized_apart_pair(
         &left, &right, &left_mapping, &right_mapping, 100000,
     );
-    let _valid_step = valid;
     let colliding_mapping = vec![ExecBinding {
         variable: 7,
         replacement: ExecTerm::Var(100),
@@ -4270,15 +4269,10 @@ fn executable_standardization_apart_example()
     let collision = check_standardized_apart_pair(
         &left, &right, &left_mapping, &colliding_mapping, 100000,
     );
-    let _collision_result = collision;
-
-    let duplicate_sources = vec![
-        ExecBinding { variable: 7, replacement: ExecTerm::Var(300) },
-        ExecBinding { variable: 8, replacement: ExecTerm::Var(300) },
-    ];
+    valid && !collision
 }
 
-fn executable_superposition_certificate_example()
+fn executable_superposition_certificate_example() -> bool
 {
     let source = ExecClause {
         literals: vec![ExecLiteral {
@@ -4297,7 +4291,7 @@ fn executable_superposition_certificate_example()
             ))),
         }],
     };
-    let certificate = SuperpositionCertificate {
+    let mut certificate = SuperpositionCertificate {
         source,
         target,
         source_freshening: Vec::new(),
@@ -4313,63 +4307,25 @@ fn executable_superposition_certificate_example()
             atom: ExecAtom::Pred1(8, Box::new(ExecTerm::Const(2))),
         }] },
     };
-    let _accepted = check_superposition_and_replay(&certificate, 1000);
-    let bad_path = SuperpositionCertificate {
-        source: ExecClause { literals: vec![ExecLiteral {
-            positive: true,
-            atom: ExecAtom::Eq(
-                ExecTerm::App1(4, Box::new(ExecTerm::Const(1))),
-                ExecTerm::Const(2),
-            ),
-        }] },
-        target: ExecClause { literals: vec![ExecLiteral {
-            positive: true,
-            atom: ExecAtom::Pred1(8, Box::new(ExecTerm::App1(
-                4, Box::new(ExecTerm::Const(1)),
-            ))),
-        }] },
-        source_freshening: Vec::new(),
-        target_freshening: Vec::new(),
-        source_equality_index: 0,
-        target_literal_index: 0,
-        target_argument_slot: 0,
-        target_path: Vec::new(),
-        fresh_target_path: vec![1u64],
-        unifier: Vec::new(),
-        conclusion: ExecClause { literals: vec![ExecLiteral {
-            positive: true,
-            atom: ExecAtom::Pred1(8, Box::new(ExecTerm::Const(2))),
-        }] },
-    };
-    let _bad_path_rejected = !check_superposition_certificate(&bad_path, 1000);
-    let bad_conclusion = SuperpositionCertificate {
-        source: ExecClause { literals: vec![ExecLiteral {
-            positive: true,
-            atom: ExecAtom::Eq(
-                ExecTerm::App1(4, Box::new(ExecTerm::Const(1))),
-                ExecTerm::Const(2),
-            ),
-        }] },
-        target: ExecClause { literals: vec![ExecLiteral {
-            positive: true,
-            atom: ExecAtom::Pred1(8, Box::new(ExecTerm::App1(
-                4, Box::new(ExecTerm::Const(1)),
-            ))),
-        }] },
-        source_freshening: Vec::new(),
-        target_freshening: Vec::new(),
-        source_equality_index: 0,
-        target_literal_index: 0,
-        target_argument_slot: 0,
-        target_path: Vec::new(),
-        fresh_target_path: Vec::new(),
-        unifier: Vec::new(),
-        conclusion: ExecClause { literals: vec![ExecLiteral {
-            positive: true,
-            atom: ExecAtom::Pred1(8, Box::new(ExecTerm::Const(3))),
-        }] },
-    };
-    let _bad_conclusion_rejected = !check_superposition_and_replay(&bad_conclusion, 1000);
+    if !check_superposition_and_replay(&certificate, 1000) { return false; }
+
+    // Differing raw/fresh paths must fail even when the structural path itself
+    // remains valid; an invalid continuation below a leaf must also fail.
+    certificate.fresh_target_path = vec![0u64];
+    if check_superposition_certificate(&certificate, 1000) { return false; }
+    certificate.target_path = vec![0u64, 0u64];
+    certificate.fresh_target_path = vec![0u64, 0u64];
+    if check_superposition_certificate(&certificate, 1000) { return false; }
+
+    // Out-of-range atom slots and forged conclusions fail closed.
+    certificate.target_path = Vec::new();
+    certificate.fresh_target_path = Vec::new();
+    certificate.target_argument_slot = 1;
+    if check_superposition_certificate(&certificate, 1000) { return false; }
+    certificate.target_argument_slot = 0;
+    certificate.conclusion.literals[0].atom = ExecAtom::Pred1(8,
+        Box::new(ExecTerm::Const(3)));
+    !check_superposition_and_replay(&certificate, 1000)
 }
 
 fn c502_exec_certificate(forge_conclusion: bool) -> SuperpositionCertificate {
@@ -6794,19 +6750,28 @@ fn executable_dag_certification_examples() -> bool {
 
 fn executable_input_leaf_comparison_budget_example() -> bool {
     let accepted = resolution_unit(9, true);
+    let empty = ExecClause { literals: Vec::new() };
     let dag = ProofDag {
-        nodes: vec![ProofNode { id: 1, clause: accepted, kind: ProofNodeKind::Input,
-            parents: Vec::new(), step: None }],
+        nodes: vec![
+            ProofNode { id: 1, clause: accepted, kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None },
+            ProofNode { id: 2, clause: empty, kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None },
+        ],
         input_clauses: vec![
             resolution_unit(9, false),
             resolution_unit(10, true),
             resolution_unit(9, true),
+            ExecClause { literals: Vec::new() },
         ],
-        root: 0,
+        root: 1,
     };
-    // Three exact comparisons each charge one candidate, both clauses' syntax,
-    // and share the same node meter: 3 * (1 + 2 + 2) = 15.
-    !validate_dag_node(&dag, 0, 14) && validate_dag_node(&dag, 0, 15)
+    // Two failed comparisons and a matching third candidate charge one
+    // candidate and both one-literal clauses: 3 * 5 = 15. Without the repeated
+    // node charge, that scan would fit in 9.
+    let node_cutoff = !validate_dag_node(&dag, 0, 14) && validate_dag_node(&dag, 0, 15);
+    if !node_cutoff { return false; }
+    check_dag_structure(&dag, 10, 1000) == DagVerdict::Unknown
 }
 
 fn executable_nullary_resolution_examples() -> bool {
@@ -7035,8 +7000,8 @@ fn run_examples() -> bool {
     proof { variable_substitution_is_an_instance(); }
     executable_literal_replay_examples();
     executable_clause_replay_example();
-    executable_standardization_apart_example();
-    executable_superposition_certificate_example();
+    if !executable_standardization_apart_example() { return false; }
+    if !executable_superposition_certificate_example() { return false; }
 
     // Supplied unifier certificate binding target-side variable 42 to
     // constant 9. Domain validity and simultaneous application are checked.
@@ -7054,6 +7019,10 @@ fn main() {
     assert!(executable_c502_certificate_example(), "c502 replay regression failed");
     assert!(executable_source_variable_superposition_example(),
         "source-variable unification regression failed");
+    assert!(executable_standardization_apart_example(),
+        "standardization-apart collision regression failed");
+    assert!(executable_superposition_certificate_example(),
+        "superposition path regression failed");
     assert!(executable_dag_certification_examples(), "base DAG certification regression failed");
     assert!(executable_input_leaf_comparison_budget_example(),
         "input leaf comparison budget regression failed");

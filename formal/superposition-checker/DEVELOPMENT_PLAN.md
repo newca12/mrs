@@ -666,6 +666,13 @@ freshness conditions must also be justified by the calculus contract.
   compiled mutation that removes the repeated node-clause charge is rejected.
   This closes that repeated-comparison undercount only; it does not establish
   exact accounting for all comparisons or nested replay work.
+- **DONE, adversarial hygiene/position runtime cases:** standardized parent
+  variable-ID collision is explicitly rejected; malformed descendant paths,
+  mismatched raw/fresh paths, out-of-range atom slots and forged conclusions
+  are also runtime-tested. A compiled mutation that removes the target-side
+  standardization-apart freshness check fails the collision case. This is
+  targeted regression coverage; a complete resource meter and broad adversarial
+  corpus remain open.
 - **DONE, parent and comparison charges:** superposition DAG replay charges the
   node and cited parent structures before replay, then passes the remainder to
   `check_superposition_and_replay`. Resolution replay similarly charges the
@@ -947,6 +954,9 @@ satisfiability/model claims, and unrestricted full TSTP.
 - [x] Charge both the DAG input leaf and each candidate input clause on every
   repeated exact membership comparison in structural preflight and per-node
   validation; test the exact cutoff and a runtime mutation (M4 local accounting).
+- [x] Turn standardized-apart variable collisions and malformed/mismatched
+  selected paths, bad slots, and forged conclusions into executable runtime
+  rejection cases; add a mutation removing the target freshness check.
 - [x] Specify and prove recursive term substitution/evaluation and lift it to
   atom/literal/clause preservation under total interpretation/valuation domains
   (M1 semantic foundation).

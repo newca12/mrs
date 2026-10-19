@@ -91,6 +91,10 @@ membership comparison. A runtime regression checks the exact 15-unit threshold
 for three candidates, and a compiled mutation that removes the repeated node
 charge must fail. If integer division would
 leave any node with a zero validation share, certification returns `Unknown`.
+Runtime adversarial cases also reject standardized variable-ID collisions,
+malformed/deep positions, mismatched raw/fresh paths, invalid argument slots and
+forged conclusions; a compiled mutation removing the target-parent freshening
+guard must fail the collision regression.
 `validated_dag_has_no_model` composes these facts with topological induction and
 a total valuation into the nonempty carrier. No interpretation or assumed input
 validity is supplied to the executable API.

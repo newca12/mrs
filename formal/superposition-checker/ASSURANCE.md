@@ -32,7 +32,10 @@ operation accounting is not established.
 Input-leaf validation charges both clause structures for every candidate in its
 repeated exact-membership scan, with a runtime regression for the exact cutoff;
 this closes that specific repeated-comparison undercount, not all comparison
-accounting.
+accounting. The runtime suite also exercises standardized-parent collision
+rejection, malformed/deep target paths, mismatched pre/post-freshening paths,
+out-of-range atom slots and forged conclusions. A compiled mutation removing the
+target-parent freshening guard must fail the collision regression.
 Budget division that would leave a node with a zero share returns inconclusive
 before any node can be certified.
 
@@ -119,7 +122,9 @@ An additional runtime regression rejects a disconnected but valid input node
 and exercises both zero-budget and exact-threshold closure exhaustion/success.
 Input-leaf comparison regression exercises three candidates, accepts at the
 exact 15-unit node budget and rejects at 14. A compiled-runtime mutation that
-removes the repeated node-clause charge must fail this regression.
+removes the repeated node-clause charge must fail this regression. A separate
+compiled mutation removes the target-parent freshening guard and must fail the
+standardized-variable-collision regression.
 
 ## Re-audit triggers
 
