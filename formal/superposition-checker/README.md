@@ -31,7 +31,10 @@ Set `VERUS=/path/to/verus` to verify with an already installed binary.
 
 The verification script also runs `audit-verus-source.py`; it fails closed if
 formal Rust sources contain `assume`, `admit`, `external_body`, or verifier
-allow attributes. See [`ASSURANCE.md`](ASSURANCE.md) and
+allow attributes. Each proof module is additionally verified with Verus's
+`--no-cheating` option, which rejects verifier-recognized escape hatches
+including `assume_specification`, even if they evade a lexical audit. See
+[`ASSURANCE.md`](ASSURANCE.md) and
 [`supported-rules.json`](supported-rules.json) for the current trust boundary
 and machine-readable supported-slice declaration.
 

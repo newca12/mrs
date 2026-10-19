@@ -82,6 +82,10 @@ Verus does not prove its own verifier or the compiler. Until the input adapter i
 verified or losslessly checked by the verified side, it remains trusted. A
 successful verifier run is evidence about the checked source under this TCB; it
 does not by itself certify arbitrary TSTP proofs or the MRS strict-kernel code.
+The formal verification command enables Verus `--no-cheating` for every proof
+module, so verifier-recognized escape hatches (including
+`assume_specification`) fail verification in addition to the separate lexical
+source audit.
 
 The Verus executable is pinned to release `0.2026.10.18.7d82994` with a
 verified Linux x86_64 SHA-256. The release's `rust-toolchain.toml` declares
