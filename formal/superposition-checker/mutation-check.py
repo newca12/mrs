@@ -147,6 +147,38 @@ def main() -> int:
             return 1
         print("runtime mutation rejected: certifier skips root-ancestor closure")
 
+        input_charge = (
+            "if !charge_clause_structure(&node.clause, &mut work, work_limit) {\n"
+            "                return false;\n"
+            "            }\n"
+            "            if !charge_clause_structure(&dag.input_clauses[k], &mut work, work_limit) {"
+        )
+        if source.count(input_charge) != 1:
+            print("input comparison budget mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_without_input_compare_charge.rs"
+        mutated_path.write_text(source.replace(
+            input_charge,
+            "if false { return false; }\n"
+            "            if !charge_clause_structure(&dag.input_clauses[k], &mut work, work_limit) {",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-without-input-compare-charge"
+        subprocess.run(
+            [str(verus), "--triggers-mode", "silent", "--compile", str(mutated_path),
+             "-o", str(binary)],
+            check=True,
+        )
+        runtime = subprocess.run(
+            [str(binary)], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: input comparison omits node-clause charge",
+                  file=sys.stderr)
+            return 1
+        print("runtime mutation rejected: input leaf comparisons omit repeated node charge")
+
     return 0
 
 

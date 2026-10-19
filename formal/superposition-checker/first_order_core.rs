@@ -6477,6 +6477,17 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
             {
                 if structural_work >= literal_limit { return DagVerdict::Rejected; }
                 structural_work += 1;
+                // Exact clause comparison traverses both clauses. The
+                // candidate is charged below; charge the node again for
+                // each candidate rather than treating its one-time global
+                // shape charge as payment for repeated comparisons.
+                if !charge_clause_structure(&node.clause, &mut structural_work, literal_limit) {
+                    return DagVerdict::Rejected;
+                }
+                if !charge_clause_structure(&dag.input_clauses[candidate],
+                    &mut structural_work, literal_limit) {
+                    return DagVerdict::Rejected;
+                }
                 if same_clause_exact(&node.clause, &dag.input_clauses[candidate]) {
                     found = true;
                     break;
@@ -6516,7 +6527,6 @@ fn validate_dag_node(dag: &ProofDag, index: usize, work_limit: usize) -> (ok: bo
     match node.kind {
         ProofNodeKind::Input => {
         if node.parents.len() != 0 { return false; }
-        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
         let mut k: usize = 0;
         while k < dag.input_clauses.len()
             invariant k <= dag.input_clauses.len(), work <= work_limit,
@@ -6526,6 +6536,13 @@ fn validate_dag_node(dag: &ProofDag, index: usize, work_limit: usize) -> (ok: bo
         {
             if work >= work_limit { return false; }
             work += 1;
+            // This leaf may be compared against many supplied inputs, so
+            // include both sides of every exact comparison in this node's
+            // shared meter. A single upfront charge for the node would let
+            // repeated comparisons evade the per-node ceiling.
+            if !charge_clause_structure(&node.clause, &mut work, work_limit) {
+                return false;
+            }
             if !charge_clause_structure(&dag.input_clauses[k], &mut work, work_limit) {
                 return false;
             }
@@ -6775,6 +6792,23 @@ fn executable_dag_certification_examples() -> bool {
     true
 }
 
+fn executable_input_leaf_comparison_budget_example() -> bool {
+    let accepted = resolution_unit(9, true);
+    let dag = ProofDag {
+        nodes: vec![ProofNode { id: 1, clause: accepted, kind: ProofNodeKind::Input,
+            parents: Vec::new(), step: None }],
+        input_clauses: vec![
+            resolution_unit(9, false),
+            resolution_unit(10, true),
+            resolution_unit(9, true),
+        ],
+        root: 0,
+    };
+    // Three exact comparisons each charge one candidate, both clauses' syntax,
+    // and share the same node meter: 3 * (1 + 2 + 2) = 15.
+    !validate_dag_node(&dag, 0, 14) && validate_dag_node(&dag, 0, 15)
+}
+
 fn executable_nullary_resolution_examples() -> bool {
     let positive = ExecClause { literals: vec![ExecLiteral {
         positive: true, atom: ExecAtom::Pred0(9),
@@ -7007,6 +7041,7 @@ fn run_examples() -> bool {
     // Supplied unifier certificate binding target-side variable 42 to
     // constant 9. Domain validity and simultaneous application are checked.
     if !executable_dag_certification_examples() { return false; }
+    if !executable_input_leaf_comparison_budget_example() { return false; }
     if !executable_nullary_resolution_examples() { return false; }
     if !executable_resolution_dag_examples() { return false; }
     if !executable_resolution_chain_examples() { return false; }
@@ -7020,6 +7055,8 @@ fn main() {
     assert!(executable_source_variable_superposition_example(),
         "source-variable unification regression failed");
     assert!(executable_dag_certification_examples(), "base DAG certification regression failed");
+    assert!(executable_input_leaf_comparison_budget_example(),
+        "input leaf comparison budget regression failed");
     assert!(executable_nullary_resolution_examples(), "nullary resolution regression failed");
     assert!(executable_resolution_dag_examples(), "resolution DAG regression failed");
     assert!(executable_resolution_chain_examples(), "resolution-chain DAG regression failed");

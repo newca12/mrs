@@ -85,7 +85,11 @@ and per-node replay; within a node, the validated parent edges and clause
 structure, plus the cited parents and conclusion, are charged before local
 replay receives the remainder. Nested replay helpers still use distinct
 counters, so exact cumulative operation accounting (including literal
-comparisons) remains an explicit limitation. If integer division would
+comparisons) remains an explicit limitation. DAG input-leaf validation charges
+both the node clause and each candidate input clause for every repeated exact
+membership comparison. A runtime regression checks the exact 15-unit threshold
+for three candidates, and a compiled mutation that removes the repeated node
+charge must fail. If integer division would
 leave any node with a zero validation share, certification returns `Unknown`.
 `validated_dag_has_no_model` composes these facts with topological induction and
 a total valuation into the nonempty carrier. No interpretation or assumed input

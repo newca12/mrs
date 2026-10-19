@@ -53,6 +53,7 @@
     "dag_work_budget_partitioned_by_phase_and_node": true,
     "dag_parent_validation_charged_to_node_budget": true,
     "dag_parent_and_conclusion_structure_charged_before_replay": true,
+    "dag_input_leaf_repeated_comparisons_charge_both_clauses": true,
     "dag_zero_per_node_budget_fails_closed": true,
     "dag_exact_cumulative_replay_work": false,
     "dag_resolution_nullary": true,
