@@ -341,7 +341,10 @@ The archived CASC-J13 clean audit marked `GEO111+1` `VerifiedBad` at node
 target with one justified literal removed. Replaying the archived proof with
 the current strict kernel and the TPTP 9.3.0 include tree now returns
 `VerifiedGood`. The archived `audit.csv` is a historical result from the old
-kernel and has not been rewritten.
+kernel and has not been rewritten. The fresh FEQ campaign
+`campaign-cascj13-feq-W8C8J1-20261016` also generated a new `GEO111+1` proof,
+which strict replay returned as `VerifiedGood` (proof SHA-256
+`8423e7b6edb7a0a1590c1e4935d7ba9d7d8260869417c828f9f86b9091901e39`).
 
 The offending clause at `c10744` has two negative literals and repeated copies
 of `part_of(X2,X2)`. The active parent `c10670` supplies the complementary
@@ -1155,6 +1158,36 @@ spelling. The route remains bounded and falls through on exhaustion. This
 decision uses the matched full-division CASC-shaped measurement, not the earlier
 10-problem subset. It is one replicate; repeat the A/B before claiming a
 replicated coverage or competition-rate gain.
+
+### 2026-10-19 full-division CASC-mode EPU follow-up
+
+The independent full-division campaign
+`campaign-casc30-epu-W8CASCHJ1-02-20261019` returned 11 `Unsatisfiable`
+problems, all **strict `VerifiedGood`**, with zero `VerifiedBad`; its other
+results were 27 `GaveUp` and 62 `Timeout`. It reproduces the nine certified
+problems in both `cert-epu-20260926` and
+`campaign-casc30-epu-W8C8J1-20261002`, and adds `HWV078-1` and `MSC024-1`.
+Thus the observed strict solve set grows by two, with no losses.
+
+The two new proofs exercise separate extraction paths. `HWV078-1` is a
+52,857-node / 13,382,823-byte proof from `derivation_loop`, certified in this
+campaign with the 32 MiB proof cap. `MSC024-1` is a 26,189-node / 8,057,596
+byte proof from `lrat_lift`. The EPR telemetry reports `epr_route=epr_equality`
+for both. This confirms that both previously observed extraction cases can now
+produce checkable proofs at the full-division configuration.
+
+This is **one post-change campaign**, not the matched grounding-off/on A/B
+required to attribute the +2 to the EPR grounding change. The run used a
+different binary from the October 12 pair, so it also cannot replace that
+pair's causal comparison. Repeat the full-division paired arms at the same
+8-core `casc` shape before claiming a replicated rate improvement.
+
+The host had 95,979 MB RAM, below the nominal 128-GiB CASC allowance; the
+prover reported 81,582 MB effective memory. The highest observed per-problem
+peak was 25,692 MB (`HWV081-1`), and no result stopped at a memory or other
+resource limit. Provenance is recorded in the campaign's `run_meta.json`: dirty
+commit `40278337`, Rust 1.99.1, binary SHA-256
+`947aba9b604307f33e86d595b6112def78b42925f3a6ebeefac114aaf7cb9c96`.
 
 ```bash
 # Reproduce the two paired arms with the full-division sweep wrapper.

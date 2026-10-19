@@ -109,13 +109,85 @@ artifacts. Source campaigns live under
 `/home/hack/crates/mrs-bench/results/`. Regenerate the audits with the checker
 revision being evaluated; old audit summaries are historical.
 
-## Remote validation needed
+## Fresh full-division validation (2026-10-16)
 
-Use the same host with eight physical cores and 128 GB, one problem at a time.
-First measure this repair with the shipped portfolio and sharing disabled;
-portfolio tuning would confound the calculus comparison. Record source state,
-binary hashes and environment. Build the verifier explicitly: building the audit
-binary alone does not rebuild `mrs-proover`.
+The requested fresh campaign was run with the shipped UEQ portfolio and
+cross-strategy sharing disabled. It completed all 400 CASC-J13 UEQ problems:
+
+| Measure | Result |
+|---|---:|
+| Generated refutations | **112/400 (28.00%)** |
+| Strict `VerifiedGood` | **111/400 (27.75%)** |
+| Strict `Unknown` | 1 |
+| `VerifiedBad` / checker errors | **0 / 0** |
+| Other outcomes | 273 `Timeout`, 15 `GaveUp` |
+
+The unknown is `RNG009-7`, whose proof reaches `ac_superposition` node `c3774551`;
+strict replay reports that the conclusion is not a valid rewrite and that AC
+superposition replay is incomplete. This is consistent with the remaining AC
+replay gap, not evidence of a bad proof. The other 111 generated proofs passed
+strict replay. All 112 proof files are present, their recorded hashes match,
+and the audit rows agree with `run.csv`.
+
+Against the previously documented 107/400 strict result, the generated solve
+sets have 101 problems in common, 11 current-only, and 6 baseline-only. The
+strictly certified score is therefore up by four, from 107 to 111; the 112th
+refutation remains uncertified. This is a measured coverage recovery, but not an
+isolated code-only A/B: the baseline and recovery run used different binaries,
+toolchains and hosts. It is one run, so it does not establish a repeatable
+four-solve gain above the known UEQ run variance.
+
+Run provenance: `~/crates/mrs-bench/results/ueq-syntactic-recovery-j13/`;
+`git_commit abeda8c53aab2d96e7f42c10969bb569e45e1646`, dirty tree,
+`binary_sha256 07626858470bfbe45c29b22b6788c2afe0367715280fc36f067d751aae1d5467`.
+The run used eight workers on eight physical cores (Intel Xeon E5-2407),
+`MRS_HARDWARE=casc`, `MRS_SHARED_POOL_INTERVAL=0`, strategy order
+`4,8,12,11,2,14,15,1`, and the official 180-second UEQ clock. The host had
+96,350 MB RAM rather than the 128 GB CASC allowance; the prover reported an
+effective memory budget of 81,897 MB. This did not produce a resource-limit
+outcome, but the measurement is not on the full CASC memory allowance.
+
+## CASC-30 follow-up audit (2026-10-16)
+
+The combined CASC-30 FEQ/UEQ campaign
+`campaign-casc30-ueq-feq-W8CASCHJ1-20261016` is a separate edition and a
+separate binary, so it does not replace the CASC-J13 measurement above. Its
+UEQ slice generated 124 refutations, of which 118 passed strict replay, **five
+were `VerifiedBad`**, and one refutation artifact lacked a `$false` root and
+proof-omission marker. The five rejected problems are `MVA008-1`, `MVA009-1`,
+`REL034-2`, `RNG009-5`, and `RNG009-7`.
+
+The current evidence does not establish one common cause: two proofs cite
+residual-operation leaves that do not match the named problem axioms, two have
+symbol-signature/arity conflicts, and one cites a distribution axiom leaf that
+does not match. Treat these as failed proof audits until each derivation is
+explained and re-audited; do not count the raw 124 refutations as a sound solve
+score. Relative to the October 7 CASC-30 UEQ audit (127 `VerifiedGood`), this
+campaign has 113 certified problems in common, five certified only in the new
+run, and 14 only in the October 7 run: net strict coverage is down nine. It is
+not a controlled A/B because the binaries differ.
+
+The companion FEQ slice is useful context: it produced 109 theorems, 105
+`VerifiedGood`, two `VerifiedBad`, one `Unknown`, and one verifier timeout.
+Therefore the combined campaign improves the strict FEQ count against the
+October 12 clean campaign (70 to 105), while the UEQ strict count regresses and
+has unresolved failed audits. Both divisions ran on eight physical cores in
+CASC mode, but the 95,969 MB host had only 81,897 MB effective memory against
+the 128-GiB allowance. No row was stopped by a resource limit. Full campaign
+provenance and the per-problem diagnostics are recorded in
+[`results/README.md`](../../results/README.md#casc-30-combined-fequeq-full-division-campaign-2026-10-16).
+
+The run metadata's `default_time_limit=120` is the harness default, not the
+actual per-problem timeout: `use_casc_times=1`, `run.log`, `run.csv`, and the
+audit all show 180 seconds for UEQ.
+
+## Follow-up needed
+
+Repeat the shipped-portfolio, no-sharing measurement at least five times on a
+host with eight physical cores and 128 GB before treating the observed coverage
+delta as stable. Keep the calculus and portfolio fixed during those replicates.
+Record source state, binary hashes and environment. Build the verifier
+explicitly: building the audit binary alone does not rebuild `mrs-proover`.
 
 ```bash
 cargo build --release -p mrs -p mrs-proover -p mrs-bench \
@@ -126,9 +198,8 @@ MRS_HARDWARE=casc MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=0 \
   --output crates/mrs-bench/results/ueq-syntactic-recovery-j13
 ```
 
-Return `run.csv`, `run_meta.json`, `run.log`, `certification/audit.csv` and
-`certification/audit-summary.txt`, preserving raw proofs for any failed audit.
-Compare generated refutations and strictly certified refutations separately.
-Repeat decisive comparisons at least five times after the first audited campaign
-shows that recovery survives the full division. Then investigate remaining AC
-Unknown nodes and only then re-open portfolio/sharing optimization.
+Preserve `run.csv`, `run_meta.json`, `run.log`, `certification/audit.csv`,
+`certification/audit-summary.txt`, and raw proofs for any failed audit. Compare
+generated refutations and strictly certified refutations separately. After the
+replicates, investigate the remaining AC `Unknown` proofs; only then re-open
+portfolio/sharing optimization.

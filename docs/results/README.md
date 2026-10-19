@@ -12,14 +12,173 @@ Re-measure before quoting one.
 
 | Division | Edition | Evaluated | Current Verified Baseline | Historical Unverified Snapshot (`codex.db`) | Audit & Trust Notes |
 |:---|:---|---:|---:|---:|:---|
-| **UEQ** | CASC-J13 | 400 | **107 (26.8%)** | ~~257 (64.3%)~~ | Re-audits of the 257 run found 82 `VerifiedBad` / 114 proofs due to AC fallback substitutions. 107 baseline is 100% `VerifiedGood` (0 `VerifiedBad`). See UI-1. |
-| **UEQ** | CASC-30 | 300 | Pending campaign | ~~222 (74.0%)~~ | Historical 222 snapshot is superseded by the same AC soundness invalidation. |
-| **FEQ** | CASC-J13 | 300 | **64–72** | 72 (24.0%) | Validated under strict proof verification. |
-| **FEQ** | CASC-30 | 400 | **98–112** | 112 (28.0%) | 98 kernel-certified in recent verified runs. |
+| **UEQ** | CASC-J13 | 400 | **111 (27.75%; one recovery run)** | ~~257 (64.3%)~~ | Fresh 2026-10-16 syntactic-recovery run: 111 `VerifiedGood`, 0 `VerifiedBad`, 1 `Unknown`; 8 physical cores but only 96 GB host RAM. Repeat before treating the +4 vs. the 107 strict baseline as stable. The historical 257 run re-audit found 82 `VerifiedBad` / 114 proofs due to AC fallback substitutions. See UI-1 and the [recovery report](../reports/benchmarks/ueq-soundness-regression-2026-10.md). |
+| **UEQ** | CASC-30 | 300 | **127 (42.3%; 2026-10-07 audited run)** | ~~222 (74.0%)~~ | The 2026-10-16 combined CASC-mode run certified 118, rejected 5 (`VerifiedBad`), and had 1 refutation without a proof. This is below the 127 trusted baseline and is not a clean replacement. Historical 222 remains superseded by the AC soundness invalidation. |
+| **FEQ** | CASC-J13 | 300 | **72 (24.0%; combined CASC-mode run)** | 72 (24.0%) | The 2026-10-16 combined run strictly certified all 72. A separate same-day adaptive-hardware run certified 71/300; it is not a canonical CASC-hardware score. See the FEQ campaign details in [`CERTIFICATION_STATUS.md`](../CERTIFICATION_STATUS.md). |
+| **FEQ** | CASC-30 | 400 | **105 (26.25%; 2026-10-16 run)** | 112 (28.0%) | Strict audit: 105 `VerifiedGood`, 2 `VerifiedBad`, 1 `Unknown`, 1 verifier timeout. The rejected proofs are excluded from the verified count. |
 | **FNE** | CASC-J13 | 100 | **35 (35.0%)** | 35 (35.0%) | Zero reference violations. |
-| **FNE** | CASC-30 | 100 | **42–43** | 43 (43.0%) | 42 solved with pre-pass off / on. |
-| **EPS** | CASC-30 | 100 | **42–44 (Satisfiable)** | 17 (17.0%) | 38–40 kernel-certified finite models on dual-search / certified track. |
-| **EPU** | CASC-30 | 100 | **18 (18.0%)** | 18 (18.0%) | Bounded EPR / resolution path. |
+| **FNE** | CASC-30 | 100 | **41 (41.0%; 2026-10-19 CASC-mode run)** | 43 (43.0%) | 41/41 refutations strictly `VerifiedGood`, no invalids. Up 11 verified solves over the October 2 audited campaign; both runs are single measurements. |
+| **EPS** | CASC-30 | 100 | **44 (40 certified models; 2026-10-19)** | 17 (17.0%) | CASC-mode dual-search run; 0 invalid models, 4 inconclusive model checks. Same 40 certified models as 2026-09-28, with two more models certified (the corresponding raw `Satisfiable` answers were already present in September). |
+| **EPU** | CASC-30 | 100 | **11 (11.0%; 2026-10-19 CASC-mode run)** | 18 (18.0%) | 11/11 strict `VerifiedGood`, 0 `VerifiedBad`; +2 over both audited September 26 and October 2 runs, same 9 retained. The 18 historical solves are not the current verified score. |
+
+---
+
+## Intermittent certified solves
+
+Per-problem list of division/edition results that are strictly certified in
+some full-division campaigns and not certified in others:
+[`intermittency.md`](intermittency.md). The inventory groups problems by their
+run-to-run outcome signature and names the campaign keys, excludes historical
+`VerifiedBad` results, and is maintained from audited campaign artifacts. CASC-30
+ICU is listed as not yet measurable because only one complete audited campaign
+is available.
+
+---
+
+## CASC-J13 combined full-division campaign, 2026-10-16
+
+`campaign-casc-j13-W8C8J1-20261016` ran all three CASC-J13 divisions in one
+campaign: 800 problems total, sequential jobs, eight workers, `MRS_HARDWARE=casc`,
+and official 180-second division limits. Its strict audit certified **221/800**
+results: **FEQ 72/300, FNE 36/100, UEQ 113/400**. All 72 FEQ and 36 FNE
+refutations passed strict verification; UEQ had 113 `VerifiedGood`, one
+`Unknown`, and no `VerifiedBad`. The remaining outcomes were 505 timeouts and
+73 `GaveUp`; there were no resource-outs, errors, or other results.
+
+| Division | Strict `VerifiedGood` | Comparison campaign | Common | Combined-only | Comparison-only |
+|---|---:|---|---:|---|---|
+| FEQ | 72/300 | `campaign-cascj13-feq-W8C8J1-20261016` (adaptive mode) | 70 | `GEO277+1`, `SWB073+1` | `SWW298+1` |
+| FNE | 36/100 | `campaign-cascj13-fne-W8C8J1-20261002` | 31 | `CSR115+8`, `CSR116+19`, `KRS234+1`, `KRS261+1`, `SYO605+1` | — |
+| UEQ | 113/400 | `ueq-syntactic-recovery-j13` (CASC mode, no sharing) | 109 | `ALG240-1`, `KLE145-10`, `KLE147-10`, `LAT222-10` | `REL019-1`, `REL026-3` |
+
+These are solve-set comparisons, not controlled A/B estimates. The FEQ standalone
+run used the same eight strategies but a different binary and adaptive mode; its
+host had 16 physical cores and about 44 GB per-run memory, versus the combined
+run's CASC-mode host. The FNE comparator is an earlier adaptive, 8-worker run;
+the UEQ comparator is the separate CASC-mode recovery run on a different binary
+and host. Portfolio search is timing-sensitive, so repeat matched runs before
+assigning these deltas to a source change. The combined campaign is also dirty
+tree evidence: `run_meta.json` records commit `dfef326c`, `git_dirty=true`,
+binary SHA-256 `b551916d3d379087fdb99ef0486d7fc98430e54146e8943960346a662d4a5069`,
+and Rust 1.99.1. The host had 128,019 MB RAM; `casc` therefore reported a
+128-GB allowance with an effective budget below the allowance. The metadata's
+120-second default was overridden by `use_casc_times=1`; the run log and rows
+show the official 180-second clocks.
+
+Full per-problem intermittency signatures are in
+[`intermittency.md`](intermittency.md); campaign-level strict totals are in
+[`CERTIFICATION_STATUS.md`](../CERTIFICATION_STATUS.md).
+
+---
+
+## CASC-30 combined FEQ/UEQ full-division campaign, 2026-10-16
+
+`campaign-casc30-ueq-feq-W8CASCHJ1-20261016` ran both divisions sequentially
+with eight workers, `MRS_HARDWARE=casc`, and the official 240-second limits on
+the 8-core Xeon E5-2407 host. It covered all 700 problems. Strict audit gives:
+
+| Division | Generated refutations | `VerifiedGood` | `VerifiedBad` | Other proof-audit results |
+|---|---:|---:|---:|---|
+| FEQ (400) | 109 | **105** | 2 | 1 `Unknown`, 1 `Timeout` |
+| UEQ (300) | 124 | **118** | 5 | 1 refutation had no `$false` root and no omission marker |
+
+Therefore the audited total is **223 strictly certified refutations**. Do not
+report 233 raw refutation statuses (109+124) as certified: seven generated
+proofs were rejected, the FEQ audit has one `Unknown` and one checker timeout,
+and the UEQ audit has one malformed/incomplete proof artifact. No rows ended in
+`ResourceOut`, process `Error`, or `Other`.
+
+The rejection reasons are specific and should remain visible pending
+investigation:
+
+- **FEQ:** `KLE071+1` has inconsistent symbol arity in the proof signature;
+  `SWV486+2` has an `ac_superposition` conclusion the checker cannot validate
+  as a rewrite. `LCL894+1` is `Unknown` at an incomplete AC-superposition
+  replay, and `ALG049+1` exceeded the strict verifier's 120-second limit.
+- **UEQ:** `MVA008-1` and `MVA009-1` have cited axiom leaves that do not match
+  `residual_b` / `residual_c`; `REL034-2` and `RNG009-5` have inconsistent
+  symbol arities; `RNG009-7` has a cited `distribute2` leaf mismatch.
+  `REL045-2` reports refutation but its proof has no `$false` root and no
+  proof-omission marker, so it is not counted as a certified solve.
+
+Compared with the October 12 CASC-mode FEQ campaign
+(`campaign-casc30-feq-clean`), the new run has **66 certified problems in
+common, 39 new, and 4 no longer certified**, raising strict coverage from 70 to
+105. Compared with the October 7 audited CASC-30 UEQ run, it has **113 in
+common, 5 new, and 14 no longer certified**, lowering strict coverage from 127
+to 118. These are separate campaigns and binaries, not a controlled A/B; in
+UEQ, the five rejected derivations mean the run must not be read as proof that
+all emitted refutations are valid. Per-problem outcome signatures are tracked in
+[`intermittency.md`](intermittency.md).
+
+The host had 95,969 MB RAM, below the nominal 128-GiB allowance; per-problem
+hardware records show an effective memory budget of 81,897 MB. Maximum observed
+row peaks were 64,650 MB in FEQ (`CSR037+5`) and 61,248 MB in UEQ (`ROB005-1`),
+with no memory-limit exit. Provenance is commit `dfef326c`, dirty tree, Rust
+1.99.1, binary SHA-256
+`7c9230d46623933a5ab7885d0e42bc6c9b2c02ddd4021af064da1e22bb39eb4f`; the run
+used TPTP v9.3.0. Keep the strict certified counts distinct from raw search
+coverage when quoting this campaign.
+
+For context, the October 12 CASC-mode FEQ campaign certified 70, so the new
+run has 39 certified solves not in that set and four no longer certified (66
+common). The October 7 UEQ audit certified 127; this campaign has five certified
+solves not in that set and 14 prior certified solves absent (113 common), for a
+net decrease of nine. The FEQ result is an encouraging measured increase, but
+both runs are single measurements with different binaries/hosts. The UEQ result
+is not an acceptable score improvement: its five rejected derivations must be
+resolved, and the 118 current `VerifiedGood` is below the 127 trusted campaign.
+The problem-level signatures in [`intermittency.md`](intermittency.md) include
+only strictly certified results, not the rejected raw refutations.
+
+The current verified UEQ CASC-30 score remains the **127/300** result from the
+October 7 audited campaign. The October 16 audit's five `VerifiedBad` outcomes
+are specifically `MVA008-1`, `MVA009-1`, `REL034-2`, `RNG009-5`, and `RNG009-7`;
+the separate missing-proof-root row is `REL045-2`. `VerifiedBad` records that
+the archived derivation failed strict replay; it is not, by itself, a diagnosis
+that all five are the same producer defect. The two MVA proof leaves do not
+match the named residual axioms, two proofs use conflicting symbol arities,
+and the RNG009-7 leaf does not match `distribute2`. Preserve these as audit
+failures until their cause is resolved and the derivations are re-audited.
+
+**HEAD re-audit (2026-10-20):** the seven archived proofs above were rechecked
+individually with a fresh release `mrs-proover --strict --no-atp` built from
+HEAD `070c7800fed2e7c34500f1e492f8c7553b125649`, against the CASC-30 corpus.
+All seven reproduced as `VerifiedBad` with the same rejection reasons recorded
+in the campaign audit. The verifier binary SHA-256 was
+`f06c373901fd8620071a164e71a74f0217f5f60a70fe95c9160ac8c07448087d`. This
+confirms the failures reproduce on current HEAD; it does not classify all of
+them as one defect or change the trusted 127/300 UEQ baseline.
+
+---
+
+## Peak memory and large proofs by division
+
+The table reports the maximum per-problem `peak_memory_mb` in the listed
+campaign and the count of emitted proofs whose `proof_bytes` is **greater than
+8 MB (8,000,000 bytes)**. Memory is the campaign row's observed per-problem
+peak, not the host's installed RAM or the configured memory ceiling. EPS
+produces model certificates rather than refutation proofs, so a proof-size count
+does not apply.
+
+| Edition | Division | Campaign | Max per-problem peak memory | Emitted proofs >8 MB |
+|:---|:---|:---|---:|---:|
+| CASC-J13 | FEQ | `~/crates/mrs-bench/results/campaign-casc-j13-W8C8J1-20261016` | 70,108 MB (`CSR025+5`) | 7 |
+| CASC-J13 | FNE | `~/crates/mrs-bench/results/campaign-casc-j13-W8C8J1-20261016` | 66,771 MB (`NLP261+1`) | 3 |
+| CASC-J13 | UEQ | `~/crates/mrs-bench/results/campaign-casc-j13-W8C8J1-20261016` | 73,685 MB (`ROB015-10`) | 0 |
+| CASC-30 | FEQ | `~/crates/mrs-bench/results/campaign-casc30-ueq-feq-W8CASCHJ1-20261016` | 64,650 MB (`CSR037+5`) | 5 |
+| CASC-30 | UEQ | `~/crates/mrs-bench/results/campaign-casc30-ueq-feq-W8CASCHJ1-20261016` | 61,248 MB (`ROB005-1`) | 0 |
+| CASC-30 | FNE | `~/crates/mrs-bench/results/campaign-casc30-fne-W8CASCHJ1-99-20261019` | 69,716 MB (`BOO109+1`) | 4 |
+| CASC-30 | EPS | `~/crates/mrs-bench/results/campaign-casc30-eps-W8CASCHJ1-01-20261019` | 33,731 MB (`SYN888-1`) | N/A (model certificates; no `proof_bytes`) |
+| CASC-30 | EPU | `~/crates/mrs-bench/results/campaign-casc30-epu-W8CASCHJ1-02-20261019` | 25,692 MB (`HWV081-1`) | 2 |
+
+These are the largest observed values and large-proof counts in the named
+campaigns, not cross-run maxima or stable properties of each division. The
+CASC-J13 UEQ row uses the combined 2026-10-16 campaign (114 generated
+refutations, 113 strict `VerifiedGood`, one `Unknown`); the separate
+syntactic-recovery run has its own artifacts and slightly different peak.
+Campaign metadata and per-row output contain the hardware, binary hash and
+raw `proof_bytes`/`proof_emitted` values used to derive the table.
 
 ---
 
@@ -45,6 +204,104 @@ and `git_dirty: true` records an incidental local modification, so the number
 belongs to the merge rather than to the branch tip in isolation. The archived
 streams confirm which changes ran: every solved row carries `cert_tier=2` and
 `stopped=portfolio`.
+
+## `casc-30` EPS, 2026-10-19 CASC-mode campaign
+
+`campaign-casc30-eps-W8CASCHJ1-01-20261019` ran the complete 100-problem EPS
+division with `MRS_HARDWARE=casc`, eight workers, `jobs=1`, and the official
+120-second clock. It returned **44 `Satisfiable` answers**; strict model audit
+certified **40**, found **0 invalid models**, and left **4 inconclusive**. The
+remaining 56 problems returned no model answer (10 `GaveUp`, 46 `Timeout`).
+The four inconclusive model checks are `NLP115-1`, `NLP118-1`, `NLP120-1`, and
+`NLP123-1`.
+
+Compared with `cert-eps-20260928`, all 38 previously certified models are
+retained, and `SYN441-1` and `SYN529-1` are newly certified: **+2 certified
+models, no certified-model regressions**. The four inconclusive model checks are
+unchanged. Thus raw and certified coverage both rise from 42/38 to 44/40. The
+models for `SYN441-1` and `SYN529-1` were inconclusive in the September run, so
+these are also two model-checking recoveries, not merely new solver answers.
+Compared with `cert-eps-20260926`, the run retains all four previously
+certified models and adds 36, with no losses. These are archived model-set
+comparisons across different builds and campaigns, not a matched A/B.
+
+The run used an 8-physical-core Xeon E5-2407 host with 96,350 MB RAM, below the
+nominal 128-GiB CASC allowance; the prover reported 81,897 MB effective memory.
+The maximum observed per-problem peak was 33,731 MB (`SYN888-1`), and no problem
+ended at a resource limit. On `SYN441-1` and `SYN529-1`, the portfolio worker was
+terminated at the 118-second division budget after the certification worker had
+already returned a verified model. The certified `Satisfiable` result remained
+valid in both cases.
+
+Provenance: `run_meta.json` records commit `40278337`, `git_dirty=true`, Rust
+1.99.1, and binary SHA-256
+`a2f8178145f688bdf1deeb47648938d88d7d0039a19d8754237901aa458b046d`. See the
+[EPS certification summary](../CERTIFICATION_STATUS.md) and the EPS
+[intermittency list](intermittency.md).
+
+## `casc-30` EPU, 2026-10-19 CASC-mode campaign
+
+`campaign-casc30-epu-W8CASCHJ1-02-20261019` ran all 100 EPU problems with
+`MRS_HARDWARE=casc`, eight workers, `jobs=1`, and the official 120-second
+clock. It generated **11 refutations**; all **11 are strict `VerifiedGood`**,
+with zero `VerifiedBad`, checker timeouts, or inconclusive proofs. The other
+89 rows were 27 `GaveUp` and 62 `Timeout`.
+
+This is **two more strictly certified solves** than both `cert-epu-20260926`
+and `campaign-casc30-epu-W8C8J1-20261002`: all nine previously certified
+problems remain certified, and `HWV078-1` and `MSC024-1` are new. Neither
+earlier audit contained a `VerifiedBad` proof. This is a genuine full-division
+gain in the archived strict solve set, not yet a replicated estimate of the
+coverage rate.
+
+Both new proofs came from the bounded EPR equality route (`epr_route=epr_equality`):
+`HWV078-1` refuted in 53.4 s with a 52,857-node, 13,382,823-byte proof emitted
+by `derivation_loop`; `MSC024-1` refuted in 4.5 s with a 26,189-node,
+8,057,596-byte proof emitted by `lrat_lift`. The former 8-MiB proof-output cap
+would have omitted `HWV078-1`; the current 32-MiB default allowed strict
+replay. These successes address two earlier failure modes: the HWV078-1
+ground-fallback proof extraction failure and the MSC024-1 grounding/LRAT
+reconstruction gap. See UI-5 in
+[`policies/unresolved-issues.md`](../policies/unresolved-issues.md).
+
+The eight-physical-core host had 95,979 MB RAM, below the nominal 128-GiB CASC
+allowance; the prover reported 81,582 MB effective memory. Peak observed
+per-problem memory was 25,692 MB (`HWV081-1`); no problem hit a resource limit.
+Provenance: commit `40278337`, dirty tree, Rust 1.99.1, binary SHA-256
+`947aba9b604307f33e86d595b6112def78b42925f3a6ebeefac114aaf7cb9c96`. This is
+one CASC-shaped measurement, so repeat the paired grounding-off/on comparison
+at the same 8-core, `jobs=1` shape before attributing the gain causally to the
+EPR grounding change. Per-problem solve signatures are in
+[`intermittency.md`](intermittency.md).
+
+## `casc-30` FNE, 2026-10-19 CASC-mode campaign
+
+`campaign-casc30-fne-W8CASCHJ1-99-20261019` completed the full 100-problem
+division using eight workers, `MRS_HARDWARE=casc`, `jobs=1`, and the official
+240-second clock. It generated **41 theorems**, and strict audit certified
+**all 41 `VerifiedGood`**, with no `VerifiedBad`, `Unknown`, or audit timeout.
+The other outcomes were 10 `GaveUp` and 49 `Timeout`; no resource limits or
+process errors were recorded.
+
+Compared with `campaign-casc30-fne-W8C8J1-20261002`, all 30 previously
+certified problems are retained and **11 are newly certified**, with no losses.
+Compared with the October 1 concurrent `condensed` and `ref` measurements, all
+29–30 certified problems from those audits are included in the new 41. Those
+October 1 measurements ran with two jobs and share the same build but not the
+same resource conditions; they are context, not matched controls.
+
+The per-problem telemetry shows the EPR/InstGen pre-pass ran on only four
+`pure_relational_epr` rows; all four fell back after `grounding_exhausted`.
+Across these four it generated 1,338,617 grounded clauses in total (maximum
+442,641). The additional certified solves therefore cannot be attributed to
+EPR grounding from this run’s telemetry. This is a single full-division result,
+not a replicated estimate or a paired pre-pass A/B.
+
+Provenance: commit `40278337`, dirty tree, Rust 1.99.1, binary SHA-256
+`edd0ccdeadc5f8d1d2dc764c83057b851cbb45def4d64ad7ca5663c1af1133aa`. The
+8-physical-core host had 128,019 MB RAM; maximum observed per-problem peak was
+69,716 MB (`BOO109+1`). See UI-5 and the per-problem
+[`intermittency inventory`](intermittency.md).
 
 ## `casc-j13` UEQ, and a 150-problem regression
 
