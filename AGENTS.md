@@ -349,6 +349,18 @@ The question is whether those division schedules are optimal for 8 cores.
 > optimize EPS coverage. Focus EPS work on the certified path and grounding
 > tiers; see `docs/reports/benchmarks/eps-2026-09.md`.
 
+> **UEQ historical numbers — do not quote superseded/unsound runs as current scores.**
+> Historical unverified snapshots in `codex.db` (such as 257/400 for CASC-J13
+> and 222/300 for CASC-30) were derived from an older engine whose AC fallback
+> permitted invalid substitutions. Independent strict-kernel re-audits showed 82
+> of 114 audited proofs were rejected as `VerifiedBad` (see UI-1 in
+> `docs/policies/unresolved-issues.md`, `docs/CERTIFICATION_STATUS.md`, and
+> `docs/reports/benchmarks/ueq-soundness-regression-2026-10.md`). The current
+> strictly verified UEQ baseline is **107/400** on CASC-J13 (all 107
+> kernel-certified `VerifiedGood`, 0 `VerifiedBad`). Whenever reporting CASC
+> scores, never present the raw 257/400 or 222/300 numbers as valid scores
+> without explicitly stating they are superseded by soundness re-audits.
+
 ### Decision rule for implementing `--casc`
 
 A dedicated `--casc` flag (hard-coded 8-strategy per-division portfolio,

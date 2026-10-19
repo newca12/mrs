@@ -4,6 +4,25 @@ Dated, per-run artefacts. These are evidence, not current baselines: a number
 here describes the commit and configuration named in the file that produced it.
 Re-measure before quoting one.
 
+## Canonical CASC Baselines & Trust Status
+
+> **Reporting Rule:** Never quote unverified historical solve counts without stating
+> their audit status. Superseded runs that permitted unsound inferences must not be
+> presented as valid CASC scores.
+
+| Division | Edition | Evaluated | Current Verified Baseline | Historical Unverified Snapshot (`codex.db`) | Audit & Trust Notes |
+|:---|:---|---:|---:|---:|:---|
+| **UEQ** | CASC-J13 | 400 | **107 (26.8%)** | ~~257 (64.3%)~~ | Re-audits of the 257 run found 82 `VerifiedBad` / 114 proofs due to AC fallback substitutions. 107 baseline is 100% `VerifiedGood` (0 `VerifiedBad`). See UI-1. |
+| **UEQ** | CASC-30 | 300 | Pending campaign | ~~222 (74.0%)~~ | Historical 222 snapshot is superseded by the same AC soundness invalidation. |
+| **FEQ** | CASC-J13 | 300 | **64–72** | 72 (24.0%) | Validated under strict proof verification. |
+| **FEQ** | CASC-30 | 400 | **98–112** | 112 (28.0%) | 98 kernel-certified in recent verified runs. |
+| **FNE** | CASC-J13 | 100 | **35 (35.0%)** | 35 (35.0%) | Zero reference violations. |
+| **FNE** | CASC-30 | 100 | **42–43** | 43 (43.0%) | 42 solved with pre-pass off / on. |
+| **EPS** | CASC-30 | 100 | **42–44 (Satisfiable)** | 17 (17.0%) | 38–40 kernel-certified finite models on dual-search / certified track. |
+| **EPU** | CASC-30 | 100 | **18 (18.0%)** | 18 (18.0%) | Bounded EPR / resolution path. |
+
+---
+
 ## `casc-30` EPS, before and after the 2026-09 tier-routing work
 
 | file | what |

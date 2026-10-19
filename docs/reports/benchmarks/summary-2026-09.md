@@ -191,11 +191,13 @@ The Codex summary records one 8-worker run over 1,039 rows:
 |---|---:|---:|---:|
 | FNE | 100 | 43 | 43.0% |
 | FEQ | 400 | 112 | 28.0% |
-| UEQ | 300 | 222 | 74.0% |
+| UEQ* | 300 | 222* | 74.0%* |
 | EPU | 100 | 18 | 18.0% |
 | EPS | 100 | 17 | 17.0% |
 | ICU | 39 | 7 | 17.9% |
 | Total | 1,039 | 419 | 40.3% |
+
+*\* **UEQ caveat:** Superseded historical snapshot. Proofs in this older run were derived before AC fallback soundness fixes and are not strictly verified. See UI-1 in `docs/policies/unresolved-issues.md`.*
 
 The run had no reference-status violations. ICU also contained the recorded
 OS-OOM event and must not be treated as an ordinary performance result.
@@ -232,8 +234,10 @@ The stored 800-row run records:
 |---|---:|---:|---:|
 | FNE | 100 | 35 | 35.0% |
 | FEQ | 300 | 72 | 24.0% |
-| UEQ | 400 | 257 | 64.3% |
+| UEQ* | 400 | 257* | 64.3%* |
 | Total | 800 | 364 | 45.5% |
+
+*\* **UEQ caveat:** Superseded. Independent re-audits showed historical AC fallback unsoundness (82 `VerifiedBad` on 114 audited proofs). Current certified baseline is **107/400 (26.8%)** (`VerifiedGood`, 0 `VerifiedBad`). See below and UI-1 in `docs/policies/unresolved-issues.md`.*
 
 There were no errors, no `ko` rows, and no reference or polarity violations.
 
