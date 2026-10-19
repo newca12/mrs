@@ -46,12 +46,11 @@ source tree is not modified by these negative checks.
 `runtime-check.py` compiles the verified core and runs DAG regressions in a
 temporary directory.
 
-The checks use Verus `0.2026.10.04.426d8b0` (the latest published release).
-Verus `main` currently declares Rust `1.99.1`, matching
-[`verus/rust-toolchain.toml`](https://github.com/verus-lang/verus/blob/main/rust-toolchain.toml)
-but this release binary reports its effective toolchain as Rust `1.98.1` and
-overrides the request. The verification log records both. Verus uses its
-bundled Z3. Results:
+The checks use Verus `0.2026.10.18.7d82994` (the latest published release).
+This release declares Rust `1.99.1` in
+[`verus/rust-toolchain.toml`](https://github.com/verus-lang/verus/blob/release/0.2026.10.18.7d82994/rust-toolchain.toml),
+matching the requested toolchain. The verification log records both requested
+and effective toolchains. Verus uses its bundled Z3. Results:
 `5 verified, 0 errors` for the original pilot, `204 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
@@ -127,7 +126,7 @@ The archived c502 clauses are kept in
 current checker gives no verdict for c502 because it is outside the supported
 ground-unit fragment.
 
-Verus `0.2026.10.04.426d8b0` is pinned in
+Verus `0.2026.10.18.7d82994` is pinned in
 [`verus-toolchain.json`](verus-toolchain.json); CI downloads and checksum-checks
 the corresponding Linux binary. CI runs this as a regular required project
 check. See [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md)

@@ -49,12 +49,11 @@ verified or losslessly checked by the verified side, it remains trusted. A
 successful verifier run is evidence about the checked source under this TCB; it
 does not by itself certify arbitrary TSTP proofs or the MRS strict-kernel code.
 
-The Verus executable is pinned to the latest published release binary with a
-verified SHA-256. The requested Rust toolchain follows current Verus `main`'s
-`rust-toolchain.toml` (currently Rust `1.99.1`), while the latest release still
-overrides it with its bundled Rust `1.98.1`. `verify.sh` records both values.
-Updating either pin requires a fresh full verification run and recorded
-evidence.
+The Verus executable is pinned to release `0.2026.10.18.7d82994` with a
+verified Linux x86_64 SHA-256. The release's `rust-toolchain.toml` declares
+Rust `1.99.1`, matching the requested toolchain. `verify.sh` records both
+requested and effective values. Updating either pin requires a fresh full
+verification run and recorded evidence.
 
 ## Verification evidence
 
