@@ -829,6 +829,10 @@ archived cases, and a versioned support declaration.
 - **DONE, mutation gates:** `verify.sh` requires sixteen verifier-negative
   mutations and three compiled-runtime mutations to fail; this is a targeted set,
   not a complete threat-model proof.
+- **DONE, no-cheating self-test:** each module is checked with Verus
+  `--no-cheating`, and the mutation gate injects an
+  `#[verifier::assume_specification]` probe and requires that strict option to
+  reject it. Broader escape-hatch and ignored-module audits remain part of M0.
 - **PARTIAL, reproducibility gate:** `runtime-check.py` compiles the checked
   Verus core twice and requires byte-identical executable hashes before
   running the fixtures. This currently establishes same-host reproducibility,
@@ -927,8 +931,8 @@ satisfiability/model claims, and unrestricted full TSTP.
 - [x] Pin Verus/toolchain and add the verification script plus CI workflow (M0
   partial; fresh installation and all-module verification reproduce in a
   detached clean worktree; the source audit and `--no-cheating` gate reject
-  verifier-recognized escape hatches; proof corpus and broader mutation audits
-  remain TODO).
+  verifier-recognized escape hatches, including a negative self-test for
+  `assume_specification`; proof corpus and broader mutation audits remain TODO).
 - [x] Implement and verify the restricted ground unit-superposition checker,
   soundness lemma, and forged-field examples (M3 partial).
 - [x] Preserve the archived c502 clauses as a fixture and verify a manually

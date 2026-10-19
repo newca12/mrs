@@ -101,6 +101,31 @@ def main() -> int:
     ]
 
     with tempfile.TemporaryDirectory(prefix="mrs-verus-mutation-") as temp_dir:
+        cheating_path = pathlib.Path(temp_dir) / "first_order_core_with_assume_specification.rs"
+        cheating_path.write_text(
+            source.replace(
+                "pub enum ExecTerm {",
+                "#[verifier::assume_specification]\n"
+                "pub fn verifier_cheat_probe() {}\n\n"
+                "pub enum ExecTerm {",
+                1,
+            )
+        )
+        if cheating_path.read_text() == source:
+            print("assume_specification mutation anchor is missing", file=sys.stderr)
+            return 2
+        no_cheating = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", str(cheating_path)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if no_cheating.returncode == 0:
+            print("Verus --no-cheating accepted assume_specification probe", file=sys.stderr)
+            return 1
+        print("mutation rejected: Verus --no-cheating rejects assume_specification")
+
         for index, (name, correct, mutated) in enumerate(mutations):
             if source.count(correct) != 1:
                 print(f"{name}: mutation anchor is missing or ambiguous", file=sys.stderr)

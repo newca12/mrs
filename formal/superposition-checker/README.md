@@ -52,6 +52,8 @@ source tree is not modified by these negative checks.
 temporary directory. It performs the compile twice and requires byte-identical
 runtime artifacts before executing the regressions; this is a same-host
 determinism check, not a cross-host reproducible-build claim.
+The mutation gate also injects an `assume_specification` probe into a temporary
+source copy and requires Verus `--no-cheating` to reject it.
 
 The checks use Verus `0.2026.10.18.7d82994` (the latest published release).
 This release declares Rust `1.99.1` in

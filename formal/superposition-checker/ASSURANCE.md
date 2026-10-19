@@ -118,6 +118,8 @@ charge during input membership checks, and remove target-parent freshening.
 The gate also compiles
 and runs positive/negative DAG examples via `runtime-check.py`; the ordinary Rust `main`
 assertion is a test oracle outside the verified certification API.
+The mutation suite injects `#[verifier::assume_specification]` into a temporary
+source copy and requires `--no-cheating` to reject it.
 Resolution-step fixtures additionally cover complementary pivots, wrong symbols,
 forged conclusions, out-of-range pivots and work-limit exhaustion.
 Resolution DAG fixtures cover unit and context-bearing refutations, omitted
