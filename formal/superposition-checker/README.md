@@ -41,8 +41,9 @@ lookup with root lookup, omit appending the rewritten target clause, skip DAG-st
 replay, ignore its cited source parent, or skip replay during DAG-node validation.
 The verification gate requires Verus to reject all sixteen broken refinements,
 including skipped node validation, forged input membership, forward parents,
-and nonempty-root acceptance. A separate compiled-runtime mutation removes the
-root-ancestor closure guard and must fail the disconnected-node regression. The
+and nonempty-root acceptance. Compiled-runtime mutations remove the root-ancestor
+closure guard, repeated input-comparison node charge and target-parent freshness
+guard; each must fail its corresponding regression. The
 source tree is not modified by these negative checks.
 `runtime-check.py` compiles the verified core and runs DAG regressions in a
 temporary directory. It performs the compile twice and requires byte-identical

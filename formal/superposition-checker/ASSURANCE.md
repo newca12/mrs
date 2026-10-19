@@ -108,8 +108,10 @@ the cited source parent, and skipping local replay in DAG-node validation. Each 
 fail Verus verification. This samples key executable/model refinement
 contracts; it is not comprehensive threat-model coverage.
 The four Verus-negative certification mutations skip node validation, forge
-input membership, allow forward parents and accept a nonempty root. A separate
-compiled-runtime mutation skips root-ancestor closure. The gate also compiles
+input membership, allow forward parents and accept a nonempty root. Compiled-
+runtime mutations skip root-ancestor closure, omit the repeated node-clause
+charge during input membership checks, and remove target-parent freshening.
+The gate also compiles
 and runs positive/negative DAG examples via `runtime-check.py`; the ordinary Rust `main`
 assertion is a test oracle outside the verified certification API.
 Resolution-step fixtures additionally cover complementary pivots, wrong symbols,
