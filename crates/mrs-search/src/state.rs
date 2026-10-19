@@ -732,6 +732,55 @@ mod tests {
         assert!(matches!(normalized.source, ClauseSource::Input { .. }));
     }
 
+    #[test]
+    fn ac_normalization_retains_same_name_unary_terms() {
+        use mrs_core::clause::ClauseSource;
+        use mrs_core::{Atom, Literal, Term};
+
+        let mut symbols = SymbolTable::new();
+        let f = symbols.intern("arity_shared_f");
+        let a = symbols.intern("arity_shared_a");
+        let b = symbols.intern("arity_shared_b");
+        let unary = Term::app(f, vec![Term::constant(a)]);
+        let binary = Term::app(f, vec![unary.clone(), Term::constant(b)]);
+        let clause = mrs_core::clause::Clause::new(
+            ClauseId(0),
+            vec![Literal::pos(Atom::eq(binary, Term::constant(a)))],
+            ClauseSource::Input {
+                name: "arity_shared".into(),
+                role: "axiom".into(),
+            },
+        );
+        let mut state = SearchState::new(
+            vec![clause],
+            ClauseIdGen::new(),
+            Arc::new(SymbolConfig::default()),
+            Arc::new(symbols),
+            false,
+        );
+        let mut ac = HashSet::default();
+        ac.insert(f);
+
+        let original = state.clause_store.get(&ClauseId(0)).unwrap().clone();
+        let normalized = state.ac_normalize_clause(original, &ac);
+        let legacy = state.term_bank.clause_to_legacy(&normalized);
+        let Atom::Eq(left, right) = &legacy.literals[0].atom else {
+            panic!("expected equality clause");
+        };
+        let outer = [left, right]
+            .into_iter()
+            .find(|term| matches!(term, Term::App(symbol, args) if *symbol == f && args.len() == 2))
+            .expect("outer application must be retained");
+        let Term::App(symbol, args) = outer else {
+            unreachable!()
+        };
+        assert_eq!(*symbol, f);
+        assert_eq!(args.len(), 2);
+        assert!(
+            matches!(&args[0], Term::App(inner, inner_args) if *inner == f && inner_args.len() == 1)
+        );
+    }
+
     #[cfg(feature = "ml-guidance")]
     #[test]
     fn benchmark_scoring_overhead() {

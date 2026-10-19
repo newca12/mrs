@@ -511,7 +511,11 @@ pub fn flatten_ac(
     while let Some(current) = stack.pop() {
         let current = deref_id(current, subst, bank);
         if let TermNode::App(head, args) = bank.get(current)
+            // The laws recognized as AC are binary. TPTP allows the same
+            // symbol spelling at other arities; those applications remain
+            // opaque operands rather than being flattened by arity alone.
             && *head == symbol
+            && args.len() >= 2
         {
             for arg in args.iter().rev() {
                 stack.push(*arg);

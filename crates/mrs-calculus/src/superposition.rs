@@ -760,15 +760,17 @@ fn assoc_occurs(var: u32, term: TermId, subst: &IdSubstitution, bank: &TermBank)
 /// Rebuilds an AC term from a non-empty argument list in the prover's canonical
 /// shape: right-nested, matching [`TermBank::ac_normalize`].
 fn rebuild_ac_term(args: Vec<TermId>, symbol: SymbolId, bank: &mut TermBank) -> TermId {
+    if args.len() == 1 {
+        // The caller is rebuilding an AC subset rewrite after replacing the
+        // consumed operands. Returning its only operand expresses that rewrite
+        // and does not manufacture an f/1 application from a binary AC step.
+        return args[0];
+    }
     let mut rebuilt = args[args.len() - 1];
     for &arg in args[..args.len() - 1].iter().rev() {
         rebuilt = bank.intern_app(symbol, smallvec::smallvec![arg, rebuilt]);
     }
-    if args.len() == 1 {
-        bank.intern_app(symbol, smallvec::smallvec![args[0]])
-    } else {
-        rebuilt
-    }
+    rebuilt
 }
 
 type LiteralTermPositions = Vec<(usize, TermId, Vec<Vec<usize>>)>;
@@ -1227,5 +1229,72 @@ mod tests {
                 // Note: parent[1] is the original target id, not the renamed one
             }
         }
+    }
+
+    #[test]
+    fn ac_rebuild_with_one_operand_does_not_invent_unary_application() {
+        let mut symbols = SymbolTable::new();
+        let f = symbols.intern("f");
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let d = symbols.intern("d");
+        let mut bank = TermBank::new();
+        let a = bank.intern_app(a, smallvec::smallvec![]);
+        let b = bank.intern_app(b, smallvec::smallvec![]);
+        let d = bank.intern_app(d, smallvec::smallvec![]);
+
+        assert_eq!(rebuild_ac_term(vec![a], f, &mut bank), a);
+
+        let from = bank.intern_app(f, smallvec::smallvec![a, b]);
+        let mut commutative = HashSet::default();
+        commutative.insert(f);
+        let mut associative = HashSet::default();
+        associative.insert(f);
+        let mut budget = AcSubsetBudget::new(32);
+        let (_, replacement) = ac_subset_replacement(
+            from,
+            d,
+            from,
+            &mut bank,
+            &commutative,
+            &associative,
+            &HashSet::default(),
+            &mut budget,
+        )
+        .expect("whole-term AC match succeeds");
+        assert_eq!(replacement, d);
+    }
+
+    #[test]
+    fn associative_single_operand_binding_is_not_wrapped_in_unary_symbol() {
+        let mut symbols = SymbolTable::new();
+        let f = symbols.intern("assoc_single_f");
+        let a = symbols.intern("assoc_single_a");
+        let b = symbols.intern("assoc_single_b");
+        let c = symbols.intern("assoc_single_c");
+        let mut bank = TermBank::new();
+        let x = bank.intern_var(0);
+        let a = bank.intern_app(a, smallvec::smallvec![]);
+        let b = bank.intern_app(b, smallvec::smallvec![]);
+        let c = bank.intern_app(c, smallvec::smallvec![]);
+        let from = bank.intern_app(f, smallvec::smallvec![x, a]);
+        let target = bank.intern_app(f, smallvec::smallvec![c, a]);
+        let mut associative = HashSet::default();
+        associative.insert(f);
+        let mut budget = AcSubsetBudget::new(32);
+
+        let (subst, replacement) = assoc_replacement(
+            from,
+            b,
+            target,
+            &mut bank,
+            &associative,
+            &HashSet::default(),
+            &mut budget,
+        )
+        .expect("ordered associative match succeeds");
+
+        assert_eq!(replacement, b);
+        assert_eq!(subst.get(0), Some(c));
     }
 }

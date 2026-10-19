@@ -3573,18 +3573,20 @@ fn verify_leaf<'a>(
     // one name twice (see above), so a leaf is substantiated when ANY of
     // them matches in role and formula.
     let proof_formula = lower_annotated(symbols, node.formula, limits)?;
-    let mut named_match = false;
     let mut role_match = false;
     // A comparison that ran out of budget has not decided anything, so it must
     // not be allowed to fall through to the `does not match` rejection below:
     // that would report the checker giving up as a broken proof.
     let mut undecided: Option<&'static str> = None;
+    let has_named_formula = problem
+        .formulas
+        .iter()
+        .any(|formula| formula.name() == annotation.1);
     for expected in problem
         .formulas
         .iter()
         .filter(|formula| formula.name() == annotation.1)
     {
-        named_match = true;
         if !roles_compatible(node.role, expected.role()) {
             continue;
         }
@@ -3596,7 +3598,7 @@ fn verify_leaf<'a>(
             MatchOutcome::Differ => {}
         }
     }
-    if !named_match {
+    if !has_named_formula {
         let mut provenance_match = false;
         for expected in problem.formulas.iter().filter(|formula| {
             formula
@@ -9385,7 +9387,11 @@ fn ac_term_matches(
         (Term::App(left_symbol, left_args), Term::App(right_symbol, right_args))
             if left_symbol == right_symbol =>
         {
-            if associative.contains(left_symbol) && commutative.contains(left_symbol) {
+            if associative.contains(left_symbol)
+                && commutative.contains(left_symbol)
+                && left_args.len() >= 2
+                && right_args.len() >= 2
+            {
                 let left_leaves = flatten_ac_term(left, *left_symbol, associative);
                 let right_leaves = flatten_ac_term(right, *right_symbol, associative);
                 if left_leaves.len() != right_leaves.len() {
@@ -9493,10 +9499,13 @@ fn flatten_ac_term<'a>(
     associative: &HashSet<mrs_core::SymbolId>,
 ) -> Vec<&'a Term> {
     match term {
-        Term::App(current, args) if *current == symbol && associative.contains(current) => args
-            .iter()
-            .flat_map(|arg| flatten_ac_term(arg, symbol, associative))
-            .collect(),
+        Term::App(current, args)
+            if *current == symbol && args.len() >= 2 && associative.contains(current) =>
+        {
+            args.iter()
+                .flat_map(|arg| flatten_ac_term(arg, symbol, associative))
+                .collect()
+        }
         _ => vec![term],
     }
 }
@@ -10583,6 +10592,11 @@ fn ac_subset_superposition_replay(
 }
 
 fn rebuild_ac_term(mut operands: Vec<Term>, symbol: mrs_core::SymbolId) -> Term {
+    if operands.len() == 1 {
+        // AC rewriting works in a semigroup, not a monoid. If the rewrite
+        // consumes every operand, there is no remaining f-context to rebuild.
+        return operands.pop().expect("one operand");
+    }
     let mut result = operands
         .pop()
         .expect("AC subset rewrite retains an operand");
@@ -11147,6 +11161,10 @@ fn ac_superposition_replay(
                                 }
                             }
                             clause_alpha_equiv(&expected, goal)
+                                || clause_alpha_equiv(
+                                    &condense_clause(&expected),
+                                    &condense_clause(goal),
+                                )
                                 || ac_clause_alpha_equiv(
                                     &expected,
                                     goal,
@@ -14382,6 +14400,125 @@ mod tests {
                 &HashSet::new(),
             ),
             KernelVerdict::Certified
+        );
+    }
+
+    #[test]
+    fn ac_subset_superposition_collapsing_the_whole_target_returns_rhs() {
+        let mut symbols = SymbolTable::new();
+        let f = symbols.intern("whole_subset_f");
+        let p = symbols.intern("whole_subset_p");
+        let a = symbols.intern("whole_subset_a");
+        let b = symbols.intern("whole_subset_b");
+        let d = symbols.intern("whole_subset_d");
+        let x = Term::var(0);
+        let y = Term::var(1);
+        let commutativity = Formula::atom(Atom::eq(
+            Term::app(f, vec![x.clone(), y.clone()]),
+            Term::app(f, vec![y, x]),
+        ));
+        let associativity = Formula::atom(Atom::eq(
+            Term::app(
+                f,
+                vec![Term::app(f, vec![Term::var(0), Term::var(1)]), Term::var(2)],
+            ),
+            Term::app(
+                f,
+                vec![Term::var(0), Term::app(f, vec![Term::var(1), Term::var(2)])],
+            ),
+        ));
+        let source = Formula::atom(Atom::eq(
+            Term::app(f, vec![Term::constant(a), Term::constant(b)]),
+            Term::constant(d),
+        ));
+        let target = Formula::atom(Atom::Pred(
+            p,
+            vec![Term::app(f, vec![Term::constant(a), Term::constant(b)])],
+        ));
+        let conclusion = Formula::atom(Atom::Pred(p, vec![Term::constant(d)]));
+
+        assert_eq!(
+            verify_ac_superposition(
+                &[source, target, commutativity, associativity],
+                &conclusion,
+                VerificationLimits::default(),
+                &HashSet::new(),
+                &HashSet::new(),
+            ),
+            KernelVerdict::Certified
+        );
+    }
+
+    #[test]
+    fn background_commutativity_replays_whole_term_superposition() {
+        let problem = "fof(plus_commutative, axiom, ![X,Y] : plus(X,Y) = plus(Y,X)).\n\
+                       fof(one, axiom, plus(int_one,K) = K).\n\
+                       fof(target, axiom, p(plus(K,int_one)) | q).\n\
+                       fof(np, axiom, ~p(K)).\n\
+                       fof(nq, axiom, ~q).";
+        let proof = "fof(plus_commutative, axiom, ![X,Y] : plus(X,Y) = plus(Y,X), file('problem.p', plus_commutative)).\n\
+                     fof(one, axiom, plus(int_one,K) = K, file('problem.p', one)).\n\
+                     fof(target, axiom, p(plus(K,int_one)) | q, file('problem.p', target)).\n\
+                     fof(np, axiom, ~p(K), file('problem.p', np)).\n\
+                     fof(nq, axiom, ~q, file('problem.p', nq)).\n\
+                     cnf(sp, plain, p(K) | q, inference(superposition, [status(thm)], [one,target])).\n\
+                     cnf(r1, plain, q, inference(resolution, [status(thm)], [sp,np])).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [r1,nq])).";
+
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn background_commutativity_replay_condenses_shared_avatar_literals() {
+        let problem = "fof(plus_commutative, axiom, ![X,Y] : plus(X,Y) = plus(Y,X)).\n\
+                       fof(one, axiom, plus(int_one,K) = K).\n\
+                       fof(target, axiom, ~int_leq(plus(K,int_one),n) | ~spl0_43 | ~spl0_1899).";
+        let proof = "fof(plus_commutative, axiom, ![X,Y] : plus(X,Y) = plus(Y,X), file('problem.p', plus_commutative)).\n\
+                     fof(one, axiom, plus(int_one,K) = K, file('problem.p', one)).\n\
+                     cnf(eq, plain, plus(int_one,K) = K | ~spl0_43 | ~spl0_45 | ~spl0_1012 | ~spl0_5660, inference(avatar_component_clause, [status(esa)], [])).\n\
+                     cnf(target, plain, ~int_leq(plus(K,int_one),n) | ~spl0_43 | ~spl0_1899, inference(avatar_component_clause, [status(esa)], [])).\n\
+                     cnf(sp, plain, ~int_leq(K,n) | ~spl0_43 | ~spl0_45 | ~spl0_1012 | ~spl0_1899 | ~spl0_5660, inference(superposition, [status(thm)], [eq,target])).";
+
+        // Exercise the replay directly: the in-memory fixture intentionally
+        // omits the AVATAR split DAG, while the inference is a sound rewrite
+        // with duplicated context literals condensed in its conclusion.
+        let mut symbols = SymbolTable::new();
+        let parse = |text: &str, symbols: &mut SymbolTable| {
+            let parsed = parse_tptp(text).expect("fixture parses");
+            parsed
+                .formulas
+                .iter()
+                .map(|formula| lower_annotated(symbols, formula, VerificationLimits::default()))
+                .collect::<Result<Vec<_>, _>>()
+                .expect("fixture lowers")
+        };
+        let problem_formulas = parse(problem, &mut symbols);
+        let proof_formulas = parse(proof, &mut symbols);
+        let mut commutative = HashSet::new();
+        let associative = HashSet::new();
+        for formula in problem_formulas {
+            if let Some(clause) = clause_from_formula(&formula, VerificationLimits::default())
+                && clause.len() == 1
+                && let Atom::Eq(left, right) = &clause[0].atom
+                && let Some((symbol, AcAxiomKind::Commutative)) = classify_ac_axiom(left, right)
+            {
+                commutative.insert(symbol);
+            }
+        }
+        let eq = clause_from_formula(&proof_formulas[2], VerificationLimits::default()).unwrap();
+        let target =
+            clause_from_formula(&proof_formulas[3], VerificationLimits::default()).unwrap();
+        let goal = clause_from_formula(&proof_formulas[4], VerificationLimits::default()).unwrap();
+        assert_eq!(
+            ac_superposition_replay(
+                &eq,
+                &target,
+                &goal,
+                &commutative,
+                &associative,
+                VerificationLimits::default(),
+            ),
+            AcReplay::Matched
         );
     }
 

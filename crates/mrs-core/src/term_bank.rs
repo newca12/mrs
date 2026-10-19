@@ -475,13 +475,17 @@ impl TermBank {
             .map(|&arg| self.ac_normalize(arg, ac_syms))
             .collect();
 
-        if ac_syms.contains(&sym) {
+        if ac_syms.contains(&sym) && norm_args.len() >= 2 {
             let mut leaves = Vec::new();
             let mut stack = norm_args.into_iter().collect::<Vec<_>>();
             stack.reverse();
             while let Some(current) = stack.pop() {
                 match self.get(current) {
-                    TermNode::App(g, child_args) if *g == sym => {
+                    // TPTP is untyped: f/1 and f/2 are distinct
+                    // applications, even when they share the spelling `f`.
+                    // Do not flatten unary f nodes: they are a distinct
+                    // arity from the associative symbol's compound forms.
+                    TermNode::App(g, child_args) if *g == sym && child_args.len() >= 2 => {
                         for &child in child_args.iter().rev() {
                             stack.push(child);
                         }
@@ -497,7 +501,7 @@ impl TermBank {
             if leaves.is_empty() {
                 self.intern_app(sym, smallvec![])
             } else if leaves.len() == 1 {
-                self.intern_app(sym, smallvec![leaves[0]])
+                leaves[0]
             } else {
                 let mut rebuilt = *leaves.last().unwrap();
                 for &leaf in leaves.iter().rev().skip(1) {
@@ -870,6 +874,18 @@ mod tests {
         assert_eq!(
             norm_f_b_a, norm_f_a_b,
             "f(b, a) and f(a, b) must normalize to the same term"
+        );
+
+        // Explicit unary terms remain distinct from their operands.
+        let unary_f_a = bank.intern_app(f, smallvec![a_term]);
+        assert_eq!(bank.ac_normalize(unary_f_a, &ac_syms), unary_f_a);
+
+        // A unary same-name child is opaque when flattening a surrounding
+        // binary AC application; the outer node remains binary.
+        let binary_f_unary_f_a = bank.intern_app(f, smallvec![unary_f_a, b_term]);
+        let normalized_binary = bank.ac_normalize(binary_f_unary_f_a, &ac_syms);
+        assert!(
+            matches!(bank.get(normalized_binary), TermNode::App(sym, args) if *sym == f && args.len() == 2)
         );
 
         // 2. Test associativity: f(f(a, b), c) -> f(a, f(b, c))
