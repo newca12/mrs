@@ -47,7 +47,11 @@ APIs:
   timeout, process error or malformed response suppresses certification.
 * `mrs_proover::strict::{verify_loaded_job_with_verus_shadow,
   verify_loaded_job_with_verus_gate}`: loaded-job integration, including linked
-  problem provenance. Includes must already have been resolved by the loader.
+  problem provenance. The loader recursively resolves includes and applies each
+  include selection only to formulas imported from that target file, then merges
+  the selected closure and clears directives before formal-adapter entry. Loader
+  tests cover nested selection. The resolver/parser remain trusted host code;
+  the Verus bridge itself rejects residual include directives.
 
 The CLI example reads standalone files; unresolved includes return Unknown.
 These APIs do not change the default strict kernel or prover output behavior.

@@ -88,7 +88,6 @@ pub fn load(proof_path: &Path, problems_root: Option<&Path>) -> Result<LoadedJob
                     base_dir,
                     &mut problem_includes,
                 )?;
-
                 (Some(path), Some(parsed))
             }
             None => (None, None),
@@ -108,6 +107,7 @@ pub fn load(proof_path: &Path, problems_root: Option<&Path>) -> Result<LoadedJob
 
     // Merge included formulas into the main problem
     if let Some(ref mut prob) = job.problem {
+        prob.clear_includes();
         for inc in &job.problem_includes {
             let inc_tptp: &mrs_tptp::ast::TPTPProblem<'static> = inc;
             prob.append_formulas(&inc_tptp.formulas);
@@ -137,6 +137,7 @@ pub fn load_text(
         include_root,
         &mut problem_includes,
     )?;
+    problem.clear_includes();
     for inc in &problem_includes {
         let inc_tptp: &mrs_tptp::ast::TPTPProblem<'static> = inc;
         problem.append_formulas(&inc_tptp.formulas);
@@ -151,6 +152,85 @@ pub fn load_text(
     })
 }
 
+#[cfg(test)]
+mod include_selection_tests {
+    use super::*;
+
+    #[test]
+    fn include_selection_imports_only_named_formulas_and_clears_resolved_directives() {
+        let root =
+            std::env::temp_dir().join(format!("mrs_include_selection_{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("selected.p"),
+            "cnf(wanted,axiom,p). cnf(unselected,axiom,q).\n",
+        )
+        .unwrap();
+        let job = load_text(
+            "include('selected.p',[wanted]).\n".into(),
+            "% Proof : input\ncnf(wanted,axiom,p,file('input',wanted)).\n".to_owned(),
+            &root,
+        )
+        .unwrap();
+        let problem = job.problem.as_ref().unwrap().problem();
+        assert!(problem.includes.is_empty());
+        assert_eq!(
+            problem
+                .formulas
+                .iter()
+                .filter(|f| f.name() == "wanted")
+                .count(),
+            1
+        );
+        assert_eq!(
+            problem
+                .formulas
+                .iter()
+                .filter(|f| f.name() == "unselected")
+                .count(),
+            0
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn nested_include_selection_is_respected_at_each_level() {
+        let root = std::env::temp_dir().join(format!(
+            "mrs_nested_include_selection_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("outer.p"),
+            "include('inner.p',[chosen]).\ncnf(outer_unselected,axiom,r).\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("inner.p"),
+            "cnf(chosen,axiom,p). cnf(inner_unselected,axiom,q).\n",
+        )
+        .unwrap();
+        let job = load_text(
+            "include('outer.p',[outer_unselected]).\n".into(),
+            "% Proof : input\ncnf(outer_unselected,axiom,r,file('input',outer_unselected)).\n"
+                .into(),
+            &root,
+        )
+        .unwrap();
+        let names: Vec<_> = job
+            .problem
+            .as_ref()
+            .unwrap()
+            .problem()
+            .formulas
+            .iter()
+            .map(|formula| formula.name())
+            .collect();
+        assert_eq!(names, vec!["chosen", "outer_unselected"]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
 fn resolve_includes_recursive(
     proof_path: &Path,
     problems_root: Option<&Path>,
@@ -162,7 +242,7 @@ fn resolve_includes_recursive(
         let rel = inc.file_name;
         let candidate = resolve_problem_path_with_base(proof_path, problems_root, base_dir, rel);
         if let Some(path) = candidate {
-            let parsed = parse_tptp_file(&path)
+            let mut parsed = parse_tptp_file(&path)
                 .map_err(|e| LoadError::ParseProblem(e.to_string(), path.clone()))?;
 
             let inc_dir = path.parent().unwrap_or(Path::new("."));
@@ -174,6 +254,8 @@ fn resolve_includes_recursive(
                 problem_includes,
             )?;
 
+            parsed.retain_formula_names(inc.selection.as_deref());
+            parsed.clear_includes();
             problem_includes.push(parsed);
         } else {
             return Err(LoadError::ReadProblem(

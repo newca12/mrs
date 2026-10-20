@@ -30,6 +30,10 @@ Exact-atom resolution has a separate semantic theorem and executable checker;
 it removes one occurrence per parent with identical complementary atoms and
 does not implement pivot unification. The complete archived SWV406+1 proof is
 not present in the three-clause fixture and is not certified by these tests.
+Loaded-job bridge tests also resolve selected and nested includes through the
+ProoVer loader, then require the same formal DAG gate to accept; introducing an
+unselected premise into the resolved problem is rejected by the adapter. Include
+path resolution and selection filtering remain trusted loader behavior.
 
 Build evidence records source commit/dirty state/hash, artifact SHA-256, toolchain,
 support manifest and strict verification flags. Artifact execution uses a private

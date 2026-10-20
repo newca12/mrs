@@ -831,10 +831,76 @@ pub fn check_tptp_dag(
     limits: VerificationLimits,
     config: &VerusConfig,
 ) -> ShadowReport {
-    match dag_request(problem, proof, source, limits) {
+    let (problem, proof) = match (resolved_problem_snapshot(problem), owned_snapshot(proof)) {
+        (Ok(problem), Ok(proof)) => (problem, proof),
+        (Err(error), _) | (_, Err(error)) => return unknown(error),
+    };
+    match dag_request(problem.problem(), proof.problem(), source, limits) {
         Ok((bytes, count)) => run(config, bytes, count, true),
         Err(e) => unknown(e),
     }
+}
+
+/// Make the included-premise closure explicit and owned before lowering.
+/// Unresolved includes are rejected. Formula-level annotations are preserved
+/// exactly, and duplicate formula names fail closed.
+fn resolved_problem_snapshot(
+    problem: &mrs_tptp::TPTPProblem<'_>,
+) -> Result<mrs_tptp::owned::OwnedTPTPProblem, String> {
+    if !problem.includes.is_empty() {
+        return Err("unresolved problem includes; load through mrs-proover first".into());
+    }
+    let mut source = String::new();
+    for formula in &problem.formulas {
+        source.push_str(&formula.to_string());
+        source.push('\n');
+        if source.len() > MAX_BYTES {
+            return Err("resolved problem snapshot byte ceiling".into());
+        }
+    }
+    let owned = mrs_tptp::owned::parse_tptp_owned(source).map_err(|e| e.to_string())?;
+    if owned.problem().formulas.len() != problem.formulas.len() {
+        return Err("problem snapshot did not preserve every formula".into());
+    }
+    for (original, reparsed) in problem.formulas.iter().zip(&owned.problem().formulas) {
+        if original.name() != reparsed.name()
+            || original.role() != reparsed.role()
+            || original.to_string() != reparsed.to_string()
+        {
+            return Err("problem snapshot changed formula identity or syntax".into());
+        }
+    }
+    let mut names = HashSet::new();
+    if !owned
+        .problem()
+        .formulas
+        .iter()
+        .all(|f| names.insert(f.name()))
+    {
+        return Err("duplicate formula name in resolved problem closure".into());
+    }
+    Ok(owned)
+}
+
+fn owned_snapshot(
+    problem: &mrs_tptp::TPTPProblem<'_>,
+) -> Result<mrs_tptp::owned::OwnedTPTPProblem, String> {
+    if !problem.includes.is_empty() {
+        return Err("proof includes are unsupported".into());
+    }
+    let mut source = String::new();
+    for formula in &problem.formulas {
+        source.push_str(&formula.to_string());
+        source.push('\n');
+        if source.len() > MAX_BYTES {
+            return Err("proof snapshot byte ceiling".into());
+        }
+    }
+    let owned = mrs_tptp::owned::parse_tptp_owned(source).map_err(|e| e.to_string())?;
+    if owned.problem().formulas.len() != problem.formulas.len() {
+        return Err("proof snapshot did not preserve every formula".into());
+    }
+    Ok(owned)
 }
 
 fn run(config: &VerusConfig, bytes: Vec<u8>, nodes: usize, dag: bool) -> ShadowReport {

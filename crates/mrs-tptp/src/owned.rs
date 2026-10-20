@@ -120,6 +120,30 @@ impl OwnedTPTPProblem {
     pub fn append_formulas(&mut self, other: &[crate::ast::AnnotatedFormula<'static>]) {
         self.problem.formulas.extend(other.iter().cloned());
     }
+
+    /// Retain only formulas named by an include selection. `None` represents
+    /// the TPTP `include(file)` form and preserves every formula. Formula
+    /// comments for removed names are removed with their formulas.
+    pub fn retain_formula_names(&mut self, selection: Option<&[crate::ast::common::Name<'_>]>) {
+        let Some(selection) = selection else {
+            return;
+        };
+        self.problem
+            .formulas
+            .retain(|formula| selection.iter().any(|name| name.as_str() == formula.name()));
+        self.problem.formula_comments.retain(|name, _| {
+            self.problem
+                .formulas
+                .iter()
+                .any(|formula| formula.name() == *name)
+        });
+    }
+
+    /// Mark all include directives as resolved after the loader has merged the
+    /// selected formulas from the complete recursive include closure.
+    pub fn clear_includes(&mut self) {
+        self.problem.includes.clear();
+    }
 }
 
 impl std::ops::Deref for OwnedTPTPProblem {

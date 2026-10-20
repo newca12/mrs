@@ -20,11 +20,34 @@ are retained as regression evidence, not promoted to a theorem. Closing this
 M5 item needs a span-carrying parser state/invariant proof or a formally refined
 byte lexer.
 
+### 2026-10-21 include-closure bridge checkpoint
+
+- **DONE:** `mrs-proover::load` now applies every TPTP include selection to the
+  formulas imported from that file, recursively at each include level, and
+  clears include directives only after the resolved closure is merged. This
+  prevents unselected formulas from silently becoming problem premises.
+- **DONE:** the Verus TPTP bridge accepts only a fully resolved problem AST;
+  the normal `LoadedJob` entry path now passes the loader's selected closure to
+  the bridge. A loaded-job integration test certifies an included two-clause
+  refutation through both strict and formal paths and checks that an injected
+  unselected premise causes the formal bridge to fail closed.
+- **DONE:** include selection is applied to only the formulas imported from
+  each target file, after recursively resolving that file's own includes.
+  Regression tests cover direct selection, nested selection and clearing the
+  resolved directive list before adapter entry.
+- **REMAINING:** file path resolution, include graph traversal, and the parser
+  remain trusted host behavior. Resource/cycle limits and an independently
+  reviewed, verified include resolver are still needed before the boundary can
+  be considered end-to-end verified.
+
 - **DONE:** wire v1 for superposition steps and complete proof DAGs; bounded
   decoder invokes the same compiled Verus-verified replay/certifier.
 - **DONE:** bounded CNF TPTP-to-IR adapter in `mrs-proof-kernel::verus`, exact
   problem/input binding, topological parent binding, strict supported-rule
   dispatch and certificate discovery; unsupported syntax is inconclusive.
+- **DONE:** resolved TPTP include closures are consumed from `LoadedJob`, and
+  include selections are honored recursively before formula merging; see the
+  include-closure test and source/location boundary notes above.
 - **DONE:** archived c27/c39/c502 is parsed from the actual fixture and replayed
   through the subprocess adapter, rather than hand-encoded IR only.
 - **DONE:** complete CNF refutations traverse the adapter, including an essential
