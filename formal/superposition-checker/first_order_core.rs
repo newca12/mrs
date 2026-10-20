@@ -7530,19 +7530,103 @@ fn wire_decimal_append(value: u64, digit: u64) -> (next: Option<u64>)
     Some(next)
 }
 
+spec fn is_ascii_digit(byte: u8) -> bool {
+    48 <= byte <= 57
+}
+
+spec fn decimal_digit_value(byte: u8) -> int {
+    (byte - 48) as int
+}
+
+spec fn decimal_digits_value(bytes: Seq<u8>) -> int
+    decreases bytes.len()
+{
+    if bytes.len() == 0 {
+        0
+    } else {
+        decimal_digits_value(bytes.subrange(0, bytes.len() - 1 as int)) * 10
+            + decimal_digit_value(bytes[bytes.len() - 1 as int])
+    }
+}
+
+spec fn all_ascii_digits(bytes: Seq<u8>) -> bool {
+    forall|i: int| 0 <= i < bytes.len() ==> is_ascii_digit(bytes[i])
+}
+
+spec fn wire_tokens_span_correspondence(
+    bytes: Seq<u8>,
+    tokens: Seq<u64>,
+    spans: Seq<(usize, usize)>,
+) -> bool {
+    &&& spans.len() == tokens.len()
+    &&& forall|i: int| #![trigger spans[i]] 0 <= i < spans.len() ==> {
+        &&& spans[i].0 < spans[i].1 <= bytes.len()
+        &&& all_ascii_digits(bytes.subrange(spans[i].0 as int, spans[i].1 as int))
+        &&& tokens[i] as int == decimal_digits_value(
+            bytes.subrange(spans[i].0 as int, spans[i].1 as int))
+    }
+}
+
+proof fn lemma_decimal_digits_value_append(prefix: Seq<u8>, d: u8)
+    ensures decimal_digits_value(prefix.push(d))
+        == decimal_digits_value(prefix) * 10 + decimal_digit_value(d)
+{
+    let combined = prefix.push(d);
+    assert(combined.subrange(0, combined.len() - 1 as int) =~= prefix);
+}
+
+proof fn lemma_all_ascii_digits_append(prefix: Seq<u8>, d: u8)
+    requires all_ascii_digits(prefix), is_ascii_digit(d)
+    ensures all_ascii_digits(prefix.push(d))
+{
+    let combined = prefix.push(d);
+    assert forall|i: int| 0 <= i < combined.len() implies is_ascii_digit(combined[i]) by {
+        if i < prefix.len() {
+            assert(combined[i] == prefix[i]);
+        }
+    }
+}
+
+proof fn lemma_subrange_extend_one(bytes: Seq<u8>, start: int, end: int)
+    requires 0 <= start <= end < bytes.len()
+    ensures bytes.subrange(start, end + 1) =~= bytes.subrange(start, end).push(bytes[end])
+{
+}
+
 // Verified ASCII whitespace/decimal-u64 tokenizer. UTF-8 is unnecessary for
 // this numeric protocol: every non-ASCII byte is rejected as a malformed token.
 fn wire_tokenize(bytes: &Vec<u8>) -> (tokens: Option<Vec<u64>>)
-    ensures tokens.is_some() ==> tokens.unwrap()@.len() <= 500_000
+    ensures
+        tokens.is_some() ==> tokens.unwrap()@.len() <= 500_000,
+        tokens.is_some() ==> exists|spans: Seq<(usize, usize)>|
+            #![trigger wire_tokens_span_correspondence(bytes@, tokens.unwrap()@, spans)]
+            wire_tokens_span_correspondence(bytes@, tokens.unwrap()@, spans),
 {
     if bytes.len() > 4 * 1024 * 1024 { return None; }
     let mut tokens: Vec<u64> = Vec::new();
     let mut cursor: usize = 0;
     let mut value: u64 = 0;
     let mut in_token = false;
+    let mut token_start: usize = 0;
+    let mut spans: Ghost<Seq<(usize, usize)>> = Ghost(Seq::empty());
     while cursor < bytes.len()
-        invariant cursor <= bytes.len(), tokens@.len() <= 500_000,
-            in_token ==> value <= u64::MAX
+        invariant
+            cursor <= bytes.len(),
+            tokens@.len() <= 500_000,
+            tokens@.len() == spans@.len(),
+            forall|i: int| #![trigger spans@[i]]
+                0 <= i < spans@.len() ==> {
+                    &&& spans@[i].0 < spans@[i].1 <= cursor
+                    &&& all_ascii_digits(bytes@.subrange(spans@[i].0 as int, spans@[i].1 as int))
+                    &&& tokens@[i] as int == decimal_digits_value(
+                        bytes@.subrange(spans@[i].0 as int, spans@[i].1 as int))
+                },
+            in_token ==> {
+                &&& token_start < cursor
+                &&& all_ascii_digits(bytes@.subrange(token_start as int, cursor as int))
+                &&& value as int == decimal_digits_value(
+                    bytes@.subrange(token_start as int, cursor as int))
+            },
         decreases bytes.len() - cursor
     {
         let byte = bytes[cursor];
@@ -7550,23 +7634,101 @@ fn wire_tokenize(bytes: &Vec<u8>) -> (tokens: Option<Vec<u64>>)
             if in_token {
                 if tokens.len() >= 500_000 { return None; }
                 tokens.push(value);
+                let ghost old_spans = spans@;
+                let ghost old_tokens = tokens@;
+                spans = Ghost(spans@.push((token_start, cursor)));
+                proof {
+                    let last = (spans@.len() - 1) as int;
+                    assert(spans@[last] == (token_start, cursor));
+                    assert(tokens@[last] == value);
+                    assert forall|i: int| 0 <= i < spans@.len() implies {
+                        &&& spans@[i].0 < spans@[i].1 <= (cursor + 1)
+                        &&& all_ascii_digits(bytes@.subrange(spans@[i].0 as int, spans@[i].1 as int))
+                        &&& tokens@[i] as int == decimal_digits_value(
+                            bytes@.subrange(spans@[i].0 as int, spans@[i].1 as int))
+                    } by {
+                        if i < last {
+                            assert(spans@[i] == old_spans[i]);
+                            assert(tokens@[i] == old_tokens[i]);
+                        }
+                    }
+                }
                 value = 0;
                 in_token = false;
             }
         } else {
             if byte < 48 || byte > 57 { return None; }
             let digit = (byte - 48) as u64;
-            let Some(next) = wire_decimal_append(value, digit) else { return None; };
-            value = next;
-            in_token = true;
+            if in_token {
+                let Some(next) = wire_decimal_append(value, digit) else { return None; };
+                proof {
+                    lemma_subrange_extend_one(bytes@, token_start as int, cursor as int);
+                    lemma_decimal_digits_value_append(
+                        bytes@.subrange(token_start as int, cursor as int), byte);
+                    lemma_all_ascii_digits_append(
+                        bytes@.subrange(token_start as int, cursor as int), byte);
+                    assert(token_start < cursor + 1);
+                    assert(next as int == decimal_digits_value(
+                        bytes@.subrange(token_start as int, (cursor + 1) as int)));
+                    assert(all_ascii_digits(
+                        bytes@.subrange(token_start as int, (cursor + 1) as int)));
+                }
+                value = next;
+            } else {
+                let Some(next) = wire_decimal_append(0, digit) else { return None; };
+                token_start = cursor;
+                in_token = true;
+                proof {
+                    assert(bytes@.subrange(cursor as int, cursor as int) =~= Seq::empty());
+                    lemma_subrange_extend_one(bytes@, cursor as int, cursor as int);
+                    lemma_decimal_digits_value_append(Seq::empty(), byte);
+                    assert(all_ascii_digits(bytes@.subrange(cursor as int, cursor as int + 1)));
+                    assert(cursor < cursor + 1);
+                    assert(next as int == decimal_digits_value(
+                        bytes@.subrange(cursor as int, (cursor + 1) as int)));
+                }
+                value = next;
+            }
         }
         cursor += 1;
     }
     if in_token {
         if tokens.len() >= 500_000 { return None; }
         tokens.push(value);
+        let ghost old_spans = spans@;
+        let ghost old_tokens = tokens@;
+        spans = Ghost(spans@.push((token_start, cursor)));
+        proof {
+            let last = (spans@.len() - 1) as int;
+            assert(spans@[last] == (token_start, cursor));
+            assert(tokens@[last] == value);
+            assert forall|i: int| #![trigger spans@[i]] 0 <= i < spans@.len() implies {
+                &&& spans@[i].0 < spans@[i].1 <= cursor
+                &&& all_ascii_digits(bytes@.subrange(spans@[i].0 as int, spans@[i].1 as int))
+                &&& tokens@[i] as int == decimal_digits_value(
+                    bytes@.subrange(spans@[i].0 as int, spans@[i].1 as int))
+            } by {
+                if i < last {
+                    assert(spans@[i] == old_spans[i]);
+                    assert(tokens@[i] == old_tokens[i]);
+                }
+            }
+        }
     }
-    Some(tokens)
+    let res = Some(tokens);
+    proof {
+        assert forall|i: int| #![trigger spans@[i]] 0 <= i < spans@.len() implies {
+            &&& spans@[i].0 < spans@[i].1 <= bytes@.len()
+            &&& all_ascii_digits(bytes@.subrange(spans@[i].0 as int, spans@[i].1 as int))
+            &&& tokens@[i] as int == decimal_digits_value(
+                bytes@.subrange(spans@[i].0 as int, spans@[i].1 as int))
+        } by {
+            assert(spans@[i].1 <= cursor);
+        }
+        assert(res.unwrap()@ =~= tokens@);
+        assert(wire_tokens_span_correspondence(bytes@, res.unwrap()@, spans@));
+    }
+    res
 }
 
 fn wire_dispatch_regressions() -> bool {

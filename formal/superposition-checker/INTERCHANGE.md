@@ -140,9 +140,8 @@ Limits: 4 MiB request, 500,000 decoded numeric tokens (the producer uses at most
 400,000), 512 nodes/inputs, two parents, 64 literals per clause, term depth below
 64, 256 substitution bindings, 64 path entries, work at most 10,000,000. These
 are ceilings, not completeness claims or exact cumulative replay accounting.
-The tokenizer's Verus postcondition proves the output token-count ceiling; the
-byte-span-to-token-value correspondence is currently covered by runtime examples
-but is not yet a quantified theorem. See the M5 ledger for this open proof task.
+The tokenizer's Verus postcondition proves both the output token-count ceiling
+and the quantified byte-span-to-token-value correspondence (`wire_tokens_span_correspondence`).
 The MRS subprocess runner bounds output to 1 KiB and the wall clock to the
 explicit configuration (maximum 60 s). Exceeded limits cannot certify.
 On Unix, the runner snapshots and hashes the binary, clears the child's

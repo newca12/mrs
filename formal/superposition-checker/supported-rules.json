@@ -79,7 +79,7 @@
     "wire_max_bindings": 256,
     "wire_structural_decoder_verified": true,
     "wire_byte_tokenizer_verified": true,
-    "wire_token_value_correspondence_postcondition": false,
+    "wire_token_value_correspondence_postcondition": true,
     "wire_token_value_examples_tested": true,
     "wire_tokenizer_malformed_mutation_checked": true,
     "wire_decoder_fully_verified": false,

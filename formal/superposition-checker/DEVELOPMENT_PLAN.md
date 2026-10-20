@@ -24,7 +24,19 @@ that no interchange or caller exists are superseded by this update.
 - **DONE:** enabled `executable_unifier_certificate_examples` in `run_examples()`
   so the adversarial suite is verified at proof time and executed in runtime regressions.
 
-### 2026-10-21 tokenizer proof boundary correction
+### 2026-10-21 tokenizer span correspondence checkpoint
+
+- **DONE:** `wire_tokenize` now carries a verified ghost span sequence
+  and proves `wire_tokens_span_correspondence`: for every emitted token, there
+  exists an exact source byte span `[start, end)` within bounds such that all
+  bytes are ASCII digits and the decoded token equals `decimal_digits_value(bytes[start..end])`.
+- **DONE:** `lemma_decimal_digits_value_append`, `lemma_all_ascii_digits_append`,
+  and `lemma_subrange_extend_one` establish the inductive step of the loop
+  invariant relating checked decimal accumulation to the exact slice values.
+- **DONE:** updated `supported-rules.json` with
+  `"wire_token_value_correspondence_postcondition": true`.
+
+### 2026-10-21 tokenizer proof boundary correction (superseded by span correspondence)
 
 The tokenizer audit now distinguishes executable checks from the theorem
 postcondition. `wire_tokenize` verifies bounds, ASCII decimal syntax, checked
@@ -109,17 +121,10 @@ byte lexer.
 - **DONE:** decimal byte tokenization is now inside `verus!`; `wire_tokenize`
   verifies ASCII whitespace, digit-only tokens, maximum token length, checked
   u64 accumulation and the 500,000-token cap. Runtime cases cover exact-u64,
-  exact-byte and exact-token ceilings. The tokenizer postcondition currently
-  establishes the output-count limit; a full quantified source-span/value
-  relation is still a proof task, and the support manifest does not claim it.
-  `wire_decimal_append` separately proves successful checked accumulation;
-  this primitive result does not yet lift to the full token span.
-- **REMAINING clarification:** `wire_tokenize` currently has the executable
-  output-count postcondition and comprehensive runtime cases, but no quantified
-  Verus relation from each output element back to its exact source byte span.
-  `wire_token_value_correspondence_postcondition` in the manifest was premature
-  and is removed in this checkpoint; establishing that relation needs a proof
-  over the tokenizer loop invariant, not just example tests.
+  exact-byte and exact-token ceilings. The tokenizer postcondition proves both
+  the output-count limit and the quantified byte-span-to-token-value
+  correspondence (`wire_tokens_span_correspondence`). `supported-rules.json`
+  records `wire_token_value_correspondence_postcondition=true`.
 - **DONE:** the host shim only acquires at most 4 MiB of bytes and performs
   process I/O/result formatting. `wire_tokenize`, inside `verus!`, verifies
   Runtime tests cover every request prefix, malformed version/tag/count input,
@@ -152,7 +157,7 @@ invalidate the original code. The gate now removes the actual forbidden-image
 check and requires Verus to reject that mutation. The no-cheating self-test first
 accepts a valid assumption probe without the flag, then requires rejection with
 the flag; the earlier malformed `assume_specification` probe was not evidence.
-Current module counts: **5 / 247 / 5 / 5**, with **19 verifier-negative mutations,
+Current module counts: **5 / 252 / 5 / 5**, with **19 verifier-negative mutations,
 three runtime mutations and one no-cheating probe**. The newest tokenizer mutation
 is compiled by Verus but rejected before runtime because the weakened source no
 longer proves the tokenizer invariant; it does not count as a runtime mutation.
