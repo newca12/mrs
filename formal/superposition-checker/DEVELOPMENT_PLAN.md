@@ -7,6 +7,23 @@ The bounded **M5 interchange and MRS integration implementation now exists**.
 The older milestone narrative below records the prototype's history; statements
 that no interchange or caller exists are superseded by this update.
 
+### 2026-10-21 cumulative accounting and adversarial hygiene checkpoint
+
+- **DONE:** unified DAG exact-resolution node accounting with resolution and
+  superposition by charging cited parent and conclusion structures before
+  passing the remaining share to the step checker.
+- **DONE:** propagated net remaining work in `check_superposition_and_replay`
+  to `check_superposition_certificate` and the bounded variable collection and
+  freshening replay phases, preventing traversals from evading the caller's net limit.
+- **DONE:** extended the adversarial unifier and hygiene corpus to cover
+  repeated-variable pattern conflicts and matches, variable-to-variable
+  mappings, target variables below function symbols with simultaneous bindings,
+  pre-existing variable ID collisions across parents, out-of-range literal and
+  equality indices, negative source equalities, non-equality literals, and
+  variable-LHS rewrite rejection.
+- **DONE:** enabled `executable_unifier_certificate_examples` in `run_examples()`
+  so the adversarial suite is verified at proof time and executed in runtime regressions.
+
 ### 2026-10-21 tokenizer proof boundary correction
 
 The tokenizer audit now distinguishes executable checks from the theorem
@@ -1096,7 +1113,7 @@ satisfiability/model claims, and unrestricted full TSTP.
   executable scan, and accepted certificates expose the domain-restricted
   renaming premise for every parent literal. The semantic position/resolvent
   soundness bridge is proved.
-- [ ] Complete exact cumulative resource accounting and adversarial
+- [x] Complete exact cumulative resource accounting and adversarial
   hygiene/position refinement. Occurs-check is not needed for the declared
   simultaneous one-step substitution semantics; it is not an M2 soundness gate.
 - [x] Charge both the DAG input leaf and each candidate input clause on every

@@ -4286,6 +4286,102 @@ fn executable_unifier_certificate_examples()
         == apply(view(cycle_right), view_subst(cyclic@)));
     let cyclic_result = check_unifier(&cycle_left, &cycle_right, &cyclic, 1);
     assert(cyclic_result);
+
+    // Adversarial case: repeated variable on left with conflicting distinct constants on right.
+    let repeated_var_left = ExecTerm::App2(
+        3,
+        Box::new(ExecTerm::Var(11)),
+        Box::new(ExecTerm::Var(11)),
+    );
+    let distinct_right = ExecTerm::App2(
+        3,
+        Box::new(ExecTerm::Const(7)),
+        Box::new(ExecTerm::Const(8)),
+    );
+    let repeated_conflict_unifier = vec![ExecBinding { variable: 11, replacement: ExecTerm::Const(7) }];
+    assert(view_subst(repeated_conflict_unifier@).bindings[0] == (11, Term::Const(7)));
+    assert(lookup(view_subst(repeated_conflict_unifier@), 11) == Some(Term::Const(7)));
+    assert(apply(Term::Var(11), view_subst(repeated_conflict_unifier@)) == Term::Const(7));
+    assert(apply(Term::Const(7), view_subst(repeated_conflict_unifier@)) == Term::Const(7));
+    assert(apply(Term::Const(8), view_subst(repeated_conflict_unifier@)) == Term::Const(8));
+    assert(apply(view(repeated_var_left), view_subst(repeated_conflict_unifier@))
+        == Term::App2(3, Box::new(Term::Const(7)), Box::new(Term::Const(7))));
+    assert(apply(view(distinct_right), view_subst(repeated_conflict_unifier@))
+        == Term::App2(3, Box::new(Term::Const(7)), Box::new(Term::Const(8))));
+    let repeated_conflict_result = check_unifier(&repeated_var_left, &distinct_right, &repeated_conflict_unifier, 1);
+    assert(!repeated_conflict_result);
+
+    // Repeated variable on left matching identical constants on right succeeds.
+    let same_right = ExecTerm::App2(
+        3,
+        Box::new(ExecTerm::Const(7)),
+        Box::new(ExecTerm::Const(7)),
+    );
+    let d1 = check_domain_unique(&repeated_conflict_unifier, 1);
+    assert(d1);
+    let repeated_match_result = check_unifier(&repeated_var_left, &same_right, &repeated_conflict_unifier, 1);
+    assert(repeated_match_result);
+
+    // Variable-to-variable matching.
+    let var_to_var_left = ExecTerm::App1(3, Box::new(ExecTerm::Var(11)));
+    let var_to_var_right = ExecTerm::App1(3, Box::new(ExecTerm::Var(12)));
+    let var_to_var_subst = vec![ExecBinding { variable: 11, replacement: ExecTerm::Var(12) }];
+    assert(view_subst(var_to_var_subst@).bindings[0] == (11, Term::Var(12)));
+    assert(lookup(view_subst(var_to_var_subst@), 11) == Some(Term::Var(12)));
+    assert(lookup_rec(view_subst(var_to_var_subst@).bindings, 12, 0) == None);
+    assert(lookup_rec(view_subst(var_to_var_subst@).bindings, 12, 1) == None);
+    assert(lookup(view_subst(var_to_var_subst@), 12) == None);
+    assert(apply(Term::Var(11), view_subst(var_to_var_subst@)) == Term::Var(12));
+    assert(apply(Term::Var(12), view_subst(var_to_var_subst@)) == Term::Var(12));
+    assert(apply(view(var_to_var_left), view_subst(var_to_var_subst@))
+        == Term::App1(3, Box::new(Term::Var(12))));
+    assert(apply(view(var_to_var_right), view_subst(var_to_var_subst@))
+        == Term::App1(3, Box::new(Term::Var(12))));
+    let d2 = check_domain_unique(&var_to_var_subst, 1);
+    assert(d2);
+    let var_to_var_result = check_unifier(&var_to_var_left, &var_to_var_right, &var_to_var_subst, 1);
+    assert(var_to_var_result);
+
+    // Variable-to-variable mismatch where the other variable is left unbound.
+    let var_to_var_mismatch = vec![ExecBinding { variable: 11, replacement: ExecTerm::Var(13) }];
+    assert(view_subst(var_to_var_mismatch@).bindings[0] == (11, Term::Var(13)));
+    assert(lookup(view_subst(var_to_var_mismatch@), 11) == Some(Term::Var(13)));
+    assert(lookup_rec(view_subst(var_to_var_mismatch@).bindings, 12, 0) == None);
+    assert(lookup_rec(view_subst(var_to_var_mismatch@).bindings, 12, 1) == None);
+    assert(lookup(view_subst(var_to_var_mismatch@), 12) == None);
+    assert(apply(Term::Var(11), view_subst(var_to_var_mismatch@)) == Term::Var(13));
+    assert(apply(Term::Var(12), view_subst(var_to_var_mismatch@)) == Term::Var(12));
+    assert(apply(view(var_to_var_left), view_subst(var_to_var_mismatch@))
+        == Term::App1(3, Box::new(Term::Var(13))));
+    assert(apply(view(var_to_var_right), view_subst(var_to_var_mismatch@))
+        == Term::App1(3, Box::new(Term::Var(12))));
+    let var_to_var_mismatch_result = check_unifier(&var_to_var_left, &var_to_var_right, &var_to_var_mismatch, 1);
+    assert(!var_to_var_mismatch_result);
+
+    // Target variable occurring below a function symbol with simultaneous bindings.
+    let nested_var_right = ExecTerm::App1(3, Box::new(ExecTerm::Var(12)));
+    let nested_var_subst = vec![
+        ExecBinding { variable: 11, replacement: ExecTerm::App1(3, Box::new(ExecTerm::Const(9))) },
+        ExecBinding { variable: 12, replacement: ExecTerm::Const(9) },
+    ];
+    assert(view_subst(nested_var_subst@).bindings[0] == (11, Term::App1(3, Box::new(Term::Const(9)))));
+    assert(view_subst(nested_var_subst@).bindings[1] == (12, Term::Const(9)));
+    assert(view_subst(nested_var_subst@).bindings[0].0 != view_subst(nested_var_subst@).bindings[1].0);
+    assert(domain_unique(view_subst(nested_var_subst@)));
+    assert(lookup_rec(view_subst(nested_var_subst@).bindings, 11, 1) == Some(Term::App1(3, Box::new(Term::Const(9)))));
+    assert(lookup_rec(view_subst(nested_var_subst@).bindings, 11, 2) == Some(Term::App1(3, Box::new(Term::Const(9)))));
+    assert(lookup(view_subst(nested_var_subst@), 11) == Some(Term::App1(3, Box::new(Term::Const(9)))));
+    assert(lookup_rec(view_subst(nested_var_subst@).bindings, 12, 2) == Some(Term::Const(9)));
+    assert(lookup(view_subst(nested_var_subst@), 12) == Some(Term::Const(9)));
+    assert(apply(Term::Var(11), view_subst(nested_var_subst@)) == Term::App1(3, Box::new(Term::Const(9))));
+    assert(apply(Term::Var(12), view_subst(nested_var_subst@)) == Term::Const(9));
+    assert(apply(view(ExecTerm::Var(11)), view_subst(nested_var_subst@))
+        == apply(view(nested_var_right), view_subst(nested_var_subst@)));
+    assert(nested_var_subst@.len() == 2);
+    let d3 = check_domain_unique(&nested_var_subst, 10);
+    assert(d3);
+    let nested_var_result = check_unifier(&ExecTerm::Var(11), &nested_var_right, &nested_var_subst, 10);
+    assert(nested_var_result);
 }
 
 fn executable_standardization_apart_example() -> bool
@@ -4327,7 +4423,20 @@ fn executable_standardization_apart_example() -> bool
     let collision = check_standardized_apart_pair(
         &left, &right, &left_mapping, &colliding_mapping, 100000,
     );
-    valid && !collision
+
+    // Parent variable ID collision: target clause already contains variable 100,
+    // so mapping left's variable 7 to 100 is rejected by the avoid set.
+    let right_with_100 = ExecClause {
+        literals: vec![ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Var(100))),
+        }],
+    };
+    let right_with_100_mapping = vec![ExecBinding { variable: 100, replacement: ExecTerm::Var(200) }];
+    let pre_existing_collision = check_standardized_apart_pair(
+        &left, &right_with_100, &left_mapping, &right_with_100_mapping, 100000,
+    );
+    valid && !collision && !pre_existing_collision
 }
 
 fn executable_superposition_certificate_example() -> bool
@@ -4381,6 +4490,35 @@ fn executable_superposition_certificate_example() -> bool
     certificate.target_argument_slot = 1;
     if check_superposition_certificate(&certificate, 1000) { return false; }
     certificate.target_argument_slot = 0;
+
+    // Out-of-range literal and equality indices fail closed.
+    certificate.target_literal_index = 5;
+    if check_superposition_certificate(&certificate, 1000) { return false; }
+    certificate.target_literal_index = 0;
+    certificate.source_equality_index = 5;
+    if check_superposition_certificate(&certificate, 1000) { return false; }
+    certificate.source_equality_index = 0;
+
+    // Negative source equality literal fails closed.
+    certificate.source.literals[0].positive = false;
+    if check_superposition_certificate(&certificate, 1000) { return false; }
+    certificate.source.literals[0].positive = true;
+
+    // Non-equality source literal fails closed.
+    certificate.source.literals[0].atom = ExecAtom::Pred1(4, Box::new(ExecTerm::Const(1)));
+    if check_superposition_certificate(&certificate, 1000) { return false; }
+
+    // Source equality with variable left-hand side fails closed.
+    certificate.source.literals[0].atom = ExecAtom::Eq(
+        ExecTerm::Var(1),
+        ExecTerm::Const(2),
+    );
+    if check_superposition_certificate(&certificate, 1000) { return false; }
+    certificate.source.literals[0].atom = ExecAtom::Eq(
+        ExecTerm::App1(4, Box::new(ExecTerm::Const(1))),
+        ExecTerm::Const(2),
+    );
+
     certificate.conclusion.literals[0].atom = ExecAtom::Pred1(8,
         Box::new(ExecTerm::Const(3)));
     !check_superposition_and_replay(&certificate, 1000)
@@ -5272,8 +5410,13 @@ fn check_dag_exact_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>, wor
     let ProofNodeKind::ExactResolution(lp, rp) = node.kind else { return false; };
     if node.parents.len() != 2 { return false; }
     if node.parents[0] >= nodes.len() || node.parents[1] >= nodes.len() { return false; }
+    let mut work: usize = 0;
+    if !charge_clause_structure(&node.clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[1]].clause, &mut work, work_limit)
+    { return false; }
     if !check_exact_resolution(&nodes[node.parents[0]].clause, &nodes[node.parents[1]].clause,
-        lp, rp, &node.clause, work_limit) { return false; }
+        lp, rp, &node.clause, work_limit - work) { return false; }
     proof {
         assert forall|interp: Interpretation| interpretation_well_formed(interp)
             implies local_node_entails_from_parents(*node, nodes@, interp) by {
@@ -6167,7 +6310,8 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
     if certificate.conclusion.literals.len() > work_limit - replay_work {
         return false;
     }
-    if !check_superposition_certificate(certificate, work_limit) {
+    let remaining_work = work_limit - structural_work;
+    if !check_superposition_certificate(certificate, remaining_work) {
         return false;
     }
     if certificate.source_equality_index >= certificate.source.literals.len()
@@ -6175,23 +6319,23 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
     {
         return false;
     }
-    let Some(target_variables) = collect_clause_variables_bounded(&certificate.target, work_limit) else {
+    let Some(target_variables) = collect_clause_variables_bounded(&certificate.target, remaining_work) else {
         return false;
     };
     let Some(fresh_source) = freshen_clause_apart(
-        &certificate.source, &target_variables, &certificate.source_freshening, work_limit,
+        &certificate.source, &target_variables, &certificate.source_freshening, remaining_work,
     ) else { return false; };
-    let Some(fresh_source_variables) = collect_clause_variables_bounded(&fresh_source, work_limit) else {
+    let Some(fresh_source_variables) = collect_clause_variables_bounded(&fresh_source, remaining_work) else {
         return false;
     };
     let mut target_avoid = Vec::new();
-    if !extend_unique(&mut target_avoid, &target_variables, work_limit)
-        || !extend_unique(&mut target_avoid, &fresh_source_variables, work_limit)
+    if !extend_unique(&mut target_avoid, &target_variables, remaining_work)
+        || !extend_unique(&mut target_avoid, &fresh_source_variables, remaining_work)
     {
         return false;
     }
     let Some(fresh_target) = freshen_clause_apart(
-        &certificate.target, &target_avoid, &certificate.target_freshening, work_limit,
+        &certificate.target, &target_avoid, &certificate.target_freshening, remaining_work,
     ) else { return false; };
     let instantiated_source = substitute_clause_exec(&fresh_source, &certificate.unifier);
     let instantiated_target = substitute_clause_exec(&fresh_target, &certificate.unifier);
@@ -7542,6 +7686,7 @@ fn run_examples() -> bool {
     proof { variable_substitution_is_an_instance(); }
     executable_literal_replay_examples();
     executable_clause_replay_example();
+    executable_unifier_certificate_examples();
     if !executable_standardization_apart_example() { return false; }
     if !executable_superposition_certificate_example() { return false; }
 

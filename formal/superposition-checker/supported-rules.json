@@ -68,6 +68,7 @@
     "archived_c502_step_replay": true,
     "archived_c502_full_proof_translation": false,
     "source_variable_unification_regression": true,
+    "adversarial_hygiene_and_position_guards_tested": true,
     "same_host_runtime_build_hash_reproducibility_checked": true,
     "cross_host_artifact_reproducibility_checked": false,
     "serialized_interchange_version": 1,
