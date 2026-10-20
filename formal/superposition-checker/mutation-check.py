@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import concurrent.futures
+import os
 import pathlib
 import subprocess
 import sys
@@ -135,11 +137,10 @@ def main() -> int:
             return 1
         print("mutation rejected: Verus --no-cheating rejects a valid assumption probe")
 
-        for index, (name, correct, mutated) in enumerate(mutations):
+        def check_mutation(item: tuple[int, tuple[str, str, str]]) -> tuple[int, str, int, str]:
+            index, (name, correct, mutated) = item
             if source.count(correct) != 1:
-                print(f"{name}: mutation anchor is missing or ambiguous", file=sys.stderr)
-                return 2
-
+                return (index, name, 2, f"{name}: mutation anchor is missing or ambiguous")
             mutated_path = pathlib.Path(temp_dir) / f"first_order_core_mutated_{index}.rs"
             mutated_path.write_text(source.replace(correct, mutated, 1))
             result = subprocess.run(
@@ -150,9 +151,18 @@ def main() -> int:
                 check=False,
             )
             if result.returncode == 0:
-                print(f"Verus accepted mutation: {name}", file=sys.stderr)
-                return 1
-            print(f"mutation rejected: {name}")
+                return (index, name, 1, f"Verus accepted mutation: {name}")
+            return (index, name, 0, f"mutation rejected: {name}")
+
+        workers = min(8, os.cpu_count() or 4)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            results = list(executor.map(check_mutation, enumerate(mutations)))
+
+        for index, name, code, msg in results:
+            if code != 0:
+                print(msg, file=sys.stderr)
+                return code
+            print(msg)
 
         closure_guard = (
             "match check_root_ancestor_closure(dag, closure_budget) {\n"
@@ -258,19 +268,25 @@ def main() -> int:
             "let digit = if byte == 255 { 0u64 } else { (byte - 48) as u64 };", 1)
         mutated_path.write_text(mutated_source)
         binary = pathlib.Path(temp_dir) / "first-order-core-accepts-nondecimal"
-        subprocess.run(
+        compile_result = subprocess.run(
             [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
              str(mutated_path), "-o", str(binary)],
-            check=True,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
         )
-        malformed = subprocess.run(
-            [str(binary), "--wire-v1"], input=b"1 0\xff0", stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, check=True,
-        )
-        if malformed.stdout != b"MRS_VERUS 1 Unknown\n":
-            print("runtime accepted mutation: tokenizer accepts nondecimal token", file=sys.stderr)
-            return 1
-        print("runtime mutation rejected: tokenizer accepts nondecimal bytes")
+        if compile_result.returncode != 0:
+            if "is_ascii_digit" not in compile_result.stdout and "precondition not satisfied" not in compile_result.stdout:
+                print("tokenizer mutation failed for an unexpected reason:", compile_result.stdout, file=sys.stderr)
+                return 1
+            print("mutation rejected: nondecimal token violates the verified ascii-digit invariant")
+        else:
+            malformed = subprocess.run(
+                [str(binary), "--wire-v1"], input=b"1 0\xff0", stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, check=True,
+            )
+            if malformed.stdout != b"MRS_VERUS 1 Unknown\n":
+                print("runtime accepted mutation: tokenizer accepts nondecimal token", file=sys.stderr)
+                return 1
+            print("runtime mutation rejected: tokenizer accepts nondecimal bytes")
 
     return 0
 
