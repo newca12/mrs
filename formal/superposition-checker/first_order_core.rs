@@ -7380,11 +7380,10 @@ fn wire_tokenize(bytes: &Vec<u8>) -> (tokens: Option<Vec<u64>>)
     let mut tokens: Vec<u64> = Vec::new();
     let mut cursor: usize = 0;
     let mut value: u64 = 0;
-    let mut digits: usize = 0;
     let mut in_token = false;
     while cursor < bytes.len()
-        invariant cursor <= bytes.len(), tokens@.len() <= 500_000, digits <= 20,
-            in_token == (digits > 0)
+        invariant cursor <= bytes.len(), tokens@.len() <= 500_000,
+            in_token ==> value <= u64::MAX
         decreases bytes.len() - cursor
     {
         let byte = bytes[cursor];
@@ -7393,16 +7392,14 @@ fn wire_tokenize(bytes: &Vec<u8>) -> (tokens: Option<Vec<u64>>)
                 if tokens.len() >= 500_000 { return None; }
                 tokens.push(value);
                 value = 0;
-                digits = 0;
                 in_token = false;
             }
         } else {
-            if byte < 48 || byte > 57 || digits >= 20 { return None; }
+            if byte < 48 || byte > 57 { return None; }
             let digit = (byte - 48) as u64;
             let Some(times_ten) = value.checked_mul(10) else { return None; };
             let Some(next) = times_ten.checked_add(digit) else { return None; };
             value = next;
-            digits += 1;
             in_token = true;
         }
         cursor += 1;
@@ -7452,6 +7449,65 @@ fn wire_dispatch_regressions() -> bool {
         && match wire_tokenize(&spaces) { Some(tokens) => tokens.len() == 0, None => false }
 }
 
+fn wire_tokenizer_boundary_regression() -> bool {
+    let maximum_u64 = vec![49u8, 56, 52, 52, 54, 55, 52, 52, 48, 55, 51, 55, 48,
+        57, 53, 53, 49, 54, 49, 53];
+    let max_value_ok = match wire_tokenize(&maximum_u64) {
+        Some(tokens) => tokens.len() == 1 && tokens[0] == u64::MAX,
+        None => false,
+    };
+    let mut max_tokens: Vec<u8> = Vec::new();
+    let mut i: usize = 0;
+    while i < 500_000
+        invariant i <= 500_000,
+            max_tokens@.len() == i * 2,
+        decreases 500_000 - i
+    {
+        max_tokens.push(48u8);
+        max_tokens.push(32u8);
+        i += 1;
+    }
+    let exact_count_ok = match wire_tokenize(&max_tokens) {
+        Some(tokens) => tokens.len() == 500_000 && tokens[0] == 0
+            && tokens[499_999] == 0,
+        None => false,
+    };
+    max_tokens.push(48u8);
+    max_tokens.push(32u8);
+    let over_count_rejected = wire_tokenize(&max_tokens).is_none();
+
+    let mut max_bytes: Vec<u8> = Vec::new();
+    let mut j: usize = 0;
+    while j < 4 * 1024 * 1024
+        invariant j <= 4 * 1024 * 1024, max_bytes@.len() == j as int,
+        decreases 4 * 1024 * 1024 - j
+    {
+        max_bytes.push(32u8);
+        j += 1;
+    }
+    let exact_byte_limit_ok = match wire_tokenize(&max_bytes) {
+        Some(tokens) => tokens.len() == 0,
+        None => false,
+    };
+    max_bytes.push(32u8);
+    let over_byte_limit_rejected = wire_tokenize(&max_bytes).is_none();
+
+    let mut too_many_tokens: Vec<u8> = Vec::new();
+    let mut token_index: usize = 0;
+    while token_index < 500_001
+        invariant token_index <= 500_001,
+            too_many_tokens@.len() == token_index * 2,
+        decreases 500_001 - token_index
+    {
+        too_many_tokens.push(48u8);
+        too_many_tokens.push(32u8);
+        token_index += 1;
+    }
+    let too_many_tokens_rejected = wire_tokenize(&too_many_tokens).is_none();
+    max_value_ok && exact_count_ok && over_count_rejected
+        && exact_byte_limit_ok && over_byte_limit_rejected && too_many_tokens_rejected
+}
+
 fn run_examples() -> bool {
     proof { variable_substitution_is_an_instance(); }
     executable_literal_replay_examples();
@@ -7467,6 +7523,7 @@ fn run_examples() -> bool {
     if !executable_resolution_dag_examples() { return false; }
     if !executable_resolution_chain_examples() { return false; }
     if !wire_dispatch_regressions() { return false; }
+    if !wire_tokenizer_boundary_regression() { return false; }
     true
 }
 
@@ -7487,6 +7544,7 @@ fn regression_main() {
     assert!(executable_resolution_dag_examples(), "resolution DAG regression failed");
     assert!(executable_resolution_chain_examples(), "resolution-chain DAG regression failed");
     assert!(wire_dispatch_regressions(), "verified wire-dispatch regression failed");
+    assert!(wire_tokenizer_boundary_regression(), "verified wire-tokenizer boundary failed");
     assert!(run_examples(), "DAG certification regression failed");
 }
 

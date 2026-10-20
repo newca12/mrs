@@ -58,7 +58,8 @@ The Verus theorem covers the **decoded IR**. Wire-v1 version/tag/field/count
 validation, recursive term/clause/certificate/DAG decoding, command dispatch,
 and ASCII whitespace/unsigned-decimal tokenization are Verus-verified by
 `check_wire_tokens` and `wire_tokenize`, including digit limits and checked
-`u64` accumulation. The host shim only acquires a bounded byte buffer and
+`u64` accumulation and exact decimal-value/token-span correspondence. The host
+shim only acquires a bounded byte buffer and
 performs process I/O/response formatting. TPTP parsing, bounded CNF lowering,
 numeric symbol assignment, certificate discovery, equality orientation, ordered
 alpha matching, and subprocess orchestration remain unverified. The opt-in
@@ -167,3 +168,6 @@ it twice, compares hashes, runs runtime regressions and wire malformed/truncated
 request tests, then runs Rust integration tests against that exact temporary
 artifact/hash. Rust tests requiring the artifact are explicitly ignored in
 ordinary `cargo test`; they are mandatory in the formal CI job.
+The compiled-runtime mutation gate weakens the tokenizer's digit guard and maps
+a non-ASCII byte into a digit, then requires the malformed request to remain
+rejected.

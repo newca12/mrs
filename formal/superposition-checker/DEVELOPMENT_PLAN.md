@@ -23,8 +23,9 @@ that no interchange or caller exists are superseded by this update.
   disagreement suppresses certification in that gate.
 - **DONE:** artifact/request SHA-256, protocol version, checked-node telemetry,
   pinned verified build with JSON provenance, deadline/output limits, subprocess
-  group cleanup, malformed/truncated protocol regressions and formal CI bridge
-  tests using the exact artifact that passed Verus verification.
+  group cleanup, malformed/truncated protocol regressions, a compiled tokenizer
+  mutation, and formal CI bridge tests using the exact artifact that passed
+  Verus verification.
 - **REMAINING M5 assurance gate:** parser/lowering/alpha-orientation conversion
   and process orchestration are unverified trusted boundaries. This is a supported-subset
   shadow/dual-check integration, **not end-to-end verified TPTP certification**.
@@ -42,7 +43,9 @@ that no interchange or caller exists are superseded by this update.
   and dispatch fully decoded requests to the local step/DAG checker.
 - **DONE:** decimal byte tokenization is now inside `verus!`; `wire_tokenize`
   verifies ASCII whitespace, digit-only tokens, maximum token length, checked
-  u64 accumulation and the 500,000-token cap.
+  u64 accumulation and the 500,000-token cap. Its postcondition relates each
+  token to the exact decimal byte span; a compiled mutation weakening the digit
+  guard and mapping a non-ASCII byte into a digit must fail the regression.
 - **DONE:** the host shim only acquires at most 4 MiB of bytes and performs
   process I/O/result formatting. `wire_tokenize`, inside `verus!`, verifies
   Runtime tests cover every request prefix, malformed version/tag/count input,
@@ -68,8 +71,8 @@ invalidate the original code. The gate now removes the actual forbidden-image
 check and requires Verus to reject that mutation. The no-cheating self-test first
 accepts a valid assumption probe without the flag, then requires rejection with
 the flag; the earlier malformed `assume_specification` probe was not evidence.
-Current module counts: **5 / 240 / 5 / 5**, with **19 verifier-negative mutations,
-two runtime mutations and one no-cheating probe**.
+Current module counts: **5 / 247 / 5 / 5**, with **19 verifier-negative mutations,
+three runtime mutations and one no-cheating probe**.
 
 ## Implementation status (historical 2026-10-18 ledger, updated where indicated)
 

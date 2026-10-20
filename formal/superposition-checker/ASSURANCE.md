@@ -37,12 +37,14 @@ replacement risk. Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
 is checked; cross-host reproducibility and a verified decoder remain open.
 
-The mutation inventory is now nineteen verifier-negative checks, two compiled
+The mutation inventory is now nineteen verifier-negative checks, three compiled
 runtime checks and one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now
 mutated and rejected by Verus. The detailed historical notes below are superseded
 where they describe no serialized interchange or MRS caller.
+The additional runtime mutation weakens decimal-digit validation and maps a
+non-ASCII byte to a digit; its malformed-request response regression must fail.
 
 ## Claim currently supported
 

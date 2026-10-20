@@ -213,6 +213,35 @@ def main() -> int:
             return 1
         print("runtime mutation rejected: input leaf comparisons omit repeated node charge")
 
+        tokenizer_guard = "if byte < 48 || byte > 57 { return None; }"
+        digit_mapping = "let digit = (byte - 48) as u64;"
+        if source.count(tokenizer_guard) != 1:
+            print("verified tokenizer mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_accepts_nondecimal.rs"
+        mutated_source = source.replace(tokenizer_guard,
+            "if byte < 48 || byte > 57 { if byte != 255 { return None; } }", 1)
+        if mutated_source == source or mutated_source.count(digit_mapping) != 1:
+            print("verified tokenizer digit-mapping mutation anchor is missing", file=sys.stderr)
+            return 2
+        mutated_source = mutated_source.replace(digit_mapping,
+            "let digit = if byte == 255 { 0u64 } else { (byte - 48) as u64 };", 1)
+        mutated_path.write_text(mutated_source)
+        binary = pathlib.Path(temp_dir) / "first-order-core-accepts-nondecimal"
+        subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            check=True,
+        )
+        malformed = subprocess.run(
+            [str(binary), "--wire-v1"], input=b"1 0\xff0", stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, check=True,
+        )
+        if malformed.stdout != b"MRS_VERUS 1 Unknown\n":
+            print("runtime accepted mutation: tokenizer accepts nondecimal token", file=sys.stderr)
+            return 1
+        print("runtime mutation rejected: tokenizer accepts nondecimal bytes")
+
     return 0
 
 
