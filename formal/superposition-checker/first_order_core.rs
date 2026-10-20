@@ -7472,6 +7472,14 @@ fn wire_tokenizer_boundary_regression() -> bool {
             && tokens[499_999] == 0,
         None => false,
     };
+    // Check both shortest/longest encodings of zero and leading-zero decimal
+    // forms. These are regression examples; semantic byte-span correspondence
+    // remains a separate quantified proof obligation.
+    let zeros = wire_tokenize(&vec![48u8, 32, 48, 48, 48]);
+    let zeros_ok = match zeros {
+        Some(tokens) => tokens.len() == 2 && tokens[0] == 0 && tokens[1] == 0,
+        None => false,
+    };
     max_tokens.push(48u8);
     max_tokens.push(32u8);
     let over_count_rejected = wire_tokenize(&max_tokens).is_none();
@@ -7504,7 +7512,7 @@ fn wire_tokenizer_boundary_regression() -> bool {
         token_index += 1;
     }
     let too_many_tokens_rejected = wire_tokenize(&too_many_tokens).is_none();
-    max_value_ok && exact_count_ok && over_count_rejected
+    max_value_ok && zeros_ok && exact_count_ok && over_count_rejected
         && exact_byte_limit_ok && over_byte_limit_rejected && too_many_tokens_rejected
 }
 

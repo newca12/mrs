@@ -58,8 +58,7 @@ The Verus theorem covers the **decoded IR**. Wire-v1 version/tag/field/count
 validation, recursive term/clause/certificate/DAG decoding, command dispatch,
 and ASCII whitespace/unsigned-decimal tokenization are Verus-verified by
 `check_wire_tokens` and `wire_tokenize`, including digit limits and checked
-`u64` accumulation and exact decimal-value/token-span correspondence. The host
-shim only acquires a bounded byte buffer and
+`u64` accumulation. The host shim only acquires a bounded byte buffer and
 performs process I/O/response formatting. TPTP parsing, bounded CNF lowering,
 numeric symbol assignment, certificate discovery, equality orientation, ordered
 alpha matching, and subprocess orchestration remain unverified. The opt-in
@@ -137,6 +136,9 @@ Limits: 4 MiB request, 500,000 decoded numeric tokens (the producer uses at most
 400,000), 512 nodes/inputs, two parents, 64 literals per clause, term depth below
 64, 256 substitution bindings, 64 path entries, work at most 10,000,000. These
 are ceilings, not completeness claims or exact cumulative replay accounting.
+The tokenizer's Verus postcondition proves the output token-count ceiling; the
+byte-span-to-token-value correspondence is currently covered by runtime examples
+but is not yet a quantified theorem. See the M5 ledger for this open proof task.
 The MRS subprocess runner bounds output to 1 KiB and the wall clock to the
 explicit configuration (maximum 60 s). Exceeded limits cannot certify.
 

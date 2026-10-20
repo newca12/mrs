@@ -7,6 +7,19 @@ The bounded **M5 interchange and MRS integration implementation now exists**.
 The older milestone narrative below records the prototype's history; statements
 that no interchange or caller exists are superseded by this update.
 
+### 2026-10-21 tokenizer proof boundary correction
+
+The tokenizer audit now distinguishes executable checks from the theorem
+postcondition. `wire_tokenize` verifies bounds, ASCII decimal syntax, checked
+u64 accumulation and limits, with exact-ceiling runtime cases. It does **not**
+yet prove a quantified relation from each output value to the exact source byte
+span. An attempted recursive span specification was removed when the pinned
+Verus/SMT check could not establish termination/composition reliably. The
+manifest records `wire_token_value_correspondence_postcondition=false`; tests
+are retained as regression evidence, not promoted to a theorem. Closing this
+M5 item needs a span-carrying parser state/invariant proof or a formally refined
+byte lexer.
+
 - **DONE:** wire v1 for superposition steps and complete proof DAGs; bounded
   decoder invokes the same compiled Verus-verified replay/certifier.
 - **DONE:** bounded CNF TPTP-to-IR adapter in `mrs-proof-kernel::verus`, exact
@@ -43,9 +56,16 @@ that no interchange or caller exists are superseded by this update.
   and dispatch fully decoded requests to the local step/DAG checker.
 - **DONE:** decimal byte tokenization is now inside `verus!`; `wire_tokenize`
   verifies ASCII whitespace, digit-only tokens, maximum token length, checked
-  u64 accumulation and the 500,000-token cap. Its postcondition relates each
-  token to the exact decimal byte span; a compiled mutation weakening the digit
-  guard and mapping a non-ASCII byte into a digit must fail the regression.
+  u64 accumulation and the 500,000-token cap. Runtime cases cover exact-u64,
+  exact-byte and exact-token ceilings. The tokenizer postcondition currently
+  establishes the output-count limit; a full quantified source-span/value
+  relation is still a proof task, and the support manifest does not claim it.
+- **REMAINING clarification:** `wire_tokenize` currently has the executable
+  output-count postcondition and comprehensive runtime cases, but no quantified
+  Verus relation from each output element back to its exact source byte span.
+  `wire_token_value_correspondence_postcondition` in the manifest was premature
+  and is removed in this checkpoint; establishing that relation needs a proof
+  over the tokenizer loop invariant, not just example tests.
 - **DONE:** the host shim only acquires at most 4 MiB of bytes and performs
   process I/O/result formatting. `wire_tokenize`, inside `verus!`, verifies
   Runtime tests cover every request prefix, malformed version/tag/count input,
@@ -72,7 +92,11 @@ check and requires Verus to reject that mutation. The no-cheating self-test firs
 accepts a valid assumption probe without the flag, then requires rejection with
 the flag; the earlier malformed `assume_specification` probe was not evidence.
 Current module counts: **5 / 247 / 5 / 5**, with **19 verifier-negative mutations,
-three runtime mutations and one no-cheating probe**.
+three runtime mutations and one no-cheating probe**. The newest tokenizer mutation
+is compiled by Verus but rejected before runtime because the weakened source no
+longer proves the tokenizer invariant; it does not count as a runtime mutation.
+The other three counts cover root closure, repeated input comparison accounting,
+and runtime root/node regressions (see `mutation-check.py`).
 
 ## Implementation status (historical 2026-10-18 ledger, updated where indicated)
 
