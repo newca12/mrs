@@ -20,6 +20,18 @@ are retained as regression evidence, not promoted to a theorem. Closing this
 M5 item needs a span-carrying parser state/invariant proof or a formally refined
 byte lexer.
 
+### 2026-10-21 decimal accumulation refinement checkpoint
+
+- **DONE:** checked decimal accumulation is factored into
+  `wire_decimal_append`. Its Verus postcondition states the exact
+  multiply-by-ten/add-digit relation whenever the checked operations succeed.
+  Runtime regressions exercise the exact `u64::MAX` boundary and both
+  multiplication/addition overflow failures.
+- **REMAINING:** `wire_tokenize` does not yet carry source spans or prove that
+  its emitted values correspond to those spans. This primitive theorem is a
+  composable step toward the loop invariant, not closure of the tokenizer
+  correspondence obligation.
+
 ### 2026-10-21 include-closure bridge checkpoint
 
 - **DONE:** `mrs-proover::load` now applies every TPTP include selection to the
@@ -83,6 +95,8 @@ byte lexer.
   exact-byte and exact-token ceilings. The tokenizer postcondition currently
   establishes the output-count limit; a full quantified source-span/value
   relation is still a proof task, and the support manifest does not claim it.
+  `wire_decimal_append` separately proves successful checked accumulation;
+  this primitive result does not yet lift to the full token span.
 - **REMAINING clarification:** `wire_tokenize` currently has the executable
   output-count postcondition and comprehensive runtime cases, but no quantified
   Verus relation from each output element back to its exact source byte span.

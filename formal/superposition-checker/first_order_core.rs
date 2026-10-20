@@ -7371,6 +7371,15 @@ fn wire_is_space(byte: u8) -> (space: bool)
     byte == 32 || byte == 9 || byte == 10 || byte == 11 || byte == 12 || byte == 13
 }
 
+fn wire_decimal_append(value: u64, digit: u64) -> (next: Option<u64>)
+    requires digit < 10
+    ensures next.is_some() ==> next.unwrap() as int == value as int * 10 + digit as int
+{
+    let Some(times_ten) = value.checked_mul(10) else { return None; };
+    let Some(next) = times_ten.checked_add(digit) else { return None; };
+    Some(next)
+}
+
 // Verified ASCII whitespace/decimal-u64 tokenizer. UTF-8 is unnecessary for
 // this numeric protocol: every non-ASCII byte is rejected as a malformed token.
 fn wire_tokenize(bytes: &Vec<u8>) -> (tokens: Option<Vec<u64>>)
@@ -7397,8 +7406,7 @@ fn wire_tokenize(bytes: &Vec<u8>) -> (tokens: Option<Vec<u64>>)
         } else {
             if byte < 48 || byte > 57 { return None; }
             let digit = (byte - 48) as u64;
-            let Some(times_ten) = value.checked_mul(10) else { return None; };
-            let Some(next) = times_ten.checked_add(digit) else { return None; };
+            let Some(next) = wire_decimal_append(value, digit) else { return None; };
             value = next;
             in_token = true;
         }
@@ -7484,6 +7492,13 @@ fn wire_tokenizer_boundary_regression() -> bool {
     max_tokens.push(32u8);
     let over_count_rejected = wire_tokenize(&max_tokens).is_none();
 
+    let decimal_append_max = match wire_decimal_append(u64::MAX / 10, u64::MAX % 10) {
+        Some(value) => value == u64::MAX,
+        None => false,
+    };
+    let decimal_append_overflow = wire_decimal_append(u64::MAX / 10, u64::MAX % 10 + 1).is_none()
+        && wire_decimal_append(u64::MAX, 0).is_none();
+
     let mut max_bytes: Vec<u8> = Vec::new();
     let mut j: usize = 0;
     while j < 4 * 1024 * 1024
@@ -7513,6 +7528,7 @@ fn wire_tokenizer_boundary_regression() -> bool {
     }
     let too_many_tokens_rejected = wire_tokenize(&too_many_tokens).is_none();
     max_value_ok && zeros_ok && exact_count_ok && over_count_rejected
+        && decimal_append_max && decimal_append_overflow
         && exact_byte_limit_ok && over_byte_limit_rejected && too_many_tokens_rejected
 }
 
