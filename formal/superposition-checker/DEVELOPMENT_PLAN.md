@@ -157,7 +157,7 @@ invalidate the original code. The gate now removes the actual forbidden-image
 check and requires Verus to reject that mutation. The no-cheating self-test first
 accepts a valid assumption probe without the flag, then requires rejection with
 the flag; the earlier malformed `assume_specification` probe was not evidence.
-Current module counts: **5 / 252 / 5 / 5**, with **19 verifier-negative mutations,
+Current module counts: **5 / 252 / 5 / 5**, with **20 verifier-negative mutations,
 three runtime mutations and one no-cheating probe**. The newest tokenizer mutation
 is compiled by Verus but rejected before runtime because the weakened source no
 longer proves the tokenizer invariant; it does not count as a runtime mutation.

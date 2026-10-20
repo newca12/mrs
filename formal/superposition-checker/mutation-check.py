@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-import concurrent.futures
-import os
 import pathlib
 import subprocess
 import sys
@@ -115,6 +113,11 @@ def main() -> int:
             "&nodes[node.parents[1]].clause, lp, rp, &node.clause, work_limit - work);",
             "&nodes[node.parents[1]].clause, lp, rp, &nodes[node.parents[0]].clause, work_limit);",
         ),
+        (
+            "tokenizer span correspondence omits inductive decimal append lemma",
+            "lemma_decimal_digits_value_append(\n                        bytes@.subrange(token_start as int, cursor as int), byte);",
+            "// omitted",
+        ),
     ]
 
     with tempfile.TemporaryDirectory(prefix="mrs-verus-mutation-") as temp_dir:
@@ -137,10 +140,11 @@ def main() -> int:
             return 1
         print("mutation rejected: Verus --no-cheating rejects a valid assumption probe")
 
-        def check_mutation(item: tuple[int, tuple[str, str, str]]) -> tuple[int, str, int, str]:
-            index, (name, correct, mutated) = item
+        for index, (name, correct, mutated) in enumerate(mutations):
             if source.count(correct) != 1:
-                return (index, name, 2, f"{name}: mutation anchor is missing or ambiguous")
+                print(f"{name}: mutation anchor is missing or ambiguous", file=sys.stderr)
+                return 2
+
             mutated_path = pathlib.Path(temp_dir) / f"first_order_core_mutated_{index}.rs"
             mutated_path.write_text(source.replace(correct, mutated, 1))
             result = subprocess.run(
@@ -151,18 +155,9 @@ def main() -> int:
                 check=False,
             )
             if result.returncode == 0:
-                return (index, name, 1, f"Verus accepted mutation: {name}")
-            return (index, name, 0, f"mutation rejected: {name}")
-
-        workers = min(8, os.cpu_count() or 4)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-            results = list(executor.map(check_mutation, enumerate(mutations)))
-
-        for index, name, code, msg in results:
-            if code != 0:
-                print(msg, file=sys.stderr)
-                return code
-            print(msg)
+                print(f"Verus accepted mutation: {name}", file=sys.stderr)
+                return 1
+            print(f"mutation rejected: {name}", flush=True)
 
         closure_guard = (
             "match check_root_ancestor_closure(dag, closure_budget) {\n"
