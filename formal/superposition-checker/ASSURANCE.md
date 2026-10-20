@@ -11,9 +11,10 @@ hash mismatches and disagreements suppress certification in that gate.
 
 The mathematical theorem still covers **decoded IR**, not the TPTP bytes.
 Parsing, syntax lowering, symbol assignment, equality orientation, ordered
-alpha conversion, certificate discovery, decimal byte tokenization and process
-I/O are unverified. Wire-v1 structural decoding is verified, but not the mapping
-from token bytes to integer tokens. Reports explicitly retain
+alpha conversion, certificate discovery and subprocess orchestration are
+unverified. Wire-v1 structural decoding and ASCII decimal tokenization into u64
+tokens are verified by `wire_*`; bounded byte acquisition and response I/O are
+still host shims. Reports explicitly retain
 `production_certification=false` for
 formal evidence; the dual gate relies on both this trusted bridge and the
 independent strict kernel. No default certification path has been replaced.

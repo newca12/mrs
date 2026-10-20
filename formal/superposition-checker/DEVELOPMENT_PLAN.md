@@ -26,7 +26,7 @@ that no interchange or caller exists are superseded by this update.
   group cleanup, malformed/truncated protocol regressions and formal CI bridge
   tests using the exact artifact that passed Verus verification.
 - **REMAINING M5 assurance gate:** parser/lowering/alpha-orientation conversion
-  and decimal byte tokenization are unverified trusted boundaries. This is a supported-subset
+  and process orchestration are unverified trusted boundaries. This is a supported-subset
   shadow/dual-check integration, **not end-to-end verified TPTP certification**.
   Default enablement requires a refined input bridge and independent review.
   The available c502 archive has only three clauses, so replaying it cannot
@@ -40,8 +40,11 @@ that no interchange or caller exists are superseded by this update.
   recursively construct terms/atoms/clauses/substitutions/paths, construct step
   certificates and complete DAGs, reject unknown commands and trailing tokens,
   and dispatch fully decoded requests to the local step/DAG checker.
-- **DONE:** the host shim is reduced to a 4 MiB read bound, UTF-8/decimal
-  tokenization with a 500,000-token cap, process I/O and result formatting.
+- **DONE:** decimal byte tokenization is now inside `verus!`; `wire_tokenize`
+  verifies ASCII whitespace, digit-only tokens, maximum token length, checked
+  u64 accumulation and the 500,000-token cap.
+- **DONE:** the host shim only acquires at most 4 MiB of bytes and performs
+  process I/O/result formatting. `wire_tokenize`, inside `verus!`, verifies
   Runtime tests cover every request prefix, malformed version/tag/count input,
   malformed literal records, numeric overflow/nondecimal bytes and oversized
   input.
@@ -55,7 +58,7 @@ that no interchange or caller exists are superseded by this update.
 - **DONE:** the Rust runner copies the bounded caller artifact into a private
   snapshot, hashes that exact snapshot and launches it; process-group cleanup
   handles timeouts and leaked pipe descriptors.
-- **REMAINING:** decimal byte tokenization, TPTP parser/lowering, certificate
+- **REMAINING:** bounded host byte acquisition, TPTP parser/lowering, certificate
   discovery, alpha/equality normalization and process orchestration remain
   trusted/unverified. M5 remains partial pending verified TPTP lowering or a
   refinement proof from original bytes to the verified IR.

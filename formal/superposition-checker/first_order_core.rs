@@ -7365,17 +7365,91 @@ fn check_wire_tokens(tokens: &Vec<u64>) -> (response: u64)
     response
 }
 
+fn wire_is_space(byte: u8) -> (space: bool)
+    ensures space == (byte == 32 || byte == 9 || byte == 10 || byte == 11 || byte == 12 || byte == 13)
+{
+    byte == 32 || byte == 9 || byte == 10 || byte == 11 || byte == 12 || byte == 13
+}
+
+// Verified ASCII whitespace/decimal-u64 tokenizer. UTF-8 is unnecessary for
+// this numeric protocol: every non-ASCII byte is rejected as a malformed token.
+fn wire_tokenize(bytes: &Vec<u8>) -> (tokens: Option<Vec<u64>>)
+    ensures tokens.is_some() ==> tokens.unwrap()@.len() <= 500_000
+{
+    if bytes.len() > 4 * 1024 * 1024 { return None; }
+    let mut tokens: Vec<u64> = Vec::new();
+    let mut cursor: usize = 0;
+    let mut value: u64 = 0;
+    let mut digits: usize = 0;
+    let mut in_token = false;
+    while cursor < bytes.len()
+        invariant cursor <= bytes.len(), tokens@.len() <= 500_000, digits <= 20,
+            in_token == (digits > 0)
+        decreases bytes.len() - cursor
+    {
+        let byte = bytes[cursor];
+        if wire_is_space(byte) {
+            if in_token {
+                if tokens.len() >= 500_000 { return None; }
+                tokens.push(value);
+                value = 0;
+                digits = 0;
+                in_token = false;
+            }
+        } else {
+            if byte < 48 || byte > 57 || digits >= 20 { return None; }
+            let digit = (byte - 48) as u64;
+            let Some(times_ten) = value.checked_mul(10) else { return None; };
+            let Some(next) = times_ten.checked_add(digit) else { return None; };
+            value = next;
+            digits += 1;
+            in_token = true;
+        }
+        cursor += 1;
+    }
+    if in_token {
+        if tokens.len() >= 500_000 { return None; }
+        tokens.push(value);
+    }
+    Some(tokens)
+}
+
 fn wire_dispatch_regressions() -> bool {
     let ready = vec![1u64, 0, 0];
     let wrong_version = vec![2u64, 0, 0];
     let unknown_command = vec![1u64, 9, 0];
     let truncated = vec![1u64, 2];
     let trailing = vec![1u64, 0, 0, 7];
+    let decimal = wire_tokenize(&vec![49u8, 32, 50, 32, 48]);
+    let attached = wire_tokenize(&vec![49u8, 32, 49, 50, 51]);
+    let whitespace = wire_tokenize(&vec![49u8, 9, 10, 50]);
+    let decimal_ok = match decimal {
+        Some(tokens) => tokens.len() == 3 && tokens[0] == 1 && tokens[1] == 2 && tokens[2] == 0,
+        None => false,
+    };
+    let attached_ok = match attached {
+        Some(tokens) => tokens.len() == 2 && tokens[0] == 1 && tokens[1] == 123,
+        None => false,
+    };
+    let whitespace_ok = match whitespace {
+        Some(tokens) => tokens.len() == 2 && tokens[0] == 1 && tokens[1] == 2,
+        None => false,
+    };
+    let empty: Vec<u8> = Vec::new();
+    let spaces = vec![32u8, 9, 10, 13, 12, 11];
     check_wire_tokens(&ready) == 0
         && check_wire_tokens(&wrong_version) == 4
         && check_wire_tokens(&unknown_command) == 4
         && check_wire_tokens(&truncated) == 4
         && check_wire_tokens(&trailing) == 4
+        && decimal_ok && attached_ok && whitespace_ok
+        && wire_tokenize(&vec![49u8, 46, 50]).is_none()
+        && wire_tokenize(&vec![45u8, 49]).is_none()
+        && wire_tokenize(&vec![49u8, 32, 255]).is_none()
+        && wire_tokenize(&vec![49u8; 21]).is_none()
+        && wire_tokenize(&vec![50u8; 20]).is_none()
+        && match wire_tokenize(&empty) { Some(tokens) => tokens.len() == 0, None => false }
+        && match wire_tokenize(&spaces) { Some(tokens) => tokens.len() == 0, None => false }
 }
 
 fn run_examples() -> bool {
@@ -7421,21 +7495,11 @@ mod wire {
     use std::io::{Read, Write};
 
     const MAX_BYTES: u64 = 4 * 1024 * 1024;
-    fn tokenize(text: &str) -> Option<Vec<u64>> {
-        let mut tokens = Vec::new();
-        for token in text.split_whitespace() {
-            if tokens.len() >= 500_000 || token.len() > 20
-                || !token.bytes().all(|b| b.is_ascii_digit()) { return None; }
-            tokens.push(token.parse::<u64>().ok()?);
-        }
-        Some(tokens)
-    }
     pub fn run() {
         let mut bytes = Vec::new();
         let result = std::io::stdin().take(MAX_BYTES + 1).read_to_end(&mut bytes);
         let code = if result.is_err() || bytes.len() as u64 > MAX_BYTES { 4 }
-            else { std::str::from_utf8(&bytes).ok().and_then(tokenize)
-                .map(|tokens| check_wire_tokens(&tokens)).unwrap_or(4) };
+            else { wire_tokenize(&bytes).map(|tokens| check_wire_tokens(&tokens)).unwrap_or(4) };
         let verdict = match code { 0 => "Ready", 1 => "Accepted", 2 => "CertifiedIR",
             3 => "Rejected", _ => "Unknown" };
         let _ = writeln!(std::io::stdout(), "MRS_VERUS 1 {}", verdict);

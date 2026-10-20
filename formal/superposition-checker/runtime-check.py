@@ -53,6 +53,8 @@ def main() -> None:
         for end in range(len(request.split())):
             check_wire(" ".join(request.split()[:end]).encode(), b"MRS_VERUS 1 Unknown\n")
         check_wire(b"1 0 0 \xff", b"MRS_VERUS 1 Unknown\n")
+        check_wire(b"1 0 0 +1", b"MRS_VERUS 1 Unknown\n")
+        check_wire(b"1 0 0 18446744073709551616", b"MRS_VERUS 1 Unknown\n")
         check_wire(b"0" * (4 * 1024 * 1024 + 1), b"MRS_VERUS 1 Unknown\n")
         structural = "1 2 100000 3 2 2 1 1 0 9 1 0 0 9 " \
                      "1 1 1 0 9 0 0 2 1 0 0 9 0 0 3 0 2 2 0 1 0 0"
