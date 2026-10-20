@@ -54,6 +54,21 @@ def main() -> None:
             check_wire(" ".join(request.split()[:end]).encode(), b"MRS_VERUS 1 Unknown\n")
         check_wire(b"1 0 0 \xff", b"MRS_VERUS 1 Unknown\n")
         check_wire(b"0" * (4 * 1024 * 1024 + 1), b"MRS_VERUS 1 Unknown\n")
+        structural = "1 2 100000 3 2 2 1 1 0 9 1 0 0 9 " \
+                     "1 1 1 0 9 0 0 2 1 0 0 9 0 0 3 0 2 2 0 1 0 0"
+        check_wire(structural.encode(), b"MRS_VERUS 1 CertifiedIR\n")
+        replacements = [
+            ("1 2 100000", "2 2 100000"), # protocol version
+            ("1 2 100000", "1 99 100000"), # command tag
+            ("1 2 100000", "1 2 10000001"), # work bound
+            ("3 2 2", "513 2 2"), # nodes over max
+            ("3 2 2 1 1 0 9", "3 2 2 1 2 0 9"), # parent count/tag shape
+            ("1 1 0 9", "1 9 0 9"), # atom tag
+        ]
+        for old, new in replacements:
+            malformed = structural.replace(old, new, 1)
+            check_wire(malformed.encode(), b"MRS_VERUS 1 Unknown\n")
+        check_wire((structural + " 0").encode(), b"MRS_VERUS 1 Unknown\n")
         if os.environ.get("MRS_VERUS_BRIDGE_TESTS") == "1":
             env = dict(os.environ, MRS_VERUS_TEST_BINARY=str(binary),
                        MRS_VERUS_TEST_SHA256=second_hash)

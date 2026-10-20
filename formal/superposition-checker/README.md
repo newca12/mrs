@@ -8,8 +8,9 @@ shadow and dual-check APIs; a CLI example and formal-CI integration tests run
 actual parsed CNF proofs and the archived c502 fixture through the artifact.
 See **[`INTERCHANGE.md`](INTERCHANGE.md)** for build/run commands, wire grammar,
 limits, support and provenance. The dual gate requires both the independent
-strict kernel and Verus IR certifier to accept. TPTP lowering and byte decoding
-remain unverified, so this is a trusted-adapter integration rather than an
+strict kernel and Verus IR certifier to accept. Wire-v1 structural decoding is
+verified in Verus; decimal byte tokenization and TPTP lowering remain
+unverified, so this is a trusted-adapter integration rather than an
 end-to-end formally verified TPTP certifier. Older prototype limitations below
 that say no adapter/caller exists are superseded by this section.
 

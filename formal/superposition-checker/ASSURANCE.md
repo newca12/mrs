@@ -11,10 +11,14 @@ hash mismatches and disagreements suppress certification in that gate.
 
 The mathematical theorem still covers **decoded IR**, not the TPTP bytes.
 Parsing, syntax lowering, symbol assignment, equality orientation, ordered
-alpha conversion, certificate discovery, wire decoding and process I/O are
-unverified. Reports explicitly retain `production_certification=false` for
+alpha conversion, certificate discovery, decimal byte tokenization and process
+I/O are unverified. Wire-v1 structural decoding is verified, but not the mapping
+from token bytes to integer tokens. Reports explicitly retain
+`production_certification=false` for
 formal evidence; the dual gate relies on both this trusted bridge and the
 independent strict kernel. No default certification path has been replaced.
+The verified DAG contract requires an empty root and exactly two parent edges
+for each supported inference.
 
 The actual archived c502 fixture is now parsed, translated and accepted as a
 local step through the subprocess boundary. Complete supported CNF DAGs,
@@ -26,7 +30,9 @@ does not implement pivot unification. The complete archived SWV406+1 proof is
 not present in the three-clause fixture and is not certified by these tests.
 
 Build evidence records source commit/dirty state/hash, artifact SHA-256, toolchain,
-support manifest and strict verification flags. Per-call reports record artifact
+support manifest and strict verification flags. Artifact execution uses a private
+read-only byte snapshot of the hash-checked caller binary, reducing check/launch
+replacement risk. Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
 is checked; cross-host reproducibility and a verified decoder remain open.
 

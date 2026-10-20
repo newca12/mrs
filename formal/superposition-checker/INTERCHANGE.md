@@ -54,9 +54,11 @@ These APIs do not change the default strict kernel or prover output behavior.
 
 ## Trust boundary and supported subset
 
-The Verus theorem covers the **decoded IR**. TPTP parsing, bounded CNF lowering,
-numeric symbol assignment, certificate discovery, equality orientation, ordered
-alpha matching, byte decoding and subprocess I/O are unverified. The opt-in
+The Verus theorem covers the **decoded IR**. Wire-v1 version/tag/field/count
+validation, recursive term/clause/certificate/DAG decoding and command dispatch
+are Verus-verified. Bounded byte reading, UTF-8/unsigned-decimal tokenization,
+TPTP parsing, bounded CNF lowering, numeric symbol assignment, certificate discovery,
+equality orientation, and ordered alpha matching are also unverified. The opt-in
 gate remains a trusted-adapter dual-check, not an end-to-end verified TPTP
 certifier. Its positive result requires the independently implemented strict
 kernel. Shadow results always carry `production_certification=false` to prevent

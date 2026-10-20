@@ -9,10 +9,12 @@ use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const MAX_BYTES: usize = 4 * 1024 * 1024;
 const MAX_NODES: usize = 512;
 const WORK: u64 = 10_000_000;
+static ARTIFACT_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
 /// Explicitly selected, hash-pinned artifact. No binary is downloaded or built
 /// by verification. Build with formal/superposition-checker/build-runtime.sh.
@@ -59,6 +61,68 @@ fn digest(bytes: &[u8]) -> String {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+/// Hash and execute one private snapshot, never the mutable caller path. This
+/// removes the obvious hash-then-replace race between validation and spawn.
+struct ArtifactSnapshot(PathBuf);
+impl Drop for ArtifactSnapshot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn snapshot_artifact(source: &std::path::Path) -> Result<(ArtifactSnapshot, String), String> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(source)
+        .map_err(|e| format!("checker artifact: {e}"))?
+        .take(128 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() > 128 * 1024 * 1024 {
+        return Err("checker artifact size ceiling".into());
+    }
+    let hash = digest(&bytes);
+    let (file, path) = loop {
+        let candidate = std::env::temp_dir().join(format!(
+            "mrs-verus-{}-{}",
+            std::process::id(),
+            ARTIFACT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => break (file, candidate),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("checker snapshot: {e}")),
+        }
+    };
+    let snapshot = path;
+    let mut file = file;
+    if let Err(error) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
+        let _ = std::fs::remove_file(&snapshot);
+        return Err(format!("checker snapshot write: {error}"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&snapshot, std::fs::Permissions::from_mode(0o500)).map_err(
+            |e| {
+                let _ = std::fs::remove_file(&snapshot);
+                format!("checker snapshot mode: {e}")
+            },
+        )?;
+    }
+    #[cfg(not(unix))]
+    {
+        let permissions = std::fs::metadata(source)
+            .map_err(|e| e.to_string())?
+            .permissions();
+        std::fs::set_permissions(&snapshot, permissions).map_err(|e| e.to_string())?;
+    }
+    Ok((ArtifactSnapshot(snapshot), hash))
 }
 
 struct Wire {
@@ -597,6 +661,10 @@ fn dag_request(
     let mut indices = HashMap::new();
     for index in &dag.topo {
         let node = &dag.nodes[*index];
+        // The parser-owned input is immutable for the duration of this call;
+        // Rust's shared borrow prevents concurrent mutation while the adapter
+        // validates and lowers this node.
+        let node_formula = node.formula;
         if node
             .formula
             .annotations()
@@ -605,8 +673,7 @@ fn dag_request(
             return Err("unsupported parent pedigree".into());
         }
         if !node.parents.is_empty() {
-            let annotation = node
-                .formula
+            let annotation = node_formula
                 .annotations()
                 .ok_or("missing inference annotation")?;
             let GeneralTerm::Function(_, args) = &annotation.source else {
@@ -619,7 +686,7 @@ fn dag_request(
                 return Err("nested/annotated inference parents require explicit replay".into());
             }
         }
-        let raw = supported_clause(&mut symbols, node.formula, limits)?;
+        let raw = supported_clause(&mut symbols, node_formula, limits)?;
         for l in &raw {
             register_signatures(&Formula::Atom(l.atom.clone()), &mut signatures)?;
         }
@@ -746,21 +813,12 @@ fn run(config: &VerusConfig, bytes: Vec<u8>, nodes: usize, dag: bool) -> ShadowR
         if config.timeout.is_zero() || config.timeout > Duration::from_secs(60) {
             return Err("invalid checker timeout".into());
         }
-        let mut artifact = Vec::new();
-        std::fs::File::open(&config.executable)
-            .map_err(|e| format!("checker artifact: {e}"))?
-            .take(128 * 1024 * 1024 + 1)
-            .read_to_end(&mut artifact)
-            .map_err(|e| e.to_string())?;
-        if artifact.len() > 128 * 1024 * 1024 {
-            return Err("checker artifact size ceiling".into());
-        }
-        let hash = digest(&artifact);
+        let (artifact, hash) = snapshot_artifact(&config.executable)?;
         report.artifact_sha256 = Some(hash.clone());
         if config.expected_sha256.len() != 64 || hash != config.expected_sha256 {
             return Err("checker artifact hash mismatch".into());
         }
-        let mut command = Command::new(&config.executable);
+        let mut command = Command::new(&artifact.0);
         command
             .arg("--wire-v1")
             .stdin(Stdio::piped())
@@ -772,6 +830,7 @@ fn run(config: &VerusConfig, bytes: Vec<u8>, nodes: usize, dag: bool) -> ShadowR
             command.process_group(0);
         }
         let mut child = command.spawn().map_err(|e| format!("checker spawn: {e}"))?;
+        let child_id = child.id();
         let mut stdin = child.stdin.take().ok_or("checker stdin missing")?;
         let stdout = child.stdout.take().ok_or("checker stdout missing")?;
         // Both pipes are drained concurrently; the deadline also covers blocked
@@ -795,15 +854,8 @@ fn run(config: &VerusConfig, bytes: Vec<u8>, nodes: usize, dag: bool) -> ShadowR
         if status.is_err() {
             let _ = child.kill();
             let _ = child.wait();
-        }
-        #[cfg(unix)]
-        {
-            // The checker is a separate process group. Terminate descendants
-            // too, including peers keeping pipe descriptors open after exit.
-            // SAFETY: kill with a negative pid addresses only this child group.
-            unsafe {
-                libc::kill(-(child.id() as i32), libc::SIGKILL);
-            }
+            #[cfg(unix)]
+            kill_process_group(child_id);
         }
         // An exited child may have forked peers holding pipe ends. Never block
         // waiting on their threads; unfinished pipe work is an unknown result.
@@ -811,6 +863,8 @@ fn run(config: &VerusConfig, bytes: Vec<u8>, nodes: usize, dag: bool) -> ShadowR
             std::thread::sleep(Duration::from_millis(5));
         }
         if !writer.is_finished() || !reader.is_finished() {
+            #[cfg(unix)]
+            kill_process_group(child_id);
             return Err("checker pipe timeout".into());
         }
         writer
@@ -834,6 +888,15 @@ fn run(config: &VerusConfig, bytes: Vec<u8>, nodes: usize, dag: bool) -> ShadowR
     })();
     report.verdict = result.unwrap_or_else(ShadowVerdict::Unknown);
     report
+}
+
+#[cfg(unix)]
+fn kill_process_group(child_id: u32) {
+    // SAFETY: CommandExt assigned a fresh process group whose id is the child
+    // pid. Kill only on timeout or leaked descendant pipe descriptors.
+    unsafe {
+        libc::kill(-(child_id as i32), libc::SIGKILL);
+    }
 }
 
 /// Independent strict-kernel verdict plus optional formal-track shadow evidence.
@@ -918,6 +981,21 @@ mod process_tests {
             );
             assert!(start.elapsed() < Duration::from_secs(2));
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn executable_snapshot_is_immutable_when_caller_path_changes() {
+        let dir = std::env::temp_dir().join(format!("mrs-verus-snapshot-{}", std::process::id()));
+        let _ = std::fs::create_dir(&dir);
+        let original = dir.join("checker");
+        std::fs::write(&original, b"first artifact").unwrap();
+        let (snapshot, hash) = snapshot_artifact(&original).unwrap();
+        std::fs::write(&original, b"replaced artifact").unwrap();
+        assert_eq!(hash, digest(b"first artifact"));
+        assert_eq!(std::fs::read(&snapshot.0).unwrap(), b"first artifact");
+        drop(snapshot);
+        assert!(!dir.join("unused").exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

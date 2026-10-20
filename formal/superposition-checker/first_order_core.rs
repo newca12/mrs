@@ -2584,6 +2584,29 @@ pub enum ExecTerm {
     App2(u64, Box<ExecTerm>, Box<ExecTerm>),
 }
 
+spec fn exec_term_depth(term: ExecTerm) -> nat
+    decreases term
+{
+    match term {
+        ExecTerm::Var(_) | ExecTerm::Const(_) => 0,
+        ExecTerm::App1(_, child) => 1 + exec_term_depth(*child),
+        ExecTerm::App2(_, left, right) => if exec_term_depth(*left) > exec_term_depth(*right) {
+            1 + exec_term_depth(*left)
+        } else { 1 + exec_term_depth(*right) },
+    }
+}
+
+spec fn exec_atom_depth_below(atom: ExecAtom, bound: nat) -> bool {
+    match atom {
+        ExecAtom::Pred0(_) => true,
+        ExecAtom::Pred1(_, arg) => exec_term_depth(*arg) < bound,
+        ExecAtom::Pred2(_, left, right) => exec_term_depth(*left) < bound
+            && exec_term_depth(*right) < bound,
+        ExecAtom::Eq(left, right) => exec_term_depth(left) < bound
+            && exec_term_depth(right) < bound,
+    }
+}
+
 #[derive(PartialEq, Eq)]
 pub struct ExecBinding {
     variable: u64,
@@ -6601,16 +6624,19 @@ fn validate_dag_node(dag: &ProofDag, index: usize, work_limit: usize) -> (ok: bo
         false
         },
         ProofNodeKind::Superposition => {
+        if node.parents.len() != 2 { return false; }
         if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
         let checked = check_dag_superposition_step(node, &dag.nodes,
             work_limit - work);
         checked
         },
         ProofNodeKind::Resolution(_, _) => {
+        if node.parents.len() != 2 { return false; }
         if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
         check_dag_resolution_step(node, &dag.nodes, work_limit - work)
         },
         ProofNodeKind::ExactResolution(_, _) => {
+        if node.parents.len() != 2 { return false; }
         if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
         check_dag_exact_resolution_step(node, &dag.nodes, work_limit - work)
         },
@@ -7090,6 +7116,268 @@ proof fn variable_substitution_is_an_instance()
     assert(apply(Term::Var(7), sigma) == Term::Const(19));
 }
 
+fn wire_number(tokens: &Vec<u64>, cursor: &mut usize) -> (value: Option<u64>)
+    requires *old(cursor) <= tokens.len()
+    ensures *final(cursor) <= tokens.len(),
+        value.is_some() ==> *final(cursor) == *old(cursor) + 1,
+        value.is_some() ==> value.unwrap() == tokens@[(*old(cursor)) as int],
+        value.is_none() ==> *final(cursor) == *old(cursor)
+{
+    if *cursor >= tokens.len() { return None; }
+    let value = tokens[*cursor];
+    *cursor += 1;
+    Some(value)
+}
+
+fn wire_count(tokens: &Vec<u64>, cursor: &mut usize, maximum: usize) -> (value: Option<usize>)
+    requires *old(cursor) <= tokens.len()
+    ensures *final(cursor) <= tokens.len(),
+        value.is_some() ==> *final(cursor) == *old(cursor) + 1,
+        value.is_some() ==> value.unwrap() <= maximum
+{
+    let Some(value) = wire_number(tokens, cursor) else { return None; };
+    match usize::try_from(value) { Ok(n) if n <= maximum => Some(n), _ => None }
+}
+
+fn wire_term(tokens: &Vec<u64>, cursor: &mut usize, depth: usize) -> (term: Option<ExecTerm>)
+    requires *old(cursor) <= tokens.len(), depth <= 64
+    ensures *final(cursor) <= tokens.len(), term.is_some() ==> *final(cursor) > *old(cursor),
+        term.is_some() ==> depth + exec_term_depth(term.unwrap()) < 64
+    decreases 64 - depth
+{
+    if depth >= 64 { return None; }
+    let Some(tag) = wire_number(tokens, cursor) else { return None; };
+    let Some(symbol) = wire_number(tokens, cursor) else { return None; };
+    match tag {
+        0 => Some(ExecTerm::Var(symbol)),
+        1 => Some(ExecTerm::Const(symbol)),
+        2 => match wire_term(tokens, cursor, depth + 1) {
+            Some(child) => Some(ExecTerm::App1(symbol, Box::new(child))), None => None,
+        },
+        3 => match wire_term(tokens, cursor, depth + 1) {
+            Some(left) => match wire_term(tokens, cursor, depth + 1) {
+                Some(right) => Some(ExecTerm::App2(symbol, Box::new(left), Box::new(right))),
+                None => None,
+            }, None => None,
+        },
+        _ => None,
+    }
+}
+
+fn wire_clause(tokens: &Vec<u64>, cursor: &mut usize) -> (clause: Option<ExecClause>)
+    requires *old(cursor) <= tokens.len()
+    ensures *final(cursor) <= tokens.len(),
+        clause.is_some() ==> clause.unwrap().literals@.len() <= 64,
+        clause.is_some() ==> forall|i: int| 0 <= i < clause.unwrap().literals@.len()
+            ==> #[trigger] exec_atom_depth_below(clause.unwrap().literals@[i].atom, 64)
+{
+    let Some(count) = wire_count(tokens, cursor, 64) else { return None; };
+    let mut literals: Vec<ExecLiteral> = Vec::new();
+    let mut i: usize = 0;
+    while i < count
+        invariant i <= count, literals@.len() == i, *cursor <= tokens.len(),
+            forall|j: int| 0 <= j < i ==> exec_atom_depth_below(literals@[j].atom, 64)
+        decreases count - i
+    {
+        let Some(polarity) = wire_number(tokens, cursor) else { return None; };
+        let positive = match polarity { 0 => false, 1 => true, _ => return None };
+        let Some(tag) = wire_number(tokens, cursor) else { return None; };
+        let atom = match tag {
+            0 => match wire_number(tokens, cursor) { Some(p) => ExecAtom::Pred0(p), None => return None },
+            1 => {
+                let Some(p) = wire_number(tokens, cursor) else { return None; };
+                let Some(arg) = wire_term(tokens, cursor, 0) else { return None; };
+                ExecAtom::Pred1(p, Box::new(arg))
+            },
+            2 => {
+                let Some(p) = wire_number(tokens, cursor) else { return None; };
+                let Some(a) = wire_term(tokens, cursor, 0) else { return None; };
+                let Some(b) = wire_term(tokens, cursor, 0) else { return None; };
+                ExecAtom::Pred2(p, Box::new(a), Box::new(b))
+            },
+            3 => {
+                let Some(a) = wire_term(tokens, cursor, 0) else { return None; };
+                let Some(b) = wire_term(tokens, cursor, 0) else { return None; };
+                ExecAtom::Eq(a, b)
+            },
+            _ => return None,
+        };
+        literals.push(ExecLiteral { positive, atom });
+        i += 1;
+    }
+    Some(ExecClause { literals })
+}
+
+fn wire_bindings(tokens: &Vec<u64>, cursor: &mut usize) -> (bindings: Option<Vec<ExecBinding>>)
+    requires *old(cursor) <= tokens.len()
+    ensures *final(cursor) <= tokens.len(),
+        bindings.is_some() ==> bindings.unwrap()@.len() <= 256
+{
+    let Some(count) = wire_count(tokens, cursor, 256) else { return None; };
+    let mut bindings: Vec<ExecBinding> = Vec::new();
+    let mut i: usize = 0;
+    while i < count
+        invariant i <= count, bindings@.len() == i, *cursor <= tokens.len()
+        decreases count - i
+    {
+        let Some(variable) = wire_number(tokens, cursor) else { return None; };
+        let Some(replacement) = wire_term(tokens, cursor, 0) else { return None; };
+        bindings.push(ExecBinding { variable, replacement });
+        i += 1;
+    }
+    Some(bindings)
+}
+
+fn wire_path(tokens: &Vec<u64>, cursor: &mut usize) -> (path: Option<Vec<u64>>)
+    requires *old(cursor) <= tokens.len()
+    ensures *final(cursor) <= tokens.len(), path.is_some() ==> path.unwrap()@.len() <= 64
+{
+    let Some(count) = wire_count(tokens, cursor, 64) else { return None; };
+    let mut path: Vec<u64> = Vec::new();
+    let mut i: usize = 0;
+    while i < count
+        invariant i <= count, path@.len() == i, *cursor <= tokens.len()
+        decreases count - i
+    {
+        let Some(child) = wire_number(tokens, cursor) else { return None; };
+        path.push(child);
+        i += 1;
+    }
+    Some(path)
+}
+
+fn wire_certificate(tokens: &Vec<u64>, cursor: &mut usize)
+    -> (certificate: Option<SuperpositionCertificate>)
+    requires *old(cursor) <= tokens.len()
+    ensures *final(cursor) <= tokens.len()
+{
+    let Some(source) = wire_clause(tokens, cursor) else { return None; };
+    let Some(target) = wire_clause(tokens, cursor) else { return None; };
+    let Some(conclusion) = wire_clause(tokens, cursor) else { return None; };
+    let Some(source_freshening) = wire_bindings(tokens, cursor) else { return None; };
+    let Some(target_freshening) = wire_bindings(tokens, cursor) else { return None; };
+    let Some(unifier) = wire_bindings(tokens, cursor) else { return None; };
+    let Some(si) = wire_count(tokens, cursor, 63) else { return None; };
+    let Some(ti) = wire_count(tokens, cursor, 63) else { return None; };
+    let Some(slot) = wire_number(tokens, cursor) else { return None; };
+    let Some(path) = wire_path(tokens, cursor) else { return None; };
+    let Some(fresh_path) = wire_path(tokens, cursor) else { return None; };
+    Some(SuperpositionCertificate { source, target, conclusion, source_freshening,
+        target_freshening, unifier, source_equality_index: si, target_literal_index: ti,
+        target_argument_slot: slot, target_path: path, fresh_target_path: fresh_path })
+}
+
+fn wire_dag(tokens: &Vec<u64>, cursor: &mut usize) -> (dag: Option<ProofDag>)
+    requires *old(cursor) <= tokens.len()
+    ensures *final(cursor) <= tokens.len(),
+        dag.is_some() ==> dag.unwrap().nodes@.len() <= 512,
+        dag.is_some() ==> dag.unwrap().input_clauses@.len() <= 512,
+        dag.is_some() ==> dag.unwrap().root <= 511,
+        dag.is_some() ==> forall|i: int| 0 <= i < dag.unwrap().nodes@.len()
+            ==> dag.unwrap().nodes@[i].parents@.len() <= 2,
+        dag.is_some() ==> forall|i: int, j: int| 0 <= i < dag.unwrap().nodes@.len()
+            && 0 <= j < dag.unwrap().nodes@[i].parents@.len()
+            ==> dag.unwrap().nodes@[i].parents@[j] <= 511
+{
+    let Some(count) = wire_count(tokens, cursor, 512) else { return None; };
+    let Some(root) = wire_count(tokens, cursor, 511) else { return None; };
+    let Some(input_count) = wire_count(tokens, cursor, 512) else { return None; };
+    let mut inputs: Vec<ExecClause> = Vec::new();
+    let mut i: usize = 0;
+    while i < input_count
+        invariant i <= input_count, inputs@.len() == i, *cursor <= tokens.len()
+        decreases input_count - i
+    {
+        let Some(c) = wire_clause(tokens, cursor) else { return None; };
+        inputs.push(c); i += 1;
+    }
+    let mut nodes: Vec<ProofNode> = Vec::new();
+    let mut n: usize = 0;
+    while n < count
+        invariant n <= count, nodes@.len() == n, *cursor <= tokens.len(),
+            forall|j: int| 0 <= j < n ==> nodes@[j].parents@.len() <= 2,
+            forall|j: int, k: int| 0 <= j < n && 0 <= k < nodes@[j].parents@.len()
+                ==> nodes@[j].parents@[k] <= 511
+        decreases count - n
+    {
+        let Some(id) = wire_number(tokens, cursor) else { return None; };
+        let Some(clause) = wire_clause(tokens, cursor) else { return None; };
+        let Some(tag) = wire_number(tokens, cursor) else { return None; };
+        let Some(parent_count) = wire_count(tokens, cursor, 2) else { return None; };
+        let mut parents: Vec<usize> = Vec::new();
+        let mut p: usize = 0;
+        while p < parent_count
+            invariant p <= parent_count, parents@.len() == p, *cursor <= tokens.len(),
+                forall|j: int| 0 <= j < p ==> parents@[j] <= 511
+            decreases parent_count - p
+        {
+            let Some(parent) = wire_count(tokens, cursor, 511) else { return None; };
+            parents.push(parent); p += 1;
+        }
+        let (kind, step) = match tag {
+            0 => (ProofNodeKind::Input, None),
+            1 => {
+                let Some(c) = wire_certificate(tokens, cursor) else { return None; };
+                (ProofNodeKind::Superposition, Some(c))
+            },
+            2 => {
+                let Some(lp) = wire_count(tokens, cursor, 63) else { return None; };
+                let Some(rp) = wire_count(tokens, cursor, 63) else { return None; };
+                (ProofNodeKind::Resolution(lp, rp), None)
+            },
+            3 => {
+                let Some(lp) = wire_count(tokens, cursor, 63) else { return None; };
+                let Some(rp) = wire_count(tokens, cursor, 63) else { return None; };
+                (ProofNodeKind::ExactResolution(lp, rp), None)
+            },
+            _ => return None,
+        };
+        nodes.push(ProofNode { id, clause, kind, parents, step }); n += 1;
+    }
+    Some(ProofDag { nodes, input_clauses: inputs, root })
+}
+
+fn check_wire_tokens(tokens: &Vec<u64>) -> (response: u64)
+    ensures response <= 4
+{
+    let mut cursor: usize = 0;
+    let Some(version) = wire_number(tokens, &mut cursor) else { return 4; };
+    if version != 1 { return 4; }
+    let Some(command) = wire_number(tokens, &mut cursor) else { return 4; };
+    let Some(work) = wire_count(tokens, &mut cursor, 10_000_000) else { return 4; };
+    let response = match command {
+        0 => 0,
+        1 => {
+            let Some(c) = wire_certificate(tokens, &mut cursor) else { return 4; };
+            if check_superposition_and_replay(&c, work) { 1 } else { 4 }
+        },
+        2 => {
+            let Some(dag) = wire_dag(tokens, &mut cursor) else { return 4; };
+            match certify_dag(&dag, 512, work) {
+                DagVerdict::Certified => 2,
+                DagVerdict::Rejected => 3,
+                _ => 4,
+            }
+        },
+        _ => return 4,
+    };
+    if cursor != tokens.len() { return 4; }
+    response
+}
+
+fn wire_dispatch_regressions() -> bool {
+    let ready = vec![1u64, 0, 0];
+    let wrong_version = vec![2u64, 0, 0];
+    let unknown_command = vec![1u64, 9, 0];
+    let truncated = vec![1u64, 2];
+    let trailing = vec![1u64, 0, 0, 7];
+    check_wire_tokens(&ready) == 0
+        && check_wire_tokens(&wrong_version) == 4
+        && check_wire_tokens(&unknown_command) == 4
+        && check_wire_tokens(&truncated) == 4
+        && check_wire_tokens(&trailing) == 4
+}
+
 fn run_examples() -> bool {
     proof { variable_substitution_is_an_instance(); }
     executable_literal_replay_examples();
@@ -7104,6 +7392,7 @@ fn run_examples() -> bool {
     if !executable_nullary_resolution_examples() { return false; }
     if !executable_resolution_dag_examples() { return false; }
     if !executable_resolution_chain_examples() { return false; }
+    if !wire_dispatch_regressions() { return false; }
     true
 }
 
@@ -7123,132 +7412,32 @@ fn regression_main() {
     assert!(executable_nullary_resolution_examples(), "nullary resolution regression failed");
     assert!(executable_resolution_dag_examples(), "resolution DAG regression failed");
     assert!(executable_resolution_chain_examples(), "resolution-chain DAG regression failed");
+    assert!(wire_dispatch_regressions(), "verified wire-dispatch regression failed");
     assert!(run_examples(), "DAG certification regression failed");
 }
 
-// The byte decoder and process I/O are deliberately outside verus!: the
-// semantic theorem certifies decoded IR, not the TPTP adapter or this decoder.
 mod wire {
     use super::*;
     use std::io::{Read, Write};
 
     const MAX_BYTES: u64 = 4 * 1024 * 1024;
-    struct Decoder<'a> { tokens: std::str::SplitWhitespace<'a>, remaining: usize }
-    impl Decoder<'_> {
-        fn number(&mut self) -> Result<u64, ()> {
-            self.remaining = self.remaining.checked_sub(1).ok_or(())?;
-            let token = self.tokens.next().ok_or(())?;
-            if token.len() > 20 || !token.bytes().all(|b| b.is_ascii_digit()) { return Err(()); }
-            token.parse().map_err(|_| ())
+    fn tokenize(text: &str) -> Option<Vec<u64>> {
+        let mut tokens = Vec::new();
+        for token in text.split_whitespace() {
+            if tokens.len() >= 500_000 || token.len() > 20
+                || !token.bytes().all(|b| b.is_ascii_digit()) { return None; }
+            tokens.push(token.parse::<u64>().ok()?);
         }
-        fn count(&mut self, max: usize) -> Result<usize, ()> {
-            let n = usize::try_from(self.number()?).map_err(|_| ())?;
-            if n > max { Err(()) } else { Ok(n) }
-        }
-        fn term(&mut self, depth: usize) -> Result<ExecTerm, ()> {
-            if depth >= 64 { return Err(()); }
-            let tag = self.number()?;
-            let id = self.number()?;
-            Ok(match tag {
-                0 => ExecTerm::Var(id), 1 => ExecTerm::Const(id),
-                2 => ExecTerm::App1(id, Box::new(self.term(depth + 1)?)),
-                3 => ExecTerm::App2(id, Box::new(self.term(depth + 1)?), Box::new(self.term(depth + 1)?)),
-                _ => return Err(()),
-            })
-        }
-        fn clause(&mut self) -> Result<ExecClause, ()> {
-            let n = self.count(64)?;
-            let mut literals = Vec::new();
-            for _ in 0..n {
-                let positive = match self.number()? { 0 => false, 1 => true, _ => return Err(()) };
-                let tag = self.number()?;
-                let atom = match tag {
-                    0 => ExecAtom::Pred0(self.number()?),
-                    1 => ExecAtom::Pred1(self.number()?, Box::new(self.term(0)?)),
-                    2 => ExecAtom::Pred2(self.number()?, Box::new(self.term(0)?), Box::new(self.term(0)?)),
-                    3 => ExecAtom::Eq(self.term(0)?, self.term(0)?),
-                    _ => return Err(()),
-                };
-                literals.push(ExecLiteral { positive, atom });
-            }
-            Ok(ExecClause { literals })
-        }
-        fn bindings(&mut self) -> Result<Vec<ExecBinding>, ()> {
-            let n = self.count(256)?;
-            let mut result = Vec::new();
-            for _ in 0..n { result.push(ExecBinding { variable: self.number()?, replacement: self.term(0)? }); }
-            Ok(result)
-        }
-        fn path(&mut self) -> Result<Vec<u64>, ()> {
-            let n = self.count(64)?;
-            (0..n).map(|_| self.number()).collect()
-        }
-        fn certificate(&mut self) -> Result<SuperpositionCertificate, ()> {
-            Ok(SuperpositionCertificate {
-                source: self.clause()?, target: self.clause()?, conclusion: self.clause()?,
-                source_freshening: self.bindings()?, target_freshening: self.bindings()?,
-                unifier: self.bindings()?, source_equality_index: self.count(63)?,
-                target_literal_index: self.count(63)?, target_argument_slot: self.number()?,
-                target_path: self.path()?, fresh_target_path: self.path()?,
-            })
-        }
-        fn dag(&mut self) -> Result<ProofDag, ()> {
-            let n = self.count(512)?;
-            let root = self.count(511)?;
-            let inputs = self.count(512)?;
-            let mut input_clauses = Vec::new();
-            for _ in 0..inputs { input_clauses.push(self.clause()?); }
-            let mut nodes = Vec::new();
-            for _ in 0..n {
-                let id = self.number()?;
-                let clause = self.clause()?;
-                let tag = self.number()?;
-                let parent_count = self.count(2)?;
-                let mut parents = Vec::new();
-                for _ in 0..parent_count { parents.push(self.count(511)?); }
-                let (kind, step) = match tag {
-                    0 => (ProofNodeKind::Input, None),
-                    1 => (ProofNodeKind::Superposition, Some(self.certificate()?)),
-                    2 => (ProofNodeKind::Resolution(self.count(63)?, self.count(63)?), None),
-                    3 => (ProofNodeKind::ExactResolution(self.count(63)?, self.count(63)?), None),
-                    _ => return Err(()),
-                };
-                nodes.push(ProofNode { id, clause, kind, parents, step });
-            }
-            Ok(ProofDag { nodes, input_clauses, root })
-        }
-    }
-    fn check(text: &str) -> Result<&'static str, ()> {
-        let mut d = Decoder { tokens: text.split_whitespace(), remaining: 500_000 };
-        if d.number()? != 1 { return Err(()); }
-        let command = d.number()?;
-        let work = d.count(10_000_000)?;
-        let verdict = match command {
-            0 => "Ready",
-            1 => {
-                let c = d.certificate()?;
-                if d.tokens.next().is_some() { return Err(()); }
-                if check_superposition_and_replay(&c, work) { "Accepted" } else { "Unknown" }
-            },
-            2 => {
-                let dag = d.dag()?;
-                if d.tokens.next().is_some() { return Err(()); }
-                match certify_dag(&dag, 512, work) {
-                    DagVerdict::Certified => "CertifiedIR",
-                    DagVerdict::Rejected => "Rejected",
-                    _ => "Unknown",
-                }
-            },
-            _ => return Err(()),
-        };
-        if d.tokens.next().is_some() { return Err(()); }
-        Ok(verdict)
+        Some(tokens)
     }
     pub fn run() {
         let mut bytes = Vec::new();
         let result = std::io::stdin().take(MAX_BYTES + 1).read_to_end(&mut bytes);
-        let verdict = if result.is_err() || bytes.len() as u64 > MAX_BYTES { "Unknown" }
-            else { std::str::from_utf8(&bytes).ok().and_then(|s| check(s).ok()).unwrap_or("Unknown") };
+        let code = if result.is_err() || bytes.len() as u64 > MAX_BYTES { 4 }
+            else { std::str::from_utf8(&bytes).ok().and_then(tokenize)
+                .map(|tokens| check_wire_tokens(&tokens)).unwrap_or(4) };
+        let verdict = match code { 0 => "Ready", 1 => "Accepted", 2 => "CertifiedIR",
+            3 => "Rejected", _ => "Unknown" };
         let _ = writeln!(std::io::stdout(), "MRS_VERUS 1 {}", verdict);
     }
 }

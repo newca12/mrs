@@ -26,19 +26,46 @@ that no interchange or caller exists are superseded by this update.
   group cleanup, malformed/truncated protocol regressions and formal CI bridge
   tests using the exact artifact that passed Verus verification.
 - **REMAINING M5 assurance gate:** parser/lowering/alpha-orientation conversion
-  and wire decoder are unverified trusted boundaries. This is a supported-subset
+  and decimal byte tokenization are unverified trusted boundaries. This is a supported-subset
   shadow/dual-check integration, **not end-to-end verified TPTP certification**.
   Default enablement requires a refined input bridge and independent review.
   The available c502 archive has only three clauses, so replaying it cannot
   establish full SWV406+1 proof certification. General first-order resolution,
   proof transformations and unrestricted TPTP remain separate milestones.
 
+### M5 trusted-boundary refinement checkpoint
+
+- **DONE:** wire v1 structural decoding is now inside `verus!`. Verified
+  functions decode numbers from a bounded token vector, validate tags/counts,
+  recursively construct terms/atoms/clauses/substitutions/paths, construct step
+  certificates and complete DAGs, reject unknown commands and trailing tokens,
+  and dispatch fully decoded requests to the local step/DAG checker.
+- **DONE:** the host shim is reduced to a 4 MiB read bound, UTF-8/decimal
+  tokenization with a 500,000-token cap, process I/O and result formatting.
+  Runtime tests cover every request prefix, malformed version/tag/count input,
+  malformed literal records, numeric overflow/nondecimal bytes and oversized
+  input.
+- **DONE:** root interpretation is now part of the verified DAG semantic
+  contract: `certify_dag` only accepts empty-clause roots. Per-node validation
+  also enforces the exact two-parent shape consumed by the supported inference
+  rules, rather than relying on producer-side parent counts.
+- **DONE:** decoder bounds are postconditions/invariants: term depth, clause
+  width and term depth, binding/path sizes, node/input counts, root range, parent
+  count and parent-index range.
+- **DONE:** the Rust runner copies the bounded caller artifact into a private
+  snapshot, hashes that exact snapshot and launches it; process-group cleanup
+  handles timeouts and leaked pipe descriptors.
+- **REMAINING:** decimal byte tokenization, TPTP parser/lowering, certificate
+  discovery, alpha/equality normalization and process orchestration remain
+  trusted/unverified. M5 remains partial pending verified TPTP lowering or a
+  refinement proof from original bytes to the verified IR.
+
 The mutation gate is repaired: removing a redundant freshness check did not
 invalidate the original code. The gate now removes the actual forbidden-image
 check and requires Verus to reject that mutation. The no-cheating self-test first
 accepts a valid assumption probe without the flag, then requires rejection with
 the flag; the earlier malformed `assume_specification` probe was not evidence.
-Current module counts: **5 / 223 / 5 / 5**, with **19 verifier-negative mutations,
+Current module counts: **5 / 240 / 5 / 5**, with **19 verifier-negative mutations,
 two runtime mutations and one no-cheating probe**.
 
 ## Implementation status (historical 2026-10-18 ledger, updated where indicated)
@@ -57,8 +84,8 @@ the item itself is explicitly marked `ABANDONED`.
 | M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` proves parent validity survives independent standardization substitutions and connects accepted general replay to `standardized_superposition_sound` through `accepted_replay_preserves_validity`. Arbitrary selected indices and duplicate-preserving contexts are covered. `RULE_CONTRACT.md` specifies the prototype's unordered rule, whole-parent simultaneous one-step substitution and selected position. Remaining: independent review of the calculus/interchange boundary. |
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. Collector exactness now composes with independent freshening-scan postconditions to prove variable-valued images throughout each parent, and accepted certificates expose `renames_variables_on` for every parent literal. The replay conclusion builder has a verified pointwise sequence contract; term replacement is proved to commute with substitution at valid positions and is lifted through atom/literal slots. Remaining: broader adversarial hygiene/position refinement, exact cumulative resource accounting and larger-arity generalization. |
 | M3 — Superposition checker | **PARTIAL** | `check_superposition_and_replay` postconditions both exact ordered conclusion equality and universal validity preservation for accepted general certificates. `replay_semantic_premises` connects checked source equality, selected target occurrence, unifier equation and replacement to `standardized_superposition_sound`. Context deletion/substitution and exact conclusion-order composition are proved. Bounded executable certificates accept archived `SWV406+1:c502` and a source-variable binding case, rejecting forged conclusions. Full TSTP fixture translation/proof-DAG replay, equivalence modulo literal order/renaming, exact cumulative resource refinement, and independent calculus review remain. |
-| M4 — Proof-DAG validation | **PARTIAL** | `certify_dag` returns `Certified` with `dag_inputs_unsatisfiable`, proving no well-formed interpretation satisfies the supplied universally closed IR inputs. DAG dispatch supports input, superposition and positive-left/negative-right nullary-predicate resolution nodes. Accepted resolution replay postconditions universal validity preservation; `check_dag_resolution_step` binds it to cited parents and the node conclusion, and the generic induction consumes local entailment for both rules. Compiled unit and multi-step resolution refutations certify without empty inputs. `check_root_ancestor_closure` rejects every disconnected node and returns `Unknown` on bounded traversal exhaustion. The certifier partitions work across structural preflight, closure and per-node validation; input-leaf membership now charges both clause structures for every repeated candidate comparison against the shared node meter. Remaining: exact accounting inside recursive local replay helpers and comparison loops, production input adapter and broader rules/fixtures. |
-| M5 — MRS integration | **PARTIAL: bounded implementation complete** | Wire v1, compiled checker, CNF TPTP adapter, kernel/ProoVer shadow and opt-in dual-check APIs, archived local c502 translation, complete supported DAG integration, artifact provenance and CI boundary tests exist. Input bridge refinement, independent review and default-enable gate remain. See `INTERCHANGE.md`. |
+| M4 — Proof-DAG validation | **PARTIAL** | `certify_dag` returns `Certified` with `dag_inputs_unsatisfiable`, proving no well-formed interpretation satisfies the supplied universally closed IR inputs. DAG dispatch supports input, superposition and positive-left/negative-right nullary/exact-atom resolution nodes. Accepted replay postconditions universal validity preservation; the generic induction consumes local entailment. The certified root is required empty by the semantic specification; supported inference contracts require their binary parent edges. Compiled refutations certify without empty inputs. Root-ancestor closure rejects disconnected nodes and returns `Unknown` on bounded traversal exhaustion. The certifier partitions work across structural preflight, closure and per-node validation; input-leaf membership charges both clauses for every repeated candidate comparison. Remaining: exact cumulative local replay accounting, production input bridge refinement and broader rules/fixtures. |
+| M5 — MRS integration | **PARTIAL: verified wire decoder, trusted TPTP bridge** | Wire v1 structural decoding is verified in Verus; bounded byte/tokenization shim, CNF TPTP adapter, certificate discovery, kernel/ProoVer shadow and opt-in dual-check APIs, archived local c502 translation, complete supported DAG integration, artifact provenance and CI boundary tests exist. TPTP bridge refinement, independent review and default-enable gate remain. See `INTERCHANGE.md`. |
 | M6 — Broader rules | **PARTIAL** | Nullary-predicate resolution is verified and DAG-dispatched; c502 is now additionally replayed as a local general superposition example. General first-order resolution, AC, demodulation, transformations, and AVATAR/LRAT remain unimplemented. |
 | M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB/re-audit note, and a CI audit for `assume`, `admit`, and external-body/allow escape hatches. CI now uploads a Verus evidence log with source commit, binary hash, toolchain, and proof output. Mutation corpus, supported proof corpus, reproducible production artifact, and release gates remain. |
 
