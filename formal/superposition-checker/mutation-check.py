@@ -213,6 +213,36 @@ def main() -> int:
             return 1
         print("runtime mutation rejected: input leaf comparisons omit repeated node charge")
 
+        duplicate_id_guard = "if dag.nodes[prior].id == node.id {\n                return DagVerdict::Rejected;\n            }"
+        if source.count(duplicate_id_guard) != 1:
+            print("duplicate node-ID mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_accepts_duplicate_node_ids.rs"
+        mutated_path.write_text(source.replace(duplicate_id_guard, "if false {\n"
+            "                return DagVerdict::Rejected;\n            }", 1))
+        binary = pathlib.Path(temp_dir) / "first-order-core-accepts-duplicate-node-ids"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
+        )
+        if compile_result.returncode != 0:
+            if "invariant not satisfied" not in compile_result.stdout or \
+                    "dag.nodes[j].id != node.id" not in compile_result.stdout:
+                print("duplicate node-ID mutation failed for an unexpected reason:",
+                      compile_result.stdout, file=sys.stderr)
+                return 1
+            print("mutation rejected: duplicate DAG node IDs violate the verified loop invariant")
+        else:
+            runtime = subprocess.run(
+                [str(binary)], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                check=False,
+            )
+            if runtime.returncode == 0:
+                print("runtime accepted mutation: duplicate DAG node IDs", file=sys.stderr)
+                return 1
+            print("runtime mutation rejected: duplicate DAG node IDs")
+
         tokenizer_guard = "if byte < 48 || byte > 57 { return None; }"
         digit_mapping = "let digit = (byte - 48) as u64;"
         if source.count(tokenizer_guard) != 1:
