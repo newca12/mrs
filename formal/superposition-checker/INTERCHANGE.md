@@ -141,6 +141,12 @@ byte-span-to-token-value correspondence is currently covered by runtime examples
 but is not yet a quantified theorem. See the M5 ledger for this open proof task.
 The MRS subprocess runner bounds output to 1 KiB and the wall clock to the
 explicit configuration (maximum 60 s). Exceeded limits cannot certify.
+On Unix, the runner snapshots and hashes the binary, clears the child's
+environment, sets its cwd to `/`, starts a private process group, and installs
+CPU (60 s), address-space (768 MiB), file-size (1 MiB), and zero core-dump
+limits before exec. Linux additionally sets `NO_NEW_PRIVS`. Timeouts and
+descendants holding pipes trigger process-group termination. Startup or limit
+setup failures return Unknown.
 
 Responses:
 

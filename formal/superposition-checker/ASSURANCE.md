@@ -34,12 +34,15 @@ not present in the three-clause fixture and is not certified by these tests.
 Build evidence records source commit/dirty state/hash, artifact SHA-256, toolchain,
 support manifest and strict verification flags. Artifact execution uses a private
 read-only byte snapshot of the hash-checked caller binary, reducing check/launch
-replacement risk. Per-call reports record artifact
+replacement risk. On Unix, the child has a cleared environment, `/` cwd, a private
+process group, 60 s CPU, 768 MiB address-space, 1 MiB file-size and zero core-dump
+limits; Linux also sets `NO_NEW_PRIVS`. Startup or rlimit failures cannot certify.
+Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
 is checked; cross-host reproducibility and a verified decoder remain open.
 
-The mutation inventory is now nineteen verifier-negative checks, three compiled
-runtime checks and one valid assumption probe (accepted without strict mode,
+The mutation inventory is now nineteen verifier-negative checks and four
+compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now
 mutated and rejected by Verus. The detailed historical notes below are superseded

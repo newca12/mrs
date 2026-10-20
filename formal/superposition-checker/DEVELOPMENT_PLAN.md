@@ -81,8 +81,15 @@ byte lexer.
 - **DONE:** the Rust runner copies the bounded caller artifact into a private
   snapshot, hashes that exact snapshot and launches it; process-group cleanup
   handles timeouts and leaked pipe descriptors.
+- **DONE:** the child process starts with a cleared environment and `/` working
+  directory, a private process group, `NO_NEW_PRIVS` on Linux, and fixed CPU
+  (60 s), address-space (768 MiB), file-size (1 MiB), and core-dump (0) limits.
+  These are in force before exec. Peer regressions confirm environment and cwd
+  isolation, limits, malformed responses, nonzero exits, hangs, output floods and
+  descendants retaining pipes all fail closed.
 - **REMAINING:** bounded host byte acquisition, TPTP parser/lowering, certificate
-  discovery, alpha/equality normalization and process orchestration remain
+  discovery, alpha/equality normalization and the process supervisor's host
+  implementation remain
   trusted/unverified. M5 remains partial pending verified TPTP lowering or a
   refinement proof from original bytes to the verified IR.
 

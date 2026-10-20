@@ -14,6 +14,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 const MAX_BYTES: usize = 4 * 1024 * 1024;
 const MAX_NODES: usize = 512;
 const WORK: u64 = 10_000_000;
+const CHILD_MEMORY_BYTES: u64 = 768 * 1024 * 1024;
+const CHILD_CPU_SECONDS: u64 = 60;
+const CHILD_FILE_BYTES: u64 = 1024 * 1024;
 static ARTIFACT_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
 /// Explicitly selected, hash-pinned artifact. No binary is downloaded or built
@@ -123,6 +126,35 @@ fn snapshot_artifact(source: &std::path::Path) -> Result<(ArtifactSnapshot, Stri
         std::fs::set_permissions(&snapshot, permissions).map_err(|e| e.to_string())?;
     }
     Ok((ArtifactSnapshot(snapshot), hash))
+}
+
+fn configure_child(command: &mut Command) {
+    command
+        .env_clear()
+        .current_dir("/")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+        // SAFETY: only async-signal-safe libc resource-limit and prctl calls
+        // occur in the child setup before exec; errors abort spawning.
+        unsafe {
+            command.pre_exec(|| {
+                set_limit(libc::RLIMIT_CPU, CHILD_CPU_SECONDS)?;
+                set_limit(libc::RLIMIT_AS, CHILD_MEMORY_BYTES)?;
+                set_limit(libc::RLIMIT_FSIZE, CHILD_FILE_BYTES)?;
+                set_limit(libc::RLIMIT_CORE, 0)?;
+                #[cfg(target_os = "linux")]
+                if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
 }
 
 struct Wire {
@@ -819,16 +851,8 @@ fn run(config: &VerusConfig, bytes: Vec<u8>, nodes: usize, dag: bool) -> ShadowR
             return Err("checker artifact hash mismatch".into());
         }
         let mut command = Command::new(&artifact.0);
-        command
-            .arg("--wire-v1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            command.process_group(0);
-        }
+        command.arg("--wire-v1");
+        configure_child(&mut command);
         let mut child = command.spawn().map_err(|e| format!("checker spawn: {e}"))?;
         let child_id = child.id();
         let mut stdin = child.stdin.take().ok_or("checker stdin missing")?;
@@ -865,6 +889,9 @@ fn run(config: &VerusConfig, bytes: Vec<u8>, nodes: usize, dag: bool) -> ShadowR
         if !writer.is_finished() || !reader.is_finished() {
             #[cfg(unix)]
             kill_process_group(child_id);
+            if !status.as_ref().is_ok_and(|exit| exit.success()) {
+                return Err("checker process failed".into());
+            }
             return Err("checker pipe timeout".into());
         }
         writer
@@ -896,6 +923,20 @@ fn kill_process_group(child_id: u32) {
     // pid. Kill only on timeout or leaked descendant pipe descriptors.
     unsafe {
         libc::kill(-(child_id as i32), libc::SIGKILL);
+    }
+}
+
+#[cfg(unix)]
+fn set_limit(resource: libc::__rlimit_resource_t, value: u64) -> std::io::Result<()> {
+    let limit = libc::rlimit {
+        rlim_cur: value as libc::rlim_t,
+        rlim_max: value as libc::rlim_t,
+    };
+    // SAFETY: points to a properly initialized rlimit value for this syscall.
+    if unsafe { libc::setrlimit(resource, &limit) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
     }
 }
 
@@ -963,7 +1004,9 @@ mod process_tests {
             "printf 'MRS_VERUS 1 Accepted\\n'",
             "sleep 10",
             "sleep 10 & exit 0",
+            "sleep 10 >&1 & printf 'MRS_VERUS 2 CertifiedIR\\n'; exit 0",
             "while :; do printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'; done",
+            "pwd; printf '%s\\n' \"${LEAK_ME:-missing}\"",
         ] {
             let script = format!("#!{}\n{body}\n", shell.trim());
             std::fs::write(&binary, &script).unwrap();
@@ -977,10 +1020,74 @@ mod process_tests {
             let report = run(&config, b"1 2 1000".to_vec(), 3, true);
             assert!(
                 matches!(report.verdict, ShadowVerdict::Unknown(_)),
-                "{report:?}"
+                "body={body:?} {report:?}"
             );
             assert!(start.elapsed() < Duration::from_secs(2));
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn child_environment_directory_and_rlimits_are_sanitized() {
+        let shell = Command::new("sh")
+            .args(["-c", "command -v sh"])
+            .output()
+            .unwrap();
+        assert!(shell.status.success());
+        let shell = String::from_utf8(shell.stdout).unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "mrs-verus-limits-{}-{}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let binary = dir.join("peer");
+        let script = format!(
+            "#!{}\nprintf '%s\\n' \"${{LEAK_ME:-missing}}\"\npwd\nulimit -v\nulimit -t\nulimit -f\nulimit -c\nprintf 'MRS_VERUS 1 CertifiedIR\\n'\n",
+            shell.trim()
+        );
+        std::fs::write(&binary, &script).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config = VerusConfig {
+            executable: binary.clone(),
+            expected_sha256: digest(script.as_bytes()),
+            timeout: Duration::from_secs(2),
+        };
+        let old_leak = std::env::var_os("LEAK_ME");
+        unsafe {
+            std::env::set_var("LEAK_ME", "must-not-be-inherited");
+        }
+        let report = run(&config, b"1 2 1000".to_vec(), 3, true);
+        match old_leak {
+            Some(value) => unsafe {
+                std::env::set_var("LEAK_ME", value);
+            },
+            None => unsafe {
+                std::env::remove_var("LEAK_ME");
+            },
+        }
+        assert!(
+            matches!(report.verdict, ShadowVerdict::Unknown(_)),
+            "{report:?}"
+        );
+        // The runner's stdout parser does not expose peer output. Execute the
+        // bounded policy check directly in a clean environment as a harness
+        // sanity check, then exercise an output that fails the exact protocol.
+        let mut command = Command::new(&binary);
+        configure_child(&mut command);
+        let direct = command.output().unwrap();
+        assert!(direct.status.success());
+        let output = String::from_utf8_lossy(&direct.stdout);
+        let lines: Vec<_> = output.lines().collect();
+        assert_eq!(lines[0], "missing");
+        assert_eq!(lines[1], "/");
+        assert_eq!(lines[2], (CHILD_MEMORY_BYTES / 1024).to_string());
+        assert_eq!(lines[3], CHILD_CPU_SECONDS.to_string());
+        // Linux shells round file-size limits to filesystem blocks; the
+        // requested byte cap is 1 MiB (normally printed as 2048 512-byte
+        // blocks), and core dumps remain disabled.
+        assert_eq!(lines[4], "2048");
+        assert_eq!(lines[5], "0");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
