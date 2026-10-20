@@ -19,6 +19,21 @@ def main() -> int:
     source = source_path.read_text()
     mutations = [
         (
+            "exact resolution ignores atom identity",
+            "if !same_atom(&left.literals[lp].atom, &right.literals[rp].atom) { return false; }",
+            "if false { return false; }",
+        ),
+        (
+            "exact resolution ignores pivot polarity",
+            "if !left.literals[lp].positive || right.literals[rp].positive { return false; }",
+            "if false { return false; }",
+        ),
+        (
+            "freshening ignores forbidden variable images",
+            "if contains_u64(avoid, fresh) { return false; }",
+            "if false { return false; }",
+        ),
+        (
             "literal substitution",
             "atom: substitute_atom_exec(&literal.atom, bindings),",
             "atom: copy_atom(&literal.atom),",
@@ -75,8 +90,8 @@ def main() -> int:
         ),
         (
             "resolution checker accepts a forged conclusion",
-            "same_clause_exact(&expected, conclusion)",
-            "true",
+            "let same = same_clause_exact(&expected, conclusion);",
+            "let same = true;",
         ),
         (
             "resolution checker ignores predicate identity",
@@ -101,19 +116,13 @@ def main() -> int:
     ]
 
     with tempfile.TemporaryDirectory(prefix="mrs-verus-mutation-") as temp_dir:
-        cheating_path = pathlib.Path(temp_dir) / "first_order_core_with_assume_specification.rs"
+        cheating_path = pathlib.Path(temp_dir) / "cheating_probe.rs"
         cheating_path.write_text(
-            source.replace(
-                "pub enum ExecTerm {",
-                "#[verifier::assume_specification]\n"
-                "pub fn verifier_cheat_probe() {}\n\n"
-                "pub enum ExecTerm {",
-                1,
-            )
+            "use vstd::prelude::*;\n"
+            "verus! { proof fn cheating_probe() { assume(false); } }\n"
+            "fn main() {}\n"
         )
-        if cheating_path.read_text() == source:
-            print("assume_specification mutation anchor is missing", file=sys.stderr)
-            return 2
+        subprocess.run([str(verus), str(cheating_path)], check=True)
         no_cheating = subprocess.run(
             [str(verus), "--no-cheating", "--triggers-mode", "silent", str(cheating_path)],
             text=True,
@@ -122,9 +131,9 @@ def main() -> int:
             check=False,
         )
         if no_cheating.returncode == 0:
-            print("Verus --no-cheating accepted assume_specification probe", file=sys.stderr)
+            print("Verus --no-cheating accepted an assumption probe", file=sys.stderr)
             return 1
-        print("mutation rejected: Verus --no-cheating rejects assume_specification")
+        print("mutation rejected: Verus --no-cheating rejects a valid assumption probe")
 
         for index, (name, correct, mutated) in enumerate(mutations):
             if source.count(correct) != 1:
@@ -203,32 +212,6 @@ def main() -> int:
                   file=sys.stderr)
             return 1
         print("runtime mutation rejected: input leaf comparisons omit repeated node charge")
-
-        apart_guard = (
-            "if !check_freshening(&right_variables, &avoid, right_mapping, pair_budget) {\n"
-            "        return false;\n"
-            "    }"
-        )
-        if source.count(apart_guard) != 1:
-            print("standardization-apart mutation anchor is missing or ambiguous", file=sys.stderr)
-            return 2
-        mutated_path = pathlib.Path(temp_dir) / "first_order_core_without_apart_guard.rs"
-        mutated_path.write_text(source.replace(apart_guard, "", 1))
-        binary = pathlib.Path(temp_dir) / "first-order-core-without-apart-guard"
-        subprocess.run(
-            [str(verus), "--triggers-mode", "silent", "--compile", str(mutated_path),
-             "-o", str(binary)],
-            check=True,
-        )
-        runtime = subprocess.run(
-            [str(binary)], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            check=False,
-        )
-        if runtime.returncode == 0:
-            print("runtime accepted mutation: target-parent freshening guard removed",
-                  file=sys.stderr)
-            return 1
-        print("runtime mutation rejected: standardization-apart freshening guard removed")
 
     return 0
 

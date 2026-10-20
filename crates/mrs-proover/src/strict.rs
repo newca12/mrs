@@ -9,6 +9,48 @@ use mrs_tptp::proover::proof_header_link;
 
 use crate::load::LoadedJob;
 
+/// Opt-in formal-track shadow report alongside the authoritative strict kernel.
+/// Unsupported bridges and checker failures remain explicit Unknown evidence.
+pub fn verify_loaded_job_with_verus_shadow(
+    job: &LoadedJob,
+    limits: VerificationLimits,
+    config: &mrs_proof_kernel::verus::VerusConfig,
+) -> Result<(KernelVerdict, mrs_proof_kernel::verus::ShadowReport), KernelVerdict> {
+    let problem = job.problem.as_ref().ok_or_else(|| {
+        KernelVerdict::Inconclusive(
+            "strict: proof has no linked problem file for provenance verification".into(),
+        )
+    })?;
+    Ok(mrs_proof_kernel::verus::verify_with_shadow(
+        problem.problem(),
+        job.proof.problem(),
+        proof_header_link(&job.proof_text),
+        limits,
+        config,
+    ))
+}
+
+/// Opt-in dual-check certification: every failure on either path suppresses
+/// certification. The TPTP/IR adapter remains explicitly trusted.
+pub fn verify_loaded_job_with_verus_gate(
+    job: &LoadedJob,
+    limits: VerificationLimits,
+    config: &mrs_proof_kernel::verus::VerusConfig,
+) -> Result<(KernelVerdict, mrs_proof_kernel::verus::ShadowReport), KernelVerdict> {
+    let problem = job.problem.as_ref().ok_or_else(|| {
+        KernelVerdict::Inconclusive(
+            "strict: proof has no linked problem file for provenance verification".into(),
+        )
+    })?;
+    Ok(mrs_proof_kernel::verus::verify_with_verus_gate(
+        problem.problem(),
+        job.proof.problem(),
+        proof_header_link(&job.proof_text),
+        limits,
+        config,
+    ))
+}
+
 /// Verify a loaded proof with the independent strict kernel.
 pub fn verify_loaded_job(job: &LoadedJob, limits: VerificationLimits) -> KernelVerdict {
     let Some(problem) = job.problem.as_ref() else {

@@ -1,5 +1,15 @@
 # Supported superposition-step contract (prototype)
 
+The compiled wire-v1 artifact now invokes this rule from the CNF TPTP/MRS bridge;
+see `INTERCHANGE.md` for the trusted decoding/normalization boundary. DAG support
+also includes **exact-atom resolution**: complementary positive-left/negative-right
+occurrences of the identical predicate or equality atom, with exactly one pivot
+removed per parent and left-context/right-context concatenation. Its theorem
+`exact_atom_resolution_sound` and checker `check_exact_resolution` prove local
+validity preservation without unification; DAG dispatch binds the actual cited
+clauses. This includes unary/binary predicates and equality, not just nullary
+predicates. It does not compute general first-order resolvents.
+
 This document fixes the mathematical rule represented by
 `SuperpositionCertificate` in `first_order_core.rs`. It is an **unordered
 first-order superposition rule**: no KBO/LPO maximality or literal-selection

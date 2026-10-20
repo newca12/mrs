@@ -44,6 +44,7 @@ jobs:
           VERUS: ${{ runner.temp }}/mrs-verus/0.2026.10.18.7d82994/verus
           RUSTUP_HOME: ${{ runner.temp }}/mrs-verus-rustup
           VERUS_LOG: ${{ runner.temp }}/superposition-verus.log
+          MRS_VERUS_BRIDGE_TESTS: "1"
         run: formal/superposition-checker/verify.sh
       - name: Upload pinned Verus evidence
         if: always()

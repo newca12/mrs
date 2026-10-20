@@ -1,5 +1,42 @@
 # Superposition-checker assurance note
 
+## Integration boundary (2026-10-20)
+
+The bounded wire-v1 checker and CNF TPTP adapter are implemented; see
+[`INTERCHANGE.md`](INTERCHANGE.md). `mrs-proof-kernel::verus` and
+`mrs-proover::strict` call the compiled artifact in explicit shadow or opt-in
+dual-check mode. The latter certifies only when both independent paths accept.
+Crashes, timeouts, unsupported syntax, malformed/version-mismatched responses,
+hash mismatches and disagreements suppress certification in that gate.
+
+The mathematical theorem still covers **decoded IR**, not the TPTP bytes.
+Parsing, syntax lowering, symbol assignment, equality orientation, ordered
+alpha conversion, certificate discovery, wire decoding and process I/O are
+unverified. Reports explicitly retain `production_certification=false` for
+formal evidence; the dual gate relies on both this trusted bridge and the
+independent strict kernel. No default certification path has been replaced.
+
+The actual archived c502 fixture is now parsed, translated and accepted as a
+local step through the subprocess boundary. Complete supported CNF DAGs,
+including an essential superposition plus exact-atom-resolution refutation,
+are checked against the actual artifact built and verified in formal CI.
+Exact-atom resolution has a separate semantic theorem and executable checker;
+it removes one occurrence per parent with identical complementary atoms and
+does not implement pivot unification. The complete archived SWV406+1 proof is
+not present in the three-clause fixture and is not certified by these tests.
+
+Build evidence records source commit/dirty state/hash, artifact SHA-256, toolchain,
+support manifest and strict verification flags. Per-call reports record artifact
+and request hashes, protocol version and node count. Same-host double compilation
+is checked; cross-host reproducibility and a verified decoder remain open.
+
+The mutation inventory is now nineteen verifier-negative checks, two compiled
+runtime checks and one valid assumption probe (accepted without strict mode,
+rejected with `--no-cheating`). Prior claims that the redundant target-freshening
+guard mutation failed were incorrect; the actual forbidden-image check is now
+mutated and rejected by Verus. The detailed historical notes below are superseded
+where they describe no serialized interchange or MRS caller.
+
 ## Claim currently supported
 
 The pinned `verify.sh` run verifies the listed Verus specifications, proofs, and

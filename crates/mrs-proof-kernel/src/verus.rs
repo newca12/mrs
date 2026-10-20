@@ -1,0 +1,923 @@
+//! Bounded shadow bridge to the compiled Verus checker.
+//!
+//! The parser, lowering, alpha/orientation normalization, certificate discovery,
+//! wire decoder and process runner are trusted/unverified. A positive result is
+//! evidence about the decoded IR only and never upgrades a kernel verdict.
+
+use super::*;
+use sha2::{Digest, Sha256};
+use std::io::{Read, Write};
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+
+const MAX_BYTES: usize = 4 * 1024 * 1024;
+const MAX_NODES: usize = 512;
+const WORK: u64 = 10_000_000;
+
+/// Explicitly selected, hash-pinned artifact. No binary is downloaded or built
+/// by verification. Build with formal/superposition-checker/build-runtime.sh.
+#[derive(Debug, Clone)]
+pub struct VerusConfig {
+    pub executable: PathBuf,
+    pub expected_sha256: String,
+    pub timeout: Duration,
+}
+
+/// Shadow results deliberately cannot be converted into `KernelVerdict`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShadowVerdict {
+    AcceptedStepIr,
+    CertifiedDagIr,
+    RejectedIr,
+    Unknown(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShadowReport {
+    pub verdict: ShadowVerdict,
+    pub artifact_sha256: Option<String>,
+    pub request_sha256: Option<String>,
+    pub protocol_version: u32,
+    pub checked_nodes: usize,
+    /// All reports remain shadow-only while the input bridge is unverified.
+    pub production_certification: bool,
+}
+
+fn unknown(reason: impl Into<String>) -> ShadowReport {
+    ShadowReport {
+        verdict: ShadowVerdict::Unknown(reason.into()),
+        artifact_sha256: None,
+        request_sha256: None,
+        protocol_version: 1,
+        checked_nodes: 0,
+        production_certification: false,
+    }
+}
+
+fn digest(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+struct Wire {
+    words: Vec<u64>,
+}
+impl Wire {
+    fn new(command: u64) -> Self {
+        Self {
+            words: vec![1, command, WORK],
+        }
+    }
+    fn n(&mut self, n: usize) -> Result<(), String> {
+        self.words
+            .push(u64::try_from(n).map_err(|_| "integer overflow")?);
+        if self.words.len() > 400_000 {
+            return Err("wire token ceiling".into());
+        }
+        Ok(())
+    }
+    fn term(&mut self, term: &Term, depth: usize) -> Result<(), String> {
+        if depth >= 64 {
+            return Err("term depth exceeds wire limit".into());
+        }
+        match term {
+            Term::Var(v) => {
+                self.n(0)?;
+                self.n(*v as usize)?;
+            }
+            Term::App(s, args) => {
+                self.n(match args.len() {
+                    0 => 1,
+                    1 => 2,
+                    2 => 3,
+                    _ => return Err("function arity exceeds two".into()),
+                })?;
+                self.n(s.index() as usize)?;
+                for arg in args {
+                    self.term(arg, depth + 1)?;
+                }
+            }
+        }
+        Ok(())
+    }
+    fn clause(&mut self, clause: &[Literal]) -> Result<(), String> {
+        if clause.len() > 64 {
+            return Err("clause width exceeds 64".into());
+        }
+        self.n(clause.len())?;
+        for literal in clause {
+            self.n(usize::from(literal.positive))?;
+            match &literal.atom {
+                Atom::Pred(s, args) => {
+                    if args.len() > 2 {
+                        return Err("predicate arity exceeds two".into());
+                    }
+                    self.n(args.len())?;
+                    self.n(s.index() as usize)?;
+                    for arg in args {
+                        self.term(arg, 0)?;
+                    }
+                }
+                Atom::Eq(a, b) => {
+                    self.n(3)?;
+                    self.term(a, 0)?;
+                    self.term(b, 0)?;
+                }
+            }
+        }
+        Ok(())
+    }
+    fn bindings(&mut self, bindings: &[(VarId, Term)]) -> Result<(), String> {
+        if bindings.len() > 256 {
+            return Err("substitution exceeds 256 bindings".into());
+        }
+        self.n(bindings.len())?;
+        for (v, t) in bindings {
+            self.n(*v as usize)?;
+            self.term(t, 0)?;
+        }
+        Ok(())
+    }
+    fn finish(self) -> Result<Vec<u8>, String> {
+        let text = self
+            .words
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(" ");
+        if text.len() > MAX_BYTES {
+            Err("wire byte ceiling".into())
+        } else {
+            Ok(text.into_bytes())
+        }
+    }
+}
+
+type Bindings = Vec<(VarId, Term)>;
+
+struct Certificate {
+    source: Vec<Literal>,
+    target: Vec<Literal>,
+    conclusion: Vec<Literal>,
+    source_map: Vec<(VarId, Term)>,
+    target_map: Vec<(VarId, Term)>,
+    unifier: Vec<(VarId, Term)>,
+    si: usize,
+    ti: usize,
+    slot: usize,
+    path: Vec<usize>,
+}
+
+fn instance(
+    term: &Term,
+    subst: &HashMap<VarId, Term>,
+    fuel: &mut usize,
+    depth: usize,
+) -> Result<Term, String> {
+    *fuel = fuel.checked_sub(1).ok_or("substitution work ceiling")?;
+    if depth >= 64 {
+        return Err("substitution depth ceiling".into());
+    }
+    match term {
+        Term::Var(v) => match subst.get(v) {
+            Some(t) => instance(t, subst, fuel, depth + 1),
+            None => Ok(term.clone()),
+        },
+        Term::App(s, args) => Ok(Term::App(
+            *s,
+            args.iter()
+                .map(|t| instance(t, subst, fuel, depth + 1))
+                .collect::<Result<_, _>>()?,
+        )),
+    }
+}
+
+fn instantiate(
+    literal: &Literal,
+    subst: &HashMap<VarId, Term>,
+    fuel: &mut usize,
+) -> Result<Literal, String> {
+    let atom = match &literal.atom {
+        Atom::Pred(s, args) => Atom::Pred(
+            *s,
+            args.iter()
+                .map(|t| instance(t, subst, fuel, 0))
+                .collect::<Result<_, _>>()?,
+        ),
+        Atom::Eq(a, b) => Atom::Eq(instance(a, subst, fuel, 0)?, instance(b, subst, fuel, 0)?),
+    };
+    Ok(Literal {
+        positive: literal.positive,
+        atom,
+    })
+}
+
+fn bounded_unify(
+    a: &Term,
+    b: &Term,
+    fuel: &mut usize,
+) -> Result<Option<HashMap<VarId, Term>>, String> {
+    let mut subst = HashMap::new();
+    let mut pending = vec![(a.clone(), b.clone())];
+    while let Some((a, b)) = pending.pop() {
+        let a = instance(&a, &subst, fuel, 0)?;
+        let b = instance(&b, &subst, fuel, 0)?;
+        if a == b {
+            continue;
+        }
+        match (a, b) {
+            (Term::Var(v), t) | (t, Term::Var(v)) => {
+                if t.free_vars().contains(&v) {
+                    return Ok(None);
+                }
+                subst.insert(v, t);
+            }
+            (Term::App(f, a), Term::App(g, b)) => {
+                if f != g || a.len() != b.len() {
+                    return Ok(None);
+                }
+                pending.extend(a.into_iter().zip(b));
+            }
+        }
+    }
+    Ok(Some(subst))
+}
+impl Certificate {
+    fn encode(&self, wire: &mut Wire) -> Result<(), String> {
+        wire.clause(&self.source)?;
+        wire.clause(&self.target)?;
+        wire.clause(&self.conclusion)?;
+        wire.bindings(&self.source_map)?;
+        wire.bindings(&self.target_map)?;
+        wire.bindings(&self.unifier)?;
+        wire.n(self.si)?;
+        wire.n(self.ti)?;
+        wire.n(self.slot)?;
+        for _ in 0..2 {
+            wire.n(self.path.len())?;
+            for child in &self.path {
+                wire.n(*child)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn freshen(clause: &[Literal], next: &mut VarId) -> Result<(Vec<Literal>, Bindings), String> {
+    let mut vars: Vec<_> = clause.iter().flat_map(|l| atom_vars(&l.atom)).collect();
+    vars.sort_unstable();
+    vars.dedup();
+    let mut map = Vec::new();
+    for v in vars {
+        let fresh = *next;
+        *next = next.checked_add(1).ok_or("variable-id overflow")?;
+        map.push((v, Term::Var(fresh)));
+    }
+    let subst = map.iter().cloned().collect();
+    let fresh = clause
+        .iter()
+        .map(|l| apply_substitution_literal(l, &subst))
+        .collect();
+    Ok((fresh, map))
+}
+
+/// Discover an unordered, exact-context step. Conclusion alpha conversion and
+/// source equality symmetry are explicitly part of the unverified bridge.
+fn certificate(
+    source: &[Literal],
+    target: &[Literal],
+    goal: &[Literal],
+    reverse: bool,
+    limits: VerificationLimits,
+) -> Result<Certificate, String> {
+    let mut next = max_var_clause(source)
+        .max(max_var_clause(target))
+        .checked_add(1)
+        .ok_or("variable-id overflow")?;
+    let (fresh_source, source_map) = freshen(source, &mut next)?;
+    let (fresh_target, target_map) = freshen(target, &mut next)?;
+    let mut attempts = 0usize;
+    let mut fuel = limits.max_comparison_steps.min(200_000);
+    for (si, eq) in fresh_source.iter().enumerate() {
+        if !eq.positive {
+            continue;
+        }
+        let Atom::Eq(a, b) = &eq.atom else {
+            continue;
+        };
+        for swapped in [false, true] {
+            if swapped && !reverse {
+                continue;
+            }
+            let (from, to) = if swapped { (b, a) } else { (a, b) };
+            if matches!(from, Term::Var(_)) {
+                continue;
+            }
+            for (ti, literal) in fresh_target.iter().enumerate() {
+                for (slot, path) in atom_term_positions(&literal.atom) {
+                    attempts += 1;
+                    if attempts > limits.max_comparison_steps.min(10_000) {
+                        return Err("certificate search budget exhausted".into());
+                    }
+                    let base = match &literal.atom {
+                        Atom::Pred(_, args) => &args[slot],
+                        Atom::Eq(a, b) => {
+                            if slot == 0 {
+                                a
+                            } else {
+                                b
+                            }
+                        }
+                    };
+                    let selected = term_at_position(base, &path).ok_or("invalid internal path")?;
+                    let Some(subst) = bounded_unify(from, selected, &mut fuel)? else {
+                        continue;
+                    };
+                    let replacement = instance(to, &subst, &mut fuel, 0)?;
+                    // Replace *before* simultaneous substitution; this is
+                    // equivalent on a valid raw position for the normalized unifier.
+                    let atom = replace_atom_side(
+                        &literal.atom,
+                        slot,
+                        replace_term_at(base, &path, replacement),
+                    );
+                    let mut expected: Vec<_> = fresh_source
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| *i != si)
+                        .map(|(_, l)| instantiate(l, &subst, &mut fuel))
+                        .collect::<Result<_, _>>()?;
+                    expected.extend(
+                        fresh_target
+                            .iter()
+                            .enumerate()
+                            .map(|(i, l)| {
+                                instantiate(
+                                    &Literal {
+                                        positive: l.positive,
+                                        atom: if i == ti {
+                                            atom.clone()
+                                        } else {
+                                            l.atom.clone()
+                                        },
+                                    },
+                                    &subst,
+                                    &mut fuel,
+                                )
+                            })
+                            .collect::<Result<Vec<_>, _>>()?,
+                    );
+                    // Bounded ordered alpha matching: permutations, contraction,
+                    // and folded demodulation are outside this bridge's scope.
+                    if expected.len() != goal.len() {
+                        continue;
+                    }
+                    let (mut forward, mut backward) = (HashMap::new(), HashMap::new());
+                    if !expected.iter().zip(goal).all(|(a, b)| {
+                        a.positive == b.positive
+                            && atom_alpha_equiv(&a.atom, &b.atom, &mut forward, &mut backward)
+                    }) {
+                        continue;
+                    }
+                    let mut unifier: Vec<_> = subst
+                        .iter()
+                        .map(|(v, t)| Ok((*v, instance(t, &subst, &mut fuel, 0)?)))
+                        .collect::<Result<_, String>>()?;
+                    unifier.sort_by_key(|(v, _)| *v);
+                    let mut oriented_source = source.to_vec();
+                    if swapped {
+                        let Atom::Eq(a, b) = &source[si].atom else {
+                            unreachable!()
+                        };
+                        oriented_source[si].atom = Atom::Eq(b.clone(), a.clone());
+                    }
+                    return Ok(Certificate {
+                        source: oriented_source,
+                        target: target.to_vec(),
+                        conclusion: expected,
+                        source_map: source_map.clone(),
+                        target_map: target_map.clone(),
+                        unifier,
+                        si,
+                        ti,
+                        slot,
+                        path,
+                    });
+                }
+            }
+        }
+    }
+    Err("no supported exact ordered superposition certificate".into())
+}
+
+fn supported_clause(
+    symbols: &mut SymbolTable,
+    formula: &AnnotatedFormula<'_>,
+    limits: VerificationLimits,
+) -> Result<Vec<Literal>, String> {
+    if !formula.is_cnf() {
+        return Err("only CNF clauses are supported by the shadow bridge".into());
+    }
+    fn term(
+        t: &FOFTerm<'_>,
+        symbols: &mut SymbolTable,
+        vars: &mut HashMap<String, VarId>,
+        depth: usize,
+        work: &mut usize,
+    ) -> Result<Term, String> {
+        *work = work.checked_sub(1).ok_or("syntax work ceiling")?;
+        if depth >= 64 {
+            return Err("term depth ceiling".into());
+        }
+        match t {
+            FOFTerm::Variable(name) => {
+                let next = u32::try_from(vars.len()).map_err(|_| "variable ceiling")?;
+                Ok(Term::Var(*vars.entry((*name).into()).or_insert(next)))
+            }
+            FOFTerm::Function(name, args) if args.len() <= 2 => Ok(Term::App(
+                symbols.intern(name.as_str()),
+                args.iter()
+                    .map(|t| term(t, symbols, vars, depth + 1, work))
+                    .collect::<Result<_, _>>()?,
+            )),
+            _ => {
+                Err("unsupported interpreted, distinct-object, numeric or larger-arity term".into())
+            }
+        }
+    }
+    let AnnotatedFormula::CNF(f) = formula else {
+        unreachable!()
+    };
+    let CNFStatement::Logical(body) = &f.formula;
+    let mut body = body;
+    let mut depth = 0;
+    while let CNFFormula::Parens(inner) = body {
+        depth += 1;
+        if depth >= 64 {
+            return Err("clause parentheses depth ceiling".into());
+        }
+        body = inner;
+    }
+    let CNFFormula::Disjunction(literals) = body else {
+        unreachable!()
+    };
+    if literals.len() > limits.max_clause_literals.min(64) {
+        return Err("clause width ceiling".into());
+    }
+    let mut vars = HashMap::new();
+    let mut work = limits.max_formula_nodes.min(100_000);
+    let mut clause = Vec::new();
+    for literal in literals {
+        let (positive, atom) = match literal {
+            CNFLiteral::Positive(mrs_tptp::CNFAtomicFormula::False) if literals.len() == 1 => {
+                continue;
+            }
+            CNFLiteral::Positive(mrs_tptp::CNFAtomicFormula::Plain(name, args))
+            | CNFLiteral::Negative(mrs_tptp::CNFAtomicFormula::Plain(name, args)) => {
+                if args.len() > 2 {
+                    return Err("predicate arity ceiling".into());
+                }
+                (
+                    matches!(literal, CNFLiteral::Positive(_)),
+                    Atom::Pred(
+                        symbols.intern(name.as_str()),
+                        args.iter()
+                            .map(|t| term(t, symbols, &mut vars, 0, &mut work))
+                            .collect::<Result<_, _>>()?,
+                    ),
+                )
+            }
+            CNFLiteral::Equality(a, b) | CNFLiteral::Inequality(a, b) => (
+                matches!(literal, CNFLiteral::Equality(_, _)),
+                Atom::Eq(
+                    term(a, symbols, &mut vars, 0, &mut work)?,
+                    term(b, symbols, &mut vars, 0, &mut work)?,
+                ),
+            ),
+            _ => return Err("unsupported CNF atom; no literal may be silently dropped".into()),
+        };
+        clause.push(Literal { positive, atom });
+    }
+    // Check all constructors before certificate discovery traverses them.
+    Wire::new(0).clause(&clause)?;
+    Ok(clause)
+}
+
+/// Parse actual TPTP parents/conclusion and check one archived/local step.
+/// This makes no proof-DAG or problem-provenance claim.
+pub fn check_tptp_step(
+    text: &str,
+    source: &str,
+    target: &str,
+    conclusion: &str,
+    config: &VerusConfig,
+) -> ShadowReport {
+    let result = (|| {
+        if text.len() > MAX_BYTES {
+            return Err("TPTP byte ceiling".into());
+        }
+        let parsed = mrs_tptp::parse_tptp(text).map_err(|e| e.to_string())?;
+        if parsed.formulas.len() > MAX_NODES {
+            return Err("TPTP formula ceiling".into());
+        }
+        if !parsed.includes.is_empty() {
+            return Err("unresolved includes".into());
+        }
+        let mut names = HashSet::new();
+        for f in &parsed.formulas {
+            if !names.insert(f.name()) {
+                return Err("duplicate formula name".into());
+            }
+        }
+        let mut symbols = SymbolTable::new();
+        let mut get = |name| {
+            let f = parsed
+                .formulas
+                .iter()
+                .find(|f| f.name() == name)
+                .ok_or("missing step formula")?;
+            supported_clause(&mut symbols, f, VerificationLimits::default())
+        };
+        let (s, t, c) = (get(source)?, get(target)?, get(conclusion)?);
+        let mut signatures = HashMap::new();
+        for l in s.iter().chain(&t).chain(&c) {
+            register_signatures(&Formula::Atom(l.atom.clone()), &mut signatures)?;
+        }
+        let cert = certificate(&s, &t, &c, true, VerificationLimits::default())?;
+        let mut wire = Wire::new(1);
+        cert.encode(&mut wire)?;
+        wire.finish()
+    })();
+    match result {
+        Ok(bytes) => run(config, bytes, 1, false),
+        Err(e) => unknown(e),
+    }
+}
+
+enum Kind {
+    Input,
+    Superposition(Certificate),
+    Resolution(usize, usize),
+}
+struct WireNode {
+    clause: Vec<Literal>,
+    parents: Vec<usize>,
+    kind: Kind,
+}
+
+fn dag_request(
+    problem: &mrs_tptp::TPTPProblem<'_>,
+    proof: &mrs_tptp::TPTPProblem<'_>,
+    source: Option<&str>,
+    limits: VerificationLimits,
+) -> Result<(Vec<u8>, usize), String> {
+    if !problem.includes.is_empty() || !proof.includes.is_empty() {
+        return Err("unresolved includes".into());
+    }
+    if problem.formulas.len() > MAX_NODES || proof.formulas.len() > MAX_NODES {
+        return Err("DAG node ceiling".into());
+    }
+    let mut signatures = HashMap::new();
+    let dag = build_dag(proof, limits).map_err(|v| v.to_string())?;
+    let mut symbols = SymbolTable::new();
+    let mut inputs = Vec::new();
+    for f in &problem.formulas {
+        if !f.role().is_premise() && f.role() != FormulaRole::NegatedConjecture {
+            return Err("unsupported problem role or conjecture transformation".into());
+        }
+        let clause = supported_clause(&mut symbols, f, limits)?;
+        for l in &clause {
+            register_signatures(&Formula::Atom(l.atom.clone()), &mut signatures)?;
+        }
+        inputs.push(clause);
+    }
+    let mut nodes: Vec<WireNode> = Vec::new();
+    let mut indices = HashMap::new();
+    for index in &dag.topo {
+        let node = &dag.nodes[*index];
+        if node
+            .formula
+            .annotations()
+            .is_some_and(|a| !a.parent_refs_well_formed())
+        {
+            return Err("unsupported parent pedigree".into());
+        }
+        if !node.parents.is_empty() {
+            let annotation = node
+                .formula
+                .annotations()
+                .ok_or("missing inference annotation")?;
+            let GeneralTerm::Function(_, args) = &annotation.source else {
+                return Err("unsupported inference source".into());
+            };
+            let Some(GeneralTerm::List(parents)) = args.get(2) else {
+                return Err("malformed inference parents".into());
+            };
+            if !parents.iter().all(|p| matches!(p, GeneralTerm::Word(_))) {
+                return Err("nested/annotated inference parents require explicit replay".into());
+            }
+        }
+        let raw = supported_clause(&mut symbols, node.formula, limits)?;
+        for l in &raw {
+            register_signatures(&Formula::Atom(l.atom.clone()), &mut signatures)?;
+        }
+        let parents: Vec<usize> = node
+            .parents
+            .iter()
+            .map(|p| {
+                if p.negated {
+                    return Err("negated pedigree is unsupported".into());
+                }
+                indices
+                    .get(p.name)
+                    .copied()
+                    .ok_or_else(|| "missing/forward parent".into())
+            })
+            .collect::<Result<_, String>>()?;
+        let (kind, clause) = if parents.is_empty() {
+            verify_leaf(node, problem, source, &mut symbols, limits).map_err(|v| v.to_string())?;
+            // Exact raw syntax, no AC/alpha leaf relaxation in this bridge.
+            if !inputs.contains(&raw) {
+                return Err("leaf differs from exact problem clause".into());
+            }
+            (Kind::Input, raw)
+        } else if parents.len() == 2 {
+            let (left, right) = (&nodes[parents[0]].clause, &nodes[parents[1]].clause);
+            match node.rule {
+                Some("superposition") => {
+                    let c = certificate(left, right, &raw, false, limits)?;
+                    let conclusion = c.conclusion.clone();
+                    (Kind::Superposition(c), conclusion)
+                }
+                Some("resolution") => {
+                    let mut pivot = None;
+                    for (lp, l) in left.iter().enumerate() {
+                        for (rp, r) in right.iter().enumerate() {
+                            if l.positive && !r.positive && l.atom == r.atom {
+                                let expected: Vec<_> = left
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(i, _)| *i != lp)
+                                    .chain(right.iter().enumerate().filter(|(i, _)| *i != rp))
+                                    .map(|(_, l)| l.clone())
+                                    .collect();
+                                if expected == raw {
+                                    pivot = Some((lp, rp));
+                                }
+                            }
+                        }
+                    }
+                    let (lp, rp) = pivot.ok_or("no exact oriented resolution pivot")?;
+                    (Kind::Resolution(lp, rp), raw)
+                }
+                _ => return Err("unsupported inference rule".into()),
+            }
+        } else {
+            return Err("unsupported parent count".into());
+        };
+        indices.insert(node.name, nodes.len());
+        nodes.push(WireNode {
+            clause,
+            parents,
+            kind,
+        });
+    }
+    let roots: Vec<_> = nodes
+        .iter()
+        .enumerate()
+        .filter(|(i, n)| n.clause.is_empty() && !nodes.iter().any(|n| n.parents.contains(i)))
+        .map(|(i, _)| i)
+        .collect();
+    if roots.len() != 1 {
+        return Err("expected exactly one empty root".into());
+    }
+    let mut wire = Wire::new(2);
+    wire.n(nodes.len())?;
+    wire.n(roots[0])?;
+    wire.n(inputs.len())?;
+    for clause in &inputs {
+        wire.clause(clause)?;
+    }
+    for (i, node) in nodes.iter().enumerate() {
+        wire.n(i)?;
+        wire.clause(&node.clause)?;
+        wire.n(match node.kind {
+            Kind::Input => 0,
+            Kind::Superposition(_) => 1,
+            Kind::Resolution(_, _) => 3,
+        })?;
+        wire.n(node.parents.len())?;
+        for p in &node.parents {
+            wire.n(*p)?;
+        }
+        match &node.kind {
+            Kind::Input => {}
+            Kind::Superposition(c) => c.encode(&mut wire)?,
+            Kind::Resolution(lp, rp) => {
+                wire.n(*lp)?;
+                wire.n(*rp)?;
+            }
+        }
+    }
+    Ok((wire.finish()?, nodes.len()))
+}
+
+/// Run the compiled verified DAG checker as an independent shadow check.
+pub fn check_tptp_dag(
+    problem: &mrs_tptp::TPTPProblem<'_>,
+    proof: &mrs_tptp::TPTPProblem<'_>,
+    source: Option<&str>,
+    limits: VerificationLimits,
+    config: &VerusConfig,
+) -> ShadowReport {
+    match dag_request(problem, proof, source, limits) {
+        Ok((bytes, count)) => run(config, bytes, count, true),
+        Err(e) => unknown(e),
+    }
+}
+
+fn run(config: &VerusConfig, bytes: Vec<u8>, nodes: usize, dag: bool) -> ShadowReport {
+    let mut report = unknown("checker did not respond");
+    report.request_sha256 = Some(digest(&bytes));
+    report.checked_nodes = nodes;
+    let result = (|| -> Result<ShadowVerdict, String> {
+        if config.timeout.is_zero() || config.timeout > Duration::from_secs(60) {
+            return Err("invalid checker timeout".into());
+        }
+        let mut artifact = Vec::new();
+        std::fs::File::open(&config.executable)
+            .map_err(|e| format!("checker artifact: {e}"))?
+            .take(128 * 1024 * 1024 + 1)
+            .read_to_end(&mut artifact)
+            .map_err(|e| e.to_string())?;
+        if artifact.len() > 128 * 1024 * 1024 {
+            return Err("checker artifact size ceiling".into());
+        }
+        let hash = digest(&artifact);
+        report.artifact_sha256 = Some(hash.clone());
+        if config.expected_sha256.len() != 64 || hash != config.expected_sha256 {
+            return Err("checker artifact hash mismatch".into());
+        }
+        let mut command = Command::new(&config.executable);
+        command
+            .arg("--wire-v1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        let mut child = command.spawn().map_err(|e| format!("checker spawn: {e}"))?;
+        let mut stdin = child.stdin.take().ok_or("checker stdin missing")?;
+        let stdout = child.stdout.take().ok_or("checker stdout missing")?;
+        // Both pipes are drained concurrently; the deadline also covers blocked
+        // input writes and a peer that floods stdout instead of reading stdin.
+        let writer = std::thread::spawn(move || stdin.write_all(&bytes));
+        let reader = std::thread::spawn(move || {
+            let mut output = Vec::new();
+            stdout.take(1025).read_to_end(&mut output).map(|_| output)
+        });
+        let deadline = Instant::now() + config.timeout;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Ok(status),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(5))
+                }
+                Ok(None) => break Err("checker timeout".to_owned()),
+                Err(e) => break Err(format!("checker wait: {e}")),
+            }
+        };
+        if status.is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        #[cfg(unix)]
+        {
+            // The checker is a separate process group. Terminate descendants
+            // too, including peers keeping pipe descriptors open after exit.
+            // SAFETY: kill with a negative pid addresses only this child group.
+            unsafe {
+                libc::kill(-(child.id() as i32), libc::SIGKILL);
+            }
+        }
+        // An exited child may have forked peers holding pipe ends. Never block
+        // waiting on their threads; unfinished pipe work is an unknown result.
+        while (!writer.is_finished() || !reader.is_finished()) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if !writer.is_finished() || !reader.is_finished() {
+            return Err("checker pipe timeout".into());
+        }
+        writer
+            .join()
+            .map_err(|_| "checker writer panicked")?
+            .map_err(|e| e.to_string())?;
+        let output = reader
+            .join()
+            .map_err(|_| "checker reader panicked")?
+            .map_err(|e| e.to_string())?;
+        if !status?.success() || output.len() > 1024 {
+            return Err("checker failed or exceeded response bound".into());
+        }
+        match output.as_slice() {
+            b"MRS_VERUS 1 Accepted\n" if !dag => Ok(ShadowVerdict::AcceptedStepIr),
+            b"MRS_VERUS 1 CertifiedIR\n" if dag => Ok(ShadowVerdict::CertifiedDagIr),
+            b"MRS_VERUS 1 Rejected\n" => Ok(ShadowVerdict::RejectedIr),
+            b"MRS_VERUS 1 Unknown\n" => Err("verified checker returned Unknown".into()),
+            _ => Err("checker version or protocol mismatch".into()),
+        }
+    })();
+    report.verdict = result.unwrap_or_else(ShadowVerdict::Unknown);
+    report
+}
+
+/// Independent strict-kernel verdict plus optional formal-track shadow evidence.
+/// A shadow result cannot turn an unsupported/invalid strict proof into a theorem.
+pub fn verify_with_shadow(
+    problem: &mrs_tptp::TPTPProblem<'_>,
+    proof: &mrs_tptp::TPTPProblem<'_>,
+    source: Option<&str>,
+    limits: VerificationLimits,
+    config: &VerusConfig,
+) -> (KernelVerdict, ShadowReport) {
+    let kernel = verify_strict_with_source(problem, proof, source, limits);
+    let shadow = check_tptp_dag(problem, proof, source, limits, config);
+    (kernel, shadow)
+}
+
+/// Explicit dual-check gate. Certification requires both independent strict
+/// replay and a positive Verus IR-DAG result. This is an opt-in trusted-adapter
+/// gate, not a proof that TPTP decoding/lowering is verified. Any disagreement,
+/// unsupported shape, timeout or protocol failure suppresses certification.
+pub fn verify_with_verus_gate(
+    problem: &mrs_tptp::TPTPProblem<'_>,
+    proof: &mrs_tptp::TPTPProblem<'_>,
+    source: Option<&str>,
+    limits: VerificationLimits,
+    config: &VerusConfig,
+) -> (KernelVerdict, ShadowReport) {
+    let (kernel, shadow) = verify_with_shadow(problem, proof, source, limits, config);
+    let verdict = match (&kernel, &shadow.verdict) {
+        (KernelVerdict::Certified, ShadowVerdict::CertifiedDagIr) => KernelVerdict::Certified,
+        (KernelVerdict::Rejected(_), _) | (KernelVerdict::Inconclusive(_), _) => kernel,
+        _ => KernelVerdict::Inconclusive(format!("Verus dual-check gate: {:?}", shadow.verdict)),
+    };
+    (verdict, shadow)
+}
+
+#[cfg(all(test, unix))]
+mod process_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn failed_malformed_and_hanging_peers_cannot_certify() {
+        let shell = Command::new("sh")
+            .args(["-c", "command -v sh"])
+            .output()
+            .unwrap();
+        assert!(shell.status.success());
+        let shell = String::from_utf8(shell.stdout).unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "mrs-verus-peer-{}-{}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let binary = dir.join("peer");
+        for body in [
+            "printf 'MRS_VERUS 2 CertifiedIR\\n'",
+            "printf 'MRS_VERUS 1 CertifiedIR\\nextra'",
+            "printf 'MRS_VERUS 1 CertifiedIR\\n'; exit 1",
+            "printf 'MRS_VERUS 1 Accepted\\n'",
+            "sleep 10",
+            "sleep 10 & exit 0",
+            "while :; do printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'; done",
+        ] {
+            let script = format!("#!{}\n{body}\n", shell.trim());
+            std::fs::write(&binary, &script).unwrap();
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let config = VerusConfig {
+                executable: binary.clone(),
+                expected_sha256: digest(script.as_bytes()),
+                timeout: Duration::from_millis(100),
+            };
+            let start = Instant::now();
+            let report = run(&config, b"1 2 1000".to_vec(), 3, true);
+            assert!(
+                matches!(report.verdict, ShadowVerdict::Unknown(_)),
+                "{report:?}"
+            );
+            assert!(start.elapsed() < Duration::from_secs(2));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}

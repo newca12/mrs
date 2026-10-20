@@ -1715,6 +1715,39 @@ proof fn nullary_predicate_resolution_sound(
         delete_literal(right, right_pivot), interp, valuation);
 }
 
+/// Exact syntactic pivots need no unification: both parents hold under the
+/// same valuation, so complementary occurrences of the same atom cannot both
+/// be their only true literal. This includes equality atoms and variables.
+proof fn exact_atom_resolution_sound(
+    left: Clause, right: Clause, left_pivot: int, right_pivot: int,
+    interp: Interpretation, valuation: Valuation,
+)
+    requires
+        clause_holds(left, interp, valuation), clause_holds(right, interp, valuation),
+        0 <= left_pivot < left.literals.len(), 0 <= right_pivot < right.literals.len(),
+        left.literals[left_pivot].positive, !right.literals[right_pivot].positive,
+        left.literals[left_pivot].atom == right.literals[right_pivot].atom,
+    ensures clause_holds(resolution_conclusion(left, right, left_pivot, right_pivot),
+        interp, valuation)
+{
+    let li = choose|i: int| 0 <= i < left.literals.len()
+        && literal_holds(left.literals[i], interp, valuation);
+    let ri = choose|i: int| 0 <= i < right.literals.len()
+        && literal_holds(right.literals[i], interp, valuation);
+    if li != left_pivot {
+        let j = if li < left_pivot { li } else { li - 1 };
+        assert(delete_literal(left, left_pivot).literals[j] == left.literals[li]);
+        assert(clause_holds(delete_literal(left, left_pivot), interp, valuation));
+    } else {
+        assert(ri != right_pivot);
+        let j = if ri < right_pivot { ri } else { ri - 1 };
+        assert(delete_literal(right, right_pivot).literals[j] == right.literals[ri]);
+        assert(clause_holds(delete_literal(right, right_pivot), interp, valuation));
+    }
+    clause_holds_concat(delete_literal(left, left_pivot), delete_literal(right, right_pivot),
+        interp, valuation);
+}
+
 proof fn clause_holds_concat(left: Clause, right: Clause, interp: Interpretation,
     valuation: Valuation)
     ensures clause_holds(clause_concat(left, right), interp, valuation)
@@ -2596,11 +2629,13 @@ pub enum ProofNodeKind {
     Superposition,
     /// Positive-left/negative-right nullary-predicate resolution pivot indices.
     Resolution(usize, usize),
+    /// Exact identical atom pivots, without unification or normalization.
+    ExactResolution(usize, usize),
     Unsupported,
 }
 
 spec fn supported_inference(kind: ProofNodeKind) -> bool {
-    kind == ProofNodeKind::Superposition || kind is Resolution
+    kind == ProofNodeKind::Superposition || kind is Resolution || kind is ExactResolution
 }
 
 pub struct ProofNode {
@@ -5175,6 +5210,60 @@ fn check_nullary_resolution(left: &ExecClause, right: &ExecClause,
     true
 }
 
+fn check_exact_resolution(left: &ExecClause, right: &ExecClause,
+    lp: usize, rp: usize, conclusion: &ExecClause, work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        && clause_valid(view_clause(*left), interp) && clause_valid(view_clause(*right), interp)
+        ==> clause_valid(view_clause(*conclusion), interp),
+{
+    let mut work: usize = 0;
+    if !charge_clause_structure(left, &mut work, work_limit)
+        || !charge_clause_structure(right, &mut work, work_limit)
+        || !charge_clause_structure(conclusion, &mut work, work_limit) { return false; }
+    if lp >= left.literals.len() || rp >= right.literals.len() { return false; }
+    if !left.literals[lp].positive || right.literals[rp].positive { return false; }
+    if !same_atom(&left.literals[lp].atom, &right.literals[rp].atom) { return false; }
+    let expected = build_nullary_resolution_conclusion(left, right, lp, rp);
+    if !same_clause_exact(&expected, conclusion) { return false; }
+    proof {
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(*left), interp) && clause_valid(view_clause(*right), interp)
+            implies clause_valid(view_clause(*conclusion), interp) by {
+            assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+                implies clause_holds(view_clause(*conclusion), interp, valuation) by {
+                exact_atom_resolution_sound(view_clause(*left), view_clause(*right), lp as int,
+                    rp as int, interp, valuation);
+                assert(view_clause(*conclusion).literals =~= resolution_conclusion(
+                    view_clause(*left), view_clause(*right), lp as int, rp as int).literals);
+            }
+        }
+    }
+    true
+}
+
+fn check_dag_exact_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>, work_limit: usize)
+    -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    let ProofNodeKind::ExactResolution(lp, rp) = node.kind else { return false; };
+    if node.parents.len() != 2 { return false; }
+    if node.parents[0] >= nodes.len() || node.parents[1] >= nodes.len() { return false; }
+    if !check_exact_resolution(&nodes[node.parents[0]].clause, &nodes[node.parents[1]].clause,
+        lp, rp, &node.clause, work_limit) { return false; }
+    proof {
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            implies local_node_entails_from_parents(*node, nodes@, interp) by {
+            if forall|j: int| 0 <= j < node.parents@.len()
+                ==> clause_valid(view_clause(nodes@[node.parents@[j] as int].clause), interp) {
+                assert(clause_valid(view_clause(nodes@[node.parents@[0] as int].clause), interp));
+                assert(clause_valid(view_clause(nodes@[node.parents@[1] as int].clause), interp));
+            }
+        }
+    }
+    true
+}
+
 fn check_dag_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>, work_limit: usize)
     -> (accepted: bool)
     ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
@@ -6245,6 +6334,7 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
                 || dag.nodes[i].kind == ProofNodeKind::Superposition
                     && dag.nodes[i].parents@.len() == 2 && dag.nodes[i].step.is_some()
                 || dag.nodes[i].kind is Resolution && dag.nodes[i].parents@.len() == 2
+                || dag.nodes[i].kind is ExactResolution && dag.nodes[i].parents@.len() == 2
         && verdict == DagVerdict::Unknown ==> forall|i: int, j: int|
             0 <= i < j < dag.nodes.len() ==> dag.nodes[i].id != dag.nodes[j].id
         && verdict == DagVerdict::Unknown ==> forall|i: int|
@@ -6519,6 +6609,10 @@ fn validate_dag_node(dag: &ProofDag, index: usize, work_limit: usize) -> (ok: bo
         ProofNodeKind::Resolution(_, _) => {
         if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
         check_dag_resolution_step(node, &dag.nodes, work_limit - work)
+        },
+        ProofNodeKind::ExactResolution(_, _) => {
+        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
+        check_dag_exact_resolution_step(node, &dag.nodes, work_limit - work)
         },
         ProofNodeKind::Unsupported => false,
     }
@@ -7015,7 +7109,7 @@ fn run_examples() -> bool {
 
 } // verus!
 
-fn main() {
+fn regression_main() {
     assert!(executable_c502_certificate_example(), "c502 replay regression failed");
     assert!(executable_source_variable_superposition_example(),
         "source-variable unification regression failed");
@@ -7030,4 +7124,137 @@ fn main() {
     assert!(executable_resolution_dag_examples(), "resolution DAG regression failed");
     assert!(executable_resolution_chain_examples(), "resolution-chain DAG regression failed");
     assert!(run_examples(), "DAG certification regression failed");
+}
+
+// The byte decoder and process I/O are deliberately outside verus!: the
+// semantic theorem certifies decoded IR, not the TPTP adapter or this decoder.
+mod wire {
+    use super::*;
+    use std::io::{Read, Write};
+
+    const MAX_BYTES: u64 = 4 * 1024 * 1024;
+    struct Decoder<'a> { tokens: std::str::SplitWhitespace<'a>, remaining: usize }
+    impl Decoder<'_> {
+        fn number(&mut self) -> Result<u64, ()> {
+            self.remaining = self.remaining.checked_sub(1).ok_or(())?;
+            let token = self.tokens.next().ok_or(())?;
+            if token.len() > 20 || !token.bytes().all(|b| b.is_ascii_digit()) { return Err(()); }
+            token.parse().map_err(|_| ())
+        }
+        fn count(&mut self, max: usize) -> Result<usize, ()> {
+            let n = usize::try_from(self.number()?).map_err(|_| ())?;
+            if n > max { Err(()) } else { Ok(n) }
+        }
+        fn term(&mut self, depth: usize) -> Result<ExecTerm, ()> {
+            if depth >= 64 { return Err(()); }
+            let tag = self.number()?;
+            let id = self.number()?;
+            Ok(match tag {
+                0 => ExecTerm::Var(id), 1 => ExecTerm::Const(id),
+                2 => ExecTerm::App1(id, Box::new(self.term(depth + 1)?)),
+                3 => ExecTerm::App2(id, Box::new(self.term(depth + 1)?), Box::new(self.term(depth + 1)?)),
+                _ => return Err(()),
+            })
+        }
+        fn clause(&mut self) -> Result<ExecClause, ()> {
+            let n = self.count(64)?;
+            let mut literals = Vec::new();
+            for _ in 0..n {
+                let positive = match self.number()? { 0 => false, 1 => true, _ => return Err(()) };
+                let tag = self.number()?;
+                let atom = match tag {
+                    0 => ExecAtom::Pred0(self.number()?),
+                    1 => ExecAtom::Pred1(self.number()?, Box::new(self.term(0)?)),
+                    2 => ExecAtom::Pred2(self.number()?, Box::new(self.term(0)?), Box::new(self.term(0)?)),
+                    3 => ExecAtom::Eq(self.term(0)?, self.term(0)?),
+                    _ => return Err(()),
+                };
+                literals.push(ExecLiteral { positive, atom });
+            }
+            Ok(ExecClause { literals })
+        }
+        fn bindings(&mut self) -> Result<Vec<ExecBinding>, ()> {
+            let n = self.count(256)?;
+            let mut result = Vec::new();
+            for _ in 0..n { result.push(ExecBinding { variable: self.number()?, replacement: self.term(0)? }); }
+            Ok(result)
+        }
+        fn path(&mut self) -> Result<Vec<u64>, ()> {
+            let n = self.count(64)?;
+            (0..n).map(|_| self.number()).collect()
+        }
+        fn certificate(&mut self) -> Result<SuperpositionCertificate, ()> {
+            Ok(SuperpositionCertificate {
+                source: self.clause()?, target: self.clause()?, conclusion: self.clause()?,
+                source_freshening: self.bindings()?, target_freshening: self.bindings()?,
+                unifier: self.bindings()?, source_equality_index: self.count(63)?,
+                target_literal_index: self.count(63)?, target_argument_slot: self.number()?,
+                target_path: self.path()?, fresh_target_path: self.path()?,
+            })
+        }
+        fn dag(&mut self) -> Result<ProofDag, ()> {
+            let n = self.count(512)?;
+            let root = self.count(511)?;
+            let inputs = self.count(512)?;
+            let mut input_clauses = Vec::new();
+            for _ in 0..inputs { input_clauses.push(self.clause()?); }
+            let mut nodes = Vec::new();
+            for _ in 0..n {
+                let id = self.number()?;
+                let clause = self.clause()?;
+                let tag = self.number()?;
+                let parent_count = self.count(2)?;
+                let mut parents = Vec::new();
+                for _ in 0..parent_count { parents.push(self.count(511)?); }
+                let (kind, step) = match tag {
+                    0 => (ProofNodeKind::Input, None),
+                    1 => (ProofNodeKind::Superposition, Some(self.certificate()?)),
+                    2 => (ProofNodeKind::Resolution(self.count(63)?, self.count(63)?), None),
+                    3 => (ProofNodeKind::ExactResolution(self.count(63)?, self.count(63)?), None),
+                    _ => return Err(()),
+                };
+                nodes.push(ProofNode { id, clause, kind, parents, step });
+            }
+            Ok(ProofDag { nodes, input_clauses, root })
+        }
+    }
+    fn check(text: &str) -> Result<&'static str, ()> {
+        let mut d = Decoder { tokens: text.split_whitespace(), remaining: 500_000 };
+        if d.number()? != 1 { return Err(()); }
+        let command = d.number()?;
+        let work = d.count(10_000_000)?;
+        let verdict = match command {
+            0 => "Ready",
+            1 => {
+                let c = d.certificate()?;
+                if d.tokens.next().is_some() { return Err(()); }
+                if check_superposition_and_replay(&c, work) { "Accepted" } else { "Unknown" }
+            },
+            2 => {
+                let dag = d.dag()?;
+                if d.tokens.next().is_some() { return Err(()); }
+                match certify_dag(&dag, 512, work) {
+                    DagVerdict::Certified => "CertifiedIR",
+                    DagVerdict::Rejected => "Rejected",
+                    _ => "Unknown",
+                }
+            },
+            _ => return Err(()),
+        };
+        if d.tokens.next().is_some() { return Err(()); }
+        Ok(verdict)
+    }
+    pub fn run() {
+        let mut bytes = Vec::new();
+        let result = std::io::stdin().take(MAX_BYTES + 1).read_to_end(&mut bytes);
+        let verdict = if result.is_err() || bytes.len() as u64 > MAX_BYTES { "Unknown" }
+            else { std::str::from_utf8(&bytes).ok().and_then(|s| check(s).ok()).unwrap_or("Unknown") };
+        let _ = writeln!(std::io::stdout(), "MRS_VERUS 1 {}", verdict);
+    }
+}
+
+fn main() {
+    if std::env::args().skip(1).eq(["--wire-v1"]) { wire::run(); }
+    else if std::env::args().len() == 1 { regression_main(); }
+    else { std::process::exit(2); }
 }

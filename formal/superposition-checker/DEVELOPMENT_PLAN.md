@@ -1,6 +1,47 @@
 # Verus superposition checker: development plan
 
-## Implementation status (2026-10-18)
+## Integration implementation update (2026-10-20)
+
+The bounded **M5 interchange and MRS integration implementation now exists**.
+[`INTERCHANGE.md`](INTERCHANGE.md) is the normative protocol/rollout guide.
+The older milestone narrative below records the prototype's history; statements
+that no interchange or caller exists are superseded by this update.
+
+- **DONE:** wire v1 for superposition steps and complete proof DAGs; bounded
+  decoder invokes the same compiled Verus-verified replay/certifier.
+- **DONE:** bounded CNF TPTP-to-IR adapter in `mrs-proof-kernel::verus`, exact
+  problem/input binding, topological parent binding, strict supported-rule
+  dispatch and certificate discovery; unsupported syntax is inconclusive.
+- **DONE:** archived c27/c39/c502 is parsed from the actual fixture and replayed
+  through the subprocess adapter, rather than hand-encoded IR only.
+- **DONE:** complete CNF refutations traverse the adapter, including an essential
+  superposition followed by exact-atom resolution. The added resolution rule has
+  its own semantic theorem, executable refinement and verifier-negative tests.
+- **DONE:** explicit shadow and opt-in dual-check APIs in `mrs-proof-kernel` and
+  `mrs-proover::strict`, plus a CLI example. The dual gate requires independent
+  strict certification and formal IR-DAG certification; every Unknown/error or
+  disagreement suppresses certification in that gate.
+- **DONE:** artifact/request SHA-256, protocol version, checked-node telemetry,
+  pinned verified build with JSON provenance, deadline/output limits, subprocess
+  group cleanup, malformed/truncated protocol regressions and formal CI bridge
+  tests using the exact artifact that passed Verus verification.
+- **REMAINING M5 assurance gate:** parser/lowering/alpha-orientation conversion
+  and wire decoder are unverified trusted boundaries. This is a supported-subset
+  shadow/dual-check integration, **not end-to-end verified TPTP certification**.
+  Default enablement requires a refined input bridge and independent review.
+  The available c502 archive has only three clauses, so replaying it cannot
+  establish full SWV406+1 proof certification. General first-order resolution,
+  proof transformations and unrestricted TPTP remain separate milestones.
+
+The mutation gate is repaired: removing a redundant freshness check did not
+invalidate the original code. The gate now removes the actual forbidden-image
+check and requires Verus to reject that mutation. The no-cheating self-test first
+accepts a valid assumption probe without the flag, then requires rejection with
+the flag; the earlier malformed `assume_specification` probe was not evidence.
+Current module counts: **5 / 223 / 5 / 5**, with **19 verifier-negative mutations,
+two runtime mutations and one no-cheating probe**.
+
+## Implementation status (historical 2026-10-18 ledger, updated where indicated)
 
 **Status key:** `DONE` = deliverable and its stated acceptance gate are complete;
 `PARTIAL` = an explicitly narrower slice exists and verifies, but the milestone
@@ -17,7 +58,7 @@ the item itself is explicitly marked `ABANDONED`.
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. Collector exactness now composes with independent freshening-scan postconditions to prove variable-valued images throughout each parent, and accepted certificates expose `renames_variables_on` for every parent literal. The replay conclusion builder has a verified pointwise sequence contract; term replacement is proved to commute with substitution at valid positions and is lifted through atom/literal slots. Remaining: broader adversarial hygiene/position refinement, exact cumulative resource accounting and larger-arity generalization. |
 | M3 — Superposition checker | **PARTIAL** | `check_superposition_and_replay` postconditions both exact ordered conclusion equality and universal validity preservation for accepted general certificates. `replay_semantic_premises` connects checked source equality, selected target occurrence, unifier equation and replacement to `standardized_superposition_sound`. Context deletion/substitution and exact conclusion-order composition are proved. Bounded executable certificates accept archived `SWV406+1:c502` and a source-variable binding case, rejecting forged conclusions. Full TSTP fixture translation/proof-DAG replay, equivalence modulo literal order/renaming, exact cumulative resource refinement, and independent calculus review remain. |
 | M4 — Proof-DAG validation | **PARTIAL** | `certify_dag` returns `Certified` with `dag_inputs_unsatisfiable`, proving no well-formed interpretation satisfies the supplied universally closed IR inputs. DAG dispatch supports input, superposition and positive-left/negative-right nullary-predicate resolution nodes. Accepted resolution replay postconditions universal validity preservation; `check_dag_resolution_step` binds it to cited parents and the node conclusion, and the generic induction consumes local entailment for both rules. Compiled unit and multi-step resolution refutations certify without empty inputs. `check_root_ancestor_closure` rejects every disconnected node and returns `Unknown` on bounded traversal exhaustion. The certifier partitions work across structural preflight, closure and per-node validation; input-leaf membership now charges both clause structures for every repeated candidate comparison against the shared node meter. Remaining: exact accounting inside recursive local replay helpers and comparison loops, production input adapter and broader rules/fixtures. |
-| M5 — MRS integration | **TODO** | The Verus executable is not called by `mrs-proof-kernel`; no interchange format or production adapter exists. |
+| M5 — MRS integration | **PARTIAL: bounded implementation complete** | Wire v1, compiled checker, CNF TPTP adapter, kernel/ProoVer shadow and opt-in dual-check APIs, archived local c502 translation, complete supported DAG integration, artifact provenance and CI boundary tests exist. Input bridge refinement, independent review and default-enable gate remain. See `INTERCHANGE.md`. |
 | M6 — Broader rules | **PARTIAL** | Nullary-predicate resolution is verified and DAG-dispatched; c502 is now additionally replayed as a local general superposition example. General first-order resolution, AC, demodulation, transformations, and AVATAR/LRAT remain unimplemented. |
 | M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB/re-audit note, and a CI audit for `assume`, `admit`, and external-body/allow escape hatches. CI now uploads a Verus evidence log with source commit, binary hash, toolchain, and proof output. Mutation corpus, supported proof corpus, reproducible production artifact, and release gates remain. |
 
@@ -725,11 +766,12 @@ front-end or a separately justified premise transformation.
   cycle, unsupported rule, and resource cutoff.
 - Every unknown/rejected outcome suppresses certification in the caller.
 
-### M5 — Integrate the verified superposition checker with MRS (**TODO — DIFFICULT**)
+### M5 — Integrate the verified superposition checker with MRS (**PARTIAL: implementation complete, verified input boundary remains DIFFICULT**)
 
 **Current status**
 
-- No Rust code calls the Verus-verified executable. `mrs-proof-kernel` handles
+- **Superseded prototype baseline:** originally no Rust code called the
+  Verus-verified executable. `mrs-proof-kernel` handles
   full parsed FOF/CNF TSTP proofs and many transformations; the current Verus
   IR handles bounded clauses, superposition and nullary-predicate resolution.
   A direct replacement would either reject supported kernel cases or risk
@@ -1051,11 +1093,13 @@ satisfiability/model claims, and unrestricted full TSTP.
 - [x] Encode the exact `SWV406+1:c502` parents/conclusion as a verified local
   certificate; establish that the whole-parent substitution is consistent and
   the conclusion is entailed by the proved superposition theorem (M3).
-- [ ] Translate the relevant archived TSTP proof context losslessly and certify
-  c502 through the future interchange adapter (M3/M5).
-- [ ] Decide the interchange boundary and integrate this verified step checker
-  into the Rust strict-kernel path before adding proof-DAG or broader-rule
-  coverage (M5 architecture gate).
+- [x] Parse and translate archived c27/c39/c502 through the interchange adapter
+  and accept its local step. Full archived proof-context certification remains
+  open because the fixture contains only those three clauses (M3/M5).
+- [x] Decide the initial interchange boundary and integrate the compiled checker
+  with the strict kernel/ProoVer as shadow and opt-in trusted-adapter dual-check
+  APIs (M5 architecture implementation). Verified input refinement and default
+  enablement remain open.
 
 - [x] Run verifier-negative mutations omitting substitution, ignoring polarity,
   replacing selected-position lookup, dropping replayed context, skipping local

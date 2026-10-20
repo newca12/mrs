@@ -35,7 +35,8 @@ fn print_and_exit(v: Verdict) -> ExitCode {
 fn usage() -> ExitCode {
     eprintln!(
         "usage: mrs-proover [--strict] [--problems-dir DIR] [--no-atp] [--no-mrs] [--no-fmb]\n\
-                      [--eprover PATH] [--vampire PATH]\n\
+                       [--eprover PATH] [--vampire PATH]\n\
+                       [--verus-shadow PATH|--verus-gate PATH] [--verus-sha256 HASH]\n\
                       [--only-mrs|--only-eprover|--only-vampire]\n\
                       [--time SECS] [--workers N] [--verbose] <proof.p>"
     );
@@ -50,6 +51,8 @@ fn main() -> ExitCode {
     let mut no_mrs = false;
     let mut no_fmb = false;
     let mut strict = false;
+    let mut verus: Option<(PathBuf, bool)> = None;
+    let mut verus_hash: Option<String> = None;
     let mut eprover_override: Option<PathBuf> = None;
     let mut vampire_override: Option<PathBuf> = None;
     let mut verbose = false;
@@ -68,6 +71,25 @@ fn main() -> ExitCode {
             "--no-mrs" => no_mrs = true,
             "--no-fmb" => no_fmb = true,
             "--strict" => strict = true,
+            "--verus-shadow" | "--verus-gate" => {
+                if verus.is_some() {
+                    return usage();
+                }
+                let Some(path) = iter.next() else {
+                    return usage();
+                };
+                strict = true;
+                verus = Some((path.into(), a == "--verus-gate"));
+            }
+            "--verus-sha256" => {
+                let Some(hash) = iter.next() else {
+                    return usage();
+                };
+                if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return usage();
+                }
+                verus_hash = Some(hash.to_ascii_lowercase());
+            }
             "--only-mrs" => only = Some("mrs"),
             "--only-eprover" => only = Some("eprover"),
             "--only-vampire" => only = Some("vampire"),
@@ -102,6 +124,9 @@ fn main() -> ExitCode {
     let Some(proof_path) = proof_path else {
         return usage();
     };
+    if verus.is_some() != verus_hash.is_some() {
+        return usage();
+    }
 
     let problems_dir = problems_dir.or_else(|| std::env::var("TPTP").ok().map(PathBuf::from));
 
@@ -109,6 +134,11 @@ fn main() -> ExitCode {
     if let Ok(raw_text) = std::fs::read_to_string(&proof_path)
         && let Ok(cert) = mrs_proover::model::ModelCertificate::extract_from_text(&raw_text)
     {
+        if verus.is_some() {
+            return print_and_exit(Verdict::Unknown(
+                "Verus proof-DAG mode does not support model certificates".into(),
+            ));
+        }
         let header_link = mrs_tptp::proover::proof_header_link(&raw_text);
         let prob_path = header_link
             .and_then(|link| {
@@ -170,7 +200,35 @@ fn main() -> ExitCode {
     };
 
     if strict {
-        let verdict = match mrs_proover::strict::verify_loaded_job_default(&job) {
+        let kernel = if let Some((path, gate)) = verus {
+            let config = mrs_proof_kernel::verus::VerusConfig {
+                executable: path,
+                expected_sha256: verus_hash.expect("validated Verus hash"),
+                timeout: Duration::from_secs(total_budget_secs.unwrap_or(10).min(60)),
+            };
+            let verify = if gate {
+                mrs_proover::strict::verify_loaded_job_with_verus_gate
+            } else {
+                mrs_proover::strict::verify_loaded_job_with_verus_shadow
+            };
+            match verify(
+                &job,
+                mrs_proof_kernel::VerificationLimits::default(),
+                &config,
+            ) {
+                Ok((kernel, report)) => {
+                    eprintln!(
+                        "% Verus {}: {report:?}",
+                        if gate { "dual-check gate" } else { "shadow" }
+                    );
+                    kernel
+                }
+                Err(verdict) => verdict,
+            }
+        } else {
+            mrs_proover::strict::verify_loaded_job_default(&job)
+        };
+        let verdict = match kernel {
             mrs_proof_kernel::KernelVerdict::Certified => Verdict::VerifiedGood,
             mrs_proof_kernel::KernelVerdict::Rejected(reason) => Verdict::VerifiedBad(reason),
             mrs_proof_kernel::KernelVerdict::Inconclusive(reason) => Verdict::Unknown(reason),

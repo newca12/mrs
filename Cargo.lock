@@ -4276,6 +4276,7 @@ dependencies = [
 name = "mrs-proof-kernel"
 version = "0.2.3"
 dependencies = [
+ "libc",
  "mrs-cadical",
  "mrs-cnf",
  "mrs-core",

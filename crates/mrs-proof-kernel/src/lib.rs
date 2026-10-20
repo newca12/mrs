@@ -24,6 +24,7 @@ use mrs_tptp::{AnnotatedFormula, BinaryConnective, CNFFormula, CNFLiteral, CNFSt
 use mrs_tptp::{FOFAtomicFormula, FOFFormula, FOFStatement, FOFTerm, FormulaRole, Quantifier};
 
 pub mod model;
+pub mod verus;
 pub use model::{EqualitySemantics, FunctionTable, ModelCertificate, ModelVerdict, PredicateTable};
 
 /// Result of strict proof-kernel verification.

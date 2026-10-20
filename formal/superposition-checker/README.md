@@ -1,5 +1,18 @@
 # Verus superposition checker
 
+## TPTP interchange and MRS integration
+
+The compiled checker now exposes bounded wire v1 for local steps and complete
+proof DAGs. `mrs-proof-kernel::verus` and `mrs-proover::strict` provide opt-in
+shadow and dual-check APIs; a CLI example and formal-CI integration tests run
+actual parsed CNF proofs and the archived c502 fixture through the artifact.
+See **[`INTERCHANGE.md`](INTERCHANGE.md)** for build/run commands, wire grammar,
+limits, support and provenance. The dual gate requires both the independent
+strict kernel and Verus IR certifier to accept. TPTP lowering and byte decoding
+remain unverified, so this is a trusted-adapter integration rather than an
+end-to-end formally verified TPTP certifier. Older prototype limitations below
+that say no adapter/caller exists are superseded by this section.
+
 This is MRS's Verus superposition-checker project. It contains the original
 target-rigidity policy pilot, first-order substitution model, and an initial
 checker for one ground-unit fragment. The pilot tests a chosen policy; it does
@@ -52,15 +65,17 @@ source tree is not modified by these negative checks.
 temporary directory. It performs the compile twice and requires byte-identical
 runtime artifacts before executing the regressions; this is a same-host
 determinism check, not a cross-host reproducible-build claim.
-The mutation gate also injects an `assume_specification` probe into a temporary
-source copy and requires Verus `--no-cheating` to reject it.
+The mutation gate first verifies a valid assumption probe without strict mode,
+then requires Verus `--no-cheating` to reject it. It also rejects the actual
+forbidden-image freshness mutation; removing a redundant check alone is not a
+valid negative test.
 
 The checks use Verus `0.2026.10.18.7d82994` (the latest published release).
 This release declares Rust `1.99.1` in
 [`verus/rust-toolchain.toml`](https://github.com/verus-lang/verus/blob/release/0.2026.10.18.7d82994/rust-toolchain.toml),
 matching the requested toolchain. The verification log records both requested
 and effective toolchains. Verus uses its bundled Z3. Results:
-`5 verified, 0 errors` for the original pilot, `219 verified, 0 errors` for
+`5 verified, 0 errors` for the original pilot, `223 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
 
