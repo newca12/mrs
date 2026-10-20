@@ -1557,8 +1557,8 @@ changing defaults or drawing coverage conclusions.
 
 | | |
 |---|---|
-| Status | Open, not scheduled |
-| Severity | The archived run has 3 `verdict=ok`; 44 reference answers are `GaveUp` |
+| Status | Bounded-NNF kernel check verified in campaign; 44 non-decisive references and CSI008+1 OOM remain |
+| Severity | 2026-10-19 run strictly certifies 4/4 refutations (100%); 44 reference answers remain GaveUp |
 | Soundness | No unsound result is reported; the CSV's `ok` label is not a certificate. |
 
 ### Observation
@@ -1644,11 +1644,13 @@ biconditional), quantifier polarity, and scoped variable identity. Regression
 tests cover deep linear formulas, those connective cases, mismatches, and
 budget exhaustion.
 
-This addresses the kernel's bounded-NNF decision path, but the archived ICU
-proofs are not present in this checkout. UI-6 remains open until the retained
-`EEE001+1` and `CSE007+1` proofs are replayed through the strict kernel and the
-resulting audit is checked; this code-level regression result is not a new
-campaign certification measurement.
+This addresses the kernel's bounded-NNF decision path. In the October 19 campaign
+(`campaign-casc30-icu-W8CASCHJ1-97-20261019`), the retained proofs for both
+`EEE001+1` and `CSE007+1` were replayed through the strict kernel and both audited
+cleanly as **`VerifiedGood`** (taking 0.49 s and 1.92 s, respectively). This
+confirms the bounded-NNF check resolves the formula-size ceiling under full
+campaign execution. The remaining aspects of UI-6 are the 44 non-decisive
+references and early memory protection for multi-million axiom problems.
 
 ### One OS OOM kill despite the reported adaptive memory budget
 

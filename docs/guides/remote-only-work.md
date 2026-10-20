@@ -553,6 +553,11 @@ Caveats that apply to this table — each of these has cost a wrong number:
   rows with non-definitive expected statuses. On the 95 rows with a decisive
   reference, 9 `ok` is 9.5%. A second run on a different binary and host
   solved the same nine problems. See **UI-5**.
+- **ICU October 19 run certifies 4, not 3.** The follow-up campaign at
+  `campaign-casc30-icu-W8CASCHJ1-97-20261019` (`tlpnf9701`, binary `2982908b`,
+  commit `40278337`) certified all 4 generated refutations as `VerifiedGood`
+  (including `EEE001+1` and `CSE007+1`, previously `Unknown` under NNF/conjecture
+  size limits), achieving 100% strict verification on solved problems. See **UI-6**.
 
 **Before comparing any two runs, check all four of:** problem-set intersection
 and size; per-problem `timeout`; `binary_sha256`; and host RAM. If the

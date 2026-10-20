@@ -20,6 +20,7 @@ Re-measure before quoting one.
 | **FNE** | CASC-30 | 100 | **41 (41.0%; 2026-10-19 CASC-mode run)** | 43 (43.0%) | 41/41 refutations strictly `VerifiedGood`, no invalids. Up 11 verified solves over the October 2 audited campaign; both runs are single measurements. |
 | **EPS** | CASC-30 | 100 | **44 (40 certified models; 2026-10-19)** | 17 (17.0%) | CASC-mode dual-search run; 0 invalid models, 4 inconclusive model checks. Same 40 certified models as 2026-09-28, with two more models certified (the corresponding raw `Satisfiable` answers were already present in September). |
 | **EPU** | CASC-30 | 100 | **11 (11.0%; 2026-10-19 CASC-mode run)** | 18 (18.0%) | 11/11 strict `VerifiedGood`, 0 `VerifiedBad`; +2 over both audited September 26 and October 2 runs, same 9 retained. The 18 historical solves are not the current verified score. |
+| **ICU** | CASC-30 | 101 | **4 (4.0%; 2026-10-19 CASC-mode run)** | 3 (3.0%) | 4/4 refutations strictly `VerifiedGood`, 0 `VerifiedBad`. Resolves prior `Unknown` checks on `CSE007+1` and `EEE001+1` via bounded NNF fix (`13653b9`). `EEE009+1` (certified in October 2 in 45.7 s) timed out, establishing intermittency. 44 of 101 problems carry non-decisive references (`expected=GaveUp`); score is 3/55 on decisive references. 1 OOM kill (`CSI008+1`, 2M axioms). See UI-6 and the [ICU report](../reports/benchmarks/icu-2026-10.md). |
 
 ---
 
@@ -30,8 +31,8 @@ some full-division campaigns and not certified in others:
 [`intermittency.md`](intermittency.md). The inventory groups problems by their
 run-to-run outcome signature and names the campaign keys, excludes historical
 `VerifiedBad` results, and is maintained from audited campaign artifacts. CASC-30
-ICU is listed as not yet measurable because only one complete audited campaign
-is available.
+ICU is included with 3 intermittent problems between the October 2 and October 19
+campaigns (`c30-icu-02` and `c30-icu-19`).
 
 ---
 
@@ -171,6 +172,7 @@ does not apply.
 | CASC-30 | FNE | `~/crates/mrs-bench/results/campaign-casc30-fne-W8CASCHJ1-99-20261019` | 69,716 MB (`BOO109+1`) | 4 |
 | CASC-30 | EPS | `~/crates/mrs-bench/results/campaign-casc30-eps-W8CASCHJ1-01-20261019` | 33,731 MB (`SYN888-1`) | N/A (model certificates; no `proof_bytes`) |
 | CASC-30 | EPU | `~/crates/mrs-bench/results/campaign-casc30-epu-W8CASCHJ1-02-20261019` | 25,692 MB (`HWV081-1`) | 2 |
+| CASC-30 | ICU | `~/crates/mrs-bench/results/campaign-casc30-icu-W8CASCHJ1-97-20261019` | 53,772 MB (`EEE009+1`) | 0 |
 
 These are the largest observed values and large-proof counts in the named
 campaigns, not cross-run maxima or stable properties of each division. The
@@ -301,6 +303,38 @@ Provenance: commit `40278337`, dirty tree, Rust 1.99.1, binary SHA-256
 `edd0ccdeadc5f8d1d2dc764c83057b851cbb45def4d64ad7ca5663c1af1133aa`. The
 8-physical-core host had 128,019 MB RAM; maximum observed per-problem peak was
 69,716 MB (`BOO109+1`). See UI-5 and the per-problem
+[`intermittency inventory`](intermittency.md).
+
+## `casc-30` ICU, 2026-10-19 CASC-mode campaign
+
+`campaign-casc30-icu-W8CASCHJ1-97-20261019` completed the full 101-problem
+ICU division using eight workers, `MRS_HARDWARE=casc`, `jobs=1`, and the official
+480-second clock. It generated **4 theorems**, and strict audit certified
+**all 4 `VerifiedGood`**, with zero `VerifiedBad`, `Unknown`, or audit timeouts.
+The other outcomes were 18 `GaveUp`, 78 `Timeout`, and 1 `Error` (`CSI008+1`,
+killed by the OS OOM killer at 68.1 s on 2,004,866 axioms).
+
+Compared with `campaign-casc30-icu-W8C8J1-20261002`, the strict certification rate
+rose from 3/5 (60.0%) to **4/4 (100.0%)**. Both `CSE007+1` and `EEE001+1`—which
+returned `Unknown` in the October 2 audit due to strict formula-size limits on NNF
+and negated conjecture expansion—certified cleanly (`VerifiedGood` in 1.92 s and
+0.49 s, respectively) following commit `13653b9`. `EEE009+1` (certified in October 2
+in 45.7 s) timed out at 480 s on the 1.80 GHz host, establishing it as an
+intermittent problem under parallel 8-worker search. `CSI007+1` and `EEE007+1`
+certified in both campaigns.
+
+Because 44 of the 101 ICU problems carry non-decisive reference statuses
+(`expected=GaveUp`), `casc.sh` grades `CSE007+1` as `verdict=unknown` despite its
+verified proof. On decisive references alone (`expected=Theorem`), the score is
+3/55 (5.5%).
+
+Provenance: commit `40278337`, dirty tree, Rust 1.99.1, binary SHA-256
+`2982908b6da78fd0c791a171f4e47af6207c93b80512befcae271caf46537865`. The
+16-physical-core Xeon Silver 4108 host had 63,763 MB RAM; effective memory was
+54,198 MB. Maximum observed per-problem peak memory among completing jobs was
+53,772 MB (`EEE009+1`). See UI-6 in
+[`policies/unresolved-issues.md`](../policies/unresolved-issues.md), the
+[ICU certification report](../reports/benchmarks/icu-2026-10.md), and the
 [`intermittency inventory`](intermittency.md).
 
 ## `casc-j13` UEQ, and a 150-problem regression

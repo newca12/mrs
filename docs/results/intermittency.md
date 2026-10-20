@@ -51,7 +51,7 @@ certified signature.
 | `c30-07`, `c30-02`, `c30-05`, `c30-16` | CASC-30 UEQ | `campaign-casc30-ueq-W8C8J1-20261007`; `campaign-casc30-ueq-W8C8J1-20261002`; `campaign-casc30-ueq-W8P8J1-NOLRS-MB90G-20261005`; `campaign-casc30-ueq-feq-W8CASCHJ1-20261016` (combined FEQ/UEQ campaign) |
 | `c30-28`, `c30-26` | CASC-30 EPS | `cert-eps-20260928`; `cert-eps-20260926` |
 | `c30-26` | CASC-30 EPU | `cert-epu-20260926` |
-| `c30-icu-02` | CASC-30 ICU | `campaign-casc30-icu-W8C8J1-20261002` |
+| `c30-icu-19`, `c30-icu-02` | CASC-30 ICU | `campaign-casc30-icu-W8CASCHJ1-97-20261019`; `campaign-casc30-icu-W8C8J1-20261002` |
 
 ## CASC-J13
 
@@ -139,10 +139,18 @@ The October 19 EPU campaign certified both intermittent problems. Their earlier
 audited runs returned `Timeout`; the new `HWV078-1` proof uses the
 `derivation_loop` extractor and `MSC024-1` uses `lrat_lift`.
 
-### ICU — no intermittent list yet
+### ICU — 3 intermittent problems
 
-Only one complete, audited CASC-30 ICU campaign is currently in the results
-tree: `c30-icu-02` (`campaign-casc30-icu-W8C8J1-20261002`). It certified 3 of
-5 generated proofs; one run cannot establish that any problem is intermittent.
-Add this division once another complete, row-level audited ICU campaign is
-available.
+| Certified in | Not certified in | Problems |
+|---|---|---|
+| `c30-icu-19` | `c30-icu-02` | `CSE007+1`, `EEE001+1` |
+| `c30-icu-02` | `c30-icu-19` | `EEE009+1` |
+
+`CSE007+1` and `EEE001+1` generated refutations in both campaigns, but their
+October 2 strict audits were `Unknown` under strict formula-size limits on NNF
+and negated conjecture expansion. The October 19 campaign (`c30-icu-19`)
+certified both as strict `VerifiedGood` following the deep NNF kernel
+verification fix (`13653b9`). Conversely, `EEE009+1` was certified in the
+October 2 campaign (`VerifiedGood` in 45.7 s) but timed out at 480 s in the
+October 19 campaign on `tlpnf9701`. `CSI007+1` and `EEE007+1` certified
+`VerifiedGood` in both campaigns.

@@ -608,6 +608,37 @@ not a paired off/on measurement with the same build and environment. Repeat
 matched grounding-off/on CASC-mode full-division runs before making that causal
 claim.
 
+### Fresh CASC-30 ICU campaign (2026-10-19)
+
+The full 101-problem run
+`~/crates/mrs-bench/results/campaign-casc30-icu-W8CASCHJ1-97-20261019`
+returned 4 refutations, all **strict `VerifiedGood`**, with zero `VerifiedBad`,
+`Unknown`, or checker timeouts. The remaining rows were 18 `GaveUp`, 78 `Timeout`,
+and 1 `Error` (`CSI008+1`, killed by OS OOM killer on a 2,004,866-axiom input).
+
+Compared with `campaign-casc30-icu-W8C8J1-20261002`, the strict certification
+rate on refutations rose from 3/5 (60.0%) to **4/4 (100.0%)**. Both `CSE007+1`
+and `EEE001+1`—which previously returned `Unknown` under strict formula-size
+limits on NNF and negated conjecture expansion—certified cleanly (`VerifiedGood`
+in 1.92 s and 0.49 s, respectively) following commit `13653b9`. `EEE009+1`
+(certified in October 2 in 45.7 s) timed out at 480 s on the 1.80 GHz host,
+establishing it as an intermittent solve under parallel 8-worker search.
+`CSI007+1` and `EEE007+1` certified in both campaigns.
+
+Because 44 of the 101 ICU problems carry non-decisive reference statuses
+(`expected=GaveUp`), `casc.sh` grades `CSE007+1` as `verdict=unknown` despite its
+verified proof. On decisive references alone (`expected=Theorem`), the score is
+3/55 (5.5%).
+
+The CASC-mode host had 16 physical cores and 63,763 MB RAM, below the nominal
+128-GiB CASC allowance; effective memory was 54,198 MB. Peak observed memory
+among completed jobs was 53,772 MB (`EEE009+1`). Provenance: commit `40278337`,
+dirty tree, Rust 1.99.1, binary SHA-256
+`2982908b6da78fd0c791a171f4e47af6207c93b80512befcae271caf46537865`. Full
+row-level outcome detail is in [`results/README.md`](results/README.md), the
+[ICU certification report](reports/benchmarks/icu-2026-10.md), and the
+[`intermittency inventory`](results/intermittency.md).
+
 ---
 
 ## 3. Robustness beyond the corpus
