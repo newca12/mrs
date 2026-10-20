@@ -6824,6 +6824,12 @@ fn executable_dag_certification_examples() -> bool {
     dag.input_clauses = vec![positive, negative];
     dag.root = 2;
     if certify_dag(&dag, 10, 1000) != DagVerdict::Certified { return false; }
+    // Node IDs are producer-facing identities; duplicate IDs must fail closed
+    // even when the vector-index parent graph itself is otherwise valid.
+    dag.nodes[1].id = dag.nodes[0].id;
+    if certify_dag(&dag, 10, 1000) != DagVerdict::Rejected { return false; }
+    dag.nodes[1].id = 11;
+    if certify_dag(&dag, 10, 1000) != DagVerdict::Certified { return false; }
     if certify_dag(&dag, 10, 2) == DagVerdict::Certified { return false; }
     dag.nodes.push(ProofNode { id: 2, clause: resolution_unit(17, true),
         kind: ProofNodeKind::Input, parents: Vec::new(), step: None });

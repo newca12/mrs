@@ -1105,6 +1105,10 @@ satisfiability/model claims, and unrestricted full TSTP.
 - [x] Turn standardized-apart variable collisions and malformed/mismatched
   selected paths, bad slots, and forged conclusions into executable runtime
   rejection cases; add a mutation removing the target freshness check.
+- [x] Exercise the proof-DAG duplicate-node-ID rejection path with an otherwise
+  valid refutation: changing one input ID to collide is rejected, and restoring
+  the unique ID certifies again. The structural loop already proves ID
+  uniqueness; this adds a direct runtime boundary regression.
 - [x] Specify and prove recursive term substitution/evaluation and lift it to
   atom/literal/clause preservation under total interpretation/valuation domains
   (M1 semantic foundation).
