@@ -181,6 +181,95 @@ The run metadata's `default_time_limit=120` is the harness default, not the
 actual per-problem timeout: `use_casc_times=1`, `run.log`, `run.csv`, and the
 audit all show 180 seconds for UEQ.
 
+## CASC-J13 UEQ audit follow-up (2026-10-20)
+
+The archived campaign
+`campaign-casc-j13-04-ueq-CASCHJ1-20261020` produced 120 refutations in the
+400-problem CASC-J13 UEQ division. Its strict audit recorded **112
+`VerifiedGood`, 6 `VerifiedBad`, and 2 `Unknown`**. The six `VerifiedBad` verdicts
+are a verifier false rejection: each proof leaf cites the correct named CNF
+equality axiom, but the emitted equation has its sides reversed.
+
+| Problems | Cited leaf | Problem axiom | Proof leaf |
+|---|---|---|---|
+| `GRP178-1`, `GRP183-3`, `GRP186-1` | `monotony_glb2` | `greatest_lower_bound(multiply(Y,X),multiply(Z,X)) = multiply(greatest_lower_bound(Y,Z),X)` in `Axioms/GRP004-2.ax` | The same equation with sides swapped |
+| `REL026-3`, `REL041-2`, `REL045-2` | `dedekind_law_14` | `composition(meet(A,composition(C,converse(B))),meet(B,composition(converse(A),C))) = join(meet(composition(A,B),C),composition(meet(A,composition(C,converse(B))),meet(B,composition(converse(A),C))))` in `Axioms/REL001-1.ax` | The same equation with sides swapped |
+
+For example, `GRP178-1.s` line 11 attributes its input clause `c13` to
+`monotony_glb2`; the audit reports `leaf c13 does not match problem formula
+monotony_glb2`. The included axiom is in
+`crates/mrs-bench/problems/casc-j13/Axioms/GRP004-2.ax:31-32`, and the
+normalized campaign problem is
+`crates/mrs-bench/results/campaign-casc-j13-04-ueq-CASCHJ1-20261020/certification/proofs/mrs/ueq/Problems/GRP178-1.p`.
+The REL cases show the same pattern against
+`crates/mrs-bench/problems/casc-j13/Axioms/REL001-1.ax:1-2`. This rules out a
+missing include or wrong source name: the named formulas are present and match
+modulo equality symmetry.
+
+The campaign's strict audit invokes `mrs-proover --strict`, which routes to the
+strict proof kernel (`crates/mrs-proover/src/bin/mrs-proover.rs`). The kernel's
+bounded matcher does try both orientations of equality in
+`crates/mrs-proof-kernel/src/lib.rs`, `AcState::atom_eq`; therefore the
+failure is not simply a missing equation-symmetry branch.
+
+The remaining mismatch is in matching CNF variables after the side reversal.
+`lower_cnf_formula` in the proof kernel turns the implicitly universally
+quantified CNF variables into nested `Forall` binders in first-occurrence order.
+When an equality's sides are reversed, their first-occurrence order can change.
+The formula matcher then compares variables by binder depth. Equality matching
+tries the reversed sides, but does not independently recover a variable
+correspondence for that orientation, so it can compare the right equation under
+the wrong binder mapping and reject it. This explains why the formulas are the
+same up to alpha-renaming and equation symmetry while the archived kernel audit
+still returns `VerifiedBad`.
+
+The direct replay with `target/release/mrs-proover --strict` reproduces the
+archived `VerifiedBad` for `GRP178-1`. This confirms the failure in the current
+strict path. The campaign's `git_dirty=true` metadata means its exact dirty
+source snapshot is unavailable, so archived source-level details cannot be
+reconstructed from the commit alone.
+
+**Conclusion:** these six `VerifiedBad` rows were false rejections, not evidence
+of unsound inference. The cited axioms and emitted leaves are identical modulo
+variable renaming and equation symmetry; the old strict matcher rejected them
+because the flipped equality orientation was checked with the wrong binder
+correspondence. The targeted re-audit below now certifies all six. The other 114
+audit results (112 good, 2 unknown) are unaffected by this diagnosis.
+
+### Fix and re-audit (2026-10-21)
+
+`mrs-proof-kernel` now compares CNF leaves as disjunctions of literals under one
+explicit bijection between their implicitly universal variables. Literal
+pairing backtracks consistently across the clause, and equality matching
+backtracks over both orientations while retaining the successful variable map.
+The comparison uses the existing `max_comparison_steps` budget; exhaustion
+remains inconclusive, never a mismatch. FOF leaf comparison continues through
+the existing bounded AC-alpha-equivalence path.
+
+Regression tests cover both archived axiom shapes, reject inconsistent
+cross-literal variable mappings and changed function symbols, and verify that
+budget exhaustion returns `Undecided`. The full proof-kernel suite passes (302
+unit tests plus integration tests). Re-running strict verification on the six
+preserved campaign proofs now returns `VerifiedGood` for all six:
+
+| Problems | Before | After |
+|---|---|---|
+| `GRP178-1`, `GRP183-3`, `GRP186-1` | `VerifiedBad` | `VerifiedGood` |
+| `REL026-3`, `REL041-2`, `REL045-2` | `VerifiedBad` | `VerifiedGood` |
+
+This is a targeted re-audit of the six archived proofs, not a rerun of the
+400-problem search or a new division score.
+
+Run provenance is in the campaign directory's `run_meta.json` and `run_meta.txt`:
+`git_commit=a38c8bc83c5c2c16fb478e6fe2f4d6392f58c7df`,
+`git_dirty=true`, 8 workers, `MRS_HARDWARE=casc`, `jobs=1`, official 180-second
+UEQ limit, and binary SHA-256
+`c881d56f47b848d507017f4f3a4cb58fa24da0c4e3d8e267c45bc6c0d4e7ae94`. Because
+the source tree was dirty, the commit alone does not reconstruct the exact
+campaign source; the archived stdout/proofs and audit details are the primary
+evidence. This is a verifier diagnosis, not a fresh search or certification
+measurement.
+
 ## Follow-up needed
 
 Repeat the shipped-portfolio, no-sharing measurement at least five times on a

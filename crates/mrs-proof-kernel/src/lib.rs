@@ -3593,7 +3593,13 @@ fn verify_leaf<'a>(
         }
         role_match = true;
         let expected_formula = lower_annotated(symbols, expected, limits)?;
-        match ac_alpha_equiv(&proof_formula, &expected_formula, limits) {
+        match leaf_formula_equiv(
+            node.formula,
+            expected,
+            &proof_formula,
+            &expected_formula,
+            limits,
+        ) {
             MatchOutcome::Match => return Ok(()),
             MatchOutcome::Undecided => undecided = Some("named"),
             MatchOutcome::Differ => {}
@@ -3614,7 +3620,13 @@ fn verify_leaf<'a>(
             }
             role_match = true;
             let expected_formula = lower_annotated(symbols, expected, limits)?;
-            match ac_alpha_equiv(&proof_formula, &expected_formula, limits) {
+            match leaf_formula_equiv(
+                node.formula,
+                expected,
+                &proof_formula,
+                &expected_formula,
+                limits,
+            ) {
                 MatchOutcome::Match => return Ok(()),
                 MatchOutcome::Undecided => undecided = Some("provenance"),
                 MatchOutcome::Differ => {}
@@ -3648,6 +3660,267 @@ fn verify_leaf<'a>(
         "leaf `{}` does not match problem formula `{}`",
         node.name, annotation.1
     )))
+}
+
+/// Compare a proof leaf with its named problem formula using the equivalences
+/// appropriate to their shared dialect. CNF variables are implicitly
+/// universally quantified, but their textual names/order have no semantic
+/// significance; in particular, reversing an equality can change the order in
+/// which those variables first appear. Compare CNF leaves as clauses with an
+/// explicit variable bijection instead of relying on binder-depth alpha
+/// equivalence.
+fn leaf_formula_equiv(
+    proof: &AnnotatedFormula<'_>,
+    problem: &AnnotatedFormula<'_>,
+    proof_formula: &Formula,
+    problem_formula: &Formula,
+    limits: VerificationLimits,
+) -> MatchOutcome {
+    if proof.is_cnf() && problem.is_cnf() {
+        cnf_alpha_equiv(proof_formula, problem_formula, limits)
+    } else {
+        ac_alpha_equiv(proof_formula, problem_formula, limits)
+    }
+}
+
+fn cnf_alpha_equiv(a: &Formula, b: &Formula, limits: VerificationLimits) -> MatchOutcome {
+    fn universal_body(mut formula: &Formula) -> &Formula {
+        while let Formula::Forall(_, body) = formula {
+            formula = body;
+        }
+        formula
+    }
+
+    fn clause_literals<'a>(formula: &'a Formula, out: &mut Vec<&'a Formula>) {
+        match formula {
+            Formula::Or(parts) => {
+                for part in parts {
+                    clause_literals(part, out);
+                }
+            }
+            other => out.push(other),
+        }
+    }
+
+    let mut left = Vec::new();
+    let mut right = Vec::new();
+    clause_literals(universal_body(a), &mut left);
+    clause_literals(universal_body(b), &mut right);
+    if left.len() != right.len() {
+        return MatchOutcome::Differ;
+    }
+    let mut state = CnfAlphaState {
+        left_to_right: HashMap::new(),
+        right_to_left: HashMap::new(),
+        budget: Rc::new(Cell::new(limits.max_comparison_steps)),
+    };
+    state.match_literals(&left, &right, 0, &mut vec![false; right.len()])
+}
+
+/// Clause comparison for TPTP CNF leaves. Unlike binder-depth comparison,
+/// this constructs one consistent bijection between the implicit universally
+/// quantified variables in each clause. Candidate literal pairings and the two
+/// orientations of equality backtrack over that same relation.
+struct CnfAlphaState {
+    left_to_right: HashMap<VarId, VarId>,
+    right_to_left: HashMap<VarId, VarId>,
+    budget: Rc<Cell<usize>>,
+}
+
+impl Clone for CnfAlphaState {
+    fn clone(&self) -> Self {
+        Self {
+            left_to_right: self.left_to_right.clone(),
+            right_to_left: self.right_to_left.clone(),
+            // Speculative branches share the total work budget.
+            budget: Rc::clone(&self.budget),
+        }
+    }
+}
+
+impl CnfAlphaState {
+    fn spend(&self) -> bool {
+        let remaining = self.budget.get();
+        if remaining == 0 {
+            false
+        } else {
+            self.budget.set(remaining - 1);
+            true
+        }
+    }
+
+    fn match_literals(
+        &mut self,
+        left: &[&Formula],
+        right: &[&Formula],
+        index: usize,
+        used: &mut [bool],
+    ) -> MatchOutcome {
+        if index == left.len() {
+            return MatchOutcome::Match;
+        }
+        let mut undecided = false;
+        for (right_index, candidate) in right.iter().enumerate() {
+            if used[right_index] {
+                continue;
+            }
+            if !self.spend() {
+                undecided = true;
+                break;
+            }
+            let mut branch = self.clone();
+            match branch.literal_eq(left[index], candidate) {
+                MatchOutcome::Match => {}
+                MatchOutcome::Differ => continue,
+                MatchOutcome::Undecided => {
+                    undecided = true;
+                    break;
+                }
+            }
+            used[right_index] = true;
+            match branch.match_literals(left, right, index + 1, used) {
+                MatchOutcome::Match => {
+                    self.left_to_right = branch.left_to_right;
+                    self.right_to_left = branch.right_to_left;
+                    return MatchOutcome::Match;
+                }
+                MatchOutcome::Undecided => {
+                    used[right_index] = false;
+                    undecided = true;
+                    break;
+                }
+                MatchOutcome::Differ => used[right_index] = false,
+            }
+        }
+        if undecided {
+            MatchOutcome::Undecided
+        } else {
+            MatchOutcome::Differ
+        }
+    }
+
+    fn literal_eq(&mut self, a: &Formula, b: &Formula) -> MatchOutcome {
+        if !self.spend() {
+            return MatchOutcome::Undecided;
+        }
+        match (a, b) {
+            (Formula::True, Formula::True) | (Formula::False, Formula::False) => {
+                return MatchOutcome::Match;
+            }
+            (Formula::Neg(left), Formula::Neg(right))
+                if matches!(
+                    (&**left, &**right),
+                    (Formula::True, Formula::True) | (Formula::False, Formula::False)
+                ) =>
+            {
+                return MatchOutcome::Match;
+            }
+            _ => {}
+        }
+        let (positive_a, atom_a) = match a {
+            Formula::Atom(atom) => (true, atom),
+            Formula::Neg(inner) => match inner.as_ref() {
+                Formula::Atom(atom) => (false, atom),
+                _ => return MatchOutcome::Differ,
+            },
+            _ => return MatchOutcome::Differ,
+        };
+        let (positive_b, atom_b) = match b {
+            Formula::Atom(atom) => (true, atom),
+            Formula::Neg(inner) => match inner.as_ref() {
+                Formula::Atom(atom) => (false, atom),
+                _ => return MatchOutcome::Differ,
+            },
+            _ => return MatchOutcome::Differ,
+        };
+        if positive_a != positive_b {
+            return MatchOutcome::Differ;
+        }
+        self.atom_eq(atom_a, atom_b)
+    }
+
+    fn atom_eq(&mut self, a: &Atom, b: &Atom) -> MatchOutcome {
+        if !self.spend() {
+            return MatchOutcome::Undecided;
+        }
+        match (a, b) {
+            (Atom::Pred(symbol_a, args_a), Atom::Pred(symbol_b, args_b)) => {
+                if symbol_a != symbol_b || args_a.len() != args_b.len() {
+                    return MatchOutcome::Differ;
+                }
+                self.terms_eq(args_a, args_b)
+            }
+            (Atom::Eq(left_a, right_a), Atom::Eq(left_b, right_b)) => {
+                let mut direct = self.clone();
+                let direct_result = direct
+                    .term_eq(left_a, left_b)
+                    .and_then(|| direct.term_eq(right_a, right_b));
+                if direct_result == MatchOutcome::Match {
+                    self.left_to_right = direct.left_to_right;
+                    self.right_to_left = direct.right_to_left;
+                    return MatchOutcome::Match;
+                }
+                if direct_result == MatchOutcome::Undecided {
+                    return MatchOutcome::Undecided;
+                }
+                let mut flipped = self.clone();
+                match flipped
+                    .term_eq(left_a, right_b)
+                    .and_then(|| flipped.term_eq(right_a, left_b))
+                {
+                    MatchOutcome::Match => {
+                        self.left_to_right = flipped.left_to_right;
+                        self.right_to_left = flipped.right_to_left;
+                        MatchOutcome::Match
+                    }
+                    other => other,
+                }
+            }
+            _ => MatchOutcome::Differ,
+        }
+    }
+
+    fn terms_eq(&mut self, left: &[Term], right: &[Term]) -> MatchOutcome {
+        for (left_term, right_term) in left.iter().zip(right) {
+            match self.term_eq(left_term, right_term) {
+                MatchOutcome::Match => {}
+                other => return other,
+            }
+        }
+        MatchOutcome::Match
+    }
+
+    fn term_eq(&mut self, a: &Term, b: &Term) -> MatchOutcome {
+        if !self.spend() {
+            return MatchOutcome::Undecided;
+        }
+        match (a, b) {
+            (Term::Var(left), Term::Var(right)) => {
+                match (self.left_to_right.get(left), self.right_to_left.get(right)) {
+                    (Some(mapped), Some(reverse)) => {
+                        if mapped == right && reverse == left {
+                            MatchOutcome::Match
+                        } else {
+                            MatchOutcome::Differ
+                        }
+                    }
+                    (None, None) => {
+                        self.left_to_right.insert(*left, *right);
+                        self.right_to_left.insert(*right, *left);
+                        MatchOutcome::Match
+                    }
+                    _ => MatchOutcome::Differ,
+                }
+            }
+            (Term::App(symbol_a, args_a), Term::App(symbol_b, args_b)) => {
+                if symbol_a != symbol_b || args_a.len() != args_b.len() {
+                    return MatchOutcome::Differ;
+                }
+                self.terms_eq(args_a, args_b)
+            }
+            _ => MatchOutcome::Differ,
+        }
+    }
 }
 
 fn roles_compatible(proof: FormulaRole, problem: FormulaRole) -> bool {
@@ -15793,7 +16066,11 @@ mod tests {
             let expected = to_nnf_checked(&source, VerificationLimits::default())
                 .expect("small positive control fits the bounded converter");
             assert_eq!(
-                verify_nnf(&[source.clone()], &expected, VerificationLimits::default()),
+                verify_nnf(
+                    std::slice::from_ref(&source),
+                    &expected,
+                    VerificationLimits::default()
+                ),
                 KernelVerdict::Certified
             );
             assert!(
@@ -16984,8 +17261,10 @@ mod tests {
              cnf(m1, plain, q(a), inference(resolution, [status(thm)], [main, np])).\n\
              cnf(bot, plain, $false, inference(resolution, [status(thm)], [m1, nq]))."
         );
-        let mut limits = VerificationLimits::default();
-        limits.max_expansion_clauses = 100; // Far smaller than 2^20
+        let limits = VerificationLimits {
+            max_expansion_clauses: 100, // Far smaller than 2^20
+            ..VerificationLimits::default()
+        };
         let parsed_prob = parse_tptp(&problem).unwrap();
         let parsed_proof = parse_tptp(&proof).unwrap();
         assert_eq!(
@@ -17020,8 +17299,10 @@ mod tests {
              cnf(forged, plain, unentailed_target, inference(cnf_transformation, [status(thm)], [src])).\n\
              fof(bot, plain, $false, inference(consequence, [status(thm)], [forged]))."
         );
-        let mut limits = VerificationLimits::default();
-        limits.max_expansion_clauses = 4;
+        let limits = VerificationLimits {
+            max_expansion_clauses: 4,
+            ..VerificationLimits::default()
+        };
         let parsed_prob = parse_tptp(&problem).unwrap();
         let parsed_proof = parse_tptp(&proof).unwrap();
         let verdict = verify_strict(&parsed_prob, &parsed_proof, limits);
@@ -19652,6 +19933,36 @@ mod leaf_matching_tests {
         ac_alpha_equiv(&first, &second, VerificationLimits::default())
     }
 
+    fn cnf_pair(a: &str, b: &str) -> MatchOutcome {
+        let statement = |text: &str, name: &str| {
+            let trimmed = text.trim();
+            if trimmed.starts_with("cnf(") {
+                trimmed.to_string()
+            } else {
+                format!("cnf({name},axiom,{trimmed})")
+            }
+        };
+        let text = format!("{}.\n{}.\n", statement(a, "cnf_a"), statement(b, "cnf_b"));
+        let problem = parse_tptp(&text)
+            .unwrap_or_else(|error| panic!("CNF pair does not parse: {error}\ninput was {text:?}"));
+        let mut symbols = SymbolTable::new();
+        let limits = VerificationLimits::default();
+        let mut formulas = problem
+            .formulas
+            .iter()
+            .map(|formula| lower_annotated(&mut symbols, formula, limits).expect("lower"));
+        let first = formulas.next().expect("first CNF formula");
+        let second = formulas.next().expect("second CNF formula");
+        assert!(formulas.next().is_none());
+        leaf_formula_equiv(
+            &problem.formulas[0],
+            &problem.formulas[1],
+            &first,
+            &second,
+            limits,
+        )
+    }
+
     /// `alpha_equiv` decides some shapes and refuses others. Its refusals of
     /// conjunction reordering and reassociation are recorded here so that
     /// widening the *leaf* comparison cannot be mistaken for a change to the
@@ -19763,6 +20074,65 @@ mod leaf_matching_tests {
         assert_eq!(
             ac_alpha_equiv(&leaf, &axiom, VerificationLimits::default()),
             MatchOutcome::Match
+        );
+    }
+
+    #[test]
+    fn cnf_leaf_matching_handles_reversed_equations_and_implicit_variable_order() {
+        // The proof leaf has a different first-occurrence order because its
+        // equality sides are reversed. These are the two shapes responsible
+        // for the six CASC-J13 UEQ false rejections.
+        assert_eq!(
+            cnf_pair(
+                "greatest_lower_bound(multiply(Y,X),multiply(Z,X)) = multiply(greatest_lower_bound(Y,Z),X)",
+                "multiply(greatest_lower_bound(X0,X1),X2) = greatest_lower_bound(multiply(X0,X2),multiply(X1,X2))",
+            ),
+            MatchOutcome::Match,
+            "monotony_glb2 must match modulo equation symmetry and variable renaming"
+        );
+        assert_eq!(
+            cnf_pair(
+                "composition(meet(A,composition(C,converse(B))),meet(B,composition(converse(A),C))) = join(meet(composition(A,B),C),composition(meet(A,composition(C,converse(B))),meet(B,composition(converse(A),C))))",
+                "join(meet(composition(X0,X1),X2),composition(meet(X0,composition(X2,converse(X1))),meet(X1,composition(converse(X0),X2)))) = composition(meet(X0,composition(X2,converse(X1))),meet(X1,composition(converse(X0),X2)))",
+            ),
+            MatchOutcome::Match,
+            "dedekind_law_14 must match modulo equation symmetry and variable renaming"
+        );
+    }
+
+    #[test]
+    fn cnf_leaf_matching_keeps_one_variable_bijection_for_the_whole_clause() {
+        assert_eq!(
+            cnf_pair("p(X) | q(X)", "q(B) | p(A)"),
+            MatchOutcome::Differ,
+            "one source variable cannot map to two distinct target variables"
+        );
+        assert_eq!(
+            cnf_pair("f(X) = g(Y)", "f(A) = h(B)"),
+            MatchOutcome::Differ,
+            "equality symmetry must not make different function symbols equivalent"
+        );
+    }
+
+    #[test]
+    fn cnf_leaf_matching_budget_exhaustion_is_inconclusive() {
+        let text = "cnf(a,axiom,p(X) | q(Y) | r(Z)).\n\
+                    cnf(b,axiom,r(C) | q(B) | p(A)).\n";
+        let problem = parse_tptp(text).expect("CNF formulas parse");
+        let mut symbols = SymbolTable::new();
+        let limits = VerificationLimits {
+            max_comparison_steps: 1,
+            ..VerificationLimits::default()
+        };
+        let mut formulas = problem
+            .formulas
+            .iter()
+            .map(|formula| lower_annotated(&mut symbols, formula, limits).expect("lower"));
+        let first = formulas.next().expect("first CNF formula");
+        let second = formulas.next().expect("second CNF formula");
+        assert_eq!(
+            cnf_alpha_equiv(&first, &second, limits),
+            MatchOutcome::Undecided
         );
     }
 
