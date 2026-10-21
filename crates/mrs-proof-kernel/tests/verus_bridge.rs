@@ -370,6 +370,27 @@ fn archived_step_and_real_tptp_dags_traverse_compiled_checker() {
     assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
     assert_eq!(report.checked_nodes, 4);
 
+    // Clause weakening:
+    let wk_problem =
+        mrs_tptp::parse_tptp("cnf(a,axiom,p(a)). cnf(b,axiom,~p(a)). cnf(c,axiom,~q(a)).").unwrap();
+    let wk_text = "cnf(a,axiom,p(a),file('input',a)).
+        cnf(b,axiom,~p(a),file('input',b)).
+        cnf(c,axiom,~q(a),file('input',c)).
+        cnf(w,plain,p(a)|q(a),inference(weaken,[status(thm)],[a])).
+        cnf(r1,plain,q(a),inference(resolution,[status(thm)],[w,b])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[r1,c])).";
+    let wk_proof = mrs_tptp::parse_tptp(wk_text).unwrap();
+    let (kernel, report) = verify_with_shadow(
+        &wk_problem,
+        &wk_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified);
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+    assert_eq!(report.checked_nodes, 6);
+
     let mut bad = cfg.clone();
     bad.expected_sha256 = "0".repeat(64);
     assert!(matches!(

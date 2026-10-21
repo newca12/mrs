@@ -311,6 +311,12 @@ struct SubsumptionResolutionCertificate {
     matches: Vec<usize>,
 }
 
+struct WeakeningCertificate {
+    parent: Vec<Literal>,
+    inclusions: Vec<usize>,
+    conclusion: Vec<Literal>,
+}
+
 fn instance(
     term: &Term,
     subst: &HashMap<VarId, Term>,
@@ -464,6 +470,18 @@ impl SubsumptionResolutionCertificate {
         wire.n(self.matches.len())?;
         for m in &self.matches {
             wire.n(*m)?;
+        }
+        Ok(())
+    }
+}
+
+impl WeakeningCertificate {
+    fn encode(&self, wire: &mut Wire) -> Result<(), String> {
+        wire.clause(&self.parent)?;
+        wire.clause(&self.conclusion)?;
+        wire.n(self.inclusions.len())?;
+        for inc in &self.inclusions {
+            wire.n(*inc)?;
         }
         Ok(())
     }
@@ -1045,6 +1063,37 @@ fn subsumption_resolution_certificate(
     Err("no supported subsumption resolution certificate".into())
 }
 
+fn weakening_certificate(
+    parent: &[Literal],
+    goal: &[Literal],
+) -> Result<WeakeningCertificate, String> {
+    if parent.len() > goal.len() {
+        return Err("weakening parent larger than goal".into());
+    }
+    let mut inclusions = Vec::with_capacity(parent.len());
+    let mut used = vec![false; goal.len()];
+    for p_lit in parent {
+        let mut found = None;
+        for (g_idx, g_lit) in goal.iter().enumerate() {
+            if !used[g_idx] && p_lit.positive == g_lit.positive && p_lit.atom == g_lit.atom {
+                used[g_idx] = true;
+                found = Some(g_idx);
+                break;
+            }
+        }
+        if let Some(idx) = found {
+            inclusions.push(idx);
+        } else {
+            return Err("weakening parent literal not in goal".into());
+        }
+    }
+    Ok(WeakeningCertificate {
+        parent: parent.to_vec(),
+        inclusions,
+        conclusion: goal.to_vec(),
+    })
+}
+
 fn supported_clause(
     symbols: &mut SymbolTable,
     formula: &AnnotatedFormula<'_>,
@@ -1198,6 +1247,7 @@ enum Kind {
     Factoring(FactoringCertificate),
     EqualityFactoring(EqualityFactoringCertificate),
     SubsumptionResolution(SubsumptionResolutionCertificate),
+    Weakening(WeakeningCertificate),
 }
 struct WireNode {
     clause: Vec<Literal>,
@@ -1397,6 +1447,11 @@ fn dag_request(
                     let conclusion = c.conclusion.clone();
                     (Kind::EqualityFactoring(c), conclusion, parents)
                 }
+                Some("weaken") => {
+                    let c = weakening_certificate(parent, &raw)?;
+                    let conclusion = c.conclusion.clone();
+                    (Kind::Weakening(c), conclusion, parents)
+                }
                 _ => return Err("unsupported inference rule".into()),
             }
         } else {
@@ -1437,6 +1492,7 @@ fn dag_request(
             Kind::Factoring(_) => 6,
             Kind::EqualityFactoring(_) => 7,
             Kind::SubsumptionResolution(_) => 8,
+            Kind::Weakening(_) => 9,
         })?;
         wire.n(node.parents.len())?;
         for p in &node.parents {
@@ -1454,6 +1510,7 @@ fn dag_request(
             Kind::Factoring(c) => c.encode(&mut wire)?,
             Kind::EqualityFactoring(c) => c.encode(&mut wire)?,
             Kind::SubsumptionResolution(c) => c.encode(&mut wire)?,
+            Kind::Weakening(c) => c.encode(&mut wire)?,
         }
     }
     Ok((wire.finish()?, nodes.len()))
