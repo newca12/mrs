@@ -118,6 +118,16 @@ def main() -> int:
             "lemma_decimal_digits_value_append(\n                        bytes@.subrange(token_start as int, cursor as int), byte);",
             "// omitted",
         ),
+        (
+            "first-order resolution ignores unified atom equality",
+            "if !same_atom(&inst_left.literals[certificate.left_pivot].atom, &inst_right.literals[certificate.right_pivot].atom) {",
+            "if false {",
+        ),
+        (
+            "first-order resolution ignores pivot polarity",
+            "if !certificate.left.literals[certificate.left_pivot].positive\n        || certificate.right.literals[certificate.right_pivot].positive\n    {",
+            "if false {",
+        ),
     ]
 
     with tempfile.TemporaryDirectory(prefix="mrs-verus-mutation-") as temp_dir:
