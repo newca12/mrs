@@ -100,6 +100,12 @@ CASC-J13 solo-strategy sweeps. These results are diagnostics, not cooperative
 portfolio measurements. The UEQ CASC-30 coverage refers to its original greedy
 order; the exact coverage for the compromise order has not been measured.
 
+> **FNE full-time sweep update (2026-10-20):** Full-time (180 s / 240 s) sweeps revealed
+> that `s13` cracks 5 previously unsolved LCL problems in 56–105 s. Greedy set cover
+> over full-time runs selects candidate order `[s11, s13, s04, s08, s15, s07, s03, s01]`,
+> which raises solo diagnostic coverage from 35/38 to 38/38 (100%) on J13 and from
+> 40/44 to 44/44 (100%) on CASC-30. See [`fne-fulltime-portfolio-2026-10.md`](fne-fulltime-portfolio-2026-10.md).
+
 ### UEQ measured cooperatively: 107/400, and a 150-problem regression
 
 `docs/reports/benchmarks/ueq-2026-09.md` is the first cooperative 8-worker
