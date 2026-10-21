@@ -1287,9 +1287,24 @@ fn dag_request(
         } else if parents.len() == 2 {
             let (left, right) = (&nodes[parents[0]].clause, &nodes[parents[1]].clause);
             match node.rule {
-                Some("superposition") => {
-                    let c = certificate(left, right, &raw, false, limits)?;
+                Some("superposition") | Some("paramodulation") | Some("demodulation") => {
+                    let (c, flipped) = if let Ok(c) = certificate(left, right, &raw, false, limits)
+                    {
+                        (c, false)
+                    } else if let Ok(c) = certificate(right, left, &raw, false, limits) {
+                        (c, true)
+                    } else {
+                        return Err(
+                            "no supported superposition/paramodulation/demodulation certificate"
+                                .into(),
+                        );
+                    };
                     let conclusion = c.conclusion.clone();
+                    let parents = if flipped {
+                        vec![parents[1], parents[0]]
+                    } else {
+                        parents
+                    };
                     (Kind::Superposition(c), conclusion, parents)
                 }
                 Some("resolution") => {
@@ -1305,17 +1320,48 @@ fn dag_request(
                                     .map(|(_, l)| l.clone())
                                     .collect();
                                 if expected == raw {
-                                    exact_pivot = Some((lp, rp));
+                                    exact_pivot = Some(((lp, rp), false));
                                 }
                             }
                         }
                     }
-                    if let Some((lp, rp)) = exact_pivot {
+                    if exact_pivot.is_none() {
+                        for (rp, r) in right.iter().enumerate() {
+                            for (lp, l) in left.iter().enumerate() {
+                                if r.positive && !l.positive && r.atom == l.atom {
+                                    let expected: Vec<_> = right
+                                        .iter()
+                                        .enumerate()
+                                        .filter(|(i, _)| *i != rp)
+                                        .chain(left.iter().enumerate().filter(|(i, _)| *i != lp))
+                                        .map(|(_, l)| l.clone())
+                                        .collect();
+                                    if expected == raw {
+                                        exact_pivot = Some(((rp, lp), true));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let Some(((lp, rp), flipped)) = exact_pivot {
+                        let parents = if flipped {
+                            vec![parents[1], parents[0]]
+                        } else {
+                            parents
+                        };
                         (Kind::Resolution(lp, rp), raw, parents)
-                    } else {
-                        let c = resolution_certificate(left, right, &raw, limits)?;
+                    } else if let Ok(c) = resolution_certificate(left, right, &raw, limits) {
                         let conclusion = c.conclusion.clone();
                         (Kind::FirstOrderResolution(c), conclusion, parents)
+                    } else if let Ok(c) = resolution_certificate(right, left, &raw, limits) {
+                        let conclusion = c.conclusion.clone();
+                        (
+                            Kind::FirstOrderResolution(c),
+                            conclusion,
+                            vec![parents[1], parents[0]],
+                        )
+                    } else {
+                        return Err("no supported first-order resolution certificate".into());
                     }
                 }
                 Some("subsumption_resolution") => {
@@ -1334,12 +1380,14 @@ fn dag_request(
         } else if parents.len() == 1 {
             let parent = &nodes[parents[0]].clause;
             match node.rule {
-                Some("equality_resolution") | Some("destructive_equality_resolution") => {
+                Some("equality_resolution")
+                | Some("destructive_equality_resolution")
+                | Some("trivial_inequality_removal") => {
                     let c = equality_resolution_certificate(parent, &raw, limits)?;
                     let conclusion = c.conclusion.clone();
                     (Kind::EqualityResolution(c), conclusion, parents)
                 }
-                Some("factoring") => {
+                Some("factoring") | Some("condensation") => {
                     let c = factoring_certificate(parent, &raw, limits)?;
                     let conclusion = c.conclusion.clone();
                     (Kind::Factoring(c), conclusion, parents)

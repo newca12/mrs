@@ -289,6 +289,87 @@ fn archived_step_and_real_tptp_dags_traverse_compiled_checker() {
     assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
     assert_eq!(report.checked_nodes, 7);
 
+    // Paramodulation (bidirectional superposition):
+    let pm_problem =
+        mrs_tptp::parse_tptp("cnf(a,axiom,f(a)=b). cnf(t,axiom,p(f(a))). cnf(n,axiom,~p(b)).")
+            .unwrap();
+    let pm_text = "cnf(a,axiom,f(a)=b,file('input',a)).
+        cnf(t,axiom,p(f(a)),file('input',t)). cnf(n,axiom,~p(b),file('input',n)).
+        cnf(s,plain,p(b),inference(paramodulation,[status(thm)],[t,a])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[s,n])).";
+    let pm_proof = mrs_tptp::parse_tptp(pm_text).unwrap();
+    let (kernel, report) = verify_with_shadow(
+        &pm_problem,
+        &pm_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified);
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+    assert_eq!(report.checked_nodes, 5);
+
+    // Demodulation (unit rewriting):
+    let dm_problem =
+        mrs_tptp::parse_tptp("cnf(a,axiom,f(a)=b). cnf(t,axiom,p(f(a))). cnf(n,axiom,~p(b)).")
+            .unwrap();
+    let dm_text = "cnf(a,axiom,f(a)=b,file('input',a)).
+        cnf(t,axiom,p(f(a)),file('input',t)). cnf(n,axiom,~p(b),file('input',n)).
+        cnf(s,plain,p(b),inference(demodulation,[status(thm)],[t,a])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[s,n])).";
+    let dm_proof = mrs_tptp::parse_tptp(dm_text).unwrap();
+    let (kernel, report) = verify_with_shadow(
+        &dm_problem,
+        &dm_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified);
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+    assert_eq!(report.checked_nodes, 5);
+
+    // Condensation (factoring):
+    let cond_problem = mrs_tptp::parse_tptp(
+        "cnf(a,axiom,p(X)|q(X)|p(Y)). cnf(b,axiom,~p(a)). cnf(c,axiom,~q(a)).",
+    )
+    .unwrap();
+    let cond_text = "cnf(a,axiom,p(X)|q(X)|p(Y),file('input',a)).
+        cnf(b,axiom,~p(a),file('input',b)).
+        cnf(c,axiom,~q(a),file('input',c)).
+        cnf(f1,plain,p(X)|q(X),inference(condensation,[status(thm)],[a])).
+        cnf(r1,plain,q(a),inference(resolution,[status(thm)],[f1,b])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[r1,c])).";
+    let cond_proof = mrs_tptp::parse_tptp(cond_text).unwrap();
+    let (kernel, report) = verify_with_shadow(
+        &cond_problem,
+        &cond_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified);
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+    assert_eq!(report.checked_nodes, 6);
+
+    // Destructive equality resolution (equality resolution on reflexive inequality):
+    let ineq_problem = mrs_tptp::parse_tptp("cnf(a,axiom,a!=a|p(a)). cnf(b,axiom,~p(a)).").unwrap();
+    let ineq_text = "cnf(a,axiom,a!=a|p(a),file('input',a)).
+        cnf(b,axiom,~p(a),file('input',b)).
+        cnf(s,plain,p(a),inference(destructive_equality_resolution,[status(thm)],[a])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[s,b])).";
+    let ineq_proof = mrs_tptp::parse_tptp(ineq_text).unwrap();
+    let (kernel, report) = verify_with_shadow(
+        &ineq_problem,
+        &ineq_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified);
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+    assert_eq!(report.checked_nodes, 4);
+
     let mut bad = cfg.clone();
     bad.expected_sha256 = "0".repeat(64);
     assert!(matches!(
