@@ -180,6 +180,26 @@ def main() -> int:
             "|| !check_equality_factoring_and_replay(step, remaining_work)",
             "|| false",
         ),
+        (
+            "subsumption resolution ignores pivot polarity",
+            "if target_pivot_lit.positive == active_pivot_lit.positive {\n        return false;\n    }",
+            "if false {\n        return false;\n    }",
+        ),
+        (
+            "subsumption resolution ignores pivot atom equality",
+            "if !same_atom(&target_pivot_lit.atom, &active_pivot_lit.atom) {\n        return false;\n    }",
+            "if false {\n        return false;\n    }",
+        ),
+        (
+            "subsumption resolution ignores non-pivot literal match",
+            "if !same_literal(&inst_active.literals[j], &certificate.target.literals[target_idx]) {\n                return false;\n            }",
+            "if false {\n                return false;\n            }",
+        ),
+        (
+            "DAG subsumption resolution skips rule replay",
+            "|| !check_subsumption_resolution_and_replay(step, remaining_work)",
+            "|| false",
+        ),
     ]
 
     with tempfile.TemporaryDirectory(prefix="mrs-verus-mutation-") as temp_dir:
