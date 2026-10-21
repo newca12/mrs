@@ -39,6 +39,34 @@
       "production_certification": false
     },
     {
+      "id": "first-order-resolution",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_and_dag_dispatch",
+      "description": "Standardized-apart first-order binary resolution with independent parent freshening, common simultaneous one-step unifier, positive-left/negative-right unified atom pivot equation, and exact concatenated resolvent construction. Dispatched in proof DAGs via ProofNodeKind::FirstOrderResolution; proven by standardized_first_order_resolution_sound to preserve universal validity.",
+      "production_certification": false
+    },
+    {
+      "id": "equality-resolution",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_and_dag_dispatch",
+      "description": "Equality resolution (reflexivity resolution) on a negative equality literal: from C | s != t where s and t unify under unifier sigma, derive C sigma. Dispatched in proof DAGs via ProofNodeKind::EqualityResolution; proven by equality_resolution_sound to preserve universal validity.",
+      "production_certification": false
+    },
+    {
+      "id": "clause-factoring",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_and_dag_dispatch",
+      "description": "First-order clause factoring: from C | L1 | L2 where L1 and L2 have the same polarity and their atoms unify under unifier sigma, derive (C | L1) sigma. Dispatched in proof DAGs via ProofNodeKind::Factoring; proven by clause_factoring_sound to preserve universal validity.",
+      "production_certification": false
+    },
+    {
+      "id": "equality-factoring",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_and_dag_dispatch",
+      "description": "Equality factoring on positive equality literals: from C | s = t | u = v where s and u unify under unifier sigma, derive (C | t != v | s = t) sigma. Dispatched in proof DAGs via ProofNodeKind::EqualityFactoring; proven by equality_factoring_sound to preserve universal validity.",
+      "production_certification": false
+    },
+    {
       "id": "proof-dag-refutation",
       "module": "first_order_core.rs",
       "status": "verified_ir_dag_certification",
@@ -65,9 +93,18 @@
     "dag_exact_cumulative_replay_work": false,
     "dag_resolution_nullary": true,
     "standalone_resolution_nullary": true,
+    "standalone_resolution_first_order_unifier": true,
+    "dag_resolution_first_order_unifier": true,
+    "equality_resolution_rule": true,
+    "dag_equality_resolution": true,
+    "clause_factoring_rule": true,
+    "dag_clause_factoring": true,
+    "equality_factoring_rule": true,
+    "dag_equality_factoring": true,
     "archived_c502_step_replay": true,
     "archived_c502_full_proof_translation": false,
     "source_variable_unification_regression": true,
+    "adversarial_hygiene_and_position_guards_tested": true,
     "same_host_runtime_build_hash_reproducibility_checked": true,
     "cross_host_artifact_reproducibility_checked": false,
     "serialized_interchange_version": 1,
@@ -78,7 +115,7 @@
     "wire_max_bindings": 256,
     "wire_structural_decoder_verified": true,
     "wire_byte_tokenizer_verified": true,
-    "wire_token_value_correspondence_postcondition": false,
+    "wire_token_value_correspondence_postcondition": true,
     "wire_token_value_examples_tested": true,
     "wire_tokenizer_malformed_mutation_checked": true,
     "wire_decoder_fully_verified": false,

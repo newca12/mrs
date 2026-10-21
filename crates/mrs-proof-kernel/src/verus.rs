@@ -266,6 +266,40 @@ struct Certificate {
     path: Vec<usize>,
 }
 
+struct ResolutionCertificate {
+    left: Vec<Literal>,
+    right: Vec<Literal>,
+    conclusion: Vec<Literal>,
+    left_map: Vec<(VarId, Term)>,
+    right_map: Vec<(VarId, Term)>,
+    unifier: Vec<(VarId, Term)>,
+    lp: usize,
+    rp: usize,
+}
+
+struct EqualityResolutionCertificate {
+    clause: Vec<Literal>,
+    pivot: usize,
+    unifier: Vec<(VarId, Term)>,
+    conclusion: Vec<Literal>,
+}
+
+struct FactoringCertificate {
+    clause: Vec<Literal>,
+    first: usize,
+    second: usize,
+    unifier: Vec<(VarId, Term)>,
+    conclusion: Vec<Literal>,
+}
+
+struct EqualityFactoringCertificate {
+    clause: Vec<Literal>,
+    first: usize,
+    second: usize,
+    unifier: Vec<(VarId, Term)>,
+    conclusion: Vec<Literal>,
+}
+
 fn instance(
     term: &Term,
     subst: &HashMap<VarId, Term>,
@@ -357,6 +391,52 @@ impl Certificate {
                 wire.n(*child)?;
             }
         }
+        Ok(())
+    }
+}
+
+impl ResolutionCertificate {
+    fn encode(&self, wire: &mut Wire) -> Result<(), String> {
+        wire.clause(&self.left)?;
+        wire.clause(&self.right)?;
+        wire.clause(&self.conclusion)?;
+        wire.bindings(&self.left_map)?;
+        wire.bindings(&self.right_map)?;
+        wire.bindings(&self.unifier)?;
+        wire.n(self.lp)?;
+        wire.n(self.rp)?;
+        Ok(())
+    }
+}
+
+impl EqualityResolutionCertificate {
+    fn encode(&self, wire: &mut Wire) -> Result<(), String> {
+        wire.clause(&self.clause)?;
+        wire.clause(&self.conclusion)?;
+        wire.bindings(&self.unifier)?;
+        wire.n(self.pivot)?;
+        Ok(())
+    }
+}
+
+impl FactoringCertificate {
+    fn encode(&self, wire: &mut Wire) -> Result<(), String> {
+        wire.clause(&self.clause)?;
+        wire.clause(&self.conclusion)?;
+        wire.bindings(&self.unifier)?;
+        wire.n(self.first)?;
+        wire.n(self.second)?;
+        Ok(())
+    }
+}
+
+impl EqualityFactoringCertificate {
+    fn encode(&self, wire: &mut Wire) -> Result<(), String> {
+        wire.clause(&self.clause)?;
+        wire.clause(&self.conclusion)?;
+        wire.bindings(&self.unifier)?;
+        wire.n(self.first)?;
+        wire.n(self.second)?;
         Ok(())
     }
 }
@@ -508,6 +588,281 @@ fn certificate(
     Err("no supported exact ordered superposition certificate".into())
 }
 
+fn bounded_unify_atoms(
+    a: &Atom,
+    b: &Atom,
+    fuel: &mut usize,
+) -> Result<Option<HashMap<VarId, Term>>, String> {
+    let mut subst = HashMap::new();
+    let mut pending = Vec::new();
+    match (a, b) {
+        (Atom::Pred(p1, args1), Atom::Pred(p2, args2)) => {
+            if p1 != p2 || args1.len() != args2.len() {
+                return Ok(None);
+            }
+            pending.extend(args1.iter().cloned().zip(args2.iter().cloned()));
+        }
+        (Atom::Eq(a1, a2), Atom::Eq(b1, b2)) => {
+            pending.push((a1.clone(), b1.clone()));
+            pending.push((a2.clone(), b2.clone()));
+        }
+        _ => return Ok(None),
+    }
+    while let Some((a, b)) = pending.pop() {
+        let a = instance(&a, &subst, fuel, 0)?;
+        let b = instance(&b, &subst, fuel, 0)?;
+        if a == b {
+            continue;
+        }
+        match (a, b) {
+            (Term::Var(v), t) | (t, Term::Var(v)) => {
+                if t.free_vars().contains(&v) {
+                    return Ok(None);
+                }
+                subst.insert(v, t);
+            }
+            (Term::App(f, a), Term::App(g, b)) => {
+                if f != g || a.len() != b.len() {
+                    return Ok(None);
+                }
+                pending.extend(a.into_iter().zip(b));
+            }
+        }
+    }
+    Ok(Some(subst))
+}
+
+fn resolution_certificate(
+    left: &[Literal],
+    right: &[Literal],
+    goal: &[Literal],
+    limits: VerificationLimits,
+) -> Result<ResolutionCertificate, String> {
+    let mut next = max_var_clause(left)
+        .max(max_var_clause(right))
+        .checked_add(1)
+        .ok_or("variable-id overflow")?;
+    let (fresh_left, left_map) = freshen(left, &mut next)?;
+    let (fresh_right, right_map) = freshen(right, &mut next)?;
+    let mut attempts = 0usize;
+    let mut fuel = limits.max_comparison_steps.min(200_000);
+    for (lp, l) in fresh_left.iter().enumerate() {
+        if !l.positive {
+            continue;
+        }
+        for (rp, r) in fresh_right.iter().enumerate() {
+            if r.positive {
+                continue;
+            }
+            attempts += 1;
+            if attempts > limits.max_comparison_steps.min(10_000) {
+                return Err("resolution certificate search budget exhausted".into());
+            }
+            let Some(subst) = bounded_unify_atoms(&l.atom, &r.atom, &mut fuel)? else {
+                continue;
+            };
+            let mut expected: Vec<_> = fresh_left
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != lp)
+                .map(|(_, lit)| instantiate(lit, &subst, &mut fuel))
+                .collect::<Result<_, _>>()?;
+            expected.extend(
+                fresh_right
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != rp)
+                    .map(|(_, lit)| instantiate(lit, &subst, &mut fuel))
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+            if expected.len() != goal.len() {
+                continue;
+            }
+            let (mut forward, mut backward) = (HashMap::new(), HashMap::new());
+            if !expected.iter().zip(goal).all(|(a, b)| {
+                a.positive == b.positive
+                    && atom_alpha_equiv(&a.atom, &b.atom, &mut forward, &mut backward)
+            }) {
+                continue;
+            }
+            let mut unifier: Vec<_> = subst
+                .iter()
+                .map(|(v, t)| Ok((*v, instance(t, &subst, &mut fuel, 0)?)))
+                .collect::<Result<_, String>>()?;
+            unifier.sort_by_key(|(v, _)| *v);
+            return Ok(ResolutionCertificate {
+                left: left.to_vec(),
+                right: right.to_vec(),
+                conclusion: expected,
+                left_map,
+                right_map,
+                unifier,
+                lp,
+                rp,
+            });
+        }
+    }
+    Err("no supported first-order resolution certificate".into())
+}
+
+fn equality_resolution_certificate(
+    parent: &[Literal],
+    goal: &[Literal],
+    limits: VerificationLimits,
+) -> Result<EqualityResolutionCertificate, String> {
+    let mut fuel = limits.max_comparison_steps.min(200_000);
+    for (pivot, lit) in parent.iter().enumerate() {
+        if lit.positive {
+            continue;
+        }
+        let Atom::Eq(left, right) = &lit.atom else {
+            continue;
+        };
+        let Some(subst) = bounded_unify(left, right, &mut fuel)? else {
+            continue;
+        };
+        let expected: Vec<_> = parent
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != pivot)
+            .map(|(_, l)| instantiate(l, &subst, &mut fuel))
+            .collect::<Result<_, _>>()?;
+        if expected.len() != goal.len() {
+            continue;
+        }
+        let (mut forward, mut backward) = (HashMap::new(), HashMap::new());
+        if !expected.iter().zip(goal).all(|(a, b)| {
+            a.positive == b.positive
+                && atom_alpha_equiv(&a.atom, &b.atom, &mut forward, &mut backward)
+        }) {
+            continue;
+        }
+        let mut unifier: Vec<_> = subst
+            .iter()
+            .map(|(v, t)| Ok((*v, instance(t, &subst, &mut fuel, 0)?)))
+            .collect::<Result<_, String>>()?;
+        unifier.sort_by_key(|(v, _)| *v);
+        return Ok(EqualityResolutionCertificate {
+            clause: parent.to_vec(),
+            pivot,
+            unifier,
+            conclusion: expected,
+        });
+    }
+    Err("no supported equality resolution certificate".into())
+}
+
+fn factoring_certificate(
+    parent: &[Literal],
+    goal: &[Literal],
+    limits: VerificationLimits,
+) -> Result<FactoringCertificate, String> {
+    let mut fuel = limits.max_comparison_steps.min(200_000);
+    for first in 0..parent.len() {
+        for second in (first + 1)..parent.len() {
+            let (l1, l2) = (&parent[first], &parent[second]);
+            if l1.positive != l2.positive {
+                continue;
+            }
+            let Some(subst) = bounded_unify_atoms(&l1.atom, &l2.atom, &mut fuel)? else {
+                continue;
+            };
+            let expected: Vec<_> = parent
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != second)
+                .map(|(_, l)| instantiate(l, &subst, &mut fuel))
+                .collect::<Result<_, _>>()?;
+            if expected.len() != goal.len() {
+                continue;
+            }
+            let (mut forward, mut backward) = (HashMap::new(), HashMap::new());
+            if !expected.iter().zip(goal).all(|(a, b)| {
+                a.positive == b.positive
+                    && atom_alpha_equiv(&a.atom, &b.atom, &mut forward, &mut backward)
+            }) {
+                continue;
+            }
+            let mut unifier: Vec<_> = subst
+                .iter()
+                .map(|(v, t)| Ok((*v, instance(t, &subst, &mut fuel, 0)?)))
+                .collect::<Result<_, String>>()?;
+            unifier.sort_by_key(|(v, _)| *v);
+            return Ok(FactoringCertificate {
+                clause: parent.to_vec(),
+                first,
+                second,
+                unifier,
+                conclusion: expected,
+            });
+        }
+    }
+    Err("no supported clause factoring certificate".into())
+}
+
+fn equality_factoring_certificate(
+    parent: &[Literal],
+    goal: &[Literal],
+    limits: VerificationLimits,
+) -> Result<EqualityFactoringCertificate, String> {
+    let mut fuel = limits.max_comparison_steps.min(200_000);
+    for first in 0..parent.len() {
+        for second in (first + 1)..parent.len() {
+            let (l1, l2) = (&parent[first], &parent[second]);
+            if !l1.positive || !l2.positive {
+                continue;
+            }
+            let (Atom::Eq(s, t), Atom::Eq(u, v)) = (&l1.atom, &l2.atom) else {
+                continue;
+            };
+            let Some(subst) = bounded_unify(s, u, &mut fuel)? else {
+                continue;
+            };
+            let s_inst = instance(s, &subst, &mut fuel, 0)?;
+            let t_inst = instance(t, &subst, &mut fuel, 0)?;
+            let v_inst = instance(v, &subst, &mut fuel, 0)?;
+            let ineq = Literal {
+                positive: false,
+                atom: Atom::Eq(t_inst.clone(), v_inst),
+            };
+            let mut expected = Vec::new();
+            expected.push(Literal {
+                positive: true,
+                atom: Atom::Eq(s_inst, t_inst),
+            });
+            expected.push(ineq);
+            for (i, l) in parent.iter().enumerate() {
+                if i != first && i != second {
+                    expected.push(instantiate(l, &subst, &mut fuel)?);
+                }
+            }
+            if expected.len() != goal.len() {
+                continue;
+            }
+            let (mut forward, mut backward) = (HashMap::new(), HashMap::new());
+            if !expected.iter().zip(goal).all(|(a, b)| {
+                a.positive == b.positive
+                    && atom_alpha_equiv(&a.atom, &b.atom, &mut forward, &mut backward)
+            }) {
+                continue;
+            }
+            let mut unifier: Vec<_> = subst
+                .iter()
+                .map(|(v, t)| Ok((*v, instance(t, &subst, &mut fuel, 0)?)))
+                .collect::<Result<_, String>>()?;
+            unifier.sort_by_key(|(v, _)| *v);
+            return Ok(EqualityFactoringCertificate {
+                clause: parent.to_vec(),
+                first,
+                second,
+                unifier,
+                conclusion: expected,
+            });
+        }
+    }
+    Err("no supported equality factoring certificate".into())
+}
+
 fn supported_clause(
     symbols: &mut SymbolTable,
     formula: &AnnotatedFormula<'_>,
@@ -656,6 +1011,10 @@ enum Kind {
     Input,
     Superposition(Certificate),
     Resolution(usize, usize),
+    FirstOrderResolution(ResolutionCertificate),
+    EqualityResolution(EqualityResolutionCertificate),
+    Factoring(FactoringCertificate),
+    EqualityFactoring(EqualityFactoringCertificate),
 }
 struct WireNode {
     clause: Vec<Literal>,
@@ -751,7 +1110,7 @@ fn dag_request(
                     (Kind::Superposition(c), conclusion)
                 }
                 Some("resolution") => {
-                    let mut pivot = None;
+                    let mut exact_pivot = None;
                     for (lp, l) in left.iter().enumerate() {
                         for (rp, r) in right.iter().enumerate() {
                             if l.positive && !r.positive && l.atom == r.atom {
@@ -763,13 +1122,38 @@ fn dag_request(
                                     .map(|(_, l)| l.clone())
                                     .collect();
                                 if expected == raw {
-                                    pivot = Some((lp, rp));
+                                    exact_pivot = Some((lp, rp));
                                 }
                             }
                         }
                     }
-                    let (lp, rp) = pivot.ok_or("no exact oriented resolution pivot")?;
-                    (Kind::Resolution(lp, rp), raw)
+                    if let Some((lp, rp)) = exact_pivot {
+                        (Kind::Resolution(lp, rp), raw)
+                    } else {
+                        let c = resolution_certificate(left, right, &raw, limits)?;
+                        let conclusion = c.conclusion.clone();
+                        (Kind::FirstOrderResolution(c), conclusion)
+                    }
+                }
+                _ => return Err("unsupported inference rule".into()),
+            }
+        } else if parents.len() == 1 {
+            let parent = &nodes[parents[0]].clause;
+            match node.rule {
+                Some("equality_resolution") | Some("destructive_equality_resolution") => {
+                    let c = equality_resolution_certificate(parent, &raw, limits)?;
+                    let conclusion = c.conclusion.clone();
+                    (Kind::EqualityResolution(c), conclusion)
+                }
+                Some("factoring") => {
+                    let c = factoring_certificate(parent, &raw, limits)?;
+                    let conclusion = c.conclusion.clone();
+                    (Kind::Factoring(c), conclusion)
+                }
+                Some("equality_factoring") => {
+                    let c = equality_factoring_certificate(parent, &raw, limits)?;
+                    let conclusion = c.conclusion.clone();
+                    (Kind::EqualityFactoring(c), conclusion)
                 }
                 _ => return Err("unsupported inference rule".into()),
             }
@@ -806,6 +1190,10 @@ fn dag_request(
             Kind::Input => 0,
             Kind::Superposition(_) => 1,
             Kind::Resolution(_, _) => 3,
+            Kind::FirstOrderResolution(_) => 4,
+            Kind::EqualityResolution(_) => 5,
+            Kind::Factoring(_) => 6,
+            Kind::EqualityFactoring(_) => 7,
         })?;
         wire.n(node.parents.len())?;
         for p in &node.parents {
@@ -818,6 +1206,10 @@ fn dag_request(
                 wire.n(*lp)?;
                 wire.n(*rp)?;
             }
+            Kind::FirstOrderResolution(c) => c.encode(&mut wire)?,
+            Kind::EqualityResolution(c) => c.encode(&mut wire)?,
+            Kind::Factoring(c) => c.encode(&mut wire)?,
+            Kind::EqualityFactoring(c) => c.encode(&mut wire)?,
         }
     }
     Ok((wire.finish()?, nodes.len()))

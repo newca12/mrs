@@ -1,14 +1,40 @@
-# Supported superposition-step contract (prototype)
+# Supported superposition and resolution step contract (prototype)
 
 The compiled wire-v1 artifact now invokes this rule from the CNF TPTP/MRS bridge;
-see `INTERCHANGE.md` for the trusted decoding/normalization boundary. DAG support
-also includes **exact-atom resolution**: complementary positive-left/negative-right
+see `INTERCHANGE.md` for the trusted decoding/normalization boundary. Step support
+also includes **first-order binary resolution**: complementary positive-left/negative-right
+occurrences of unified predicate or equality atoms under independent parent
+standardization apart and a common simultaneous one-step unifier, with one pivot
+removed per parent and left-context/right-context concatenation. Its theorem
+`standardized_first_order_resolution_sound` and executable checker
+`check_first_order_resolution_and_replay` prove universal validity preservation.
+DAG support also includes **exact-atom resolution**: complementary positive-left/negative-right
 occurrences of the identical predicate or equality atom, with exactly one pivot
 removed per parent and left-context/right-context concatenation. Its theorem
 `exact_atom_resolution_sound` and checker `check_exact_resolution` prove local
 validity preservation without unification; DAG dispatch binds the actual cited
 clauses. This includes unary/binary predicates and equality, not just nullary
-predicates. It does not compute general first-order resolvents.
+predicates.
+
+DAG support also includes **equality resolution** (reflexivity resolution):
+from a clause with a negative equality literal `s != t` where `s` and `t` unify
+under simultaneous unifier `sigma`, the conclusion removes the negative equality
+literal and instantiates the remaining literals under `sigma`. Its theorem
+`equality_resolution_sound` and checker `check_equality_resolution_and_replay`
+prove universal validity preservation.
+
+DAG support also includes **clause factoring** (positive/negative factoring):
+from a clause `C | L1 | L2` where `L1` and `L2` have the same polarity and their
+atoms unify under simultaneous unifier `sigma`, the conclusion removes `L2`
+and instantiates the remaining literals under `sigma`. Its theorem
+`clause_factoring_sound` and checker `check_clause_factoring_and_replay`
+prove universal validity preservation.
+
+DAG support also includes **equality factoring**:
+from a clause `C | s = t | u = v` where `s` and `u` unify under simultaneous unifier
+`sigma`, the conclusion derives `(C | t != v | s = t) sigma`. Its theorem
+`equality_factoring_sound` and checker `check_equality_factoring_and_replay`
+prove universal validity preservation.
 
 This document fixes the mathematical rule represented by
 `SuperpositionCertificate` in `first_order_core.rs`. It is an **unordered

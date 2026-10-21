@@ -111,16 +111,28 @@ unknown tags, trailing fields or partially decoded requests are accepted.
 ```text
 request       := 1 command work payload
 command       := 0 (identity) | 1 (superposition step) | 2 (DAG)
-step payload  := certificate
+               | 3 (first-order resolution step) | 4 (equality resolution step)
+               | 5 (clause factoring step) | 6 (equality factoring step)
+step payload  := certificate | resolution_certificate | eq_resolution_certificate
+               | factoring_certificate | eq_factoring_certificate
 DAG payload   := node_count root input_count clause* node*
 node          := id clause kind parent_count parent_index* rule_payload
 kind          := 0 (input) | 1 (superposition) | 2 (nullary resolution)
-               | 3 (exact atom resolution)
-rule_payload  := empty | certificate | left_pivot right_pivot
+               | 3 (exact atom resolution) | 4 (first-order resolution)
+               | 5 (equality resolution) | 6 (clause factoring)
+               | 7 (equality factoring)
+rule_payload  := empty | certificate | resolution_certificate | eq_resolution_certificate
+               | factoring_certificate | eq_factoring_certificate | left_pivot right_pivot
 certificate   := source_clause target_clause conclusion_clause
                  source_freshening target_freshening unifier
                  source_equality_index target_literal_index argument_slot
                  raw_path fresh_path
+resolution_certificate := left_clause right_clause conclusion_clause
+                          left_freshening right_freshening unifier
+                          left_pivot right_pivot
+eq_resolution_certificate := clause conclusion unifier pivot
+factoring_certificate := clause conclusion unifier first second
+eq_factoring_certificate := clause conclusion unifier first second
 clause        := literal_count (polarity atom)*
 polarity      := 0 (negative) | 1 (positive)
 atom          := 0 symbol | 1 symbol term | 2 symbol term term | 3 term term
@@ -140,9 +152,8 @@ Limits: 4 MiB request, 500,000 decoded numeric tokens (the producer uses at most
 400,000), 512 nodes/inputs, two parents, 64 literals per clause, term depth below
 64, 256 substitution bindings, 64 path entries, work at most 10,000,000. These
 are ceilings, not completeness claims or exact cumulative replay accounting.
-The tokenizer's Verus postcondition proves the output token-count ceiling; the
-byte-span-to-token-value correspondence is currently covered by runtime examples
-but is not yet a quantified theorem. See the M5 ledger for this open proof task.
+The tokenizer's Verus postcondition proves both the output token-count ceiling
+and the quantified byte-span-to-token-value correspondence (`wire_tokens_span_correspondence`).
 The MRS subprocess runner bounds output to 1 KiB and the wall clock to the
 explicit configuration (maximum 60 s). Exceeded limits cannot certify.
 On Unix, the runner snapshots and hashes the binary, clears the child's
