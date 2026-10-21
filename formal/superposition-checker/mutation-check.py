@@ -148,6 +148,21 @@ def main() -> int:
             "|| !check_equality_resolution_and_replay(step, remaining_work)",
             "|| false",
         ),
+        (
+            "clause factoring ignores polarity agreement",
+            "if first_lit.positive != second_lit.positive {\n        return false;\n    }",
+            "if false {\n        return false;\n    }",
+        ),
+        (
+            "clause factoring ignores unified atom equality",
+            "if !same_atom(&inst_clause.literals[certificate.first].atom, &inst_clause.literals[certificate.second].atom) {\n        return false;\n    }",
+            "if false {\n        return false;\n    }",
+        ),
+        (
+            "DAG clause factoring skips rule replay",
+            "|| !check_clause_factoring_and_replay(step, remaining_work)",
+            "|| false",
+        ),
     ]
 
     with tempfile.TemporaryDirectory(prefix="mrs-verus-mutation-") as temp_dir:
