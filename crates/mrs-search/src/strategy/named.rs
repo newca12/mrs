@@ -37,8 +37,31 @@ use super::StrategySchedule;
 /// All built-in schedule names, in the order they should be listed in
 /// `--help` output.
 pub const ALL: &[&str] = &[
-    "casc", "casc_feq", "casc_fne", "casc_ueq", "casc_epr", "casc_eps", "casc_epu", "casc_icu",
-    "fast", "mini", "ml", "ml_feq", "ml_fne", "ml_ueq", "ml_epr", "mq",
+    "casc",
+    "casc_feq",
+    "casc_fne",
+    "casc_ueq",
+    "casc_epr",
+    "casc_eps",
+    "casc_epu",
+    "casc_icu",
+    "casc_fne_mq_hybrid",
+    "fast",
+    "mini",
+    "ml",
+    "ml_feq",
+    "ml_fne",
+    "ml_ueq",
+    "ml_epr",
+    "mq",
+    "mq_1",
+    "mq_2",
+    "mq_3",
+    "mq_4",
+    "mq_5",
+    "mq_6",
+    "mq_7",
+    "mq_8",
 ];
 
 const DEFAULT_CASC_ORDER: [usize; 15] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
@@ -160,6 +183,7 @@ pub fn by_name(name: &str, total_time: Duration, workers: usize) -> Option<Strat
         "casc_eps" => Some(casc_eps(total_time, workers)),
         "casc_epu" => Some(casc_epu(total_time, workers)),
         "casc_icu" => Some(casc_icu(total_time, workers)),
+        "casc_fne_mq_hybrid" => Some(casc_fne_mq_hybrid(total_time, workers)),
         "fast" => Some(fast(total_time, workers)),
         "mini" => Some(mini(total_time, workers)),
         "ml" | "ml_feq" => Some(ml_feq(total_time, workers)),
@@ -167,6 +191,14 @@ pub fn by_name(name: &str, total_time: Duration, workers: usize) -> Option<Strat
         "ml_ueq" => Some(ml_ueq(total_time, workers)),
         "ml_epr" => Some(ml_epr(total_time, workers)),
         "mq" => Some(mq(total_time, workers)),
+        "mq_1" => Some(mq_archetype_schedule(total_time, workers, 0)),
+        "mq_2" => Some(mq_archetype_schedule(total_time, workers, 1)),
+        "mq_3" => Some(mq_archetype_schedule(total_time, workers, 2)),
+        "mq_4" => Some(mq_archetype_schedule(total_time, workers, 3)),
+        "mq_5" => Some(mq_archetype_schedule(total_time, workers, 4)),
+        "mq_6" => Some(mq_archetype_schedule(total_time, workers, 5)),
+        "mq_7" => Some(mq_archetype_schedule(total_time, workers, 6)),
+        "mq_8" => Some(mq_archetype_schedule(total_time, workers, 7)),
         _ => None,
     };
     if let Some(s) = &mut schedule {
@@ -632,11 +664,31 @@ pub fn casc_icu(total_time: Duration, workers: usize) -> StrategySchedule {
 /// A multi-queue portfolio leveraging prioritized unit, Horn, SOS, and goal-directed queues.
 /// Distributes diverse multi-queue configurations across the worker threads.
 pub fn mq(total_time: Duration, workers: usize) -> StrategySchedule {
-    let workers = workers.max(1);
-    let t_part = Duration::from_millis((total_time.as_millis() / workers as u128) as u64);
-    let t_last = total_time.saturating_sub(t_part * (workers as u32 - 1));
+    build_mq_schedule(total_time, workers, &[0, 1, 2, 3, 4, 5, 6, 7])
+}
 
-    let archetypes = [
+/// Eight-slot FNE experiment retaining four high-coverage base strategies and
+/// adding four diverse MultiQueue configurations. This is diagnostic until
+/// replicated cooperative runs establish its coverage and certification.
+pub fn casc_fne_mq_hybrid(total_time: Duration, workers: usize) -> StrategySchedule {
+    let base_ids = [11, 13, 4, 15];
+    let mq_indices = [0, 1, 2, 5];
+    let base_configs = super::StrategySchedule::_all_strategies(Duration::ZERO, 0)
+        .strategies
+        .into_iter()
+        .map(|(config, _)| config)
+        .collect::<Vec<_>>();
+    let archetypes = mq_archetypes();
+    let template = base_ids
+        .iter()
+        .map(|&id| base_configs[id - 1].clone())
+        .chain(mq_indices.iter().map(|&index| archetypes[index].clone()))
+        .collect::<Vec<_>>();
+    build_from_template(total_time, workers, &template)
+}
+
+fn mq_archetypes() -> [SearchConfig; 8] {
+    let archetype_specs = [
         // 0: Balanced multi-queue
         (
             SelectionStrategy::MultiQueue(vec![
@@ -748,17 +800,16 @@ pub fn mq(total_time: Duration, workers: usize) -> StrategySchedule {
         ),
     ];
 
-    let mut strategies = Vec::new();
-    for i in 0..workers {
-        let t = if i == workers - 1 { t_last } else { t_part };
+    std::array::from_fn(|i| {
         let (selection, literal_selection, ordering, weight_fn, use_avatar, max_w) =
-            &archetypes[i % archetypes.len()];
+            &archetype_specs[i];
         let mut cfg = SearchConfig {
-            time_limit: t,
+            time_limit: Duration::ZERO,
             selection: selection.clone(),
             literal_selection: literal_selection.clone(),
             ordering: ordering.clone(),
             use_avatar: *use_avatar,
+            strategy_id: 101 + i,
             ..SearchConfig::default()
         };
         if let Some(wf) = weight_fn {
@@ -767,7 +818,7 @@ pub fn mq(total_time: Duration, workers: usize) -> StrategySchedule {
         if !*max_w {
             cfg.max_term_weight = None;
         }
-        match i % archetypes.len() {
+        match i {
             0 => {
                 cfg.precedence_scheme = crate::PrecedenceScheme::InvFreq;
                 cfg.symbol_weight_scheme = crate::SymbolWeightScheme::Uniform;
@@ -802,8 +853,43 @@ pub fn mq(total_time: Duration, workers: usize) -> StrategySchedule {
             }
             _ => {}
         }
-        strategies.push((cfg, t));
-    }
+        cfg
+    })
+}
+
+fn build_mq_schedule(
+    total_time: Duration,
+    workers: usize,
+    archetype_indices: &[usize],
+) -> StrategySchedule {
+    let archetypes = mq_archetypes();
+    let workers = workers.max(1);
+    let configs = (0..workers)
+        .map(|i| archetypes[archetype_indices[i % archetype_indices.len()]].clone())
+        .collect::<Vec<_>>();
+    build_from_template(total_time, workers, &configs)
+}
+
+fn mq_archetype_schedule(total_time: Duration, workers: usize, index: usize) -> StrategySchedule {
+    build_mq_schedule(total_time, workers, &[index])
+}
+
+fn build_from_template(
+    total_time: Duration,
+    workers: usize,
+    template: &[SearchConfig],
+) -> StrategySchedule {
+    let workers = workers.max(1);
+    let part = Duration::from_millis((total_time.as_millis() / workers as u128) as u64);
+    let last = total_time.saturating_sub(part * (workers as u32 - 1));
+    let strategies = (0..workers)
+        .map(|i| {
+            let time = if i + 1 == workers { last } else { part };
+            let mut config = template[i % template.len()].clone();
+            config.time_limit = time;
+            (config, time)
+        })
+        .collect();
     StrategySchedule { strategies }
 }
 
@@ -847,8 +933,26 @@ mod tests {
     fn division_schedules_scale_with_workers() {
         let t = Duration::from_secs(8);
         for name in [
-            "casc_fne", "casc_feq", "casc_ueq", "casc_epr", "casc_eps", "casc_epu", "casc_icu",
-            "ml_fne", "ml_ueq", "ml_epr", "mq",
+            "casc_fne",
+            "casc_feq",
+            "casc_ueq",
+            "casc_epr",
+            "casc_eps",
+            "casc_epu",
+            "casc_icu",
+            "casc_fne_mq_hybrid",
+            "ml_fne",
+            "ml_ueq",
+            "ml_epr",
+            "mq",
+            "mq_1",
+            "mq_2",
+            "mq_3",
+            "mq_4",
+            "mq_5",
+            "mq_6",
+            "mq_7",
+            "mq_8",
         ] {
             let s = by_name(name, t, 8).unwrap();
             assert_eq!(s.strategies.len(), 8, "{name} should have 8 strategies");
@@ -860,9 +964,32 @@ mod tests {
     #[test]
     fn named_schedules_default_to_no_sharing() {
         for name in [
-            "casc", "default", "casc_fne", "casc_feq", "casc_ueq", "casc_epr", "casc_eps",
-            "casc_epu", "casc_icu", "fast", "mini", "ml", "ml_feq", "ml_fne", "ml_ueq", "ml_epr",
+            "casc",
+            "default",
+            "casc_fne",
+            "casc_feq",
+            "casc_ueq",
+            "casc_epr",
+            "casc_eps",
+            "casc_epu",
+            "casc_icu",
+            "fast",
+            "mini",
+            "ml",
+            "ml_feq",
+            "ml_fne",
+            "ml_ueq",
+            "ml_epr",
             "mq",
+            "mq_1",
+            "mq_2",
+            "mq_3",
+            "mq_4",
+            "mq_5",
+            "mq_6",
+            "mq_7",
+            "mq_8",
+            "casc_fne_mq_hybrid",
         ] {
             let schedule = by_name(name, Duration::from_secs(8), 8).unwrap();
             assert!(
@@ -910,6 +1037,45 @@ mod tests {
     #[test]
     fn explicit_portfolio_requires_one_strategy_per_worker() {
         assert!(with_portfolio("casc_feq", Duration::from_secs(8), 4, &[1, 2, 3]).is_none());
+    }
+
+    #[test]
+    fn mq_schedules_have_stable_distinct_archetype_ids() {
+        for index in 1..=8 {
+            let schedule = by_name(&format!("mq_{index}"), Duration::from_secs(8), 8).unwrap();
+            assert!(schedule.strategies.iter().all(|(config, _)| {
+                config.strategy_id == 100 + index
+                    && matches!(config.selection, SelectionStrategy::MultiQueue(_))
+            }));
+        }
+    }
+
+    #[test]
+    fn fne_mq_hybrid_keeps_base_strategies_and_adds_four_attributed_mq_slots() {
+        let budget = Duration::from_secs(240);
+        let schedule = by_name("casc_fne_mq_hybrid", budget, 8).unwrap();
+        let ids = schedule
+            .strategies
+            .iter()
+            .map(|(config, _)| config.strategy_id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec![11, 13, 4, 15, 101, 102, 103, 106]);
+        assert_eq!(
+            schedule
+                .strategies
+                .iter()
+                .map(|(_, slice)| *slice)
+                .sum::<Duration>(),
+            budget
+        );
+        assert!(matches!(
+            schedule.strategies[4].0.selection,
+            SelectionStrategy::MultiQueue(_)
+        ));
+        assert!(!matches!(
+            schedule.strategies[0].0.selection,
+            SelectionStrategy::MultiQueue(_)
+        ));
     }
 
     #[test]

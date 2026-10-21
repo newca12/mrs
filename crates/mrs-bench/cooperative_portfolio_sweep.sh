@@ -2,10 +2,11 @@
 # Run one real cooperative portfolio through casc.sh.
 #
 # Usage:
-#   cooperative_portfolio_sweep.sh <edition> <division> <portfolio> [time] [jobs] [output]
+#   cooperative_portfolio_sweep.sh <edition> <division> <portfolio|schedule:name> [time] [jobs] [output]
 #
 # Example:
 #   cooperative_portfolio_sweep.sh casc-30 feq 11,12,1,6,10,8,14,4 30 4 results/coop-feq
+#   cooperative_portfolio_sweep.sh casc-30 fne schedule:casc_fne_mq_hybrid 240 1 results/fne-hybrid
 #
 # Unlike run_codex_sweep.sh/run_strategy_sweep.sh, this launches one mrs
 # process per problem with the requested number of workers. Set
@@ -16,32 +17,42 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-EDITION="${1:?usage: $0 <edition> <division> <portfolio> [time] [jobs] [output]}"
-DIVISION="${2:?usage: $0 <edition> <division> <portfolio> [time] [jobs] [output]}"
-PORTFOLIO="${3:?usage: $0 <edition> <division> <portfolio> [time] [jobs] [output]}"
+EDITION="${1:?usage: $0 <edition> <division> <portfolio|schedule:name> [time] [jobs] [output]}"
+DIVISION="${2:?usage: $0 <edition> <division> <portfolio|schedule:name> [time] [jobs] [output]}"
+CONFIG="${3:?usage: $0 <edition> <division> <portfolio|schedule:name> [time] [jobs] [output]}"
 TIME_LIMIT="${4:-30}"
 JOBS="${5:-1}"
 OUTPUT="${6:-${SCRIPT_DIR}/results/${EDITION}/cooperative-${DIVISION}-$(date +%Y%m%d_%H%M%S)}"
 
-if ! [[ "${PORTFOLIO}" =~ ^[1-9][0-5]*(,[1-9][0-5]*)*$ ]]; then
-    echo "Error: portfolio must be comma-separated strategy IDs in 1..15." >&2
-    exit 1
-fi
-
 WORKERS="${MRS_WORKERS:-8}"
-portfolio_count="$(tr ',' '\n' <<< "${PORTFOLIO}" | wc -l)"
-if [[ "${portfolio_count}" -ne "${WORKERS}" ]]; then
-    echo "Error: portfolio has ${portfolio_count} strategies but MRS_WORKERS=${WORKERS}." >&2
-    exit 1
+if [[ "${CONFIG}" == schedule:* ]]; then
+    SCHEDULE="${CONFIG#schedule:}"
+    if ! [[ "${SCHEDULE}" =~ ^[a-zA-Z0-9_]+$ ]]; then
+        echo "Error: named schedule must use letters, digits, and underscores." >&2
+        exit 1
+    fi
+    export MRS_SCHEDULE="${SCHEDULE}"
+    unset MRS_PORTFOLIO
+else
+    PORTFOLIO="${CONFIG}"
+    if ! [[ "${PORTFOLIO}" =~ ^[1-9][0-5]*(,[1-9][0-5]*)*$ ]]; then
+        echo "Error: portfolio must be comma-separated strategy IDs in 1..15." >&2
+        exit 1
+    fi
+    portfolio_count="$(tr ',' '\n' <<< "${PORTFOLIO}" | wc -l)"
+    if [[ "${portfolio_count}" -ne "${WORKERS}" ]]; then
+        echo "Error: portfolio has ${portfolio_count} strategies but MRS_WORKERS=${WORKERS}." >&2
+        exit 1
+    fi
+    export MRS_PORTFOLIO="${PORTFOLIO}"
 fi
 
 mkdir -p "${OUTPUT}"
 
-echo "[coop] edition=${EDITION} division=${DIVISION} portfolio=${PORTFOLIO}" >&2
+echo "[coop] edition=${EDITION} division=${DIVISION} config=${CONFIG}" >&2
 echo "[coop] time=${TIME_LIMIT}s jobs=${JOBS} workers=${WORKERS}" >&2
 echo "[coop] shared_pool_interval=${MRS_SHARED_POOL_INTERVAL:-0}" >&2
 
-export MRS_PORTFOLIO="${PORTFOLIO}"
 export MRS_WORKERS="${WORKERS}"
 
 exec "${SCRIPT_DIR}/casc.sh" \

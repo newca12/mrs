@@ -126,6 +126,32 @@ shared and no-sharing runs to quantify cooperation separately from strategy
 diversity. `failure_detail` records `strategy_ids`, `shared_published`, and
 `shared_imported` telemetry for each problem.
 
+`cooperative_portfolio_sweep.sh` also accepts `schedule:<name>` to benchmark a
+built-in schedule through the same harness. This supports named schedules that
+mix base strategies with experimental selectors and do not fit the numeric
+`--portfolio` interface:
+
+```bash
+# Eight-worker FNE/MultiQueue hybrid candidate; repeat with interval 0 as a control.
+MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=0 \
+  crates/mrs-bench/cooperative_portfolio_sweep.sh \
+  casc-30 fne schedule:casc_fne_mq_hybrid 240 1 \
+  results/cooperative-fne-mq-hybrid-no-sharing
+
+# Diagnose one MultiQueue archetype across the corpus as one full-budget worker.
+MRS_WORKERS=1 MRS_SHARED_POOL_INTERVAL=0 \
+  crates/mrs-bench/cooperative_portfolio_sweep.sh \
+  casc-30 fne schedule:mq_1 240 1 results/solo-mq-1
+```
+
+The `mq_1` … `mq_8` schedules repeat one archetype over the requested workers;
+use one worker for an isolated full-budget diagnostic. Compare these diagnostic
+results before changing which MultiQueue archetypes the hybrid contains. The
+initial `casc_fne_mq_hybrid` composition is an experiment, not a fitted or
+validated portfolio. For decisive cooperative comparisons, use
+`run_variance.sh` with at least five replicates and an identical clean binary
+on canonical eight-worker hardware.
+
 ## Cross-build throughput probe
 
 `throughput_probe.sh` answers "did that change make the engine faster?" without

@@ -122,21 +122,48 @@ reported as an MQ speedup. A same-host, same-binary rerun is needed.
    hybrid portfolio as a new experiment; do not infer its score by adding the
    two solve sets, since worker competition and allocated budgets change the
    outcome.
+   The initial implementation candidate is named `casc_fne_mq_hybrid` and
+   keeps base strategies s11, s13, s04, and s15 alongside MQ archetypes 1, 2,
+   3, and 6. Those MQ choices are for a first test, not winners established by
+   the existing aggregate run. `mq_1` through `mq_8` expose each archetype for
+   one-worker diagnostic sweeps before revising this composition.
 3. **Run repeated, controlled comparisons before making a portfolio change.**
    Use the same clean binary, canonical eight-worker hardware, `jobs=1`, and at
    least five replicates for baseline, `mq`, and any hybrid candidate. Include
    proof auditing where solver theorems are to be reported as certified.
-4. **Fix archetype attribution in `mq`.** Its schedule constructs each config
-   from `SearchConfig::default()` without assigning a distinct `strategy_id`,
-   so current telemetry prints `strategy_ids=0:0;...;7:0`. The scores remain
-   usable, but aggregate rows cannot identify the winning archetype. Assign
-   stable IDs before using these runs for per-archetype conclusions.
+4. **Attribute archetypes in future runs.** The archived `mq` runs constructed
+   configs without distinct `strategy_id`s, so their telemetry prints
+   `strategy_ids=0:0;...;7:0`; those records cannot identify the winning
+   archetype. The current `mq` implementation now assigns stable IDs 101–108,
+   and `mq_1` through `mq_8` repeat one archetype for diagnostics. Re-run the
+   sweep with this instrumented build before making per-archetype claims.
 5. **Treat `SYN353+1` as an important regression case.** The solo sweep shows
    `s04` solves it, while both `mq` runs fail to do so. The `mq` archetypes are
    not equivalent to `s04` (they differ in selection and other search
    settings), so the result supports testing an `s04`-retaining hybrid; it does
    not establish that `mq` lacks all positive-literal selection, since one
    `mq` archetype uses `LiteralSelection::All`.
+
+The benchmark harness accepts named schedules using `schedule:<name>` in
+`cooperative_portfolio_sweep.sh`; examples and the isolated archetype workflow
+are documented in [`crates/mrs-bench/README.md`](../../../crates/mrs-bench/README.md#portfolio-coverage).
+
+For the decision-quality comparison, run at least five sequential replicates
+for each condition against the same corpus and clean binary, on the canonical
+eight-worker host:
+
+```bash
+for schedule in casc_fne mq casc_fne_mq_hybrid; do
+  MRS_WORKERS=8 MRS_SCHEDULE="$schedule" MRS_SHARED_POOL_INTERVAL=0 \
+    crates/mrs-bench/run_variance.sh 5 \
+      --edition casc-30 --systems mrs --divisions fne --casc-times --jobs 1 \
+      --output "crates/mrs-bench/results/variance-fne-${schedule}-$(date +%Y%m%d)"
+done
+```
+
+Run the same three conditions with the intended positive sharing interval as a
+separate experiment. Keep the sharing-off comparison as the control so the
+portfolio effect is not confounded with cross-strategy sharing.
 
 This first measurement establishes that multi-queue selection is a promising
 complement to the existing portfolio, particularly for hard KRS/NUN and CSR
