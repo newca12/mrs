@@ -639,6 +639,117 @@ row-level outcome detail is in [`results/README.md`](results/README.md), the
 [ICU certification report](reports/benchmarks/icu-2026-10.md), and the
 [`intermittency inventory`](results/intermittency.md).
 
+### Fresh CASC-30 FEQ campaign (2026-10-20)
+
+The full 400-problem run
+`~/crates/mrs-bench/results/campaign-casc30-feq-W8CASCHJ1-01-20261020`
+returned 108 refutations (`Theorem`), 249 `Timeout`, and 43 `GaveUp`, with zero
+process errors or silent kills. Strict audit certified **103 `VerifiedGood`
+(95.4%)**, with **0 `VerifiedBad`**, 2 `Unknown`, 1 verifier `Timeout`, and 2
+`Proof Omitted`.
+
+Compared with `campaign-casc30-ueq-feq-W8CASCHJ1-20261016`, strict unsoundness
+dropped from 2 `VerifiedBad` to **0**: both `KLE071+1` (fixed symbol signature
+arity) and `SWV486+2` (fixed AC superposition validation) now certify strictly
+as `VerifiedGood`. Two residual proofs remain `Unknown` at incomplete AC
+superposition replay (`KLE132+1` and `LCL894+1`), `ALG049+1` timed out in the
+verifier (>120 s) on an 8.2k-node proof, and two refutations (`SET017+1` and
+`SET072+1`) were withheld exceeding the 32 MB proof limit.
+
+The run also establishes production resolution of the quadratic SOS pre-flight
+issue: previously hung problems terminated cleanly, with `BIO005+1` and
+`BIO006+1` both solving in ~157 s and strictly certifying.
+
+Hardware: `mtsdev01` (8 physical cores, 96,350 MB RAM, effective memory ceiling
+81,897 MB). Peak observed memory among completed jobs was 64,651 MB
+(`CSR037+5`). Provenance: commit `a38c8bc8`, dirty tree, Rust 1.99.1, binary
+SHA-256 `8029b1d6c1fee6b5b533365823755a659bca31eb33e9d4e1e92e3e23cf48f762`.
+Detailed telemetry and domain breakdown are in the
+[FEQ campaign report](reports/benchmarks/feq-2026-10.md) and
+[`results/README.md`](results/README.md).
+
+### Fresh CASC-30 UEQ campaign (2026-10-20)
+
+The full 300-problem run
+`~/crates/mrs-bench/results/campaign-casc30-ueq-W8CASCHJ1-02-20261020`
+returned 124 refutations (`Unsatisfiable`), 167 `Timeout`, and 9 `GaveUp`,
+with zero process errors or crashes. Strict audit certified **120 `VerifiedGood`
+(96.8%)**, with **0 `VerifiedBad`**, 4 `Unknown`, 0 checker timeouts, and 0
+omitted proofs.
+
+Compared with `campaign-casc30-ueq-feq-W8CASCHJ1-20261016`, strict unsoundness
+dropped from 5 `VerifiedBad` and 1 missing root to **0**:
+- `MVA008-1` and `MVA009-1` (leaf matching with residual axioms) certify strictly as `VerifiedGood`.
+- `REL034-2` (symbol arity conflict) certifies strictly as `VerifiedGood`.
+- `REL045-2` (previously omitted proof root) certifies strictly as `VerifiedGood`.
+- `RNG009-5` and `RNG009-7` now fail closed as `Unknown` due to incomplete AC rewrite replay.
+
+Together with `GRP179-2` and `REL027-3`, exactly 4 residual proofs remain `Unknown`
+due to incomplete AC superposition rewrite replay.
+
+Hardware: `mtsdev02` (8 physical cores, 95,979 MB RAM, effective memory ceiling
+81,897 MB). Peak observed memory among completed jobs was 63,428 MB (`ROB005-1`).
+Provenance: commit `a38c8bc8`, dirty tree, Rust 1.99.1, binary SHA-256
+`21e72729ecf09c86b78f35caa56d91a9b06c969771988fac806dcc68d3987ecb`. Detailed
+telemetry and domain breakdown are in the
+[UEQ campaign report](reports/benchmarks/ueq-2026-10.md) and
+[`results/README.md`](results/README.md).
+
+### Fresh CASC-J13 FEQ standalone campaign (2026-10-20)
+
+The full 300-problem run
+`~/crates/mrs-bench/results/campaign-casc-j13-03-feq-CASCHJ1-20261020`
+returned 68 refutations (`Theorem`), 193 `Timeout`, and 39 `GaveUp`, with zero
+process errors or crashes. Strict audit certified **all 68 (`VerifiedGood`,
+100.0%)**, with **0 `VerifiedBad`**, **0 `Unknown`**, **0 checker timeouts**,
+and **0 omitted proofs**.
+
+This standalone run used canonical CASC constraints: eight workers,
+`MRS_HARDWARE=casc`, `jobs=1`, and the official 180-second clock on the physical
+8-core Xeon E5-2407 host `mtsdev03`. Compared with the 72-solve combined run on
+a 16-core host, 66 solves are common; this run uniquely solved `MGT091+1` (89.96 s)
+and `SET101+1` (0.44 s), while six borderline solves timed out or gave up near
+the 180 s limit (`BIO006+1`, `GEO277+1`, `GEO494+1`, `SWB053+1`, `SWB073+1`,
+`SWW186+1`). Three proofs exceeded 8 MB (`MGT005+1` at 8.3 MB, `SEV677+1` at
+16.9 MB, `MGT079+1` at 23.1 MB) and all certified cleanly in under 3 seconds.
+
+Hardware: `mtsdev03` (8 physical cores, 95,969 MB RAM, effective memory ceiling
+81,897 MB). Peak observed memory was 65,040 MB (`CSR025+5`). Provenance: commit
+`a38c8bc8`, dirty tree, Rust 1.99.1, binary SHA-256
+`f1c84643ab459fca2f4b29b8def0fbbd9418559b271eadb178aedcf6e5a65bc5`. Full
+details are in the [CASC-J13 FEQ report](reports/benchmarks/feq-j13-2026-10.md)
+and [`results/README.md`](results/README.md).
+
+### Fresh CASC-J13 UEQ standalone campaign (2026-10-20)
+
+The full 400-problem run
+`~/crates/mrs-bench/results/campaign-casc-j13-04-ueq-CASCHJ1-20261020`
+returned 120 refutations (`Unsatisfiable`), 266 `Timeout`, and 14 `GaveUp`,
+with zero process errors or crashes. Strict audit certified **112 `VerifiedGood`
+(93.3%)**, 6 `VerifiedBad`, 2 `Unknown`, 0 checker timeouts, and 0 omitted proofs.
+
+The six `VerifiedBad` rejections are all due to leaf equality symmetry
+orientation mismatches against problem file source axioms:
+- `GRP178-1`, `GRP183-3`, and `GRP186-1` flip `s = t` against axiom `monotony_glb2`.
+- `REL026-3`, `REL041-2`, and `REL045-2` flip `s = t` against axiom `dedekind_law_14`.
+In each case, KBO/LPO ordering canonicalized the equation during ingestion and
+the leaf was serialized in the oriented form; the deductions themselves are sound.
+Following commit `b1033d3` (`fix(proof-kernel): match CNF leaves modulo equality
+symmetry`), re-verifying the six archived proofs strictly certifies all six as
+`VerifiedGood`, raising the re-audited strictly certified total to **118 of 120
+(98.3%)** with **0 `VerifiedBad`**.
+
+The two `Unknown` proofs (`RNG009-5` and `RNG009-7`) remain incomplete at AC
+superposition rewrite replay.
+
+Hardware: `mtsdev04` (8 physical cores, 95,969 MB RAM, effective memory ceiling
+81,897 MB). Peak observed memory was 57,732 MB (`ROB015-10`). Provenance: commit
+`a38c8bc8`, dirty tree, Rust 1.99.1, binary SHA-256
+`c881d56f47b848d507017f4f3a4cb58fa24da0c4e3d8e267c45bc6c0d4e7ae94`. Detailed
+telemetry and domain breakdown are in the
+[CASC-J13 UEQ report](reports/benchmarks/ueq-j13-2026-10.md) and
+[`results/README.md`](results/README.md).
+
 ---
 
 ## 3. Robustness beyond the corpus
