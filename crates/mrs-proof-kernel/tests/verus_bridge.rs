@@ -147,6 +147,33 @@ fn archived_step_and_real_tptp_dags_traverse_compiled_checker() {
         &cfg,
     );
     assert_ne!(report.verdict, ShadowVerdict::CertifiedDagIr);
+
+    // First-order resolution with variable unification across standardized parents:
+    // a: p(X) | q(X)
+    // b: ~p(a)
+    // c: ~q(a)
+    // r1: q(a) by resolution([a, b])
+    // bot: $false by resolution([r1, c])
+    let fo_problem =
+        mrs_tptp::parse_tptp("cnf(a,axiom,p(X)|q(X)). cnf(b,axiom,~p(a)). cnf(c,axiom,~q(a)).")
+            .unwrap();
+    let fo_text = "cnf(a,axiom,p(X)|q(X),file('input',a)).
+        cnf(b,axiom,~p(a),file('input',b)).
+        cnf(c,axiom,~q(a),file('input',c)).
+        cnf(r1,plain,q(a),inference(resolution,[status(thm)],[a,b])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[r1,c])).";
+    let fo_proof = mrs_tptp::parse_tptp(fo_text).unwrap();
+    let (kernel, report) = verify_with_shadow(
+        &fo_problem,
+        &fo_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified);
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+    assert_eq!(report.checked_nodes, 5);
+
     let mut bad = cfg.clone();
     bad.expected_sha256 = "0".repeat(64);
     assert!(matches!(
