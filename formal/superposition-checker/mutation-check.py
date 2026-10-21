@@ -200,6 +200,16 @@ def main() -> int:
             "|| !check_subsumption_resolution_and_replay(step, remaining_work)",
             "|| false",
         ),
+        (
+            "weakening ignores literal agreement",
+            "if !same_literal(&certificate.parent.literals[i], &certificate.conclusion.literals[target_idx]) {\n            return false;\n        }",
+            "if false {\n            return false;\n        }",
+        ),
+        (
+            "DAG weakening skips rule replay",
+            "|| !check_weakening_and_replay(step, remaining_work)",
+            "|| false",
+        ),
     ]
 
     with tempfile.TemporaryDirectory(prefix="mrs-verus-mutation-") as temp_dir:
