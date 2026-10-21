@@ -277,6 +277,13 @@ struct ResolutionCertificate {
     rp: usize,
 }
 
+struct EqualityResolutionCertificate {
+    clause: Vec<Literal>,
+    pivot: usize,
+    unifier: Vec<(VarId, Term)>,
+    conclusion: Vec<Literal>,
+}
+
 fn instance(
     term: &Term,
     subst: &HashMap<VarId, Term>,
@@ -382,6 +389,16 @@ impl ResolutionCertificate {
         wire.bindings(&self.unifier)?;
         wire.n(self.lp)?;
         wire.n(self.rp)?;
+        Ok(())
+    }
+}
+
+impl EqualityResolutionCertificate {
+    fn encode(&self, wire: &mut Wire) -> Result<(), String> {
+        wire.clause(&self.clause)?;
+        wire.clause(&self.conclusion)?;
+        wire.bindings(&self.unifier)?;
+        wire.n(self.pivot)?;
         Ok(())
     }
 }
@@ -650,6 +667,53 @@ fn resolution_certificate(
     Err("no supported first-order resolution certificate".into())
 }
 
+fn equality_resolution_certificate(
+    parent: &[Literal],
+    goal: &[Literal],
+    limits: VerificationLimits,
+) -> Result<EqualityResolutionCertificate, String> {
+    let mut fuel = limits.max_comparison_steps.min(200_000);
+    for (pivot, lit) in parent.iter().enumerate() {
+        if lit.positive {
+            continue;
+        }
+        let Atom::Eq(left, right) = &lit.atom else {
+            continue;
+        };
+        let Some(subst) = bounded_unify(left, right, &mut fuel)? else {
+            continue;
+        };
+        let expected: Vec<_> = parent
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != pivot)
+            .map(|(_, l)| instantiate(l, &subst, &mut fuel))
+            .collect::<Result<_, _>>()?;
+        if expected.len() != goal.len() {
+            continue;
+        }
+        let (mut forward, mut backward) = (HashMap::new(), HashMap::new());
+        if !expected.iter().zip(goal).all(|(a, b)| {
+            a.positive == b.positive
+                && atom_alpha_equiv(&a.atom, &b.atom, &mut forward, &mut backward)
+        }) {
+            continue;
+        }
+        let mut unifier: Vec<_> = subst
+            .iter()
+            .map(|(v, t)| Ok((*v, instance(t, &subst, &mut fuel, 0)?)))
+            .collect::<Result<_, String>>()?;
+        unifier.sort_by_key(|(v, _)| *v);
+        return Ok(EqualityResolutionCertificate {
+            clause: parent.to_vec(),
+            pivot,
+            unifier,
+            conclusion: expected,
+        });
+    }
+    Err("no supported equality resolution certificate".into())
+}
+
 fn supported_clause(
     symbols: &mut SymbolTable,
     formula: &AnnotatedFormula<'_>,
@@ -799,6 +863,7 @@ enum Kind {
     Superposition(Certificate),
     Resolution(usize, usize),
     FirstOrderResolution(ResolutionCertificate),
+    EqualityResolution(EqualityResolutionCertificate),
 }
 struct WireNode {
     clause: Vec<Literal>,
@@ -921,6 +986,16 @@ fn dag_request(
                 }
                 _ => return Err("unsupported inference rule".into()),
             }
+        } else if parents.len() == 1 {
+            let parent = &nodes[parents[0]].clause;
+            match node.rule {
+                Some("equality_resolution") | Some("destructive_equality_resolution") => {
+                    let c = equality_resolution_certificate(parent, &raw, limits)?;
+                    let conclusion = c.conclusion.clone();
+                    (Kind::EqualityResolution(c), conclusion)
+                }
+                _ => return Err("unsupported inference rule".into()),
+            }
         } else {
             return Err("unsupported parent count".into());
         };
@@ -955,6 +1030,7 @@ fn dag_request(
             Kind::Superposition(_) => 1,
             Kind::Resolution(_, _) => 3,
             Kind::FirstOrderResolution(_) => 4,
+            Kind::EqualityResolution(_) => 5,
         })?;
         wire.n(node.parents.len())?;
         for p in &node.parents {
@@ -968,6 +1044,7 @@ fn dag_request(
                 wire.n(*rp)?;
             }
             Kind::FirstOrderResolution(c) => c.encode(&mut wire)?,
+            Kind::EqualityResolution(c) => c.encode(&mut wire)?,
         }
     }
     Ok((wire.finish()?, nodes.len()))

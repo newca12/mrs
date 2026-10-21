@@ -174,6 +174,28 @@ fn archived_step_and_real_tptp_dags_traverse_compiled_checker() {
     assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
     assert_eq!(report.checked_nodes, 5);
 
+    // Equality resolution (reflexivity resolution) on a negative equality literal:
+    // a: X != a | p(X)
+    // b: ~p(a)
+    // r1: p(a) by equality_resolution([a])
+    // bot: $false by resolution([r1, b])
+    let eq_problem = mrs_tptp::parse_tptp("cnf(a,axiom,X!=a|p(X)). cnf(b,axiom,~p(a)).").unwrap();
+    let eq_text = "cnf(a,axiom,X!=a|p(X),file('input',a)).
+        cnf(b,axiom,~p(a),file('input',b)).
+        cnf(r1,plain,p(a),inference(equality_resolution,[status(thm)],[a])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[r1,b])).";
+    let eq_proof = mrs_tptp::parse_tptp(eq_text).unwrap();
+    let (kernel, report) = verify_with_shadow(
+        &eq_problem,
+        &eq_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified);
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+    assert_eq!(report.checked_nodes, 4);
+
     let mut bad = cfg.clone();
     bad.expected_sha256 = "0".repeat(64);
     assert!(matches!(
