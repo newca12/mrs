@@ -225,6 +225,39 @@ fn archived_step_and_real_tptp_dags_traverse_compiled_checker() {
     assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
     assert_eq!(report.checked_nodes, 6);
 
+    // Equality factoring on positive equality literals under a unifier:
+    // a: f(X) = a | f(b) = c | p(X)
+    // b: ~(f(b) = a)
+    // c: a = c
+    // d: ~p(b)
+    // ef: f(b) = a | ~(a = c) | p(b) by equality_factoring([a])
+    // r1: ~(a = c) | p(b) by resolution([ef, b])
+    // r2: p(b) by resolution([c, r1])
+    // bot: $false by resolution([r2, d])
+    let eq_fact_problem = mrs_tptp::parse_tptp(
+        "cnf(a,axiom,f(X)=a|f(b)=c|p(X)). cnf(b,axiom,f(b)!=a). cnf(c,axiom,a=c). cnf(d,axiom,~p(b)).",
+    )
+    .unwrap();
+    let eq_fact_text = "cnf(a,axiom,f(X)=a|f(b)=c|p(X),file('input',a)).
+        cnf(b,axiom,f(b)!=a,file('input',b)).
+        cnf(c,axiom,a=c,file('input',c)).
+        cnf(d,axiom,~p(b),file('input',d)).
+        cnf(ef,plain,f(b)=a|a!=c|p(b),inference(equality_factoring,[status(thm)],[a])).
+        cnf(r1,plain,a!=c|p(b),inference(resolution,[status(thm)],[ef,b])).
+        cnf(r2,plain,p(b),inference(resolution,[status(thm)],[c,r1])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[r2,d])).";
+    let eq_fact_proof = mrs_tptp::parse_tptp(eq_fact_text).unwrap();
+    let (kernel, report) = verify_with_shadow(
+        &eq_fact_problem,
+        &eq_fact_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified);
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+    assert_eq!(report.checked_nodes, 8);
+
     let mut bad = cfg.clone();
     bad.expected_sha256 = "0".repeat(64);
     assert!(matches!(

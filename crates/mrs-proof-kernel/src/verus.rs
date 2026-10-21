@@ -292,6 +292,14 @@ struct FactoringCertificate {
     conclusion: Vec<Literal>,
 }
 
+struct EqualityFactoringCertificate {
+    clause: Vec<Literal>,
+    first: usize,
+    second: usize,
+    unifier: Vec<(VarId, Term)>,
+    conclusion: Vec<Literal>,
+}
+
 fn instance(
     term: &Term,
     subst: &HashMap<VarId, Term>,
@@ -412,6 +420,17 @@ impl EqualityResolutionCertificate {
 }
 
 impl FactoringCertificate {
+    fn encode(&self, wire: &mut Wire) -> Result<(), String> {
+        wire.clause(&self.clause)?;
+        wire.clause(&self.conclusion)?;
+        wire.bindings(&self.unifier)?;
+        wire.n(self.first)?;
+        wire.n(self.second)?;
+        Ok(())
+    }
+}
+
+impl EqualityFactoringCertificate {
     fn encode(&self, wire: &mut Wire) -> Result<(), String> {
         wire.clause(&self.clause)?;
         wire.clause(&self.conclusion)?;
@@ -781,6 +800,69 @@ fn factoring_certificate(
     Err("no supported clause factoring certificate".into())
 }
 
+fn equality_factoring_certificate(
+    parent: &[Literal],
+    goal: &[Literal],
+    limits: VerificationLimits,
+) -> Result<EqualityFactoringCertificate, String> {
+    let mut fuel = limits.max_comparison_steps.min(200_000);
+    for first in 0..parent.len() {
+        for second in (first + 1)..parent.len() {
+            let (l1, l2) = (&parent[first], &parent[second]);
+            if !l1.positive || !l2.positive {
+                continue;
+            }
+            let (Atom::Eq(s, t), Atom::Eq(u, v)) = (&l1.atom, &l2.atom) else {
+                continue;
+            };
+            let Some(subst) = bounded_unify(s, u, &mut fuel)? else {
+                continue;
+            };
+            let s_inst = instance(s, &subst, &mut fuel, 0)?;
+            let t_inst = instance(t, &subst, &mut fuel, 0)?;
+            let v_inst = instance(v, &subst, &mut fuel, 0)?;
+            let ineq = Literal {
+                positive: false,
+                atom: Atom::Eq(t_inst.clone(), v_inst),
+            };
+            let mut expected = Vec::new();
+            expected.push(Literal {
+                positive: true,
+                atom: Atom::Eq(s_inst, t_inst),
+            });
+            expected.push(ineq);
+            for (i, l) in parent.iter().enumerate() {
+                if i != first && i != second {
+                    expected.push(instantiate(l, &subst, &mut fuel)?);
+                }
+            }
+            if expected.len() != goal.len() {
+                continue;
+            }
+            let (mut forward, mut backward) = (HashMap::new(), HashMap::new());
+            if !expected.iter().zip(goal).all(|(a, b)| {
+                a.positive == b.positive
+                    && atom_alpha_equiv(&a.atom, &b.atom, &mut forward, &mut backward)
+            }) {
+                continue;
+            }
+            let mut unifier: Vec<_> = subst
+                .iter()
+                .map(|(v, t)| Ok((*v, instance(t, &subst, &mut fuel, 0)?)))
+                .collect::<Result<_, String>>()?;
+            unifier.sort_by_key(|(v, _)| *v);
+            return Ok(EqualityFactoringCertificate {
+                clause: parent.to_vec(),
+                first,
+                second,
+                unifier,
+                conclusion: expected,
+            });
+        }
+    }
+    Err("no supported equality factoring certificate".into())
+}
+
 fn supported_clause(
     symbols: &mut SymbolTable,
     formula: &AnnotatedFormula<'_>,
@@ -932,6 +1014,7 @@ enum Kind {
     FirstOrderResolution(ResolutionCertificate),
     EqualityResolution(EqualityResolutionCertificate),
     Factoring(FactoringCertificate),
+    EqualityFactoring(EqualityFactoringCertificate),
 }
 struct WireNode {
     clause: Vec<Literal>,
@@ -1067,6 +1150,11 @@ fn dag_request(
                     let conclusion = c.conclusion.clone();
                     (Kind::Factoring(c), conclusion)
                 }
+                Some("equality_factoring") => {
+                    let c = equality_factoring_certificate(parent, &raw, limits)?;
+                    let conclusion = c.conclusion.clone();
+                    (Kind::EqualityFactoring(c), conclusion)
+                }
                 _ => return Err("unsupported inference rule".into()),
             }
         } else {
@@ -1105,6 +1193,7 @@ fn dag_request(
             Kind::FirstOrderResolution(_) => 4,
             Kind::EqualityResolution(_) => 5,
             Kind::Factoring(_) => 6,
+            Kind::EqualityFactoring(_) => 7,
         })?;
         wire.n(node.parents.len())?;
         for p in &node.parents {
@@ -1120,6 +1209,7 @@ fn dag_request(
             Kind::FirstOrderResolution(c) => c.encode(&mut wire)?,
             Kind::EqualityResolution(c) => c.encode(&mut wire)?,
             Kind::Factoring(c) => c.encode(&mut wire)?,
+            Kind::EqualityFactoring(c) => c.encode(&mut wire)?,
         }
     }
     Ok((wire.finish()?, nodes.len()))
