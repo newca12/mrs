@@ -46,6 +46,13 @@
       "production_certification": false
     },
     {
+      "id": "equality-resolution",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_and_dag_dispatch",
+      "description": "Equality resolution (reflexivity resolution) on a negative equality literal: from C | s != t where s and t unify under unifier sigma, derive C sigma. Dispatched in proof DAGs via ProofNodeKind::EqualityResolution; proven by equality_resolution_sound to preserve universal validity.",
+      "production_certification": false
+    },
+    {
       "id": "proof-dag-refutation",
       "module": "first_order_core.rs",
       "status": "verified_ir_dag_certification",
@@ -74,6 +81,8 @@
     "standalone_resolution_nullary": true,
     "standalone_resolution_first_order_unifier": true,
     "dag_resolution_first_order_unifier": true,
+    "equality_resolution_rule": true,
+    "dag_equality_resolution": true,
     "archived_c502_step_replay": true,
     "archived_c502_full_proof_translation": false,
     "source_variable_unification_regression": true,

@@ -16,6 +16,13 @@ validity preservation without unification; DAG dispatch binds the actual cited
 clauses. This includes unary/binary predicates and equality, not just nullary
 predicates.
 
+DAG support also includes **equality resolution** (reflexivity resolution):
+from a clause with a negative equality literal `s != t` where `s` and `t` unify
+under simultaneous unifier `sigma`, the conclusion removes the negative equality
+literal and instantiates the remaining literals under `sigma`. Its theorem
+`equality_resolution_sound` and checker `check_equality_resolution_and_replay`
+prove universal validity preservation.
+
 This document fixes the mathematical rule represented by
 `SuperpositionCertificate` in `first_order_core.rs`. It is an **unordered
 first-order superposition rule**: no KBO/LPO maximality or literal-selection
