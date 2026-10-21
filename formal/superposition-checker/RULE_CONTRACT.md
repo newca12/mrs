@@ -43,6 +43,12 @@ the conclusion removes `L` from the target clause without instantiating `C`. Its
 `subsumption_resolution_sound` and checker `check_subsumption_resolution_and_replay`
 prove universal validity preservation.
 
+DAG support also includes **clause weakening**:
+from universally valid parent clause `C`, any clause `D` containing all literals
+of `C` is derived without variable instantiation. Its theorem
+`clause_weakening_sound` and checker `check_weakening_and_replay` prove universal
+validity preservation.
+
 This document fixes the mathematical rule represented by
 `SuperpositionCertificate` in `first_order_core.rs`. It is an **unordered
 first-order superposition rule**: no KBO/LPO maximality or literal-selection
