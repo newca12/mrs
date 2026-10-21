@@ -133,6 +133,21 @@ def main() -> int:
             "|| !check_first_order_resolution_and_replay(step, remaining_work)",
             "|| false",
         ),
+        (
+            "equality resolution ignores pivot polarity",
+            "if pivot_lit.positive {\n        return false;\n    }",
+            "if false {\n        return false;\n    }",
+        ),
+        (
+            "equality resolution ignores unified terms equality",
+            "if !same_term(&left_inst, &right_inst) {\n        return false;\n    }",
+            "if false {\n        return false;\n    }",
+        ),
+        (
+            "DAG equality resolution skips rule replay",
+            "|| !check_equality_resolution_and_replay(step, remaining_work)",
+            "|| false",
+        ),
     ]
 
     with tempfile.TemporaryDirectory(prefix="mrs-verus-mutation-") as temp_dir:
