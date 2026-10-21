@@ -258,6 +258,37 @@ fn archived_step_and_real_tptp_dags_traverse_compiled_checker() {
     assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
     assert_eq!(report.checked_nodes, 8);
 
+    // Subsumption resolution:
+    // target (a): ~p(a) | q(a) | r(a)
+    // active (b): p(X) | q(X)
+    // c: ~q(a)
+    // d: ~r(a)
+    // sr: q(a) | r(a) by subsumption_resolution([a, b])
+    // r1: r(a) by resolution([sr, c])
+    // bot: $false by resolution([r1, d])
+    let sr_problem = mrs_tptp::parse_tptp(
+        "cnf(a,axiom,~p(a)|q(a)|r(a)). cnf(b,axiom,p(X)|q(X)). cnf(c,axiom,~q(a)). cnf(d,axiom,~r(a)).",
+    )
+    .unwrap();
+    let sr_text = "cnf(a,axiom,~p(a)|q(a)|r(a),file('input',a)).
+        cnf(b,axiom,p(X)|q(X),file('input',b)).
+        cnf(c,axiom,~q(a),file('input',c)).
+        cnf(d,axiom,~r(a),file('input',d)).
+        cnf(sr,plain,q(a)|r(a),inference(subsumption_resolution,[status(thm)],[a,b])).
+        cnf(r1,plain,r(a),inference(resolution,[status(thm)],[sr,c])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[r1,d])).";
+    let sr_proof = mrs_tptp::parse_tptp(sr_text).unwrap();
+    let (kernel, report) = verify_with_shadow(
+        &sr_problem,
+        &sr_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified);
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+    assert_eq!(report.checked_nodes, 7);
+
     let mut bad = cfg.clone();
     bad.expected_sha256 = "0".repeat(64);
     assert!(matches!(
