@@ -691,6 +691,13 @@ fn bounded_unify_atoms(
     }
 }
 
+fn consume_search_fuel(fuel: &mut usize) -> Result<(), String> {
+    *fuel = fuel
+        .checked_sub(1)
+        .ok_or("subsumption matching work ceiling")?;
+    Ok(())
+}
+
 fn resolution_certificate(
     left: &[Literal],
     right: &[Literal],
@@ -933,6 +940,7 @@ fn match_active_literals(
     matches: &mut Vec<usize>,
     fuel: &mut usize,
 ) -> Result<Option<HashMap<VarId, Term>>, String> {
+    consume_search_fuel(fuel)?;
     if active_idx == active.len() {
         return Ok(Some(subst.clone()));
     }
@@ -956,6 +964,7 @@ fn match_active_literals(
     }
     let act_lit = &active[active_idx];
     for tgt_idx in 0..target.len() {
+        consume_search_fuel(fuel)?;
         if tgt_idx == target_pivot {
             continue;
         }
