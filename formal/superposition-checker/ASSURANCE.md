@@ -45,7 +45,7 @@ Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
 is checked; cross-host reproducibility and a verified decoder remain open.
 
-The mutation inventory is now twenty-nine verifier-negative checks and four
+The mutation inventory is now thirty-two verifier-negative checks and four
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now

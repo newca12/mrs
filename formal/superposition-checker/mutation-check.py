@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import concurrent.futures
+import os
 import pathlib
 import subprocess
 import sys
@@ -163,6 +165,21 @@ def main() -> int:
             "|| !check_clause_factoring_and_replay(step, remaining_work)",
             "|| false",
         ),
+        (
+            "equality factoring ignores premise literal positive polarity",
+            "if !first_lit.positive || !second_lit.positive {\n        return false;\n    }",
+            "if false {\n        return false;\n    }",
+        ),
+        (
+            "equality factoring ignores unified term equality",
+            "if !same_term(&s_inst, &u_inst) {\n        return false;\n    }",
+            "if false {\n        return false;\n    }",
+        ),
+        (
+            "DAG equality factoring skips rule replay",
+            "|| !check_equality_factoring_and_replay(step, remaining_work)",
+            "|| false",
+        ),
     ]
 
     with tempfile.TemporaryDirectory(prefix="mrs-verus-mutation-") as temp_dir:
@@ -185,24 +202,32 @@ def main() -> int:
             return 1
         print("mutation rejected: Verus --no-cheating rejects a valid assumption probe")
 
-        for index, (name, correct, mutated) in enumerate(mutations):
+        def check_mutation(item: tuple[int, tuple[str, str, str]]) -> tuple[int, str, int, str]:
+            index, (name, correct, mutated) = item
             if source.count(correct) != 1:
-                print(f"{name}: mutation anchor is missing or ambiguous", file=sys.stderr)
-                return 2
-
+                return (index, name, 2, f"{name}: mutation anchor is missing or ambiguous")
             mutated_path = pathlib.Path(temp_dir) / f"first_order_core_mutated_{index}.rs"
             mutated_path.write_text(source.replace(correct, mutated, 1))
             result = subprocess.run(
-                [str(verus), "--triggers-mode", "silent", str(mutated_path)],
+                [str(verus), "--triggers-mode", "silent", "--num-threads", "1", str(mutated_path)],
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 check=False,
             )
             if result.returncode == 0:
-                print(f"Verus accepted mutation: {name}", file=sys.stderr)
-                return 1
-            print(f"mutation rejected: {name}", flush=True)
+                return (index, name, 1, f"Verus accepted mutation: {name}")
+            return (index, name, 0, f"mutation rejected: {name}")
+
+        workers = 2
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(check_mutation, item) for item in enumerate(mutations)]
+            for future in concurrent.futures.as_completed(futures):
+                index, name, code, msg = future.result()
+                if code != 0:
+                    print(msg, file=sys.stderr)
+                    return code
+                print(msg, flush=True)
 
         closure_guard = (
             "match check_root_ancestor_closure(dag, closure_budget) {\n"
