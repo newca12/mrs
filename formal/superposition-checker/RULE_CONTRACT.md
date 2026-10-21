@@ -30,6 +30,12 @@ and instantiates the remaining literals under `sigma`. Its theorem
 `clause_factoring_sound` and checker `check_clause_factoring_and_replay`
 prove universal validity preservation.
 
+DAG support also includes **equality factoring**:
+from a clause `C | s = t | u = v` where `s` and `u` unify under simultaneous unifier
+`sigma`, the conclusion derives `(C | t != v | s = t) sigma`. Its theorem
+`equality_factoring_sound` and checker `check_equality_factoring_and_replay`
+prove universal validity preservation.
+
 This document fixes the mathematical rule represented by
 `SuperpositionCertificate` in `first_order_core.rs`. It is an **unordered
 first-order superposition rule**: no KBO/LPO maximality or literal-selection

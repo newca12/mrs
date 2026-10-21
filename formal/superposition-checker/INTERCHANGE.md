@@ -112,16 +112,17 @@ unknown tags, trailing fields or partially decoded requests are accepted.
 request       := 1 command work payload
 command       := 0 (identity) | 1 (superposition step) | 2 (DAG)
                | 3 (first-order resolution step) | 4 (equality resolution step)
-               | 5 (clause factoring step)
+               | 5 (clause factoring step) | 6 (equality factoring step)
 step payload  := certificate | resolution_certificate | eq_resolution_certificate
-               | factoring_certificate
+               | factoring_certificate | eq_factoring_certificate
 DAG payload   := node_count root input_count clause* node*
 node          := id clause kind parent_count parent_index* rule_payload
 kind          := 0 (input) | 1 (superposition) | 2 (nullary resolution)
                | 3 (exact atom resolution) | 4 (first-order resolution)
                | 5 (equality resolution) | 6 (clause factoring)
+               | 7 (equality factoring)
 rule_payload  := empty | certificate | resolution_certificate | eq_resolution_certificate
-               | factoring_certificate | left_pivot right_pivot
+               | factoring_certificate | eq_factoring_certificate | left_pivot right_pivot
 certificate   := source_clause target_clause conclusion_clause
                  source_freshening target_freshening unifier
                  source_equality_index target_literal_index argument_slot
@@ -131,6 +132,7 @@ resolution_certificate := left_clause right_clause conclusion_clause
                           left_pivot right_pivot
 eq_resolution_certificate := clause conclusion unifier pivot
 factoring_certificate := clause conclusion unifier first second
+eq_factoring_certificate := clause conclusion unifier first second
 clause        := literal_count (polarity atom)*
 polarity      := 0 (negative) | 1 (positive)
 atom          := 0 symbol | 1 symbol term | 2 symbol term term | 3 term term

@@ -60,6 +60,13 @@
       "production_certification": false
     },
     {
+      "id": "equality-factoring",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_and_dag_dispatch",
+      "description": "Equality factoring on positive equality literals: from C | s = t | u = v where s and u unify under unifier sigma, derive (C | t != v | s = t) sigma. Dispatched in proof DAGs via ProofNodeKind::EqualityFactoring; proven by equality_factoring_sound to preserve universal validity.",
+      "production_certification": false
+    },
+    {
       "id": "proof-dag-refutation",
       "module": "first_order_core.rs",
       "status": "verified_ir_dag_certification",
@@ -92,6 +99,8 @@
     "dag_equality_resolution": true,
     "clause_factoring_rule": true,
     "dag_clause_factoring": true,
+    "equality_factoring_rule": true,
+    "dag_equality_factoring": true,
     "archived_c502_step_replay": true,
     "archived_c502_full_proof_translation": false,
     "source_variable_unification_regression": true,
