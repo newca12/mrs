@@ -36,6 +36,13 @@ from a clause `C | s = t | u = v` where `s` and `u` unify under simultaneous uni
 `equality_factoring_sound` and checker `check_equality_factoring_and_replay`
 prove universal validity preservation.
 
+DAG support also includes **subsumption resolution** (contextual literal elimination):
+from target clause `C | L` and active clause `A | ~L'` where `L'` unifies with `L`
+under unifier `sigma` and all other literals of `A sigma` match literals in `C`,
+the conclusion removes `L` from the target clause without instantiating `C`. Its theorem
+`subsumption_resolution_sound` and checker `check_subsumption_resolution_and_replay`
+prove universal validity preservation.
+
 This document fixes the mathematical rule represented by
 `SuperpositionCertificate` in `first_order_core.rs`. It is an **unordered
 first-order superposition rule**: no KBO/LPO maximality or literal-selection
