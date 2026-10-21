@@ -38,19 +38,18 @@ fi
 DIVISION=$(basename $(dirname "$PROBLEM"))
 DIV_LOWER="${DIVISION,,}"
 
-# Select the appropriate static schedule
-SCHEDULE="${MRS_SCHEDULE:-casc_${DIV_LOWER}}"
-
-# Map CASC division names to available named schedules.
-# EPS (satisfiable) and EPU (unsatisfiable) now have dedicated data-driven
-# schedules; casc_epr is kept as a generic fallback.
-case "${SCHEDULE}" in
-    casc_feq|casc_fne|casc_ueq|casc_icu) ;;   # already have dedicated schedules
-    casc_eps) ;;                               # EPS: s1-first (greedy optimal)
-    casc_epu) ;;                               # EPU: s4-first (greedy optimal)
-    casc_epr) ;;                               # generic EPR fallback
-    *) SCHEDULE="casc" ;;                      # fallback for other divisions
-esac
+# Respect an explicit schedule (e.g. `mq`) without rewriting it as `casc`.
+# Otherwise select the division-specific schedule when available, falling back
+# to the generic CASC schedule for divisions without a dedicated portfolio.
+if [[ -n "${MRS_SCHEDULE:-}" ]]; then
+    SCHEDULE="${MRS_SCHEDULE}"
+else
+    SCHEDULE="casc_${DIV_LOWER}"
+    case "${SCHEDULE}" in
+        casc_feq|casc_fne|casc_ueq|casc_icu|casc_eps|casc_epu|casc_epr) ;;
+        *) SCHEDULE="casc" ;;
+    esac
+fi
 
 # Run with an internal deadline slightly below the harness limit so mrs's
 # own time-check fires and prints its SZS status line (Refutation/GaveUp/

@@ -14,6 +14,8 @@
 #                                (default: fne,feq,epu,eps,ueq,icu)
 #   --time        <secs>         Per-problem time limit for ALL divisions (default: 120)
 #                                Overridden per-division by --casc-times or --time-DIV.
+#   --schedule    <name>         Override the mrs named schedule (default: infer
+#                                casc_<division> in systems/mrs/invoke.sh)
 #   --casc-times                 Use official CASC-30 times per division:
 #                                  fne/feq/ueq → 240s, eps/epu → 120s,
 #                                  icu → 480s, slh → 15s
@@ -139,6 +141,7 @@ while [[ $# -gt 0 ]]; do
         --systems)    SYSTEMS="$2";    shift 2 ;;
         --divisions)  DIVISIONS="$2";  shift 2 ;;
         --time)       TIME_LIMIT="$2"; shift 2 ;;
+        --schedule)   MRS_SCHEDULE="$2"; export MRS_SCHEDULE; shift 2 ;;
         --casc-times) USE_CASC_TIMES=1; shift ;;
         --sanity-check) RUN_SANITY_CHECK=1; shift ;;
         --jobs)       JOBS="$2";       shift 2 ;;
@@ -415,6 +418,7 @@ fi
     echo "mrs_binary_sha256=${MRS_BIN_SHA256}"
     echo "time_limit=${TIME_LIMIT}"
     echo "use_casc_times=${USE_CASC_TIMES}"
+    echo "mrs_schedule=${MRS_SCHEDULE:-auto}"
     echo "subset_file=${SUBSET_FILE}"
 } > "${OUTPUT}/run_meta.txt"
 

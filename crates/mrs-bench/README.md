@@ -79,6 +79,12 @@ cp /path/to/vampire crates/mrs-bench/systems/vampire/bin/vampire
 # 4. Run the benchmark (12 s per problem, all default divisions)
 crates/mrs-bench/casc.sh --systems mrs,vampire --time 12  # omit ,vampire if not installed
 
+# Use one named mrs schedule across the selected divisions (for example, mq)
+MRS_WORKERS=8 MRS_HARDWARE=casc \
+  crates/mrs-bench/casc.sh --edition casc-30 --systems mrs --divisions fne \
+    --schedule mq --casc-times --jobs 1 \
+    --output crates/mrs-bench/results/casc30-fne-mq-240s
+
 # 5. Summarise the latest run
 cargo run -p mrs-bench --bin bench_report -- crates/mrs-bench/results/casc-30/<timestamp>/run.csv
 ```
