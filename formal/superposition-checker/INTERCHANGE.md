@@ -111,16 +111,20 @@ unknown tags, trailing fields or partially decoded requests are accepted.
 ```text
 request       := 1 command work payload
 command       := 0 (identity) | 1 (superposition step) | 2 (DAG)
-step payload  := certificate
+               | 3 (first-order resolution step)
+step payload  := certificate | resolution_certificate
 DAG payload   := node_count root input_count clause* node*
 node          := id clause kind parent_count parent_index* rule_payload
 kind          := 0 (input) | 1 (superposition) | 2 (nullary resolution)
-               | 3 (exact atom resolution)
-rule_payload  := empty | certificate | left_pivot right_pivot
+               | 3 (exact atom resolution) | 4 (first-order resolution)
+rule_payload  := empty | certificate | resolution_certificate | left_pivot right_pivot
 certificate   := source_clause target_clause conclusion_clause
                  source_freshening target_freshening unifier
                  source_equality_index target_literal_index argument_slot
                  raw_path fresh_path
+resolution_certificate := left_clause right_clause conclusion_clause
+                          left_freshening right_freshening unifier
+                          left_pivot right_pivot
 clause        := literal_count (polarity atom)*
 polarity      := 0 (negative) | 1 (positive)
 atom          := 0 symbol | 1 symbol term | 2 symbol term term | 3 term term

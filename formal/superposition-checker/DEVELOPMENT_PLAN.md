@@ -24,6 +24,19 @@ that no interchange or caller exists are superseded by this update.
 - **DONE:** enabled `executable_unifier_certificate_examples` in `run_examples()`
   so the adversarial suite is verified at proof time and executed in runtime regressions.
 
+### 2026-10-21 first-order resolution DAG integration checkpoint
+
+- **DONE:** integrated first-order resolution with unifier into the verified
+  proof DAG via `ProofNodeKind::FirstOrderResolution` and `check_dag_first_order_resolution_step`.
+- **DONE:** `check_dag_structure` and `validate_dag_node` validate and dispatch
+  first-order resolution nodes, charging parent/conclusion syntax and verifying
+  local entailment.
+- **DONE:** decoded wire v1 tag 4 and command 3 via
+  `wire_first_order_resolution_certificate` and dispatched to the certifier.
+- **DONE:** `executable_first_order_resolution_dag_examples` compiles and certifies
+  a complete refutation DAG with a first-order resolution node and exact-atom
+  resolution refutation.
+
 ### 2026-10-21 first-order resolution with unifier checkpoint
 
 - **DONE:** standardized first-order resolution is proved sound in
@@ -174,7 +187,7 @@ invalidate the original code. The gate now removes the actual forbidden-image
 check and requires Verus to reject that mutation. The no-cheating self-test first
 accepts a valid assumption probe without the flag, then requires rejection with
 the flag; the earlier malformed `assume_specification` probe was not evidence.
-Current module counts: **5 / 256 / 5 / 5**, with **22 verifier-negative mutations,
+Current module counts: **5 / 263 / 5 / 5**, with **22 verifier-negative mutations,
 three runtime mutations and one no-cheating probe**. The newest tokenizer mutation
 is compiled by Verus but rejected before runtime because the weakened source no
 longer proves the tokenizer invariant; it does not count as a runtime mutation.
@@ -197,13 +210,13 @@ the item itself is explicitly marked `ABANDONED`.
 | M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` proves parent validity survives independent standardization substitutions and connects accepted general replay to `standardized_superposition_sound` through `accepted_replay_preserves_validity`. Arbitrary selected indices and duplicate-preserving contexts are covered. `RULE_CONTRACT.md` specifies the prototype's unordered rule, whole-parent simultaneous one-step substitution and selected position. Remaining: independent review of the calculus/interchange boundary. |
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. Collector exactness now composes with independent freshening-scan postconditions to prove variable-valued images throughout each parent, and accepted certificates expose `renames_variables_on` for every parent literal. The replay conclusion builder has a verified pointwise sequence contract; term replacement is proved to commute with substitution at valid positions and is lifted through atom/literal slots. Adversarial unifier conflict/match, var-to-var, subterm variable and parent avoid-set cases are verified, and remaining work is propagated through replay. Remaining: larger-arity generalization. |
 | M3 — Superposition checker | **PARTIAL: general replay soundness proved** | `check_superposition_and_replay` postconditions both exact ordered conclusion equality and universal validity preservation for accepted general certificates. `replay_semantic_premises` connects checked source equality, selected target occurrence, unifier equation and replacement to `standardized_superposition_sound`. Context deletion/substitution and exact conclusion-order composition are proved. Bounded executable certificates accept archived `SWV406+1:c502` and a source-variable binding case, rejecting forged conclusions. Full TSTP fixture translation/proof-DAG replay, equivalence modulo literal order/renaming, exact cumulative resource refinement, and independent calculus review remain. |
-| M4 — Proof-DAG validation | **PARTIAL** | `certify_dag` returns `Certified` with `dag_inputs_unsatisfiable`, proving no well-formed interpretation satisfies the supplied universally closed IR inputs. DAG dispatch supports input, superposition and positive-left/negative-right nullary/exact-atom resolution nodes. Accepted replay postconditions universal validity preservation; the generic induction consumes local entailment. The certified root is required empty by the semantic specification; supported inference contracts require their binary parent edges. Compiled refutations certify without empty inputs. Root-ancestor closure rejects disconnected nodes and returns `Unknown` on bounded traversal exhaustion. The certifier partitions work across structural preflight, closure and per-node validation; input-leaf membership charges both clauses for every repeated candidate comparison. Node-level parent and conclusion charging is unified across resolution and superposition. Remaining: exact cumulative local replay accounting, production input bridge refinement and broader rules/fixtures. |
+| M4 — Proof-DAG validation | **PARTIAL** | `certify_dag` returns `Certified` with `dag_inputs_unsatisfiable`, proving no well-formed interpretation satisfies the supplied universally closed IR inputs. DAG dispatch supports input, superposition, positive-left/negative-right nullary/exact-atom resolution, and first-order binary resolution nodes. Accepted replay postconditions universal validity preservation; the generic induction consumes local entailment. The certified root is required empty by the semantic specification; supported inference contracts require their binary parent edges. Compiled refutations certify without empty inputs. Root-ancestor closure rejects disconnected nodes and returns `Unknown` on bounded traversal exhaustion. The certifier partitions work across structural preflight, closure and per-node validation; input-leaf membership charges both clauses for every repeated candidate comparison. Node-level parent and conclusion charging is unified across resolution and superposition. Remaining: exact cumulative local replay accounting, production input bridge refinement and broader rules/fixtures. |
 | M5 — MRS integration | **PARTIAL: verified wire decoder, trusted TPTP bridge** | Wire v1 structural decoding and decimal byte tokenization with verified span correspondence are verified in Verus; bounded byte acquisition shim, CNF TPTP adapter, certificate discovery, kernel/ProoVer shadow and opt-in dual-check APIs, archived local c502 translation, complete supported DAG integration, artifact provenance and CI boundary tests exist. TPTP bridge refinement, independent review and default-enable gate remain. See `INTERCHANGE.md`. |
-| M6 — Broader rules | **PARTIAL** | Nullary-predicate and exact-atom resolution are verified and DAG-dispatched; standardized first-order resolution with unifier is verified by `standardized_first_order_resolution_sound` and `check_first_order_resolution_and_replay`. AC, demodulation, transformations, and AVATAR/LRAT remain unimplemented. |
+| M6 — Broader rules | **PARTIAL** | Nullary-predicate, exact-atom, and first-order resolution with unifier are verified and DAG-dispatched; standardized first-order resolution is proved by `standardized_first_order_resolution_sound` and `check_first_order_resolution_and_replay`. AC, demodulation, transformations, and AVATAR/LRAT remain unimplemented. |
 | M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB/re-audit note, and a CI audit for `assume`, `admit`, and external-body/allow escape hatches. CI now uploads a Verus evidence log with source commit, binary hash, toolchain, and proof output. Mutation corpus, supported proof corpus, reproducible production artifact, and release gates remain. |
 
 **What is DONE now:** the pinned local command `formal/superposition-checker/verify.sh`
-passes all four Verus files (currently `5`, `256`, `5`, and `5` verified functions
+passes all four Verus files (currently `5`, `263`, `5`, and `5` verified functions
 respectively), the compiled runtime fixtures pass, and all mutation gates pass.
 The general replay accepts the manually encoded local c502 step with its semantic
 validity-preservation theorem. These results establish the implemented bounded
