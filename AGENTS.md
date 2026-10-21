@@ -14,10 +14,9 @@ The host environment is **NixOS running inside Windows Subsystem for Linux (WSL)
 - This project uses **Nix Flakes** (`flake.nix`) and **direnv** (`.envrc`) to declare its development dependencies (including Rust compiler stable 1.99.1, cargo, clippy, rustfmt, rust-analyzer, pkg-config, git, and cargo-nextest).
 
 ### Execution Rule (Critical)
-Because your native agent `bash` or terminal execution tool starts in a raw shell that does not automatically load `direnv`, **you must wrap any compilation, testing, or development command in the Nix environment.**
+Because your native agent `bash` or terminal execution tool starts in a raw shell that does not automatically load `direnv`, prefer wrapping compilation, testing, and development commands in the Nix environment when `nix` or `direnv` is available.
 
-- **DO NOT RUN:** `cargo check` or `cargo test --workspace` directly.
-- **DO RUN:** Nest your commands inside `nix develop` or `direnv exec`:
+- **Preferred:** Nest commands inside `nix develop` or `direnv exec`:
   ```bash
   # Option A (Preferred):
   nix develop -c cargo check
@@ -25,6 +24,14 @@ Because your native agent `bash` or terminal execution tool starts in a raw shel
   # Option B:
   direnv exec . cargo check
   ```
+
+- **Fallback:** If neither `nix` nor `direnv` is installed or available in the
+  execution environment, use the installed Rust toolchain directly (for
+  example, `cargo check`, `cargo clippy --all -- -D warnings`,
+  `cargo fmt --all --check`, and `cargo test --workspace`). Do not treat the
+  missing wrappers alone as a reason to skip verification or block a commit.
+  Report that the direct-Cargo fallback was used, and resolve any missing
+  toolchain or dependency errors normally.
 
 ### Non-NixOS systems
 When working on a non-NixOS host that has the project's Rust toolchain and
@@ -38,11 +45,17 @@ for ordinary Linux/macOS development hosts.
 ## 2. Commit and Verification Policy (Strictly Enforced)
 To maintain the highest repository standards, any AI agent working in this workspace must adhere to the following rules:
 
-1. **Pre-Commit Verification**: Every single code change and commit must be completely clean and fully validated. Before creating any commit, you must run and pass the following Nix-wrapped commands with zero errors or warnings:
+1. **Pre-Commit Verification**: Every single code change and commit must be completely clean and fully validated. Before creating any commit, run and pass the following checks with zero errors or warnings. Use the Nix-wrapped form when available; if neither `nix` nor `direnv` is available, run the equivalent direct Cargo command:
    - **Check**: `nix develop -c cargo check`
    - **Lints**: `nix develop -c cargo clippy --all -- -D warnings`
    - **Format**: `nix develop -c cargo fmt --all --check`
    - **Tests**: `nix develop -c cargo test --workspace`
+
+   Direct-Cargo fallback forms:
+   - `cargo check`
+   - `cargo clippy --all -- -D warnings`
+   - `cargo fmt --all --check`
+   - `cargo test --workspace`
 
    These wrappers are local developer/CI verification commands. Do not add
    `nix develop` invocations to runtime or benchmark scripts: those scripts
