@@ -128,6 +128,11 @@ def main() -> int:
             "if !certificate.left.literals[certificate.left_pivot].positive\n        || certificate.right.literals[certificate.right_pivot].positive\n    {",
             "if false {",
         ),
+        (
+            "DAG first-order resolution skips rule replay",
+            "|| !check_first_order_resolution_and_replay(step, remaining_work)",
+            "|| false",
+        ),
     ]
 
     with tempfile.TemporaryDirectory(prefix="mrs-verus-mutation-") as temp_dir:
