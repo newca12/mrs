@@ -53,6 +53,13 @@
       "production_certification": false
     },
     {
+      "id": "clause-factoring",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_and_dag_dispatch",
+      "description": "First-order clause factoring: from C | L1 | L2 where L1 and L2 have the same polarity and their atoms unify under unifier sigma, derive (C | L1) sigma. Dispatched in proof DAGs via ProofNodeKind::Factoring; proven by clause_factoring_sound to preserve universal validity.",
+      "production_certification": false
+    },
+    {
       "id": "proof-dag-refutation",
       "module": "first_order_core.rs",
       "status": "verified_ir_dag_certification",
@@ -83,6 +90,8 @@
     "dag_resolution_first_order_unifier": true,
     "equality_resolution_rule": true,
     "dag_equality_resolution": true,
+    "clause_factoring_rule": true,
+    "dag_clause_factoring": true,
     "archived_c502_step_replay": true,
     "archived_c502_full_proof_translation": false,
     "source_variable_unification_regression": true,

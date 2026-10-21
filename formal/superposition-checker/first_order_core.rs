@@ -2533,6 +2533,45 @@ proof fn equality_resolution_sound(
     }
 }
 
+/// Soundness theorem for first-order clause factoring:
+/// from C | L1 | L2, where L1 and L2 have the same polarity and their atoms
+/// unify under unifier sigma, derive (C | L1) sigma.
+proof fn clause_factoring_sound(
+    clause: Clause,
+    first: int,
+    second: int,
+    unifier: Substitution,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(clause, interp),
+        0 <= first < second < clause.literals.len(),
+        clause.literals[first].positive == clause.literals[second].positive,
+        substitute_atom(clause.literals[first].atom, unifier)
+            == substitute_atom(clause.literals[second].atom, unifier),
+    ensures
+        clause_valid(
+            delete_literal(substitute_clause(clause, unifier), second),
+            interp,
+        )
+{
+    let inst = substitute_clause(clause, unifier);
+    clause_valid_after_substitution(clause, unifier, interp);
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        implies clause_holds(delete_literal(inst, second), interp, valuation) by {
+        assert(clause_holds(inst, interp, valuation));
+        let i = choose|i: int| 0 <= i < inst.literals.len()
+            && literal_holds(inst.literals[i], interp, valuation);
+        let target_i = if i == second { first } else { i };
+        assert(literal_holds(inst.literals[target_i], interp, valuation));
+        assert(target_i != second);
+        let j = if target_i < second { target_i } else { target_i - 1 };
+        assert(delete_literal(inst, second).literals[j] == inst.literals[target_i]);
+        assert(literal_holds(delete_literal(inst, second).literals[j], interp, valuation));
+    }
+}
+
 spec fn inverse_renamings(sigma: Substitution, inverse: Substitution) -> bool {
     forall|x: u64|
         apply(apply(Term::Var(x), sigma), inverse) == Term::Var(x)
@@ -2764,6 +2803,14 @@ pub struct EqualityResolutionCertificate {
     conclusion: ExecClause,
 }
 
+pub struct ClauseFactoringCertificate {
+    clause: ExecClause,
+    first: usize,
+    second: usize,
+    unifier: Vec<ExecBinding>,
+    conclusion: ExecClause,
+}
+
 #[derive(PartialEq, Eq)]
 pub enum ProofNodeKind {
     Input,
@@ -2776,13 +2823,15 @@ pub enum ProofNodeKind {
     FirstOrderResolution,
     /// Equality resolution (reflexivity resolution) on a negative equality literal.
     EqualityResolution,
+    /// First-order clause factoring of two same-polarity literals under a unifier.
+    Factoring,
     Unsupported,
 }
 
 spec fn supported_inference(kind: ProofNodeKind) -> bool {
     kind == ProofNodeKind::Superposition || kind is Resolution
         || kind is ExactResolution || kind == ProofNodeKind::FirstOrderResolution
-        || kind == ProofNodeKind::EqualityResolution
+        || kind == ProofNodeKind::EqualityResolution || kind == ProofNodeKind::Factoring
 }
 
 pub struct ProofNode {
@@ -2793,6 +2842,7 @@ pub struct ProofNode {
     step: Option<SuperpositionCertificate>,
     res_step: Option<FirstOrderResolutionCertificate>,
     eq_step: Option<EqualityResolutionCertificate>,
+    fact_step: Option<ClauseFactoringCertificate>,
 }
 
 pub struct ProofDag {
@@ -5303,6 +5353,23 @@ fn charge_equality_resolution_certificate(
     true
 }
 
+fn charge_clause_factoring_certificate(
+    certificate: &ClauseFactoringCertificate,
+    work: &mut usize,
+    limit: usize,
+) -> (ok: bool)
+    requires *work <= limit
+    ensures *final(work) <= limit
+{
+    if !charge_clause_structure(&certificate.clause, work, limit)
+        || !charge_clause_structure(&certificate.conclusion, work, limit)
+        || !charge_binding_structure(&certificate.unifier, work, limit)
+    {
+        return false;
+    }
+    true
+}
+
 fn lookup_exec(bindings: &Vec<ExecBinding>, variable: u64) -> (result: Option<ExecTerm>)
     ensures
         match result {
@@ -5835,6 +5902,76 @@ fn check_equality_resolution_and_replay(
             assert(clause_equal(view_clause(expected), delete_literal(
                 substitute_clause(view_clause(certificate.clause), view_subst(certificate.unifier@)),
                 certificate.pivot as int)));
+            assert(clause_equal(view_clause(expected), view_clause(certificate.conclusion)));
+            assert(view_clause(certificate.conclusion).literals =~= view_clause(expected).literals);
+        }
+    }
+    true
+}
+
+fn check_clause_factoring_and_replay(
+    certificate: &ClauseFactoringCertificate,
+    work_limit: usize,
+) -> (accepted: bool)
+    ensures
+        accepted ==> certificate.clause.literals.len()
+            + certificate.conclusion.literals.len() <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.clause), interp)
+            ==> clause_valid(view_clause(certificate.conclusion), interp),
+{
+    let mut structural_work: usize = 0;
+    if !charge_clause_factoring_certificate(certificate, &mut structural_work, work_limit) {
+        return false;
+    }
+    if certificate.clause.literals.len() > work_limit
+        || certificate.conclusion.literals.len() > work_limit - certificate.clause.literals.len()
+    {
+        return false;
+    }
+    let remaining_work = work_limit - structural_work;
+    if certificate.first >= certificate.second || certificate.second >= certificate.clause.literals.len() {
+        return false;
+    }
+    let first_lit = &certificate.clause.literals[certificate.first];
+    let second_lit = &certificate.clause.literals[certificate.second];
+    if first_lit.positive != second_lit.positive {
+        return false;
+    }
+    if !check_domain_unique(&certificate.unifier, remaining_work) {
+        return false;
+    }
+    let inst_clause = substitute_clause_exec(&certificate.clause, &certificate.unifier);
+    if certificate.second >= inst_clause.literals.len() {
+        return false;
+    }
+    if !same_atom(&inst_clause.literals[certificate.first].atom, &inst_clause.literals[certificate.second].atom) {
+        return false;
+    }
+    let expected = delete_clause_literal_exec(&inst_clause, certificate.second);
+    if !same_clause_exact(&expected, &certificate.conclusion) {
+        return false;
+    }
+    proof {
+        assert(view_atom(inst_clause.literals@[certificate.first as int].atom)
+            == view_atom(inst_clause.literals@[certificate.second as int].atom));
+        assert(view_clause(inst_clause).literals[certificate.first as int].atom
+            == view_atom(inst_clause.literals@[certificate.first as int].atom));
+        assert(view_clause(inst_clause).literals[certificate.second as int].atom
+            == view_atom(inst_clause.literals@[certificate.second as int].atom));
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.clause), interp)
+            implies clause_valid(view_clause(certificate.conclusion), interp) by {
+            clause_factoring_sound(
+                view_clause(certificate.clause),
+                certificate.first as int,
+                certificate.second as int,
+                view_subst(certificate.unifier@),
+                interp,
+            );
+            assert(clause_equal(view_clause(expected), delete_literal(
+                substitute_clause(view_clause(certificate.clause), view_subst(certificate.unifier@)),
+                certificate.second as int)));
             assert(clause_equal(view_clause(expected), view_clause(certificate.conclusion)));
             assert(view_clause(certificate.conclusion).literals =~= view_clause(expected).literals);
         }
@@ -6912,6 +7049,48 @@ fn check_dag_equality_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     true
 }
 
+fn check_dag_factoring_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    if node.kind != ProofNodeKind::Factoring || node.parents.len() != 1 {
+        return false;
+    }
+    let Some(step) = &node.fact_step else { return false; };
+    if node.parents[0] >= nodes.len() {
+        return false;
+    }
+    let mut work: usize = 0;
+    if !charge_clause_factoring_certificate(step, &mut work, work_limit)
+        || !charge_clause_structure(&node.clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+    {
+        return false;
+    }
+    let remaining_work = work_limit - work;
+    if !same_clause_exact(&step.clause, &nodes[node.parents[0]].clause)
+        || !same_clause_exact(&step.conclusion, &node.clause)
+        || !check_clause_factoring_and_replay(step, remaining_work)
+    {
+        return false;
+    }
+    proof {
+        assert(view_clause(step.clause).literals
+            =~= view_clause(nodes@[node.parents@[0] as int].clause).literals);
+        assert(view_clause(step.conclusion).literals =~= view_clause(node.clause).literals);
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            implies local_node_entails_from_parents(*node, nodes@, interp) by {
+            if forall|j: int| 0 <= j < node.parents@.len()
+                ==> clause_valid(view_clause(nodes@[node.parents@[j] as int].clause), interp) {
+                assert(clause_valid(view_clause(step.clause), interp));
+                assert(clause_valid(view_clause(step.conclusion), interp));
+            }
+        }
+    }
+    true
+}
+
 proof fn replayed_conclusion_has_source_target_context_split(
     certificate: SuperpositionCertificate,
     work_limit: nat,
@@ -6977,6 +7156,8 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
                     && dag.nodes[i].parents@.len() == 2 && dag.nodes[i].res_step.is_some()
                 || dag.nodes[i].kind == ProofNodeKind::EqualityResolution
                     && dag.nodes[i].parents@.len() == 1 && dag.nodes[i].eq_step.is_some()
+                || dag.nodes[i].kind == ProofNodeKind::Factoring
+                    && dag.nodes[i].parents@.len() == 1 && dag.nodes[i].fact_step.is_some()
         && verdict == DagVerdict::Unknown ==> forall|i: int, j: int|
             0 <= i < j < dag.nodes.len() ==> dag.nodes[i].id != dag.nodes[j].id
         && verdict == DagVerdict::Unknown ==> forall|i: int|
@@ -7012,6 +7193,14 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
         && verdict == DagVerdict::Unknown ==> forall|i: int|
             0 <= i < dag.nodes.len() && dag.nodes[i].kind == ProofNodeKind::EqualityResolution
             ==> match dag.nodes[i].eq_step {
+                Some(step) => clause_equal(view_clause(step.clause),
+                        view_clause(dag.nodes[dag.nodes[i].parents@[0] as int].clause))
+                    && clause_equal(view_clause(step.conclusion), view_clause(dag.nodes[i].clause)),
+                None => false,
+            }
+        && verdict == DagVerdict::Unknown ==> forall|i: int|
+            0 <= i < dag.nodes.len() && dag.nodes[i].kind == ProofNodeKind::Factoring
+            ==> match dag.nodes[i].fact_step {
                 Some(step) => clause_equal(view_clause(step.clause),
                         view_clause(dag.nodes[dag.nodes[i].parents@[0] as int].clause))
                     && clause_equal(view_clause(step.conclusion), view_clause(dag.nodes[i].clause)),
@@ -7164,6 +7353,16 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
                 return DagVerdict::Rejected;
             }
         }
+        if node.kind == ProofNodeKind::Factoring {
+            let Some(step) = &node.fact_step else { return DagVerdict::Rejected; };
+            if node.parents.len() != 1 { return DagVerdict::Rejected; }
+            assert(node.parents[0] < dag.nodes.len());
+            if !same_clause_exact(&step.clause, &dag.nodes[node.parents[0]].clause)
+                || !same_clause_exact(&step.conclusion, &node.clause)
+            {
+                return DagVerdict::Rejected;
+            }
+        }
         i += 1;
     }
     let mut input_index: usize = 0;
@@ -7308,6 +7507,11 @@ fn validate_dag_node(dag: &ProofDag, index: usize, work_limit: usize) -> (ok: bo
         if node.parents.len() != 1 { return false; }
         if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
         check_dag_equality_resolution_step(node, &dag.nodes, work_limit - work)
+        },
+        ProofNodeKind::Factoring => {
+        if node.parents.len() != 1 { return false; }
+        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
+        check_dag_factoring_step(node, &dag.nodes, work_limit - work)
         },
         ProofNodeKind::Unsupported => false,
     }
@@ -7466,7 +7670,7 @@ fn check_root_ancestor_closure(dag: &ProofDag, work_limit: usize) -> (closed: Op
 fn executable_dag_certification_examples() -> bool {
     let mut dag = ProofDag {
         nodes: vec![ProofNode { id: 1, clause: ExecClause { literals: Vec::new() },
-            kind: ProofNodeKind::Input, parents: Vec::new(), step: None, res_step: None, eq_step: None }],
+            kind: ProofNodeKind::Input, parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None }],
         input_clauses: vec![ExecClause { literals: Vec::new() }],
         root: 0,
     };
@@ -7484,11 +7688,11 @@ fn executable_dag_certification_examples() -> bool {
     let negative = resolution_unit(17, false);
     dag.nodes = vec![
         ProofNode { id: 10, clause: resolution_unit(17, true), kind: ProofNodeKind::Input,
-            parents: Vec::new(), step: None, res_step: None, eq_step: None },
+            parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None },
         ProofNode { id: 11, clause: resolution_unit(17, false), kind: ProofNodeKind::Input,
-            parents: Vec::new(), step: None, res_step: None, eq_step: None },
+            parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None },
         ProofNode { id: 12, clause: ExecClause { literals: Vec::new() },
-            kind: ProofNodeKind::Resolution(0, 0), parents: vec![0usize, 1usize], step: None, res_step: None, eq_step: None },
+            kind: ProofNodeKind::Resolution(0, 0), parents: vec![0usize, 1usize], step: None, res_step: None, eq_step: None, fact_step: None },
     ];
     dag.input_clauses = vec![positive, negative];
     dag.root = 2;
@@ -7501,14 +7705,14 @@ fn executable_dag_certification_examples() -> bool {
     if certify_dag(&dag, 10, 1000) != DagVerdict::Certified { return false; }
     if certify_dag(&dag, 10, 2) == DagVerdict::Certified { return false; }
     dag.nodes.push(ProofNode { id: 2, clause: resolution_unit(17, true),
-        kind: ProofNodeKind::Input, parents: Vec::new(), step: None, res_step: None, eq_step: None });
+        kind: ProofNodeKind::Input, parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None });
     dag.input_clauses.push(resolution_unit(17, true));
     if certify_dag(&dag, 10, 1000) != DagVerdict::Rejected { return false; }
     dag.nodes.pop();
     dag.input_clauses.pop();
     if certify_dag(&dag, 10, 1000) != DagVerdict::Certified { return false; }
     dag.nodes = vec![ProofNode { id: 1, clause: ExecClause { literals: Vec::new() },
-        kind: ProofNodeKind::Input, parents: Vec::new(), step: None, res_step: None, eq_step: None }];
+        kind: ProofNodeKind::Input, parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None }];
     dag.input_clauses = vec![ExecClause { literals: Vec::new() }];
     dag.root = 0;
     if check_root_ancestor_closure(&dag, 0) != None { return false; }
@@ -7549,9 +7753,9 @@ fn executable_input_leaf_comparison_budget_example() -> bool {
     let dag = ProofDag {
         nodes: vec![
             ProofNode { id: 1, clause: accepted, kind: ProofNodeKind::Input,
-                parents: Vec::new(), step: None, res_step: None, eq_step: None },
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None },
             ProofNode { id: 2, clause: empty, kind: ProofNodeKind::Input,
-                parents: Vec::new(), step: None, res_step: None, eq_step: None },
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None },
         ],
         input_clauses: vec![
             resolution_unit(9, false),
@@ -7674,15 +7878,15 @@ fn executable_resolution_chain_examples() -> bool {
     let mut dag = ProofDag {
         nodes: vec![
             ProofNode { id: 1, clause: resolution_pair(9, true, 10),
-                kind: ProofNodeKind::Input, parents: Vec::new(), step: None, res_step: None, eq_step: None },
+                kind: ProofNodeKind::Input, parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None },
             ProofNode { id: 2, clause: resolution_unit(9, false),
-                kind: ProofNodeKind::Input, parents: Vec::new(), step: None, res_step: None, eq_step: None },
+                kind: ProofNodeKind::Input, parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None },
             ProofNode { id: 3, clause: resolution_unit(10, false),
-                kind: ProofNodeKind::Input, parents: Vec::new(), step: None, res_step: None, eq_step: None },
+                kind: ProofNodeKind::Input, parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None },
             ProofNode { id: 4, clause: resolution_unit(10, true),
-                kind: ProofNodeKind::Resolution(0, 0), parents: vec![0usize, 1usize], step: None, res_step: None, eq_step: None },
+                kind: ProofNodeKind::Resolution(0, 0), parents: vec![0usize, 1usize], step: None, res_step: None, eq_step: None, fact_step: None },
             ProofNode { id: 5, clause: ExecClause { literals: Vec::new() },
-                kind: ProofNodeKind::Resolution(0, 0), parents: vec![3usize, 2usize], step: None, res_step: None, eq_step: None },
+                kind: ProofNodeKind::Resolution(0, 0), parents: vec![3usize, 2usize], step: None, res_step: None, eq_step: None, fact_step: None },
         ],
         input_clauses: vec![resolution_pair(9, true, 10), resolution_unit(9, false),
             resolution_unit(10, false)], root: 4,
@@ -7702,11 +7906,11 @@ fn executable_resolution_dag_examples() -> bool {
     let mut dag = ProofDag {
         nodes: vec![
             ProofNode { id: 1, clause: resolution_unit(9, true), kind: ProofNodeKind::Input,
-                parents: Vec::new(), step: None, res_step: None, eq_step: None },
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None },
             ProofNode { id: 2, clause: resolution_unit(9, false), kind: ProofNodeKind::Input,
-                parents: Vec::new(), step: None, res_step: None, eq_step: None },
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None },
             ProofNode { id: 3, clause: ExecClause { literals: Vec::new() },
-                kind: ProofNodeKind::Resolution(0, 0), parents: vec![0usize, 1usize], step: None, res_step: None, eq_step: None },
+                kind: ProofNodeKind::Resolution(0, 0), parents: vec![0usize, 1usize], step: None, res_step: None, eq_step: None, fact_step: None },
         ],
         input_clauses: vec![resolution_unit(9, true), resolution_unit(9, false)], root: 2,
     };
@@ -7768,15 +7972,15 @@ fn executable_first_order_resolution_dag_examples() -> bool {
     let dag = ProofDag {
         nodes: vec![
             ProofNode { id: 1, clause: res_fo_in1(), kind: ProofNodeKind::Input,
-                parents: Vec::new(), step: None, res_step: None, eq_step: None },
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None },
             ProofNode { id: 2, clause: res_fo_in2(), kind: ProofNodeKind::Input,
-                parents: Vec::new(), step: None, res_step: None, eq_step: None },
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None },
             ProofNode { id: 3, clause: res_fo_in3(), kind: ProofNodeKind::Input,
-                parents: Vec::new(), step: None, res_step: None, eq_step: None },
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None },
             ProofNode { id: 4, clause: res_fo_n4(), kind: ProofNodeKind::FirstOrderResolution,
-                parents: vec![0usize, 1usize], step: None, res_step: Some(cert), eq_step: None },
+                parents: vec![0usize, 1usize], step: None, res_step: Some(cert), eq_step: None, fact_step: None },
             ProofNode { id: 5, clause: ExecClause { literals: Vec::new() }, kind: ProofNodeKind::ExactResolution(0, 0),
-                parents: vec![3usize, 2usize], step: None, res_step: None, eq_step: None },
+                parents: vec![3usize, 2usize], step: None, res_step: None, eq_step: None, fact_step: None },
         ],
         input_clauses: vec![res_fo_in1(), res_fo_in2(), res_fo_in3()],
         root: 4,
@@ -7882,16 +8086,153 @@ fn executable_equality_resolution_dag_examples() -> bool {
     let dag = ProofDag {
         nodes: vec![
             ProofNode { id: 1, clause: eq_res_in1(), kind: ProofNodeKind::Input,
-                parents: Vec::new(), step: None, res_step: None, eq_step: None },
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None },
             ProofNode { id: 2, clause: eq_res_in2(), kind: ProofNodeKind::Input,
-                parents: Vec::new(), step: None, res_step: None, eq_step: None },
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None },
             ProofNode { id: 3, clause: eq_res_n3(), kind: ProofNodeKind::EqualityResolution,
-                parents: vec![0usize], step: None, res_step: None, eq_step: Some(cert) },
+                parents: vec![0usize], step: None, res_step: None, eq_step: Some(cert), fact_step: None },
             ProofNode { id: 4, clause: empty, kind: ProofNodeKind::ExactResolution(0, 0),
-                parents: vec![2usize, 1usize], step: None, res_step: None, eq_step: None },
+                parents: vec![2usize, 1usize], step: None, res_step: None, eq_step: None, fact_step: None },
         ],
         input_clauses: vec![eq_res_in1(), eq_res_in2()],
         root: 3,
+    };
+    certify_dag(&dag, 10, 10000) == DagVerdict::Certified
+}
+
+fn fact_in1() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Var(7))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Var(7))) },
+    ] }
+}
+
+fn fact_n2() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(1))) },
+    ] }
+}
+
+fn executable_clause_factoring_examples() -> bool {
+    let cert = ClauseFactoringCertificate {
+        clause: fact_in1(),
+        first: 0,
+        second: 1,
+        unifier: vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(1) }],
+        conclusion: fact_n2(),
+    };
+    if !check_clause_factoring_and_replay(&cert, 1000) {
+        return false;
+    }
+
+    // Forged conclusion (wrong constant 99) fails closed.
+    let forged_cert = ClauseFactoringCertificate {
+        clause: fact_in1(),
+        first: 0,
+        second: 1,
+        unifier: vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(1) }],
+        conclusion: ExecClause { literals: vec![
+            ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(99))) },
+            ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(1))) },
+        ] },
+    };
+    if check_clause_factoring_and_replay(&forged_cert, 1000) {
+        return false;
+    }
+
+    // Opposite polarity fails closed.
+    let opp_clause = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Var(7))) },
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Var(7))) },
+    ] };
+    let opp_cert = ClauseFactoringCertificate {
+        clause: opp_clause,
+        first: 0,
+        second: 1,
+        unifier: vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(1) }],
+        conclusion: fact_n2(),
+    };
+    if check_clause_factoring_and_replay(&opp_cert, 1000) {
+        return false;
+    }
+
+    // Atom predicate mismatch fails closed.
+    let mismatch_clause = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Var(7))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(99, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Var(7))) },
+    ] };
+    let mismatch_cert = ClauseFactoringCertificate {
+        clause: mismatch_clause,
+        first: 0,
+        second: 1,
+        unifier: vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(1) }],
+        conclusion: fact_n2(),
+    };
+    if check_clause_factoring_and_replay(&mismatch_cert, 1000) {
+        return false;
+    }
+
+    // Non-unifying substitution fails closed.
+    let non_unifying_cert = ClauseFactoringCertificate {
+        clause: fact_in1(),
+        first: 0,
+        second: 1,
+        unifier: vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(99) }],
+        conclusion: fact_n2(),
+    };
+    if check_clause_factoring_and_replay(&non_unifying_cert, 1000) {
+        return false;
+    }
+
+    true
+}
+
+fn fact_in2() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+    ] }
+}
+
+fn fact_in3() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(1))) },
+    ] }
+}
+
+fn executable_clause_factoring_dag_examples() -> bool {
+    let empty = ExecClause { literals: Vec::new() };
+
+    let cert = ClauseFactoringCertificate {
+        clause: fact_in1(),
+        first: 0,
+        second: 1,
+        unifier: vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(1) }],
+        conclusion: fact_n2(),
+    };
+
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode { id: 1, clause: fact_in1(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None },
+            ProofNode { id: 2, clause: fact_in2(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None },
+            ProofNode { id: 3, clause: fact_in3(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None },
+            ProofNode { id: 4, clause: fact_n2(), kind: ProofNodeKind::Factoring,
+                parents: vec![0usize], step: None, res_step: None, eq_step: None, fact_step: Some(cert) },
+            ProofNode { id: 5, clause: ExecClause { literals: vec![
+                ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(1))) },
+            ] }, kind: ProofNodeKind::ExactResolution(0, 0),
+                parents: vec![3usize, 1usize], step: None, res_step: None, eq_step: None, fact_step: None },
+            ProofNode { id: 6, clause: empty, kind: ProofNodeKind::ExactResolution(0, 0),
+                parents: vec![4usize, 2usize], step: None, res_step: None, eq_step: None, fact_step: None },
+        ],
+        input_clauses: vec![fact_in1(), fact_in2(), fact_in3()],
+        root: 5,
     };
     certify_dag(&dag, 10, 10000) == DagVerdict::Certified
 }
@@ -8198,6 +8539,19 @@ fn wire_equality_resolution_certificate(tokens: &Vec<u64>, cursor: &mut usize)
     Some(EqualityResolutionCertificate { clause, pivot, unifier, conclusion })
 }
 
+fn wire_clause_factoring_certificate(tokens: &Vec<u64>, cursor: &mut usize)
+    -> (certificate: Option<ClauseFactoringCertificate>)
+    requires *old(cursor) <= tokens.len()
+    ensures *final(cursor) <= tokens.len()
+{
+    let Some(clause) = wire_clause(tokens, cursor) else { return None; };
+    let Some(conclusion) = wire_clause(tokens, cursor) else { return None; };
+    let Some(unifier) = wire_bindings(tokens, cursor) else { return None; };
+    let Some(first) = wire_count(tokens, cursor, 63) else { return None; };
+    let Some(second) = wire_count(tokens, cursor, 63) else { return None; };
+    Some(ClauseFactoringCertificate { clause, first, second, unifier, conclusion })
+}
+
 fn wire_dag(tokens: &Vec<u64>, cursor: &mut usize) -> (dag: Option<ProofDag>)
     requires *old(cursor) <= tokens.len()
     ensures *final(cursor) <= tokens.len(),
@@ -8245,33 +8599,37 @@ fn wire_dag(tokens: &Vec<u64>, cursor: &mut usize) -> (dag: Option<ProofDag>)
             let Some(parent) = wire_count(tokens, cursor, 511) else { return None; };
             parents.push(parent); p += 1;
         }
-        let (kind, step, res_step, eq_step) = match tag {
-            0 => (ProofNodeKind::Input, None, None, None),
+        let (kind, step, res_step, eq_step, fact_step) = match tag {
+            0 => (ProofNodeKind::Input, None, None, None, None),
             1 => {
                 let Some(c) = wire_certificate(tokens, cursor) else { return None; };
-                (ProofNodeKind::Superposition, Some(c), None, None)
+                (ProofNodeKind::Superposition, Some(c), None, None, None)
             },
             2 => {
                 let Some(lp) = wire_count(tokens, cursor, 63) else { return None; };
                 let Some(rp) = wire_count(tokens, cursor, 63) else { return None; };
-                (ProofNodeKind::Resolution(lp, rp), None, None, None)
+                (ProofNodeKind::Resolution(lp, rp), None, None, None, None)
             },
             3 => {
                 let Some(lp) = wire_count(tokens, cursor, 63) else { return None; };
                 let Some(rp) = wire_count(tokens, cursor, 63) else { return None; };
-                (ProofNodeKind::ExactResolution(lp, rp), None, None, None)
+                (ProofNodeKind::ExactResolution(lp, rp), None, None, None, None)
             },
             4 => {
                 let Some(c) = wire_first_order_resolution_certificate(tokens, cursor) else { return None; };
-                (ProofNodeKind::FirstOrderResolution, None, Some(c), None)
+                (ProofNodeKind::FirstOrderResolution, None, Some(c), None, None)
             },
             5 => {
                 let Some(c) = wire_equality_resolution_certificate(tokens, cursor) else { return None; };
-                (ProofNodeKind::EqualityResolution, None, None, Some(c))
+                (ProofNodeKind::EqualityResolution, None, None, Some(c), None)
+            },
+            6 => {
+                let Some(c) = wire_clause_factoring_certificate(tokens, cursor) else { return None; };
+                (ProofNodeKind::Factoring, None, None, None, Some(c))
             },
             _ => return None,
         };
-        nodes.push(ProofNode { id, clause, kind, parents, step, res_step, eq_step }); n += 1;
+        nodes.push(ProofNode { id, clause, kind, parents, step, res_step, eq_step, fact_step }); n += 1;
     }
     Some(ProofDag { nodes, input_clauses: inputs, root })
 }
@@ -8305,6 +8663,10 @@ fn check_wire_tokens(tokens: &Vec<u64>) -> (response: u64)
         4 => {
             let Some(c) = wire_equality_resolution_certificate(tokens, &mut cursor) else { return 4; };
             if check_equality_resolution_and_replay(&c, work) { 1 } else { 4 }
+        },
+        5 => {
+            let Some(c) = wire_clause_factoring_certificate(tokens, &mut cursor) else { return 4; };
+            if check_clause_factoring_and_replay(&c, work) { 1 } else { 4 }
         },
         _ => return 4,
     };
@@ -8656,9 +9018,11 @@ fn run_examples() -> bool {
     if !executable_nullary_resolution_examples() { return false; }
     if !executable_first_order_resolution_examples() { return false; }
     if !executable_equality_resolution_examples() { return false; }
+    if !executable_clause_factoring_examples() { return false; }
     if !executable_resolution_dag_examples() { return false; }
     if !executable_first_order_resolution_dag_examples() { return false; }
     if !executable_equality_resolution_dag_examples() { return false; }
+    if !executable_clause_factoring_dag_examples() { return false; }
     if !executable_resolution_chain_examples() { return false; }
     if !wire_dispatch_regressions() { return false; }
     if !wire_tokenizer_boundary_regression() { return false; }
@@ -8683,11 +9047,15 @@ fn regression_main() {
         "first-order resolution regression failed");
     assert!(executable_equality_resolution_examples(),
         "equality resolution regression failed");
+    assert!(executable_clause_factoring_examples(),
+        "clause factoring regression failed");
     assert!(executable_resolution_dag_examples(), "resolution DAG regression failed");
     assert!(executable_first_order_resolution_dag_examples(),
         "first-order resolution DAG regression failed");
     assert!(executable_equality_resolution_dag_examples(),
         "equality resolution DAG regression failed");
+    assert!(executable_clause_factoring_dag_examples(),
+        "clause factoring DAG regression failed");
     assert!(executable_resolution_chain_examples(), "resolution-chain DAG regression failed");
     assert!(wire_dispatch_regressions(), "verified wire-dispatch regression failed");
     assert!(wire_tokenizer_boundary_regression(), "verified wire-tokenizer boundary failed");

@@ -196,6 +196,35 @@ fn archived_step_and_real_tptp_dags_traverse_compiled_checker() {
     assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
     assert_eq!(report.checked_nodes, 4);
 
+    // Clause factoring on same-polarity literals under a unifier:
+    // a: p(X) | p(a) | q(X)
+    // b: ~p(a)
+    // c: ~q(a)
+    // f1: p(a) | q(a) by factoring([a])
+    // r1: q(a) by resolution([f1, b])
+    // bot: $false by resolution([r1, c])
+    let fact_problem = mrs_tptp::parse_tptp(
+        "cnf(a,axiom,p(X)|p(a)|q(X)). cnf(b,axiom,~p(a)). cnf(c,axiom,~q(a)).",
+    )
+    .unwrap();
+    let fact_text = "cnf(a,axiom,p(X)|p(a)|q(X),file('input',a)).
+        cnf(b,axiom,~p(a),file('input',b)).
+        cnf(c,axiom,~q(a),file('input',c)).
+        cnf(f1,plain,p(a)|q(a),inference(factoring,[status(thm)],[a])).
+        cnf(r1,plain,q(a),inference(resolution,[status(thm)],[f1,b])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[r1,c])).";
+    let fact_proof = mrs_tptp::parse_tptp(fact_text).unwrap();
+    let (kernel, report) = verify_with_shadow(
+        &fact_problem,
+        &fact_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified);
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+    assert_eq!(report.checked_nodes, 6);
+
     let mut bad = cfg.clone();
     bad.expected_sha256 = "0".repeat(64);
     assert!(matches!(

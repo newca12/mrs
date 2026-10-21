@@ -23,6 +23,13 @@ literal and instantiates the remaining literals under `sigma`. Its theorem
 `equality_resolution_sound` and checker `check_equality_resolution_and_replay`
 prove universal validity preservation.
 
+DAG support also includes **clause factoring** (positive/negative factoring):
+from a clause `C | L1 | L2` where `L1` and `L2` have the same polarity and their
+atoms unify under simultaneous unifier `sigma`, the conclusion removes `L2`
+and instantiates the remaining literals under `sigma`. Its theorem
+`clause_factoring_sound` and checker `check_clause_factoring_and_replay`
+prove universal validity preservation.
+
 This document fixes the mathematical rule represented by
 `SuperpositionCertificate` in `first_order_core.rs`. It is an **unordered
 first-order superposition rule**: no KBO/LPO maximality or literal-selection
