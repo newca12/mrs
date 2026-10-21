@@ -24,6 +24,23 @@ that no interchange or caller exists are superseded by this update.
 - **DONE:** enabled `executable_unifier_certificate_examples` in `run_examples()`
   so the adversarial suite is verified at proof time and executed in runtime regressions.
 
+### 2026-10-21 first-order resolution with unifier checkpoint
+
+- **DONE:** standardized first-order resolution is proved sound in
+  `standardized_first_order_resolution_sound`, connecting independent parent
+  freshenings and a common simultaneous unifier to `exact_atom_resolution_sound`.
+- **DONE:** executable `FirstOrderResolutionCertificate` and verified step
+  checker `check_first_order_resolution_and_replay` implement bounded syntax
+  charging, parent variable collection, freshening-apart validation, unifier
+  domain-uniqueness checking, pivot polarity verification, atom unification
+  matching, and exact conclusion comparison with universal validity preservation.
+- **DONE:** runtime regressions in `executable_first_order_resolution_examples`
+  exercise a valid variable-bearing resolution step with surviving contexts,
+  and verify fail-closed behavior for forged conclusions, atom predicate mismatches,
+  and wrong pivot polarities.
+- **DONE:** added rule specification in `RULE_CONTRACT.md` and updated
+  `supported-rules.json`.
+
 ### 2026-10-21 tokenizer span correspondence checkpoint
 
 - **DONE:** `wire_tokenize` now carries a verified ghost span sequence
@@ -157,7 +174,7 @@ invalidate the original code. The gate now removes the actual forbidden-image
 check and requires Verus to reject that mutation. The no-cheating self-test first
 accepts a valid assumption probe without the flag, then requires rejection with
 the flag; the earlier malformed `assume_specification` probe was not evidence.
-Current module counts: **5 / 252 / 5 / 5**, with **20 verifier-negative mutations,
+Current module counts: **5 / 256 / 5 / 5**, with **20 verifier-negative mutations,
 three runtime mutations and one no-cheating probe**. The newest tokenizer mutation
 is compiled by Verus but rejected before runtime because the weakened source no
 longer proves the tokenizer invariant; it does not count as a runtime mutation.
@@ -182,11 +199,11 @@ the item itself is explicitly marked `ABANDONED`.
 | M3 — Superposition checker | **PARTIAL: general replay soundness proved** | `check_superposition_and_replay` postconditions both exact ordered conclusion equality and universal validity preservation for accepted general certificates. `replay_semantic_premises` connects checked source equality, selected target occurrence, unifier equation and replacement to `standardized_superposition_sound`. Context deletion/substitution and exact conclusion-order composition are proved. Bounded executable certificates accept archived `SWV406+1:c502` and a source-variable binding case, rejecting forged conclusions. Full TSTP fixture translation/proof-DAG replay, equivalence modulo literal order/renaming, exact cumulative resource refinement, and independent calculus review remain. |
 | M4 — Proof-DAG validation | **PARTIAL** | `certify_dag` returns `Certified` with `dag_inputs_unsatisfiable`, proving no well-formed interpretation satisfies the supplied universally closed IR inputs. DAG dispatch supports input, superposition and positive-left/negative-right nullary/exact-atom resolution nodes. Accepted replay postconditions universal validity preservation; the generic induction consumes local entailment. The certified root is required empty by the semantic specification; supported inference contracts require their binary parent edges. Compiled refutations certify without empty inputs. Root-ancestor closure rejects disconnected nodes and returns `Unknown` on bounded traversal exhaustion. The certifier partitions work across structural preflight, closure and per-node validation; input-leaf membership charges both clauses for every repeated candidate comparison. Node-level parent and conclusion charging is unified across resolution and superposition. Remaining: exact cumulative local replay accounting, production input bridge refinement and broader rules/fixtures. |
 | M5 — MRS integration | **PARTIAL: verified wire decoder, trusted TPTP bridge** | Wire v1 structural decoding and decimal byte tokenization with verified span correspondence are verified in Verus; bounded byte acquisition shim, CNF TPTP adapter, certificate discovery, kernel/ProoVer shadow and opt-in dual-check APIs, archived local c502 translation, complete supported DAG integration, artifact provenance and CI boundary tests exist. TPTP bridge refinement, independent review and default-enable gate remain. See `INTERCHANGE.md`. |
-| M6 — Broader rules | **PARTIAL** | Nullary-predicate resolution is verified and DAG-dispatched; c502 is now additionally replayed as a local general superposition example. General first-order resolution, AC, demodulation, transformations, and AVATAR/LRAT remain unimplemented. |
+| M6 — Broader rules | **PARTIAL** | Nullary-predicate and exact-atom resolution are verified and DAG-dispatched; standardized first-order resolution with unifier is verified by `standardized_first_order_resolution_sound` and `check_first_order_resolution_and_replay`. AC, demodulation, transformations, and AVATAR/LRAT remain unimplemented. |
 | M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB/re-audit note, and a CI audit for `assume`, `admit`, and external-body/allow escape hatches. CI now uploads a Verus evidence log with source commit, binary hash, toolchain, and proof output. Mutation corpus, supported proof corpus, reproducible production artifact, and release gates remain. |
 
 **What is DONE now:** the pinned local command `formal/superposition-checker/verify.sh`
-passes all four Verus files (currently `5`, `252`, `5`, and `5` verified functions
+passes all four Verus files (currently `5`, `256`, `5`, and `5` verified functions
 respectively), the compiled runtime fixtures pass, and all mutation gates pass.
 The general replay accepts the manually encoded local c502 step with its semantic
 validity-preservation theorem. These results establish the implemented bounded

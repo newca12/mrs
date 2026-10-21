@@ -39,6 +39,13 @@
       "production_certification": false
     },
     {
+      "id": "first-order-resolution",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_soundness",
+      "description": "Standardized-apart first-order binary resolution with independent parent freshening, common simultaneous one-step unifier, positive-left/negative-right unified atom pivot equation, and exact concatenated resolvent construction. Proven by standardized_first_order_resolution_sound to preserve universal validity.",
+      "production_certification": false
+    },
+    {
       "id": "proof-dag-refutation",
       "module": "first_order_core.rs",
       "status": "verified_ir_dag_certification",
@@ -65,6 +72,7 @@
     "dag_exact_cumulative_replay_work": false,
     "dag_resolution_nullary": true,
     "standalone_resolution_nullary": true,
+    "standalone_resolution_first_order_unifier": true,
     "archived_c502_step_replay": true,
     "archived_c502_full_proof_translation": false,
     "source_variable_unification_regression": true,

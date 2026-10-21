@@ -2433,6 +2433,57 @@ proof fn standardized_superposition_parents_are_valid(
     standardized_parent_valid(target_parent, target_freshening, interp);
 }
 
+/// Soundness theorem for first-order binary resolution with independent
+/// parent standardization and a common simultaneous one-step unifier.
+proof fn standardized_first_order_resolution_sound(
+    left: Clause,
+    right: Clause,
+    left_pivot: int,
+    right_pivot: int,
+    left_freshening: Substitution,
+    right_freshening: Substitution,
+    unifier: Substitution,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(left, interp),
+        clause_valid(right, interp),
+        0 <= left_pivot < left.literals.len(),
+        0 <= right_pivot < right.literals.len(),
+        left.literals[left_pivot].positive,
+        !right.literals[right_pivot].positive,
+        substitute_atom(substitute_atom(left.literals[left_pivot].atom, left_freshening), unifier)
+            == substitute_atom(substitute_atom(right.literals[right_pivot].atom, right_freshening), unifier),
+    ensures
+        clause_valid(
+            resolution_conclusion(
+                substitute_clause(substitute_clause(left, left_freshening), unifier),
+                substitute_clause(substitute_clause(right, right_freshening), unifier),
+                left_pivot,
+                right_pivot,
+            ),
+            interp,
+        )
+{
+    let left_inst = substitute_clause(substitute_clause(left, left_freshening), unifier);
+    let right_inst = substitute_clause(substitute_clause(right, right_freshening), unifier);
+    standardized_parent_valid(left, left_freshening, interp);
+    clause_valid_after_substitution(substitute_clause(left, left_freshening), unifier, interp);
+    standardized_parent_valid(right, right_freshening, interp);
+    clause_valid_after_substitution(substitute_clause(right, right_freshening), unifier, interp);
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        implies clause_holds(resolution_conclusion(left_inst, right_inst, left_pivot, right_pivot),
+            interp, valuation) by {
+        assert(clause_holds(left_inst, interp, valuation));
+        assert(clause_holds(right_inst, interp, valuation));
+        assert(left_inst.literals[left_pivot].positive);
+        assert(!right_inst.literals[right_pivot].positive);
+        assert(left_inst.literals[left_pivot].atom == right_inst.literals[right_pivot].atom);
+        exact_atom_resolution_sound(left_inst, right_inst, left_pivot, right_pivot, interp, valuation);
+    }
+}
+
 spec fn inverse_renamings(sigma: Substitution, inverse: Substitution) -> bool {
     forall|x: u64|
         apply(apply(Term::Var(x), sigma), inverse) == Term::Var(x)
@@ -2643,6 +2694,17 @@ pub struct SuperpositionCertificate {
     target_path: Vec<u64>,
     fresh_target_path: Vec<u64>,
     unifier: Vec<ExecBinding>,
+    conclusion: ExecClause,
+}
+
+pub struct FirstOrderResolutionCertificate {
+    left: ExecClause,
+    right: ExecClause,
+    left_freshening: Vec<ExecBinding>,
+    right_freshening: Vec<ExecBinding>,
+    unifier: Vec<ExecBinding>,
+    left_pivot: usize,
+    right_pivot: usize,
     conclusion: ExecClause,
 }
 
@@ -4242,9 +4304,10 @@ fn executable_unifier_certificate_examples()
     let left = ExecTerm::Var(11);
     let right = ExecTerm::Const(7);
     let valid = vec![ExecBinding { variable: 11, replacement: ExecTerm::Const(7) }];
-    let valid_domain_unique = check_domain_unique(&valid, 1);
+    assert(valid@.len() == 1);
+    let valid_domain_unique = check_domain_unique(&valid, 10);
     assert(valid_domain_unique);
-    let valid_result = check_unifier(&left, &right, &valid, 1);
+    let valid_result = check_unifier(&left, &right, &valid, 10);
     assert(domain_unique(view_subst(valid@)));
     assert(lookup(view_subst(valid@), 11) == Some(Term::Const(7)));
     assert(valid_result);
@@ -5139,6 +5202,26 @@ fn charge_certificate_structure(
     true
 }
 
+fn charge_first_order_resolution_certificate(
+    certificate: &FirstOrderResolutionCertificate,
+    work: &mut usize,
+    limit: usize,
+) -> (ok: bool)
+    requires *work <= limit
+    ensures *final(work) <= limit
+{
+    if !charge_clause_structure(&certificate.left, work, limit)
+        || !charge_clause_structure(&certificate.right, work, limit)
+        || !charge_clause_structure(&certificate.conclusion, work, limit)
+        || !charge_binding_structure(&certificate.left_freshening, work, limit)
+        || !charge_binding_structure(&certificate.right_freshening, work, limit)
+        || !charge_binding_structure(&certificate.unifier, work, limit)
+    {
+        return false;
+    }
+    true
+}
+
 fn lookup_exec(bindings: &Vec<ExecBinding>, variable: u64) -> (result: Option<ExecTerm>)
     ensures
         match result {
@@ -5455,6 +5538,129 @@ fn check_dag_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>, work_limi
                 assert(clause_valid(view_clause(nodes@[node.parents@[1] as int].clause), interp));
                 assert(clause_valid(view_clause(node.clause), interp));
             }
+        }
+    }
+    true
+}
+
+fn check_first_order_resolution_and_replay(
+    certificate: &FirstOrderResolutionCertificate,
+    work_limit: usize,
+) -> (accepted: bool)
+    ensures
+        accepted ==> certificate.left.literals.len()
+            + certificate.right.literals.len()
+            + certificate.conclusion.literals.len() <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.left), interp)
+            && clause_valid(view_clause(certificate.right), interp)
+            ==> clause_valid(view_clause(certificate.conclusion), interp),
+{
+    let mut structural_work: usize = 0;
+    if !charge_first_order_resolution_certificate(certificate, &mut structural_work, work_limit) {
+        return false;
+    }
+    if certificate.left.literals.len() > work_limit
+        || certificate.right.literals.len() > work_limit - certificate.left.literals.len()
+    {
+        return false;
+    }
+    let replay_work = certificate.left.literals.len() + certificate.right.literals.len();
+    if certificate.conclusion.literals.len() > work_limit - replay_work {
+        return false;
+    }
+    let remaining_work = work_limit - structural_work;
+    if certificate.left_pivot >= certificate.left.literals.len()
+        || certificate.right_pivot >= certificate.right.literals.len()
+    {
+        return false;
+    }
+    if !certificate.left.literals[certificate.left_pivot].positive
+        || certificate.right.literals[certificate.right_pivot].positive
+    {
+        return false;
+    }
+    let Some(left_variables) = collect_clause_variables_bounded(&certificate.left, remaining_work) else {
+        return false;
+    };
+    let Some(right_variables) = collect_clause_variables_bounded(&certificate.right, remaining_work) else {
+        return false;
+    };
+    if !check_freshening(&left_variables, &right_variables, &certificate.left_freshening, remaining_work) {
+        return false;
+    }
+    let Some(fresh_left) = freshen_clause_apart(
+        &certificate.left, &right_variables, &certificate.left_freshening, remaining_work,
+    ) else { return false; };
+    let Some(fresh_left_variables) = collect_clause_variables_bounded(&fresh_left, remaining_work) else {
+        return false;
+    };
+    let mut target_avoid = Vec::new();
+    if !extend_unique(&mut target_avoid, &right_variables, remaining_work)
+        || !extend_unique(&mut target_avoid, &fresh_left_variables, remaining_work)
+    {
+        return false;
+    }
+    if !check_freshening(&right_variables, &target_avoid, &certificate.right_freshening, remaining_work) {
+        return false;
+    }
+    let Some(fresh_right) = freshen_clause_apart(
+        &certificate.right, &target_avoid, &certificate.right_freshening, remaining_work,
+    ) else { return false; };
+
+    if !check_domain_unique(&certificate.unifier, remaining_work) {
+        return false;
+    }
+    let inst_left = substitute_clause_exec(&fresh_left, &certificate.unifier);
+    let inst_right = substitute_clause_exec(&fresh_right, &certificate.unifier);
+    if certificate.left_pivot >= inst_left.literals.len()
+        || certificate.right_pivot >= inst_right.literals.len()
+    {
+        return false;
+    }
+    if !same_atom(&inst_left.literals[certificate.left_pivot].atom, &inst_right.literals[certificate.right_pivot].atom) {
+        return false;
+    }
+    let expected = build_nullary_resolution_conclusion(&inst_left, &inst_right, certificate.left_pivot, certificate.right_pivot);
+    if !same_clause_exact(&expected, &certificate.conclusion) {
+        return false;
+    }
+    proof {
+        assert(view_clause(inst_left)
+            == substitute_clause(
+                substitute_clause(view_clause(certificate.left),
+                    view_subst(certificate.left_freshening@)),
+                view_subst(certificate.unifier@)));
+        assert(view_clause(inst_right)
+            == substitute_clause(
+                substitute_clause(view_clause(certificate.right),
+                    view_subst(certificate.right_freshening@)),
+                view_subst(certificate.unifier@)));
+        assert(view_atom(inst_left.literals@[certificate.left_pivot as int].atom)
+            == view_atom(inst_right.literals@[certificate.right_pivot as int].atom));
+        assert(view_clause(inst_left).literals[certificate.left_pivot as int].atom
+            == view_atom(inst_left.literals@[certificate.left_pivot as int].atom));
+        assert(view_clause(inst_right).literals[certificate.right_pivot as int].atom
+            == view_atom(inst_right.literals@[certificate.right_pivot as int].atom));
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.left), interp)
+            && clause_valid(view_clause(certificate.right), interp)
+            implies clause_valid(view_clause(certificate.conclusion), interp) by {
+            standardized_first_order_resolution_sound(
+                view_clause(certificate.left),
+                view_clause(certificate.right),
+                certificate.left_pivot as int,
+                certificate.right_pivot as int,
+                view_subst(certificate.left_freshening@),
+                view_subst(certificate.right_freshening@),
+                view_subst(certificate.unifier@),
+                interp,
+            );
+            assert(clause_equal(view_clause(expected), resolution_conclusion(
+                view_clause(inst_left), view_clause(inst_right),
+                certificate.left_pivot as int, certificate.right_pivot as int)));
+            assert(clause_equal(view_clause(expected), view_clause(certificate.conclusion)));
+            assert(view_clause(certificate.conclusion).literals =~= view_clause(expected).literals);
         }
     }
     true
@@ -7074,6 +7280,65 @@ fn executable_nullary_resolution_examples() -> bool {
     true
 }
 
+fn executable_first_order_resolution_examples() -> bool {
+    // left: p(X) | q(X)
+    let left = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Var(7))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Var(7))) },
+    ] };
+    // right: ~p(a) | r(b)
+    let right = ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(3, Box::new(ExecTerm::Const(2))) },
+    ] };
+    // conclusion: q(a) | r(b)
+    let conclusion = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(3, Box::new(ExecTerm::Const(2))) },
+    ] };
+    let mut cert = FirstOrderResolutionCertificate {
+        left: left,
+        right: right,
+        left_freshening: vec![ExecBinding { variable: 7, replacement: ExecTerm::Var(10) }],
+        right_freshening: Vec::new(),
+        unifier: vec![ExecBinding { variable: 10, replacement: ExecTerm::Const(1) }],
+        left_pivot: 0,
+        right_pivot: 0,
+        conclusion: conclusion,
+    };
+    if !check_first_order_resolution_and_replay(&cert, 1000) {
+        return false;
+    }
+
+    // Forged conclusion (wrong constant 99) fails closed.
+    cert.conclusion = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(99))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(3, Box::new(ExecTerm::Const(2))) },
+    ] };
+    if check_first_order_resolution_and_replay(&cert, 1000) {
+        return false;
+    }
+
+    // Atom predicate mismatch fails closed.
+    cert.conclusion = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(3, Box::new(ExecTerm::Const(2))) },
+    ] };
+    cert.right.literals[0].atom = ExecAtom::Pred1(99, Box::new(ExecTerm::Const(1)));
+    if check_first_order_resolution_and_replay(&cert, 1000) {
+        return false;
+    }
+
+    // Wrong polarity (right pivot positive) fails closed.
+    cert.right.literals[0].atom = ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1)));
+    cert.right.literals[0].positive = true;
+    if check_first_order_resolution_and_replay(&cert, 1000) {
+        return false;
+    }
+
+    true
+}
+
 fn resolution_unit(predicate: u64, positive: bool) -> ExecClause {
     ExecClause { literals: vec![ExecLiteral { positive, atom: ExecAtom::Pred0(predicate) }] }
 }
@@ -7857,6 +8122,7 @@ fn run_examples() -> bool {
     if !executable_dag_certification_examples() { return false; }
     if !executable_input_leaf_comparison_budget_example() { return false; }
     if !executable_nullary_resolution_examples() { return false; }
+    if !executable_first_order_resolution_examples() { return false; }
     if !executable_resolution_dag_examples() { return false; }
     if !executable_resolution_chain_examples() { return false; }
     if !wire_dispatch_regressions() { return false; }
@@ -7878,6 +8144,8 @@ fn regression_main() {
     assert!(executable_input_leaf_comparison_budget_example(),
         "input leaf comparison budget regression failed");
     assert!(executable_nullary_resolution_examples(), "nullary resolution regression failed");
+    assert!(executable_first_order_resolution_examples(),
+        "first-order resolution regression failed");
     assert!(executable_resolution_dag_examples(), "resolution DAG regression failed");
     assert!(executable_resolution_chain_examples(), "resolution-chain DAG regression failed");
     assert!(wire_dispatch_regressions(), "verified wire-dispatch regression failed");
