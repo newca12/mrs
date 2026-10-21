@@ -300,6 +300,23 @@ struct EqualityFactoringCertificate {
     conclusion: Vec<Literal>,
 }
 
+struct SubsumptionResolutionCertificate {
+    target: Vec<Literal>,
+    active: Vec<Literal>,
+    conclusion: Vec<Literal>,
+    active_freshening: Vec<(VarId, Term)>,
+    unifier: Vec<(VarId, Term)>,
+    target_pivot: usize,
+    active_pivot: usize,
+    matches: Vec<usize>,
+}
+
+struct WeakeningCertificate {
+    parent: Vec<Literal>,
+    inclusions: Vec<usize>,
+    conclusion: Vec<Literal>,
+}
+
 fn instance(
     term: &Term,
     subst: &HashMap<VarId, Term>,
@@ -437,6 +454,35 @@ impl EqualityFactoringCertificate {
         wire.bindings(&self.unifier)?;
         wire.n(self.first)?;
         wire.n(self.second)?;
+        Ok(())
+    }
+}
+
+impl SubsumptionResolutionCertificate {
+    fn encode(&self, wire: &mut Wire) -> Result<(), String> {
+        wire.clause(&self.target)?;
+        wire.clause(&self.active)?;
+        wire.clause(&self.conclusion)?;
+        wire.bindings(&self.active_freshening)?;
+        wire.bindings(&self.unifier)?;
+        wire.n(self.target_pivot)?;
+        wire.n(self.active_pivot)?;
+        wire.n(self.matches.len())?;
+        for m in &self.matches {
+            wire.n(*m)?;
+        }
+        Ok(())
+    }
+}
+
+impl WeakeningCertificate {
+    fn encode(&self, wire: &mut Wire) -> Result<(), String> {
+        wire.clause(&self.parent)?;
+        wire.clause(&self.conclusion)?;
+        wire.n(self.inclusions.len())?;
+        for inc in &self.inclusions {
+            wire.n(*inc)?;
+        }
         Ok(())
     }
 }
@@ -588,17 +634,17 @@ fn certificate(
     Err("no supported exact ordered superposition certificate".into())
 }
 
-fn bounded_unify_atoms(
+fn bounded_unify_atoms_into(
     a: &Atom,
     b: &Atom,
+    subst: &mut HashMap<VarId, Term>,
     fuel: &mut usize,
-) -> Result<Option<HashMap<VarId, Term>>, String> {
-    let mut subst = HashMap::new();
+) -> Result<bool, String> {
     let mut pending = Vec::new();
     match (a, b) {
         (Atom::Pred(p1, args1), Atom::Pred(p2, args2)) => {
             if p1 != p2 || args1.len() != args2.len() {
-                return Ok(None);
+                return Ok(false);
             }
             pending.extend(args1.iter().cloned().zip(args2.iter().cloned()));
         }
@@ -606,30 +652,50 @@ fn bounded_unify_atoms(
             pending.push((a1.clone(), b1.clone()));
             pending.push((a2.clone(), b2.clone()));
         }
-        _ => return Ok(None),
+        _ => return Ok(false),
     }
     while let Some((a, b)) = pending.pop() {
-        let a = instance(&a, &subst, fuel, 0)?;
-        let b = instance(&b, &subst, fuel, 0)?;
+        let a = instance(&a, subst, fuel, 0)?;
+        let b = instance(&b, subst, fuel, 0)?;
         if a == b {
             continue;
         }
         match (a, b) {
             (Term::Var(v), t) | (t, Term::Var(v)) => {
                 if t.free_vars().contains(&v) {
-                    return Ok(None);
+                    return Ok(false);
                 }
                 subst.insert(v, t);
             }
             (Term::App(f, a), Term::App(g, b)) => {
                 if f != g || a.len() != b.len() {
-                    return Ok(None);
+                    return Ok(false);
                 }
                 pending.extend(a.into_iter().zip(b));
             }
         }
     }
-    Ok(Some(subst))
+    Ok(true)
+}
+
+fn bounded_unify_atoms(
+    a: &Atom,
+    b: &Atom,
+    fuel: &mut usize,
+) -> Result<Option<HashMap<VarId, Term>>, String> {
+    let mut subst = HashMap::new();
+    if bounded_unify_atoms_into(a, b, &mut subst, fuel)? {
+        Ok(Some(subst))
+    } else {
+        Ok(None)
+    }
+}
+
+fn consume_search_fuel(fuel: &mut usize) -> Result<(), String> {
+    *fuel = fuel
+        .checked_sub(1)
+        .ok_or("subsumption matching work ceiling")?;
+    Ok(())
 }
 
 fn resolution_certificate(
@@ -863,6 +929,180 @@ fn equality_factoring_certificate(
     Err("no supported equality factoring certificate".into())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn match_active_literals(
+    active: &[Literal],
+    target: &[Literal],
+    active_idx: usize,
+    active_pivot: usize,
+    target_pivot: usize,
+    subst: &HashMap<VarId, Term>,
+    matches: &mut Vec<usize>,
+    fuel: &mut usize,
+) -> Result<Option<HashMap<VarId, Term>>, String> {
+    consume_search_fuel(fuel)?;
+    if active_idx == active.len() {
+        return Ok(Some(subst.clone()));
+    }
+    if active_idx == active_pivot {
+        matches.push(target_pivot);
+        let res = match_active_literals(
+            active,
+            target,
+            active_idx + 1,
+            active_pivot,
+            target_pivot,
+            subst,
+            matches,
+            fuel,
+        )?;
+        if res.is_some() {
+            return Ok(res);
+        }
+        matches.pop();
+        return Ok(None);
+    }
+    let act_lit = &active[active_idx];
+    for tgt_idx in 0..target.len() {
+        consume_search_fuel(fuel)?;
+        if tgt_idx == target_pivot {
+            continue;
+        }
+        let tgt_lit = &target[tgt_idx];
+        if act_lit.positive != tgt_lit.positive {
+            continue;
+        }
+        let mut branch_subst = subst.clone();
+        if bounded_unify_atoms_into(&act_lit.atom, &tgt_lit.atom, &mut branch_subst, fuel)? {
+            matches.push(tgt_idx);
+            let res = match_active_literals(
+                active,
+                target,
+                active_idx + 1,
+                active_pivot,
+                target_pivot,
+                &branch_subst,
+                matches,
+                fuel,
+            )?;
+            if res.is_some() {
+                return Ok(res);
+            }
+            matches.pop();
+        }
+    }
+    Ok(None)
+}
+
+fn subsumption_resolution_certificate(
+    p0: &[Literal],
+    p1: &[Literal],
+    goal: &[Literal],
+    limits: VerificationLimits,
+) -> Result<(SubsumptionResolutionCertificate, bool), String> {
+    let mut fuel = limits.max_comparison_steps.min(200_000);
+    for (target, active, flipped) in [(p0, p1, false), (p1, p0, true)] {
+        if target.is_empty() || active.is_empty() {
+            continue;
+        }
+        for target_pivot in 0..target.len() {
+            let mut expected = target.to_vec();
+            expected.remove(target_pivot);
+            if expected.len() != goal.len() {
+                continue;
+            }
+            let (mut forward, mut backward) = (HashMap::new(), HashMap::new());
+            if !expected.iter().zip(goal).all(|(a, b)| {
+                a.positive == b.positive
+                    && atom_alpha_equiv(&a.atom, &b.atom, &mut forward, &mut backward)
+            }) {
+                continue;
+            }
+            let mut next = max_var_clause(target)
+                .max(max_var_clause(active))
+                .checked_add(1)
+                .ok_or("variable-id overflow")?;
+            let (fresh_active, active_freshening) = freshen(active, &mut next)?;
+            for active_pivot in 0..fresh_active.len() {
+                if fresh_active[active_pivot].positive == target[target_pivot].positive {
+                    continue;
+                }
+                let mut base_subst = HashMap::new();
+                if !bounded_unify_atoms_into(
+                    &fresh_active[active_pivot].atom,
+                    &target[target_pivot].atom,
+                    &mut base_subst,
+                    &mut fuel,
+                )? {
+                    continue;
+                }
+                let mut matches = Vec::new();
+                if let Some(final_subst) = match_active_literals(
+                    &fresh_active,
+                    target,
+                    0,
+                    active_pivot,
+                    target_pivot,
+                    &base_subst,
+                    &mut matches,
+                    &mut fuel,
+                )? {
+                    let mut unifier: Vec<_> = final_subst
+                        .iter()
+                        .map(|(v, t)| Ok((*v, instance(t, &final_subst, &mut fuel, 0)?)))
+                        .collect::<Result<_, String>>()?;
+                    unifier.sort_by_key(|(v, _)| *v);
+                    return Ok((
+                        SubsumptionResolutionCertificate {
+                            target: target.to_vec(),
+                            active: active.to_vec(),
+                            conclusion: expected,
+                            active_freshening,
+                            unifier,
+                            target_pivot,
+                            active_pivot,
+                            matches,
+                        },
+                        flipped,
+                    ));
+                }
+            }
+        }
+    }
+    Err("no supported subsumption resolution certificate".into())
+}
+
+fn weakening_certificate(
+    parent: &[Literal],
+    goal: &[Literal],
+) -> Result<WeakeningCertificate, String> {
+    if parent.len() > goal.len() {
+        return Err("weakening parent larger than goal".into());
+    }
+    let mut inclusions = Vec::with_capacity(parent.len());
+    let mut used = vec![false; goal.len()];
+    for p_lit in parent {
+        let mut found = None;
+        for (g_idx, g_lit) in goal.iter().enumerate() {
+            if !used[g_idx] && p_lit.positive == g_lit.positive && p_lit.atom == g_lit.atom {
+                used[g_idx] = true;
+                found = Some(g_idx);
+                break;
+            }
+        }
+        if let Some(idx) = found {
+            inclusions.push(idx);
+        } else {
+            return Err("weakening parent literal not in goal".into());
+        }
+    }
+    Ok(WeakeningCertificate {
+        parent: parent.to_vec(),
+        inclusions,
+        conclusion: goal.to_vec(),
+    })
+}
+
 fn supported_clause(
     symbols: &mut SymbolTable,
     formula: &AnnotatedFormula<'_>,
@@ -1015,6 +1255,8 @@ enum Kind {
     EqualityResolution(EqualityResolutionCertificate),
     Factoring(FactoringCertificate),
     EqualityFactoring(EqualityFactoringCertificate),
+    SubsumptionResolution(SubsumptionResolutionCertificate),
+    Weakening(WeakeningCertificate),
 }
 struct WireNode {
     clause: Vec<Literal>,
@@ -1094,20 +1336,35 @@ fn dag_request(
                     .ok_or_else(|| "missing/forward parent".into())
             })
             .collect::<Result<_, String>>()?;
-        let (kind, clause) = if parents.is_empty() {
+        let (kind, clause, parents) = if parents.is_empty() {
             verify_leaf(node, problem, source, &mut symbols, limits).map_err(|v| v.to_string())?;
             // Exact raw syntax, no AC/alpha leaf relaxation in this bridge.
             if !inputs.contains(&raw) {
                 return Err("leaf differs from exact problem clause".into());
             }
-            (Kind::Input, raw)
+            (Kind::Input, raw, parents)
         } else if parents.len() == 2 {
             let (left, right) = (&nodes[parents[0]].clause, &nodes[parents[1]].clause);
             match node.rule {
-                Some("superposition") => {
-                    let c = certificate(left, right, &raw, false, limits)?;
+                Some("superposition") | Some("paramodulation") | Some("demodulation") => {
+                    let (c, flipped) = if let Ok(c) = certificate(left, right, &raw, false, limits)
+                    {
+                        (c, false)
+                    } else if let Ok(c) = certificate(right, left, &raw, false, limits) {
+                        (c, true)
+                    } else {
+                        return Err(
+                            "no supported superposition/paramodulation/demodulation certificate"
+                                .into(),
+                        );
+                    };
                     let conclusion = c.conclusion.clone();
-                    (Kind::Superposition(c), conclusion)
+                    let parents = if flipped {
+                        vec![parents[1], parents[0]]
+                    } else {
+                        parents
+                    };
+                    (Kind::Superposition(c), conclusion, parents)
                 }
                 Some("resolution") => {
                     let mut exact_pivot = None;
@@ -1122,38 +1379,87 @@ fn dag_request(
                                     .map(|(_, l)| l.clone())
                                     .collect();
                                 if expected == raw {
-                                    exact_pivot = Some((lp, rp));
+                                    exact_pivot = Some(((lp, rp), false));
                                 }
                             }
                         }
                     }
-                    if let Some((lp, rp)) = exact_pivot {
-                        (Kind::Resolution(lp, rp), raw)
-                    } else {
-                        let c = resolution_certificate(left, right, &raw, limits)?;
-                        let conclusion = c.conclusion.clone();
-                        (Kind::FirstOrderResolution(c), conclusion)
+                    if exact_pivot.is_none() {
+                        for (rp, r) in right.iter().enumerate() {
+                            for (lp, l) in left.iter().enumerate() {
+                                if r.positive && !l.positive && r.atom == l.atom {
+                                    let expected: Vec<_> = right
+                                        .iter()
+                                        .enumerate()
+                                        .filter(|(i, _)| *i != rp)
+                                        .chain(left.iter().enumerate().filter(|(i, _)| *i != lp))
+                                        .map(|(_, l)| l.clone())
+                                        .collect();
+                                    if expected == raw {
+                                        exact_pivot = Some(((rp, lp), true));
+                                    }
+                                }
+                            }
+                        }
                     }
+                    if let Some(((lp, rp), flipped)) = exact_pivot {
+                        let parents = if flipped {
+                            vec![parents[1], parents[0]]
+                        } else {
+                            parents
+                        };
+                        (Kind::Resolution(lp, rp), raw, parents)
+                    } else if let Ok(c) = resolution_certificate(left, right, &raw, limits) {
+                        let conclusion = c.conclusion.clone();
+                        (Kind::FirstOrderResolution(c), conclusion, parents)
+                    } else if let Ok(c) = resolution_certificate(right, left, &raw, limits) {
+                        let conclusion = c.conclusion.clone();
+                        (
+                            Kind::FirstOrderResolution(c),
+                            conclusion,
+                            vec![parents[1], parents[0]],
+                        )
+                    } else {
+                        return Err("no supported first-order resolution certificate".into());
+                    }
+                }
+                Some("subsumption_resolution") => {
+                    let (c, flipped) =
+                        subsumption_resolution_certificate(left, right, &raw, limits)?;
+                    let conclusion = c.conclusion.clone();
+                    let parents = if flipped {
+                        vec![parents[1], parents[0]]
+                    } else {
+                        parents
+                    };
+                    (Kind::SubsumptionResolution(c), conclusion, parents)
                 }
                 _ => return Err("unsupported inference rule".into()),
             }
         } else if parents.len() == 1 {
             let parent = &nodes[parents[0]].clause;
             match node.rule {
-                Some("equality_resolution") | Some("destructive_equality_resolution") => {
+                Some("equality_resolution")
+                | Some("destructive_equality_resolution")
+                | Some("trivial_inequality_removal") => {
                     let c = equality_resolution_certificate(parent, &raw, limits)?;
                     let conclusion = c.conclusion.clone();
-                    (Kind::EqualityResolution(c), conclusion)
+                    (Kind::EqualityResolution(c), conclusion, parents)
                 }
-                Some("factoring") => {
+                Some("factoring") | Some("condensation") => {
                     let c = factoring_certificate(parent, &raw, limits)?;
                     let conclusion = c.conclusion.clone();
-                    (Kind::Factoring(c), conclusion)
+                    (Kind::Factoring(c), conclusion, parents)
                 }
                 Some("equality_factoring") => {
                     let c = equality_factoring_certificate(parent, &raw, limits)?;
                     let conclusion = c.conclusion.clone();
-                    (Kind::EqualityFactoring(c), conclusion)
+                    (Kind::EqualityFactoring(c), conclusion, parents)
+                }
+                Some("weaken") => {
+                    let c = weakening_certificate(parent, &raw)?;
+                    let conclusion = c.conclusion.clone();
+                    (Kind::Weakening(c), conclusion, parents)
                 }
                 _ => return Err("unsupported inference rule".into()),
             }
@@ -1194,6 +1500,8 @@ fn dag_request(
             Kind::EqualityResolution(_) => 5,
             Kind::Factoring(_) => 6,
             Kind::EqualityFactoring(_) => 7,
+            Kind::SubsumptionResolution(_) => 8,
+            Kind::Weakening(_) => 9,
         })?;
         wire.n(node.parents.len())?;
         for p in &node.parents {
@@ -1210,6 +1518,8 @@ fn dag_request(
             Kind::EqualityResolution(c) => c.encode(&mut wire)?,
             Kind::Factoring(c) => c.encode(&mut wire)?,
             Kind::EqualityFactoring(c) => c.encode(&mut wire)?,
+            Kind::SubsumptionResolution(c) => c.encode(&mut wire)?,
+            Kind::Weakening(c) => c.encode(&mut wire)?,
         }
     }
     Ok((wire.finish()?, nodes.len()))

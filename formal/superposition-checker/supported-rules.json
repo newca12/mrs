@@ -67,6 +67,20 @@
       "production_certification": false
     },
     {
+      "id": "subsumption-resolution",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_and_dag_dispatch",
+      "description": "Subsumption resolution (contextual literal elimination): from target clause C | L and active clause A | ~L' where L' unifies with L under unifier sigma and all other literals of A sigma match literals in C, derive C without instantiating C. Dispatched in proof DAGs via ProofNodeKind::SubsumptionResolution; proven by subsumption_resolution_sound to preserve universal validity.",
+      "production_certification": false
+    },
+    {
+      "id": "clause-weakening",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_and_dag_dispatch",
+      "description": "Clause weakening: from universally valid parent clause C, any superset clause D containing all literals of C is universally valid. Dispatched in proof DAGs via ProofNodeKind::Weakening; proven by clause_weakening_sound to preserve universal validity.",
+      "production_certification": false
+    },
+    {
       "id": "proof-dag-refutation",
       "module": "first_order_core.rs",
       "status": "verified_ir_dag_certification",
@@ -101,6 +115,10 @@
     "dag_clause_factoring": true,
     "equality_factoring_rule": true,
     "dag_equality_factoring": true,
+    "subsumption_resolution_rule": true,
+    "dag_subsumption_resolution": true,
+    "clause_weakening_rule": true,
+    "dag_weakening": true,
     "archived_c502_step_replay": true,
     "archived_c502_full_proof_translation": false,
     "source_variable_unification_regression": true,
