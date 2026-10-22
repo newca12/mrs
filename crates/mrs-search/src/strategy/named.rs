@@ -66,7 +66,7 @@ pub const ALL: &[&str] = &[
 
 const DEFAULT_CASC_ORDER: [usize; 15] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 const CASC_FEQ_ORDER: [usize; 15] = [11, 12, 1, 6, 10, 8, 14, 4, 5, 2, 3, 7, 9, 13, 15];
-const CASC_FNE_ORDER: [usize; 15] = [11, 8, 4, 15, 10, 3, 12, 1, 6, 2, 5, 7, 9, 13, 14];
+const CASC_FNE_ORDER: [usize; 15] = [11, 13, 4, 8, 15, 7, 3, 1, 10, 12, 6, 2, 9, 14, 5];
 const CASC_UEQ_ORDER: [usize; 15] = [4, 8, 12, 11, 2, 14, 15, 1, 3, 5, 6, 7, 9, 10, 13];
 const CASC_EPR_ORDER: [usize; 15] = [6, 2, 1, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 const CASC_EPS_ORDER: [usize; 15] = [2, 3, 1, 8, 11, 12, 9, 14, 7, 10, 5, 13, 15, 6, 4];
@@ -1082,7 +1082,7 @@ mod tests {
     fn canonical_orders_match_named_division_schedules() {
         for (name, expected) in [
             ("casc_feq", &CASC_FEQ_ORDER[..8]),
-            ("casc_fne", &[11, 8, 4, 15, 10, 3, 12, 1][..]),
+            ("casc_fne", &[11, 13, 4, 8, 15, 7, 3, 1][..]),
             ("casc_ueq", &[4, 8, 12, 11, 2, 14, 15, 1][..]),
         ] {
             let schedule = by_name(name, Duration::from_secs(8), 8).unwrap();

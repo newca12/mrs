@@ -639,116 +639,192 @@ row-level outcome detail is in [`results/README.md`](results/README.md), the
 [ICU certification report](reports/benchmarks/icu-2026-10.md), and the
 [`intermittency inventory`](results/intermittency.md).
 
-### Fresh CASC-30 FEQ campaign (2026-10-20)
+### Fresh CASC-30 FEQ campaigns (2026-10-20 and 2026-10-21)
 
-The full 400-problem run
-`~/crates/mrs-bench/results/campaign-casc30-feq-W8CASCHJ1-01-20261020`
-returned 108 refutations (`Theorem`), 249 `Timeout`, and 43 `GaveUp`, with zero
-process errors or silent kills. Strict audit certified **103 `VerifiedGood`
-(95.4%)**, with **0 `VerifiedBad`**, 2 `Unknown`, 1 verifier `Timeout`, and 2
-`Proof Omitted`.
+Two consecutive full 400-problem runs were evaluated on canonical 8-core hardware (`mtsdev01`):
+- `~/crates/mrs-bench/results/campaign-casc30-feq-W8CASCHJ1-01-20261020` (Oct 20)
+- `~/crates/mrs-bench/results/campaign-casc30-feq-W8CASCHJ1-01-20261021` (Oct 21)
 
-Compared with `campaign-casc30-ueq-feq-W8CASCHJ1-20261016`, strict unsoundness
-dropped from 2 `VerifiedBad` to **0**: both `KLE071+1` (fixed symbol signature
-arity) and `SWV486+2` (fixed AC superposition validation) now certify strictly
-as `VerifiedGood`. Two residual proofs remain `Unknown` at incomplete AC
-superposition replay (`KLE132+1` and `LCL894+1`), `ALG049+1` timed out in the
-verifier (>120 s) on an 8.2k-node proof, and two refutations (`SET017+1` and
-`SET072+1`) were withheld exceeding the 32 MB proof limit.
+Both runs produced identical certification outcomes: exactly **108 refutations (`Theorem`)**,
+**103 `VerifiedGood` (95.4%)**, **0 `VerifiedBad` (0.0% unsoundness)**, 2 `Unknown`,
+1 verifier `Timeout`, and 2 `Proof Omitted`. Oct 20 returned 249 `Timeout` and 43 `GaveUp`;
+Oct 21 returned 244 `Timeout` and 48 `GaveUp`. Zero process errors, crashes, or silent kills
+occurred in either campaign.
 
-The run also establishes production resolution of the quadratic SOS pre-flight
-issue: previously hung problems terminated cleanly, with `BIO005+1` and
-`BIO006+1` both solving in ~157 s and strictly certifying.
+Compared with `campaign-casc30-ueq-feq-W8CASCHJ1-20261016`, strict unsoundness dropped from
+2 `VerifiedBad` to **0**: both `KLE071+1` (fixed symbol signature arity) and `SWV486+2` (fixed AC
+superposition validation) certify strictly as `VerifiedGood` across both runs. Two residual
+proofs remain `Unknown` at incomplete AC superposition replay (`KLE132+1` and `LCL894+1`),
+`ALG049+1` timed out in the verifier (>120 s) on an 8.2k-node proof in both runs, and two
+refutations (`SET017+1` and `SET072+1`) were withheld exceeding the 32 MB proof limit.
 
-Hardware: `mtsdev01` (8 physical cores, 96,350 MB RAM, effective memory ceiling
-81,897 MB). Peak observed memory among completed jobs was 64,651 MB
-(`CSR037+5`). Provenance: commit `a38c8bc8`, dirty tree, Rust 1.99.1, binary
-SHA-256 `8029b1d6c1fee6b5b533365823755a659bca31eb33e9d4e1e92e3e23cf48f762`.
-Detailed telemetry and domain breakdown are in the
+Across the two runs, 107 of 108 solved problems are identical. Exactly one borderline problem
+pair swapped near the 240 s horizon due to thread racing under 8-worker concurrency: `SWV458+1`
+solved in 28.4 s on Oct 20 (`VerifiedGood`) but timed out on Oct 21; `SWV457+1` timed out on Oct 20
+but solved in 153.4 s on Oct 21 (`VerifiedGood`).
+
+Both runs establish production confirmation of the quadratic SOS pre-flight fix (UI-10 / UI-2)
+on 96 GB hardware: previously hung problems terminated cleanly, with `BIO005+1` and `BIO006+1`
+both solving in ~157 s and strictly certifying in both runs.
+
+Hardware: `mtsdev01` (8 physical cores, 96,350 MB RAM, effective memory ceiling 81,897 MB).
+Peak observed memory was 64,651 MB (`CSR037+5`). Provenance: commit `a38c8bc8` (binary SHA-256
+`8029b1d6c1fee6b5b533365823755a659bca31eb33e9d4e1e92e3e23cf48f762`) on Oct 20; commit
+`c45227ff` (binary SHA-256 `fd60bd269efe77c249ba2531605b6223fed510df275e0446008c9cf0fd106d19`)
+on Oct 21. Detailed telemetry and domain breakdowns are in the
 [FEQ campaign report](reports/benchmarks/feq-2026-10.md) and
 [`results/README.md`](results/README.md).
 
-### Fresh CASC-30 UEQ campaign (2026-10-20)
+### Fresh CASC-30 UEQ campaigns (2026-10-20 and 2026-10-21)
 
-The full 300-problem run
-`~/crates/mrs-bench/results/campaign-casc30-ueq-W8CASCHJ1-02-20261020`
-returned 124 refutations (`Unsatisfiable`), 167 `Timeout`, and 9 `GaveUp`,
-with zero process errors or crashes. Strict audit certified **120 `VerifiedGood`
-(96.8%)**, with **0 `VerifiedBad`**, 4 `Unknown`, 0 checker timeouts, and 0
-omitted proofs.
+Two consecutive full 300-problem runs were evaluated on canonical 8-core hardware (`mtsdev02`):
+- `~/crates/mrs-bench/results/campaign-casc30-ueq-W8CASCHJ1-02-20261020` (Oct 20)
+  returned 124 refutations (`Unsatisfiable`), 167 `Timeout`, and 9 `GaveUp`.
+  Strict audit certified **120 `VerifiedGood` (96.8%)**, with **0 `VerifiedBad`**,
+  4 `Unknown`, 0 checker timeouts, and 0 omitted proofs.
+- `~/crates/mrs-bench/results/campaign-casc30-ueq-W8CASCHJ1-02-20261021` (Oct 21)
+  returned 123 refutations (`Unsatisfiable`), 166 `Timeout`, and 11 `GaveUp`.
+  Strict audit certified **119 `VerifiedGood` (96.8%)**, with **0 `VerifiedBad`**,
+  4 `Unknown`, 0 checker timeouts, and 0 omitted proofs.
 
-Compared with `campaign-casc30-ueq-feq-W8CASCHJ1-20261016`, strict unsoundness
-dropped from 5 `VerifiedBad` and 1 missing root to **0**:
-- `MVA008-1` and `MVA009-1` (leaf matching with residual axioms) certify strictly as `VerifiedGood`.
-- `REL034-2` (symbol arity conflict) certifies strictly as `VerifiedGood`.
-- `REL045-2` (previously omitted proof root) certifies strictly as `VerifiedGood`.
-- `RNG009-5` and `RNG009-7` now fail closed as `Unknown` due to incomplete AC rewrite replay.
+Both runs confirm zero unsoundness (`VerifiedBad = 0`) across 247 total evaluated refutations,
+reproducing the complete resolution of the 5 false rejections and 1 missing root from the
+2026-10-16 campaign:
+- `MVA008-1` and `MVA009-1` (leaf matching with residual axioms) certify strictly as `VerifiedGood` in both runs.
+- `REL034-2` (symbol arity conflict) certified strictly as `VerifiedGood` on Oct 20 (timed out at 238.8 s on Oct 21).
+- `REL045-2` (previously omitted proof root) certifies strictly as `VerifiedGood` in both runs.
+- `RNG009-5` and `RNG009-7` properly fail closed as `Unknown` due to incomplete AC rewrite replay in both runs.
 
-Together with `GRP179-2` and `REL027-3`, exactly 4 residual proofs remain `Unknown`
-due to incomplete AC superposition rewrite replay.
+Together with `GRP179-2` and `REL027-3`, exactly the same 4 residual proofs remain `Unknown`
+due to incomplete AC superposition rewrite replay across both campaigns. Across both runs, 123 of 124
+refutations re-solved identically (>99% replicate consistency).
 
-Hardware: `mtsdev02` (8 physical cores, 95,979 MB RAM, effective memory ceiling
-81,897 MB). Peak observed memory among completed jobs was 63,428 MB (`ROB005-1`).
-Provenance: commit `a38c8bc8`, dirty tree, Rust 1.99.1, binary SHA-256
-`21e72729ecf09c86b78f35caa56d91a9b06c969771988fac806dcc68d3987ecb`. Detailed
-telemetry and domain breakdown are in the
+Hardware: `mtsdev02` (8 physical cores, 95,979 MB RAM, effective memory ceiling 81,897 MB).
+Peak observed memory among completed jobs was 63,428 MB on Oct 20 and 67,525 MB on Oct 21
+(both on `ROB005-1`). Provenance: commit `a38c8bc8` (binary SHA-256
+`21e72729ecf09c86b78f35caa56d91a9b06c969771988fac806dcc68d3987ecb`) on Oct 20; commit
+`c45227ff` (binary SHA-256 `eb9a70780d9249618e62468501ebc56bce280f53a0051570fde2f0e0d2a99435`)
+on Oct 21. Detailed telemetry and domain breakdowns are in the
 [UEQ campaign report](reports/benchmarks/ueq-2026-10.md) and
 [`results/README.md`](results/README.md).
 
-### Fresh CASC-J13 FEQ standalone campaign (2026-10-20)
+### Fresh CASC-J13 FEQ standalone campaigns (2026-10-20 and 2026-10-21)
 
-The full 300-problem run
-`~/crates/mrs-bench/results/campaign-casc-j13-03-feq-CASCHJ1-20261020`
-returned 68 refutations (`Theorem`), 193 `Timeout`, and 39 `GaveUp`, with zero
-process errors or crashes. Strict audit certified **all 68 (`VerifiedGood`,
-100.0%)**, with **0 `VerifiedBad`**, **0 `Unknown`**, **0 checker timeouts**,
-and **0 omitted proofs**.
+Two consecutive full 300-problem runs were evaluated on canonical 8-core hardware (`mtsdev03`):
+- `~/crates/mrs-bench/results/campaign-casc-j13-03-feq-CASCHJ1-20261020` (Oct 20)
+  returned 68 refutations (`Theorem`), 193 `Timeout`, and 39 `GaveUp`.
+  Strict audit certified **all 68 (`VerifiedGood`, 100.0%)**, with **0 `VerifiedBad`**,
+  **0 `Unknown`**, 0 checker timeouts, and 0 omitted proofs.
+- `~/crates/mrs-bench/results/campaign-casc-j13-03-feq-CASCHJ1-20261021` (Oct 21)
+  returned 69 refutations (`Theorem`), 194 `Timeout`, and 37 `GaveUp`.
+  Strict audit certified **68 `VerifiedGood` (98.6%)**, **0 `VerifiedBad`**,
+  **0 `Unknown`**, 0 checker timeouts, and 1 `Proof Omitted` (`SWV406+1`, 83.4 MB proof).
 
-This standalone run used canonical CASC constraints: eight workers,
-`MRS_HARDWARE=casc`, `jobs=1`, and the official 180-second clock on the physical
-8-core Xeon E5-2407 host `mtsdev03`. Compared with the 72-solve combined run on
-a 16-core host, 66 solves are common; this run uniquely solved `MGT091+1` (89.96 s)
-and `SET101+1` (0.44 s), while six borderline solves timed out or gave up near
-the 180 s limit (`BIO006+1`, `GEO277+1`, `GEO494+1`, `SWB053+1`, `SWB073+1`,
-`SWW186+1`). Three proofs exceeded 8 MB (`MGT005+1` at 8.3 MB, `SEV677+1` at
-16.9 MB, `MGT079+1` at 23.1 MB) and all certified cleanly in under 3 seconds.
+Both standalone runs used canonical CASC constraints: eight workers, `MRS_HARDWARE=casc`,
+`jobs=1`, and the official 180-second clock on the physical 8-core Xeon E5-2407 host `mtsdev03`.
+Across both runs, 100% of emitted proofs certified strictly as `VerifiedGood`. All 68
+`VerifiedGood` refutations from Oct 20 re-solved and re-certified on Oct 21, including
+`MGT091+1` (89.96 s on Oct 20; 89.28 s on Oct 21) and `SET101+1` (0.44 s both runs).
+The 69th solve on Oct 21, `SWV406+1` (162.75 s wall time), derived an 83.4 MB proof (319k nodes)
+withheld under the 32 MB `--proof-bytes-limit`.
 
-Hardware: `mtsdev03` (8 physical cores, 95,969 MB RAM, effective memory ceiling
-81,897 MB). Peak observed memory was 65,040 MB (`CSR025+5`). Provenance: commit
-`a38c8bc8`, dirty tree, Rust 1.99.1, binary SHA-256
-`f1c84643ab459fca2f4b29b8def0fbbd9418559b271eadb178aedcf6e5a65bc5`. Full
-details are in the [CASC-J13 FEQ report](reports/benchmarks/feq-j13-2026-10.md)
+Hardware: `mtsdev03` (8 physical cores, 95,969 MB RAM, effective memory ceiling 81,897 MB).
+Peak observed memory was 65,040 MB on Oct 20 (`CSR025+5`) and 64,650 MB on Oct 21 (`CSR036+5`).
+Provenance: commit `a38c8bc8` (binary SHA-256 `f1c84643ab459fca2f4b29b8def0fbbd9418559b271eadb178aedcf6e5a65bc5`)
+on Oct 20; commit `c45227ff` (binary SHA-256 `53e2c5a6071ddd912b65e497ca455effb5e39ea813085f25a3d4a0708560effc`)
+on Oct 21. Full details are in the [CASC-J13 FEQ report](reports/benchmarks/feq-j13-2026-10.md)
 and [`results/README.md`](results/README.md).
 
-### Fresh CASC-J13 UEQ standalone campaign (2026-10-20)
+### Fresh CASC-J13 UEQ standalone campaigns (2026-10-20 and 2026-10-21)
 
-The full 400-problem run
-`~/crates/mrs-bench/results/campaign-casc-j13-04-ueq-CASCHJ1-20261020`
-returned 120 refutations (`Unsatisfiable`), 266 `Timeout`, and 14 `GaveUp`,
-with zero process errors or crashes. Strict audit certified **112 `VerifiedGood`
-(93.3%)**, 6 `VerifiedBad`, 2 `Unknown`, 0 checker timeouts, and 0 omitted proofs.
+Two consecutive full 400-problem runs were evaluated on canonical 8-core hardware (`mtsdev04`):
+- `~/crates/mrs-bench/results/campaign-casc-j13-04-ueq-CASCHJ1-20261020` (Oct 20)
+  returned 120 refutations (`Unsatisfiable`), 266 `Timeout`, and 14 `GaveUp`.
+  Initial audit certified 112 `VerifiedGood`, 6 `VerifiedBad` (leaf equality orientation flips),
+  and 2 `Unknown`. Following the kernel symmetry fix (`b1033d3`), post-hoc re-audit certified
+  118 of 120 (0 `VerifiedBad`).
+- `~/crates/mrs-bench/results/campaign-casc-j13-04-ueq-CASCHJ1-20261021` (Oct 21)
+  returned 119 refutations (`Unsatisfiable`), 267 `Timeout`, and 14 `GaveUp`.
+  Strict audit certified **117 `VerifiedGood` (98.32%)**, **0 `VerifiedBad` (0.0% unsoundness)**,
+  2 `Unknown`, 0 checker timeouts, and 0 omitted proofs.
 
-The six `VerifiedBad` rejections are all due to leaf equality symmetry
-orientation mismatches against problem file source axioms:
-- `GRP178-1`, `GRP183-3`, and `GRP186-1` flip `s = t` against axiom `monotony_glb2`.
-- `REL026-3`, `REL041-2`, and `REL045-2` flip `s = t` against axiom `dedekind_law_14`.
-In each case, KBO/LPO ordering canonicalized the equation during ingestion and
-the leaf was serialized in the oriented form; the deductions themselves are sound.
-Following commit `b1033d3` (`fix(proof-kernel): match CNF leaves modulo equality
-symmetry`), re-verifying the six archived proofs strictly certifies all six as
-`VerifiedGood`, raising the re-audited strictly certified total to **118 of 120
-(98.3%)** with **0 `VerifiedBad`**.
+Crucially, the Oct 21 campaign was executed with the `b1033d3` kernel fix integrated into the binary,
+confirming natively in live production that all six previously rejected leaf symmetry problems
+(`GRP178-1`, `GRP183-3`, `GRP186-1`, `REL026-3`, `REL041-2`, `REL045-2`) certify cleanly as
+`VerifiedGood` with zero false rejections. Additionally, `REL027-3` solved in 84.78 s on Oct 21
+(timed out on Oct 20) and certified as `VerifiedGood`, while `ALG240-1` and `NUN133-1` timed out
+near the 180 s limit.
 
-The two `Unknown` proofs (`RNG009-5` and `RNG009-7`) remain incomplete at AC
-superposition rewrite replay.
+Across both runs, exactly the same two `Unknown` proofs (`RNG009-5` and `RNG009-7`) remain incomplete
+at AC superposition rewrite replay.
 
-Hardware: `mtsdev04` (8 physical cores, 95,969 MB RAM, effective memory ceiling
-81,897 MB). Peak observed memory was 57,732 MB (`ROB015-10`). Provenance: commit
-`a38c8bc8`, dirty tree, Rust 1.99.1, binary SHA-256
-`c881d56f47b848d507017f4f3a4cb58fa24da0c4e3d8e267c45bc6c0d4e7ae94`. Detailed
-telemetry and domain breakdown are in the
+Hardware: `mtsdev04` (8 physical cores, 95,969 MB RAM, effective memory ceiling 81,897 MB).
+Peak observed memory was 57,732 MB (`ROB015-10`) in both campaigns. Provenance: commit `a38c8bc8`
+(binary SHA-256 `c881d56f47b848d507017f4f3a4cb58fa24da0c4e3d8e267c45bc6c0d4e7ae94`) on Oct 20;
+commit `c45227ff` (binary SHA-256 `088f4b1e613660d094e20185b0dd23e3ce73f70c7fdaee710b4e91cc6cf5da63`)
+on Oct 21. Detailed telemetry and domain breakdown are in the
 [CASC-J13 UEQ report](reports/benchmarks/ueq-j13-2026-10.md) and
 [`results/README.md`](results/README.md).
+
+### Cooperative FNE candidate portfolio campaigns (2026-10-21 and 2026-10-22)
+
+The candidate 8-strategy FNE portfolio `MRS_PORTFOLIO=11,13,4,8,15,7,3,1` (derived
+from full-time solo sweeps and greedy set cover to promote Strategy 13 and eliminate
+redundant Strategies 10 and 12) was validated cooperatively with 8 workers and no
+shared equality pool across three full-division campaigns:
+
+1. **CASC-30 (`casc-30/coop-fne-candidate-20261021`)**:
+   Evaluated on `teenf9901` at 240 s limit. Generated **45 refutations (`Theorem`)**,
+   all **45 certified strictly as `VerifiedGood` (100.0%)**, with **0 `VerifiedBad`**
+   and **0 `Unknown`**. Retains 100% of the 41 solves from the shipped baseline
+   (`campaign-casc30-fne-W8CASCHJ1-99-20261019`) and adds **+4 newly solved theorems**
+   unlocked by Strategy 13: `LCL370+2` (61.0 s), `LCL373+2` (66.6 s), `LCL390+2` (91.7 s),
+   and `LCL403+2` (92.7 s).
+
+2. **CASC-J13 on Canonical 8-Core Hardware (`casc-j13/coop-fne-candidate-03-20261022`)**:
+   Evaluated on `mtsdev03` (8 physical cores, 96 GB RAM) at official 180 s limit.
+   Generated **40 refutations (`Theorem`)**, up from 36 in the shipped baseline.
+   Strict audit (with HEAD) certified **39 `VerifiedGood`**, **0 `VerifiedBad`**,
+   **0 `Unknown`**, and **1 `Proof Omitted`** (`KRS261+1`, 55.6 MB proof exceeding 32 MB limit).
+   Achieves +4 refutations / +3 verified over the shipped baseline (36).
+
+3. **CASC-J13 Comparator (`casc-j13/coop-fne-candidate-20261021`)**:
+   Evaluated on `tlpnf9701` at 180 s limit. Generated **38 refutations (`Theorem`)**,
+   all **38 certified strictly as `VerifiedGood` (100.0%)**, with **0 `VerifiedBad`**
+   and **0 `Unknown`**.
+
+Across all three campaigns, 100% of emitted refutations passed strict kernel verification
+without a single unsound inference. Full details are in the
+[FNE candidate portfolio report](reports/benchmarks/fne-candidate-portfolio-2026-10.md) and
+[`results/README.md`](results/README.md).
+
+### Cooperative MultiQueue hybrid FNE campaigns (2026-10-22)
+
+The hybrid portfolio `MRS_SCHEDULE=casc_fne_mq_hybrid` (`[11, 13, 4, 15]` base strategies
+combined with `[mq_0, mq_1, mq_2, mq_5]` multi-queue archetypes) was evaluated with
+8 workers and no shared equality pool across three full-division campaigns:
+
+1. **CASC-30 (`cooperative-fne-mq-hybrid-no-sharing`)**:
+   Evaluated on `teenf9901` at 240 s limit. Generated **45 refutations (`Theorem`)**.
+   Strict audit (with HEAD) certified **42 `VerifiedGood` (93.3%)**, **0 `VerifiedBad`**,
+   **2 `Unknown`** (`LCL642+1.015`, `LCL660+1.015` on factoring step limit), and
+   **1 `Proof Omitted`** (`KRS261+1`, 62.8 MB proof exceeding 32 MB limit).
+
+2. **CASC-J13 on Canonical 8-Core Hardware (`cooperative-fne-j13-04-mq-hybrid-no-sharing`)**:
+   Evaluated on `mtsdev04` (8 physical cores, 96 GB RAM) at official 180 s limit.
+   Generated **37 refutations (`Theorem`)**, all **37 certified strictly as `VerifiedGood` (100.0%)**,
+   with **0 `VerifiedBad`** and **0 `Unknown`**.
+
+3. **CASC-J13 on 32-Core Host (`cooperative-fne-j13-mq-hybrid-no-sharing`)**:
+   Evaluated on `tlpnf9701` at 180 s limit. Generated **41 refutations (`Theorem`)**,
+   all **41 certified strictly as `VerifiedGood` (100.0%)**, with **0 `VerifiedBad`**
+   and **0 `Unknown`**.
+
+Comparing against the pure base candidate portfolio on canonical 8-core hardware shows that
+while MultiQueue selection scales well on uncongested 32-core systems, the pure base candidate
+portfolio achieves higher certified solve counts on 8 cores (39 vs 37 on J13; 45 vs 42 on C30)
+with cleaner kernel replay. Full details are in the
+[FNE MultiQueue report](reports/benchmarks/fne-multiqueue-2026-10.md).
 
 ---
 

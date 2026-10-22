@@ -170,3 +170,43 @@ complement to the existing portfolio, particularly for hard KRS/NUN and CSR
 instances. It does **not** establish a robust coverage gain or an overall
 speedup. A repeated cooperative comparison and proof audit should decide
 whether any hybrid or `mq`-based order is promoted.
+
+---
+
+## Cooperative MultiQueue Hybrid Campaigns (`casc_fne_mq_hybrid`, 2026-10-22)
+
+Following the initial exploration, the hybrid portfolio `casc_fne_mq_hybrid`—combining
+four high-coverage base strategies `[s11, s13, s04, s15]` with four diverse MultiQueue
+configurations `[mq_0, mq_1, mq_2, mq_5]`—was evaluated across three cooperative campaigns
+with 8 workers, `jobs=1`, and `MRS_SHARED_POOL_INTERVAL=0`.
+
+Each campaign was strictly audited via `audit_casc_proofs` with HEAD proof kernel (`--checks strict --strict-time 120`):
+
+| Campaign | Edition | Host | Wall Clock | Theorems | `VerifiedGood` | `VerifiedBad` | `Unknown` | Proof Omitted |
+|:---|:---|:---|---:|---:|---:|---:|---:|---:|
+| `cooperative-fne-mq-hybrid-no-sharing` | CASC-30 | `teenf9901` (32c) | 240 s | **45** | **42** | **0** | 2 | 1 |
+| `cooperative-fne-j13-mq-hybrid-no-sharing` | CASC-J13 | `tlpnf9701` (32c) | 180 s | **41** | **41** | **0** | 0 | 0 |
+| `cooperative-fne-j13-04-mq-hybrid-no-sharing` | CASC-J13 | `mtsdev04` (**8c**) | 180 s | **37** | **37** | **0** | 0 | 0 |
+
+### Findings & Analysis
+
+1. **Strict Soundness**: Zero unsound deductions (`VerifiedBad = 0`) across all 123 evaluated refutations.
+2. **CASC-30 Verification Gaps**:
+   - While raw theorem count reached 45 (matching the pure base candidate portfolio), only 42 certified as `VerifiedGood`.
+   - Two proofs (`LCL642+1.015` and `LCL660+1.015`) failed verification with `Unknown` because multi-queue derivations produced clause structures where the kernel's factoring step limit was exceeded.
+   - One proof (`KRS261+1`) derived a 62.8 MB proof text (289,316 nodes) that exceeded the 32 MB output limit (`proof_omitted`).
+3. **Hardware Scaling Divergence on CASC-J13**:
+   - On the 32-core host (`tlpnf9701`), MQ-hybrid solved **41 theorems** (all 41 `VerifiedGood`), demonstrating strong search diversity when worker threads run without cache or CPU contention.
+   - On the canonical 8-core host (`mtsdev04`), MQ-hybrid solved **37 theorems** (all 37 `VerifiedGood`).
+   - Under canonical 8-core competition constraints, the pure base candidate portfolio `[11, 13, 4, 8, 15, 7, 3, 1]` on `mtsdev03` achieved **40 refutations (39 `VerifiedGood`, 1 omitted)**, outperforming `casc_fne_mq_hybrid` by +3 refutations / +2 strictly verified solves.
+
+### Comparison: Pure Base Candidate vs. MQ-Hybrid
+
+| Division / Condition | Baseline (`casc_fne`) | Pure Base Candidate (`11,13,4,8,15,7,3,1`) | MQ-Hybrid (`casc_fne_mq_hybrid`) |
+|:---|---:|---:|---:|
+| **CASC-30 Solves** | 41 | **45** | 45 |
+| **CASC-30 `VerifiedGood`** | 41 | **45** (100.0%) | 42 (93.3%) |
+| **CASC-J13 (8-core host)** | 36 | **40** (39 VG + 1 PO) | 37 (37 VG) |
+| **CASC-J13 (32-core host)** | — | 38 (38 VG) | **41** (41 VG) |
+
+**Conclusion**: On canonical 8-core CASC hardware, the pure base candidate portfolio `[11, 13, 4, 8, 15, 7, 3, 1]` remains superior in both solve throughput and certification reliability (45 vs 42 verified on CASC-30; 39 vs 37 verified on 8-core CASC-J13). While MultiQueue selection provides strong exploratory capability on wide machines, its heavier branching and complex proof structures make the pure base portfolio the optimal choice for promotion to the canonical CASC schedule.

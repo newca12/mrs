@@ -38,6 +38,8 @@ certified signature.
 | `j13-16c` | CASC-J13 FEQ | `campaign-casc-j13-W8C8J1-20261016` (combined CASC-mode run) |
 | `j13-16a` | CASC-J13 FEQ | `campaign-cascj13-feq-W8C8J1-20261016` (standalone adaptive-mode run) |
 | `j13-20` | CASC-J13 FEQ, UEQ | `campaign-casc-j13-03-feq-CASCHJ1-20261020`; `campaign-casc-j13-04-ueq-CASCHJ1-20261020` |
+| `j13-21` | CASC-J13 FEQ, UEQ | `campaign-casc-j13-03-feq-CASCHJ1-20261021`; `campaign-casc-j13-04-ueq-CASCHJ1-20261021` |
+| `j13-cand-21`, `j13-cand-22` | CASC-J13 FNE | `casc-j13/coop-fne-candidate-20261021`; `casc-j13/coop-fne-candidate-03-20261022` |
 | `j13-16` | CASC-J13 FNE, UEQ | `campaign-casc-j13-W8C8J1-20261016` (combined CASC-mode run) |
 | `j13-02` | CASC-J13 FNE, UEQ | `campaign-cascj13-fne-W8C8J1-20261002`; `campaign-cascj13-ueq-W8C8J1-20261002` |
 | `j13-01c`, `j13-01r` | CASC-J13 FNE | `campaign-cascj13-fne-condensed-W8C16J2-20261001`; `campaign-cascj13-fne-ref-W8C16J2-20261001` |
@@ -46,11 +48,13 @@ certified signature.
 | `j13-09` | CASC-J13 UEQ | `campaign-ueq-W8C16J1-20260930` |
 | `c30-16` | CASC-30 FEQ, UEQ | `campaign-casc30-ueq-feq-W8CASCHJ1-20261016` (combined CASC-mode run) |
 | `c30-20` | CASC-30 FEQ, UEQ | `campaign-casc30-feq-W8CASCHJ1-01-20261020`; `campaign-casc30-ueq-W8CASCHJ1-02-20261020` |
+| `c30-21` | CASC-30 FEQ, UEQ | `campaign-casc30-feq-W8CASCHJ1-01-20261021`; `campaign-casc30-ueq-W8CASCHJ1-02-20261021` |
+| `c30-cand-21` | CASC-30 FNE | `casc-30/coop-fne-candidate-20261021` |
 | `c30-clean` | CASC-30 FEQ | `campaign-casc30-feq-clean` |
 | `c30-19` | CASC-30 FNE, EPS, EPU | `campaign-casc30-fne-W8CASCHJ1-99-20261019`; `campaign-casc30-eps-W8CASCHJ1-01-20261019`; `campaign-casc30-epu-W8CASCHJ1-02-20261019` |
 | `c30-02` | CASC-30 FNE, EPU | `campaign-casc30-fne-W8C8J1-20261002`; `campaign-casc30-epu-W8C8J1-20261002` |
 | `c30-01c`, `c30-01r` | CASC-30 FNE | `campaign-casc30-fne-condensed-W8C16J2-20261001`; `campaign-casc30-fne-ref-W8C16J2-20261001` |
-| `c30-07`, `c30-02`, `c30-05`, `c30-16`, `c30-20` | CASC-30 UEQ | `campaign-casc30-ueq-W8C8J1-20261007`; `campaign-casc30-ueq-W8C8J1-20261002`; `campaign-casc30-ueq-W8P8J1-NOLRS-MB90G-20261005`; `campaign-casc30-ueq-feq-W8CASCHJ1-20261016`; `campaign-casc30-ueq-W8CASCHJ1-02-20261020` |
+| `c30-07`, `c30-02`, `c30-05`, `c30-16`, `c30-20`, `c30-21` | CASC-30 UEQ | `campaign-casc30-ueq-W8C8J1-20261007`; `campaign-casc30-ueq-W8C8J1-20261002`; `campaign-casc30-ueq-W8P8J1-NOLRS-MB90G-20261005`; `campaign-casc30-ueq-feq-W8CASCHJ1-20261016`; `campaign-casc30-ueq-W8CASCHJ1-02-20261020`; `campaign-casc30-ueq-W8CASCHJ1-02-20261021` |
 | `c30-28`, `c30-26` | CASC-30 EPS | `cert-eps-20260928`; `cert-eps-20260926` |
 | `c30-26` | CASC-30 EPU | `cert-epu-20260926` |
 | `c30-icu-19`, `c30-icu-02` | CASC-30 ICU | `campaign-casc30-icu-W8CASCHJ1-97-20261019`; `campaign-casc30-icu-W8C8J1-20261002` |
@@ -61,10 +65,12 @@ certified signature.
 
 | Certified in | Not certified in | Problems |
 |---|---|---|
-| `j13-16c`, `j13-16a` | `j13-20` | `BIO006+1`, `GEO494+1`, `SWB053+1`, `SWW186+1` |
-| `j13-16c` | `j13-20`, `j13-16a` | `GEO277+1`, `SWB073+1` |
-| `j13-20` | `j13-16c`, `j13-16a` | `MGT091+1`, `SET101+1` |
-| `j13-16a` | `j13-20`, `j13-16c` | `SWW298+1` |
+| `j13-16c`, `j13-16a` | `j13-20`, `j13-21` | `BIO006+1`, `GEO494+1`, `SWB053+1`, `SWW186+1` |
+| `j13-16c` | `j13-20`, `j13-21`, `j13-16a` | `GEO277+1`, `SWB073+1` |
+| `j13-20`, `j13-21` | `j13-16c`, `j13-16a` | `MGT091+1`, `SET101+1` |
+| `j13-16a` | `j13-20`, `j13-21`, `j13-16c` | `SWW298+1` |
+
+*(Note: `SWV406+1` derived a raw refutation on `j13-21` in 162.8 s, but its 83.4 MB proof was withheld under `--proof-bytes-limit 32000000`, so it is classified as `proof_omitted` rather than certified.)*
 
 ### FNE — 5 intermittent problems
 
@@ -72,6 +78,8 @@ certified signature.
 |---|---|---|
 | `j13-16` | `j13-02`, `j13-01c`, `j13-01r`, `j13-clean` | `KRS234+1`, `KRS261+1`, `SYO605+1` |
 | `j13-16`, `j13-clean` | `j13-02`, `j13-01c`, `j13-01r` | `CSR115+8`, `CSR116+19` |
+
+*(Note on candidate portfolio `j13-cand-21` and `j13-cand-22`: Evaluated candidate portfolio `[11, 13, 4, 8, 15, 7, 3, 1]`. On `mtsdev03` (`j13-cand-22`), 40 refutations were derived with 39 `VerifiedGood` and 1 `proof_omitted` (`KRS261+1`, 55.6 MB proof). Newly certified problems include `LCL373+2`, `LCL382+1`, `LCL390+2`, `CSR116+8`, `CSR116+38`, and `PRD001+1`.)*
 
 ### UEQ — 125 intermittent problems
 
@@ -95,18 +103,22 @@ certified signature.
 | `j13-02` | `j13-20, j13-16, j13-recov, j13-09, j13-clean` | `REL021-1` |
 | `j13-recov` | `j13-20, j13-16, j13-02, j13-09, j13-clean` | `REL026-3` |
 
+*(Note on `j13-21`: The October 21 campaign certified 117 refutations with 0 `VerifiedBad`. With the leaf symmetry orientation fix (`b1033d3`) active in the binary, `GRP178-1`, `GRP183-3`, `GRP186-1`, `REL026-3`, `REL041-2`, and `REL045-2` all certified natively as `VerifiedGood`. Additionally, `REL027-3` solved in 84.8 s and certified, while `ALG240-1` and `NUN133-1` timed out near the 180 s limit.)*
+
 ## CASC-30
 
 ### FEQ — 49 intermittent problems
 
 | Certified in | Not certified in | Problems |
 |---|---|---|
-| `c30-20`, `c30-16` | `c30-clean` | `ALG210+2`, `GEO126+1`, `GEO331+1`, `GEO499+1`, `GEO524+1`, `ITP013+1`, `KLE113+1`, `LCL518+1`, `LCL895+1`, `LCL896+1`, `LCL901+1`, `MGT054+1`, `NUM835+1`, `NUM852+1`, `SET090+1`, `SET637+3`, `SWV449+1`, `SWV451+1`, `SWV452+1`, `SWV453+1`, `SWV455+1`, `SWV460+1`, `SWV462+1`, `SWV466+1`, `SWV468+1`, `SWV471+1`, `SWV473+1`, `SWV476+1`, `SWV480+1`, `SWV487+1`, `SWW383+1` |
-| `c30-16` | `c30-20`, `c30-clean` | `GEO559+1`, `GEO641+1`, `NUM926+2`, `NUN086+2`, `SET017+1`, `SET072+1`, `SWV457+1`, `SWV459+1` |
-| `c30-20` | `c30-16`, `c30-clean` | `COM135+1`, `KLE071+1`, `SWV458+1`, `SWV472+1`, `SWV486+2` |
-| `c30-20`, `c30-clean` | `c30-16` | `GEO625+1`, `SWB073+1` |
-| `c30-clean` | `c30-20`, `c30-16` | `GRA009+1`, `SWW313+1` |
-| `c30-16`, `c30-clean` | `c30-20` | `SET095+1` |
+| `c30-20`, `c30-21`, `c30-16` | `c30-clean` | `ALG210+2`, `GEO126+1`, `GEO331+1`, `GEO499+1`, `GEO524+1`, `ITP013+1`, `KLE113+1`, `LCL518+1`, `LCL895+1`, `LCL896+1`, `LCL901+1`, `MGT054+1`, `NUM835+1`, `NUM852+1`, `SET090+1`, `SET637+3`, `SWV449+1`, `SWV451+1`, `SWV452+1`, `SWV453+1`, `SWV455+1`, `SWV460+1`, `SWV462+1`, `SWV466+1`, `SWV468+1`, `SWV471+1`, `SWV473+1`, `SWV476+1`, `SWV480+1`, `SWV487+1`, `SWW383+1` |
+| `c30-16` | `c30-20`, `c30-21`, `c30-clean` | `GEO559+1`, `GEO641+1`, `NUM926+2`, `NUN086+2`, `SET017+1`, `SET072+1`, `SWV459+1` |
+| `c30-16`, `c30-21` | `c30-20`, `c30-clean` | `SWV457+1` |
+| `c30-20` | `c30-16`, `c30-21`, `c30-clean` | `SWV458+1` |
+| `c30-20`, `c30-21` | `c30-16`, `c30-clean` | `COM135+1`, `KLE071+1`, `SWV472+1`, `SWV486+2` |
+| `c30-20`, `c30-21`, `c30-clean` | `c30-16` | `GEO625+1`, `SWB073+1` |
+| `c30-clean` | `c30-20`, `c30-21`, `c30-16` | `GRA009+1`, `SWW313+1` |
+| `c30-16`, `c30-clean` | `c30-20`, `c30-21` | `SET095+1` |
 
 ### FNE — 12 intermittent problems
 
@@ -115,24 +127,27 @@ certified signature.
 | `c30-19` | `c30-02`, `c30-01c`, `c30-01r` | `CSR115+31`, `CSR115+6`, `CSR115+91`, `CSR116+6`, `KRS203+1`, `LCL390+1`, `LCL642+1.015`, `LCL660+1.020`, `MED007+1`, `MED009+1`, `SYN938+1` |
 | `c30-19`, `c30-02`, `c30-01c` | `c30-01r` | `LCL660+1.015` |
 
+*(Note on candidate portfolio `c30-cand-21`: Candidate portfolio `[11, 13, 4, 8, 15, 7, 3, 1]` certified all 41 baseline problems solved in `c30-19` (including all 12 intermittent problems above) and additionally certified four new theorems: `LCL370+2`, `LCL373+2`, `LCL390+2`, and `LCL403+2`.)*
+
 ### UEQ — 42 intermittent problems
 
 | Certified in | Not certified in | Problems |
 |---|---|---|
-| `c30-20`, `c30-16`, `c30-07`, `c30-02` | `c30-05` | `GRP167-4`, `GRP185-3`, `GRP423-1`, `GRP667-3`, `GRP766-1`, `KLE152-10`, `REL019-2`, `REL031-2`, `TOP052-1` |
-| `c30-20`, `c30-16`, `c30-07` | `c30-05`, `c30-02` | `GRP654-12`, `GRP655-13`, `GRP655-14`, `GRP667-10`, `LAT022-1` |
-| `c30-05` | `c30-20`, `c30-16`, `c30-07`, `c30-02` | `COL009-1`, `COL057-1`, `LCL400-10`, `SYN615-10` |
-| `c30-07`, `c30-05`, `c30-02` | `c30-20`, `c30-16` | `LAT174-1`, `RNG006-10`, `RNG009-5`, `RNG009-7` |
-| `c30-16` | `c30-20`, `c30-07`, `c30-05`, `c30-02` | `GRP167-3`, `GRP184-1`, `REL021-1` |
-| `c30-07`, `c30-02` | `c30-20`, `c30-16`, `c30-05` | `LAT241-10`, `REL027-3`, `REL035-1` |
-| `c30-20`, `c30-16` | `c30-07`, `c30-05`, `c30-02` | `KLE145-10`, `LAT168-1` |
-| `c30-20`, `c30-07`, `c30-02` | `c30-16`, `c30-05` | `MVA008-1`, `REL005-3` |
-| `c30-20`, `c30-07`, `c30-05`, `c30-02` | `c30-16` | `MVA009-1`, `REL045-2` |
-| `c30-07` | `c30-20`, `c30-16`, `c30-05`, `c30-02` | `MVA011-1`, `REL032-1` |
-| `c30-02` | `c30-20`, `c30-16`, `c30-07`, `c30-05` | `REL028-2`, `REL034-1` |
-| `c30-20` | `c30-16`, `c30-07`, `c30-05`, `c30-02` | `REL034-2`, `RNG001-10` |
-| `c30-16`, `c30-07`, `c30-05`, `c30-02` | `c30-20` | `GRP179-2` |
-| `c30-07`, `c30-05` | `c30-20`, `c30-16`, `c30-02` | `LCL211-10` |
+| `c30-20`, `c30-21`, `c30-16`, `c30-07`, `c30-02` | `c30-05` | `GRP167-4`, `GRP185-3`, `GRP423-1`, `GRP667-3`, `GRP766-1`, `KLE152-10`, `REL019-2`, `REL031-2`, `TOP052-1` |
+| `c30-20`, `c30-21`, `c30-16`, `c30-07` | `c30-05`, `c30-02` | `GRP654-12`, `GRP655-13`, `GRP655-14`, `GRP667-10`, `LAT022-1` |
+| `c30-05` | `c30-20`, `c30-21`, `c30-16`, `c30-07`, `c30-02` | `COL009-1`, `COL057-1`, `LCL400-10`, `SYN615-10` |
+| `c30-07`, `c30-05`, `c30-02` | `c30-20`, `c30-21`, `c30-16` | `LAT174-1`, `RNG006-10`, `RNG009-5`, `RNG009-7` |
+| `c30-16` | `c30-20`, `c30-21`, `c30-07`, `c30-05`, `c30-02` | `GRP167-3`, `GRP184-1`, `REL021-1` |
+| `c30-07`, `c30-02` | `c30-20`, `c30-21`, `c30-16`, `c30-05` | `LAT241-10`, `REL027-3`, `REL035-1` |
+| `c30-20`, `c30-21`, `c30-16` | `c30-07`, `c30-05`, `c30-02` | `KLE145-10`, `LAT168-1` |
+| `c30-20`, `c30-21`, `c30-07`, `c30-02` | `c30-16`, `c30-05` | `MVA008-1`, `REL005-3` |
+| `c30-20`, `c30-21`, `c30-07`, `c30-05`, `c30-02` | `c30-16` | `MVA009-1`, `REL045-2` |
+| `c30-07` | `c30-20`, `c30-21`, `c30-16`, `c30-05`, `c30-02` | `MVA011-1`, `REL032-1` |
+| `c30-02` | `c30-20`, `c30-21`, `c30-16`, `c30-07`, `c30-05` | `REL028-2`, `REL034-1` |
+| `c30-20` | `c30-21`, `c30-16`, `c30-07`, `c30-05`, `c30-02` | `REL034-2` |
+| `c30-20`, `c30-21` | `c30-16`, `c30-07`, `c30-05`, `c30-02` | `RNG001-10` |
+| `c30-16`, `c30-07`, `c30-05`, `c30-02` | `c30-20`, `c30-21` | `GRP179-2` |
+| `c30-07`, `c30-05` | `c30-20`, `c30-21`, `c30-16`, `c30-02` | `LCL211-10` |
 
 ### EPS — 36 intermittent problems
 

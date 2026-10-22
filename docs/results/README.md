@@ -12,12 +12,12 @@ Re-measure before quoting one.
 
 | Division | Edition | Evaluated | Current Verified Baseline | Historical Unverified Snapshot (`codex.db`) | Audit & Trust Notes |
 |:---|:---|---:|---:|---:|:---|
-| **UEQ** | CASC-J13 | 400 | **112 (28.0%; 2026-10-20 standalone run, 118 post-fix) / 113 (combined run)** | ~~257 (64.3%)~~ | Fresh 2026-10-20 standalone CASC-mode run: 112 `VerifiedGood`, 6 `VerifiedBad` (leaf equality orientation), 2 `Unknown`. Commit `b1033d3` resolves the leaf orientation issue, re-auditing all 6 to `VerifiedGood` (118 verified, 0 `VerifiedBad`). See the [CASC-J13 UEQ report](../reports/benchmarks/ueq-j13-2026-10.md). Historical 257 remains superseded. |
-| **UEQ** | CASC-30 | 300 | **120 (40.0%; 2026-10-20 CASC-mode run) / 127 (42.3%; 2026-10-07 run)** | ~~222 (74.0%)~~ | Fresh 2026-10-20 standalone CASC-mode run: 120 `VerifiedGood`, 0 `VerifiedBad`, 4 `Unknown`, completely resolving the 5 `VerifiedBad` rejections and 1 missing root from the 2026-10-16 run. The 127 baseline (Oct 7 on 16 cores) remains the peak trusted score. Historical 222 remains superseded. See the [UEQ report](../reports/benchmarks/ueq-2026-10.md). |
-| **FEQ** | CASC-J13 | 300 | **68 (22.67%; 2026-10-20 standalone run) / 72 (24.0%; combined run)** | 72 (24.0%) | Fresh 2026-10-20 standalone CASC-mode run: 68 strictly certified (100% verification: 68/68 `VerifiedGood`, 0 `VerifiedBad`, 0 `Unknown`) on an 8-core host. The 2026-10-16 combined run certified 72/300 on a 16-core host. See the [CASC-J13 FEQ report](../reports/benchmarks/feq-j13-2026-10.md). |
-| **FEQ** | CASC-30 | 400 | **103 (25.75%; 2026-10-20 standalone run)** | 112 (28.0%) | Fresh standalone CASC-mode run: 108 raw Theorems, 103 `VerifiedGood`, 0 `VerifiedBad`, 2 `Unknown`, 1 verifier timeout, 2 proof omitted. Zero unsound proofs. Supersedes the 2026-10-16 run (which had 2 `VerifiedBad`). See the [FEQ report](../reports/benchmarks/feq-2026-10.md). |
-| **FNE** | CASC-J13 | 100 | **35 (35.0%)** | 35 (35.0%) | Zero reference violations. |
-| **FNE** | CASC-30 | 100 | **41 (41.0%; 2026-10-19 CASC-mode run)** | 43 (43.0%) | 41/41 refutations strictly `VerifiedGood`, no invalids. Up 11 verified solves over the October 2 audited campaign; both runs are single measurements. |
+| **UEQ** | CASC-J13 | 400 | **117 (29.25%; 2026-10-21 standalone run, 0 VerifiedBad) / 112 (Oct 20, 118 post-fix) / 113 (combined run)** | ~~257 (64.3%)~~ | Standalone CASC-mode run on Oct 21 natively confirms the leaf symmetry fix (`b1033d3`): 117 `VerifiedGood`, 0 `VerifiedBad`, 2 `Unknown` on an 8-core host. The Oct 20 run generated 120 refutations (112 initial, 118 re-audited). Historical 257 remains superseded. See the [CASC-J13 UEQ report](../reports/benchmarks/ueq-j13-2026-10.md). |
+| **UEQ** | CASC-30 | 300 | **119–120 (39.7–40.0%; 2026-10-20/21 standalone runs) / 127 (42.3%; 2026-10-07 run)** | ~~222 (74.0%)~~ | Replicated standalone CASC-mode runs: 120 `VerifiedGood` (Oct 20) and 119 `VerifiedGood` (Oct 21), 0 `VerifiedBad`, 4 `Unknown` across consecutive days (>99% replicate consistency). All 5 historical rejection bugs remain resolved. The 127 baseline (Oct 7 on 16 cores) remains the peak trusted score. Historical 222 remains superseded. See the [UEQ report](../reports/benchmarks/ueq-2026-10.md). |
+| **FEQ** | CASC-J13 | 300 | **68 (22.67%; 2026-10-20/21 standalone runs) / 72 (24.0%; combined run)** | 72 (24.0%) | Replicated standalone CASC-mode runs: 68 strictly certified (68/68 `VerifiedGood`, 0 `VerifiedBad`, 0 `Unknown`) on an 8-core host across consecutive days (69 raw theorems on Oct 21, with 1 proof withheld). The 2026-10-16 combined run certified 72/300 on a 16-core host. See the [CASC-J13 FEQ report](../reports/benchmarks/feq-j13-2026-10.md). |
+| **FEQ** | CASC-30 | 400 | **103 (25.75%; 2026-10-20/21 standalone runs)** | 112 (28.0%) | Replicated standalone CASC-mode runs: exactly 108 raw Theorems, 103 `VerifiedGood`, 0 `VerifiedBad`, 2 `Unknown`, 1 verifier timeout, 2 proof omitted across consecutive days. Zero unsound proofs. Supersedes the 2026-10-16 run (which had 2 `VerifiedBad`). See the [FEQ report](../reports/benchmarks/feq-2026-10.md). |
+| **FNE** | CASC-J13 | 100 | **39–40 (39.0–40.0%; candidate portfolio on 8-core host) / 36 (baseline)** | 35 (35.0%) | Candidate portfolio `11,13,4,8,15,7,3,1` achieves 40 refutations (39 `VerifiedGood`, 1 proof omitted) on canonical 8-core host `mtsdev03` (+4 over shipped 36 baseline). 38/38 certified on `tlpnf9701`. 0 `VerifiedBad` across all runs. See the [candidate FNE report](../reports/benchmarks/fne-candidate-portfolio-2026-10.md). |
+| **FNE** | CASC-30 | 100 | **45 (45.0%; candidate portfolio) / 41 (41.0%; baseline)** | 43 (43.0%) | Candidate portfolio `11,13,4,8,15,7,3,1` solves 45/100 (45/45 strictly `VerifiedGood`, 0 `VerifiedBad`), retaining all 41 baseline solves and adding +4 hard LCL problems via Strategy 13. See the [candidate FNE report](../reports/benchmarks/fne-candidate-portfolio-2026-10.md). |
 | **EPS** | CASC-30 | 100 | **44 (40 certified models; 2026-10-19)** | 17 (17.0%) | CASC-mode dual-search run; 0 invalid models, 4 inconclusive model checks. Same 40 certified models as 2026-09-28, with two more models certified (the corresponding raw `Satisfiable` answers were already present in September). |
 | **EPU** | CASC-30 | 100 | **11 (11.0%; 2026-10-19 CASC-mode run)** | 18 (18.0%) | 11/11 strict `VerifiedGood`, 0 `VerifiedBad`; +2 over both audited September 26 and October 2 runs, same 9 retained. The 18 historical solves are not the current verified score. |
 | **ICU** | CASC-30 | 101 | **4 (4.0%; 2026-10-19 CASC-mode run)** | 3 (3.0%) | 4/4 refutations strictly `VerifiedGood`, 0 `VerifiedBad`. Resolves prior `Unknown` checks on `CSE007+1` and `EEE001+1` via bounded NNF fix (`13653b9`). `EEE009+1` (certified in October 2 in 45.7 s) timed out, establishing intermittency. 44 of 101 problems carry non-decisive references (`expected=GaveUp`); score is 3/55 on decisive references. 1 OOM kill (`CSI008+1`, 2M axioms). See UI-6 and the [ICU report](../reports/benchmarks/icu-2026-10.md). |
@@ -153,117 +153,165 @@ them as one defect or change the trusted 127/300 UEQ baseline.
 
 ---
 
-## CASC-30 FEQ standalone full-division campaign, 2026-10-20
+## CASC-30 FEQ standalone full-division campaigns, 2026-10-20 and 2026-10-21
 
-`campaign-casc30-feq-W8CASCHJ1-01-20261020` evaluated all 400 problems in FEQ
-sequentially (`jobs=1`) with eight workers, `MRS_HARDWARE=casc`, and official
-240-second division limits on the 8-core Xeon E5-2407 host (`mtsdev01`).
+Two consecutive campaigns evaluated all 400 problems in FEQ sequentially (`jobs=1`) with eight workers,
+`MRS_HARDWARE=casc`, and official 240-second division limits on the 8-core Xeon E5-2407 host (`mtsdev01`):
+- `campaign-casc30-feq-W8CASCHJ1-01-20261020` (Oct 20)
+- `campaign-casc30-feq-W8CASCHJ1-01-20261021` (Oct 21)
 
-| Total problems | Refutations (`Theorem`) | `VerifiedGood` | `VerifiedBad` | `Unknown` | Verifier Timeout | Proof Omitted |
-|---:|---:|---:|---:|---:|---:|---:|
-| 400 | 108 | **103** | **0** | 2 | 1 | 2 |
+| Campaign | Total | Refutations (`Theorem`) | `VerifiedGood` | `VerifiedBad` | `Unknown` | Verifier Timeout | Proof Omitted |
+|:---|---:|---:|---:|---:|---:|---:|---:|
+| **2026-10-20** | 400 | 108 | **103** | **0** | 2 | 1 | 2 |
+| **2026-10-21** | 400 | 108 | **103** | **0** | 2 | 1 | 2 |
 
 Key takeaways:
-- **Zero Unsound Proofs (`VerifiedBad = 0`)**: Resolves both false/invalid
-  proof rejections from the 2026-10-16 campaign (`KLE071+1` and `SWV486+2`),
+- **Zero Unsound Proofs (`VerifiedBad = 0`)**: Replicated across both consecutive runs, resolving
+  both false/invalid proof rejections from the 2026-10-16 campaign (`KLE071+1` and `SWV486+2`),
   which now certify strictly as `VerifiedGood`.
-- **Production Resolution of Quadratic SOS Pre-flight**: Problems that previously
-  hung silently (`BIO005+1`, `BIO006+1`, `CSR047+5`, `CSR052+4`, etc.) completed
-  cleanly; `BIO005+1` and `BIO006+1` both solved as strictly certified theorems.
-- **Proof-size limits**: `SET017+1` (49.3 MB) and `SET072+1` (45.2 MB) derived
-  refutations but withheld proof text because they exceeded 32 MB.
-- **Residual gaps**: `KLE132+1` and `LCL894+1` remain `Unknown` on incomplete
-  AC-superposition replay; `ALG049+1` (8.2k nodes) timed out in the verifier
-  (125 s vs. 120 s limit).
+- **Replicate Stability**: 107 of 108 solved problems are identical. Exactly one borderline pair
+  swapped under concurrent thread racing near 240 s: `SWV458+1` solved in 28.4 s on Oct 20 but
+  timed out on Oct 21; `SWV457+1` timed out on Oct 20 but solved in 153.4 s on Oct 21 (`VerifiedGood`).
+- **Production Resolution of Quadratic SOS Pre-flight**: Problems that previously hung silently
+  (`BIO005+1`, `BIO006+1`, `CSR047+5`, `CSR052+4`, etc.) completed cleanly; `BIO005+1` and `BIO006+1`
+  both solved as strictly certified theorems in both campaigns.
+- **Proof-size limits**: `SET017+1` (49.3 MB on Oct 20; 38.2 MB on Oct 21) and `SET072+1`
+  (45.2 MB on Oct 20; 38.1 MB on Oct 21) derived refutations in both runs but withheld proof
+  text exceeding 32 MB.
+- **Residual gaps**: `KLE132+1` and `LCL894+1` remain `Unknown` on incomplete AC-superposition replay
+  in both runs; `ALG049+1` (8.2k nodes) timed out in the verifier (125 s vs. 120 s limit).
 
-Provenance: commit `a38c8bc8`, dirty tree, Rust 1.99.1, binary SHA-256
-`8029b1d6c1fee6b5b533365823755a659bca31eb33e9d4e1e92e3e23cf48f762`. Detailed
+Provenance: Oct 20 commit `a38c8bc8` (SHA-256 `8029b1d6c1fee6b5b533365823755a659bca31eb33e9d4e1e92e3e23cf48f762`);
+Oct 21 commit `c45227ff` (SHA-256 `fd60bd269efe77c249ba2531605b6223fed510df275e0446008c9cf0fd106d19`). Detailed
 analysis and domain breakdowns are in [`reports/benchmarks/feq-2026-10.md`](../reports/benchmarks/feq-2026-10.md).
 
 ---
 
-## CASC-30 UEQ standalone full-division campaign, 2026-10-20
+## CASC-30 UEQ standalone full-division campaigns, 2026-10-20 and 2026-10-21
 
-`campaign-casc30-ueq-W8CASCHJ1-02-20261020` evaluated all 300 problems in UEQ
-sequentially (`jobs=1`) with eight workers, `MRS_HARDWARE=casc`, and official
-240-second division limits on the 8-core Xeon E5-2407 host (`mtsdev02`).
+Two consecutive campaigns evaluated all 300 problems in UEQ sequentially (`jobs=1`) with eight workers,
+`MRS_HARDWARE=casc`, and official 240-second division limits on the 8-core Xeon E5-2407 host (`mtsdev02`):
+- `campaign-casc30-ueq-W8CASCHJ1-02-20261020` (Oct 20)
+- `campaign-casc30-ueq-W8CASCHJ1-02-20261021` (Oct 21)
 
-| Total problems | Refutations (`Unsatisfiable`) | `VerifiedGood` | `VerifiedBad` | `Unknown` | Verifier Timeout | Proof Omitted |
-|---:|---:|---:|---:|---:|---:|---:|
-| 300 | 124 | **120** | **0** | 4 | 0 | 0 |
+| Campaign | Total problems | Refutations (`Unsatisfiable`) | `VerifiedGood` | `VerifiedBad` | `Unknown` | Verifier Timeout | Proof Omitted |
+|:---|---:|---:|---:|---:|---:|---:|---:|
+| **2026-10-20** | 300 | 124 | **120** | **0** | 4 | 0 | 0 |
+| **2026-10-21** | 300 | 123 | **119** | **0** | 4 | 0 | 0 |
 
 Key takeaways:
-- **Zero Unsound Proofs (`VerifiedBad = 0`)**: Completely eliminates the 5
-  rejection bugs and 1 missing root from the 2026-10-16 campaign:
-  `MVA008-1`, `MVA009-1`, `REL034-2`, and `REL045-2` now certify strictly as
-  `VerifiedGood`, while `RNG009-5` and `RNG009-7` properly fail closed as `Unknown`.
-- **Residual AC replay barrier**: Exactly 4 proofs return `Unknown` (`GRP179-2`,
-  `REL027-3`, `RNG009-5`, `RNG009-7`), all due to incomplete AC superposition rewrite replay.
-- **Canonical hardware baseline**: On the physical 8-core host, mrs achieves
-  120 strictly verified refutations within 7 solves of the 16-core ceiling (127).
+- **Zero Unsound Proofs (`VerifiedBad = 0`)**: Replicated across both runs, confirming the
+  elimination of the 5 rejection bugs and 1 missing root from the 2026-10-16 campaign:
+  `MVA008-1`, `MVA009-1`, `REL034-2` (on Oct 20), and `REL045-2` certify strictly as `VerifiedGood`,
+  while `RNG009-5` and `RNG009-7` properly fail closed as `Unknown`.
+- **Replicate Consistency**: 123 of 124 solves from Oct 20 re-solved identically on Oct 21 (>99%
+  solve overlap). Only `REL034-2` timed out (206.0 s on Oct 20 vs 238.8 s timeout on Oct 21).
+- **Residual AC replay barrier**: Exactly the same 4 proofs return `Unknown` across both runs
+  (`GRP179-2`, `REL027-3`, `RNG009-5`, `RNG009-7`), all due to incomplete AC superposition rewrite replay.
+- **Canonical hardware baseline**: On the physical 8-core host, mrs reliably achieves
+  119–120 strictly verified refutations within 7–8 solves of the 16-core ceiling (127).
 
-Provenance: commit `a38c8bc8`, dirty tree, Rust 1.99.1, binary SHA-256
-`21e72729ecf09c86b78f35caa56d91a9b06c969771988fac806dcc68d3987ecb`. Detailed
+Provenance: Oct 20 commit `a38c8bc8` (binary SHA-256 `21e72729ecf09c86b78f35caa56d91a9b06c969771988fac806dcc68d3987ecb`);
+Oct 21 commit `c45227ff` (binary SHA-256 `eb9a70780d9249618e62468501ebc56bce280f53a0051570fde2f0e0d2a99435`). Detailed
 analysis and domain breakdowns are in [`reports/benchmarks/ueq-2026-10.md`](../reports/benchmarks/ueq-2026-10.md).
 
 ---
 
-## CASC-J13 FEQ standalone full-division campaign, 2026-10-20
+## CASC-J13 FEQ standalone full-division campaigns, 2026-10-20 and 2026-10-21
 
-`campaign-casc-j13-03-feq-CASCHJ1-20261020` evaluated all 300 problems in CASC-J13 FEQ
-sequentially (`jobs=1`) with eight workers, `MRS_HARDWARE=casc`, and official
-180-second division limits on the 8-core Xeon E5-2407 host (`mtsdev03`).
+Two consecutive campaigns evaluated all 300 problems in CASC-J13 FEQ sequentially (`jobs=1`) with
+eight workers, `MRS_HARDWARE=casc`, and official 180-second division limits on `mtsdev03`:
+- `campaign-casc-j13-03-feq-CASCHJ1-20261020` (Oct 20)
+- `campaign-casc-j13-03-feq-CASCHJ1-20261021` (Oct 21)
 
-| Total problems | Refutations (`Theorem`) | `VerifiedGood` | `VerifiedBad` | `Unknown` | Verifier Timeout | Proof Omitted |
-|---:|---:|---:|---:|---:|---:|---:|
-| 300 | 68 | **68** | **0** | 0 | 0 | 0 |
+| Campaign | Total | Refutations (`Theorem`) | `VerifiedGood` | `VerifiedBad` | `Unknown` | Verifier Timeout | Proof Omitted |
+|:---|---:|---:|---:|---:|---:|---:|---:|
+| **2026-10-20** | 300 | 68 | **68** | **0** | 0 | 0 | 0 |
+| **2026-10-21** | 300 | 69 | **68** | **0** | 0 | 0 | 1 |
 
 Key takeaways:
-- **100% Strict Certification**: Every generated refutation passed strict verification
-  without exception (68/68 `VerifiedGood`, 0 `VerifiedBad`, 0 `Unknown`).
+- **100% Strict Certification on Emitted Proofs**: Every single emitted refutation passed
+  strict verification without exception across both runs (0 `VerifiedBad`, 0 `Unknown`).
+- **All 68 Oct 20 Solves Replicated**: All 68 `VerifiedGood` refutations from Oct 20 re-solved
+  and certified on Oct 21, including `MGT091+1` (89.96 s / 89.28 s) and `SET101+1` (0.44 s).
+- **New Solve `SWV406+1`**: Solved on Oct 21 in 162.75 s wall time (vs 178.84 s timeout on Oct 20),
+  deriving an 83.4 MB proof (319,894 nodes) that was withheld under `--proof-bytes-limit 32000000`.
 - **Speed**: Solves in this division are predominantly sub-second or single-digit seconds,
-  with a median solve time of 1.860 s (32 solved in < 1 s, 41 in < 5 s).
-- **Large proofs verified**: Three proofs exceeded 8 MB (`MGT005+1` at 8.3 MB,
-  `SEV677+1` at 16.9 MB, `MGT079+1` at 23.1 MB with 137k nodes), and all verified
-  strictly in under 3 seconds.
-- **Hardware sensitivity**: Compared with the 72-solve combined campaign on a 16-core
-  host, 66 solves are common; this run uniquely solved `MGT091+1` (89.96 s) and `SET101+1`
-  (0.44 s), while six borderline solves timed out or gave up near the 180 s limit
-  (`BIO006+1`, `GEO277+1`, `GEO494+1`, `SWB053+1`, `SWB073+1`, `SWW186+1`).
+  with median solve times under 1.9 s (over 46% solved in < 1 s, over 60% in < 5 s).
+- **Large proofs verified**: Multiple proofs exceeded 8 MB (`MGT005+1` at 8.3 MB, `SEV677+1` at 16.9 MB,
+  `MGT079+1` at 23.1 MB with 137k nodes), all certifying strictly in under 3 seconds verifier time.
 
-Provenance: commit `a38c8bc8`, dirty tree, Rust 1.99.1, binary SHA-256
-`f1c84643ab459fca2f4b29b8def0fbbd9418559b271eadb178aedcf6e5a65bc5`. Detailed
+Provenance: Oct 20 commit `a38c8bc8` (SHA-256 `f1c84643ab459fca2f4b29b8def0fbbd9418559b271eadb178aedcf6e5a65bc5`);
+Oct 21 commit `c45227ff` (SHA-256 `53e2c5a6071ddd912b65e497ca455effb5e39ea813085f25a3d4a0708560effc`). Detailed
 analysis and domain breakdowns are in [`reports/benchmarks/feq-j13-2026-10.md`](../reports/benchmarks/feq-j13-2026-10.md).
 
 ---
 
-## CASC-J13 UEQ standalone full-division campaign, 2026-10-20
+## CASC-J13 UEQ standalone full-division campaigns, 2026-10-20 and 2026-10-21
 
-`campaign-casc-j13-04-ueq-CASCHJ1-20261020` evaluated all 400 problems in CASC-J13 UEQ
-sequentially (`jobs=1`) with eight workers, `MRS_HARDWARE=casc`, and official
-180-second division limits on the 8-core Xeon E5-2407 host (`mtsdev04`).
+Two consecutive campaigns evaluated all 400 problems in CASC-J13 UEQ sequentially (`jobs=1`) with
+eight workers, `MRS_HARDWARE=casc`, and official 180-second division limits on the 8-core Xeon host (`mtsdev04`):
+- `campaign-casc-j13-04-ueq-CASCHJ1-20261020` (Oct 20)
+- `campaign-casc-j13-04-ueq-CASCHJ1-20261021` (Oct 21)
 
-| Total problems | Refutations (`Unsatisfiable`) | `VerifiedGood` | `VerifiedBad` | `Unknown` | Verifier Timeout | Proof Omitted |
-|---:|---:|---:|---:|---:|---:|---:|
-| 400 | 120 | **112** | **6** | 2 | 0 | 0 |
+| Campaign | Total problems | Refutations (`Unsatisfiable`) | `VerifiedGood` | `VerifiedBad` | `Unknown` | Verifier Timeout | Proof Omitted |
+|:---|---:|---:|---:|---:|---:|---:|---:|
+| **2026-10-20** | 400 | 120 | **112** (re-audited 118) | 6 | 2 | 0 | 0 |
+| **2026-10-21** | 400 | 119 | **117** | **0** | 2 | 0 | 0 |
 
 Key takeaways:
-- **Raw refutation count**: 120 refutations, higher than the 114 refutations in previous runs.
-- **Strict verification & Fix (`b1033d3`)**: 112 refutations certified strictly in
-  the initial campaign audit. All 6 `VerifiedBad` rejections were caused by equality
-  literal orientation flips in cited problem leaves (`monotony_glb2` on `GRP178-1`,
-  `GRP183-3`, `GRP186-1`; `dedekind_law_14` on `REL026-3`, `REL041-2`, `REL045-2`).
-  Commit `b1033d3` enhanced CNF leaf matching modulo equality symmetry, re-auditing
-  all 6 to `VerifiedGood` (raising the re-audited strictly verified count to **118 of 120**,
-  with **0 `VerifiedBad`**).
-- **Residual AC replay barrier**: `RNG009-5` and `RNG009-7` return `Unknown` on
-  incomplete AC superposition rewrite replay.
-- **Common solves**: Shares 107 verified refutations with the 16-core combined run;
-  uniquely certifies 5 problems (`LAT022-1`, `NUN133-1`, `REL012-1`, `REL019-1`, `REL024-2`).
+- **Production Confirmation of Leaf Symmetry Fix (`b1033d3`)**: In the Oct 20 run, 6 refutations
+  failed strict audit due to equality literal orientation flips in cited problem leaves (`GRP178-1`,
+  `GRP183-3`, `GRP186-1`, `REL026-3`, `REL041-2`, `REL045-2`). In the Oct 21 campaign, with the fix
+  integrated into the binary, **all six problems certified natively as `VerifiedGood`**, achieving
+  **117 `VerifiedGood`** and **0 `VerifiedBad`**.
+- **Solve set delta**: `REL027-3` solved in 84.8 s on Oct 21 (timed out on Oct 20) and certified as `VerifiedGood`.
+  Two borderline problems near 180 s (`ALG240-1` at 178.3 s and `NUN133-1` at 159.5 s on Oct 20) timed out on Oct 21.
+- **Residual AC replay barrier**: Only `RNG009-5` and `RNG009-7` return `Unknown` across both runs due
+  to incomplete AC superposition rewrite replay.
+- **Zero process errors or memory blowups**: Both runs completed 100% of jobs with clean telemetry.
 
-Provenance: commit `a38c8bc8`, dirty tree, Rust 1.99.1, binary SHA-256
-`c881d56f47b848d507017f4f3a4cb58fa24da0c4e3d8e267c45bc6c0d4e7ae94`. Detailed
+Provenance: Oct 20 commit `a38c8bc8` (binary SHA-256 `c881d56f47b848d507017f4f3a4cb58fa24da0c4e3d8e267c45bc6c0d4e7ae94`);
+Oct 21 commit `c45227ff` (binary SHA-256 `088f4b1e613660d094e20185b0dd23e3ce73f70c7fdaee710b4e91cc6cf5da63`). Detailed
 analysis and domain breakdowns are in [`reports/benchmarks/ueq-j13-2026-10.md`](../reports/benchmarks/ueq-j13-2026-10.md).
+
+---
+
+## Cooperative FNE candidate portfolio campaigns (2026-10-21 and 2026-10-22)
+
+Following solo strategy sweeps and greedy set-cover analysis, the candidate 8-strategy
+portfolio `[s11, s13, s04, s08, s15, s07, s03, s01]` was evaluated cooperatively across three campaigns:
+- `casc-30/coop-fne-candidate-20261021` on `teenf9901` (240 s official limit)
+- `casc-j13/coop-fne-candidate-20261021` on `tlpnf9701` (180 s official limit)
+- `casc-j13/coop-fne-candidate-03-20261022` on canonical 8-core host `mtsdev03` (180 s official limit)
+
+| Campaign | Edition | Host | Total | Refutations (`Theorem`) | `VerifiedGood` | `VerifiedBad` | `Unknown` | Proof Omitted |
+|:---|:---|:---|---:|---:|---:|---:|---:|---:|
+| **`coop-fne-candidate-20261021`** | CASC-30 | `teenf9901` (32c) | 100 | **45** | **45** | **0** | 0 | 0 |
+| **`coop-fne-candidate-20261021`** | CASC-J13 | `tlpnf9701` (32c) | 100 | **38** | **38** | **0** | 0 | 0 |
+| **`coop-fne-candidate-03-20261022`** | CASC-J13 | `mtsdev03` (8c) | 100 | **40** | **39** | **0** | 0 | 1 |
+
+Key takeaways:
+- **CASC-30 Breakthrough (+4 verified)**: Solves 45/100, retaining all 41 baseline solves and
+  adding four hard logic calculi theorems via Strategy 13: `LCL370+2` (61.0 s), `LCL373+2` (66.6 s),
+  `LCL390+2` (91.7 s), and `LCL403+2` (92.7 s).
+- **CASC-J13 Breakthrough (+4 refutations / +3 verified)**: On canonical 8-core hardware (`mtsdev03`),
+  derives 40 refutations (39 `VerifiedGood`, 1 `proof_omitted` `KRS261+1`), adding `LCL373+2`, `LCL382+1`,
+  `LCL390+2`, `CSR116+8`, `CSR116+38`, and `PRD001+1`.
+- **Flawless Strict Soundness**: 100% of emitted proofs certified strictly with zero `VerifiedBad`.
+- Detailed report: [`reports/benchmarks/fne-candidate-portfolio-2026-10.md`](../reports/benchmarks/fne-candidate-portfolio-2026-10.md).
+
+### MultiQueue hybrid campaigns (`casc_fne_mq_hybrid`, 2026-10-22)
+
+The hybrid portfolio combining four base strategies (`[s11, s13, s04, s15]`) and four MultiQueue
+archetypes (`[mq_0, mq_1, mq_2, mq_5]`) was evaluated with 8 workers across three campaigns:
+- `cooperative-fne-mq-hybrid-no-sharing` on `teenf9901` (240 s): **45 Theorems** (42 `VerifiedGood`, 0 `VerifiedBad`, 2 `Unknown`, 1 `proof_omitted`).
+- `cooperative-fne-j13-04-mq-hybrid-no-sharing` on `mtsdev04` (180 s, 8 cores): **37 Theorems** (all 37 `VerifiedGood`, 100%).
+- `cooperative-fne-j13-mq-hybrid-no-sharing` on `tlpnf9701` (180 s, 32 cores): **41 Theorems** (all 41 `VerifiedGood`, 100%).
+
+While MQ-hybrid reaches 41 solves on uncongested 32-core systems, on canonical 8-core hardware (`mtsdev03`/`mtsdev04`)
+the pure base candidate portfolio `[11, 13, 4, 8, 15, 7, 3, 1]` achieves higher certified yield (39 VG / 40 thm vs 37 VG)
+and avoids strict factoring step limits. Full report: [`reports/benchmarks/fne-multiqueue-2026-10.md`](../reports/benchmarks/fne-multiqueue-2026-10.md).
 
 ---
 
@@ -279,11 +327,19 @@ does not apply.
 | Edition | Division | Campaign | Max per-problem peak memory | Emitted proofs >8 MB |
 |:---|:---|:---|---:|---:|
 | CASC-J13 | FEQ | `~/crates/mrs-bench/results/campaign-casc-j13-W8C8J1-20261016` | 70,108 MB (`CSR025+5`) | 7 |
+| CASC-J13 | FEQ | `~/crates/mrs-bench/results/campaign-casc-j13-03-feq-CASCHJ1-20261021` | 64,650 MB (`CSR036+5`) | 3 (+ 1 omitted >32 MB) |
 | CASC-J13 | FNE | `~/crates/mrs-bench/results/campaign-casc-j13-W8C8J1-20261016` | 66,771 MB (`NLP261+1`) | 3 |
+| CASC-J13 | FNE | `~/crates/mrs-bench/results/casc-j13/coop-fne-candidate-03-20261022` | 58,864 MB (`NLP261+1`) | 3 (+ 1 omitted >32 MB) |
+| CASC-J13 | FNE | `~/crates/mrs-bench/results/cooperative-fne-j13-04-mq-hybrid-no-sharing` | 61,461 MB (`NLP260+1`) | 3 |
 | CASC-J13 | UEQ | `~/crates/mrs-bench/results/campaign-casc-j13-W8C8J1-20261016` | 73,685 MB (`ROB015-10`) | 0 |
+| CASC-J13 | UEQ | `~/crates/mrs-bench/results/campaign-casc-j13-04-ueq-CASCHJ1-20261021` | 57,732 MB (`ROB015-10`) | 0 |
 | CASC-30 | FEQ | `~/crates/mrs-bench/results/campaign-casc30-feq-W8CASCHJ1-01-20261020` | 64,651 MB (`CSR037+5`) | 5 |
+| CASC-30 | FEQ | `~/crates/mrs-bench/results/campaign-casc30-feq-W8CASCHJ1-01-20261021` | 64,651 MB (`CSR037+5`) | 5 (+ 2 omitted >32 MB) |
 | CASC-30 | UEQ | `~/crates/mrs-bench/results/campaign-casc30-ueq-W8CASCHJ1-02-20261020` | 63,428 MB (`ROB005-1`) | 0 |
+| CASC-30 | UEQ | `~/crates/mrs-bench/results/campaign-casc30-ueq-W8CASCHJ1-02-20261021` | 67,525 MB (`ROB005-1`) | 0 |
 | CASC-30 | FNE | `~/crates/mrs-bench/results/campaign-casc30-fne-W8CASCHJ1-99-20261019` | 69,716 MB (`BOO109+1`) | 4 |
+| CASC-30 | FNE | `~/crates/mrs-bench/results/casc-30/coop-fne-candidate-20261021` | 70,669 MB (`BOO109+1`) | 5 |
+| CASC-30 | FNE | `~/crates/mrs-bench/results/cooperative-fne-mq-hybrid-no-sharing` | 64,723 MB (`NLP260+1`) | 4 (+ 1 omitted >32 MB) |
 | CASC-30 | EPS | `~/crates/mrs-bench/results/campaign-casc30-eps-W8CASCHJ1-01-20261019` | 33,731 MB (`SYN888-1`) | N/A (model certificates; no `proof_bytes`) |
 | CASC-30 | EPU | `~/crates/mrs-bench/results/campaign-casc30-epu-W8CASCHJ1-02-20261019` | 25,692 MB (`HWV081-1`) | 2 |
 | CASC-30 | ICU | `~/crates/mrs-bench/results/campaign-casc30-icu-W8CASCHJ1-97-20261019` | 53,772 MB (`EEE009+1`) | 0 |

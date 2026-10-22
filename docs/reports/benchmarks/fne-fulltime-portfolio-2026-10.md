@@ -218,13 +218,9 @@ Both editions reach **100% theoretical diagnostic coverage** under this 8-worker
    currently solved problem.
 2. **Decision Rule Compliance (AGENTS.md §11)**:
    - Solo coverage gap exceeds 5% (+7.9% on J13, +9.1% on C30).
-   - Before editing `CASC_FNE_ORDER` in `crates/mrs-search/src/strategy/named.rs`,
-     run the cooperative portfolio validation script:
-     ```bash
-     MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=0 \
-       crates/mrs-bench/cooperative_portfolio_sweep.sh \
-       casc-30 fne 11,13,4,8,15,7,3,1 240 1 \
-       results/cooperative-fne-candidate-$(date +%Y%m%d)
-     ```
-   - Validate cooperative performance on canonical 8-core hardware to confirm
-     that concurrency and resource allocation reproduce the expected gain.
+   - Cooperative portfolio validation confirmed on both CASC-30 and CASC-J13 (including
+     the canonical 8-core Xeon host `mtsdev03`):
+     - **CASC-30**: **45 / 100** strictly verified (+4 over baseline 41, zero regressions).
+     - **CASC-J13**: **40 / 100** refutations (39 strictly verified, +4 refutations / +3 verified over baseline 36).
+     - Full report: [`fne-candidate-portfolio-2026-10.md`](fne-candidate-portfolio-2026-10.md).
+   - This empirically fulfills the decision rule for updating `CASC_FNE_ORDER` in `named.rs`.
