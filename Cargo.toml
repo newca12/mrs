@@ -31,16 +31,16 @@ rustc-hash = "2.1.3"
 sha2 = "0.11.0"
 smallvec = "1.16.3"
 wincode = { version = "0.6.2", features = ["derive"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 cc = { version = "1.7.0", features = ["parallel"] }
-clap = { version = "4.6", features = ["derive"] }
+clap = { version = "4.6.7", features = ["derive"] }
 crossbeam-channel = "0.5.17"
-libc = "0.2"
-mimalloc = { version = "0.1", default-features = false }
+libc = "0.2.191"
+mimalloc = { version = "0.1.52", default-features = false }
 num_cpus = "1.17.0"
 pretty_assertions = "1.4.1"
-rand = "0.10"
+rand = "0.10.3"
 rayon = "1.12.0"
 regex = "1.13.1"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
