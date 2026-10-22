@@ -592,7 +592,7 @@ concrete form of "the archived proofs cannot show the fix". Auditing them needs
 
 | | |
 |---|---|
-| Status | **UEQ fixed** (`a67e523`), **FEQ fixed** (UI-10); awaiting 96 GB re-confirmation |
+| Status | **UEQ fixed** (`a67e523`), **FEQ fixed** (UI-10); re-confirmed on 96 GB campaign hosts |
 | Severity | was 15 of 300 casc-30 UEQ (5%) and 12 of 400 casc-30 FEQ (3%) |
 | Soundness | Not a false-positive issue. The timeouts may still cost coverage. |
 
@@ -2142,7 +2142,7 @@ definitive result.
 
 | | |
 |---|---|
-| Status | **Fixed**; not yet re-confirmed on the 96 GB campaign host |
+| Status | **Fixed**; re-confirmed on 96 GB campaign hosts (`mtsdev01`, `mtsdev03`) |
 | Severity | was 12 of 400 casc-30 FEQ (3%); input-dependent |
 | Soundness | Unaffected. The verdict is provably unchanged; see below. |
 
@@ -2230,5 +2230,13 @@ future optimization cannot quietly change what the gate decides.
 `sos_preflight_is_not_quadratic_in_the_clause_count` fails in 68 s over 4000
 clauses if the quadratic enumeration returns (verified by temporarily
 restoring it).
+
+**Re-confirmation on 96 GB production hosts**: The fix was conclusively re-confirmed
+across two consecutive standalone campaigns on October 20 and October 21, 2026:
+`campaign-casc30-feq-W8CASCHJ1-01-20261020` and `campaign-casc30-feq-W8CASCHJ1-01-20261021` on `mtsdev01`
+(400/400 problems each), and `campaign-casc-j13-03-feq-CASCHJ1-20261020` and
+`campaign-casc-j13-03-feq-CASCHJ1-20261021` on `mtsdev03` (300/300 problems each).
+All 1,400 problem evaluations completed cleanly with 0 silent kills, 0 unhandled timeouts,
+and 100% `% SZS detail` telemetry completion.
 
 Full write-up: `docs/reports/benchmarks/feq-silent-kills-investigation.md`.

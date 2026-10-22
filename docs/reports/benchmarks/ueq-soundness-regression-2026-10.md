@@ -260,6 +260,19 @@ preserved campaign proofs now returns `VerifiedGood` for all six:
 This is a targeted re-audit of the six archived proofs, not a rerun of the
 400-problem search or a new division score.
 
+### Live Production Confirmation (2026-10-21)
+
+On October 21, 2026, a fresh full-scale 400-problem CASC-J13 UEQ campaign
+(`campaign-casc-j13-04-ueq-CASCHJ1-20261021`) was evaluated on `mtsdev04` using the
+binary built with the `b1033d3` fix. The live production campaign confirmed:
+- **119 refutations emitted** with **117 `VerifiedGood` (98.32%)**.
+- **0 `VerifiedBad` (0.0% unsoundness)**: All six previously rejected problems
+  (`GRP178-1`, `GRP183-3`, `GRP186-1`, `REL026-3`, `REL041-2`, `REL045-2`) certified
+  cleanly as `VerifiedGood` in the production run itself.
+- **2 `Unknown`**: Only the expected incomplete AC superposition replay cases (`RNG009-5`
+  and `RNG009-7`) remain unverified.
+- Full write-up: [`ueq-j13-2026-10.md`](ueq-j13-2026-10.md).
+
 Run provenance is in the campaign directory's `run_meta.json` and `run_meta.txt`:
 `git_commit=a38c8bc83c5c2c16fb478e6fe2f4d6392f58c7df`,
 `git_dirty=true`, 8 workers, `MRS_HARDWARE=casc`, `jobs=1`, official 180-second
