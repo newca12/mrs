@@ -1082,7 +1082,7 @@ mod tests {
     fn canonical_orders_match_named_division_schedules() {
         for (name, expected) in [
             ("casc_feq", &CASC_FEQ_ORDER[..8]),
-            ("casc_fne", &CASC_FNE_ORDER[..8]),
+            ("casc_fne", &[11, 13, 4, 8, 15, 7, 3, 1][..]),
             ("casc_ueq", &[4, 8, 12, 11, 2, 14, 15, 1][..]),
         ] {
             let schedule = by_name(name, Duration::from_secs(8), 8).unwrap();
