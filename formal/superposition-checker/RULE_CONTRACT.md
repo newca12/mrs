@@ -49,6 +49,14 @@ of `C` is derived without variable instantiation. Its theorem
 `clause_weakening_sound` and checker `check_weakening_and_replay` prove universal
 validity preservation.
 
+DAG support also includes **demodulation** (unit equality rewriting):
+from universally valid target clause `C` and unit positive equality parent `s = t`
+(or `t = s`), replacing an occurrence of `s sigma` (or `t sigma`) at position `p`
+in literal `k` of `C` by `t sigma` (or `s sigma`) derives `C` with literal `k`
+rewritten, preserving all other literals and their positions. Its theorem
+`demodulation_sound` and checker `check_demodulation_and_replay` prove universal
+validity preservation.
+
 This document fixes the mathematical rule represented by
 `SuperpositionCertificate` in `first_order_core.rs`. It is an **unordered
 first-order superposition rule**: no KBO/LPO maximality or literal-selection

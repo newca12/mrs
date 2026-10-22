@@ -114,19 +114,22 @@ command       := 0 (identity) | 1 (superposition step) | 2 (DAG)
                | 3 (first-order resolution step) | 4 (equality resolution step)
                | 5 (clause factoring step) | 6 (equality factoring step)
                | 7 (subsumption resolution step) | 8 (clause weakening step)
+               | 9 (demodulation step)
 step payload  := certificate | resolution_certificate | eq_resolution_certificate
                | factoring_certificate | eq_factoring_certificate
                | subsumption_resolution_certificate | weakening_certificate
+               | demodulation_certificate
 DAG payload   := node_count root input_count clause* node*
 node          := id clause kind parent_count parent_index* rule_payload
 kind          := 0 (input) | 1 (superposition) | 2 (nullary resolution)
                | 3 (exact atom resolution) | 4 (first-order resolution)
                | 5 (equality resolution) | 6 (clause factoring)
                | 7 (equality factoring) | 8 (subsumption resolution)
-               | 9 (clause weakening)
+               | 9 (clause weakening) | 10 (demodulation)
 rule_payload  := empty | certificate | resolution_certificate | eq_resolution_certificate
                | factoring_certificate | eq_factoring_certificate
                | subsumption_resolution_certificate | weakening_certificate
+               | demodulation_certificate
                | left_pivot right_pivot
 certificate   := source_clause target_clause conclusion_clause
                  source_freshening target_freshening unifier
@@ -143,6 +146,10 @@ subsumption_resolution_certificate := target_clause active_clause conclusion_cla
                                       target_pivot active_pivot matches_count match_index*
 weakening_certificate := parent_clause conclusion_clause
                          inclusions_count inclusion_index*
+demodulation_certificate := target_clause equality_clause conclusion_clause
+                            equality_freshening unifier
+                            target_literal_index argument_slot
+                            raw_path fresh_path reversed
 clause        := literal_count (polarity atom)*
 polarity      := 0 (negative) | 1 (positive)
 atom          := 0 symbol | 1 symbol term | 2 symbol term term | 3 term term

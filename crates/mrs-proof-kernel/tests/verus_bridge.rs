@@ -391,6 +391,27 @@ fn archived_step_and_real_tptp_dags_traverse_compiled_checker() {
     assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
     assert_eq!(report.checked_nodes, 6);
 
+    // Demodulation:
+    let dmod_problem =
+        mrs_tptp::parse_tptp("cnf(a,axiom,p(f(a))). cnf(b,axiom,a=b). cnf(c,axiom,~p(f(b))).")
+            .unwrap();
+    let dmod_text = "cnf(a,axiom,p(f(a)),file('input',a)).
+        cnf(b,axiom,a=b,file('input',b)).
+        cnf(c,axiom,~p(f(b)),file('input',c)).
+        cnf(d,plain,p(f(b)),inference(demodulation,[status(thm)],[a,b])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[d,c])).";
+    let dmod_proof = mrs_tptp::parse_tptp(dmod_text).unwrap();
+    let (kernel, report) = verify_with_shadow(
+        &dmod_problem,
+        &dmod_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified);
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+    assert_eq!(report.checked_nodes, 5);
+
     let mut bad = cfg.clone();
     bad.expected_sha256 = "0".repeat(64);
     assert!(matches!(
