@@ -1486,7 +1486,7 @@ fn dag_request(
         } else if parents.len() == 2 {
             let (left, right) = (&nodes[parents[0]].clause, &nodes[parents[1]].clause);
             match node.rule {
-                Some("demodulation") => {
+                Some("demodulation") | Some("equality_normalization") => {
                     if let Ok(c) = demodulation_certificate(left, right, &raw, limits) {
                         let conclusion = c.conclusion.clone();
                         (Kind::Demodulation(c), conclusion, parents)
