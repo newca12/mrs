@@ -24,6 +24,30 @@ that no interchange or caller exists are superseded by this update.
 - **DONE:** enabled `executable_unifier_certificate_examples` in `run_examples()`
   so the adversarial suite is verified at proof time and executed in runtime regressions.
 
+### 2026-10-22 demodulation checkpoint
+
+- **DONE:** demodulation (unit equality rewriting) is proved sound in `demodulation_sound`:
+  from universally valid target clause $C$ and universally valid unit positive equality
+  clause $s = t$ (or $t = s$), replacing an occurrence of $s\sigma$ (or $t\sigma$) at position
+  $p$ in literal $k$ of $C$ by $t\sigma$ (or $s\sigma$) derives $C$ with literal $k$ rewritten,
+  preserving all other literals and their positions without instantiating $C$.
+- **DONE:** implemented `DemodulationCertificate` and `check_demodulation_and_replay`
+  with bounded syntax charging, unit positive equality verification, parent variable collection,
+  freshening apart, unifier domain-uniqueness validation, subterm position lookup, equality orientation,
+  exact clause replacement, and conclusion comparison.
+- **DONE:** integrated demodulation into the proof DAG via `ProofNodeKind::Demodulation`
+  and `check_dag_demodulation_step`.
+- **DONE:** wire v1 tag 10 and command 9 decoded via `wire_demodulation_certificate`.
+- **DONE:** added demodulation certificate discovery in `mrs-proof-kernel::verus`
+  and an integration test in `verus_bridge.rs` certifying a demodulation refutation
+  through the formal dual-check gate.
+- **DONE:** executable examples and refutation DAG regressions in
+  `executable_demodulation_examples` and `executable_demodulation_dag_examples`
+  verify positive refutations (including both orientations) and fail-closed behavior
+  for forged conclusions, negative equalities, out-of-bounds indices, and mismatched paths.
+- **DONE:** 3 verifier-negative mutations in `mutation-check.py` covering equality polarity,
+  unified term agreement, and DAG replay dispatch.
+
 ### 2026-10-21 clause weakening checkpoint
 
 - **DONE:** clause weakening is proved sound in `clause_weakening_sound`: from
@@ -1083,9 +1107,9 @@ front-end or a separately justified premise transformation.
   exact-atom resolution, standardized-apart first-order binary resolution with unifier,
   unary equality resolution (reflexivity resolution), first-order clause factoring,
   positive equality factoring, subsumption resolution (contextual literal elimination),
-  and clause weakening are specified, proved sound for universal validity preservation,
+  clause weakening, and demodulation (unit equality rewriting) are specified, proved sound for universal validity preservation,
   have bounded exact executable checkers, and are dispatched in the verified proof DAG with wire v1 protocol decoding.
-- **TODO:** equality simplification (ground equality normalization, demodulation, rewrite traces),
+- **TODO:** equality simplification (ground equality normalization, rewrite traces),
   associative/commutative reasoning, formula/proof transformations, AVATAR/LRAT, and
   additional rules.
 
