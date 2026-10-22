@@ -765,7 +765,7 @@ pub fn rules() -> &'static [Rule] {
             name: "fne-resolution",
             when: &[(Condition::Class(L, "FNE"))],
             algorithm: Superposition,
-            order: &[11, 8, 4, 15, 10, 3, 12, 1, 6],
+            order: &[11, 13, 4, 8, 15, 7, 3, 1, 10],
             pre_passes: &[],
             calibrated: false,
             evidence: "prior: casc_fne",
