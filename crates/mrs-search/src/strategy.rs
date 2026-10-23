@@ -1989,6 +1989,7 @@ fn run_certified_ordered_fragment(
         crate::TermOrdering::KBO | crate::TermOrdering::CustomKBO(_) => Some("kbo".to_string()),
         crate::TermOrdering::LPO | crate::TermOrdering::CustomLPO(_) => Some("lpo".to_string()),
         crate::TermOrdering::CustomACKBO(_, _) => Some("ac-kbo".to_string()),
+        crate::TermOrdering::CustomACRPO(_, _) => Some("ac-rpo".to_string()),
     };
 
     // Keep the raw search outcome for schedule-report telemetry: a
